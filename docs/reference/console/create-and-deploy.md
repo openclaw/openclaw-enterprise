@@ -205,6 +205,16 @@ starting again.
 Repository discovery, default and custom access levels, policy checks, and save
 recovery are in [Choose repository access in the console](repository-access.md).
 
+If a password Preset's model Secret name already exists, the form offers
+**Choose existing Secret** or **Use another Secret name** under **Model provider**.
+The notice names the attempted collision. Name edits and new attempts clear old
+feedback, preserving an edited alternate. Credential changes clear
+recovery; switching back does not restore it. Select a readable Secret deliberately,
+or enter a valid **New Secret name** and select **Create Agent** again. Other draft fields stay unchanged. Selecting an existing
+Secret clears the entered key and uses metadata only; it does not read or replace
+the stored value. An Agent-name conflict still requires a different Agent name.
+An uncertain Secret write does not enable this recovery or another create attempt.
+
 ## Use repositories and Slack on the same Agent
 
 Combine approved repositories and Slack on one Codex Dedicated Agent with
@@ -258,8 +268,8 @@ Open **Open draft** and select **Deploy new version** after storing
 credentials, saving channel Secret bindings, and selecting harness authentication.
 To change plugins, edit **Plugins**, select **Save plugin selections**, then
 deploy. Deployment uses saved Configuration, plugins, and [Gateway managed mode](../agent-native-admin.md#gateway-managed-mode); it does
-not redeploy or roll back viewed snapshots. Every accepted request creates an
-immutable Agent revision, even with unchanged Configuration generation. Earlier versions
+not redeploy or roll back viewed snapshots. Each accepted deployment creates a new
+Agent revision, even when the Configuration generation is unchanged. Earlier versions
 retain their snapshots; see the
 [Plugins tab guide](../../guides/console/configuration-plugins-and-files.md#plugins-tab).
 

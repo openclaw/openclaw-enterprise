@@ -15,7 +15,7 @@ import {
   configurationErrors,
   configurationAction,
 } from "../configuration-fields.mjs";
-import { button, dismissOnBackdrop, element } from "../dom.mjs";
+import { button, dismissOnBackdrop, element, mayReturnFocus } from "../dom.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
 import {
   askForGrant,
@@ -360,7 +360,10 @@ export function renderAgentSandboxPolicy(
   dialog.addEventListener("close", () => {
     if (current()) {
       renderPolicy();
-      (dialogInvoker?.isConnected ? dialogInvoker : manageButton).focus();
+      // After the redraw: a summary control that held focus is replaced, which drops it.
+      if (mayReturnFocus(dialog)) {
+        (dialogInvoker?.isConnected ? dialogInvoker : manageButton).focus();
+      }
     }
   });
   let editorIndex: number | undefined;
@@ -414,7 +417,7 @@ export function renderAgentSandboxPolicy(
   );
   dismissOnBackdrop(limitsDialog);
   limitsDialog.addEventListener("close", () => {
-    if (current()) {
+    if (current() && mayReturnFocus(limitsDialog)) {
       const target = limitsInvoker?.isConnected
         ? limitsInvoker
         : policySummary.querySelector(".sandbox-network-limits-link");

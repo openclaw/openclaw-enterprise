@@ -10,11 +10,14 @@ import { openShellSandboxRecords } from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
   detailUrl,
+  focusKeptOverClose,
+  hasFocus,
   login,
   newPage,
   nextFrames,
   pathRequests,
 } from "./console-agents-browser-helpers.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 const grants: SandboxNetworkGrant[] = ["one", "two", "three"].map((name) => ({
   id: `python-${name}`,
@@ -114,21 +117,34 @@ test("the Policy denials page controls policy editing and disabling preserves sa
   await limits.getByText(grants[0]!.binary, { exact: true }).first().waitFor();
   assert.equal(await limits.getByRole("button", { name: "Add rule", exact: true }).count(), 0);
   await limits.getByRole("button", { name: "Done", exact: true }).click();
+  const viewLimits = card.getByRole("button", { name: "View network limits", exact: true });
+  assert.equal(await hasFocus(viewLimits), true);
+  // Focus the reader moves on before the close event fires stays where they put it.
+  const tab = page.getByRole("tab", { selected: true });
+  await viewLimits.click();
   assert.equal(
-    await card
-      .getByRole("button", { name: "View network limits", exact: true })
-      .evaluate((node) => node === document.activeElement),
+    await focusKeptOverClose(limits.getByRole("button", { name: "Done", exact: true }), tab),
     true,
+    "closing Network limits keeps focus on the tab",
   );
   assert.equal(await page.getByLabel("Select page", { exact: true }).isVisible(), false);
-  await card.getByRole("button", { name: /^(Manage|View) rules$/ }).click();
+  const manage = card.getByRole("button", { name: /^(Manage|View) rules$/ });
+  await manage.click();
   const dialog = page.getByRole("dialog", { name: /^(Manage|View) network rules$/ });
   assert.equal(await dialog.getByRole("switch", { name: "Policy editing" }).count(), 0);
   assert.equal(
     await dialog.getByRole("button", { name: "Add rule", exact: true }).isVisible(),
     false,
   );
+  // Closing redraws the policy card, which moves its rules button, yet focus returns to it.
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  assert.equal(await hasFocus(manage), true);
+  await manage.click();
+  assert.equal(
+    await focusKeptOverClose(dialog.getByRole("button", { name: "Done", exact: true }), tab),
+    true,
+    "closing the rules dialog keeps focus on the tab",
+  );
   await enable.click();
   const disable = card.getByRole("switch", { name: "Policy editing", checked: true });
   await disable.waitFor();
@@ -184,13 +200,9 @@ test("the Policy denials page controls policy editing and disabling preserves sa
 
   // Administration can be revoked after the page read. The real IAM refusal must remain
   // visible and focused on the page, with the saved editing setting unchanged.
-  fixture.policy.restrictions.push({
-    id: "deny-policy-editing-administration",
+  restrict(fixture.policy, "administer", "agent", {
     namespaceId: namespace.id,
-    resourceKind: "agent",
     resourceId: agent.id,
-    action: "administer",
-    effect: "deny",
   });
   await enable.click();
   const alert = card.getByRole("alert");

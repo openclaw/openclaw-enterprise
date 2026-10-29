@@ -28,12 +28,15 @@ host credentials. Docker Compute cannot be selected for production.
   volume.
 
 `scripts/dev-up` is the supported Podman entry point. It auto-detects Podman
-without a `docker` alias, pins the standalone `podman-compose` provider, mounts
+without a `docker` alias, requires and pins the standalone `podman-compose`
+provider, and `occ dev down` stops the stack with that same provider. It mounts
 the reported API socket through `compose.podman.yaml`, and preserves the
 driver's existing `/var/run/docker.sock` contract inside the worker. The
 Docker Compute worker disables SELinux process labeling because relabeling the
 host engine socket could disrupt the engine; the API, database, initializer,
-and migration services remain confined. The prior verified
+and migration services remain confined. Rootful Podman on Linux must expose its
+API socket (for example, `systemctl enable --now podman.socket`); the Compose
+provider reaches Podman through the `DOCKER_HOST` endpoint startup pins. The prior verified
 baseline is Podman client 6.1.0, server 5.7.1, and podman-compose 1.6.0. Prior
 Podman runtime proof covered control-plane startup, worker API preflight,
 authenticated Installation access, isolated Namespace networks, embedded and
@@ -123,6 +126,11 @@ not build, download, or publish runtime images. Missing image references,
 unsupported Harness combinations, unavailable container-engine access, failed
 transport authentication, or unready containers fail closed.
 
+To upgrade OpenClaw, deploy the Agent with a different gateway image. As on
+Kubernetes, the gateway starts OpenClaw and its state migration with
+`OPENCLAW_NO_AUTO_UPDATE=1`: OpenClaw does not check for updates, send its
+installation count request, or install updates.
+
 Container image references must already resolve in the selected engine. The
 development Driver accepts tags as well as digests; production Kubernetes
 digest requirements do not imply that the local engine enforces immutable
@@ -187,8 +195,10 @@ published port cannot reach while the healthcheck on loopback passes: a
 
 The container implementation renders `gateway.auth.mode: password` when native
 Configuration omits the mode. Explicit `password` and `trusted-proxy` are supported.
-Only supported authentication fields and modes are admitted. These rules do not
-remove the harness-authentication admission limit above.
+Only supported authentication fields and modes are admitted: deployment refuses
+another mode, such as `token` or `none`, or an unsupported field, such as
+`gateway.auth.token`, with `409` before it stops the running revision. These rules
+do not remove the harness-authentication admission limit above.
 
 With password mode, omitting `gateway.auth.password` selects the managed
 `OPENCLAW_GATEWAY_PASSWORD` reference. An explicit reference to that variable also

@@ -1102,6 +1102,23 @@ export const ErrorResponse = Type.Object(
         ]),
         message: Type.String({ minLength: 1, maxLength: 256 }),
         details: Type.Optional(Type.Array(ErrorDetail, { maxItems: 32 })),
+        remainingResources: Type.Optional(
+          Type.Array(
+            Type.Object(
+              {
+                kind: Type.String({ minLength: 1, maxLength: 64 }),
+                count: Type.Integer({ minimum: 0 }),
+                ids: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 20 }),
+              },
+              { additionalProperties: false },
+            ),
+            {
+              maxItems: 7,
+              description:
+                "Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others.",
+            },
+          ),
+        ),
       },
       { additionalProperties: false },
     ),

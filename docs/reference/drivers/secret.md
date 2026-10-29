@@ -1,3 +1,7 @@
+---
+kind: reference/driver
+---
+
 # SecretDriver contract
 
 ## Overview
@@ -17,7 +21,7 @@ Compose without Installation YAML selects no Secret Driver. See
 
 ## Interface
 
-The [shared interface](../../../packages/contracts/src/index.ts) requires four
+The [shared interface](../../../packages/contracts/src/secret.ts) requires four
 storage and projection methods and optionally supports transient server-side use.
 
 | Method                                    | Contract                                                                                                                                                                        |

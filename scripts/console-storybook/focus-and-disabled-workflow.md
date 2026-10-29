@@ -78,3 +78,20 @@ follows `:focus-visible`. No part of any ring may be cut off.
 
 Check steps 1 to 5 again at a narrow viewport (390 px; use **Plugins (phone)**
 for step 5).
+
+## Agent collection access checks
+
+Open **Pages / Agents / Populated Namespace leaves the list** at desktop and
+phone widths. Keep focus in Search Agents while the idle Namespace read finishes.
+The warning names the lost access, all Agent rows disappear, and Create Agent is
+disabled. Clear the search: the rows must not return. The existing empty
+**Namespace leaves the list while provisioning** story covers the same warning
+without rows. These stories simulate API responses; browser tests exercise the
+controller and IAM decisions.
+
+Repeat with **Namespace loss with Stop dialog** and **Namespace loss with Delete
+dialog**. The background check closes the confirmation and focuses Search Agents.
+Previous row feedback disappears. No empty-list message appears beside the
+unavailable warning. Submitted requests report generic acceptance, refusal or
+unknown outcomes without Agent details or replay. Browser tests also cover session
+expiry. Use the late Stop response story to inspect its generic result.

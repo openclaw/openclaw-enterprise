@@ -59,10 +59,36 @@ export const NAMESPACE_CREATE_DENIED = onlyAdministratorCreates(
   "in this Installation",
   "create a Namespace or to give you access to an existing one",
 );
+// Namespace IAM Roles grant only namespace:read on the Namespace itself, so no grant lets a member
+// delete one: the reason names who can, not a grant to ask for (finding D788).
+export const NAMESPACE_DELETE_DENIED =
+  "Only an Installation administrator can delete a Namespace. Ask one to delete this Namespace.";
+// An Installation administrator refused Namespace delete is refused by a deny Restriction, which
+// administration cannot lift, as for Agent create (finding 2861).
+export const NAMESPACE_DELETE_RESTRICTED =
+  "A Restriction denies deleting this Namespace, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it.";
+/** Why the Namespace permission answer refuses delete: a Restriction, or missing access. */
+export const namespaceDeleteDenied = (
+  permissions?: { installation?: { administer?: boolean } } | null,
+) =>
+  permissions?.installation?.administer === true
+    ? NAMESPACE_DELETE_RESTRICTED
+    : NAMESPACE_DELETE_DENIED;
 
 // POST /agents/{id}/stop authorizes Agent operate; DELETE /agents/{id} authorizes Agent delete.
 export const AGENT_STOP_DENIED = notIncluded("stopping this Agent", "Agent operate on it");
 export const AGENT_DELETE_DENIED = notIncluded("deleting this Agent", "Agent delete on it");
+// A Stop or Delete the API refused, on the Agent's page ("this Agent") or its Agents row (its
+// name). It says what was refused, then the same reason as the permission answer (finding D753).
+export const stopRefused = (target: string) =>
+  `Stop was refused: your access does not include stopping ${target}. ${askForGrant("Agent operate on it")}`;
+export const deleteRefused = (target: string) =>
+  `Deletion was refused: your access does not include deleting ${target}. ${askForGrant("Agent delete on it")}`;
+// POST /agents/{id}/deploy authorizes Agent deploy.
+export const AGENT_DEPLOY_DENIED = notIncluded("deploying this Agent", "Agent deploy on it");
+// A Namespace the reader cannot read: deleted, never shared or no longer shared. One sentence
+// for every page, which cannot tell these apart (finding D753).
+export const NAMESPACE_UNAVAILABLE = "This Namespace is missing or your access does not include it";
 // Saving a draft Configuration authorizes Configuration update on it.
 export const CONFIGURATION_UPDATE_DENIED = notIncluded(
   "editing this Configuration",
@@ -87,19 +113,59 @@ export const requestedVersionUnavailable = (version: string) =>
 // it is told that, not that it may not exist (finding D751).
 export const deployAcceptedVersionUnreadable = (version: string) =>
   `Deployment accepted. You cannot read version ${version}, so its progress and outcome are not shown here; ${ASK_INSTALLATION_ADMINISTRATOR} for AgentRevision read on it.`;
+// A current version the reader cannot read, named in words rather than by its raw ID, on the
+// Agents list and the Agent page alike (findings D789, D791). It is newer than every readable
+// version when the newest readable one's deployment succeeded: that made it current, and a
+// different current version came after it.
+export const unreadableCurrentVersion = (newer: boolean) =>
+  newer ? "A newer version you cannot read" : "A version you cannot read";
 
-// A rejected model credential is fixed in the Agent's Credentials, which needs Agent update. A
-// Secret-backed credential can also be replaced in place, which needs Secret update on that
-// Secret. The permission answer covers only Agent update, so a caller known to lack it is told
-// which grant does what, and who grants it, rather than to fix it (finding D750).
-const credentialFixGrants = (secretBacked: boolean, then: string) =>
-  secretBacked
-    ? `Replacing its Secret's value needs Secret update on that Secret; choosing another credential needs Agent update on this Agent, which your access does not include. If your access does not include Secret update either, ${ASK_INSTALLATION_ADMINISTRATOR} for one of them. Then ${then}.`
-    : `${notIncluded("changing it", "Agent update on this Agent")} Then ${then}.`;
-export const modelCredentialRejectedAsk = (secretBacked: boolean) =>
-  `The model provider rejected this version's credential (HTTP 401 or 403). ${credentialFixGrants(secretBacked, "deploy a new version")}`;
-export const modelCredentialRejectedReadOnly = (secretBacked: boolean) =>
-  `The last deployment's model credential was rejected. ${credentialFixGrants(secretBacked, "deploy again")}`;
+// A rejected model credential is fixed in the Agent's Credentials, which needs Agent update and
+// the grants each Agent update also checks. A Secret-backed credential can also be replaced in
+// place, which needs Secret update on that Secret. A caller whose permission answer denies the
+// Agent update is told which grant it lacks, which grants do what, and who grants them, rather
+// than to fix it (finding D750). Deploying the fix needs Agent deploy, and Secret operate on a
+// Secret-backed credential: the console cannot tell a caller who cannot read that Secret whether
+// she holds it, so it says what deploying needs unless the answer denies Agent deploy (D752).
+export type CredentialChoiceGap = "update" | "configurationRead" | "sources" | "serviceAccount";
+const CREDENTIAL_CHOICE_NEEDS: Record<CredentialChoiceGap, string> = {
+  update: "Agent update on this Agent, which your access does not include",
+  configurationRead:
+    "Configuration read on this Agent's Configuration, which your access does not include",
+  sources:
+    "operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include",
+  serviceAccount:
+    "operate on each Secret and credential source this Agent and its Configuration bind, and read on the ServiceAccount it uses for Harness authentication; your access does not include all of them",
+};
+export interface CredentialFixAccess {
+  secretBacked: boolean;
+  gap: CredentialChoiceGap;
+  // The answer's Agent deploy, or undefined when there is no answer.
+  deploy: boolean | undefined;
+}
+const credentialFixGrants = ({ secretBacked, gap, deploy }: CredentialFixAccess, then: string) => {
+  const choose = `another credential needs ${CREDENTIAL_CHOICE_NEEDS[gap]}.`;
+  const fix = secretBacked
+    ? `Replacing its Secret's value needs Secret update on that Secret; choosing ${choose}`
+    : `Choosing ${choose}`;
+  const operate = secretBacked ? " and Secret operate on that Secret" : "";
+  const deploying =
+    deploy === false
+      ? "Deploying needs Agent deploy on this Agent, which your access does not include."
+      : deploy === true
+        ? `Then ${then}${secretBacked ? ", which also needs Secret operate on that Secret" : ""}.`
+        : `Then ${then}, which needs Agent deploy on this Agent${operate}.`;
+  return `${fix} ${deploying} ${ASK} for whichever of these grants your access does not include.`;
+};
+export const MODEL_CREDENTIAL_REJECTED_DEPLOY_DENIED = `The model provider rejected this version's credential (HTTP 401 or 403). Choose a valid authentication source in Credentials. ${AGENT_DEPLOY_DENIED}`;
+export const modelCredentialRejectedAsk = (access: CredentialFixAccess) =>
+  `The model provider rejected this version's credential (HTTP 401 or 403). ${credentialFixGrants(access, "deploy a new version")}`;
+export const modelCredentialRejectedReadOnly = (access: CredentialFixAccess) =>
+  `The last deployment's model credential was rejected. ${credentialFixGrants(access, "deploy again")}`;
+// The Agent no longer binds the credential the failed version was deployed with, so the recorded
+// failure asks for nothing more, of any reader: the next deployment uses the new one (D752).
+export const MODEL_CREDENTIAL_REJECTED_REPLACED =
+  "The model provider rejected this version's credential (HTTP 401 or 403). The Agent now uses a different credential, which the next deployment uses.";
 
 // A Secret field with nothing to choose for a caller who can neither create nor read a Secret.
 export const NO_SECRETS_CREATE_DENIED = `No Secrets you can read in this Namespace. ${SECRET_CREATE_DENIED} Or ask one for Secret read and operate on an existing Secret.`;
@@ -159,6 +225,9 @@ export function runtimeStatusDenied(grants: {
   }
   return `Runtime status requires Agent operate on this Agent and AgentRevision read on this version. ${askAdministratorTo("grant them")}`;
 }
+// A version the page could not read: its runtime status would be refused too, so the Logs tab
+// says so in words instead of sending that read (finding D794).
+export const RUNTIME_STATUS_VERSION_UNREADABLE = `You cannot read this version, so its runtime status is not shown. ${askForGrant("AgentRevision read on it")}`;
 
 // Reading a workspace file authorizes Agent read; saving one and running diagnostics, Agent
 // operate.

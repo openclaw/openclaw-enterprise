@@ -35,7 +35,7 @@ selected Kubernetes Compute Driver and the
   from the repository root, followed by authenticated Namespace operations.
 - Source: `scripts/dev-up:require_command`, `internal/occdev/up.go:Up`, and
   `internal/occdev/openshell.go:prepareOpenShell`.
-- Assumptions: Docker Engine with Compose, or Podman with `podman-compose`;
+- Assumptions: Docker Engine with Compose, or Podman with `docker-compose` or `podman-compose` (Docker Compute requires `podman-compose`);
   Bash, curl, Python 3, and `yq` v4 for the Docker profile; writable PostgreSQL
   and Configuration volumes; loopback API publication; executable `bin/occ`
   built with `pnpm cli:build`. Startup needs no model credential.
@@ -129,7 +129,7 @@ engine selection, database initialization, local API admission and worker startu
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver`
 
 [Namespace execution and Agent admission](docker-compose-development/agent-execution.md)
-traces API authorization, durable work, tenant network ownership, unsupported
+traces API authorization, queued controller operations, tenant network ownership, unsupported
 Agent authentication and exact resource removal.
 The Driver rejects Docker API responses above 4 MiB from either a declared
 content length or the bytes received before buffering the complete body.

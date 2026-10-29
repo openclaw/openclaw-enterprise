@@ -20,6 +20,7 @@ import {
   apiRequests,
   expectNoText,
   expireSessions,
+  expireSessionsWhenSettled,
   login,
   loginThroughForm,
   newPage,
@@ -36,6 +37,7 @@ import {
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   NO_READABLE_NAMESPACES,
+  NAMESPACE_UNAVAILABLE,
   WORKSPACE_FILES_UNAVAILABLE,
   SIGN_IN_UNAVAILABLE,
 } from "../helpers/refusal-text.mjs";
@@ -75,16 +77,34 @@ test("mounted theme brands sign-in, Agent navigation and mobile without losing s
     ),
     "#2457C5",
   );
+  assert.deepEqual(
+    await page
+      .locator(".brand img")
+      .boundingBox()
+      .then(({ width, height }) => ({ width, height })),
+    { width: 40, height: 40 },
+  );
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  assert.deepEqual(
+    await page
+      .locator(".sidebar .brand img")
+      .boundingBox()
+      .then(({ width, height }) => ({ width, height })),
+    { width: 48, height: 48 },
+  );
   await page.getByText("Theme assistant", { exact: true }).click();
   await page.getByRole("heading", { name: "Theme assistant", exact: true }).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.locator(".topbar .brand-name").textContent(), "Example Agents");
   const logo = await page.locator(".topbar .brand img").evaluate((node) => {
-    const { width, filter } = globalThis.getComputedStyle(node);
-    return { width, filter };
+    const { width, height, filter } = globalThis.getComputedStyle(node);
+    return { width, height, filter };
   });
-  assert.deepEqual(logo, { width: "20px", filter: "none" }, "the theme logo keeps its own artwork");
+  assert.deepEqual(
+    logo,
+    { width: "48px", height: "48px", filter: "none" },
+    "the theme logo keeps its own artwork",
+  );
   await page.getByRole("button", { name: "Open navigation", exact: true }).click();
   await page.locator(".sidebar nav").waitFor({ state: "visible" });
   await page.keyboard.press("Escape");
@@ -710,7 +730,7 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
     [
       `/console/agents?namespace=${granted.id}`,
       "Namespace unavailable",
-      "This Namespace is missing or not shared with you, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.",
+      `${NAMESPACE_UNAVAILABLE}, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.`,
       "Unavailable",
     ],
     // An Agent bookmark in that Namespace kept the Agent page's header above the panel: the
@@ -719,7 +739,7 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
     [
       `/console/agents/${agent.id}?namespace=${granted.id}`,
       "Namespace unavailable",
-      "This Namespace is missing or not shared with you, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.",
+      `${NAMESPACE_UNAVAILABLE}, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.`,
       "Unavailable",
     ],
   ]) {
@@ -1265,7 +1285,10 @@ test("console retained views clear after session expiry and exact Agent denial",
   await page.getByText("Denied retained Agent", { exact: true }).waitFor();
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
-  expireSessions(fixture);
+  // Each row reads its Namespace delete permission after the list shows, so wait for the view
+  // to settle before expiring: the held return, not a row read, must find the expiry.
+  await waitForSettledView(page);
+  await expireSessionsWhenSettled(page, fixture);
   const sessionPattern = "**/api/auth/session";
   const expiredSession = await holdRoute(t, page, sessionPattern, (route, response) =>
     response ? route.fulfill({ response }) : route.continue(),
@@ -1543,6 +1566,113 @@ const GOOGLE_PROVIDER_GONE =
 const UNTRUSTED_ORIGIN_SIGN_IN =
   "Sign-in was refused because this page was not opened from the console's configured address. Open the console from its configured URL and sign in there. If you did, ask an operator to check the console address setting (OCC_AUTH_BASE_URL) and any proxy in front of it.";
 
+const UNCONFIRMED_PASSWORD_SIGN_IN =
+  "Could not confirm whether sign-in completed. Reload the page to check your session before trying your password again.";
+
+for (const [lossPoint, afterHeaders] of [
+  ["before response headers", false],
+  ["after response headers", true],
+]) {
+  test(`an accepted password sign-in interrupted ${lossPoint} asks to check the session`, async (t) => {
+    const signInPath = "/api/auth/sign-in/email";
+    let observing = false;
+    let submissions = 0;
+    let acceptedStatus;
+    let cookieIssued = false;
+    let interruptedReply;
+    const fixture = await createConsoleAppFixture(t, {
+      async onSend(request, reply, payload) {
+        if (!observing || request.method !== "POST" || request.url !== signInPath) {
+          // Give the before-headers case a fresh connection for its password submission.
+          if (!afterHeaders) {
+            reply.header("connection", "close");
+          }
+          return payload;
+        }
+        submissions += 1;
+        if (submissions !== 1) {
+          return payload;
+        }
+        acceptedStatus = reply.statusCode;
+        if (acceptedStatus !== 200) {
+          return payload;
+        }
+        const headers = reply.getHeaders();
+        cookieIssued = headers["set-cookie"] !== undefined;
+        reply.hijack();
+        if (afterHeaders) {
+          // The Controller accepted the request. Deliver its real headers and a body
+          // prefix, then keep the socket open until the browser observes the 200.
+          assert.equal(typeof payload, "string");
+          reply.raw.writeHead(reply.statusCode, {
+            ...headers,
+            "content-length": Buffer.byteLength(payload),
+          });
+          reply.raw.write(payload.slice(0, 1));
+          interruptedReply = reply.raw;
+        } else {
+          reply.raw.destroy();
+        }
+        return payload;
+      },
+    });
+    t.after(() => interruptedReply?.destroy());
+    await fixture.bootstrap();
+    const { page } = await newPage(t, fixture);
+    let browserSubmissions = 0;
+    page.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === signInPath) {
+        browserSubmissions += 1;
+      }
+    });
+    await page.goto(`${fixture.origin}/console/login`);
+    await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
+    await page.getByLabel("Password").fill(fixture.credentials.password);
+    const sessionsBefore = fixture.memoryDatabase.session.length;
+    const isSignIn = (event) => new URL(event.url()).pathname === signInPath;
+    const observed = afterHeaders
+      ? page.waitForResponse(isSignIn)
+      : page.waitForEvent("requestfailed", isSignIn);
+    observing = true;
+    await page.getByRole("button", { name: "Sign in" }).click();
+    const result = await observed;
+    assert.equal(acceptedStatus, 200, "the real Controller must accept the password");
+    assert.equal(cookieIssued, true, "the accepted sign-in must issue a cookie");
+    assert.equal(fixture.memoryDatabase.session.length, sessionsBefore + 1);
+    const createdSession = fixture.memoryDatabase.session.at(-1);
+    if (afterHeaders) {
+      assert.equal(result.status(), 200);
+      assert.ok(Number((await result.allHeaders())["content-length"]) > 1);
+      interruptedReply.destroy();
+    } else {
+      assert.equal(await result.response(), null);
+    }
+    const feedback = page.locator('form [role="alert"]');
+    await feedback.filter({ hasText: /\S/ }).waitFor();
+    assert.equal(await feedback.textContent(), UNCONFIRMED_PASSWORD_SIGN_IN);
+    assert.equal(browserSubmissions, 1);
+    assert.equal(submissions, 1);
+
+    const checkingSession = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/auth/session",
+    );
+    await page.reload();
+    const sessionResponse = await checkingSession;
+    assert.equal(sessionResponse.status(), 200);
+    const { data: session } = await sessionResponse.json();
+    if (afterHeaders) {
+      assert.equal(session?.authenticated, true);
+      assert.ok(session.user.id === createdSession.userId, "reload must find the accepted session");
+      await page.waitForURL(/\/console\/agents(?:[/?#]|$)/);
+    } else {
+      assert.equal(session, null, "the browser received no session cookie");
+      await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
+    }
+    assert.equal(browserSubmissions, 1, "checking the session must not resubmit the password");
+    assert.equal(submissions, 1, "the Controller must receive only one password submission");
+  });
+}
+
 // Each failure says what happened and what to do; a rate limit, an outage or the origin
 // check never reads as a wrong password or a refused identity (finding 2535).
 test("sign-in failures name a rate limit, an outage and the origin check", async (t) => {
@@ -1565,6 +1695,13 @@ test("sign-in failures name a rate limit, an outage and the origin check", async
     await page.getByText(expected, { exact: true }).waitFor();
   };
   await page.goto(`${fixture.origin}/console/login`);
+
+  const wrongPassword = page.waitForResponse((response) =>
+    response.url().endsWith("/api/auth/sign-in/email"),
+  );
+  const refusedPassword = signIn("Could not sign in. Check your email and password.");
+  assert.equal((await wrongPassword).status(), 401);
+  await refusedPassword;
 
   // The real API refuses a sign-in sent from another Origin before it reads the password.
   // The browser keeps its own Origin, so the request is resent from the test with another.
@@ -1594,7 +1731,7 @@ test("sign-in failures name a rate limit, an outage and the origin check", async
       outage,
       "Sign-in is temporarily unavailable because a service it depends on did not answer. Try again shortly. If it continues, ask an operator.",
     ],
-    [null, "Could not reach the sign-in service. Check your connection, then try again."],
+    [null, UNCONFIRMED_PASSWORD_SIGN_IN],
   ]) {
     await page.route("**/api/auth/sign-in/email", (route) =>
       response === null ? route.abort("connectionrefused") : route.fulfill(response),
@@ -1995,7 +2132,7 @@ test("Namespaces rows open their Agents and status badges use words with a tone"
   for (const [namespace, label, tone] of [
     [ready, "Ready", "success"],
     [provisioning, "Provisioning", "warning"],
-    [retiring, "Deleting", "warning"],
+    [retiring, "Deleting…", "warning"],
   ]) {
     const row = list.getByRole("listitem").filter({ hasText: namespace.id });
     const link = row.getByRole("link", { name: namespace.name, exact: true });
@@ -2869,12 +3006,10 @@ test("a naturally expired session returns to the requested page after sign-in", 
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
-  // The button shows before the Namespace's Preset read returns. If that read reached the API
-  // after the expiry below, its 401 would show the expired sign-in on this page before the click,
-  // and the Namespaces link would be gone. Expire only once the page has no read in flight.
-  await waitForIdleFetches(page);
-  // Expire the actual session: the controller must reject it before returning to login.
-  expireSessions(fixture);
+  // The button shows before the Namespace's Preset read returns, and that read must not find
+  // the expiry. Expire the actual session: the controller must reject it before returning to
+  // login.
+  await expireSessionsWhenSettled(page, fixture);
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByLabel("Email", { exact: true }).waitFor();
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
@@ -2889,6 +3024,7 @@ test("session expiry after a failed check returns to the requested page", async 
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Interrupted expiry", { ready: true });
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
   await page.route(
@@ -2903,7 +3039,8 @@ test("session expiry after a failed check returns to the requested page", async 
   );
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByText("Session unavailable", { exact: true }).waitFor();
-  expireSessions(fixture);
+  // The Preset read may still be out (see the test above); Retry must find the expiry.
+  await expireSessionsWhenSettled(page, fixture);
   await page.getByRole("button", { name: "Retry" }).click();
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
@@ -2926,7 +3063,7 @@ test("expiry on an active Agent page returns safely and rechecks denied access",
   const requests = apiRequests(page, fixture.origin);
 
   // A foreground recheck discovers real expiry without navigating away from this Agent.
-  expireSessions(fixture);
+  await expireSessionsWhenSettled(page, fixture);
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await page.getByText("Your session has expired").waitFor();
   await expectNoText(page, /Expired page Agent/, () => waitForIdleFetches(page));

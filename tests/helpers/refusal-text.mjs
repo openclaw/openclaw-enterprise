@@ -38,6 +38,12 @@ export const GATEWAY_MANAGED_MODE_DENIED =
 // The native admin host names the grant but no Agent: the host, not the caller, names the Agent.
 export const NATIVE_ADMIN_DENIED =
   "Not authorized: opening this Agent's native admin UI needs Agent administer on it. Ask an Installation administrator to grant it.";
+// An IAM AccessBinding subject that is an email, and one that is no eligible principal: an unknown
+// ID gets the same answer as an ineligible one (finding D753).
+export const BINDING_SUBJECT_EMAIL =
+  "The IAM AccessBinding subject is an email address, not a principal ID. Use the person's principalId (prn_…): creating their account returns it; see the IAM guide.";
+export const BINDING_SUBJECT_INELIGIBLE =
+  "The IAM AccessBinding subject must be a human Principal, a non-Agent ServicePrincipal of this Namespace, or the ServicePrincipal of a live Agent here.";
 export const DEPENDENCY_UNAVAILABLE = "A required platform dependency is unavailable.";
 export const RESOURCE_CONFLICT = "The requested platform resource already exists.";
 export const RESOURCE_NOT_FOUND = "The requested platform resource was not found.";
@@ -163,12 +169,14 @@ export const SECRET_UPDATE_DENIED = notIncluded(
 );
 export const SECRET_DELETE_DENIED = notIncluded("deleting this Secret", "Secret delete on it");
 export const AGENT_DELETE_DENIED = notIncluded("deleting this Agent", "Agent delete on it");
+// A Namespace the reader cannot read, deleted or not shared, in one sentence (finding D753).
+export const NAMESPACE_UNAVAILABLE = "This Namespace is missing or your access does not include it";
 export const AGENT_STOP_AND_DELETE_DENIED = notIncluded(
   "stopping or deleting this Agent",
   "Agent operate and Agent delete on it",
 );
-// Deploy's status line on the draft for a reader without Agent deploy.
-export const AGENT_DEPLOY_NOT_INCLUDED = "Your access does not include deploying this Agent.";
+// Deploy's status line on the draft for a reader without Agent deploy names the grant (D753).
+export const AGENT_DEPLOY_NOT_INCLUDED = notIncluded("deploying this Agent", "Agent deploy on it");
 // The Stop confirmation, on the Agents list and the Agent page, by what the page read of the
 // Agent's version and its latest deployment (apps/controller/src/console/agents/
 // lifecycle-confirmation.mts, finding D691).
@@ -192,9 +200,12 @@ export const NEW_VERSIONS_READ =
 // A request the API refused for lack of a grant: what the reader tried, then the grant to ask for.
 export const permissionRefused = (task, grant) =>
   `You do not have permission to ${task}. ${askForGrant(grant)}`;
-// A refused Stop or Delete names the Agent on the Agents list and "this Agent" on its page.
-export const stopRefused = (name) => permissionRefused(`stop ${name}`, "Agent operate on it");
-export const deleteRefused = (name) => permissionRefused(`delete ${name}`, "Agent delete on it");
+// A refused Stop or Delete names the Agent on the Agents list and "this Agent" on its page, says
+// what was refused, then the reason (finding D753).
+export const stopRefused = (name) =>
+  `Stop was refused: your access does not include stopping ${name}. ${askForGrant("Agent operate on it")}`;
+export const deleteRefused = (name) =>
+  `Deletion was refused: your access does not include deleting ${name}. ${askForGrant("Agent delete on it")}`;
 export const CONFIGURATION_UPDATE_DENIED = notIncluded(
   "editing this Configuration",
   "Configuration update on it",
@@ -220,8 +231,9 @@ export const RUNTIME_STATUS_DENIED =
   "Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Ask an Installation administrator to grant them.";
 export const RUNTIME_STATUS_OPERATE_DENIED =
   "Runtime status requires Agent operate on this Agent. Ask an Installation administrator to grant it.";
-export const RUNTIME_STATUS_VERSION_DENIED =
-  "Runtime status requires AgentRevision read on this version. Ask an Installation administrator to grant it.";
+// A version the page could not read: the strip says so instead of reading status (finding D794).
+export const RUNTIME_STATUS_VERSION_UNREADABLE =
+  "You cannot read this version, so its runtime status is not shown. Ask an Installation administrator for AgentRevision read on it.";
 // A version link the page cannot list may name a version that does not exist: the API answers
 // both alike, so the console says either may be true (finding D750).
 export const VERSION_UNAVAILABLE =
@@ -235,17 +247,43 @@ export const deployAcceptedVersionUnreadable = (version) =>
 export const DEPLOYED_VERSION_UNREADABLE = "You cannot read the version you deployed.";
 export const VERSION_READ_DENIED =
   "Your access does not include this version, so its configuration and deployment outcome are hidden. Ask an Installation administrator for AgentRevision read on it.";
-// A rejected model credential for a caller known to lack Agent update names the grants that fix
-// it and who gives them (finding D750): the failure banner, and the draft's deploy line. A
+// A rejected model credential for a caller whose permission answer denies the Agent update that
+// fixes it names the grant it lacks, the grants that fix it and who gives them (finding D750): the
+// failure banner, the draft's deploy line, the deployment record and the Agents list (D752). A
 // Secret-backed credential can also be replaced in place with Secret update on its Secret.
-const credentialFixGrants = (secretBacked, then) =>
-  secretBacked
-    ? `Replacing its Secret's value needs Secret update on that Secret; choosing another credential needs Agent update on this Agent, which your access does not include. If your access does not include Secret update either, ask an Installation administrator for one of them. Then ${then}.`
-    : `Your access does not include changing it. Ask an Installation administrator for Agent update on this Agent. Then ${then}.`;
-export const modelCredentialRejectedAsk = (secretBacked) =>
-  `The model provider rejected this version's credential (HTTP 401 or 403). ${credentialFixGrants(secretBacked, "deploy a new version")}`;
-export const modelCredentialRejectedReadOnly = (secretBacked) =>
-  `The last deployment's model credential was rejected. ${credentialFixGrants(secretBacked, "deploy again")}`;
+// Deploying needs Agent deploy, and Secret operate on that Secret, unless the answer denies deploy.
+const CREDENTIAL_CHOICE_NEEDS = {
+  update: "Agent update on this Agent, which your access does not include",
+  configurationRead:
+    "Configuration read on this Agent's Configuration, which your access does not include",
+  sources:
+    "operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include",
+  serviceAccount:
+    "operate on each Secret and credential source this Agent and its Configuration bind, and read on the ServiceAccount it uses for Harness authentication; your access does not include all of them",
+};
+const credentialFixGrants = ({ secretBacked, gap, deploy }, then) => {
+  const choose = `another credential needs ${CREDENTIAL_CHOICE_NEEDS[gap]}.`;
+  const fix = secretBacked
+    ? `Replacing its Secret's value needs Secret update on that Secret; choosing ${choose}`
+    : `Choosing ${choose}`;
+  const deploying =
+    deploy === false
+      ? "Deploying needs Agent deploy on this Agent, which your access does not include."
+      : deploy === true
+        ? `Then ${then}${secretBacked ? ", which also needs Secret operate on that Secret" : ""}.`
+        : `Then ${then}, which needs Agent deploy on this Agent${secretBacked ? " and Secret operate on that Secret" : ""}.`;
+  return `${fix} ${deploying} Ask an Installation administrator for whichever of these grants your access does not include.`;
+};
+export const modelCredentialRejectedAsk = (access) =>
+  `The model provider rejected this version's credential (HTTP 401 or 403). ${credentialFixGrants(access, "deploy a new version")}`;
+export const modelCredentialRejectedReadOnly = (access) =>
+  `The last deployment's model credential was rejected. ${credentialFixGrants(access, "deploy again")}`;
+// The recorded failure once the Agent binds another credential than the failed version (D752).
+export const MODEL_CREDENTIAL_REJECTED_REPLACED =
+  "The model provider rejected this version's credential (HTTP 401 or 403). The Agent now uses a different credential, which the next deployment uses.";
+// The API's recorded message for the same failure, which tells everyone to change the credential.
+export const MODEL_CREDENTIAL_REJECTED_RECORDED =
+  "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.";
 // The API has no route to Slack (SlackRouteNotConfiguredError, apps/controller/src/drivers/channel/
 // slack.ts). A member reads who to ask, not Helm keys; the guide lists them (findings D750, D753).
 export const SLACK_ROUTE_NOT_CONFIGURED =
@@ -441,10 +479,12 @@ const SLACK_TOKEN_OBJECTS = { secretRef: "a SecretRef", object: "an object" };
 export const unreadableSlackTokenRefusal = (setting, held) =>
   `Configuration setting ${setting} holds ${SLACK_TOKEN_OBJECTS[held]} the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole \${NAME}, bound in secretBindings.`;
 // Where the console says to add a Secret binding that a channel refusal asks for: the Agent
-// page's Configuration JSON editor saves none (finding 2494), and Create Agent binds only Slack's
-// standard names (finding 2506).
-export const CHANNEL_BINDING_CONSOLE_REMEDY =
-  "This editor does not save Secret bindings: bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
+// page's Configuration JSON editor saves none (finding 2494), the Credentials tab binds only Slack's
+// standard names (finding 2542), and Create Agent binds only those too (finding 2506).
+const CHANNEL_BINDING_PLACES =
+  "bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
+export const CHANNEL_BINDING_CONSOLE_REMEDY = `This editor does not save Secret bindings: ${CHANNEL_BINDING_PLACES}`;
+export const CHANNEL_BINDING_CREDENTIALS_REMEDY = `To fix it, ${CHANNEL_BINDING_PLACES}`;
 // The Slack card of an Embedded Agent, on Create Agent and the Agent page's Channels tab.
 export const CHANNELS_NEED_DEDICATED =
   "Channels require Dedicated execution. Embedded Agents can only keep channels disabled.";
@@ -675,3 +715,11 @@ export const workspaceWithoutRunningVersion = (agentId) =>
   `Agent ${agentId} has no running version, so its workspace files cannot be read or written. Deploy it, then try again.`;
 export const workspaceVersionStarting = (agentId) =>
   `Agent ${agentId} has no running version yet: its deployment is still starting, so its workspace files cannot be read or written. Try again when the deployment finishes.`;
+// Finding D788. Namespace IAM Roles cannot grant Namespace delete, so a member's trash icon names
+// who can delete the Namespace instead of a grant to ask for.
+export const NAMESPACE_DELETE_DENIED =
+  "Only an Installation administrator can delete a Namespace. Ask one to delete this Namespace.";
+// The same icon for an Installation administrator whom a deny Restriction keeps from deleting the
+// Namespace (finding 2861): administration cannot lift it.
+export const NAMESPACE_DELETE_RESTRICTED =
+  "A Restriction denies deleting this Namespace, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it.";

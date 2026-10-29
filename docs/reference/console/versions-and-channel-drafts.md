@@ -9,7 +9,8 @@ On desktop, the revision history sits beside its detail panel. The selected row
 and the **Revision vN** heading identify the viewed snapshot; its context states
 whether it is current or historical and read-only. **Selected for service** does
 not establish runtime health. The draft shows **Build next revision** with Draft
-context. Above 520 px, the heading and revision tabs stay visible while the panel
+context. With read-only access, it shows **Next revision draft**, **Draft · Read-only**,
+and describes saved settings. Above 520 px, the heading and revision tabs stay visible while the panel
 scrolls. At phone widths, the heading and tabs scroll together with the content.
 At widths of 1,100 px or less, **Viewing version** replaces the history rail
 with a native selector above the heading.
@@ -66,8 +67,15 @@ message with a link above the tabs. **Deployment details** follows the newest re
 starts folded; pending work, warnings, and cleanup are expanded. When the page shows
 before the first record arrives (a read slower than about 2 s), that record fills the
 folded row instead, and the summary above shows its outcome; cleanup and warnings still
-expand it, as does every later change.
-The viewed version retains its own result. Unreadable outcomes remain unknown.
+expand it. Later routine polls preserve your expanded or folded choice through
+queued/running updates and transient read failures, including recovery. A final
+refusal reveals its error; an explicit refresh of a failed read also reveals the
+error, even if unchanged. Refreshing unchanged healthy evidence keeps your choice.
+The viewed version retains its own result. A failed shared read clears that
+version's older result and shows the error outside the fold, with one visible
+alert for the same failure. An older in-flight success cannot restore that result.
+Unreadable outcomes remain unknown. Pending reads keep space for visible diagnostics
+so routine updates do not move the focused control.
 Bootstrap failures retain safe evidence; cleanup refreshes separately.
 
 A failure's card leads the page and folds the details. Its **Open vN Logs** opens

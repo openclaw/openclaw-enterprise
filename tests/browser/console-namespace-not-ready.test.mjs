@@ -5,7 +5,13 @@ import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import {
+  AGENT_READ,
+  expireSessions,
+  holdRequests,
+  revokeAdministratorGrant,
+  revokeMemberGrant,
   apiRequests,
   fileBrowser,
   login,
@@ -465,14 +471,14 @@ test("the Agents list names a Namespace that left the list while it waited", asy
   set(null);
   await poll();
   const note = view.getByRole("status").filter({
-    hasText: "This Namespace is missing or you no longer have access. Choose another Namespace.",
+    hasText: `${NAMESPACE_UNAVAILABLE}. Choose another Namespace.`,
   });
   await note.waitFor();
   assert.deepEqual(await statusTone(note), WARNING);
   assert.equal(await view.getByText(NOT_READY).count(), 0);
   assert.equal(await create.isDisabled(), true);
   assert.equal(await create.getAttribute("aria-describedby"), "namespace-not-ready");
-  await view.getByText("Agents cannot be created in this Namespace.", { exact: true }).waitFor();
+  assert.equal(await view.getByRole("heading", { name: /No .*Agents/ }).count(), 0);
   await assertStopped();
 });
 
@@ -635,3 +641,210 @@ test("Create Agent waiting on a provisioning Namespace", async (t) => {
     assert.equal(reads.length, 2);
   });
 });
+
+// A provisioning Namespace accepts drafts. Losing access during its idle check must also
+// remove those already-visible Agents, including when search redraws the collection.
+for (const reader of [false, true]) {
+  for (const width of [1440, 390]) {
+    test(`idle collection removes revoked Namespace rows for ${reader ? "reader" : "admin"} at ${width}px`, async (t) => {
+      const { fixture, namespaces } = await firstRun(t, ["Idle collection"]);
+      const namespace = namespaces["Idle collection"];
+      const agent = await fixture.createAgent(namespace.id, "Private draft", nativeValues("idle"));
+      const member = reader
+        ? await fixture.createNamespaceMember("idle-reader", namespace.id, AGENT_READ)
+        : null;
+      const { page } = await newPage(t, fixture, { browser });
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+      await page.clock.install();
+      await login(
+        page,
+        fixture,
+        `/console/agents?namespace=${namespace.id}`,
+        member?.credentials ?? fixture.credentials,
+      );
+      const search = page.getByRole("searchbox", { name: "Search Agents" });
+      await page.getByRole("link", { name: agent.name, exact: true }).waitFor();
+      await search.fill("Private");
+      const focused = reader ? search : page.getByRole("link", { name: agent.name, exact: true });
+      await focused.focus();
+      const held = await holdRequests(t, page, (url) => url.pathname === "/namespaces", {
+        once: true,
+      });
+      await page.clock.runFor(10_000);
+      await held.requested;
+      // The slow read keeps the focused control until IAM supplies its new answer.
+      assert.equal(
+        await focused.evaluate((node) => node === globalThis.document.activeElement),
+        true,
+      );
+      if (reader) {
+        revokeMemberGrant(fixture, "idle-reader", ["read", "namespace"]);
+      } else {
+        revokeAdministratorGrant(fixture, ["read", "namespace"]);
+      }
+      held.release();
+      await page
+        .getByText(`${NAMESPACE_UNAVAILABLE}. Choose another Namespace.`, { exact: true })
+        .waitFor();
+      assert.equal(await page.getByRole("link", { name: agent.name, exact: true }).count(), 0);
+      assert.equal(
+        await search.evaluate((node) => node === globalThis.document.activeElement),
+        true,
+      );
+      assert.equal(await page.getByRole("heading", { name: /No .*Agents/ }).count(), 0);
+      await search.fill("");
+      assert.equal(await page.getByRole("heading", { name: /No .*Agents/ }).count(), 0);
+      assert.equal(await page.getByText(agent.id, { exact: true }).count(), 0);
+      assert.equal(
+        await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+        true,
+      );
+    });
+  }
+}
+
+// A slow initial Namespace response can still say provisioning after the Namespace becomes
+// ready and an Agent is deployed. Keep that real response while later reads use current state.
+for (const kind of ["stop", "delete"]) {
+  for (const outcome of ["unsubmitted", "accepted", "unknown", "failed", "expired", "previous"]) {
+    test(`collection ${kind} dialog closes on Namespace loss with ${outcome} request`, async (t) => {
+      const { fixture, namespaces } = await firstRun(t, ["Dialog race"]);
+      const namespace = namespaces["Dialog race"];
+      const { page } = await newPage(t, fixture, { browser });
+      await page.clock.install();
+      const initial = await holdRequests(t, page, (url) => url.pathname === "/namespaces", {
+        once: true,
+        afterServer: true,
+      });
+      const opening = login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+      await initial.requested;
+      const admin = fixture.policy.roles.find((role) => role.name === "Installation administrator");
+      const actor = fixture.policy.bindings.find(
+        (binding) => binding.roleId === admin.id,
+      ).subjectId;
+      await fixture.controller.handleNamespaceLifecycle(actor, namespace.id, "ready");
+      const agent = await fixture.createAgent(namespace.id, "Dialog Agent", nativeValues("dialog"));
+      await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+      initial.release();
+      await opening;
+      const row = page.getByRole("row").filter({ hasText: agent.name });
+      await row.waitFor();
+      await row
+        .getByRole("button", {
+          name: `${kind === "stop" ? "Stop" : "Delete"} ${agent.name}`,
+          exact: true,
+        })
+        .click();
+      const dialog = page.getByRole("dialog");
+      await dialog.waitFor();
+      const confirm = dialog.getByRole("button", {
+        name: kind === "stop" ? "Stop Agent" : "Permanently delete Agent",
+        exact: true,
+      });
+      const method = kind === "stop" ? "POST" : "DELETE";
+      const path = `/namespaces/${namespace.id}/agents/${agent.id}${kind === "stop" ? "/stop" : ""}`;
+      let writes = 0;
+      page.on("request", (request) => {
+        if (request.method() === method && new URL(request.url()).pathname === path) {
+          writes += 1;
+        }
+      });
+      let mutation;
+      let priorRequestId;
+      if (outcome === "failed" || outcome === "previous") {
+        revokeAdministratorGrant(fixture, [kind === "stop" ? "operate" : "delete", "agent"]);
+      }
+      if (outcome !== "unsubmitted") {
+        // Hold the real API answer across access loss. A lost answer stays unknown;
+        // a refusal stays refused. Neither outcome may trigger another write.
+        mutation = await holdRequests(t, page, (url) => url.pathname === path, {
+          once: true,
+          method,
+          afterServer: outcome !== "expired",
+          loseResponse: outcome === "unknown",
+        });
+        await confirm.click();
+        const response = await mutation.requested;
+        if (outcome !== "expired") {
+          assert.equal(
+            response.status(),
+            outcome === "failed" || outcome === "previous" ? 403 : 202,
+          );
+        }
+        // Existing feedback contains both the Agent name and the refusal request ID.
+        if (outcome === "previous") {
+          mutation.release();
+          await page.getByRole("alert").filter({ hasText: agent.name }).waitFor();
+          await dialog.waitFor({ state: "detached" });
+          priorRequestId = await page.getByText(/^Request ID:/).innerText();
+        }
+      }
+      revokeAdministratorGrant(fixture, ["read", "namespace"]);
+      await page.clock.runFor(10_000);
+      // A modal makes the collection inaccessible; observe the actual note without relying
+      // on accessibility-tree visibility to detect that the background read has completed.
+      await page.waitForFunction(() =>
+        globalThis.document
+          .querySelector("#namespace-not-ready")
+          ?.textContent.includes("your access does not include it"),
+      );
+      t.diagnostic(
+        `dialog open=${await dialog.count()}, submission enabled=${outcome === "unsubmitted" && (await dialog.count()) ? await confirm.isEnabled() : false}`,
+      );
+      assert.equal(await dialog.count(), 0);
+      // The closed dialog leaves the page in its close event, a task after it closes. The page
+      // text checked below includes hidden elements, so wait until it is gone.
+      await page.locator(`dialog.agent-${kind}-dialog`).waitFor({ state: "detached" });
+      const search = page.getByRole("searchbox", { name: "Search Agents" });
+      assert.equal(
+        await search.evaluate((node) => node === globalThis.document.activeElement),
+        true,
+      );
+      // Expire the session after the Namespace poll, before the pending write reaches IAM.
+      if (outcome === "expired") {
+        expireSessions(fixture);
+      }
+      mutation?.release();
+      if (outcome === "accepted") {
+        await page
+          .getByText(
+            kind === "stop"
+              ? "Stop request accepted. This Namespace is no longer available."
+              : "Deletion request accepted. This Namespace is no longer available.",
+          )
+          .waitFor();
+      } else if (outcome === "unknown") {
+        await page.getByText(/^Outcome unknown\./).waitFor();
+      }
+      if (outcome === "failed") {
+        await page
+          .getByText("The request was not accepted. This Namespace is no longer available.", {
+            exact: true,
+          })
+          .waitFor();
+      }
+      if (outcome === "expired") {
+        await page.getByText("Your session has expired", { exact: false }).waitFor();
+        assert.equal(writes, 1);
+        return;
+      }
+      const visible = await page.locator("body").textContent();
+      assert.equal(visible.includes(agent.name), false);
+      assert.equal(visible.includes(agent.id), false);
+      assert.equal(visible.includes("Request ID:"), false);
+      if (priorRequestId) {
+        assert.equal(visible.includes(priorRequestId), false);
+      }
+      assert.equal(
+        /Select Refresh|View Agent|No Agents yet|No matching Agents/.test(visible),
+        false,
+      );
+      assert.equal(writes, outcome === "unsubmitted" ? 0 : 1);
+      assert.equal(await page.getByRole("link", { name: agent.name, exact: true }).count(), 0);
+      assert.equal(
+        await search.evaluate((node) => node === globalThis.document.activeElement),
+        true,
+      );
+    });
+  }
+}

@@ -17,6 +17,7 @@ import {
   stopFocusTrail,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 const SESSION = "**/api/auth/session";
 const activeView = '.content [aria-live="polite"]:not([inert])';
@@ -189,16 +190,6 @@ function goTo(page, url) {
   }, url);
 }
 
-function revokeNamespace(fixture, namespace, id) {
-  fixture.policy.restrictions.push({
-    id,
-    namespaceId: namespace.id,
-    resourceKind: "namespace",
-    action: "read",
-    effect: "deny",
-  });
-}
-
 // Marks the content view node, so a test can tell a remounted retained node from a rebuild.
 function tagView(page, tag) {
   return page.evaluate((value) => {
@@ -334,7 +325,7 @@ test("Back to a retained Agent page after access was revoked never shows the cac
   await page.getByRole("link", { name: "Revoked Agent" }).waitFor();
   await page.locator(activeView).waitFor();
 
-  revokeNamespace(fixture, namespace, "revoke-retained-agent-namespace");
+  restrict(fixture.policy, "read", "namespace", { namespaceId: namespace.id });
   // Record every DOM state and painted frame from Back until the refusal.
   await page.evaluate((configurationId) => {
     const seen = [];
@@ -1642,7 +1633,7 @@ test("A chat link's Agent lookup that answers after a manual navigation is ignor
 test("A Namespace revoked during a first visit's admission is not repainted by Back", async (t) => {
   const { fixture, namespace, page } = await openList(t, "Revoked during visit", "Revoked Agent");
   await tagView(page, "list");
-  revokeNamespace(fixture, namespace, "revoke-during-first-visit");
+  restrict(fixture.policy, "read", "namespace", { namespaceId: namespace.id });
   // The first visit's admission read drops the Namespace, so its retained list is discarded.
   await page.getByRole("link", NAMESPACES).click();
   await page.locator(settledView).waitFor();

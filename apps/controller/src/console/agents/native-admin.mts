@@ -1,5 +1,5 @@
 import { requestFailure, responseFields } from "../api-client.mjs";
-import { button, element } from "../dom.mjs";
+import { button, element, setText } from "../dom.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
 import { message } from "./list.mjs";
 
@@ -61,9 +61,12 @@ export function renderNativeAdminAccess(
   );
   const error = element("p", { id: "native-admin-error", className: "error", role: "alert" });
   const target = element("p", { id: "native-admin-target", className: "native-admin-target" });
+  // aria-disabled, not disabled: the control stays in the Tab order, so a keyboard user reaches
+  // the reason it describes (finding 2714). It has no action.
   const unavailable = button("Open Agent UI", () => {}, {
     tone: "primary",
-    disabled: true,
+    className: "agent-ui-unavailable",
+    "aria-disabled": "true",
     hidden: true,
     "aria-describedby": `${status.id} ${error.id}`,
   });
@@ -134,7 +137,11 @@ export function renderNativeAdminAccess(
     }
   }
   function updateTarget() {
-    target.textContent = `Opens selected version · ${options?.versionLabel() ?? "current version"} in a new tab.`;
+    // Deployment polls call this too; an unchanged line is left untouched.
+    setText(
+      target,
+      `Opens selected version · ${options?.versionLabel() ?? "current version"} in a new tab.`,
+    );
   }
 
   async function load() {

@@ -23,11 +23,13 @@
     "tests/integration/repository-credentials-github-token.test.mjs",
     "tests/integration/repository-credentials-client-config.test.mjs",
     "tests/browser/console-agent-overview.test.mjs",
+    "tests/browser/console-deployment-activity.test.ts",
     "tests/browser/console-agent-plugin-approvers.test.mjs",
     "tests/browser/console-agent-plugin-refusals.test.mjs",
     "tests/browser/docs-compute-matrix.test.mjs",
     "tests/browser/console-namespace-not-ready.test.mjs",
-    "tests/browser/console-secrets.test.ts"
+    "tests/browser/console-secrets.test.ts",
+    "tests/browser/console-namespace-delete.test.ts"
   ],
   "files": [
     {
@@ -107,7 +109,13 @@
       "path": "tests/browser/console-agent-overview.test.mjs"
     },
     {
+      "path": "tests/browser/console-deployment-activity.test.ts"
+    },
+    {
       "path": "tests/browser/console-secrets.test.ts"
+    },
+    {
+      "path": "tests/browser/console-namespace-delete.test.ts"
     }
   ]
 }

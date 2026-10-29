@@ -1,20 +1,15 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-27
-last_updated_session: authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2
+updated: 2026-10-28
+last_updated_session: authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-Kubernetes Compute delegates dedicated Codex/OpenClaw to OpenShell. Operator mode
-owns Namespace Workspaces; managed mode fails before mutation.
-[Credential sources](credential-source-lifecycle.md) provide model access without
-Agent Secret permission. Agent revision files and bearer passthrough authenticate Codex Gateway requests
-without a Harness Service.
-
-Development workspace-node setup uses a scoped token in its provider file.
+Kubernetes Compute provisions dedicated Codex and OpenClaw Harnesses through
+OpenShell. [Credential sources](credential-source-lifecycle.md) supply model access.
 
 ## Entry Points
 
@@ -224,7 +219,7 @@ mounts and symlinks.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentWithNodeEntrypoint`
 and `NATIVE_WORKER_ENTRYPOINT` apply `0700` before OpenClaw setup or migration,
 clearing inherited setgid. OpenClaw prepares its children on retry; retained state
-and workspace permissions stay unchanged. Permission failures stop startup. On upgrade, the Driver can adopt a correctly owned Codex workspace-node Sandbox whose launcher differs only in the old directory initialization. It leaves the running Sandbox and its permissions unchanged. Newly created Sandboxes always use private node state.
+and workspace permissions stay unchanged. Permission failures stop startup.
 Workspace, node identity, sessions and images stay separate. The supervisor probes
 `/tmp`; native `TMPDIR` is a private `tmp` child under the runtime home.
 
@@ -265,6 +260,10 @@ when Workspace, labels, annotations, and spec match exactly and it is neither st
 bounds trust. Native exposure ends once a post-enrollment pass confirms its
 delete, by `withdrawHarnessExposure`, adoption or recreation with
 `workspaceNodeEnrolled`.
+
+After HTTP `400` or `404`, `observeHeldRepositoryGitPreview` and `enrollHarness`
+require the recorded release acknowledgment and authenticated WebSocket. Other
+non-`200` responses stay pending or refuse enrollment without an upgrade.
 
 The Backend reuses clients, retrying setup. Cancellation is checked after
 setup/credential preparation; stalled initialization/file reads have no cancellation deadline. After dispatch, cancellation stops local gRPC; remote mutations
@@ -375,9 +374,13 @@ model execution.
 
 ## Changelog
 
+- 2026-10-28 01:58: Restrict released-preview readiness to HTTP 400/404 in the accompanying Driver change. (authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88 - 19ecdca36)
+
 - 2026-10-27 10:15: Prepare private node state before startup in the accompanying setgid fix. (authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2 - ed6a5e31e7912eb9e79fd039735b81d6f0bd1b2e)
 
 - 2026-10-24 20:50: Refuse dedicated OpenClaw with several operator-mode ServiceAccounts at admission, and offer only admitted OpenClaw modes. (finding 2346)
+
+- 2026-10-23 14:21: Confirm released preview readiness with the acknowledged release and authenticated WebSocket in the accompanying Driver change. (authoring-run/5f5f89f5-e1c7-4af8-9b15-abd7a29db02e - 725e2371e5984fbe72d679e0fb7a55833225d70d)
 
 - 2026-10-21 23:23: Record per-source retirement refusal in the accompanying worker change. (authoring-run/67a0706e-56ab-4514-adca-35cf217b0c3b - 7e5773662f34dc38be8138757ee47fd246bc3f9e)
 

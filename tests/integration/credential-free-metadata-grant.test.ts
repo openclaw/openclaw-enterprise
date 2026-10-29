@@ -167,3 +167,36 @@ test("credential-free route admission rejects changed, missing and undefined ext
   assert.equal((await revisions()).length, 1);
   assert.deepEqual(effects(), before);
 });
+
+test("source admission names the Proxy owner when its provider is no longer offered", async (t) => {
+  const { f, effects } = await metadataFixture(t, false);
+  const controller: OpenClawController = f.controller;
+  const gatewayCatalog = t.mock.method(
+    controller.selectedDriver("credential_gateway"),
+    "listSourceTypes",
+  );
+  const providers = controller.selectedDriver("credential_proxy").sourceControl
+    .providers as CredentialProviderDefinition[];
+  const offered = [...providers];
+  const restore = () => providers.splice(0, providers.length, ...offered);
+  t.after(restore);
+  const index = providers.findIndex((entry) => entry.sourceType.type === f.source.type);
+  assert.notEqual(index, -1);
+  const before = effects();
+  // Remove only the provider for the API-created source; other offered types stay available.
+  providers.splice(index, 1);
+  const result = await f.request(
+    "POST",
+    `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`,
+  );
+  assertApiError(result, 409, "RESOURCE_CONFLICT");
+  assert.equal(
+    result.body.error.message,
+    "The Credential Proxy does not offer this credential source type. An Installation administrator must check the selected Credential Proxy's provider configuration and any required token issuer.",
+  );
+  assert.equal(gatewayCatalog.mock.callCount(), 0);
+  assert.deepEqual(effects(), before);
+  // Restoring the same provider makes this Agent admissible again.
+  restore();
+  await f.deployAgent(f.namespace.id, f.agent.id);
+});

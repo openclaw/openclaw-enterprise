@@ -20,6 +20,8 @@ arrow keys move focus, and Enter or Space opens the focused tab. Use the keyboar
    Enter returns to **Revisions**, with Configuration selected. Open
    **Workspace files** from the Agent sections list: `tab=workspace` remains the
    URL, and the page explains the serving runtime rather than the viewed snapshot.
+   At 1440 × 600, scroll down 150–400 px and switch Workspace files and Revisions
+   in both directions. The Agent sections strip stays in place.
 5. Use Back and Forward through these destinations. The selected section and
    tab follow the address. Within either tab list, press End, then Tab and
    Shift+Tab: focus returns to its selected tab, not the last arrow-key target.
@@ -36,7 +38,9 @@ arrow keys move focus, and Enter or Space opens the focused tab. Use the keyboar
 
 Repeat the hierarchy check in **Unreadable Agent draft**, **Unreadable revision
 snapshot**, **Deployment activity loading**, **Version draft, viewer can only read**, and **New version
-missing credentials**. Keep the relevant read error, disabled reason, or credential
+missing credentials**. In the read-only draft, confirm **Next revision draft**,
+**Draft · Read-only**, and saved-settings scope replace the editing instructions.
+Keep the relevant read error, disabled reason, or credential
 recovery visible below the correct context. Pending saves still block navigation;
 use **Sharing holds navigation** to inspect the pending grant message and recovery.
 

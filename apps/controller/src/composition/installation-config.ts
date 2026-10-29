@@ -24,7 +24,7 @@ import {
   type InstallationFieldDetail,
   requireChartListener,
 } from "./installation-fields.ts";
-import { assertConfigurationSchema, requireConfiguration } from "@openclaw-enterprise/contracts";
+import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import type { SandboxNetworkGrant } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
@@ -535,7 +535,7 @@ function selected(
   if (schema.additionalProperties !== false) {
     throw new Error(`${path} must expose a closed configuration schema before construction.`);
   }
-  assertConfigurationSchema(schema);
+  // Registration checks the startup schema and every contributed schema.
   new DriverConfigurationRegistry().register({
     capability,
     driverId: id,
@@ -1228,18 +1228,13 @@ export async function loadInstallationConfiguration(options: {
         : options.createSandboxDriver !== undefined
           ? validateCreatedSandboxDriver(options.createSandboxDriver(sandbox, openShell), sandbox)
           : sandboxPackage === undefined
-            ? (() => {
-                const capabilities = createOpenShellCapabilities({
-                  sandbox,
-                  backend: openShell!,
-                  operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
-                  createSandbox: (configuration, selection) =>
-                    new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection),
-                  repository: repositoryDelivery,
-                });
-                repositoryTransport = capabilities.repositoryTransport;
-                return capabilities.sandbox;
-              })()
+            ? createOpenShellCapabilities({
+                sandbox,
+                backend: openShell!,
+                operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
+                createSandbox: (configuration, selection) =>
+                  new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection),
+              }).sandbox
             : (createExternalDriver(sandboxPackage.module, sandbox, "sandbox") as SandboxDriver);
   }
   const credentialRefreshDriver =

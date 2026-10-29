@@ -650,17 +650,20 @@ p {
 .runtime-debug h2 {
   color: inherit;
 }
-/* The inverse mascot has its contour in the artwork. In forced colours, picture uses the
-   original mark at the same size as an operator-supplied logo. */
+/* Navigation logos share a 48 px limit. Contain preserves wide artwork when max-width
+   constrains it; narrow artwork uses its natural aspect ratio. */
+.sidebar .brand img,
+.topbar .brand img {
+  width: auto;
+  height: 48px;
+  max-width: 48px;
+}
+/* The inverse mascot has its contour in the artwork. Forced colours use the original mark. */
 .brand-mascot {
   display: flex;
   flex: none;
 }
 @media (forced-colors: none) {
-  .brand-mascot img {
-    width: 48px;
-    height: 38px;
-  }
   .brand:has(.brand-mascot) {
     gap: var(--space-1);
   }
@@ -1226,7 +1229,7 @@ p {
 }
 /* Namespace rows are list items; each cell names itself for a screen reader. */
 .namespace-table {
-  --namespace-columns: minmax(0, 1fr) 10rem 14rem;
+  --namespace-columns: minmax(0, 1fr) 8rem 11rem 10rem;
 }
 .namespace-table-head,
 .namespace-row {
@@ -1252,6 +1255,69 @@ p {
 .namespace-cell-created {
   color: var(--color-text);
 }
+.namespace-table-head > :last-child {
+  text-align: right;
+}
+.namespace-cell-actions {
+  position: relative;
+  z-index: 1;
+  justify-self: end;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.namespace-row-feedback {
+  grid-column: 1 / -1;
+  position: relative;
+  z-index: 1;
+}
+.namespace-row-feedback:empty,
+.namespace-deletion-outcome:empty {
+  display: none;
+}
+.namespace-row-feedback .status {
+  margin: 0;
+}
+.namespace-deletion-outcome {
+  margin-bottom: var(--space-4);
+}
+.namespace-delete-identity {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  margin-block: var(--space-5);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow-wrap: anywhere;
+}
+.namespace-delete-consequence {
+  font-weight: var(--weight-semibold);
+}
+.namespace-delete-dialog details {
+  margin-top: var(--space-4);
+}
+.namespace-delete-blockers {
+  padding: 0;
+  list-style: none;
+}
+.namespace-delete-blockers > li {
+  padding-block: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+.namespace-delete-blockers .resource-id {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.namespace-delete-blockers pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.namespace-delete-resource {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
 .namespace-cell-label {
   position: absolute;
   width: 1px;
@@ -1262,7 +1328,7 @@ p {
 }
 @media (max-width: 1100px) {
   .namespace-table {
-    --namespace-columns: minmax(0, 1fr) 9rem 12rem;
+    --namespace-columns: minmax(0, 1fr) 7rem 9rem 8rem;
   }
 }
 /* Phone: the badge sits beside the name and Created goes underneath, labelled. */
@@ -1275,15 +1341,28 @@ p {
     gap: var(--space-2) var(--space-3);
     padding: var(--space-4);
   }
+  .namespace-cell-name {
+    grid-column: 1 / -1;
+  }
   .namespace-cell-status {
-    grid-column: 2;
-    grid-row: 1;
-    align-self: start;
+    grid-column: 1;
+    grid-row: 2;
+    align-self: center;
   }
   .namespace-cell-created {
-    grid-column: 1 / -1;
+    grid-column: 1;
+    grid-row: 3;
     color: var(--color-text-muted);
     font-size: var(--text-sm);
+  }
+  .namespace-cell-actions {
+    grid-column: 2;
+    grid-row: 2 / 4;
+    align-self: center;
+    max-width: 10rem;
+  }
+  .namespace-cell-name .resource-id {
+    overflow-wrap: anywhere;
   }
   .namespace-cell-label {
     position: static;
@@ -1795,6 +1874,14 @@ select:not([multiple])[size="1"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The unavailable Open Agent UI stays focusable so its reason is reachable (finding 2714). It
+   looks like button:disabled, but its fill and edge fade instead of the button, so its focus ring
+   keeps full contrast (finding 2863). */
+.agent-ui-unavailable[aria-disabled="true"] {
+  cursor: not-allowed;
+  background: color-mix(in srgb, var(--color-accent) 60%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-surface));
+}
 .native-admin-access .overview-text-button {
   margin-top: var(--space-1);
   text-decoration: underline;
@@ -1858,6 +1945,23 @@ select:not([multiple])[size="1"] {
   letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
 }
+/* Size the selected result for its wrapped generic failures as well as its record.
+   Actual errors remain in normal flow and can grow beyond these sizing copies. */
+.version-deployment-result {
+  display: grid;
+}
+.version-deployment-result > * {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+.version-deployment-error-size {
+  visibility: hidden;
+  pointer-events: none;
+}
+.version-deployment-error-size [data-message]::before {
+  content: attr(data-message);
+}
+
 .deployment-heading,
 .agent-version-heading {
   display: flex;
@@ -2149,6 +2253,10 @@ select:not([multiple])[size="1"] {
   display: grid;
   gap: var(--space-5);
 }
+.agent-deployment-panels :focus-visible {
+  /* Leave the keyboard outline visible when a refusal expands the panel. */
+  scroll-margin-block: var(--space-2);
+}
 .agent-deployment-panels > * {
   margin: 0;
 }
@@ -2161,6 +2269,10 @@ select:not([multiple])[size="1"] {
 .agent-deployment-panels > .deployment-evidence > button {
   top: 18px;
   right: 24px;
+}
+/* A requested refresh stays focusable and hovered while duplicate activation is blocked. */
+.deployment-status > button[aria-disabled="true"]:hover {
+  background: var(--color-surface-hover);
 }
 .agent-deployment-attention {
   display: flex;
@@ -2413,6 +2525,10 @@ select:not([multiple])[size="1"] {
   background: var(--surface);
   box-shadow: var(--shadow-1);
 }
+.channel-secrets .secret-typeahead-listbox {
+  position: static;
+  margin-top: var(--space-1);
+}
 .secret-typeahead-listbox [role="option"],
 .secret-typeahead-empty {
   padding: var(--space-3);
@@ -2619,11 +2735,11 @@ select:not([multiple])[size="1"] {
   display: inline-block;
   margin: var(--space-2) var(--space-2) 0 0;
 }
-.agent-row-actions {
+.resource-row-actions {
   display: flex;
   gap: var(--space-2);
 }
-.agent-row-actions .icon-button {
+.resource-row-actions .icon-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2632,13 +2748,29 @@ select:not([multiple])[size="1"] {
   padding: 0;
   color: var(--muted);
 }
-.agent-row-actions .icon-button:not(:disabled):hover {
+.resource-row-actions .icon-button:not(:disabled, [aria-disabled="true"]):hover {
   border-color: var(--danger);
   background: var(--danger-subtle);
   color: var(--danger);
 }
-.agent-row-actions .icon-button:disabled {
+.resource-row-actions .icon-button:disabled {
   cursor: not-allowed;
+}
+/* A refused delete (the trash icon or Request deletion again) stays focusable so its reason is
+   reachable (finding D788). It looks like button:disabled, but its icon, label, edge and fill fade
+   one by one: opacity on the button would also fade its focus ring (finding 2863). */
+.resource-row-actions button[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+.resource-row-actions .icon-button[aria-disabled="true"] {
+  background: color-mix(in srgb, var(--color-surface) 60%, transparent);
+  border-color: color-mix(in srgb, var(--color-border-strong) 60%, transparent);
+}
+.resource-row-actions .icon-button[aria-disabled="true"] > svg {
+  opacity: 0.6;
+}
+.resource-row-actions .button--link[aria-disabled="true"] {
+  color: color-mix(in srgb, var(--color-link) 60%, transparent);
 }
 .action-icon {
   width: 16px;
@@ -3195,6 +3327,21 @@ select:not([multiple])[size="1"] {
 .credential-status-list dd {
   margin: 0;
 }
+/* A status such as "Bound · not read by the Slack settings · Agent access not confirmed" is wider
+   than a phone's value column, so it wraps inside the column rather than widening the page
+   (finding 2852). */
+.credential-status-list .badge {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* Channel Secrets also lists environment keys, which can outgrow the label column. */
+.channel-secrets .credential-status-list {
+  grid-template-columns: minmax(130px, max-content) minmax(0, 1fr);
+}
+.channel-secrets .credential-status-list dt {
+  max-width: 20rem;
+  overflow-wrap: anywhere;
+}
 .credential-actions {
   justify-content: flex-start;
 }
@@ -3623,8 +3770,50 @@ select:not([multiple])[size="1"] {
   align-items: center;
   gap: var(--space-2);
 }
+.plugin-actions-trigger {
+  margin-inline-start: auto;
+}
+.plugin-actions {
+  inset: auto;
+  position-area: bottom span-left;
+  position-try-fallbacks: flip-block;
+  margin: var(--space-1) 0;
+}
 .plugin-toggle input {
   width: auto;
+}
+/* Collaboration and safety toggles above the Configuration JSON editor. */
+.gateway-safety {
+  display: grid;
+  gap: var(--space-3);
+  margin-block: var(--space-4) var(--space-6);
+  max-width: var(--prose-max);
+}
+.gateway-safety h3,
+.gateway-safety > p {
+  margin: 0;
+}
+.gateway-safety-settings {
+  display: grid;
+  gap: var(--space-3);
+  padding-left: var(--space-6);
+}
+.gateway-safety-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: var(--weight-medium);
+}
+.gateway-safety-toggle input {
+  width: auto;
+  min-height: 0;
+  margin: 0;
+}
+.gateway-safety-setting .field-help {
+  margin: var(--space-1) 0 0;
+}
+.gateway-safety-source {
+  font-weight: var(--weight-medium);
 }
 .plugin-tool {
   border: 1px solid var(--line);

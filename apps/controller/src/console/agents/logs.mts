@@ -17,7 +17,11 @@ import {
   statusBlock,
   withRequestId,
 } from "../dom.mjs";
-import { LOG_TEXT_DENIED, runtimeStatusDenied } from "./access-reasons.mjs";
+import {
+  LOG_TEXT_DENIED,
+  RUNTIME_STATUS_VERSION_UNREADABLE,
+  runtimeStatusDenied,
+} from "./access-reasons.mjs";
 import { displayDate, namespacePath, retryAfterText } from "./list.mjs";
 import { fitLogTimeColumn, SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
 
@@ -606,7 +610,7 @@ export function renderAgentLogs(
       !harnessDown
         ? ""
         : harnessPods.length === 0
-          ? "The Agent (Harness) has no Pod yet. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: see Deployment activity for why it has not started."
+          ? "No current Agent (Harness) Pod was reported. Check Deployment activity for the latest status."
           : "The Agent (Harness) Pod is not ready. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: read the Agent (Harness) source for the cause.",
     );
     const pod = selectedPod();
@@ -693,6 +697,17 @@ export function renderAgentLogs(
         offerLogsWithoutStatus();
         return;
       }
+    }
+    // Runtime status also checks AgentRevision read on the version, so a version the page could
+    // not read would only be refused: an audited denial on each Logs visit, shown with a Request
+    // ID. The strip says why in words, sends nothing and polls nothing; log text, which needs no
+    // version read, still shows (finding D794).
+    if ((await versionRead) === false) {
+      if (current() && !superseded()) {
+        showStripStatus(RUNTIME_STATUS_VERSION_UNREADABLE);
+        offerLogsWithoutStatus();
+      }
+      return;
     }
     if (!document.hidden) {
       try {

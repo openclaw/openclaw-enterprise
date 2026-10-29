@@ -1,90 +1,78 @@
 # Credential Proxy threat model
 
-Assume that a dependency in the Agent can run arbitrary commands, read the
-workload's configuration and open network connections. In the protected
-metadata profile, the grant covers the whole admitted execution. The boundary
-separates that execution from the trusted sender, control plane and credential
-owner. It includes the return path to the caller. Follow the
-[repository read](../../design/credential-proxy.md#read-one-repositorys-identity)
-across that boundary.
+Assume a downloaded script can read the Agent's environment and files, run
+commands and open network connections. In the protected GitHub metadata profile,
+the grant covers the whole Agent execution. The trusted sender controls which
+requests reach GitHub and which responses return to that execution. See the
+[worked repository read](../../design/credential-proxy.md#read-one-repositorys-identity).
 
 ## What can a process inside the execution do?
 
-| Attempt                                                 | Who enforces the limit and what the caller sees                                                                                                                                                                                                                                                                                               |
-| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Print the environment or copy a credential file.        | The protected metadata path keeps the GitHub App signing key and installation token outside the workload. Other delivery modes expose different values. Ordinary OpenShell delivery can expose a placeholder such as `OPENAI_API_KEY`. A native repository session file contains a usable session bearer. A source ID alone grants no access. |
-| Have a child or sibling process make the approved read. | The sender accepts a bodyless `GET /repos/acme/widgets` from any process in the admitted execution if current checks pass. The child can read the approved result. The grant says nothing about which command a human intended to run.                                                                                                        |
-| Create a pull request or read another repository.       | The metadata adapter checks the method, origin, path, headers and body against the route for the grant. It refuses `POST /repos/acme/widgets/pulls` and `GET /repos/acme/tools` before selecting material.                                                                                                                                    |
-| Obtain more data through the approved GET.              | The sender holds the complete response. On a valid response the adapter checks the numeric repository ID and name, then returns only `id` and the admitted `full_name`. If the provider redirects, returns ambiguous JSON or reports a different ID, the sender withholds the response.                                                       |
+| Attempt by the script                                     | Decision on the protected metadata path                                                                                     | What the script can still learn or do                                                                                 |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Search the environment and files for a GitHub credential. | The issuer keeps the App signing key. The trusted sender adds the installation token outside the workload.                  | The script may find a source ID. The ID alone gives it no access.                                                     |
+| Run a child process to make the approved read.            | The sender accepts a bodyless `GET /repos/acme/widgets` if the execution's current grant permits it.                        | The child can read and copy the approved result, regardless of which command the operator expected.                   |
+| Create a pull request at the same host.                   | The adapter checks method, origin, path, headers and body. `POST /repos/acme/widgets/pulls` fails before credential access. | The grant covers the original read. A GET for another repository also fails.                                          |
+| Read extra fields from GitHub's reply.                    | The sender holds the whole reply. The adapter checks the ID and name and releases only `id` and the granted `full_name`.    | The script can keep those two fields. The sender withholds a redirect, ambiguous JSON or a reply with a different ID. |
 
-The credential-free metadata profile applies the same request and response rules
-with zero credential reads. The separately approved installation-wide GitHub
-profile has a larger scope. GitHub installation membership and permissions bound
-that access, and OCE supplies no repository ref allowlist for it.
-[Metadata adapter](../../../apps/controller/src/drivers/egress-proxy/github-metadata.ts) ·
-[Installation scope](../../guides/credential-proxy.md) ·
-[Direct Harness credential exceptions](runtime-isolation.md#temporary-runtime-credential-exceptions)
+The credential-free metadata profile makes the same request and response checks
+without reading a credential. Ordinary OpenShell delivery can expose a placeholder that a child
+can use at the allowed endpoint. Native Git puts a usable repository session
+credential in the workload. Direct Harness authentication can supply a real
+model credential to the process that runs the Agent. See
+[OpenShell process matching](../drivers/openshell-credential-gateway.md#what-the-boundary-covers),
+[native Git sessions](../repository-credentials/prepared-native-git.md) and
+[direct Harness credentials](runtime-isolation.md#temporary-runtime-credential-exceptions).
 
 ## What stops another execution or a direct connection?
 
-The protected exchange binds the authenticated sender, Sandbox, running
-installation and original receiving connection to the captured request. A
-copied handle cannot authorize a second execution of the same Agent or redirect
-the first execution's response. If the recipient disappears, the sender must
-withhold the response. The provider may already have received the request.
-[Protected request flow](../../flows/credential-source-egress.md)
+**Copied request handle.** The OpenClaw Control Plane (OCC) checks the authenticated sender, Sandbox,
+running installation and original connection. Another execution of the same
+Agent cannot reuse the handle or claim the response. If the original connection
+closes, the sender withholds the response. The provider may already have received
+the request. See the [protected request flow](../../flows/credential-source-egress.md).
 
-The installed Sandbox and its network controls must force provider traffic
-through the enforcing sender. A process with another route can bypass its
-checks, including on requests that need no credential. Proxy environment
-settings, a startup hook or one successful request cannot establish that direct
-connections are blocked. Stock OpenShell's observed-hook Git preview and its
-refusal of repository-scoped protected writes are documented separately.
-[OpenShell delivery profiles](../repository-credentials/protected-openshell-git.md) ·
-[Installed custody and bypass checks](../../testing/protected-repository-custody.md#qualify-installed-custody)
+**Direct connection.** The installed Sandbox and its network controls must
+force provider traffic through the sender. A script with another route can bypass
+the request and response checks, even on a credential-free read. A proxy setting or a
+startup hook cannot establish that every request takes this path. See the
+[installed bypass checks](../../testing/protected-repository-custody.md#qualify-installed-custody).
+
+Stock OpenShell 0.1.5 offers a separately approved installation-wide GitHub
+preview. GitHub installation membership, permissions and branch rules bound
+that access. OpenClaw Enterprise adds no Git ref allowlist. The bundled Driver refuses
+repository-scoped `git-write`. See [OpenShell Git profiles](../repository-credentials/protected-openshell-git.md).
 
 ## What happens when access changes?
 
-OCC checks the current binding, execution, installation and permission before
-material access and again before releasing a send permit. To withdraw the walkthrough's
-metadata read, withdraw the bound credential source from the Agent's running
-revision. If withdrawal occurs between those checks, OCC denies the send. If renewal
-replaced the selected token, the old version fails its check. A request already
-authorized can still reach the provider. A lost acknowledgment leaves the
-attempt for reconciliation. Repeating a possible write can apply it twice.
-[Send authorization](../../../packages/occ/src/credential-proxy.ts) ·
-[Withdrawal](../credential-sources/withdrawal.md)
+Withdraw the metadata source binding from the Agent's running revision to
+stop the walkthrough's read. OCC checks access before selecting a token and again
+before authorizing the send. A withdrawal between those checks denies the send. Renewal can also invalidate the selected token version.
+A request that already has a permit can still reach GitHub. If the outcome
+is unknown, inspect the original attempt. Repeating a possible write can apply it twice.
+See [send authorization](../../../packages/occ/src/credential-proxy.ts) and
+[source withdrawal](../credential-sources/withdrawal.md).
 
-Git access through `repositoryBindings` has two additional limits. Repository
-approval can be standing or time-limited, and the execution's repository session
-has its own deadline. Both Git and the prepared metadata source also enforce a
-local safe-use cutoff for the token. GitHub sets the token's expiry. Removing
-Git approval can deny a Git request while the token still works at GitHub.
-OCC denial, observed removal of the installed route and provider revocation or
-expiry are separate events.
-[Token Service lifecycle](../repository-credentials.md#token-service-lifecycle)
+Git access through `repositoryBindings` has its own approval and execution
+session. An operator can withdraw Git approval while a separately bound metadata
+source still permits the read. Git approval can be standing or time-limited.
+The session expires in either case. Both profiles stop using a token at a local
+cutoff before its GitHub expiry. OCC denial, removal of an installed route and
+revocation or expiry at GitHub are separate events. See the
+[Token Service lifecycle](../repository-credentials.md#token-service-lifecycle).
 
-In the controlled withdrawal example, removing binding A preserves binding B.
-After B is withdrawn, OCC denies B while the peer can still return 200 pending
-policy application. After application and restart, the peer returns 403 for both
-routes and the stored plan has no routes. This source check illustrates why an
-acknowledgment alone cannot establish installed enforcement.
-[Withdrawal example](../../../tests/integration/credential-proxy-withdrawal.test.ts) ·
-[Installed qualification](../../testing/protected-repository-custody.md)
+In the [withdrawal example](../../../tests/integration/credential-proxy-withdrawal.test.ts), the operator removes binding A while B keeps working. After B is withdrawn, OCC denies it, but the test peer still returns `200` until policy takes effect. After policy application and restart, the stored plan has no routes and both requests receive `403`. An installed sender needs its own [custody and bypass checks](../../testing/protected-repository-custody.md#qualify-installed-custody).
 
 ## Who remains trusted?
 
-The sender receives usable credential headers and sees the provider response.
-The issuer owner can use the signing key to request tokens. An administrator
-who can change the sender, its trust roots or the enforced network policy can
-change where requests go. A bearer copied on the trusted side can be used
-within its own scope and lifetime. Withdrawal cannot retract data already
-released to a workload.
-[Credential custody](../credential-sources.md) ·
-[OpenShell administrative access](../drivers/openshell-credential-gateway.md#trust-requirements)
+- **OCC and the provider adapter** decide which operation a sender may perform and which bytes it may return. The sender sees the usable credential header and the full provider response.
+- **The issuer** holds the GitHub App signing key and can request installation tokens. A bearer token copied on the trusted side remains usable within its GitHub scope and lifetime.
+- **Sandbox and network administrators** can change the sender, its trust roots or where traffic goes. An administrator who redirects traffic can defeat the sender's checks.
 
-[RFC-0023](../../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md)
-describes the proposed design. OCC and the adapter implement the request checks
-above. Evidence for an installed build must cover its specific profile, sender
-and transport. A controlled origin can show what reached that peer. A claim
-about live GitHub behavior requires observation at GitHub.
+Once the workload receives data, withdrawal cannot take it back. See
+[credential custody](../credential-sources.md) and
+[OpenShell administrative access](../drivers/openshell-credential-gateway.md#trust-requirements).
+The [metadata adapter](../../../apps/controller/src/drivers/egress-proxy/github-metadata.ts)
+defines the implemented read. [RFC-0023](../../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md)
+describes the broader proposal. A controlled peer shows what reached that peer.
+Confirming that a particular build reached GitHub requires evidence from that build and provider.

@@ -13,7 +13,7 @@ import {
   NATIVE_ADMIN_DENIED,
   nativeAdminOffDenied,
 } from "../helpers/refusal-text.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole, restrict } from "../helpers/iam-grants.mjs";
 import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -982,13 +982,9 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
   assert.deepEqual(denials, [{ action: "administer", kind: "agent", id: sibling.agent.id }]);
   assert.equal(context.upstream.requests.length, 7);
 
-  context.fixture.policy.restrictions.push({
-    id: `restriction-native-admin-proxy-${randomUUID()}`,
+  restrict(context.fixture.policy, "administer", "agent", {
     namespaceId: context.namespace.id,
-    action: "administer",
-    resourceKind: "agent",
     resourceId: context.agent.id,
-    effect: "deny",
   });
   const iamDenied = await injectJson(context.fixture, "GET", "/settings/profile?after=iam", {
     headers: nativeHeaders,

@@ -17,13 +17,17 @@ import type {
   SandboxLogLine,
 } from "../../packages/contracts/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
-import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
+import {
+  authorizationDenials,
+  createConsoleAppFixture,
+  fileConsoleApp,
+} from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import {
   LOG_TEXT_DENIED,
   RUNTIME_STATUS_DENIED,
   RUNTIME_STATUS_OPERATE_DENIED,
-  RUNTIME_STATUS_VERSION_DENIED,
+  RUNTIME_STATUS_VERSION_UNREADABLE,
 } from "../helpers/refusal-text.mjs";
 import {
   createProviderSandboxDriver,
@@ -2123,16 +2127,29 @@ test("a Gateway view points at an unready Harness Pod instead of reading as a ne
   assert.equal(await hint.count(), 0);
 });
 
-test("the Gateway hint skips a rollout's old Harness Pod and covers a Harness with no Pod", async (t) => {
+test("the Gateway hint skips a rollout's old Harness Pod and reports a previously ready Harness Pod no longer observed", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   // A rollout keeps an unready old Harness Pod beside a ready one: no hint.
   computeDriver.state.harnessPod = { ready: true, stale: true };
-  computeDriver.state.lines = [
-    line(1, "codex app-server remote WebSocket connection failed: connect ECONNREFUSED"),
-  ];
+  computeDriver.state.lines = [line(1, "Gateway connection failed: connect ECONNREFUSED")];
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
+  await trackSettledFetches(page);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-09-30T12:00:01Z"));
+  const statusPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}/runtime`;
+  const statusReply = () =>
+    page.waitForResponse((response) => response.url() === `${fixture.origin}${statusPath}`);
+  const initial = statusReply();
   await login(page, fixture, url);
+  const present = await initial;
+  assert.equal(present.status(), 200);
+  assert.ok(
+    (await present.json()).data.pods.some(
+      (pod: { role: string; phase: string; ready: boolean }) =>
+        pod.role === "agent" && pod.phase === "Running" && pod.ready,
+    ),
+  );
   await page
     .locator(".runtime-pod")
     .getByText(`agent-${revisionId.slice(4, 12)}-old`)
@@ -2144,13 +2161,32 @@ test("the Gateway hint skips a rollout's old Harness Pod and covers a Harness wi
     .waitFor();
   assert.equal(await page.getByRole("note").count(), 0);
 
-  // A dedicated Harness whose Pod does not exist yet still explains the Gateway errors.
+  // Settle the ready observation before changing it; the paused clock prevents a poll racing it.
+  await waitForIdleFetches(page);
+  const before = await settledFetches(page, statusPath);
+  // A later empty observation does not mean this previously ready Harness never started.
   computeDriver.state.harnessPod = { created: false };
-  await page.reload();
-  await page.locator("#runtime-log-source").selectOption("gateway");
-  const missing = page.getByRole("note").filter({ hasText: "The Agent (Harness) has no Pod yet" });
+  const next = statusReply();
+  await page.clock.runFor(10_000);
+  const absent = await next;
+  assert.equal(absent.status(), 200);
+  assert.equal(
+    (await absent.json()).data.pods.some((pod: { role: string }) => pod.role === "agent"),
+    false,
+  );
+  // A network response alone does not prove the page has applied its body.
+  await waitForSettledFetches(page, statusPath, before + 1);
+  await waitForIdleFetches(page);
+  const missing = page.getByRole("note");
   await missing.waitFor();
-  assert.match((await missing.textContent()) ?? "", /see Deployment activity/);
+  assert.equal(
+    await missing.textContent(),
+    "No current Agent (Harness) Pod was reported. Check Deployment activity for the latest status.",
+  );
+  await page
+    .getByRole("log", { name: "Runtime log output" })
+    .getByText(/ECONNREFUSED/)
+    .waitFor();
 });
 
 // The permission answer already says the reader lacks operate and log text, so neither the status
@@ -2189,54 +2225,57 @@ test("a reader without operate learns what log text needs and is not asked for s
   assert.equal(logRequests(requests, revisionId).length, 0);
 });
 
-// The strip names only the status grant the caller's answers show missing (finding D753): the
-// permission answer says whether she holds Agent operate, and the version read whether she holds
-// AgentRevision read. A caller whose version read was refused and who lacks operate gets both.
-test("the runtime status refusal names AgentRevision read only when the version read is refused", async (t) => {
+// The strip says what keeps runtime status from a caller whose version read was refused. An
+// operator holds Agent operate, so only the version is missing: her status read was sent, refused
+// and audited on every Logs visit, and the strip showed the refusal with a Request ID. Now the
+// page's refused version read stands for it, and the strip says in words that status is not
+// shown (finding D794). A reader's answer also denies operate, so her strip names both grants
+// (finding D753) and her status read is not sent either (finding 2454). Log text needs no
+// version read: both still read it.
+test("the runtime strip reads no status for a version the caller cannot read", async (t) => {
   const { fixture, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "unreadable version output")];
   const statusPath = `/deployments/${revisionId}/runtime`;
   const cases = [
     {
       name: "runtime-operator-no-version",
-      permissions: ["read", "operate"] satisfies PermissionAction[],
-      text: RUNTIME_STATUS_VERSION_DENIED,
-      statusRead: true,
+      permissions: ["read", "operate", "read_logs"] satisfies PermissionAction[],
+      text: RUNTIME_STATUS_VERSION_UNREADABLE,
     },
     {
       name: "runtime-reader-no-version",
-      permissions: ["read"] satisfies PermissionAction[],
+      permissions: ["read", "read_logs"] satisfies PermissionAction[],
       text: RUNTIME_STATUS_DENIED,
-      statusRead: false,
     },
   ];
-  for (const { name, permissions, text, statusRead } of cases) {
+  const statusDenials = () =>
+    authorizationDenials(fixture.auditSink, "openclaw.agent_deployments.runtime.read").length;
+  for (const { name, permissions, text } of cases) {
     const { account } = await logsMember(fixture, namespace, name, permissions, {
       versionRead: false,
     });
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
+    const denied = statusDenials();
     await login(
       page,
       fixture,
       detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"),
       account.credentials,
     );
-    // A refused read adds its Request ID after the sentence.
-    await page.getByText(text).waitFor();
+    // No read was refused, so no Request ID follows the sentence.
+    await page.getByText(text, { exact: true }).waitFor();
+    await page
+      .getByRole("log", { name: "Runtime log output" })
+      .getByText("unreadable version output")
+      .waitFor();
     await settlePageRequests(page);
-    // The operator holds operate, so the strip does not ask for it.
-    assert.equal(
-      await page.getByText(/Runtime status requires Agent operate/).count(),
-      statusRead ? 0 : 1,
-      name,
-    );
-    // An operator's status read is sent and refused for the version; a reader's answer already
-    // denies operate, so hers is not sent (finding 2454).
     assert.equal(
       requests.some(({ path }) => path.endsWith(statusPath)),
-      statusRead,
+      false,
       name,
     );
+    assert.equal(statusDenials(), denied, name);
     await page.close();
   }
 });
@@ -2613,7 +2652,11 @@ test("Back rebuilds an Agent view whose runtime status or version read was refus
   await leave();
   revoke("agent_revision", "read");
   await page.goBack();
-  await page.getByText(/you cannot read this version/).waitFor();
+  // The page names the current version in words once its read is refused (finding D791).
+  await page
+    .locator(".agent-current-summary")
+    .getByText("A version you cannot read", { exact: true })
+    .waitFor();
   assert.equal(await viewKept(page), false);
 });
 

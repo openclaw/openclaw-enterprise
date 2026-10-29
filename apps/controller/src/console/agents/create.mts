@@ -880,7 +880,7 @@ function renderAgentForm(
   const auth = responseFields(agent.harnessAuth);
   const method = auth.method;
   const keyMethod = method === "api_key" || method === "codex_pat" ? method : undefined;
-  const passwordAuth = Object.hasOwn(auth, "secret");
+  let passwordAuth = Object.hasOwn(auth, "secret");
   const authDefault = keyMethod && Object.keys(auth).length === 1 ? keyMethod : undefined;
   let binding: HarnessAuthBinding | undefined;
   if (passwordAuth) {
@@ -1139,6 +1139,68 @@ function renderAgentForm(
     disabled: Boolean(binding || passwordAuth),
   });
   const modelCredentialField = modelCredentialPicker.field;
+  let secretNameConflict: string | null = null;
+  const secretConflictMessage = element("p", { className: "status-body" });
+  const ownsSecretRecovery = () =>
+    passwordAuth && !binding && ["api_key", "codex_pat"].includes(authMethod.value) && !savedSecret;
+  function clearSecretConflictFeedback() {
+    secretNameConflict = null;
+    secretConflictMessage.textContent = "";
+    secretConflictRecovery.hidden = true;
+  }
+  function clearSecretRecovery() {
+    clearSecretConflictFeedback();
+    alternateSecretField.hidden = true;
+    alternateSecretName.value = "";
+    alternateSecretName.required = false;
+    alternateSecretName.setCustomValidity("");
+  }
+  const alternateSecretName = element("input", {
+    id: "alternate-model-secret-name",
+    autocomplete: "off",
+    "data-trim": "",
+  });
+  const alternateSecretField = field("New Secret name", alternateSecretName);
+  alternateSecretField.hidden = true;
+  const requestedModelSecretName = () =>
+    (alternateSecretField.hidden ? name.value : alternateSecretName.value).trim();
+  function clearSupersededSecretConflict() {
+    if (secretNameConflict !== null && secretNameConflict !== requestedModelSecretName()) {
+      clearSecretConflictFeedback();
+    }
+  }
+  const chooseExistingSecret = button("Choose existing Secret", () => {
+    if (pending || outcomeUnknown || !ownsSecretRecovery() || !secretNameConflict) {
+      return;
+    }
+    passwordAuth = false;
+    pluginDiscoveryTokenDetails.append(transientCredentialField);
+    credentialStorageHelp.textContent =
+      "If no Secret is selected, enter a service account token to preview plugins. Agent creation uses the selected Secret; its value stays on the server.";
+    operateAnswer.reset();
+    apiKey.value = "";
+    resetPluginDiscovery();
+    clearSecretRecovery();
+    feedback.textContent =
+      "Choose an existing model credential Secret, then select Create Agent. Your other draft fields are unchanged.";
+    updateControls();
+    modelCredentialField.querySelector("input")?.focus();
+  });
+  const chooseAlternateName = button("Use another Secret name", () => {
+    if (pending || outcomeUnknown || !ownsSecretRecovery() || !secretNameConflict) {
+      return;
+    }
+    alternateSecretField.hidden = false;
+    alternateSecretName.required = true;
+    alternateSecretName.focus();
+  });
+  const secretConflictRecovery = statusBlock(
+    "warning",
+    null,
+    secretConflictMessage,
+    [chooseExistingSecret, chooseAlternateName],
+    { id: "model-secret-conflict", hidden: true },
+  );
   const oauthLogin = createDeviceLogin({
     context,
     initial: draft.oauthLogin,
@@ -1152,19 +1214,20 @@ function renderAgentForm(
       }
     },
   });
+  const credentialStorageHelp = element(
+    "p",
+    { className: "hint" },
+    passwordAuth
+      ? "Stored as a Secret for this Agent. Credentials are never included in Configuration JSON."
+      : "If no Secret is selected, enter a service account token to preview plugins. Agent creation uses the selected Secret; its value stays on the server.",
+  );
   const transientCredentialField = element(
     "div",
     { className: "form-field" },
     credentialLabel,
     apiKey,
     credentialHelp,
-    element(
-      "p",
-      { className: "hint" },
-      passwordAuth
-        ? "Stored as a Secret for this Agent. Credentials are never included in Configuration JSON."
-        : "If no Secret is selected, enter a service account token to preview plugins. Agent creation uses the selected Secret; its value stays on the server.",
-    ),
+    credentialStorageHelp,
   );
   const pluginDiscoveryTokenDetails = element(
     "details",
@@ -1198,7 +1261,10 @@ function renderAgentForm(
       ? [
           modelCredentialField,
           oauthLogin.section,
-          passwordAuth ? transientCredentialField : pluginDiscoveryTokenDetails,
+          passwordAuth ? transientCredentialField : null,
+          pluginDiscoveryTokenDetails,
+          secretConflictRecovery,
+          alternateSecretField,
         ]
       : []),
     modelSection,
@@ -1445,6 +1511,7 @@ function renderAgentForm(
     renderChannelEditor();
   }
   function clearModelCredential() {
+    clearSecretRecovery();
     apiKey.value = "";
     modelCredentialSource = null;
     modelCredentialSecret = undefined;
@@ -1560,11 +1627,12 @@ function renderAgentForm(
   const plugins = element("textarea", { id: "agent-plugins", rows: "4", spellcheck: "false" });
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
   let pluginDiscoveryCredential: "none" | "required" | null = null;
+  let savedOpenClawCatalog = false;
   // Codex serves curated plugins only to ChatGPT logins; API-key Agents get them disabled.
   const apiKeyCodex = () =>
     harness.value === "codex" && (binding?.method ?? authMethod.value) === "api_key";
   function discoveryCredential() {
-    if (apiKeyCodex()) {
+    if (savedOpenClawCatalog || apiKeyCodex()) {
       return null;
     }
     if (harness.value === "codex" && pluginDiscoveryCredential === "none") {
@@ -1613,11 +1681,13 @@ function renderAgentForm(
     isPending: () => pending,
     requestBody: (body) => ({ ...discoveryCredential(), ...body }),
     unavailableMessage: () =>
-      apiKeyCodex()
-        ? "Codex plugins need a ChatGPT login. With an OpenAI API key, each selected plugin is disabled when the Agent deploys (PLUGIN_AUTH_REQUIRED). Choose Service Accounts or ChatGPT OAuth to browse and use plugins."
-        : pluginDiscoveryCredential === "none"
-          ? "Choose the Codex harness to browse this Installation's curated plugin catalog."
-          : "For discovery, choose ChatGPT OAuth (Experimental) and sign in, or choose Service Accounts with the Codex harness and select a Secret or enter a preview token.",
+      savedOpenClawCatalog
+        ? "To install Google Workspace, open Plugins on a saved dedicated OpenClaw Agent using Kubernetes Compute."
+        : apiKeyCodex()
+          ? "Codex plugins need a ChatGPT login. With an OpenAI API key, each selected plugin is disabled when the Agent deploys (PLUGIN_AUTH_REQUIRED). Choose Service Accounts or ChatGPT OAuth to browse and use plugins."
+          : pluginDiscoveryCredential === "none"
+            ? "Choose the Codex harness to browse this Installation's curated plugin catalog."
+            : "For discovery, choose ChatGPT OAuth (Experimental) and sign in, or choose Service Accounts with the Codex harness and select a Secret or enter a preview token.",
     availableMessage: () =>
       pluginDiscoveryCredential === "none"
         ? "Load the installation's curated plugin catalog. Access and tool availability are checked separately."
@@ -2062,6 +2132,9 @@ function renderAgentForm(
       control instanceof HTMLTextAreaElement
     ) {
       control.setCustomValidity("");
+    }
+    if (event.target === name || event.target === alternateSecretName) {
+      clearSupersededSecretConflict();
     }
     if (event.target === name) {
       checkName();
@@ -2747,7 +2820,15 @@ function renderAgentForm(
         : "API key"
       : "Token for plugin discovery";
     modelCredentialField.hidden = Boolean(binding || passwordAuth || usesOAuth);
-    transientCredentialField.hidden = usesOAuth;
+    transientCredentialField.hidden =
+      usesOAuth || (!passwordAuth && transientCredentialField.parentElement === authSection);
+    if (!ownsSecretRecovery()) {
+      clearSecretConflictFeedback();
+      alternateSecretField.hidden = true;
+      alternateSecretName.required = false;
+    }
+    clearSupersededSecretConflict();
+    secretConflictRecovery.hidden = secretNameConflict === null || outcomeUnknown;
     pluginDiscoveryTokenDetails.hidden = Boolean(
       binding || passwordAuth || !usesPat || pluginDiscoveryCredential === "none",
     );
@@ -2941,6 +3022,8 @@ function renderAgentForm(
       }
       pluginDiscoveryCredential =
         installation.capabilities?.pluginDiscovery?.credential ?? "required";
+      savedOpenClawCatalog =
+        installation.capabilities?.pluginPolicies?.driver?.implementation === "occ/openclaw-plugin";
       pluginFields.setCapabilities(installation.capabilities?.pluginPolicies ?? null);
       defaultApprovers.hidden =
         installation.capabilities?.pluginPolicies?.approvers?.agent !== true;
@@ -3259,6 +3342,9 @@ function renderAgentForm(
     event.preventDefault();
     // A restored draft sets the name and files without an input event.
     checkName();
+    if (ownsSecretRecovery() && !alternateSecretField.hidden) {
+      alternateSecretName.setCustomValidity(namespaceNameProblem(alternateSecretName.value.trim()));
+    }
     // The Workspace tab's check, naming the file; validateFields opens Advanced settings to it
     // (finding 2341).
     for (const [filename, input] of workspaceInputs) {
@@ -3373,6 +3459,7 @@ function renderAgentForm(
     }
     pending = true;
     createPending = true;
+    clearSecretConflictFeedback();
     updateControls();
     feedback.textContent = "";
     // A typed key becomes a new Secret that the next requests bind. It gets no Secret operate
@@ -3471,6 +3558,7 @@ function renderAgentForm(
     context.setDraftCapture(null);
     let mutationStarted = false;
     let creatingSecret = false;
+    const requestedSecretName = requestedModelSecretName();
     let refusedInConfiguration = false;
     try {
       if (passwordAuth && !usesOAuth && !savedSecret) {
@@ -3479,10 +3567,10 @@ function renderAgentForm(
         const result = await request(`${namespacePath(namespaceId)}/secrets`, {
           method: "POST",
           expectedStatus: 201,
-          body: { name: body.name, value: apiKey.value },
+          body: { name: requestedSecretName, value: apiKey.value },
         });
         apiKey.value = "";
-        const secret = secretMetadata(result, namespaceId, body.name);
+        const secret = secretMetadata(result, namespaceId, requestedSecretName);
         if (!secret) {
           throw new Error("The create response did not identify the requested Secret.");
         }
@@ -3723,6 +3811,20 @@ function renderAgentForm(
         context.onExpired();
         return;
       }
+      const confirmedSecretConflict =
+        creatingSecret &&
+        error.status === 409 &&
+        error.code === "RESOURCE_CONFLICT" &&
+        error.serverMessage ===
+          "A Secret with this name already exists in this Namespace. Choose a different name.";
+      if (confirmedSecretConflict) {
+        secretNameConflict = requestedSecretName;
+        secretConflictMessage.textContent = withRequestId(
+          `A Secret named "${requestedSecretName}" already exists in this Namespace. Choose an existing Secret or use another Secret name. Other draft fields stay unchanged.`,
+          error.requestId,
+        );
+        secretConflictRecovery.hidden = false;
+      }
       const registrationProblem =
         error.status && error.status >= 400 ? ` ${describeFailure(cause, { mutation: true })}` : "";
       // A refused grant on a saved Agent shows this text only to an Installation administrator (a
@@ -3731,8 +3833,8 @@ function renderAgentForm(
         ? `Credential Source registration could not be confirmed.${registrationProblem} Check credential registration before retrying; the selected Secret remains saved.`
         : savedAgent
           ? `The Agent was created, but credential access is not confirmed. ${administratorMessage(cause)} Retry credential access, or open the saved Agent and check its access to its saved model and channel Secrets.`
-          : error.status === 409 && creatingSecret && error.code !== "NAMESPACE_NOT_READY"
-            ? `A Secret named "${body.name}" already exists in this Namespace, possibly from an earlier Agent with this name. Choose another Agent name, delete that Secret, or select Start over, choose the Preset again, and set its Secret source to Use existing Secret.`
+          : confirmedSecretConflict
+            ? ""
             : error.status === 409 && savedConfiguration && error.code !== "NAMESPACE_NOT_READY"
               ? error.serverMessage === AGENT_NAME_CONFLICT
                 ? AGENT_NAME_CONFLICT
@@ -3780,12 +3882,13 @@ function renderAgentForm(
         error.status === 403;
       credentialGrantRefused ||= memberGrantRefused;
       refusedInConfiguration = !savedConfiguration && showChannelBindingRefusal(cause);
-      feedback.textContent = refusedInConfiguration
-        ? ""
-        : (memberGrantRefused ? MEMBER_GRANT_REFUSED : detail) +
-          guidance +
-          (error.requestId ? ` ${requestIdText(error.requestId)}` : "");
-      focusFeedbackLine(feedback);
+      feedback.textContent =
+        refusedInConfiguration || confirmedSecretConflict
+          ? ""
+          : (memberGrantRefused ? MEMBER_GRANT_REFUSED : detail) +
+            guidance +
+            (error.requestId ? ` ${requestIdText(error.requestId)}` : "");
+      focusFeedbackLine(confirmedSecretConflict ? secretConflictRecovery : feedback);
       // A create that raced another Agent to the name (the preflight checked it).
       if (!savedAgent && error.status === 409 && error.serverMessage === AGENT_NAME_CONFLICT) {
         markNameTaken();

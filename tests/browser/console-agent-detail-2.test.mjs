@@ -21,7 +21,7 @@ import {
   detailUrl,
   deploymentStatusResponse,
   expectNoText,
-  expireSessions,
+  expireSessionsWhenSettled,
   holdRequests,
   login,
   setSlackSelection,
@@ -50,6 +50,7 @@ import {
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
   expectNativeAdminHidden,
+  expectNativeAdminUnavailable,
   withholdPermissionSummary,
   assertRevisionUrl,
   agentDeleteRequests,
@@ -77,9 +78,11 @@ import {
   BOUND_SECRET_UNLISTED,
   notIncluded,
   deleteRefused,
+  NAMESPACE_UNAVAILABLE,
   tooManyRequestsIn,
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
 // The Console Browser lane runs the two Agent detail test files in parallel.
 
@@ -1085,10 +1088,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.equal(initiallyStopped.status, 200);
   assert.deepEqual(initiallyStopped.data, { status: "stopped" });
   await page.getByText("Start this Agent before opening its native admin UI.").waitFor();
-  assert.equal(
-    await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
-    false,
-  );
+  await expectNativeAdminUnavailable(page, "Start this Agent before opening its native admin UI.");
 
   // A real deployment requests running before reconciliation selects the admitted revision.
   const pending = await fixture.deployAgent(namespace.id, agent.id);
@@ -1104,9 +1104,9 @@ test("Agent detail opens native admin UI only after real API access checks pass"
       "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
     )
     .waitFor({ timeout: 5_000 });
-  assert.equal(
-    await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
-    false,
+  await expectNativeAdminUnavailable(
+    page,
+    "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
   );
 
   let active = { revision: pending };
@@ -1134,13 +1134,9 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     false,
   );
 
-  fixture.policy.restrictions.push({
-    id: "deny-native-administer",
+  restrict(fixture.policy, "administer", "agent", {
     namespaceId: namespace.id,
-    resourceKind: "agent",
     resourceId: agent.id,
-    action: "administer",
-    effect: "deny",
   });
   await page.reload();
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
@@ -1863,7 +1859,7 @@ for (const kind of ["agent", "configuration", "namespace"]) {
       .waitFor();
     if (kind === "namespace") {
       // The page listed this Namespace earlier in the sign-in, so access was lost (finding 2550).
-      await page.getByText(/^This Namespace is missing or you no longer have access/).waitFor();
+      await page.getByText(new RegExp(`^${RegExp.escape(NAMESPACE_UNAVAILABLE)}`)).waitFor();
     }
     await expectNoText(page, /Configuration draft|Open draft|Revoked revision Agent/, () =>
       waitForIdleFetches(page),
@@ -1881,7 +1877,8 @@ test("Agent detail refocus clears a revision after session expiry", async (t) =>
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
-  expireSessions(fixture);
+  // The refocus check, not a late read of the view, must find the expiry.
+  await expireSessionsWhenSettled(page, fixture);
 
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await page.getByText("Your session has expired").waitFor();
@@ -1918,7 +1915,8 @@ for (const variant of ["credentials", "workspace", "sharing"]) {
     } else {
       await page.locator(".content form:not(.agent-access-form)").first().waitFor();
     }
-    expireSessions(fixture);
+    // The refocus check, not a late read of the view, must find the expiry.
+    await expireSessionsWhenSettled(page, fixture);
 
     await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
     await page.getByText("Your session has expired").waitFor();
@@ -1934,6 +1932,7 @@ test("Agent detail history navigation rechecks session during refocus", async (t
   const namespace = await fixture.createNamespace("Revision history refocus", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "History refocus Agent");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
@@ -1964,7 +1963,9 @@ test("Agent detail history navigation rechecks session during refocus", async (t
   });
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await held;
-  expireSessions(fixture);
+  // The held session check and the history navigation, not a late read of the view, must find
+  // the expiry.
+  await expireSessionsWhenSettled(page, fixture, { except: "/api/auth/session" });
   await page.goBack();
   await page.getByText("Your session has expired").waitFor();
   await expectNoText(page, /Configuration draft|Open draft|History refocus Agent/);
@@ -2038,6 +2039,39 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
     [],
   );
   assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+  // Section switches hide the revision strip. The Agent sections strip remains the scroll
+  // anchor in both directions, rather than compensating against a hidden strip's zero rect.
+  await page.setViewportSize({ width: 1440, height: 600 });
+  const sections = page.getByRole("tablist", { name: "Agent sections", exact: true });
+  const revisions = sections.getByRole("tab", { name: "Revisions", exact: true });
+  const workspace = sections.getByRole("tab", { name: "Workspace files", exact: true });
+  for (const scrollY of [150, 400]) {
+    await revisions.click();
+    await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
+    await page.evaluate((top) => globalThis.scrollTo(0, top), scrollY);
+    const before = await sections.boundingBox();
+    const scrollBefore = await page.evaluate(() => globalThis.scrollY);
+    // DOM activation avoids Playwright scrolling a control into view before the measurement.
+    await workspace.evaluate((node) => node.click());
+    await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
+    const afterWorkspace = await sections.boundingBox();
+    // A shorter section can reach the document bottom; that native clamp is unavoidable.
+    const maxScroll = await page.evaluate(
+      () => globalThis.document.documentElement.scrollHeight - globalThis.innerHeight,
+    );
+    const clamp = Math.max(0, scrollBefore - maxScroll);
+    assert.ok(
+      Math.abs(afterWorkspace.y - before.y - clamp) < 2,
+      `Workspace at ${scrollY}px: ${JSON.stringify({ before, afterWorkspace, clamp })}`,
+    );
+    await revisions.evaluate((node) => node.click());
+    await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
+    const afterRevisions = await sections.boundingBox();
+    assert.ok(Math.abs(afterRevisions.y - afterWorkspace.y) < 2, `Revisions at ${scrollY}px`);
+  }
+  await workspace.click();
+  await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
 
   // Refresh is still explicit and rereads the page, unlike a tab change.
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
@@ -2137,15 +2171,13 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   ];
   assert.deepEqual(await list.getByRole("tab").allTextContents(), names);
   // Which tab is selected, which one is the Tab stop, which has focus, and the URL's tab=.
-  const state = () =>
-    page.evaluate(() => {
-      const document = globalThis.document;
-      const tabs = [
-        ...document.querySelectorAll('.agent-revision-context [role="tablist"] [role="tab"]'),
-      ];
-      const panel = document.querySelector(
-        '.agent-version-detail > [role="tabpanel"]:not([hidden])',
-      );
+  const state = (scope = list) =>
+    scope.evaluate((strip) => {
+      const document = strip.ownerDocument;
+      const tabs = [...strip.querySelectorAll('[role="tab"]')];
+      const panel = strip.classList.contains("agent-scope-tabs")
+        ? document.querySelector('.agent-version-layout[role="tabpanel"]')
+        : document.querySelector('.agent-version-detail > [role="tabpanel"]:not([hidden])');
       return {
         selected: tabs
           .filter((tab) => tab.getAttribute("aria-selected") === "true")
@@ -2156,7 +2188,11 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
           : null,
         panel: document.getElementById(panel.getAttribute("aria-labelledby"))?.textContent,
         controls:
-          tabs.every((tab) => document.getElementById(tab.getAttribute("aria-controls"))) &&
+          tabs.every(
+            (tab) =>
+              document.getElementById(tab.getAttribute("aria-controls"))?.getAttribute("role") ===
+              "tabpanel",
+          ) &&
           tabs
             .find((tab) => tab.getAttribute("aria-selected") === "true")
             .getAttribute("aria-controls") === panel.id,
@@ -2225,6 +2261,36 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
     controls: true,
     tab: "plugins",
   });
+
+  const sections = page.getByRole("tablist", { name: "Agent sections", exact: true });
+  const expectSection = async (selected, focused, tab) =>
+    assert.deepEqual(await state(sections), {
+      selected: [selected],
+      stops: [focused],
+      focused,
+      panel: selected,
+      controls: true,
+      tab,
+    });
+  await sections.getByRole("tab", { name: "Revisions", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expectSection("Revisions", "Workspace files", "plugins");
+  await page.keyboard.press("Enter");
+  await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
+  await expectSection("Workspace files", "Workspace files", "workspace");
+  await page.keyboard.press("End");
+  await expectSection("Workspace files", "Access", "workspace");
+  await page.keyboard.press("Space");
+  await page.getByRole("heading", { name: "Agent-wide access", exact: true }).waitFor();
+  await expectSection("Access", "Access", "access");
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expectSection("Access", "Access", "access");
+  await page.keyboard.press("ArrowRight");
+  await expectSection("Access", "Revisions", "access");
+  await page.keyboard.press("Enter");
+  await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
+  await expectSection("Revisions", "Revisions", "configuration");
 
   // On a phone the strip scrolls sideways; the edge with more tabs past it fades, from the first
   // paint of a page whose selected tab needs no scrolling.
@@ -2544,6 +2610,7 @@ test("Agent sharing reconciles a truncated committed response without replaying 
   const agent = await fixture.createAgent(namespace.id, "Recovery Agent", nativeValues("recovery"));
   const person = fixture.provisionedAccounts[0];
   const { page, artifacts } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
   const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, detail);
@@ -2579,8 +2646,9 @@ test("Agent sharing reconciles a truncated committed response without replaying 
   const policyPath = `/namespaces/${namespace.id}/iam`;
   assert.equal((await fixture.request("GET", `${policyPath}/roles`)).data.length, 2);
   assert.equal((await fixture.request("GET", `${policyPath}/access-bindings`)).data.length, 2);
-  // A sharing read must preserve global expiry handling, including private panel removal.
-  expireSessions(fixture);
+  // A sharing read must preserve global expiry handling, including private panel removal. A late
+  // read that found the expiry first would remove the panel before the Refresh click.
+  await expireSessionsWhenSettled(page, fixture);
   await panel.getByRole("button", { name: "Refresh sharing" }).click();
   await page.getByText("Your session has expired").waitFor();
   await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
@@ -2657,8 +2725,9 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
   assert.equal(denials("openclaw.configurations.read"), 2);
 
   // The tab keeps denials for one session owner. Signing in again after the session expired
-  // starts another session, even for the same person, so its first view asks again.
-  expireSessions(fixture);
+  // starts another session, even for the same person, so its first view asks again. A late read
+  // that found the expiry first would move to /console/login, and the reload would reload that.
+  await expireSessionsWhenSettled(page, fixture);
   await page.reload();
   await page.getByText("Your session has expired").waitFor();
   await login(page, fixture, detail, viewer.credentials);
@@ -3139,12 +3208,8 @@ test("Credentials retries denied and interrupted grants without repeating the au
   // sends the grant request; a member's session sends none (finding 2259).
   assert.equal((await probe).status(), 200);
   // Native IAM denies the actor's grant authority while the Agent update remains authorized.
-  fixture.policy.restrictions.push({
-    id: "deny-update-credential-grant",
-    resourceKind: "installation",
+  const deniedGrant = restrict(fixture.policy, "administer", "installation", {
     resourceId: installation.id,
-    action: "administer",
-    effect: "deny",
   });
   await page.getByLabel("Authentication source").selectOption("codex_pat");
   await selectSecret(page, "Service account token Secret", replacement);
@@ -3167,10 +3232,7 @@ test("Credentials retries denied and interrupted grants without repeating the au
   await page.goBack();
   await page.getByRole("button", { name: "Retry credential access" }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
-  fixture.policy.restrictions.splice(
-    fixture.policy.restrictions.findIndex((item) => item.id === "deny-update-credential-grant"),
-    1,
-  );
+  liftRestriction(fixture.policy, deniedGrant);
   const rolesPath = `/namespaces/${namespace.id}/iam/roles`;
   const broader = await fixture.request("POST", rolesPath, {
     body: {

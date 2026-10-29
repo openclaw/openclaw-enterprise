@@ -140,8 +140,11 @@ grpc_endpoint = "https://openclaw-enterprise-openshell-git.openclaw-system.svc:8
 tls_ca_cert_path = "/etc/openshell/certs/oce-git-ca.pem"
 audience = "oce-prepared-git"
 max_payload_bytes = 4194304
-timeout = "3s"
+timeout = "5s"
 ```
+
+The `github-installation` preview requires exactly `5s` here. OCE still caps its
+authorization decision at three seconds.
 
 Start the configured OCE worker before restarting the Gateway: Gateway startup
 calls authenticated `Describe` and refuses an unavailable or incompatible service.

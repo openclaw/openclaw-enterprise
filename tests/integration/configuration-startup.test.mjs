@@ -32,6 +32,7 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import { validateSelectedBackendDrivers } from "../../packages/occ/src/index.ts";
 import { spawnSync } from "node:child_process";
+import { availablePort } from "../helpers/available-port.mjs";
 import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -959,6 +960,80 @@ test("the worker refuses a repository App key that cannot sign before it reports
       );
       assert.ok(!worker.stderr.includes("-----BEGIN") && !worker.stderr.includes(directory));
     }),
+  );
+});
+
+test("the worker binds bundled OpenShell Git with the prepared owner's protected authority", async (t) => {
+  // Finding 2866: worker.mjs starts the prepared owner and hands the selected OpenShell transport
+  // only its protected authority, never the owner, which also holds the revision material
+  // reader and the trial request callback. This boots the real worker with repository.openShell:
+  // it starts the owner, binds the transport (its Git authority listener included) and stops
+  // only at the unreachable database.
+  const {
+    configuration: repository,
+    registry,
+    registrySource,
+    tls,
+  } = await repositoryInstallation(t);
+  // The prepared owner admits only one explicit write ref per Namespace.
+  Object.assign(registry.repositories[0].namespaces[0], {
+    profiles: ["git-write"],
+    transport: "git-only",
+    pushRefAllowlist: ["refs/heads/review"],
+  });
+  await writeFile(registrySource, JSON.stringify(registry));
+  const configuration = credentialProxyInstallation();
+  configuration.backend.push(...repository.backend);
+  // repository.openShell selects the bundled Proxy's Git registration, with no egress authority,
+  // on the same installed Driver as the Sandbox.
+  const { sandbox } = configuration.drivers;
+  configuration.drivers.credential_proxy = { id: sandbox.id, configuration: {} };
+  configuration.backend[0].drivers.credential_proxy = sandbox.id;
+  const { nativeSender: _native, ...protectedRepository } = repository.repository;
+  const directory = dirname(protectedRepository.preparedGitHub.custodyKeyPath);
+  const issuerPublicKeyPath = join(directory, "gateway-public.pem");
+  configuration.repository = {
+    ...protectedRepository,
+    openShell: {
+      registrationName: "oce-prepared-git",
+      authority: {
+        host: "127.0.0.1",
+        port: await availablePort(),
+        certificatePath: tls.certFile,
+        privateKeyPath: tls.keyFile,
+        issuerPublicKeyPath,
+        issuer: "openshell-gateway:openshell-gateway",
+        audience: "oce-prepared-git",
+        keyId: "current",
+      },
+    },
+  };
+  const pkcs8 = { type: "pkcs8", format: "pem" };
+  await Promise.all([
+    writeFile(protectedRepository.preparedGitHub.custodyKeyPath, randomBytes(32), { mode: 0o600 }),
+    writeFile(
+      protectedRepository.preparedGitHub.privateKeyPath,
+      generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export(pkcs8),
+      { mode: 0o600 },
+    ),
+    writeFile(
+      issuerPublicKeyPath,
+      generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }),
+    ),
+  ]);
+  const worker = await boot("apps/controller/src/worker.mjs", {
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: await fixture(t, configuration),
+    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+  });
+  assert.equal(worker.status, 1, worker.stderr);
+  // The bundled sender reads the authority's online port, which the owner does not have: handing
+  // over the owner fails the bind (WORKER_STARTUP_FAILED) before the database is reached.
+  assert.equal(
+    startupDiagnostic(worker.stderr, "worker.startup-error").code,
+    "PERSISTENCE_UNAVAILABLE",
+    worker.stderr,
   );
 });
 

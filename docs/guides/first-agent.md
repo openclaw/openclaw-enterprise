@@ -156,7 +156,8 @@ export FIRST_AGENT_RECORD='<local-state-directory>/first-agent-<name-hash>.json'
 
 Run this whole block in Bash. It checks the recorded Namespace, Agent,
 Configuration, credential source and original Secret before any deletion. Missing
-records, failed lookups or changed references stop cleanup; they never fall back
+records, unsupported Sandbox Driver/authentication pairs, failed lookups or changed
+references stop cleanup; they never fall back
 to deleting whichever Secret is referenced now. For a missing record or drift,
 leave resources in place and establish ownership manually before removing them.
 A name prefix alone is not ownership evidence.
@@ -166,6 +167,9 @@ A name prefix alone is not ownership evidence.
   set -euo pipefail
   RECORD="$(jq -ec --arg ns "$OCC_NAMESPACE" --arg agent "$AGENT_ID" '
     select(.version == 3 and .namespaceId == $ns and .agentId == $agent)
+    | select((.sandboxDriver == "none" and .authMethod == "api_key") or
+        (.sandboxDriver == "openshell" and
+          (.authMethod == "api_key" or .authMethod == "codex_pat")))
     | select(.configurationId | type == "string" and startswith("cfg_"))
     | select(.secretId | type == "string" and startswith("sec_"))
     | {namespaceId, agentId, configurationId, secretId, credentialSourceId,
@@ -247,6 +251,11 @@ new name for the next run.
 <span id="troubleshooting"></span>
 
 ## Troubleshoot
+
+- **`EACCES` opening an old helper record:** inspect the exact file named in
+  the error and confirm it is your regular helper record. Restore mode `0600`
+  and retry the same Agent name. Do not print the record. New record writes
+  retain owner read/write permissions even with a restrictive umask.
 
 - **`No Namespace named default exists`:** the command creates its Agent only in
   the `default` Namespace from Local setup. After that Namespace is deleted, its

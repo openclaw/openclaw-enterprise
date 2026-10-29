@@ -8,7 +8,9 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import {
+  containerLogTail,
   createAdmittedRuntimeImageConfiguration,
+  gatewayReadinessReport,
   image,
   runDocker,
   runGatewaySmoke,
@@ -222,35 +224,56 @@ export async function runWritableGatewayRestart(t) {
       const config=JSON.parse(fs.readFileSync(path,"utf8"));
       const journal=path+".oce-peer-bridge.json";
       fetch("http://127.0.0.1:18791/readyz").then(r=>console.log(JSON.stringify({
-        ready:r.status===200, prefix:config.messages?.responsePrefix,
+        ready:r.status===200, readyStatus:r.status, prefix:config.messages?.responsePrefix,
         bridge:config.plugins?.entries?.codex?.config?.codexPlugins,
         journalMode:fs.existsSync(journal)?fs.statSync(journal).mode&0o777:null,
-      }))).catch(()=>process.exit(1));`,
+      }))).catch((error)=>{console.error(String(error?.cause?.code??error));process.exit(1);});`,
     ]);
     return JSON.parse(result.stdout.trim());
   }
+  // Polls until `predicate` holds. On a timeout or an exit, the error starts with what the
+  // wrapper's readiness was waiting on (gatewayReadinessReport) and ends with the newest logs:
+  // a same-peer restart once stayed unready for 90 s and only the oldest log lines and a
+  // boolean were kept, so the failed readiness condition was unknown (finding 2784).
   async function waitState(name, label, predicate) {
-    const deadline = Date.now() + 90_000;
+    const startedAt = Date.now();
+    const deadline = startedAt + 90_000;
     let last;
+    let lastAt;
+    let polls = 0;
+    let probeFailures = 0;
+    let lastProbeError;
     while (Date.now() < deadline) {
+      polls += 1;
       try {
         last = await state(name);
+        lastAt = Date.now() - startedAt;
         if (predicate(last)) {
           return last;
         }
-      } catch {
+      } catch (error) {
+        probeFailures += 1;
+        lastProbeError = error.message.split("\n").slice(0, 3).join(" | ").slice(0, 400);
         const observed = JSON.parse((await runDocker(["inspect", name])).stdout)[0];
         if (!observed.State.Running) {
-          const logs = await runDocker(["logs", name]);
           throw new Error(
-            `${label}: Gateway exited ${observed.State.ExitCode}\n${logs.stdout}\n${logs.stderr}`,
+            `${label}: Gateway exited ${observed.State.ExitCode}\n${await containerLogTail(name)}`,
+            { cause: error },
           );
         }
       }
       await delay(250);
     }
-    const logs = await runDocker(["logs", name]);
-    throw new Error(`${label}: ${JSON.stringify(last)}\n${logs.stdout}\n${logs.stderr}`);
+    const report = await gatewayReadinessReport(name);
+    throw new Error(
+      [
+        `${label}: not ready within 90 s. ${report.headline}`,
+        `last state (${lastAt ?? "-"} ms into the wait, ${polls} polls, ${probeFailures} failed): ${JSON.stringify(last)}`,
+        ...(lastProbeError === undefined ? [] : [`last failed poll: ${lastProbeError}`]),
+        report.detail,
+        `log tail (newest last):\n${await containerLogTail(name)}`,
+      ].join("\n"),
+    );
   }
   async function edit(name, code) {
     await runDocker([
@@ -353,9 +376,108 @@ export async function runWritableGatewayRestart(t) {
   const fresh = await waitState(replacement.containerName, "fresh Pod-local copy", (s) => s.ready);
   assert.equal(fresh.prefix, undefined, "a fresh Pod-local copy restores the admitted snapshot");
   assert.equal(fresh.bridge.plugins.linear.enabled, false);
+  // Polls the wrapper's own status port until it publishes a held failure; a hold keeps
+  // the container running.
+  async function waitHeld(name, label) {
+    const heldDeadline = Date.now() + 60_000;
+    let observedHold;
+    while (Date.now() < heldDeadline) {
+      const observed = JSON.parse((await runDocker(["inspect", name])).stdout)[0];
+      assert.equal(observed.State.Running, true, `${label} holds instead of exiting`);
+      try {
+        observedHold = JSON.parse(
+          (
+            await runDocker([
+              "exec",
+              name,
+              "node",
+              "-e",
+              `Promise.all([fetch("http://127.0.0.1:18791/readyz"),fetch("http://127.0.0.1:18791/openclaw/runtime/status").then((r)=>r.json())]).then(([ready,status])=>console.log(JSON.stringify({ready:ready.status,failure:status.runtimeFailure}))).catch(()=>process.exit(1));`,
+            ])
+          ).stdout.trim(),
+        );
+      } catch {
+        observedHold = undefined;
+      }
+      if (observedHold?.failure !== undefined) {
+        return observedHold;
+      }
+      await delay(250);
+    }
+    return observedHold;
+  }
+  async function killContainer(name) {
+    await runDocker(["kill", name]);
+    const killDeadline = Date.now() + 30_000;
+    let observed;
+    do {
+      observed = JSON.parse((await runDocker(["inspect", name])).stdout)[0];
+      if (!observed.State.Running) {
+        return;
+      }
+      await delay(250);
+    } while (Date.now() < killDeadline);
+    assert.fail(`${name} still runs 30 s after docker kill`);
+  }
+  // A Gateway container killed outright (an OOM kill or a crash) leaves the native
+  // Gateway's state lock behind. Started again in its Pod, the container has a new PID
+  // namespace and cannot verify that the holder stopped, so OpenClaw refuses to read the
+  // configuration. The wrapper must hold that refusal under its own check and name the
+  // lock, not report a tool policy failure (finding 2864). Recovery stays with the operator.
+  const pidNamespace = async (name) =>
+    (await runDocker(["exec", name, "readlink", "/proc/1/ns/pid"])).stdout.trim();
+  const killedNamespace = await pidNamespace(replacement.containerName);
+  await killContainer(replacement.containerName);
+  // The kernel hands out the lowest free namespace inode number, so a container started at
+  // once can get the killed one back; OpenClaw then sees its own namespace, finds the
+  // holder's PID gone and recovers the lock. Placeholder containers take the freed number
+  // first, as other workloads on a node can, so the restart gets a new namespace.
+  const placeholders = [];
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const name = `${owner}-pidns-${attempt}`;
+    cleanup.push(() => runDocker(["rm", "-f", name]).catch(() => {}));
+    ownedContainers.push(name);
+    placeholders.push(name);
+    await runDocker([
+      "run",
+      "--detach",
+      "--name",
+      name,
+      "--pull=never",
+      "--network",
+      "none",
+      "--label",
+      `oce.proof.owner=${owner}`,
+      "--entrypoint",
+      "sleep",
+      image,
+      "600",
+    ]);
+    if ((await pidNamespace(name)) === killedNamespace) {
+      break;
+    }
+  }
+  await runDocker(["start", replacement.containerName]);
+  assert.notEqual(await pidNamespace(replacement.containerName), killedNamespace);
+  for (const name of placeholders) {
+    await runDocker(["rm", "-f", name]);
+  }
+  const lockHeld = await waitHeld(replacement.containerName, "a stale Gateway state lock");
+  assert.equal(lockHeld?.failure?.check, "gateway-state-lock", JSON.stringify(lockHeld));
+  assert.equal(lockHeld.failure.code, "UNAVAILABLE");
+  assert.notEqual(lockHeld.ready, 200);
+  const lockLogs = await runDocker(["logs", replacement.containerName]);
+  assert.match(
+    lockLogs.stderr + lockLogs.stdout,
+    /still holds the Gateway state lock.*OpenClaw reported: cannot verify Gateway ownership/,
+  );
+  assert.doesNotMatch(lockLogs.stderr + lockLogs.stdout, /required tool policy/);
   // The peer bridge record survives container restarts in its Pod. An unreadable one
   // (here truncated, as an unsynced write after node power loss could leave it) must hold
   // the wrapper unready with its cause reported, not crash-loop on a bare SyntaxError.
+  // The wrapper checks the record before OpenClaw reads its configuration, so the lock
+  // left above does not change this hold. The container is killed again, as at power loss:
+  // a wrapper held on the lock has no stop handler, and Node as PID 1 ignores SIGTERM.
   const record = "/home/node/.openclaw/openclaw.json.oce-peer-bridge.json";
   await runDocker([
     "exec",
@@ -364,34 +486,9 @@ export async function runWritableGatewayRestart(t) {
     "-e",
     `const fs=require("node:fs");fs.writeFileSync(${JSON.stringify(record)},fs.readFileSync(${JSON.stringify(record)},"utf8").slice(0,-5));`,
   ]);
-  await runDocker(["restart", "--time", "350", replacement.containerName], { timeout: 360_000 });
-  const heldDeadline = Date.now() + 60_000;
-  let held;
-  while (Date.now() < heldDeadline) {
-    const observed = JSON.parse(
-      (await runDocker(["inspect", replacement.containerName])).stdout,
-    )[0];
-    assert.equal(observed.State.Running, true, "an unreadable record holds instead of exiting");
-    try {
-      held = JSON.parse(
-        (
-          await runDocker([
-            "exec",
-            replacement.containerName,
-            "node",
-            "-e",
-            `Promise.all([fetch("http://127.0.0.1:18791/readyz"),fetch("http://127.0.0.1:18791/openclaw/runtime/status").then((r)=>r.json())]).then(([ready,status])=>console.log(JSON.stringify({ready:ready.status,failure:status.runtimeFailure}))).catch(()=>process.exit(1));`,
-          ])
-        ).stdout.trim(),
-      );
-    } catch {
-      held = undefined;
-    }
-    if (held?.failure !== undefined) {
-      break;
-    }
-    await delay(250);
-  }
+  await killContainer(replacement.containerName);
+  await runDocker(["start", replacement.containerName]);
+  const held = await waitHeld(replacement.containerName, "an unreadable record");
   assert.equal(held?.failure?.check, "peer-bridge-record", JSON.stringify(held));
   assert.equal(held.failure.code, "UNAVAILABLE");
   assert.notEqual(held.ready, 200);
@@ -424,6 +521,7 @@ export async function runWritableGatewayRestart(t) {
       nativeEditRetained: recovered.prefix === afterRestart.prefix,
       explicitBridgeRefused: stopped.State.ExitCode,
       freshCopyRestored: fresh.prefix === undefined,
+      staleLockHeld: lockHeld.failure.check,
       unreadableRecordHeld: held.failure.check,
       heldStopMs,
     }),

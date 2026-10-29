@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-10-26"
-last_updated_session: "authoring-run/0f3c367f-75d3-40f0-bcfa-3b649b78721f"
+updated: "2026-10-29"
+last_updated_session: "fix-2874"
 ---
 
 # Agent sandbox policy flow
@@ -108,8 +108,9 @@ cleans its exact IAM access.
 into `AgentRevision.sandboxPolicy`. The OpenShell Driver provisions from this
 snapshot rather than re-reading changed defaults.
 
-`applyAgentSandboxPolicy` requires the exact active revision and supporting
-Driver. It persists a pending application and durable Agent-target work in one
+`applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
+`update` and `read` before any refusal that names saved additions, then requires
+the exact active revision and supporting Driver. It persists a pending application and durable Agent-target work in one
 transaction. Neither saving nor enqueueing establishes enforcement.
 
 ### 3. Reconcile provider effects
@@ -238,6 +239,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-29 12:00: Live application authorizes SandboxPolicy `read` before admitting the saved additions (finding 2874).
 
 - 2026-10-26 10:49: Combine the accompanying policy UX controls with upstream permission hints, unavailable Sandbox log handling, and application failure explanations. (authoring-run/0f3c367f-75d3-40f0-bcfa-3b649b78721f - e89a4e37a0b3dff75739cf6988028f81cd96f5ac)
 

@@ -16,7 +16,7 @@ import {
   memberRole,
 } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { bindRole, grantRole, restrict } from "../helpers/iam-grants.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
   authenticatedHeaders,
@@ -190,6 +190,7 @@ test("the Namespace Secret create answer matches what Secret creation checks", a
     fixture.request("POST", secretsPath, { session, body: { name, value: "synthetic-value" } });
 
   assert.deepEqual(await answer(), {
+    delete: false,
     agents: { create: true },
     secrets: { create: false },
     installation: { administer: false },
@@ -245,26 +246,14 @@ test("the Namespace Installation administer answer matches what Installation-wid
   // An administrator whose Restriction denies Agent create in this Namespace still administers
   // the Installation: Agent create says nothing about it. The Restriction is Namespace-wide, so
   // it applies to the member too; her answer was read above.
-  fixture.policy.restrictions.push({
-    id: "deny-agent-create-here",
-    namespaceId: namespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
   const restricted = await answer();
   assert.deepEqual(restricted.agents, { create: false });
   assert.deepEqual(restricted.installation, { administer: true });
   assert.equal((await backends()).status, 200);
 
   // A Restriction on Installation administer changes the answer as it changes the read.
-  fixture.policy.restrictions.push({
-    id: "deny-installation-administer",
-    resourceKind: "installation",
-    resourceId: installation.id,
-    action: "administer",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "administer", "installation", { resourceId: installation.id });
   assert.deepEqual((await answer()).installation, { administer: false });
   assertApiError(await backends(), 403, "FORBIDDEN");
 });
@@ -311,13 +300,7 @@ test("the Secret read's caller answer matches what Secret replace and delete che
   // A Restriction on Secret update overrides an administrator's grant, in the answer and the
   // write alike.
   assert.deepEqual(await answer(), { update: true, delete: true });
-  fixture.policy.restrictions.push({
-    id: "deny-secret-update-here",
-    namespaceId: namespace.id,
-    resourceKind: "secret",
-    action: "update",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "update", "secret", { namespaceId: namespace.id });
   assert.deepEqual(await answer(), { update: false, delete: true });
   assertApiError(await replace(), 403, "FORBIDDEN");
 
@@ -376,13 +359,9 @@ test("the Agent readLogs answer matches what the runtime log read checks", async
 
   // A Restriction on read_logs denies log text even to an administrator: administer cannot
   // bypass it.
-  fixture.policy.restrictions.push({
-    id: "deny-log-text",
+  restrict(fixture.policy, "read_logs", "agent", {
     namespaceId: namespace.id,
-    resourceKind: "agent",
     resourceId: agent.id,
-    action: "read_logs",
-    effect: "deny",
   });
   assert.equal(await readLogs(), false);
   assert.equal(await readLogs(readerSession), false);
@@ -421,6 +400,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
   const adminNamespace = await fixture.request("GET", namespacePath);
   assert.equal(adminNamespace.status, 200);
   assert.deepEqual(adminNamespace.data, {
+    delete: true,
     agents: { create: true },
     secrets: { create: true },
     installation: { administer: true },
@@ -496,6 +476,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
   const namespaceSummary = await fixture.request("GET", namespacePath, { session });
   assert.equal(namespaceSummary.status, 200);
   assert.deepEqual(namespaceSummary.data, {
+    delete: false,
     agents: { create: false },
     secrets: { create: false },
     installation: { administer: false },
@@ -1916,6 +1897,7 @@ test("an IAM failure on any caller permission decision fails the whole answer in
     assertApiError(await outage(agentPermissions, failing), 503, "DEPENDENCY_UNAVAILABLE", label);
   }
   for (const [label, failing] of [
+    ["namespace.delete", decision("delete", "namespace", namespace.id)],
     ["agents.create", decision("create", "agent", namespace.id)],
     ["secrets.create", decision("create", "secret", namespace.id)],
   ]) {

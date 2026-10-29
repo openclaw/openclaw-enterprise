@@ -103,11 +103,8 @@
     }
   },
   "tests/integration/docker-compute-real.test.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    },
     "preserve-caught-error": {
-      "count": 3
+      "count": 2
     }
   },
   "tests/integration/occ-api.test.mjs": {

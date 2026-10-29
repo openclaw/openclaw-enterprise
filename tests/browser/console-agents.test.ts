@@ -15,6 +15,9 @@ import type {
 } from "../../packages/contracts/src/api/common.ts";
 import type {
   AgentWire,
+  AgentDeploymentStatusWire,
+  AgentProvisioningResponse,
+  AgentProvisioningStatusResponse,
   IAMAccessBindingWire,
   IAMRoleWire,
   SecretWire,
@@ -88,6 +91,7 @@ import {
   REPOSITORY_ACCESS_NOT_CONFIGURED,
   REPOSITORY_CHOICES_CREATE_DENIED,
 } from "../helpers/refusal-text.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -475,13 +479,9 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.equal(JSON.stringify(audit.events).includes(key), false);
 
   // The server still enforces the exact source grant when the form is saved.
-  fixture.policy.restrictions.push({
-    id: "deny-harness-secret-operate",
+  restrict(fixture.policy, "operate", "secret", {
     namespaceId: namespace.id,
-    resourceKind: "secret",
     resourceId: secret.id,
-    action: "operate",
-    effect: "deny",
   });
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   const savedSecretInput = page.getByLabel("API key Secret");
@@ -501,13 +501,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     created.data.harnessAuth,
   );
 
-  fixture.policy.restrictions.push({
-    id: "deny-agent-create",
-    namespaceId: namespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
   requests.length = 0;
   // With the permission answer the start page refuses at once (finding 1521). Without one the
   // form opens, and the API still refuses the creation itself.
@@ -747,13 +741,7 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
         namespaces: [{ namespaceId, profiles: ["git-read"] }],
       },
     ]);
-  deniedFixture.policy.restrictions.push({
-    id: "deny-repository-discovery",
-    namespaceId: deniedNamespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  restrict(deniedFixture.policy, "create", "agent", { namespaceId: deniedNamespace.id });
   const { page: deniedPage } = await newPage(t, deniedFixture);
   const deniedRequests = apiRequests(deniedPage, deniedFixture.origin);
   // Without a permission answer the form opens (with one it refuses at once, finding 1521), so
@@ -1013,13 +1001,7 @@ test("Agent creation recovers from stale authoritative admission without replaci
     `${fixture.origin}/namespaces/${namespace.id}/agents/validate`,
     async (route) => {
       const response = await route.fetch();
-      fixture.policy.restrictions.push({
-        id: "stale-agent-create-authorization",
-        namespaceId: namespace.id,
-        resourceKind: "agent",
-        action: "create",
-        effect: "deny",
-      });
+      restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
       await route.fulfill({ response });
     },
     { times: 1 },
@@ -1264,13 +1246,7 @@ test("Agent repository recovery with empty current policy requires an explicit n
     `${fixture.origin}/namespaces/${namespace.id}/agents/validate`,
     async (route) => {
       const response = await route.fetch();
-      fixture.policy.restrictions.push({
-        id: "reject-before-policy-refresh",
-        namespaceId: namespace.id,
-        resourceKind: "agent",
-        action: "create",
-        effect: "deny",
-      });
+      restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
       await route.fulfill({ response });
     },
     { times: 1 },
@@ -1338,7 +1314,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
   const revisionId = "rev_00000000-0000-4000-8000-00000000feed";
   let allowProvisioningSuccess = false;
   let provisioningReads = 0;
-  let deploymentStatus = "queued";
+  let deploymentStatus: AgentDeploymentStatusWire["status"] = "queued";
   let provisionBody: ProvisionAgentBody | undefined;
   const savedSecrets = new Map<string, SecretWire>();
   await routeInstallationProvisioning(page, fixture);
@@ -1446,7 +1422,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
             updatedAt: agent.createdAt,
             url: `/namespaces/${namespace.id}/agents/provision/work_create`,
           },
-        },
+        } satisfies AgentProvisioningResponse["data"],
         202,
       ),
     );
@@ -1463,19 +1439,17 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     assert.ok(provisionBody, "the provisioning request was submitted before polling");
     await route.fulfill(
       json({
-        provisioning: {
-          requestId: provisionBody.requestId,
-          workId: "work_create",
-          status: allowProvisioningSuccess ? "succeeded" : "running",
-          phase: allowProvisioningSuccess ? "handoff" : "configuration",
-          attemptCount: 1,
-          updatedAt: agent.createdAt,
-          url: `/namespaces/${namespace.id}/agents/provision/work_create`,
-          ...(allowProvisioningSuccess
-            ? { configurationId: agent.configurationId, agentId, revisionId }
-            : {}),
-        },
-      }),
+        requestId: provisionBody.requestId,
+        workId: "work_create",
+        status: allowProvisioningSuccess ? "succeeded" : "running",
+        phase: allowProvisioningSuccess ? "handoff" : "configuration",
+        attemptCount: 1,
+        updatedAt: agent.createdAt,
+        url: `/namespaces/${namespace.id}/agents/provision/work_create`,
+        ...(allowProvisioningSuccess
+          ? { configurationId: agent.configurationId, agentId, revisionId }
+          : {}),
+      } satisfies AgentProvisioningStatusResponse["data"]),
     );
   });
   await page.route(
@@ -1483,14 +1457,21 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     async (route) => {
       await route.fulfill(
         json({
-          deploymentId: `dep_${revisionId}`,
-          revisionId,
+          deploymentId: revisionId,
+          namespaceId: namespace.id,
+          agentId,
           status: deploymentStatus,
+          cleanup: null,
+          progress:
+            deploymentStatus === "queued"
+              ? { lastAttempt: null, nextAttemptAt: revision.createdAt }
+              : null,
+          warnings: [],
           error:
             deploymentStatus === "failed"
               ? { code: "DEPENDENCY_UNAVAILABLE", message: "Deployment reconciliation failed." }
               : null,
-        }),
+        } satisfies AgentDeploymentStatusWire),
       );
     },
   );
@@ -1584,7 +1565,11 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     page,
     async () => {
       await page.getByRole("button", { name: "Create Agent" }).click();
-      assert.equal((await provisionResponse).status(), 202);
+      const accepted = await provisionResponse;
+      assert.equal(accepted.status(), 202);
+      const admission: AgentProvisioningResponse = await accepted.json();
+      assert.equal(admission.data.provisioning.requestId, provisionBody?.requestId);
+      assert.notEqual(admission.data.provisioning.requestId, admission.meta.requestId);
       assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
       allowProvisioningSuccess = true;
     },
@@ -2041,7 +2026,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
             revisionId,
             url: `/namespaces/${namespace.id}/agents/provision/work_retry`,
           },
-        },
+        } satisfies AgentProvisioningResponse["data"],
         202,
       ),
     );
@@ -2050,7 +2035,16 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
     `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
     async (route) => {
       await route.fulfill(
-        json({ deploymentId: `dep_${revisionId}`, revisionId, status: "succeeded" }),
+        json({
+          deploymentId: revisionId,
+          namespaceId: namespace.id,
+          agentId,
+          status: "succeeded",
+          cleanup: null,
+          progress: null,
+          warnings: [],
+          error: null,
+        } satisfies AgentDeploymentStatusWire),
       );
     },
   );
@@ -2128,7 +2122,17 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
   assert.equal(await page.getByLabel("Configuration JSON").isDisabled(), true);
   assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "codex");
   assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
+  const retryResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/provision` &&
+      response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "Retry provisioning request" }).click();
+  const accepted = await retryResponse;
+  assert.equal(accepted.status(), 202);
+  const admission: AgentProvisioningResponse = await accepted.json();
+  assert.equal(admission.data.provisioning.requestId, bodies[0]?.requestId);
+  assert.notEqual(admission.data.provisioning.requestId, admission.meta.requestId);
 
   await page.waitForURL((url) => {
     return (

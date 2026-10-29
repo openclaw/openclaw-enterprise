@@ -37,8 +37,9 @@ details with the error; it does not reduce them to a generic Driver refusal.
 User editing is disabled by default. Enabling or disabling
 `Agent.sandboxPolicyEditing` requires both Installation and exact-Agent
 `administer`. Changing additions or requesting live application requires exact-Agent
-`manage_policy` and exact-SandboxPolicy `update`. Reads require `read` on both
-resources. Ordinary Agent `update` does not authorize these operations.
+`manage_policy` and exact-SandboxPolicy `update`. Live application also requires
+SandboxPolicy `read`: it admits and returns the saved additions. Reads require
+`read` on both resources. Ordinary Agent `update` does not authorize these operations.
 The editing switch is temporary until the platform Guardrails primitive owns
 these restrictions. Its controller and HTTP operation are named
 `TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing`; callers must
@@ -87,7 +88,7 @@ Restrictions are removed with their policy.
 
 Saving additions requires `expectedVersion` and advances the desired policy
 version. It performs no provider mutation. Deploy explicitly to freeze selected
-Driver defaults and approved additions into a new immutable AgentRevision;
+Driver defaults and approved additions into a new AgentRevision;
 deployment retains its usual authorization and interruption behavior.
 In the Console, **Save and apply to current revision** proceeds to application
 only when the save response identifies this policy, its next version, and the
