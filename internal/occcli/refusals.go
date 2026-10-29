@@ -84,7 +84,7 @@ var commandPermissions = map[string]commandPermission{
 	"agent logs":                          {[]string{"getAgentDeploymentRuntimeLogs"}, []string{"agent.read_logs", "agent.read"}, "(or administer)"},
 	"agent policy get":                    {[]string{"getAgentSandboxPolicy"}, []string{"agent.read", "sandbox_policy.read"}, ""},
 	"agent policy update":                 {[]string{"updateAgentSandboxPolicy"}, []string{"agent.manage_policy", "sandbox_policy.update"}, ""},
-	"agent policy apply":                  {[]string{"applyAgentSandboxPolicy"}, []string{"agent.manage_policy", "sandbox_policy.update"}, ""},
+	"agent policy apply":                  {[]string{"applyAgentSandboxPolicy"}, []string{"agent.manage_policy", "sandbox_policy.update", "sandbox_policy.read"}, ""},
 	"agent policy editing":                {[]string{"TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing"}, []string{"agent.administer", "installation.administer"}, ""},
 	"agent policy recommendations":        {[]string{"getAgentSandboxRecommendations"}, []string{"agent.read", "sandbox_policy.read"}, ""},
 }
