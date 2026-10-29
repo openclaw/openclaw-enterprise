@@ -560,7 +560,10 @@ export const scenarios = {
     name: "Consumers and restricted references",
     path: "/console/secrets",
     secretConsumers: {
-      agents: ["agt_00000000-0000-4000-8000-000000000001"],
+      agents: [
+        "agt_00000000-0000-4000-8000-000000000001",
+        "agt_00000000-0000-4000-8000-000000000099",
+      ],
       configurations: ["cfg_00000000-0000-4000-8000-000000000001"],
       credentialSources: [],
       provisioningRequests: [],
@@ -569,7 +572,7 @@ export const scenarios = {
     },
     actions: [click("Demo model API key (simulated)")],
     description:
-      "Agent links and other consumer IDs are grouped by resource. The blue notice explains restricted visibility; the amber warning identifies an incomplete list. Simulated UI proof.",
+      "The readable Agent keeps its link. A previously listed Agent shows no identity or link and asks you to reopen the Secret to check again. Hidden count, incomplete-list warning and disabled deletion remain. Simulated UI proof.",
   },
   secretsReadOnly: {
     group: "Pages/Secrets",
