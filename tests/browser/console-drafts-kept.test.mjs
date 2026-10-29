@@ -244,7 +244,7 @@ test("a failed Namespace read keeps drafts; a read that no longer lists their Na
   const failed = failNextNamespacesRead(page);
   await sidebarLink(page, "Namespaces").click();
   await failed;
-  await heading(page, "Namespace access unavailable").waitFor();
+  await heading(page, "Could not reach OpenClaw Enterprise").waitFor();
   // Hiding private content does not need dropping the in-memory draft (finding 1935).
   assert.equal(await asksBeforeUnload(page), true);
   await page.getByRole("button", { name: "Retry", exact: true }).click();
@@ -306,7 +306,7 @@ test("a failed Namespace recheck keeps the Agent page's Configuration edit", asy
   const failed = failNextNamespacesRead(page);
   await refocus(page);
   await failed;
-  await heading(page, "Namespace access unavailable").waitFor();
+  await heading(page, "Could not reach OpenClaw Enterprise").waitFor();
   assert.equal(await asksBeforeUnload(page), true);
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await waitForInputValue(editor, '{"edited": true}');

@@ -1120,6 +1120,19 @@ export const scenarios = {
       "Sign in again and confirm the requested collection returns without replaying a write.",
     ],
   },
+  navigationOffline: {
+    group: "Pages/Navigation",
+    name: "Refresh while offline",
+    rules: [{ path: "/api/auth/session", skip: 1, networkError: true }],
+    actions: [click("Refresh")],
+    description:
+      "Refresh rereads the session, and the read never reaches the API. The signed-in shell stays, the page says it could not reach OpenClaw Enterprise, and focus is on Retry. The fixture fails every later session read as the browser does offline.",
+    steps: [
+      "Confirm the account and navigation stay, and no Agent or Namespace name shows.",
+      "Choose Retry: the same message returns and focus is on Retry again.",
+      "Repeat at phone width.",
+    ],
+  },
   observabilityLink: {
     group: "Components/Navigation",
     name: "Admin Observability link",
