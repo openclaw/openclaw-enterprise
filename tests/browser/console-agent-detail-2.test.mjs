@@ -17,10 +17,12 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import {
   AGENT_READ,
   apiRequests,
+  authorizationDenials,
+  denyRevisionRead,
   detailUrl,
   deploymentStatusResponse,
   expectNoText,
-  expireSessions,
+  expireSessionsWhenSettled,
   holdRequests,
   login,
   setSlackSelection,
@@ -49,6 +51,7 @@ import {
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
   expectNativeAdminHidden,
+  expectNativeAdminUnavailable,
   withholdPermissionSummary,
   assertRevisionUrl,
   agentDeleteRequests,
@@ -1086,10 +1089,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.equal(initiallyStopped.status, 200);
   assert.deepEqual(initiallyStopped.data, { status: "stopped" });
   await page.getByText("Start this Agent before opening its native admin UI.").waitFor();
-  assert.equal(
-    await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
-    false,
-  );
+  await expectNativeAdminUnavailable(page, "Start this Agent before opening its native admin UI.");
 
   // A real deployment requests running before reconciliation selects the admitted revision.
   const pending = await fixture.deployAgent(namespace.id, agent.id);
@@ -1105,9 +1105,9 @@ test("Agent detail opens native admin UI only after real API access checks pass"
       "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
     )
     .waitFor({ timeout: 5_000 });
-  assert.equal(
-    await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
-    false,
+  await expectNativeAdminUnavailable(
+    page,
+    "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
   );
 
   let active = { revision: pending };
@@ -1828,6 +1828,92 @@ test("A refused recheck of an open Agent page names the grant the API checked", 
   await page.getByText(callerDenied("Agent read", `Agent ${agent.id}`), { exact: true }).waitFor();
 });
 
+// Finding D799. A refocus rechecks the session, the Agent and its versions, and reads the shown
+// version again only when the page had it on screen. A version the page proved unreadable on load
+// is not read again: that read would add an audited denial per refocus and its refusal would
+// replace the page with "Access denied". One the page showed and that is revoked since is still
+// taken off the page, current version or not (finding 2913).
+test("A refocus does not read again a version the Agent page proved unreadable", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unreadable refocus", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Unreadable refocus", nativeValues("ur"));
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const versionDenials = () =>
+    authorizationDenials(fixture.auditSink, "openclaw.agent_revisions.read").length;
+  const accessDenied = page.getByRole("heading", { name: "Access denied", exact: true });
+  // Returns the paths this refocus check sent, once the page is idle again.
+  async function refocus() {
+    const sent = requests.length;
+    const listed = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === `${path}/revisions`,
+    );
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await listed;
+    await waitForIdleFetches(page);
+    return requests.slice(sent).map((request) => request.path);
+  }
+
+  // The current version v2 is readable and shown, opened without ?revision. Revoked since, the
+  // newest page of versions leaves it out too, but the page had it on screen: a refocus still
+  // reads it and takes it off the page (finding 2913).
+  await login(page, fixture, `/console/agents/${agent.id}?namespace=${namespace.id}`);
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await waitForIdleFetches(page);
+  denyRevisionRead(fixture, namespace, second.revision);
+  assert.ok((await refocus()).includes(`${path}/revisions/${second.revision.id}`));
+  await accessDenied.waitFor();
+  assert.equal(versionDenials(), 1);
+
+  // Opened again, the newest page of versions lists every version this reader can read and leaves
+  // the current version out, so the page reads it neither on load (finding D791) nor on any
+  // refocus, and keeps its tabs.
+  await page.goto(detailUrl(fixture, namespace.id, agent.id).href);
+  await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  for (let check = 0; check < 2; check += 1) {
+    const sent = await refocus();
+    assert.ok(sent.includes(path), "the refocus check reads the Agent again");
+    assert.equal(sent.filter((sentPath) => sentPath.startsWith(`${path}/revisions/`)).length, 0);
+  }
+  await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
+  assert.equal(await accessDenied.count(), 0);
+  assert.equal(await page.locator(".agent-tabs").count(), 1);
+  assert.equal(versionDenials(), 1);
+
+  // v1 is readable and shown. Revoked since, a refocus finds it and takes it off the page.
+  const olderPath = `${path}/revisions/${first.revision.id}`;
+  await page.goto(
+    detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration").href,
+  );
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await waitForIdleFetches(page);
+  denyRevisionRead(fixture, namespace, first.revision);
+  assert.ok((await refocus()).includes(olderPath));
+  await accessDenied.waitFor();
+  assert.equal(versionDenials(), 2);
+
+  // Opened again, the page shows v1's refusal. A refocus keeps it without another refusal: v1 is
+  // not the current version, so this tab's settled refusal is the proof.
+  await page.goto(
+    detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration").href,
+  );
+  await page.getByRole("heading", { name: "Unreadable refocus", exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  const denials = versionDenials();
+  const tabs = await page.locator(".agent-tabs").count();
+  assert.equal(await accessDenied.count(), 0);
+  assert.equal((await refocus()).includes(olderPath), false);
+  assert.equal(await accessDenied.count(), 0);
+  assert.equal(await page.locator(".agent-tabs").count(), tabs);
+  assert.equal(versionDenials(), denials);
+});
+
 for (const kind of ["agent", "configuration", "namespace"]) {
   test(`Agent detail refocus removes a revision when ${kind} access is revoked`, async (t) => {
     const fixture = await detailApp(t);
@@ -1878,7 +1964,8 @@ test("Agent detail refocus clears a revision after session expiry", async (t) =>
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
-  expireSessions(fixture);
+  // The refocus check, not a late read of the view, must find the expiry.
+  await expireSessionsWhenSettled(page, fixture);
 
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await page.getByText("Your session has expired").waitFor();
@@ -1915,7 +2002,8 @@ for (const variant of ["credentials", "workspace", "sharing"]) {
     } else {
       await page.locator(".content form:not(.agent-access-form)").first().waitFor();
     }
-    expireSessions(fixture);
+    // The refocus check, not a late read of the view, must find the expiry.
+    await expireSessionsWhenSettled(page, fixture);
 
     await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
     await page.getByText("Your session has expired").waitFor();
@@ -1931,6 +2019,7 @@ test("Agent detail history navigation rechecks session during refocus", async (t
   const namespace = await fixture.createNamespace("Revision history refocus", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "History refocus Agent");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
@@ -1961,7 +2050,9 @@ test("Agent detail history navigation rechecks session during refocus", async (t
   });
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await held;
-  expireSessions(fixture);
+  // The held session check and the history navigation, not a late read of the view, must find
+  // the expiry.
+  await expireSessionsWhenSettled(page, fixture, { except: "/api/auth/session" });
   await page.goBack();
   await page.getByText("Your session has expired").waitFor();
   await expectNoText(page, /Configuration draft|Open draft|History refocus Agent/);
@@ -2531,6 +2622,7 @@ test("Agent sharing reconciles a truncated committed response without replaying 
   const agent = await fixture.createAgent(namespace.id, "Recovery Agent", nativeValues("recovery"));
   const person = fixture.provisionedAccounts[0];
   const { page, artifacts } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
   const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, detail);
@@ -2566,8 +2658,9 @@ test("Agent sharing reconciles a truncated committed response without replaying 
   const policyPath = `/namespaces/${namespace.id}/iam`;
   assert.equal((await fixture.request("GET", `${policyPath}/roles`)).data.length, 2);
   assert.equal((await fixture.request("GET", `${policyPath}/access-bindings`)).data.length, 2);
-  // A sharing read must preserve global expiry handling, including private panel removal.
-  expireSessions(fixture);
+  // A sharing read must preserve global expiry handling, including private panel removal. A late
+  // read that found the expiry first would remove the panel before the Refresh click.
+  await expireSessionsWhenSettled(page, fixture);
   await panel.getByRole("button", { name: "Refresh sharing" }).click();
   await page.getByText("Your session has expired").waitFor();
   await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
@@ -2644,8 +2737,9 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
   assert.equal(denials("openclaw.configurations.read"), 2);
 
   // The tab keeps denials for one session owner. Signing in again after the session expired
-  // starts another session, even for the same person, so its first view asks again.
-  expireSessions(fixture);
+  // starts another session, even for the same person, so its first view asks again. A late read
+  // that found the expiry first would move to /console/login, and the reload would reload that.
+  await expireSessionsWhenSettled(page, fixture);
   await page.reload();
   await page.getByText("Your session has expired").waitFor();
   await login(page, fixture, detail, viewer.credentials);

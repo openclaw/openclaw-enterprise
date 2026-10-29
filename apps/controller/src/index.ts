@@ -230,7 +230,8 @@ interface RequiredPermission {
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
     | "read_logs_alternative"
-    | "bound_credential_source";
+    | "bound_credential_source"
+    | "saved_sandbox_policy_additions";
 }
 
 interface DocumentedFastifySchema extends FastifySchema {
@@ -558,6 +559,16 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         resourceKind: "sandbox_policy",
         scope: "requested",
       },
+      // Apply returns the saved policy and admits its additions, so it also needs read (finding 2874).
+      ...(operation.operationId === "applyAgentSandboxPolicy"
+        ? [
+            {
+              action: "read" as const,
+              resourceKind: "sandbox_policy" as const,
+              scope: "requested" as const,
+            },
+          ]
+        : []),
     ];
   }
   if (operation.operationId === "TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing") {
@@ -846,6 +857,18 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
               condition: "bound_credential_source" as const,
             },
           ]),
+      // Mirrors OCC createRevision and refuseRepositoryNetworkOverlap: refusals that name saved
+      // network policy additions come after SandboxPolicy read (findings 2151, 2881).
+      ...(operation.operationId === "deployAgent" || operation.operationId === "updateAgent"
+        ? [
+            {
+              action: "read" as const,
+              resourceKind: "sandbox_policy" as const,
+              scope: "requested" as const,
+              condition: "saved_sandbox_policy_additions" as const,
+            },
+          ]
+        : []),
     ];
   }
 
@@ -1048,6 +1071,11 @@ function permissionDescription(
           return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth, before and after the update.`;
         }
         return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth.`;
+      }
+      if (condition === "saved_sandbox_policy_additions") {
+        return operation?.operationId === "updateAgent"
+          ? `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions and the Agent has repository bindings after the update.`
+          : `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions.`;
       }
       if (condition === "missing_runtime_credentials") {
         return `Requires ${action} permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment.`;

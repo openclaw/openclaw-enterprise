@@ -203,11 +203,11 @@ try {
     });
     repositoryGitTransport = await bindRepositoryGitTransport(
       drivers,
-      preparedRepositoryGit,
+      preparedRepositoryGit.protectedGit,
       pool,
       (event) => emitOccLogEvent(logger, event),
     );
-  } else if (drivers?.repositoryGitDriver || drivers?.openShellGit) {
+  } else if (drivers?.repositoryGitDriver || drivers?.repositoryTransport) {
     throw new Error("The repository Git transport requires its selected prepared owner.");
   }
   let metrics;
@@ -233,6 +233,10 @@ try {
     ...options,
     emit: createWorkerLogEmitter(logger),
     ...(drivers === undefined ? { computeDriver } : { drivers }),
+    // Native prepared Git: a deployment waits for its version's first GitHub token (finding 2415).
+    ...(preparedRepositoryGit?.revisionMaterial === undefined
+      ? {}
+      : { repositoryGitMaterial: preparedRepositoryGit.revisionMaterial }),
     ...(readinessPath === undefined
       ? {}
       : {

@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -9,8 +10,11 @@ import {
 } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { storedCredentialSourceConfig } from "../helpers/refusal-text.mjs";
@@ -24,6 +28,7 @@ const SECRET_FIELD = {
 };
 const TOOL_TYPES = Object.keys(SECRET_FIELD);
 const OAUTH2_TYPES = TOOL_TYPES.filter((type) => type !== "bearer-token");
+
 const TOOL = { host: "tools.example.test", env_var: "TOOL_TOKEN" };
 const ISSUER = { ...TOOL, token_url: "https://issuer.example.test/token", client_id: "occ" };
 const toolConfig = (type, config) => ({ ...(type === "bearer-token" ? TOOL : ISSUER), ...config });
@@ -73,7 +78,7 @@ const checkedAt = (rows, point) =>
 // Fastify app, authentication, IAM, OCC transactions, and OpenShell Driver.
 async function fixture(
   t,
-  { toolSources = false, gateway = { endpoint: "http://127.0.0.1:1" } } = {},
+  { toolSources = false, persistedIam = false, gateway = { endpoint: "http://127.0.0.1:1" } } = {},
 ) {
   const providers = new Map();
   const profiles = new Map();
@@ -149,6 +154,7 @@ async function fixture(
   const secretDriver = createTestSecretDriver();
   const app = await createConsoleAppFixture(t, {
     now: () => new Date(now),
+    ...(persistedIam ? { provisionedPeople: [] } : {}),
     computeDriver,
     secretDriver,
   });
@@ -237,7 +243,7 @@ async function fixture(
       const stored = {
         id: "cs_" + randomUUID(),
         namespaceId: namespace.id,
-        name: "stored",
+        name: `Stored ${type}`,
         type,
         config: type === "openai" ? config : toolConfig(type, config),
         secrets:
@@ -290,6 +296,121 @@ async function fixture(
   };
 }
 
+test("the saved Agent picker and binding use the granted source and the same reviewed release", async (t) => {
+  const f = await fixture(t, { toolSources: true, persistedIam: true });
+  const { stored: google } = await f.seedStoredRecord("oauth2-refresh-token", {
+    token_url: "https://oauth2.googleapis.com/token",
+    host: "gmail.googleapis.com",
+    path: "/gmail/v1/users/me/messages",
+    scope: "https://www.googleapis.com/auth/gmail.readonly",
+    env_var: "GOG_ACCESS_TOKEN",
+  });
+  for (const driver of [
+    new OCCPluginDriver(),
+    createTestKubernetesComputeDriver("plugin-compute"),
+  ]) {
+    f.controller.registerDriver(driver);
+    f.controller.selectDriver(driver.capability, driver.id);
+  }
+  const { stored: other } = await f.seedStoredRecord("bearer-token", {
+    host: "tools.example.test",
+    path: "/lookup",
+    env_var: "LOOKUP_TOKEN",
+  });
+  const { stored: sameHost } = await f.seedStoredRecord("oauth2-client-credentials", {
+    host: "gmail.googleapis.com",
+    port: "8443",
+    path: "/different-path",
+    env_var: "ANOTHER_TOKEN",
+  });
+  const agent = await f.createAgent(
+    f.namespace.id,
+    "Google Agent",
+    createHarnessConfiguration("openclaw", "gpt-5"),
+    {
+      harnessAuth: null,
+      executionMode: "dedicated",
+      credentialSources: [{ sourceId: google.id }, { sourceId: other.id }],
+    },
+  );
+  const path = `/namespaces/${f.namespace.id}/agents/${agent.id}`;
+  const slots = async () =>
+    (await f.request("GET", `${path}/plugins/capabilities`)).data.credentialSlots;
+  assert.deepEqual((await slots())[0].sources, []);
+  const iam = `/namespaces/${f.namespace.id}/iam`;
+  const role = await f.request("POST", `${iam}/roles`, {
+    body: {
+      name: "Read Gmail",
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    },
+  });
+  assert.equal(role.status, 201, JSON.stringify(role.body));
+  for (const source of [google, other, sameHost]) {
+    const grant = await f.request("POST", `${iam}/access-bindings`, {
+      body: {
+        subjectKind: "identity",
+        subjectId: agent.servicePrincipalId,
+        roleId: role.data.id,
+        resourceKind: "credential_source",
+        resourceId: source.id,
+      },
+    });
+    assert.equal(grant.status, 201, JSON.stringify(grant.body));
+  }
+  const [slot] = await slots();
+  assert.deepEqual(slot.sources, [{ id: google.id, name: google.name }]);
+  const save = (sourceId, releaseSha256) =>
+    f.request("PATCH", path, {
+      body: {
+        configurationId: agent.configurationId,
+        plugins: {
+          [slot.pluginId]: {
+            enabled: true,
+            driverPolicy: { releaseSha256, credentials: { [slot.id]: sourceId } },
+          },
+        },
+      },
+    });
+  const stale = await save(google.id, "0".repeat(64));
+  assert.equal(stale.status, 400, JSON.stringify(stale.body));
+  const otherAccount = await save("cs_" + randomUUID(), slot.releaseSha256);
+  assert.equal(otherAccount.status, 400, JSON.stringify(otherAccount.body));
+  const unsupported = await save(google.id, slot.releaseSha256);
+  assert.equal(unsupported.status, 400, JSON.stringify(unsupported.body));
+  assert.match(unsupported.body.error.message, /OpenShell Sandbox and Credential Gateway/);
+  const sandbox = {
+    id: "openshell-placement",
+    capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    implementation: "openshell",
+    facets: ["networking", "filesystem", "process"],
+    async cleanup() {},
+  };
+  f.controller.registerDriver(sandbox);
+  f.controller.selectDriver("sandbox", sandbox.id);
+  const saved = await save(google.id, slot.releaseSha256);
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual(saved.data.plugins[slot.pluginId].driverPolicy, {
+    releaseSha256: slot.releaseSha256,
+    credentials: { account: google.id },
+  });
+  const conflicting = await f.request("PATCH", path, {
+    body: {
+      configurationId: agent.configurationId,
+      credentialSources: [google, other, sameHost].map(({ id }) => ({ sourceId: id })),
+    },
+  });
+  assert.equal(conflicting.status, 400, JSON.stringify(conflicting.body));
+  assert.match(conflicting.body.error.message, /another attached credential.*guarded Google host/);
+  const clear = await f.request("PATCH", path, {
+    body: {
+      configurationId: agent.configurationId,
+      plugins: { [slot.pluginId]: { enabled: false } },
+    },
+  });
+  assert.equal(clear.status, 200, JSON.stringify(clear.body));
+  assert.deepEqual(clear.data.credentialSources, [{ sourceId: google.id }, { sourceId: other.id }]);
+});
 test("Installation discovery serializes OpenShell model authentication and refresh source metadata", async (t) => {
   const f = await fixture(t, { toolSources: true });
   // The real Driver advertises model login and OAuth2 refresh sources. The Installation
@@ -440,6 +561,7 @@ test("OpenShell custom and default credential profiles keep independent ownershi
   const nativeRevision = {
     harness: { id: "openclaw", mode: "dedicated" },
     configuration: {
+      agents: { defaults: { model: "openai/model" } },
       models: {
         providers: {
           openai: { baseUrl: custom.data.config.base_url, models: [{ id: "model" }] },
@@ -447,20 +569,109 @@ test("OpenShell custom and default credential profiles keep independent ownershi
       },
     },
   };
+  const attachNative = (change) => {
+    const revision = structuredClone(nativeRevision);
+    change(revision.configuration);
+    return f.driver.attachForRevision({ ...context, sources: [source], revision });
+  };
+  assert.deepEqual(await attachNative(() => {}), [
+    { sourceId: custom.data.id, ref: provider.name },
+  ]);
+  // The written endpoint is compared after normalization, as Compute renders it.
   assert.deepEqual(
-    await f.driver.attachForRevision({ ...context, sources: [source], revision: nativeRevision }),
+    await attachNative((configuration) => {
+      configuration.models.providers.openai.baseUrl = "https://MODELS.example.test:8443/api/v1/";
+    }),
     [{ sourceId: custom.data.id, ref: provider.name }],
   );
-  for (const model of [{ id: "model", baseUrl: "https://other.example.test/v1" }, {}]) {
-    const revision = structuredClone(nativeRevision);
-    revision.configuration.models.providers.openai.models = [model];
-    if (!model.baseUrl) {
-      delete revision.configuration.models.providers.openai.baseUrl;
-    }
-    await assert.rejects(
-      f.driver.attachForRevision({ ...context, sources: [source], revision }),
-      /must match the bound credential source endpoint/,
-    );
+  // Compute renders only the selected models into the native worker's catalog, so an
+  // unselected entry for another endpoint gets no traffic and does not block the deployment
+  // (finding 1686).
+  assert.deepEqual(
+    await attachNative((configuration) => {
+      configuration.models.providers.openai.models.push({
+        id: "unselected",
+        baseUrl: "https://other.example.test/v1",
+      });
+    }),
+    [{ sourceId: custom.data.id, ref: provider.name }],
+  );
+  // A selected model on another endpoint, its own or the provider's, is refused by setting
+  // and both hosts, never the source ID or key. Fallbacks and roster entries are selected too.
+  const sourceHost = "source host models.example.test:8443";
+  for (const [change, refusal] of [
+    [
+      (configuration) => {
+        configuration.models.providers.openai.models[0].baseUrl = "https://other.example.test/v1";
+      },
+      `Configuration setting models.providers.openai.models.0.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host other.example.test).`,
+    ],
+    [
+      (configuration) => {
+        configuration.models.providers.openai.baseUrl = "https://models.example.test:8443/v1";
+      },
+      `Configuration setting models.providers.openai.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host models.example.test:8443).`,
+    ],
+    // A port mismatch shows in the hosts.
+    [
+      (configuration) => {
+        configuration.models.providers.openai.baseUrl = "https://models.example.test/api/v1";
+      },
+      `Configuration setting models.providers.openai.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host models.example.test).`,
+    ],
+    [
+      (configuration) => {
+        delete configuration.models.providers.openai.baseUrl;
+      },
+      `Configuration setting models.providers.openai.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host none).`,
+    ],
+    [
+      (configuration) => {
+        configuration.agents.defaults.model = {
+          primary: "openai/model",
+          fallbacks: ["openai/fallback"],
+        };
+        configuration.models.providers.openai.models.push({
+          id: "fallback",
+          baseUrl: "https://api.openai.com/v1",
+        });
+      },
+      `Configuration setting models.providers.openai.models.1.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host api.openai.com).`,
+    ],
+    [
+      (configuration) => {
+        configuration.agents.entries = { helper: { model: "openai/helper" } };
+        configuration.models.providers.openai.models.push({
+          id: "helper",
+          baseUrl: "https://other.example.test/v1",
+        });
+      },
+      `Configuration setting models.providers.openai.models.1.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host other.example.test).`,
+    ],
+  ]) {
+    await assert.rejects(attachNative(change), { name: "ScopeViolationError", message: refusal });
+  }
+  // A shape Compute refuses before deployment stays refused here, without naming a setting.
+  for (const change of [
+    (configuration) => {
+      delete configuration.agents;
+    },
+    (configuration) => {
+      configuration.models.providers.openai.models = [{ id: "another" }];
+    },
+    // OpenClaw merges rows whose ids match after trimming, so this unselected row would give
+    // the selected model its endpoint.
+    (configuration) => {
+      configuration.models.providers.openai.models.push({
+        id: " model",
+        baseUrl: "https://other.example.test/v1",
+      });
+    },
+  ]) {
+    await assert.rejects(attachNative(change), {
+      message:
+        "Dedicated native OpenClaw model endpoints must match the bound credential source endpoint.",
+    });
   }
   assert.deepEqual(
     await f.driver.attachForRevision({

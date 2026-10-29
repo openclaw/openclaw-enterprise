@@ -8,6 +8,30 @@ This record preserves the dated changes to the Agent repository credential flow.
 
 ## Changelog
 
+- 2026-10-29 18:00: Hold a native deployment until its first GitHub token commits; on a quarantined token fail a new Agent's deployment and keep an existing Agent's new version running. (finding 2415, finding 2425)
+
+- 2026-10-29 14:26: Narrow sender binding and remove fresh legacy Git composition. (authoring-run/c31ef130-d72e-46b4-93b5-a7966b286dbf - ea84f8a9595fc57e2b35bab4f9ad45f9174c8319)
+
+- 2026-10-25 00:30: Answer repository options without a repository Driver with no options and `meta.notConfigured`. (finding 2387)
+
+- 2026-10-24 22:30: Name the missing repository Driver. (fix-2361-2362 - 476c1b350)
+
+- 2026-10-22 06:30: Preserve independent authority facts and source recovery. (authoring-run/3ab680f7-bea5-4377-bb8c-14e6b81c49b4 - 221dff2ff7985a19cd34dad392d68cf5549e1136)
+
+- 2026-10-22 06:08: Distinguish definite authority loss from unavailable expiry evidence. (authoring-run/0070b799-5882-41af-9b5a-de66c2b5bd4c - 21efaa2ac0a04eb86cc45062522b5ca7551747fd)
+
+- 2026-10-22 05:40: Tighten the flow while preserving lifecycle boundaries. (authoring-run/6a3ac3a3-9ca1-4fe8-a71e-ce0445cc7840 - 6abb03f892181bfe093472a4721b8428659d245b)
+
+- 2026-10-22 05:05: Match reducible protected Git sessions to admission v7 in prepared-material selection. (authoring-run/8df2bc1b-5c23-4628-8351-ed2e23b279bf - 4c2054cd056be2d70b6343babeeea411d6aaf873)
+
+- 2026-10-22 04:11: Trace selected registered delivery reconciliation. (authoring-run/13ded5bb-8707-46f5-8aa3-7a334529d124 - f4a2ca6139625059f1f8c58855f6343864ee7528)
+
+- 2026-10-22 02:32: Require prepared authority at native OPEN, durable receipt and release; reject legacy controller selection. (authoring-run/b8149a96-d1dc-4681-8930-7d5434fbf1e3 - 2fca4e18d905f7bf760d0da70cb916f20186169e)
+
+- 2026-10-21 22:49: Separate repository policy, protected composition and explicit native session ownership. (authoring-run/fb0df3aa-3a65-40ec-9da0-20de1db91b2f - 41137910011b9c4fc1a713b234a92c87a6717e3f)
+
+- 2026-10-21 22:10: Document standing Git supervision with the accompanying uncommitted worker change. (authoring-run/5f4d0dab-1a03-4fa9-a469-a8778c8ad3d4 - 390a3627b97535f4d21107001efda8af6152355d)
+
 - 2026-10-17 06:00: Keep joiners in words and emoji and the three subdivision flags in repository descriptions. (lows-1017h - 49397a014)
 
 - 2026-10-17 05:00: Replace invisible and bidi characters in repository descriptions; escape them in the picker. (lows-1017g - 3a02bef00)

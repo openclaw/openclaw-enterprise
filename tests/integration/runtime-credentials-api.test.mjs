@@ -466,20 +466,18 @@ test("Kubernetes without managed runtime credentials admits a draft deployment",
   assert.equal(admitted.data.revision, 1);
 });
 
-test("Kubernetes deploy names an unsupported Harness authentication model provider", async () => {
+test("Kubernetes deploy names an unconfigured Harness authentication model provider", async () => {
   const fixture = await createFixture({ computeDriver: createKubernetesComputeDriver() });
   const { namespace, agent } = await fixture.bootstrapAgent();
   const values = createHarnessConfiguration("openclaw", "gpt-4.1");
-  const { openai } = values.models.providers;
   values.agents.defaults = {
     model: "zai/glm-5",
     models: { "zai/glm-5": { agentRuntime: { id: "openclaw" } } },
   };
-  values.models.providers = {
-    zai: { ...openai, models: [{ ...openai.models[0], id: "glm-5", name: "glm-5" }] },
-  };
-  // The Configuration alone is valid: only the Agent's api_key binding, which the Kubernetes
-  // Driver projects only for providers it knows, makes the pair undeliverable.
+  // A custom provider needs an explicit catalog and credential reference. Keep this
+  // unsupported-binding scenario unconfigured; configured providers are supported.
+  values.models.providers = {};
+  // The draft Configuration can be stored, but its model has no deliverable provider.
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const stored = await fixture.request("GET", agentPath);
   const replaced = await fixture.request(
@@ -513,6 +511,46 @@ test("Kubernetes deploy names an unsupported Harness authentication model provid
   assert.equal(created.body.error.message, message);
   // The stored Agent still reads.
   assert.equal((await fixture.request("GET", agentPath)).status, 200);
+});
+
+test("Kubernetes names a model provider reference the startup model check cannot resolve", async () => {
+  const fixture = await createFixture({ computeDriver: createKubernetesComputeDriver() });
+  const { namespace, agent } = await fixture.bootstrapAgent();
+  const values = createHarnessConfiguration("openclaw", "gpt-4.1");
+  values.models.providers.openai.baseUrl = "${MODEL_HOST}";
+  // Configuration save accepts the reference: another Compute's runtime may resolve it.
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const stored = await fixture.request("GET", agentPath);
+  const replaced = await fixture.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${stored.data.configurationId}`,
+    { body: { values } },
+  );
+  assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+  // Kubernetes probes the model with only the api_key binding's credential, so deploy and the
+  // Agent's saves name the setting and the reason, not a generic topology conflict (finding 2828).
+  const message =
+    "Configuration setting models.providers.openai.baseUrl must not hold an environment or Secret reference: the startup model check on Kubernetes gets only the Harness credential.";
+  const refused = (response) => {
+    assertApiError(response, 400, "INVALID_REQUEST");
+    assert.equal(response.body.error.message, message);
+  };
+  refused(await fixture.request("POST", `${agentPath}/deploy`));
+  refused(
+    await fixture.request("PATCH", agentPath, {
+      body: { configurationId: stored.data.configurationId },
+    }),
+  );
+  refused(
+    await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+      body: {
+        name: "Probe reference Agent",
+        configurationId: stored.data.configurationId,
+        executionMode: "embedded",
+        harnessAuth: stored.data.harnessAuth,
+      },
+    }),
+  );
 });
 
 test("Kubernetes names a Harness authentication method the execution mode cannot use, at save and deploy", async () => {

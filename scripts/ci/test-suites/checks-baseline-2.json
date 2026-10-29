@@ -4,6 +4,7 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
+    "tests/integration/controlled-tls-origin.test.ts",
     "tests/integration/ci-prepare-k3d.test.mjs",
     "tests/integration/ci-prepare.test.mjs",
     "tests/conformance/repository-credentials-source-boundary.test.mjs",
@@ -23,15 +24,18 @@
     "tests/integration/repository-credential-operator-recovery.test.ts",
     "tests/integration/repository-receipt-observation.test.ts",
     "tests/integration/codex-plugin-startup-reads.test.mjs",
+    "tests/integration/codex-plugin-preparation.test.ts",
     "tests/integration/container-release.test.mjs",
     "tests/integration/password-sign-in-audit.test.mjs",
     "tests/integration/ci-impact-gate.test.mjs",
     "tests/integration/console-provisioning-request.test.ts",
     "tests/integration/console-theme.test.ts",
+    "tests/integration/console-storybook-workflow.test.ts",
     "tests/integration/workspace-setup-api.test.mjs",
     "tests/integration/agent-create-validate-api.test.mjs",
     "tests/integration/repository-credentials-service-loss.test.mjs",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/local-first-agent-session-identity.test.ts",
     "tests/integration/k3d-launcher.test.mjs",
     "tests/integration/password-sign-in-admission.test.mjs",
     "tests/integration/google-login-transport.test.mjs",
@@ -119,6 +123,7 @@
     "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
+    { "path": "tests/integration/controlled-tls-origin.test.ts" },
     {
       "path": "tests/integration/tls-peer-certificate.test.mjs"
     },
@@ -174,6 +179,9 @@
         "before-commit Compute Drivers must expose an activation operation",
         "Compute Driver maintenance intervals must be positive safe integers"
       ]
+    },
+    {
+      "path": "tests/integration/local-first-agent-session-identity.test.ts"
     },
     {
       "path": "tests/integration/ci-runner.test.mjs"
@@ -334,6 +342,9 @@
       "path": "tests/integration/console-theme.test.ts"
     },
     {
+      "path": "tests/integration/console-storybook-workflow.test.ts"
+    },
+    {
       "path": "tests/integration/workspace-setup-api.test.mjs"
     },
     {
@@ -481,6 +492,12 @@
     },
     {
       "path": "tests/integration/codex-plugin-startup-reads.test.mjs"
+    },
+    {
+      "path": "tests/integration/codex-plugin-preparation.test.ts",
+      "expectedTests": [
+        "Codex no-account preparation uses its supplied caller for disable and readback"
+      ]
     },
     {
       "path": "tests/integration/kubernetes-peer-status.test.mjs",

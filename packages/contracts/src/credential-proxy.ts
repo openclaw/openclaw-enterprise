@@ -21,12 +21,11 @@ import type {
   PreparedTokenSource,
   PreparedTokenEvidence,
 } from "./prepared-token.ts";
+import type { Driver, DriverRegistrationRef } from "./driver.ts";
 import type {
   AgentRevision,
   CredentialSource,
   CredentialSourceType,
-  Driver,
-  DriverRegistrationRef,
   HarnessAuthSnapshot,
   Namespace,
   RepositoryRevisionState,

@@ -145,6 +145,39 @@ A line never carries the session credential,
 a token, a URL or a ref. Unauthenticated requests are part of Git's normal authentication and
 are not logged.
 
+## Deployment and the first token
+
+The worker asks GitHub for a version's first token only after it publishes that
+version as active. The deployment stays in progress at
+`REPOSITORY_GIT_MATERIAL_PENDING` until the token is committed, usually a few
+seconds later. If the request fails, the worker quarantines that version's
+preparation and never prepares it again. The request fails when GitHub rejects
+the App key or the registry names the wrong App or installation, and also when
+GitHub is unreachable, does not answer within 25 seconds, or its answer is lost.
+The deployment then fails at once with `REPOSITORY_GIT_TOKEN_QUARANTINED`, and
+the worker log names the revision and `repositoryRef`
+(`PREPARED_GITHUB_RECOVERY_REQUIRED`). What happens to the version then depends
+on the Agent:
+
+| Agent                                                       | Result                                                                                                                                                                                                             |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| New: no earlier version was activated by its own deployment | The controller retires the failed version and stops its runtime. The Agent has no running version until a deployment succeeds.                                                                                     |
+| Existing: an earlier version was activated                  | The failed version keeps running without Git, so users can still chat with the Agent and it can report the problem. Its maintenance continues. The earlier version stopped serving when the new one was published. |
+
+A version stopped or superseded before activation does not make the Agent
+existing. A token can also stay pending until the deployment's convergence
+deadline, for example when the worker cannot read the App key after a Secret
+rotation, restarts during a request, or the issuer changes. A new Agent's
+deployment then fails with `CONVERGENCE_DEADLINE_EXCEEDED` and its version is
+retired. An existing Agent's deployment fails with
+`REPOSITORY_GIT_TOKEN_PENDING` and the version keeps running as in the table.
+If the token is committed later, that version gets Git. Ask an Installation
+administrator to correct the key or registry, then deploy a new version; if both
+are correct, deploy a new version. See [replace a rejected App key](../../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+
+This check runs only for a deployment. A running version whose token renewal
+fails reports it only in the worker log.
+
 ## Change the issuer
 
 Changing the worker's GitHub API origin or issuer CA (`issuerCaPath`), for example

@@ -29,7 +29,7 @@ there is no fallback to environment delivery.
 
 ### Core interface
 
-The [shared interface](../../../packages/contracts/src/index.ts) requires every
+The [shared interface](../../../packages/contracts/src/credential-gateway.ts) requires every
 method below. Startup rejects a Driver that omits one.
 
 | Operation              | Inputs and preconditions                                                                         | Result or side effects                                                                                                                                         | Failure or absence                                                                     |
@@ -84,6 +84,10 @@ through a credential source. It is a receiving contract for a Credential
 Gateway and paired Sandbox that already provide OAuth token injection. The
 experimental OpenShell `codex-oauth` type requires the upstream gateway API and
 alias-enabled supervisor described in the [OpenShell Driver reference](openshell-credential-gateway.md#experimental-codex-oauth-poc).
+
+For an OAuth attachment used by a managed request guard, `requestScope` carries
+the provider’s host, port, path and configured OAuth scopes to the paired Sandbox.
+The Sandbox uses these non-secret limits when it prepares the revision’s request policy.
 
 For an `openai`/`chatgptAuthTokens` source, `attachForRevision` must return
 `externalChatgptAuth` on the source's attachment: `accessTokenPlaceholder`,

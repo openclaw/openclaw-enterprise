@@ -1228,18 +1228,13 @@ export async function loadInstallationConfiguration(options: {
         : options.createSandboxDriver !== undefined
           ? validateCreatedSandboxDriver(options.createSandboxDriver(sandbox, openShell), sandbox)
           : sandboxPackage === undefined
-            ? (() => {
-                const capabilities = createOpenShellCapabilities({
-                  sandbox,
-                  backend: openShell!,
-                  operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
-                  createSandbox: (configuration, selection) =>
-                    new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection),
-                  repository: repositoryDelivery,
-                });
-                repositoryTransport = capabilities.repositoryTransport;
-                return capabilities.sandbox;
-              })()
+            ? createOpenShellCapabilities({
+                sandbox,
+                backend: openShell!,
+                operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
+                createSandbox: (configuration, selection) =>
+                  new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection),
+              }).sandbox
             : (createExternalDriver(sandboxPackage.module, sandbox, "sandbox") as SandboxDriver);
   }
   const credentialRefreshDriver =

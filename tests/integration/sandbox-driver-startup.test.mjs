@@ -1,3 +1,4 @@
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
@@ -73,6 +74,7 @@ import {
   reservePort,
 } from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const controllerRequire = createRequire(
@@ -872,6 +874,16 @@ test("OpenShell refuses dedicated OpenClaw on settings its workspace preparation
     const options = sandboxInstallation().drivers.sandbox.configuration;
     settings(options);
     const driver = openShellDriver(workspaceGatewayClient(), options);
+    assert.deepEqual(driver.supportsHarnessExecutionMode.openclaw, {
+      embedded: { supported: false },
+      dedicated:
+        message === undefined ? { supported: true } : { supported: false, reason: message },
+    });
+    assert.throws(() => {
+      driver.supportsHarnessExecutionMode.openclaw.dedicated.supported = false;
+    }, TypeError);
+    // A caller's later mutation cannot change the constructed Driver's support decision.
+    options.kubernetes.userNamespaces = !options.kubernetes.userNamespaces;
     if (message === undefined) {
       assert.ok(driver.configureAgent(configuration, harness("openclaw")));
     } else {
@@ -1070,6 +1082,209 @@ test("OpenShell admits initial files only for its projected main workspace", () 
       /require a dedicated Codex or OpenClaw Harness/,
     );
   }
+});
+
+const negotiatedGoogleGuard = () => ({
+  kind: 4,
+  configured_name: "oce-plugin-requests",
+  implementation_name: "oce/managed-plugin-requests",
+  implementation_version: managedGoogleInstall.releaseSha256,
+  protocol_major: 1,
+  supported_capabilities: ["openshell.supervisor-middleware.contract"],
+  required_capabilities: ["openshell.supervisor-middleware.contract"],
+});
+
+test("a selected Google account uses its exact provider and a signed, fail-closed worker request guard", async () => {
+  const registration = "oce-plugin-requests";
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway.managedPluginMiddleware = "https://authority.test:443";
+  const client = workspaceGatewayClient();
+  const driver = openShellDriver(client, configuration);
+  const { context, revision, requirements } = runtimeSandboxFixture(driver, {
+    harnessId: "openclaw",
+  });
+  const sourceId = "cs_00000000-0000-4000-8000-000000000005";
+  revision.plugins = {
+    driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+    plugins: {
+      [managedGoogleInstall.id]: {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: managedGoogleInstall.releaseSha256,
+          credentials: { account: sourceId },
+        },
+      },
+    },
+  };
+  const requestScope = {
+    host: "gmail.googleapis.com",
+    port: 443,
+    path: "/gmail/v1/users/me/messages",
+    scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+  };
+  requirements.credentialAttachments = [
+    { sourceId, ref: openShellProviderName(sourceId), requestScope },
+  ];
+  const otherId = "cs_00000000-0000-4000-8000-000000000006";
+  const other = { sourceId: otherId, ref: openShellProviderName(otherId) };
+  requirements.credentialAttachments.push(other);
+  const provision = () => driver.provisionHarness({ ...context, revision, requirements });
+  let created;
+  let observedGuard = true;
+  const credentialedHosts = new Set();
+  let endpoint = configuration.gateway.managedPluginMiddleware;
+  const provider = "_provider_" + openShellProviderName(sourceId).replaceAll("-", "_");
+  const providerRule = {
+    name: provider,
+    binaries: [{ path: managedGoogleInstall.binaryPath }],
+    endpoints: [
+      {
+        host: "gmail.googleapis.com",
+        port: 443,
+        path: "/gmail/v1/users/me/messages",
+        protocol: "rest",
+        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+        access: "NETWORK_ACCESS_PRESET_READ_WRITE",
+        provider_credentialed: true,
+      },
+    ],
+  };
+  const independentProvider = {
+    name: "_provider_independent",
+    binaries: [{ path: "/usr/bin/curl" }],
+    endpoints: [{ host: "independent.example", ports: [8443], provider_credentialed: true }],
+  };
+  client.createSandbox = async ({ name, workspace, labels, annotations, spec }) => {
+    created = { name, workspace, labels, annotations, spec, serviceUrls: {} };
+    return created;
+  };
+  client.getSandbox = async () => created;
+  client.getSandboxConfig = async (workspace) => ({
+    workspace,
+    policy_source: 1,
+    configuration_admitted: true,
+    policy_validation_failure_mode: "fail_closed",
+    extension_authentication_enabled: true,
+    supervisor_middleware_services: [
+      {
+        name: registration,
+        grpc_endpoint: endpoint,
+        audience: "urn:openshell:extension:middleware:" + registration,
+      },
+    ],
+    policy: {
+      ...created.spec.policy,
+      network_policies: {
+        ...created.spec.policy.network_policies,
+        "oce-google-requests": {
+          ...created.spec.policy.network_policies["oce-google-requests"],
+          endpoints: created.spec.policy.network_policies["oce-google-requests"].endpoints.map(
+            (ep) => (credentialedHosts.has(ep.host) ? { ...ep, provider_credentialed: true } : ep),
+          ),
+        },
+        [provider]: providerRule,
+        [independentProvider.name]: independentProvider,
+      },
+      ...(!observedGuard && { network_middlewares: {} }),
+    },
+  });
+  await driver.ensureNamespace(context);
+  const wrong = (requireOwner) =>
+    driver.provisionHarness({
+      ...context,
+      revision,
+      requirements: { ...requirements, credentialAttachments: requireOwner },
+    });
+  await assert.rejects(wrong([]), /selected OpenShell provider/);
+  const service = negotiatedGoogleGuard();
+  client.getGatewayInfo = async () => ({ extensions: [service] });
+  service.implementation_name = "other/response-only";
+  await assert.rejects(provision, /has not negotiated/);
+  assert.equal(created, undefined);
+  assert.equal(client.providers.size, 0);
+  assert.equal(client.profiles.size, 0);
+  Object.assign(service, negotiatedGoogleGuard());
+  revision.sandboxPolicy = {
+    defaults: {},
+    additions: [
+      {
+        id: "wide",
+        host: "gmail.googleapis.com",
+        ports: [{ from: 443, to: 443 }],
+        binary: "/usr/bin/curl",
+      },
+    ],
+  };
+  await assert.rejects(provision, /bypass the managed plugin/);
+  delete revision.sandboxPolicy;
+  await provision();
+  assert.ok(created.spec.providers.includes(openShellProviderName(sourceId)));
+  assert.equal(created.spec.environment.OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV, "GOG_ACCESS_TOKEN");
+  assert.equal(created.spec.environment.GOG_ACCESS_TOKEN, undefined);
+  const guard = created.spec.policy.network_middlewares[registration];
+  assert.equal(guard.config.fields.binding_id.stringValue, managedGoogleInstall.releaseSha256);
+  assert.equal(guard.on_error, "fail_closed");
+  assert.deepEqual(guard.endpoints.include, ["gmail.googleapis.com", "www.googleapis.com"]);
+  const rule = created.spec.policy.network_policies["oce-google-requests"];
+  assert.deepEqual(rule.binaries, [{ path: managedGoogleInstall.binaryPath }]);
+  assert.deepEqual(rule.endpoints[0].rules[0].allow, {
+    method: "GET",
+    path: "/gmail/v1/users/me/messages",
+  });
+  assert.deepEqual(
+    rule.endpoints[1].rules.map(({ allow }) => allow.path),
+    ["/discovery/v1/apis", "/discovery/v1/apis/gmail/v1/rest"],
+  );
+  independentProvider.endpoints[0].host = "gmail.googleapis.com";
+  await assert.rejects(provision, /Another credential provider uses a guarded Google host/);
+  independentProvider.endpoints[0].host = "independent.example";
+  providerRule.endpoints[0].path = "/**";
+  await assert.rejects(provision, /exact Google provider route/);
+  providerRule.endpoints[0].path = "/gmail/v1/users/me/messages";
+  endpoint = "https://other.test:443";
+  await assert.rejects(provision, /has not admitted.*request guard/);
+  endpoint = configuration.gateway.managedPluginMiddleware;
+  observedGuard = false;
+  await assert.rejects(provision, /has not admitted.*request guard/);
+  observedGuard = true;
+
+  // For a host-wide source, stock OpenShell also marks the matching operation
+  // endpoint credentialed in GetSandboxConfig. The saved CreateSandbox spec stays raw.
+  requestScope.path = "/**";
+  providerRule.endpoints[0].path = "/**";
+  created = undefined;
+  await assert.rejects(provision, /pinned Google request routes/);
+  credentialedHosts.add(requestScope.host);
+  await provision();
+  assert.ok(
+    created.spec.policy.network_policies["oce-google-requests"].endpoints.every(
+      (ep) => ep.provider_credentialed === undefined,
+    ),
+  );
+  credentialedHosts.add("www.googleapis.com");
+  await assert.rejects(provision, /pinned Google request routes/);
+  credentialedHosts.delete("www.googleapis.com");
+
+  // The worker dispatches the same admitted revision without the withdrawn tool source.
+  revision.credentialSources = [
+    { sourceId, credentialGatewayId: "openshell", sourceType: "oauth2-refresh-token" },
+    { sourceId: otherId, credentialGatewayId: "openshell", sourceType: "bearer-token" },
+  ];
+  requirements.credentialAttachments = [other];
+  await assert.rejects(provision, /exact AgentRevision ownership and content/);
+  // OpenShell's detach removes the provider from a standing Sandbox. Its immutable launch
+  // environment and policy still describe the original request. It can be safely adopted.
+  created.spec.providers = created.spec.providers.filter(
+    (ref) => ref !== openShellProviderName(sourceId),
+  );
+  await provision();
+  created = undefined;
+  await provision();
+  assert.ok(created.spec.providers.includes(other.ref));
+  assert.ok(!created.spec.providers.includes(openShellProviderName(sourceId)));
+  assert.equal(created.spec.environment.OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV, undefined);
+  assert.equal(created.spec.policy.network_middlewares?.[registration], undefined);
+  assert.equal(created.spec.policy.network_policies["oce-google-requests"], undefined);
 });
 
 test("OpenShell provisions native OpenClaw without exposing an inbound Harness service", async () => {
@@ -1520,6 +1735,47 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
     throw refusal(7);
   };
   await unauthorized(true);
+});
+
+test("OpenShell withdrawal preserves cancellation before provider lookup", async (t) => {
+  const client = new GrpcOpenShellGatewayClient({ endpoint: "http://127.0.0.1:1" });
+  const initialize = t.mock.method(client, "createClient", async () => {
+    throw new Error("Cancelled withdrawal must not initialize the provider client.");
+  });
+  const sandbox = openShellDriver(client);
+  const { context, revision } = runtimeSandboxFixture(sandbox, { harnessId: "openclaw" });
+  const compute = new KubernetesComputeDriver(
+    conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["127.0.0.1/32"] }),
+    { sandboxDriver: sandbox },
+  );
+  revision.compute = { id: compute.id, implementation: compute.implementation };
+  const caller = new AbortController();
+  const reason = new Error("stop withdrawal during namespace lookup");
+  const objects = kubernetesObjectClient([]);
+  // Control only Kubernetes IO: retain the real context/signal composition, Sandbox
+  // withdrawal, identity wrapper, getService and unary cancellation checks.
+  Object.assign(compute, {
+    apiClients: Promise.resolve({ objects }),
+    executionApiClients: Promise.resolve({ objects }),
+    resolveNamespace: async () => ({
+      name: { name: context.namespace.name, plane: "execution" },
+      external: false,
+    }),
+    getNamespace: async () => {
+      assert.equal(caller.signal.aborted, false);
+      caller.abort(reason);
+      // A missing namespace still requires provider confirmation of withdrawal.
+      return undefined;
+    },
+  });
+  await assert.rejects(
+    compute.withdrawHarnessExposure(revision, caller.signal),
+    (error) => error === reason,
+  );
+  // Include the next event-loop turn: no late setup may dispatch a provider read
+  // or deletion after the withdrawal has rejected. Cold RPCs require initialization.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(initialize.mock.callCount(), 0);
 });
 
 // Finding 1642: a native worker that holds a failed model check never connects its node.
@@ -2479,8 +2735,8 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   // when an operator chooses a path other than the development default.
   options.kubernetes.sandboxDataMount.mountPath = "/sandbox/custom-workspace";
   const driver = openShellDriver(gatewayClient, options);
-  // Same-cluster Compute with the in-cluster Envoy route hostname the k3d OpenShell
-  // profile uses; the node's setup URL is the one Compute derives for that route.
+  // Exercise Sandbox delivery with a supported scoped node URL on the in-cluster
+  // Envoy hostname used by the k3d profile. Live first-Agent proof covers enrollment.
   const routeHost = "occ-gateway-0123456789ab.envoy-gateway-system.svc.cluster.local";
   const computeOptions = conformanceKubernetesOptions({
     gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
@@ -2502,12 +2758,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   );
   const { context, revision, requirements, runtimeManifest, codexConfig, nodeSetup } =
     runtimeSandboxFixture(driver, {
-      nodeSetupUrl: (target, { namespace }) =>
-        compute.workspaceNodeConnectionUrl(
-          target,
-          { name: namespace.name, plane: "execution" },
-          compute.getGatewayEndpoint(target),
-        ),
+      nodeSetupUrl: (target) => `${compute.getGatewayEndpoint(target)}/node`,
     });
   // Account fields are opaque claims, even when their text resembles a Harness path.
   const account = {
@@ -3370,14 +3621,14 @@ test("OpenShell rejects unsupported or foreign Codex runtime providers before Sa
       expected: /requires its exact bounded plugin-runtime files/,
     },
     {
-      name: "selected plugin",
+      name: "non-Codex manifest",
       fixture: {
         runtimeManifest: JSON.stringify({
-          kind: "codex",
-          selections: { slack: { enabled: true } },
+          kind: "openclaw",
+          selections: {},
         }),
       },
-      expected: /does not yet support selected plugins/,
+      expected: /requires a Codex plugin-runtime manifest/,
     },
     {
       name: "foreign provider collision",
@@ -4235,7 +4486,11 @@ test("shipped startup names a rejected OpenShell policy without logging its name
  * which credential source owns it; the gateway may act only on its own source's provider.
  * Kept beside the OpenShell Sandbox cases: both members come from one OpenShell Backend.
  */
-function credentialGatewayOverProviders({ keepDeleted = false, toolBinaries } = {}) {
+function credentialGatewayOverProviders({
+  keepDeleted = false,
+  toolBinaries,
+  refresh = false,
+} = {}) {
   const providers = new Map();
   const profiles = new Map();
   const deletedProfiles = [];
@@ -4296,7 +4551,10 @@ function credentialGatewayOverProviders({ keepDeleted = false, toolBinaries } = 
       { binaries, ...(toolBinaries === undefined ? {} : { toolBinaries }) },
       {
         backend: {
-          drivers: { credential_gateway: "credential-gateway-openshell" },
+          drivers: {
+            credential_gateway: "credential-gateway-openshell",
+            ...(refresh && { credential_refresh: "credential-refresh-openshell" }),
+          },
           client: { clientForNamespace: () => client, placement: () => undefined },
         },
       },
@@ -4311,6 +4569,7 @@ function credentialGatewayOverProviders({ keepDeleted = false, toolBinaries } = 
     type: "openai",
     config: {},
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: driver.id,
     state: "ready",
   });
@@ -4350,7 +4609,7 @@ async function ready(operation) {
   assert.deepEqual(await operation, { state: "ready" });
 }
 
-test("Codex PAT profiles admit native startup without granting the whole backend", async () => {
+test("Codex PAT profiles restrict native startup and plugin routes", async () => {
   const { context, driver, profiles } = credentialGatewayOverProviders();
   const source = context("cs_00000000-0000-4000-8000-0000000000c1");
   await driver.registerSource(
@@ -4358,8 +4617,8 @@ test("Codex PAT profiles admit native startup without granting the whole backend
     { type: "codex-pat", config: {}, secrets: { access_token: "synthetic-codex-pat" } },
   );
   const [profile] = profiles.values();
-  // These are the pinned Codex dependency's startup, turn and usage-recovery routes. A broader backend
-  // or WHAM wildcard would release this credential to unrelated account APIs.
+  // The native client needs plugin installation, app metadata and MCP transport.
+  // Backend or WHAM wildcards would also admit unrelated account APIs.
   assert.deepEqual(profile.endpoints, [
     {
       host: "auth.openai.com",
@@ -4372,6 +4631,30 @@ test("Codex PAT profiles admit native startup without granting the whole backend
     { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/accounts/check" },
     { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/settings/user" },
     { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/usage" },
+    {
+      host: "chatgpt.com",
+      port: 443,
+      protocol: "rest",
+      path: "/backend-api/ps/plugins/**",
+      rules: [
+        { allow: { method: "GET", path: "/backend-api/ps/plugins/*" } },
+        { allow: { method: "POST", path: "/backend-api/ps/plugins/*/install" } },
+      ],
+    },
+    {
+      host: "chatgpt.com",
+      port: 443,
+      protocol: "rest",
+      path: "/backend-api/ps/apps/batch",
+      rules: [{ allow: { method: "POST", path: "/backend-api/ps/apps/batch" } }],
+    },
+    {
+      host: "chatgpt.com",
+      port: 443,
+      protocol: "rest",
+      path: "/backend-api/ps/mcp",
+      rules: [{ allow: { method: "POST", path: "/backend-api/ps/mcp" } }],
+    },
   ]);
   assert.deepEqual(profile.binaries, ["/usr/local/bin/codex"]);
 });
@@ -4653,6 +4936,88 @@ test("OpenShell credential source removal fails while the provider survives dele
   await driver.registerSource(context(owner), input());
   await assert.rejects(driver.removeSource(context(owner)), /was not deleted/);
   assert.equal(providers.size, 1);
+});
+
+test("Google requires an OAuth source whose effective binary list is exactly the pinned executable", async () => {
+  const pinned = managedGoogleInstall.binaryPath;
+  const other = "/usr/bin/curl";
+  const sourceId = "cs_00000000-0000-4000-8000-0000000000e9";
+  const config = {
+    host: "gmail.googleapis.com",
+    path: "/gmail/v1/users/me/messages",
+    token_url: "https://oauth2.googleapis.com/token",
+    scope: "https://www.googleapis.com/auth/gmail.readonly",
+    client_id: "test-client",
+    env_var: "GOG_ACCESS_TOKEN",
+  };
+  for (const [list, binary, acceptable] of [
+    [[pinned], undefined, true],
+    [[pinned, other, "/opt/tools/*"], pinned, true],
+    [[pinned, other], undefined, false],
+  ]) {
+    const f = credentialGatewayOverProviders({ toolBinaries: list, refresh: true });
+    const context = f.context(sourceId);
+    const source = {
+      ...context.source,
+      type: "oauth2-refresh-token",
+      config: { ...config, ...(binary && { binary }) },
+    };
+    const register = (config) =>
+      f.driver.registerSource({ ...context, source }, { type: source.type, config, secrets: {} });
+    for (const invalid of ["/tmp/other", "/opt/tools/*"]) {
+      await assert.rejects(
+        register({ ...source.config, binary: invalid }),
+        /installation toolBinaries/,
+      );
+    }
+    assert.deepEqual(f.profileWrites, []);
+    await register(source.config);
+    assert.deepEqual(
+      f.profiles.get(openShellProviderName(sourceId)).binaries,
+      binary ? [binary] : list,
+    );
+    const attachment = f.revisionContext([source]);
+    attachment.revision.plugins = {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      plugins: {
+        [managedGoogleInstall.id]: {
+          enabled: true,
+          driverPolicy: {
+            releaseSha256: managedGoogleInstall.releaseSha256,
+            credentials: { account: sourceId },
+          },
+        },
+      },
+    };
+    if (acceptable) {
+      const service = negotiatedGoogleGuard();
+      f.client.getGatewayInfo = async () => ({ extensions: [service] });
+      service.implementation_version = "old-release";
+      await assert.rejects(f.driver.attachForRevision(attachment), /has not negotiated/);
+      Object.assign(service, negotiatedGoogleGuard());
+      assert.deepEqual(await f.driver.attachForRevision(attachment), [
+        {
+          sourceId,
+          ref: openShellProviderName(sourceId),
+          requestScope: {
+            host: "gmail.googleapis.com",
+            port: 443,
+            path: "/gmail/v1/users/me/messages",
+            scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+          },
+        },
+      ]);
+    } else {
+      await assert.rejects(
+        f.driver.attachForRevision(attachment),
+        /grant only the pinned Google executable/,
+      );
+    }
+    assert.deepEqual(
+      f.profileWrites.map(([operation]) => operation),
+      ["import"],
+    );
+  }
 });
 
 test("the OpenShell bearer-token type exists only with toolBinaries and validates its endpoint", async () => {
@@ -5161,6 +5526,60 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
     /managed workspace mode is not implemented; cannot observe a Harness/,
   );
   assert.deepEqual(observed, []);
+
+  // Even an already-cancelled lookup must not initialize a cold gRPC client.
+  const cold = new GrpcOpenShellGatewayClient({ endpoint: "http://127.0.0.1:1" });
+  cold.createClient = async () => assert.fail("cancelled status initialized the client");
+  const cancelled = new Error("cancel Harness observation");
+  await assert.rejects(
+    openShellDriver(cold).harnessStatus({
+      ...statusContext,
+      signal: AbortSignal.abort(cancelled),
+    }),
+    (error) => error === cancelled,
+  );
+
+  // Cancellation can arrive after a Gateway read completes but before its result
+  // reaches the Driver. Do not accept that result or begin another read.
+  for (const [operation, serving, reject] of [
+    ["getService", false, false],
+    ["serviceWebSocketHandshake", true, false],
+    ["serviceWebSocketHandshake", false, false],
+    ["getServiceDocument", false, false],
+    ["serviceWebSocketHandshake", false, true],
+  ]) {
+    handshake = serving;
+    observed.length = 0;
+    const caller = new AbortController();
+    const reason = new DependencyUnavailableError("cancel Harness observation");
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const original = gatewayClient[operation];
+    gatewayClient[operation] = async (...args) => {
+      const result = await original(...args);
+      entered.resolve();
+      await release.promise;
+      if (reject) {
+        throw reason;
+      }
+      return result;
+    };
+    try {
+      const rejected = assert.rejects(
+        driver.harnessStatus({ ...statusContext, signal: caller.signal }),
+        (error) => error === reason,
+      );
+      await entered.promise;
+      const beforeAbort = [...observed];
+      caller.abort(reason);
+      release.resolve();
+      await rejected;
+      assert.deepEqual(observed, beforeAbort, `${operation} started another read`);
+    } finally {
+      release.resolve();
+      gatewayClient[operation] = original;
+    }
+  }
 });
 
 test("OpenShell startup admits exactly the endpoints both consumers can parse and dial", async (t) => {
@@ -5449,12 +5868,9 @@ test("observed-hook preview recognizes a released Codex through its authenticate
     response.writeHead(status);
     response.end("WebSocket upgrade required");
   });
-  const sockets = new Set();
   server.on("upgrade", (request, socket) => {
     upgrades++;
-    sockets.add(socket);
     socket.on("error", () => {});
-    socket.once("close", () => sockets.delete(socket));
     if (!serving || request.headers.authorization !== `Bearer ${token}`) {
       socket.end("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
       return;
@@ -5467,17 +5883,10 @@ test("observed-hook preview recognizes a released Codex through its authenticate
         `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => {
-    for (const peer of sockets) {
-      peer.destroy();
-    }
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
-  const transport = new GrpcOpenShellGatewayClient({
-    endpoint: `http://127.0.0.1:${server.address().port}`,
-  });
+  // listen() closes the server when the test ends, after destroying every connection,
+  // including the upgraded sockets the HTTP server no longer tracks.
+  const port = await listen(t, server);
+  const transport = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
   t.after(() => transport.close());
   const gateway = workspaceGatewayClient();
   gateway.getServiceDocument = (...args) => transport.getServiceDocument(...args);
@@ -6304,8 +6713,8 @@ test(
       ...fragment.repository.openShell.authority,
       host: "127.0.0.1",
       port,
-      certificatePath: join(tls.directory, "server.pem"),
-      privateKeyPath: join(tls.directory, "server.key"),
+      certificatePath: tls.certPath,
+      privateKeyPath: tls.keyPath,
       issuerPublicKeyPath: publicKeyPath,
       issuer: "https://gateway.example.test",
       audience: "online-authorizer",

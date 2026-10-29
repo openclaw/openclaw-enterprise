@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-10-26
-last_updated_session: create-deployment-superseded
+updated: 2026-10-29
+last_updated_session: authoring-run/c2280447-76aa-4fbf-8243-bc452c961d6d
 ---
 
 # Agent provisioning flow
@@ -73,6 +73,10 @@ For a draft, Console creates the Configuration and Agent, then grants access to 
 `packages/occ/src/index.ts:OpenClawController.provisionAgent`
 
 `apps/controller/src/http/agents.ts:createAgentHandlers` receives schema-validated inputs after shared admission. It supplies the Namespace from the route and creates the audit event inside the controller transaction.
+
+For Harness authentication from a credential source, OCC reads the catalog entry
+from the recorded Gateway. Compute validates that same entry and its login mode
+for this admission. A later provisioning request reads the catalog again.
 
 OCC first authorizes Agent `create`, Configuration `create` and Installation `administer` for the Namespace, as status and retry do, so a caller without them gets `403` whatever the body says. It then validates the accepted Configuration, references, workspace inputs, supported execution mode and current authority, then refuses a taken Agent name with Agent create's `409`. Reserved Secret destinations, cross-Namespace Secret references, and missing or `runtime` Harness authentication give `400 INVALID_REQUEST` naming the rule; a Secret absent from the Namespace stays `404`. Before the Compute plan check, a Secret binding gets Agent save's Harness authentication check and its named `400`.
 
@@ -149,7 +153,7 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 ## Debugging and Verification
 
 - Poll `data.provisioning.url` or `GET /namespaces/:namespaceId/agents/provision/:workId`; failed work reports a safe error. Status checks stored ownership and provisioning grants, while retry also revalidates the accepted plan. See [admission](#2-occ-admits-one-job) for refusal rules. Explicit pre-handoff retry uses the same URL plus `/retry` and an empty body; only the initiating actor can read or retry work. Match request IDs in `agent_provisioning.compute_refused` and `worker.completed`.
-- Status does not repeat plugin policy, runtime-image support, Compute plan validation or Harness authentication checks; retry can refuse a readable record. Missing accepted Secrets, Credential Sources or ServiceAccounts give `409`; changed selected Driver IDs or Sandbox containment can give `503`. Caller-owned Configuration refusals name the setting without its value; other Compute refusals use fixed public text. A worker refusal fails that attempt with `PROVISIONING_REJECTED` after inspecting earlier unsettled writes; an unobservable write still retries. Kubernetes provisioning requires explicit `dedicated`, because omission defaults to `embedded`. An accepted account without an access token requires the ChatGPT Backend.
+- Status does not repeat repository admission, plugin policy, runtime-image support, Compute plan validation or Harness authentication checks. If the Agent already exists, retry rechecks its repository selections before the lifecycle checks and can refuse a readable record. Missing accepted Secrets, Credential Sources or ServiceAccounts give `409`; changed selected Driver IDs or Sandbox containment can give `503`. Caller-owned Configuration refusals name the setting without its value; other Compute refusals use fixed public text. A worker refusal fails that attempt with `PROVISIONING_REJECTED` after inspecting earlier unsettled writes; an unobservable write still retries. Kubernetes provisioning requires explicit `dedicated`, because omission defaults to `embedded`. An accepted account without an access token requires the ChatGPT Backend.
 - Inspect `worker.completed`, `worker.error` and the `agent_provisioning` work metric. PostgreSQL job state lives in `occ.controller_work` and `occ.agent_provisioning_work`.
 - Use `tests/integration/postgres-agent-provisioning.test.mjs` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
 - Use Console browser coverage for channel Secret creation before provisioning, reference reuse after failure and job-to-deployment navigation. The disposable Kubernetes fixture proves actual Driver handoff, not native enrollment, model execution or Slack replies.
@@ -168,6 +172,10 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 19:27: Use the resolved credential source type for Harness admission. (authoring-run/c2280447-76aa-4fbf-8243-bc452c961d6d - d19e41caf)
+
+- 2026-10-29: Keep saved provisioning status readable after repository policy changes. Retry still checks current policy.
 
 - 2026-10-25: Name Slack's whole `${NAME}` token reading; move older entries to the history page. (finding 2512)
 - 2026-10-25: Check Configuration rules before channel credentials. (finding 2506)

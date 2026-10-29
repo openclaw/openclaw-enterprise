@@ -9,7 +9,8 @@
     "tests/integration/runtime-image-native-worker.test.mjs",
     "tests/integration/runtime-image-node-state-permissions.test.ts",
     "tests/integration/runtime-image-state-migration.test.mjs",
-    "tests/integration/runtime-image-native-listener.test.mjs"
+    "tests/integration/runtime-image-native-listener.test.mjs",
+    "tests/integration/runtime-image-codex-local-plugins.test.ts"
   ],
   "files": [
     {
@@ -49,6 +50,13 @@
       "expectedTests": [
         "runtime image refuses native listener TLS that cannot satisfy Compute HTTP readiness",
         "runtime image Kubernetes admission refuses healthy native listeners that cannot serve Pod-IP traffic"
+      ]
+    },
+    {
+      "path": "tests/integration/runtime-image-codex-local-plugins.test.ts",
+      "expectedTests": [
+        "protected Codex empty selection exposes no locally known fixture skills",
+        "stock Codex preparation loads only the selected read-only local package"
       ]
     }
   ]

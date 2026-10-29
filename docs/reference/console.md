@@ -64,12 +64,26 @@ Click an Agent name or an open area of its row to open its details. Version link
 and Stop or Delete buttons keep their separate actions. Keyboard users can Tab to
 the Agent name and press Enter.
 
+While a Namespace provisions, the Agents list checks its status every ten seconds.
+If that check no longer lists the Namespace, the Console removes its Agent rows
+and previous row feedback, and disables Create Agent. Open row confirmations close
+and focus Search Agents. The unavailable status replaces empty-list messages.
+Submitted requests report acceptance, refusal or an unknown outcome without Agent
+names or IDs and without replay. Session expiry still requires sign-in.
+Clearing search does not restore the removed rows.
+
 Opening an Agent shows its details page immediately. While it loads, **Back to
 Agents** returns to your place. A slow return to a retained page says **Still
 checking…** after one second. Refresh rebuilds; refocusing an unchanged page preserves edits,
 Slack searches, focus, and the Namespace selector; at phone width, focus in the open drawer moves to
 **Open navigation**. Views belong to one account, session, route,
 and Namespace. Sign-out, session changes, exit, or Backend denial clear them.
+
+A previously shown Configuration denial can leave Agent metadata visible after
+reload and refocus. Refocus still checks current access. If the read before a
+channel Secret save is denied, the Console clears the binding controls and keeps
+the failed attempt's message. No save is sent. After access is restored, use
+**Refresh** to read saved state before retrying.
 
 **Namespace** switches readable scopes; Namespaces omits this selector. The account menu offers
 **Settings** (the signed-in account, with **Sign out**) and **Sign out**.

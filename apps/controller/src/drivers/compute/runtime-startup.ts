@@ -11,6 +11,8 @@ export function gatewayManagedModeEnvironment(managedMode: boolean): string {
           OPENCLAW_CONFIG_READONLY: "1",
           OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS: "1",
           OPENCLAW_DISABLE_CRON_HOST_EXECUTION: "1",
+          OPENCLAW_CONFIG_READONLY_NOTICE:
+            "OpenClaw Enterprise manages this Gateway’s configuration. In the OCE Console, edit and save the Agent’s draft Configuration, then select Deploy new version. https://docs-enterprise.openclaw.org/reference/agents/gateway-managed-mode/",
         }
       : {},
   );
@@ -70,7 +72,7 @@ async function timeStartupPhase(phase, run) {
  * update them with the pin.
  */
 export const OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION = 38;
-export const OPENCLAW_STATE_DATABASE_SCHEMA_VERSION = 35;
+export const OPENCLAW_STATE_DATABASE_SCHEMA_VERSION = 36;
 
 // A Gateway and a dedicated Harness's workspace node keep OpenClaw state across
 // runtime image upgrades. OpenClaw refuses an older agent database (exit 78) and

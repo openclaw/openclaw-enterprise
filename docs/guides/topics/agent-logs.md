@@ -70,7 +70,7 @@ container; omission selects the first main container. Changing containers starts
 a new audited view. Container cursors count the lines delivered at their newest
 timestamp, so a later line at that timestamp is returned once, even with identical
 text. After a tail or Driver byte cut, or with an older cursor, such a line can
-stay hidden until a later timestamp.
+stay hidden; the page that reaches a later timestamp then shows **Lines skipped**.
 `download=true` answers `text/plain` as an attachment and cannot be combined
 with `cursor` (`400`). See the
 [API reference](../../reference/api.md).
@@ -104,12 +104,13 @@ log text in the [native admin UI](../../reference/agent-native-admin.md). To
 delegate log reading, bind a Namespace Role with Agent `read_logs` and `read` to
 the exact Agent; it covers every version. Opening the Agent in the console also
 needs Namespace `read` (otherwise it shows "Namespace unavailable"). Runtime
-status needs `read` bound to each Agent revision by ID. A `read_logs`
-Restriction blocks log text even for administrators. Without `operate`, the Logs
-tab has no runtime strip or Pod picker; it reads each source's current Pod and
-says when one is missing. When the console knows which status grant is missing,
-the refusal names only that grant. Service principals use the same grants. Every
-request and poll is authorized again, so revoking a grant stops the next poll.
+status needs `read` bound to each Agent revision by ID; without it, the console
+does not read status. A `read_logs` Restriction blocks log text even for
+administrators. Without `operate`, the Logs tab has no runtime strip or Pod
+picker; it reads each source's current Pod and says when one is missing. A status
+refusal names only the grant the console knows is missing. Service principals use
+the same grants. Every request and poll is authorized again, so revoking a grant
+stops the next poll.
 See [authorization](../../reference/authorization.md).
 
 ## What the output contains

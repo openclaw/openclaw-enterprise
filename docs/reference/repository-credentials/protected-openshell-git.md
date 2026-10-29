@@ -247,7 +247,7 @@ The draft helper prints the code and the matching advice itself, for example
 | `credential_unavailable`      | The route lost its credential, for example because GitHub rejected the App key or a renewal failed                           | An operator checks the worker log; a rejected key needs a new deploy               |
 | `route_blocked`               | The worker closed this version's route for good, for example after the Sandbox was replaced                                  | An operator deploys a new version                                                  |
 | `route_not_ready`             | The route is starting, verifying or briefly unavailable                                                                      | Retry in a minute                                                                  |
-| `online_authorization_denied` | The worker did not answer in time, or could not match the request to one of its routes                                       | Retry once, then ask an operator                                                   |
+| `online_authorization_denied` | The worker did not answer in time, matched no route, or had too many decisions in flight for the Sandbox or in total         | Retry once, then ask an operator                                                   |
 
 Retry advice above applies only to a known pre-send refusal, never an uncertain send.
 

@@ -770,7 +770,7 @@ function bindDeliveryTransport(reconcile, emit, pendingLog) {
   };
   return bindRepositoryGitTransport(
     { repositoryGitDriver: driver, protectedDriver: driver },
-    { protectedGit: {} },
+    {},
     undefined,
     emit,
     { pendingLog },

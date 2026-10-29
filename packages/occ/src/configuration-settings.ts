@@ -9,6 +9,10 @@ import {
   ConfigurationHarnessError,
   GatewayPasswordValueError,
 } from "./errors.ts";
+import { validateModelProviderSettings } from "./model-provider-settings.ts";
+import { retiredOpenClawSettingMessage } from "./retired-openclaw-settings.ts";
+
+export { RETIRED_OPENCLAW_SETTINGS } from "./retired-openclaw-settings.ts";
 
 /**
  * The Codex session approval policy setting. The pinned OpenClaw Gateway (openclaw/openclaw
@@ -177,28 +181,6 @@ export function validateWorkspaceBootstrapSettings(
 }
 
 /**
- * Settings the pinned OpenClaw (the commit in `deploy/runtime/openclaw-source.json`) retired,
- * with what replaces each. Its config validation refuses them and the Gateway does not start;
- * its `doctor --fix` would remove them, but it cannot rewrite the read-only Configuration OCE
- * mounts. tests/integration/runtime-image-managed-files.test.mjs checks the image's config schema
- * no longer has the agents.defaults ones; update this list when that pin changes.
- */
-export const RETIRED_OPENCLAW_SETTINGS: readonly (readonly [string, string])[] = [
-  [
-    "agents.defaults.compaction.memoryFlush.model",
-    "memory flushes use the session model and its fallbacks",
-  ],
-  [
-    "agents.defaults.embeddedAgent.cyberFailover.model",
-    "cyber-policy retries use the active model",
-  ],
-  [
-    "plugins.entries.codex.config.appServer.cyberFailover.model",
-    "cyber-policy retries use the active model",
-  ],
-];
-
-/**
  * Refuses a setting the pinned OpenClaw retired (RETIRED_OPENCLAW_SETTINGS), whatever its value:
  * the Gateway refuses the key itself. Configuration save runs it with the other content rules;
  * Agent save and deploy admission run it on the stored Configuration, so a row saved before the
@@ -208,17 +190,9 @@ export const RETIRED_OPENCLAW_SETTINGS: readonly (readonly [string, string])[] =
 export function refuseRetiredOpenClawSettings(
   values: Readonly<OpenClawConfigurationDocument>,
 ): void {
-  for (const [setting, replacement] of RETIRED_OPENCLAW_SETTINGS) {
-    const path = setting.split(".");
-    let parent: Record<string, unknown> | undefined = values;
-    for (const key of path.slice(0, -1)) {
-      parent = asRecord(parent?.[key]);
-    }
-    if (parent !== undefined && Object.hasOwn(parent, path.at(-1)!)) {
-      throw new ConfigurationHarnessError(
-        `Configuration setting ${setting} must be removed: the OpenClaw runtime retired it (${replacement}).`,
-      );
-    }
+  const message = retiredOpenClawSettingMessage(values);
+  if (message !== null) {
+    throw new ConfigurationHarnessError(message);
   }
 }
 
@@ -242,8 +216,7 @@ const OPENCLAW_SANDBOX_SETTINGS: readonly (readonly [
  * OCE runtime does not have:
  * - An `agents.defaults.sandbox.mode`, or an `agents.entries.<id>.sandbox.mode` (which overrides
  *   it for that Agent), other than "off": the Gateway starts and then fails every turn (finding
- *   2767). Deployment admission fills "off" when unset (gateway-security-defaults.ts), so a
- *   `security.preset` that turns the sandbox on still deploys a working Agent.
+ *   2767). Deployment admission fills "off" when unset (gateway-security-defaults.ts).
  * - A `tools.exec.host`, or an `agents.entries.<id>.tools.exec.host`, other than "auto",
  *   "gateway" or "node": "sandbox" fails every shell command (finding 2773).
  * Configuration save runs it with the other content rules; Agent save and deploy admission run it
@@ -327,6 +300,31 @@ export function validateConfigurationSettings(
   validateWorkspaceBootstrapSettings(values, options);
   refuseRetiredOpenClawSettings(values);
   refuseOpenClawSandbox(values, options);
+}
+
+/**
+ * The rules above that Agent save and deploy admission run again on a stored Configuration, so
+ * one saved before a rule existed gets the message its next save would (findings 2699, 2709,
+ * 2767).
+ */
+export function refuseStoredConfigurationSettings(values: OpenClawConfigurationDocument): void {
+  validateWorkspaceBootstrapSettings(values);
+  refuseRetiredOpenClawSettings(values);
+  refuseOpenClawSandbox(values);
+}
+
+/**
+ * The rules deploy admission runs on an Agent's stored Configuration that depend only on its
+ * values, in deploy's order: the model provider settings (finding 1549), then
+ * refuseStoredConfigurationSettings. The upgrade helper's startup preflight
+ * (scripts/upgrade-startup-preflight.mjs) runs it from the selected controller image on each
+ * Agent the upgrade will deploy, before any OCC writer stops (findings 2809, 2816). Deploy's
+ * other rules read live state (Drivers, Harness, credentials, plugins, repositories), so they
+ * run only at deploy.
+ */
+export function refuseUndeployableConfigurationValues(values: OpenClawConfigurationDocument): void {
+  validateModelProviderSettings(values);
+  refuseStoredConfigurationSettings(values);
 }
 
 /**

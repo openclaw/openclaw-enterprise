@@ -139,11 +139,13 @@ see the [supported recovery boundary](../reference/credential-sources/protected-
 ### 2. Capture identity, operation and first authority decision
 
 Each TLS stream carries one `HttpInstallationExchange.Exchange`. After bearer authentication,
-the adapter issues a random 32-byte challenge. Up to 1,024 openings await proof until signed
-acceptance, closure or a 30-second deadline. The owner rechecks the bearer and verifies both
-the gateway-signed `exchange_key` and the supervisor’s Ed25519 signature over
+the adapter issues a random 32-byte challenge. Up to 1,024 openings, 256 per Sandbox, await
+proof until signed acceptance, closure or a 30-second deadline. The owner rechecks the bearer
+and verifies both the gateway-signed `exchange_key` and the supervisor’s Ed25519 signature over
 `openshell-exchange-v1`, a zero byte, the challenge and the binary opening request.
-Request JSON cannot supply a key; bearer-only RPCs refuse.
+Request JSON cannot supply a key; bearer-only RPCs refuse. Online authorization
+(`apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts:createAuthority`)
+likewise holds at most 1,024 decisions in flight, 256 per Sandbox.
 
 Before awaiting work, the adapter copies the request and binds a private capability to the stream.
 Credential Proxy bounds body size, reserves an authentication slot and snapshots headers and body.

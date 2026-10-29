@@ -1,0 +1,26 @@
+{
+  "env": {
+    "OCC_TEST_OPENSHELL_LINEAR_REAL": "1"
+  },
+  "requiredEnv": [
+    "OCC_TEST_QA_CODEX_TOKEN_FILE",
+    "OCC_TEST_QA_CODEX_MODEL",
+    "OCC_TEST_CODEX_LINEAR_PROMPT",
+    "OCC_TEST_CODEX_LINEAR_TOOL_NAME",
+    "OCC_TEST_CODEX_LINEAR_RESULT_EXPECT"
+  ],
+  "optionalEnv": [
+    "OCC_TEST_QA_CONTROLLER_IMAGE",
+    "OCC_TEST_QA_RUNTIME_IMAGE",
+    "OCC_TEST_QA_SOURCE_SHA"
+  ],
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/openshell-linear-read-real.test.ts",
+      "expectedTests": [
+        "shipped OpenShell Agent installs Linear and executes an authenticated read"
+      ]
+    }
+  ]
+}

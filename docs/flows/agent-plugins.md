@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-27
-last_updated_session: authoring-run/008c4288-2df5-4712-a902-c0f0ed7608f1
+updated: 2026-10-29
+last_updated_session: 01a184cd-7ec2-7fa2-8547-9629c51ad0ba
 ---
 
 # Agent Plugin Deployment Flow
@@ -92,6 +92,7 @@ identity, searches `q`, and pages GLOBAL entries with opaque cursors.
 [Console discovery](../../apps/controller/src/console/agents/plugin-discovery.mjs)
 prefetches catalogs on create or edit. Closing the picker or changing views cancels reads.
 Changing credentials clears results and preserves selections.
+A hidden tab cancels deferred prefetch before sending; reopening its picker can load again.
 See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
 for search, paging and tool loading.
 
@@ -139,7 +140,7 @@ Deployment revalidates selections and Configuration, records the Driver and
 policy-only plugin map in an Agent revision, and queues it. Native app mapping,
 release metadata, and configuration resolve later.
 
-For [Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json), the selection includes the package version. Kubernetes passes the release digest to both roles. The Gateway verifies the install-check skill, and the dedicated worker verifies `gog` before enrollment.
+Google Workspace binds an attached Agent credential to a pinned release. The OpenClaw Gateway loads the skill. At deployment, the Sandbox Driver binds the credential’s host, path and scopes. When the worker runs `gog`, its OpenShell supervisor asks the execution cluster’s shared guard to check the actual request against that binding and the release’s operation map. OpenShell injects the bearer after approval. Withdrawal detaches that source. Worker recovery preserves other attachments. [Deployment and inspection](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -201,7 +202,11 @@ Selections enable apps, plugins and remote plugins; disabled entries cannot exec
 The [native policy mappings](../reference/drivers/plugin-bundled.md#native-mappings-and-limits)
 describe the generated bridge.
 
-After `plugin/list`, `runtime-entrypoints.ts:readCodexPluginDetails` reads up to four
+<!-- Internal preparation threads one explicit RPC caller through these reads,
+writes, reviewer checks, and no-account disablement; ordinary transport is unchanged. -->
+
+After `plugin/search` resolves each selected ID,
+`runtime-entrypoints.ts:readCodexPluginDetails` reads up to four
 selections concurrently before and after installs. Batches preserve order and drain
 before retries and final verification; writes stay sequential.
 `codexRuntimeArtifact` uses `detail.apps`, excluding `appTemplates`.
@@ -365,12 +370,6 @@ establish starvation.
 
 ## Changelog
 
-- 2026-10-27 16:32: Trace the Google package from selection to worker installation. (authoring-run/008c4288-2df5-4712-a902-c0f0ed7608f1 - 838c18304a845fc025e0639aaa223b9ef9d6ef3e)
-
-- 2026-10-27 15:00: Repeat a stop signal that OpenClaw ignored during an in-place restart (finding 2711). (fix-2711-gateway-stop)
-
-- 2026-10-27 03:30: Check the Gateway tool policy at Configuration save and for embedded Agents on every Compute, not on maintenance passes (findings 2688, 2689, 2694, 2695). (fix-2688-policy)
-
-- 2026-10-26 20:21: Stop hosted reads on disconnect and clarify credential checks and catalog results. (authoring-run/dc13892f-22e2-4838-b5d7-a716768e7243 - cbad284a4d3d5f567e96e6c3dbb3fc5e7b86b14e)
+- 2026-10-29 22:19: Release deferred catalog loading when its tab is no longer current. (authoring-run/7a2bb516-4223-4156-b1a8-1d89f60a54d4)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

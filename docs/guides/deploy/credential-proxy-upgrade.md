@@ -56,10 +56,11 @@ an upgrade.
 
 For a compatibility-only upgrade, quiesce API, workers and other database writers,
 keep a recoverable database copy and matching release, and check the history
-using the existing migrator connection in `OCC_MIGRATION_DATABASE_URL`. From a
-release checkout, run:
+using the existing migrator connection in `OCC_MIGRATION_DATABASE_URL`. From the
+root of a release checkout, install its dependencies and run:
 
 ```bash
+pnpm install --frozen-lockfile
 pnpm db:migrate:production --check
 ```
 

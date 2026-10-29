@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
-updated: 2026-10-23
-last_updated_session: fix-1828
+updated: 2026-10-29
+last_updated_session: authoring-run/74db2351-f5c1-4733-a3dc-a1ca653b29cf
 ---
 
 # Configuration Driver and Agent Revision Flow
@@ -161,9 +161,10 @@ traces storage and delivery. Secret Broker substitution remains unimplemented.
 `apps/controller/src/drivers/configuration/filesystem/index.ts:FilesystemConfigurationDriver.write`
 
 Default Compose development uses the filesystem Driver. Each write exclusively
-creates a private temporary file under the exact Namespace directory, writes the
-approved document, closes the file, then atomically renames it to the Configuration
-path. A finally block removes only that write's temporary file, including after
+creates a private temporary file under the exact Namespace directory. It sets the
+open file to `0600` before writing so umask cannot make a successful replacement
+unreadable. It then writes the approved document, closes the file, and atomically
+renames it to the Configuration path. A finally block removes only that write's temporary file, including after
 partial writes such as `ENOSPC` or a failed rename. The prior destination stays
 intact until rename succeeds, and other writers' temporary files remain untouched. Storage
 and cleanup failures propagate to the caller; this does not add automatic retries
@@ -217,6 +218,8 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29: Establish the temporary file mode before replacing a filesystem Configuration. (authoring-run/74db2351-f5c1-4733-a3dc-a1ca653b29cf)
 
 - 2026-10-25: Writes refuse a Slack token SecretRef the Slack Channel Driver cannot read. (finding 2514)
 - 2026-10-25 13:00: Writes, provisioning and the Create Agent preflight refuse an enabled channel's unbound credential reference. (fix-2319, finding 2319)

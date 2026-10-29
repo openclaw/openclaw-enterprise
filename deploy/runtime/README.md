@@ -179,7 +179,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/762a2fe60cc37cf6b8c9d05e61c329866e0d3f6f/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/554f0b886bde6c089578c49967227f8b50d1cf16/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
@@ -239,6 +239,8 @@ enrollment, then adds that directory to its PATH. The Gateway verifies the bundl
 skill and adds it to native skill discovery. OpenClaw’s usual precedence applies if
 the workspace contains another skill with the same name. Run `gog --version` in the
 worker to check the installation.
+
+For account selection and deployment, see [Configure Agent plugins](../../docs/guides/topics/plugins-configure.md#use-the-console).
 
 OCE grants its workspace node read access to the selected skill. If you supply a
 custom file-transfer policy for that node, allow reads of

@@ -236,8 +236,10 @@ cannot use the whole operation cap or ID table, but four busy Sandboxes can. A r
 by the installation or route checks reserves no ID. From exchange capture on, its ID
 stays reserved for the whole window, even if the request is refused.
 Past any bound, `resolve` refuses with `unavailable`/`resolver`. The bundled
-OpenShell authority also admits at most 1024 pending exchange openings and 1024
-accepted exchanges.
+OpenShell authority also admits at most 1024 pending exchange openings (256 for
+one Sandbox) and 1024 accepted exchanges. Its online request authorization holds
+at most 1024 decisions in flight (256 for one Sandbox) and denies the rest with
+`online_authorization_denied`.
 
 ## Troubleshooting
 

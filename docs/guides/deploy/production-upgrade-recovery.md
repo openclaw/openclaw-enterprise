@@ -106,7 +106,8 @@ delete Agents, versions, PVCs, or the bootstrap volume to force recovery.
 
 ## Correct a refused Agent deployment
 
-When OCC refuses an Agent's deployment with a 4xx answer, such as
+The startup preflight refuses some such drafts before any writer stops. When
+OCC still refuses an Agent's deployment with a 4xx answer, such as
 `HTTP 400 ... must use reviewed task actions` for a saved Configuration that
 the new release refuses, it saved no new version. The command lists each
 refused Agent with OCC's message, keeps the message in `dispatch/*.rejected`,

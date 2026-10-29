@@ -28,6 +28,7 @@ import {
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { withEnvironment } from "../helpers/environment.mjs";
 import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.mjs";
 import { readJsonLines } from "../helpers/json-lines.mjs";
@@ -1826,9 +1827,7 @@ test("the probe's own refused connection passes a deny check", async (t) => {
 
 test("a connected probe fails a deny check", async (context) => {
   const server = createServer((socket) => socket.end());
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  context.after(() => server.close());
+  await listen(context, server);
   await assert.rejects(
     assertProbeDenied(
       "open loopback traffic",
