@@ -603,7 +603,7 @@ export function createWorkerRevisionFixtures(
       if (protectedRepositoryDriver) {
         const sandbox = protectedRepositoryDriver.require("sandbox");
         await state.transact(async (unit) => {
-          const auth = await controller.admitHarnessAuth(unit, actorId, owner);
+          const [auth] = await controller.admitHarnessAuth(unit, actorId, owner);
           assert.deepEqual(auth, harnessAuth);
           const sources = await controller.admitCredentialSources(unit, actorId, owner, sandbox);
           assert.deepEqual(sources, credentialSources);

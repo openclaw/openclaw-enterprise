@@ -2888,22 +2888,37 @@ async function revalidateMountedAgent(current) {
           : `${path}/revisions/${encodeURIComponent(selected)}`;
       const previousSnapshotRead = mountedViewState?.reads.get(snapshotPath);
       const snapshotWasReadable = mountedViewState?.readablePaths.has(snapshotPath);
+      // A refusal this page already showed, or this tab already settled, for a read it never had.
+      const refusalSettled =
+        snapshotWasReadable === false &&
+        (previousSnapshotRead === refusedRead(403) || deniedReadsFor(owner).has(snapshotPath));
+      const versions = request(`${path}/revisions`, { includeMeta: true });
+      // A version this page showed as unreadable has nothing on screen to scrub: its read would
+      // only be refused and audited again on every refocus, and the refusal would replace the
+      // page (finding D799). The page proved it on load as the version's own view does: a settled
+      // refusal, or a current version left out of a newest page of versions that lists every
+      // version the caller can read (finding D791). Refresh reads it again.
+      const shownUnreadable = async () =>
+        selected !== "draft" &&
+        snapshotWasReadable === false &&
+        (refusalSettled ||
+          (selected === agent.activeRevisionId &&
+            (await versions.then(
+              ({ data, meta }) =>
+                (meta?.nextCursor ?? null) === null && !data.some(({ id }) => id === selected),
+            ))));
       await Promise.all([
-        request(`${path}/revisions`),
-        request(snapshotPath).catch((error) => {
-          // Initial admission can show an Agent with its draft Configuration denied. Keep
-          // that same refusal, but scrub a page whose previously readable data was revoked.
-          if (
-            selected === "draft" &&
-            error.status === 403 &&
-            (previousSnapshotRead === refusedRead(403) ||
-              deniedReadsFor(owner).has(snapshotPath)) &&
-            snapshotWasReadable === false
-          ) {
-            return;
-          }
-          throw error;
-        }),
+        versions,
+        shownUnreadable()
+          .then((unreadable) => (unreadable ? undefined : request(snapshotPath)))
+          .catch((error) => {
+            // Initial admission can show an Agent with its draft Configuration denied. Keep
+            // that same refusal, but scrub a page whose previously readable data was revoked.
+            if (selected === "draft" && error.status === 403 && refusalSettled) {
+              return;
+            }
+            throw error;
+          }),
       ]);
     }
   } catch (error) {

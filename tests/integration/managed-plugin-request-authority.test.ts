@@ -34,7 +34,7 @@ test("the standalone guard refuses startup without supervisor trust settings", (
 });
 
 test("the signed OpenShell request guard intersects the source envelope with the pinned gog operations", async (t) => {
-  const { directory, caBundle } = await harnessTlsFixture(t);
+  const { directory, caBundle, certPath, keyPath } = await harnessTlsFixture(t);
   const keys = generateKeyPairSync("ed25519");
   const issuerPublicKeyPath = join(directory, "issuer.pub");
   await writeFile(issuerPublicKeyPath, keys.publicKey.export({ type: "spki", format: "pem" }));
@@ -48,8 +48,8 @@ test("the signed OpenShell request guard intersects the source envelope with the
       OCC_PLUGIN_REQUEST_AUTHORITY_KEY_ID: "gateway-key",
     },
     {
-      certificatePath: join(directory, "server.pem"),
-      privateKeyPath: join(directory, "server.key"),
+      certificatePath: certPath,
+      privateKeyPath: keyPath,
       issuerPublicKeyPath,
     },
   );

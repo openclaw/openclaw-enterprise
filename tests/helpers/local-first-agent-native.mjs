@@ -970,6 +970,19 @@ export async function collectNativeWorkerFailure({
   };
 }
 
+// Validate before reading placement so a foreign response cannot poison failure evidence.
+// Self-contained because the controller receives this function as source.
+export function nativeWorkerSessionPlacement(description, sessionId) {
+  if (
+    typeof sessionId !== "string" ||
+    sessionId.length === 0 ||
+    description?.session?.sessionId !== sessionId
+  ) {
+    throw new Error("Native worker session identity mismatch");
+  }
+  return description.session.placement;
+}
+
 // Run in the existing trusted controller: it already has the private route key,
 // cluster DNS and CA. Native admin sign-in is neither enabled nor required.
 async function nativeWorkerProof({
@@ -1079,7 +1092,9 @@ async function nativeWorkerProof({
           stage = "required-placement-describe-rejected";
           assert.fail();
         });
-        lastPlacement = described.session?.placement;
+        stage = "session-identity";
+        lastPlacement = nativeWorkerSessionPlacement(described, session.sessionId);
+        stage = "required-placement";
         const state = lastPlacement?.state;
         if (state === "active") {
           break;
@@ -1096,8 +1111,7 @@ async function nativeWorkerProof({
     const { key } = session;
     stage = "session-identity";
     const described = await call("sessions.describe", { key, agentId: "main" });
-    lastPlacement = described.session?.placement;
-    assert.equal(described.session?.sessionId, session.sessionId);
+    lastPlacement = nativeWorkerSessionPlacement(described, session.sessionId);
     // A retained placement may recover when the next turn is sent. Check its
     // current directory after that turn, rather than trusting the old owner.
     const sessionFileContent = `FIRST_AGENT_SESSION_${randomUUID()}\n`;
@@ -1267,7 +1281,7 @@ export async function assertNativeWorkerProofInController(
   delete safeEnvironment.OPENAI_API_KEY_FILE;
   delete safeEnvironment.CODEX_ACCESS_TOKEN;
   delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  const input = `const nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
+  const input = `const nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"

@@ -126,6 +126,10 @@ material.
 For a live versioned static OpenAI source without refresh, OCC skips placement
 and Gateway registration. The Gateway still owns the catalog and the source record.
 
+Codex PAT profiles include native app metadata and MCP transport; the
+[Driver reference](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
+owns the exact source-wide routes.
+
 A definitive failed/absent result triggers cleanup and record deletion; failed
 cleanup retains `deleting`. Thrown calls may still take effect, so cleanup retains
 `deleting` for another DELETE. Success commits `ready` and audit atomically. A

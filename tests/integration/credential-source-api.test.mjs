@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -380,6 +381,7 @@ test("the saved Agent picker and binding use the granted source and the same rev
   const sandbox = {
     id: "openshell-placement",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     implementation: "openshell",
     facets: ["networking", "filesystem", "process"],
     async cleanup() {},

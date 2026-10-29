@@ -1,0 +1,17 @@
+telemetry: off
+extends:
+  - minimal
+rules:
+  operation-operationId: error
+  operation-operationId-unique: error
+  operation-summary: error
+  operation-description: error
+  no-unresolved-refs: error
+  no-invalid-media-type-examples: error
+  no-invalid-parameter-examples: error
+  # Fastify prioritizes static segments; resource IDs have explicit prefixes.
+  no-ambiguous-paths: off
+  # OAuth callbacks intentionally succeed with 302, not 2xx.
+  operation-2xx-response: off
+  # Shared schemas are registered before route export, including unused ones.
+  no-unused-components: off

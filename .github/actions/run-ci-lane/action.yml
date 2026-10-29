@@ -129,7 +129,7 @@ runs:
     - name: Run docs check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
-      run: pnpm docs:install && pnpm docs:check && pnpm docs:build
+      run: pnpm docs:install && pnpm openapi:lint && pnpm docs:check && pnpm docs:build
     - name: Install documentation browser dependencies
       # Only browser part 1 runs docs-compute-matrix. Baseline part 1's docs-site
       # test needs Pagefind; the docs check above installs it otherwise.

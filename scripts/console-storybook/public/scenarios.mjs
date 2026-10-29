@@ -3868,10 +3868,10 @@ export const scenarios = {
       { suffix: "/permissions", status: 503, code: "DEPENDENCY_UNAVAILABLE" },
     ],
     description:
-      "The Installation read is refused and the Namespace permission read failed, so whether this caller may create Agents is unknown. Create Agent stays disabled, the page says the permission check failed, and Retry permission check rereads only the permission answer: a grant continues as Member with Agent create, a denial keeps the refusal.",
+      "The Installation read is refused and the Namespace permission read failed, so whether this caller may create Agents is unknown. Create Agent stays disabled, a warning above the form says the permission check failed, and its Retry permission check rereads only the permission answer: a grant continues as Member with Agent create, a denial keeps the refusal in the same block.",
     steps: [
-      'Under the form fields, read "Your permissions in this Namespace could not be checked".',
-      "Retry permission check is offered; the fixture keeps failing the read, so the text stays.",
+      'Above the form, the "Your access" warning reads "Your permissions in this Namespace could not be checked"; the hint under the form fields is empty.',
+      "Retry permission check is the warning's action; the fixture keeps failing the read, so the text stays.",
     ],
     gap: "The member creation browser test also covers a successful retry.",
   },
@@ -6222,6 +6222,7 @@ export const scenarios = {
     steps: [
       'Selected for service reads "A newer version you cannot read"; the line under the version chooser reads "A newer version you cannot read remains selected for service." and the status line "The current version is one you cannot read; v7 is an older version." No raw version ID shows.',
       "The request log shows no read of the current version.",
+      "Switch to another window and back: the page checks the session, the Agent and its versions again and keeps this page. The request log still shows no read of the current version.",
     ],
   },
   agentCurrentVersionHiddenLogs: {
@@ -6978,6 +6979,29 @@ export const scenarios = {
     actions: [click("Deploy new version")],
     description:
       "A denial for the Agent's own service principal names the grant the Agent lacks and who gives it. The Secret is named only to a caller who may read it. A caller's own denial keeps the console's guidance.",
+  },
+  deploySandboxPolicyReadDenied: {
+    group: "Pages/Agent detail",
+    name: "Deployment needs SandboxPolicy read",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Not authorized: this needs SandboxPolicy read on SandboxPolicy sbp_00000000-0000-4000-8000-000000000001. Ask an Installation administrator to grant it.",
+      },
+    ],
+    actions: [click("Deploy new version")],
+    description:
+      "The Agent's network policy has saved rules, so deploying also needs SandboxPolicy read on it. The API's denial names the policy by its ID; the alert under Deploy new version names it in words and says who grants the read.",
+    steps: [
+      'The alert reads "Deploying this Agent needs SandboxPolicy read on its network policy, which your access does not include. Ask an Installation administrator to grant it." No sbp_ ID shows.',
+      "Deploy new version is enabled again for a retry after a grant.",
+    ],
+    gap: "The refusal is simulated; the API decides whether the policy has saved rules and whether the caller may read it.",
   },
   revisionDeployDenied: {
     group: "Pages/Agent detail",

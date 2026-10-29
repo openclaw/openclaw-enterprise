@@ -204,6 +204,9 @@ export const SANDBOX_POLICY_READ_DENIED = notIncluded(
   "reading this Agent’s network policy or its suggestions",
   "SandboxPolicy read on it",
 );
+// Deploy also checks SandboxPolicy read on that policy when it has saved rules (finding 2151). The
+// API's denial names the policy by its raw ID; the Agent page names it in words (finding D801).
+export const DEPLOY_SANDBOX_POLICY_READ_DENIED = `Deploying this Agent needs SandboxPolicy read on its network policy, which your access does not include. ${askAdministratorTo("grant it")}`;
 
 // Log text authorizes Agent read_logs, or Agent administer in its place, plus Agent read. The API
 // and the CLI name the grant in these words (finding 2599); the page is open, so Agent read is held.

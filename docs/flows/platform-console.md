@@ -300,9 +300,8 @@ stop; arrows move) and focused controls keep focus. Navigation, Namespace change
 reads; generations reject late responses. Refocus coalesces events.
 `revalidateMountedAgent` rechecks session, Namespace, Agent, and version;
 unchanged access preserves controls, input, and saves.
-The same owner’s exact draft Configuration refusal preserves the partial Agent
-after reload/refocus on repeated 403 if that mounted path was never readable.
-Refocus sends a fresh GET.
+Refocus sends a fresh GET. A repeated 403 on a never-readable draft Configuration
+keeps the partial Agent; a version proved unreadable is not read again.
 Lost access scrubs; Agent, session, and scope failures clear their protected views.
 Other pages revalidate before reuse, including a shown 403 or 404; forms defer the check.
 Returning to the tab restores focus after the unchanged view is admitted, if the control

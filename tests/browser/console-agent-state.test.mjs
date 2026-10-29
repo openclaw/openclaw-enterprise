@@ -22,6 +22,7 @@ import {
   nonAuthWriteRequests,
   persistedDeploymentError,
   recordLayoutShifts,
+  settledFetches,
   shortId,
   stopAgentButton,
   takeLayoutShifts,
@@ -29,6 +30,7 @@ import {
   waitForChosenVersion,
   waitForEnabled,
   waitForIdleFetches,
+  waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import {
   deploymentRecordUrl,
@@ -52,6 +54,7 @@ import {
   BOUND_SECRET_UNLISTED,
   DIAGNOSTICS_RUNTIME_UNAVAILABLE,
   diagnosticsRecordedFailure,
+  GENERIC_DENIAL,
   MALFORMED_REQUEST,
   NO_PERSISTED_STARTUP_FAILURE,
   RESOURCE_CONFLICT,
@@ -1662,6 +1665,195 @@ test("A revoke the Access tab settles takes away administrator controls without 
   await remove.waitFor({ state: "hidden" });
   assert.equal(await deploy.isDisabled(), true);
   await waitForIdleFetches(page);
+  assert.equal(
+    requests.slice(sent).filter(({ path }) => path.endsWith("/plugins/capabilities")).length,
+    0,
+  );
+  // The Access tab's refused policy read is the only audited refusal.
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.iam.roles.list"],
+  );
+});
+
+// A namespace member who administers the Installation opens an Agent page on its Access tab
+// (`version`: the active version, or "draft"), which confirms her administration. `revoke` ends
+// it; the page learns of that only from a later read. Her own grant is Agent read, so her
+// permission answer changes from an administrator's to a reader's: no Stop, no Delete and a
+// read-only draft.
+async function openAsRevocableAdministrator(t, name, version = "active") {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  const agent = await fixture.createAgent(namespace.id, `${name} Agent`, nativeValues("x"));
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const account = await fixture.createNamespaceMember("reread", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  const shown = version === "draft" ? "draft" : revision.id;
+  await login(
+    page,
+    fixture,
+    String(detailUrl(fixture, namespace.id, agent.id, shown, "access")),
+    account.credentials,
+  );
+  await page.getByText("Current policy loaded.", { exact: true }).waitFor();
+  const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
+  const stop = stopAgentButton(page);
+  await waitForEnabled(stop);
+  await waitForEnabled(remove);
+  await waitForIdleFetches(page);
+  const permissionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+  return {
+    fixture,
+    page,
+    requests,
+    revoke,
+    stop,
+    remove,
+    agentUrl: `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+    permissionsPath,
+    permissionsUrl: `${fixture.origin}${permissionsPath}`,
+    revision,
+    // The draft's entry in the version chooser follows the permission summary (finding 2421).
+    draftEntry: page.locator('#revision-selector option[value="draft"]'),
+  };
+}
+
+// Runtime status is refused, as it is without Agent operate. Logs then compares that refusal
+// with a fresh permission answer: a permission reread the test can hold.
+async function refuseRuntimeStatus(page, agentUrl, revisionId) {
+  await page.route(`${agentUrl}/deployments/${revisionId}/runtime`, (route) =>
+    route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL)),
+  );
+}
+
+const DRAFT_EDITABLE = "Draft · Editable Configuration";
+const DRAFT_READ_ONLY = "Draft · Read-only Configuration";
+
+// Finding 2329. Two permission rereads overlap and the newer one fails: a failed reread resolves to
+// the answer before it, here the older reread, which then answers. That older answer is the
+// newest the page has, so the permission summary (Delete, the failed-version recovery, the
+// draft's access) takes it together with the operate controls (Stop). Before, only Stop took it
+// and Delete kept the administrator's answer until Refresh.
+test("An older permission reread that answers after a newer one failed applies to every control", async (t) => {
+  const { page, revoke, stop, remove, agentUrl, permissionsUrl, revision, draftEntry } =
+    await openAsRevocableAdministrator(t, "Overlapping rereads");
+  assert.equal(await draftEntry.textContent(), DRAFT_EDITABLE);
+
+  revoke();
+  await refuseRuntimeStatus(page, agentUrl, revision.id);
+  // The older reread, from Logs. The server answers it (Agent read only); the page receives
+  // that answer last.
+  const older = await holdRequests(t, page, permissionsUrl, { once: true, afterServer: true });
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
+  await older.requested;
+  // The newer reread: the Access tab's refused recheck ends administration, and the permission
+  // read that follows fails.
+  await page.route(
+    permissionsUrl,
+    (route) => route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
+    { times: 1 },
+  );
+  const failed = page.waitForResponse(
+    (response) => response.url() === permissionsUrl && response.status() === 503,
+  );
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await failed;
+  older.release();
+  // She holds Agent read only: Stop, Delete and the draft's access all follow the older answer.
+  await stop.waitFor({ state: "hidden" });
+  await waitForIdleFetches(page);
+  assert.equal(await remove.isVisible(), false);
+  assert.equal(await draftEntry.textContent(), DRAFT_READ_ONLY);
+});
+
+// Finding 2901. Two permission rereads overlap and the newer one answers first. The older
+// reread's answer, which the page receives last, is out of date: the server gave it while she
+// still administered the Installation. The page keeps the newer answer, so Stop, Delete and the
+// draft's access do not come back with the late administrator's answer.
+test("An older permission reread that answers after a newer one leaves the newer answer", async (t) => {
+  const {
+    page,
+    revoke,
+    stop,
+    remove,
+    agentUrl,
+    permissionsUrl,
+    permissionsPath,
+    revision,
+    draftEntry,
+  } = await openAsRevocableAdministrator(t, "Late older reread");
+  assert.equal(await draftEntry.textContent(), DRAFT_EDITABLE);
+
+  await refuseRuntimeStatus(page, agentUrl, revision.id);
+  // The older reread, from Logs: the server answers it before the revoke.
+  const older = await holdRequests(t, page, permissionsUrl, { once: true, afterServer: true });
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
+  await older.requested;
+  revoke();
+  // The newer reread: the Access tab's refused recheck ends administration, and the page reads
+  // her reader's answer, which it receives first.
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await stop.waitFor({ state: "hidden" });
+  assert.equal(await remove.isVisible(), false);
+  assert.equal(await draftEntry.textContent(), DRAFT_READ_ONLY);
+
+  const answered = await settledFetches(page, permissionsPath);
+  older.release();
+  await waitForSettledFetches(page, permissionsPath, answered + 1);
+  await waitForIdleFetches(page);
+  // The administrator's late answer changes nothing.
+  assert.equal(await stop.isVisible(), false);
+  assert.equal(await remove.isVisible(), false);
+  assert.equal(await draftEntry.textContent(), DRAFT_READ_ONLY);
+});
+
+// Finding 2902 (the D795 rule with overlapping rereads). An older permission reread answers,
+// out of date, while the Access tab's newer reread after a revoke is still in flight. Its
+// answer is the newest the page has, so the shown controls take it, but a view built meanwhile
+// waits for the newer answer: Plugins opened in that window sends no capabilities read the
+// API refuses and audits.
+test("Plugins opened while a newer permission reread is in flight waits for it", async (t) => {
+  const { fixture, page, requests, revoke, stop, remove, permissionsUrl, permissionsPath } =
+    await openAsRevocableAdministrator(t, "Pending newer reread", "draft");
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  const reload = page.getByRole("button", { name: "Reload authentication source", exact: true });
+  await waitForEnabled(reload);
+  await waitForIdleFetches(page);
+
+  // The older reread, from the draft refresh: the server answers it before the revoke.
+  const older = await holdRequests(t, page, permissionsUrl, { once: true, afterServer: true });
+  await reload.click();
+  await older.requested;
+  await waitForIdleFetches(page, { except: permissionsPath });
+  revoke();
+  const audited = authorizationDenials(fixture.auditSink).length;
+  // The newer reread, from the Access tab's refused recheck; the server answers it after the
+  // revoke, and the page receives it last.
+  const newer = await holdRequests(t, page, permissionsUrl, { once: true, afterServer: true });
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await newer.requested;
+  const answered = await settledFetches(page, permissionsPath);
+  older.release();
+  await waitForSettledFetches(page, permissionsPath, answered + 1);
+
+  const sent = requests.length;
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", selected: true }).waitFor();
+  await waitForIdleFetches(page, { except: permissionsPath });
+  newer.release();
+  await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
+  await stop.waitFor({ state: "hidden" });
+  await waitForIdleFetches(page);
+  assert.equal(await remove.isVisible(), false);
   assert.equal(
     requests.slice(sent).filter(({ path }) => path.endsWith("/plugins/capabilities")).length,
     0,

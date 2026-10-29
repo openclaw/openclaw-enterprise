@@ -37,6 +37,8 @@ jobs:
         run: npm install --global pnpm@11.15.1
       - name: Install documentation dependencies
         run: npm run docs:install
+      - name: Validate published OpenAPI examples
+        run: npm run openapi:lint
       - name: Build documentation and search index
         run: npm run docs:build
       - name: Configure Pages

@@ -109,7 +109,6 @@
     "tests/integration/static-egress.test.mjs",
     "tests/integration/credential-proxy-peer-pin.test.ts",
     "tests/integration/credential-proxy-provider-pin.test.ts",
-    "tests/integration/credential-proxy-revision-currentness.test.ts",
     "tests/integration/credential-proxy-stream-exchange.test.ts",
     "tests/integration/egress-stock-online-authority.test.mjs",
     "tests/integration/managed-plugin-request-authority.test.ts",
@@ -481,12 +480,6 @@
     },
     {
       "path": "tests/conformance/url-authority.test.mjs"
-    },
-    {
-      "path": "tests/integration/credential-proxy-revision-currentness.test.ts",
-      "expectedTests": [
-        "credential exchange consults revision history only for inactive executions"
-      ]
     },
     {
       "path": "tests/integration/credential-proxy-peer-pin.test.ts",

@@ -76,6 +76,15 @@ the remaining protected plugin acceptance requirements are unchanged.
 
 Prepare the [Kubernetes runtime setup](kubernetes.md#kubernetes-model-turns-and-secrets), including immutable gateway and Agent images, an authorized model, a disposable cluster, and the proxy CIDRs above. For one scenario, set its database URL below or use `OCC_TEST_DATABASE_URL`. Set one scenario flag:
 
+Dedicated Codex cases also require the real Envoy Gateway and cert-manager
+controllers from [Gateway routing setup](kubernetes.md#private-gateway-routing). Provide
+`OCC_TEST_GATEWAY_CA_CERT_PATH` and `OCC_TEST_GATEWAY_CA_KEY_PATH` for that fixture.
+The test creates an owned Gateway; Kubernetes Compute creates each Agent route.
+Set `OCC_DOCKER_RUNTIME_IMAGE` to the qualified runtime for the fixture's
+TLS-preserving host relay. This fixture runs its controller on the host; the
+[OpenShell Linear case](openshell.md#linear-tool-use-qualification) instead starts
+the shipped control plane and uses its configured OCE Gateway route directly.
+
 | Scenario                                | Flag                                        | Database variable                                   |
 | --------------------------------------- | ------------------------------------------- | --------------------------------------------------- |
 | Embedded OpenClaw Diffs                 | `OCC_TEST_PLUGIN_DRIVER_OPENCLAW_REAL`      | `OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL`      |

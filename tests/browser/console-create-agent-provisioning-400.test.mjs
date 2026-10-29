@@ -4,7 +4,6 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import { ConfigurationHarnessError } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -1280,12 +1279,12 @@ test("When the Sandbox Driver's settings refuse Dedicated OpenClaw, Create Agent
     "Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
   const sandboxDriver = {
     ...nativeSandboxDriver(),
-    configureAgent(values, harness) {
-      if (harness.id === "openclaw") {
-        throw new ConfigurationHarnessError(settingRefusal);
-      }
-      return values;
-    },
+    supportsHarnessExecutionMode: Object.freeze({
+      openclaw: Object.freeze({
+        embedded: Object.freeze({ supported: false }),
+        dedicated: Object.freeze({ supported: false, reason: settingRefusal }),
+      }),
+    }),
   };
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Setting refusal", {
     filesystemConfiguration: true,

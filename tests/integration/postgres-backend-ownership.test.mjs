@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -448,6 +449,7 @@ test(
       id: "sandbox-native-pat-admission",
       implementation: "test/native-worker",
       capability: "sandbox",
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
       facets: ["networking", "filesystem", "process"],
       async provisionHarness() {
         assert.fail("Refused admission must not provision a Sandbox.");

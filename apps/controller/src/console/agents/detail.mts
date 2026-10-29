@@ -52,6 +52,7 @@ import {
   askForGrant,
   CONFIGURATION_UPDATE_DENIED,
   credentialCheckedAtDeploy,
+  DEPLOY_SANDBOX_POLICY_READ_DENIED,
   deployAcceptedVersionUnreadable,
   deployUnreadableSecretsReason,
   MODEL_CREDENTIAL_REJECTED_REPLACED,
@@ -269,6 +270,10 @@ function deployRefusedBeforeAdmission(error: unknown) {
   );
 }
 
+// The start of the API's named denial of a deploy without SandboxPolicy read on the Agent's
+// network policy (finding 2151); the policy's ID follows.
+const DEPLOY_SANDBOX_POLICY_READ_NEED = "Not authorized: this needs SandboxPolicy read on ";
+
 function deployFailureText(cause: unknown, submitted: boolean) {
   const error = requestFailure(cause);
   if (error.code === "RUNTIME_CREDENTIALS_CLUSTER_RBAC") {
@@ -283,6 +288,10 @@ function deployFailureText(cause: unknown, submitted: boolean) {
   }
   if (error.status !== 403 && error.status !== 409) {
     return rejectionMessage(cause, submitted);
+  }
+  // The page names the Agent's network policy in words, not by the ID the API gives (D801).
+  if (namedDenial(cause)?.startsWith(DEPLOY_SANDBOX_POLICY_READ_NEED)) {
+    return DEPLOY_SANDBOX_POLICY_READ_DENIED;
   }
   // A typed refusal is written for the caller: a 409 names the setting or state to fix, and a
   // 403 names the grant the caller's own request lacks (finding 2534) or the Agent's service
@@ -633,10 +642,9 @@ export async function renderAgentDetail(
   let agentSaveDenied = callerPermissionsRead.then((permissions) =>
     agentSaveDenial(permissions, agent),
   );
-  // Only the latest reread's answer replaces the summary.
   let permissionsRereads = 0;
-  // The newest reread whose operate answer the page's controls show.
-  let appliedOperateReread = 0;
+  // The newest reread whose answer the page shows: the summary and every control that follows it.
+  let appliedReread = 0;
   // The newest permission read. Logs compares a remembered status denial with it, so an
   // operate grant read since the page was built applies (finding 1579).
   let latestPermissionsRead = callerPermissionsRead;
@@ -3858,21 +3866,27 @@ export async function renderAgentDetail(
     const reread = ++permissionsRereads;
     const read = readPermissions().then(
       (permissions) => {
-        if (context.isCurrent() && reread === permissionsRereads) {
+        // An older reread still applies when no newer one has answered: a newer read that
+        // fails resolves to this answer. The summary and the controls take it together, so
+        // the failed-version recovery and Delete never keep an answer that Stop has left
+        // (finding 2329).
+        if (context.isCurrent() && reread > appliedReread) {
+          appliedReread = reread;
           callerPermissions = permissions;
           // Views built from now on take this answer; shown ones follow it below (finding 2470).
-          agentSaveDenied = Promise.resolve(agentSaveDenial(permissions, agent));
+          // While a newer reread is in flight, views built meanwhile wait for it instead, so
+          // Plugins sends no read it denies (findings D795, 2902). A newer reread that fails
+          // resolves to this answer.
+          agentSaveDenied =
+            reread === permissionsRereads
+              ? Promise.resolve(agentSaveDenial(permissions, agent))
+              : latestPermissionsRead.then((newest) => agentSaveDenial(newest, agent));
           if (latestDeploymentStatus === "failed" && !deleting) {
             renderLatestDeployment();
           }
           // A grant or revocation since the last answer relabels the draft (finding 2421).
           applyDraftAccess();
           deletion.applyDelete(permissions?.delete);
-        }
-        // An older reread still applies when no newer one has answered: a newer read that
-        // fails resolves to this answer, which the controls would otherwise never see.
-        if (context.isCurrent() && reread > appliedOperateReread) {
-          appliedOperateReread = reread;
           applyOperateAnswer(permissions?.operate);
         }
         return permissions;

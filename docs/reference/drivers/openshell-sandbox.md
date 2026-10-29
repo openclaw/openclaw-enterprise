@@ -4,7 +4,7 @@ The OpenShell SandboxDriver pairs its Gateway, dedicated Codex/native OpenClaw
 Harnesses, and [Kubernetes Compute](kubernetes-compute.md). OCC owns Agents,
 Agent revisions, Namespaces, routing, credentials, and authorization.
 
-Development supports native OpenClaw and plugin-free Codex with
+Development supports native OpenClaw and dedicated Codex with
 [`v0.1.5`](https://github.com/NVIDIA/OpenShell/tree/v0.1.5). The pinned
 OCE runtime declares native Dedicated support. The paired
 [Credential Gateway](openshell-credential-gateway.md) delivers model credentials;
@@ -20,6 +20,10 @@ containment facets; see
 [Kubernetes Compute](kubernetes-compute.md) retains baseline isolation, storage,
 routing, and the per-Agent Gateway. Sandbox owns:
 
+- `supportsHarnessExecutionMode` declares OpenClaw support at construction. Embedded
+  is unsupported; Dedicated needs `kubernetes.userNamespaces: false` and at most
+  one ServiceAccount in `gateway.operatorWorkspaceResources`. See the
+  [mode support contract](sandbox.md#harness-mode-support).
 - `configureAgent` pins the main Agent workspace to the configured Sandbox data
   mount for both dedicated Harnesses before OCC saves the Agent revision. Codex retains
   app-server containment policy.
@@ -134,9 +138,10 @@ profile allows `api.openai.com` with TLS inspection, and an uninspected rule for
 that host conflicts.
 
 v0.1.5 requires unique network policy names and nonempty executable
-paths. `workspace-node-enrollment` is reserved. Options are `tls: skip|terminate`, `enforcement: enforce|audit`, and
-`access: read_only|read_write|full`; `skip` replaces the rejected `passthrough`
-spelling. An endpoint `protocol` is `tcp`, `rest`, `websocket`, `graphql` or
+paths. `workspace-node-enrollment` is reserved. Options include `enforcement: enforce|audit`
+and `access: read_only|read_write|full`. Omit `tls` for automatic TLS inspection;
+`tls: skip` bypasses inspection. The pinned gateway rejects explicit `terminate`
+and `passthrough`. An endpoint `protocol` is `tcp`, `rest`, `websocket`, `graphql` or
 `sql` in any case (OCE sends it lowercase), or omitted. `tcp` takes neither
 `access` nor `enforcement`; the other protocols need `access`, and `sql` allows
 only `enforcement: audit`. `json-rpc` and `mcp` need rules this setting cannot
@@ -340,10 +345,12 @@ Errors include:
   reports `SANDBOX_ADMISSION_LIMIT_REACHED`. Completed records expire after 24
   hours; unsuccessful ones have no reset API: inspect the Gateway database
   before redeploying. Other `RESOURCE_EXHAUSTED` errors retry as usual.
-- `OpenShell dedicated Codex requires one literal APP_TOKEN_SHA verifier.`
+- `OpenShell dedicated Harness exposure requires one literal APP_TOKEN_SHA verifier.`
   Malformed deployment or raw app-server token.
-- `OpenShell dedicated Codex does not yet support selected plugins or repository credentials.`
-  Deploy a plugin-free Agent revision without repository bindings.
+- `Codex plugin preparation failed before native WebSocket startup.`
+  Check that the selected plugin is available to the bound Codex account and its
+  app is connected. Correct the selection or account access, then deploy again.
+  See [plugin installation](openshell-sandbox/harness-providers.md#codex-plugin-installation).
 - A Sandbox that starts without serving the Codex app-server can report
   `Provider environment is unavailable or changed during preparation`. Confirm
   `/sandbox/.openclaw-runtime/home/.codex` is writable and no PVC mounts are

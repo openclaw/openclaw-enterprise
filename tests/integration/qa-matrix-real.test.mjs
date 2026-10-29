@@ -47,7 +47,9 @@ test(
       executionFilters,
       concurrency,
       exclusions: [
-        "Linear READ: explicitly excluded; provider currently broken",
+        ...(selection.linearRead
+          ? []
+          : ["OpenShell Linear READ requires the explicit openshell-linear-read scenario"]),
         "Embedded OpenClaw Slack: unsupported",
         "OpenClaw Codex-native approvals: not applicable",
       ],
@@ -61,6 +63,25 @@ test(
         "kubernetes/Codex/OpenShell",
         "shared Driver configuration and real network enforcement",
         () => verifyQaSandboxPolicy(artifacts),
+      );
+    }
+    if (selection.pluginInstall) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "selected native plugin installation",
+        () => verifyQaSandboxPolicy(artifacts, "plugin-install"),
+      );
+    }
+    if (selection.linearRead) {
+      const { verifyOpenShellLinearRead } = await import("../helpers/openshell-linear-read.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "installed Linear plugin executes a real read",
+        () => verifyOpenShellLinearRead(context, artifacts),
+        "openshell-linear-read",
       );
     }
     for (const installation of selection.installations.filter((value) =>
@@ -371,7 +392,7 @@ test(
                   });
                 } else if (preset === "OpenClaw") {
                   cellContext.diagnostic(
-                    "Slack and Codex-native approval policy: not applicable to Standard OpenClaw. Linear READ excluded throughout.",
+                    "Slack and Codex-native approval policy: not applicable to Standard OpenClaw. Linear READ uses its separate OpenShell scenario.",
                   );
                 }
               },
