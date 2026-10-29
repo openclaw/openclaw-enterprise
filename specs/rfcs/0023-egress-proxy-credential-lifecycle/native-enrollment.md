@@ -25,7 +25,7 @@ separate online-authorization profile.
 
 ## Existing deficit and integration points
 
-The native [StrandsBoxSandboxDriver](../../../apps/controller/src/drivers/sandbox/strands-box.ts)
+The native [StrandsBoxSandboxDriver](https://github.com/openclaw/openclaw-enterprise/blob/c7d00d7486a91de8e40d47573ec7d78fbec8690d/apps/controller/src/drivers/sandbox/strands-box.ts)
 implements Sandbox only. Installation
 selection and `provisionHarness` refuse protected requirements. Its resource
 renderer launches `outer.mjs`, which starts ordinary Box immediately.
