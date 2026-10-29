@@ -3673,9 +3673,44 @@ export const scenarios = {
       "A confirmed duplicate model Secret keeps the draft and offers deliberate existing Secret selection or a separate new Secret name.",
     steps: [
       "Choose existing Secret and select a readable model credential. Confirm the Agent name, model and other draft fields remain.",
+      "Reset the story. Use another Secret name, submit spaces, then a name longer than 255 characters. Both stop at field validation. Correct the name and create the Agent.",
       "Reset the story. Tab from the collision notice through both choices. Use another Secret name focuses its input. Switch Authentication method to ChatGPT OAuth: recovery and its required input disappear. Switch back: no stale choice returns.",
     ],
     gap: "Simulated UI proof; native controller browser tests exercise duplicate rejection and recovery.",
+  },
+  createPasswordSecretConflictPat: {
+    group: "Pages/Create Agent",
+    name: "Secret conflict restores plugin discovery",
+    path: create,
+    standardCodexPreset: true,
+    pluginDiscovery,
+    pluginCapabilities,
+    actions: [
+      ...passwordPresetForm,
+      { selector: "#agent-auth-method", value: "codex_pat" },
+      { selector: "#provider-api-key", value: "at-storybook-pat" },
+      { selector: "#agent-model", value: "gpt-5.1" },
+      click("Create Agent"),
+      click("Choose existing Secret"),
+      { selector: "#plugin-discovery-token summary", click: true },
+    ],
+    rules: [
+      {
+        suffix: "/secrets",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "A Secret with this name already exists in this Namespace. Choose a different name.",
+        once: true,
+      },
+    ],
+    description:
+      "Choosing an existing Secret restores the normal optional service account token for plugin discovery.",
+    steps: [
+      "Enter a dummy token, then open Configure plugins. Select a Secret deliberately before creating the Agent.",
+    ],
+    gap: pluginDiscoveryGap,
   },
   createPasswordSecretConflictOAuth: {
     group: "Pages/Create Agent",

@@ -36,3 +36,8 @@ In **Secret conflict cleared for OAuth**, return to API key and confirm that the
 old collision and alternate name stay cleared. In the conflict story, Tab from
 the notice through the choices; Enter on the alternate choice focuses its input.
 Repeat at phone width. Credential changes must not submit another Secret write.
+
+In **Password Secret conflict recovery**, submit whitespace and an oversized
+alternate name. The field must show validation without saving. Correct the name
+and submit. For Service Accounts, choosing an existing Secret restores the normal
+optional plugin discovery token disclosure when discovery requires credentials.

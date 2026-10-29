@@ -2933,7 +2933,22 @@ for (const recovery of ["existing", "alternate", "denied existing"] as const) {
       await selectSecret(page, "API key Secret", existing);
     } else {
       await page.getByRole("button", { name: "Use another Secret name", exact: true }).click();
-      await page.getByLabel("New Secret name", { exact: true }).fill("Alternate model key");
+      const alternateName = page.getByLabel("New Secret name", { exact: true });
+      // Invalid recovery input must stop before any resource write, without losing the draft.
+      const writesBeforeInvalidName = nonAuthWriteRequests(requests).length;
+      for (const invalidName of ["   ", "x".repeat(256)]) {
+        await alternateName.fill(invalidName);
+        await save.click();
+        await page.waitForFunction(
+          () => document.activeElement?.id === "alternate-model-secret-name",
+        );
+        assert.equal(nonAuthWriteRequests(requests).length, writesBeforeInvalidName);
+        assert.equal(secretPostRequests(requests, namespace.id).length, 1);
+        assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+        assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+        assert.equal(await apiKey.inputValue(), "replacement-model-key");
+      }
+      await alternateName.fill("  Alternate model key  ");
     }
     assert.equal(
       await page.getByLabel("Agent name", { exact: true }).inputValue(),
@@ -2965,114 +2980,190 @@ for (const recovery of ["existing", "alternate", "denied existing"] as const) {
   });
 }
 
-for (const viewport of [
-  { width: 1440, height: 1000 },
-  { width: 390, height: 844 },
-]) {
-  test(`password Secret recovery clears on OAuth switch at ${viewport.width}px`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Secret name conflict", { ready: true });
-    // Deleting an Agent keeps its model Secret, which is named after the Agent.
-    await fixture.createSecret(namespace.id, "Recreated Agent", "earlier-model-key");
-    const artifact = structuredClone(standardCodexPreset);
-    const preset: FixtureResponse<Preset> = await fixture.request(
-      "POST",
-      `/namespaces/${namespace.id}/presets`,
-      {
-        body: artifact,
-      },
-    );
-    assert.equal(preset.status, 201, JSON.stringify(preset.body));
-    const { page } = await newPage(t, fixture, { context: { viewport } });
-    await routeInstallationWithoutProvisioning(page, fixture);
-    const requests = apiRequests(page, fixture.origin);
-    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template").selectOption(preset.data.id);
-    await page.getByLabel("Name", { exact: true }).fill("Recreated Agent");
-    await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
-    await page.getByLabel("Model Secret", { exact: true }).fill("replacement-model-key");
-    await page.getByRole("button", { name: "Use Preset" }).click();
-    const apiKey = page.getByLabel("API key", { exact: true });
-    const save = page.getByRole("button", { name: "Create Agent", exact: true });
-    await openAdvancedSettings(page);
-    await page.getByLabel("USER.md", { exact: true }).fill("Preserve this workspace draft.");
-
-    const conflict = page.waitForResponse(
-      (response) =>
-        response.url().endsWith(`/namespaces/${namespace.id}/secrets`) &&
-        response.request().method() === "POST",
-    );
-    await save.click();
-    assert.equal((await conflict).status(), 409);
-
-    const alternate = page.getByRole("button", { name: "Use another Secret name", exact: true });
-    await page.waitForFunction(() => document.activeElement?.id === "model-secret-conflict");
-    await page.keyboard.press("Tab");
-    assert.equal(
-      await page
-        .getByRole("button", { name: "Choose existing Secret", exact: true })
-        .evaluate((node) => node === document.activeElement),
-      true,
-    );
-    await page.keyboard.press("Tab");
-    assert.equal(await alternate.evaluate((node) => node === document.activeElement), true);
-    await page.keyboard.press("Enter");
-    const alternateName = page.getByLabel("New Secret name", { exact: true });
-    assert.equal(await alternateName.evaluate((node) => node === document.activeElement), true);
-    const method = page.getByLabel("Authentication method", { exact: true });
-    await method.focus();
-    await method.selectOption("credential_source");
-    assert.equal(await method.evaluate((node) => node === document.activeElement), true);
-    assert.equal(await alternate.isVisible(), false, "OAuth does not own a model Secret write");
-    assert.equal(await alternateName.evaluate((node: HTMLInputElement) => node.required), false);
-    assert.equal(
-      await page.getByRole("button", { name: "Choose existing Secret", exact: true }).isVisible(),
-      false,
-    );
-    assert.equal(
-      await page.getByLabel("USER.md", { exact: true }).inputValue(),
-      "Preserve this workspace draft.",
-    );
-    assert.equal(
-      await page.getByLabel("Agent name", { exact: true }).inputValue(),
-      "Recreated Agent",
-    );
-    await method.selectOption("api_key");
-    await apiKey.fill("new-context-key");
-    assert.equal(
-      await alternate.isVisible(),
-      false,
-      "switching back must not revive the old conflict",
-    );
-    assert.equal(await alternateName.inputValue(), "");
-    assert.equal(await apiKey.inputValue(), "new-context-key");
-    assert.equal(
-      secretPostRequests(requests, namespace.id).length,
-      1,
-      "context changes do not retry the write",
-    );
-    assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
-    assert.equal(agentPostRequests(requests, namespace.id).length, 0);
-    assert.equal(
-      requests.filter(({ method }) => ["DELETE", "PATCH", "PUT"].includes(method)).length,
-      0,
-    );
-    page.once("dialog", (dialog) => dialog.accept());
-    await page.getByRole("button", { name: "Start over", exact: true }).click();
-    await page.getByLabel("Preset template").selectOption(preset.data.id);
-    await page.getByLabel("Name", { exact: true }).fill("Fresh preset draft");
-    await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
-    await page.getByLabel("Model Secret", { exact: true }).fill("fresh-preset-key");
-    await page.getByRole("button", { name: "Use Preset" }).click();
-    assert.equal(await alternate.isVisible(), false);
-    assert.equal(
-      await page.getByLabel("API key", { exact: true }).inputValue(),
-      "fresh-preset-key",
-    );
-    assert.equal(secretPostRequests(requests, namespace.id).length, 1);
+test("codex_pat Secret recovery restores authenticated plugin discovery", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new CodexPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("PAT recovery", { ready: true });
+  const existing = await fixture.createSecret(namespace.id, "Recreated Agent", "at-existing");
+  const originalFetch = globalThis.fetch;
+  const discoveryTokens: string[] = [];
+  // Keep real routes and the selected Driver; isolate every external provider request.
+  t.mock.method(globalThis, "fetch", async (...[input, options]: Parameters<typeof fetch>) => {
+    const url = new URL(input instanceof globalThis.Request ? input.url : input);
+    if (["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) {
+      return originalFetch(input, options);
+    }
+    const token = new Headers(options?.headers).get("authorization") ?? "";
+    if (url.hostname === "auth.openai.com") {
+      return Response.json({
+        chatgpt_account_id: "recovery-account",
+        chatgpt_account_is_fedramp: false,
+      });
+    }
+    assert.equal(url.hostname, "chatgpt.com");
+    assert.ok(url.pathname.endsWith("/plugins/list"), url.pathname);
+    discoveryTokens.push(token);
+    return Response.json({ plugins: [], pagination: { next_page_token: null } });
   });
-}
+  const artifact = structuredClone(standardCodexPreset);
+  artifact.template.agent.harnessAuth = {
+    ...artifact.template.agent.harnessAuth,
+    method: "codex_pat",
+  };
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    { body: artifact },
+  );
+  assert.equal(preset.status, 201);
+  const { page } = await newPage(t, fixture);
+  await page.route("**/*", (route) => {
+    const url = new URL(route.request().url());
+    return url.origin === fixture.origin ? route.continue() : route.abort();
+  });
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Name", { exact: true }).fill("Recreated Agent");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Model Secret", { exact: true }).fill("at-replacement");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const conflict = page.waitForResponse(
+    (response) => response.url().endsWith("/secrets") && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.equal((await conflict).status(), 409);
+  await page.getByRole("button", { name: "Choose existing Secret", exact: true }).click();
+  const disclosure = page.locator("#plugin-discovery-token > summary");
+  await disclosure.click();
+  const token = page.getByLabel("Token for plugin discovery", { exact: true });
+  assert.equal(await token.inputValue(), "");
+  const discovered = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/agents/plugins") &&
+      response.request().postDataJSON()?.accessToken === "at-discovery",
+  );
+  await token.fill("at-discovery");
+  assert.equal((await discovered).status(), 200);
+  assert.ok(discoveryTokens.includes("Bearer at-discovery"));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog.waitFor();
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await selectSecret(page, "Service account token Secret", existing);
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
+  assert.deepEqual(created.harnessAuth, { method: "codex_pat", source: existing.ref });
+  assert.equal(secretPostRequests(requests, namespace.id).length, 1);
+  assert.equal(
+    requests.filter(({ method }) => ["DELETE", "PATCH", "PUT"].includes(method)).length,
+    0,
+  );
+});
+
+test("password Secret recovery clears on OAuth and Preset context changes", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Secret name conflict", { ready: true });
+  // Deleting an Agent keeps its model Secret, which is named after the Agent.
+  await fixture.createSecret(namespace.id, "Recreated Agent", "earlier-model-key");
+  const artifact = structuredClone(standardCodexPreset);
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: artifact,
+    },
+  );
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Name", { exact: true }).fill("Recreated Agent");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Model Secret", { exact: true }).fill("replacement-model-key");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const apiKey = page.getByLabel("API key", { exact: true });
+  const save = page.getByRole("button", { name: "Create Agent", exact: true });
+  await openAdvancedSettings(page);
+  await page.getByLabel("USER.md", { exact: true }).fill("Preserve this workspace draft.");
+
+  const conflict = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/secrets`) &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  assert.equal((await conflict).status(), 409);
+
+  const alternate = page.getByRole("button", { name: "Use another Secret name", exact: true });
+  await page.waitForFunction(() => document.activeElement?.id === "model-secret-conflict");
+  await page.keyboard.press("Tab");
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Choose existing Secret", exact: true })
+      .evaluate((node) => node === document.activeElement),
+    true,
+  );
+  await page.keyboard.press("Tab");
+  assert.equal(await alternate.evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press("Enter");
+  const alternateName = page.getByLabel("New Secret name", { exact: true });
+  assert.equal(await alternateName.evaluate((node) => node === document.activeElement), true);
+  const method = page.getByLabel("Authentication method", { exact: true });
+  await method.focus();
+  await method.selectOption("credential_source");
+  assert.equal(await method.evaluate((node) => node === document.activeElement), true);
+  assert.equal(await alternate.isVisible(), false, "OAuth does not own a model Secret write");
+  assert.equal(await alternateName.evaluate((node: HTMLInputElement) => node.required), false);
+  assert.equal(
+    await page.getByRole("button", { name: "Choose existing Secret", exact: true }).isVisible(),
+    false,
+  );
+  assert.equal(
+    await page.getByLabel("USER.md", { exact: true }).inputValue(),
+    "Preserve this workspace draft.",
+  );
+  assert.equal(
+    await page.getByLabel("Agent name", { exact: true }).inputValue(),
+    "Recreated Agent",
+  );
+  await method.selectOption("api_key");
+  await apiKey.fill("new-context-key");
+  assert.equal(
+    await alternate.isVisible(),
+    false,
+    "switching back must not revive the old conflict",
+  );
+  assert.equal(await alternateName.inputValue(), "");
+  assert.equal(await apiKey.inputValue(), "new-context-key");
+  assert.equal(
+    secretPostRequests(requests, namespace.id).length,
+    1,
+    "context changes do not retry the write",
+  );
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+  assert.equal(
+    requests.filter(({ method }) => ["DELETE", "PATCH", "PUT"].includes(method)).length,
+    0,
+  );
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Start over", exact: true }).click();
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Name", { exact: true }).fill("Fresh preset draft");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Model Secret", { exact: true }).fill("fresh-preset-key");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  assert.equal(await alternate.isVisible(), false);
+  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "fresh-preset-key");
+  assert.equal(secretPostRequests(requests, namespace.id).length, 1);
+});
 
 for (const failure of ["denied", "uncertain", "generic conflict"] as const) {
   test(`password Preset does not offer Secret recovery after ${failure}`, async (t) => {

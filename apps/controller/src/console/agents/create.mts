@@ -1155,9 +1155,7 @@ function renderAgentForm(
   const alternateSecretName = element("input", {
     id: "alternate-model-secret-name",
     autocomplete: "off",
-  });
-  alternateSecretName.addEventListener("input", () => {
-    alternateSecretName.setCustomValidity(namespaceNameProblem(alternateSecretName.value));
+    "data-trim": "",
   });
   const alternateSecretField = field("New Secret name", alternateSecretName);
   alternateSecretField.hidden = true;
@@ -1166,6 +1164,9 @@ function renderAgentForm(
       return;
     }
     passwordAuth = false;
+    pluginDiscoveryTokenDetails.append(transientCredentialField);
+    credentialStorageHelp.textContent =
+      "If no Secret is selected, enter a service account token to preview plugins. Agent creation uses the selected Secret; its value stays on the server.";
     operateAnswer.reset();
     apiKey.value = "";
     clearSecretRecovery();
@@ -1203,19 +1204,20 @@ function renderAgentForm(
       }
     },
   });
+  const credentialStorageHelp = element(
+    "p",
+    { className: "hint" },
+    passwordAuth
+      ? "Stored as a Secret for this Agent. Credentials are never included in Configuration JSON."
+      : "If no Secret is selected, enter a service account token to preview plugins. Agent creation uses the selected Secret; its value stays on the server.",
+  );
   const transientCredentialField = element(
     "div",
     { className: "form-field" },
     credentialLabel,
     apiKey,
     credentialHelp,
-    element(
-      "p",
-      { className: "hint" },
-      passwordAuth
-        ? "Stored as a Secret for this Agent. Credentials are never included in Configuration JSON."
-        : "If no Secret is selected, enter a service account token to preview plugins. Agent creation uses the selected Secret; its value stays on the server.",
-    ),
+    credentialStorageHelp,
   );
   const pluginDiscoveryTokenDetails = element(
     "details",
@@ -1249,7 +1251,8 @@ function renderAgentForm(
       ? [
           modelCredentialField,
           oauthLogin.section,
-          passwordAuth ? transientCredentialField : pluginDiscoveryTokenDetails,
+          passwordAuth ? transientCredentialField : null,
+          pluginDiscoveryTokenDetails,
           secretConflictRecovery,
         ]
       : []),
@@ -3322,6 +3325,9 @@ function renderAgentForm(
     event.preventDefault();
     // A restored draft sets the name and files without an input event.
     checkName();
+    if (ownsSecretRecovery() && !alternateSecretField.hidden) {
+      alternateSecretName.setCustomValidity(namespaceNameProblem(alternateSecretName.value.trim()));
+    }
     // The Workspace tab's check, naming the file; validateFields opens Advanced settings to it
     // (finding 2341).
     for (const [filename, input] of workspaceInputs) {

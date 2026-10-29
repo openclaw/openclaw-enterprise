@@ -247,6 +247,8 @@ uncertain writes clear it and lock creation. Agent-name conflicts do not enable
 Secret recovery. Credential-context changes clear the notice, alternate name,
 and required state. Returning to a password method does not revive that recovery.
 The notice and choices share a focused block under the model credential field.
+Submit trims and validates alternate names before any write. Choosing an existing
+Secret restores the normal optional service-account plugin discovery token field.
 If a later save fails, its saved Secret reference is reused.
 If Configuration creation succeeds but Agent creation fails, the form retains
 the Configuration ID and locks Configuration-affecting controls. A safe retry
