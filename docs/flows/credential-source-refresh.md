@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-27
-last_updated_session: authoring-run/0430a401-05fb-4e0b-9166-a02b77498311
+updated: 2026-10-29
+last_updated_session: authoring-run/f0c1d1b2-80e6-4a5b-9dce-e888c5e30bb2
 ---
 
 # Credential source refresh Flow
@@ -135,10 +135,11 @@ The HTTP handler in `apps/controller/src/index.ts` records the successful start
 before sending the session reference. The audit event identifies the Agent or
 Namespace, not the session Secret.
 
-`apps/controller/src/console/agents/device-login.mts:createDeviceLogin` keeps
-`start_unconfirmed` in the form draft if the start has no response status or its
-successful response is unusable. The form blocks another start. Without a
-confirmed session reference, it also cannot poll or cancel. See
+`apps/controller/src/console/agents/device-login.mts:createDeviceLogin` records
+`start_unconfirmed` before sending a start. Both authentication forms retain it
+across navigation. A usable current response supplies the challenge; a confirmed
+refusal permits retry. Lost or unusable successful responses block another start,
+poll, and cancellation. See
 [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 For a known session, compare-and-swap permits one poll at a time. OCC rechecks scope and
 both Driver selections before accepting completion. An uncertain exchange closes
@@ -337,6 +338,8 @@ detached reads. Clearing bytes cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 14:58: Retain unconfirmed Console starts across navigation. (authoring-run/f0c1d1b2-80e6-4a5b-9dce-e888c5e30bb2 - 2de02b7f995d5401c9a300b1e350b9f80be1073d)
 
 - 2026-10-27 19:10: Clarify GitHub token renewal and withdrawal. (authoring-run/0430a401-05fb-4e0b-9166-a02b77498311 - d0d593e0f6b4d2c8c1282f0f05e4d83aa607608f)
 

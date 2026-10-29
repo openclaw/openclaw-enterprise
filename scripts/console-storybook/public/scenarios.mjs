@@ -3983,6 +3983,15 @@ export const scenarios = {
     description:
       "The user code and provider link are visible while authorization is pending. Cancel login removes this staged login locally.",
   },
+  createOAuthStartNavigation: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT sign-in interrupted by navigation (Experimental)",
+    path: create,
+    rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
+    actions: oauthForm,
+    description:
+      "Start sign-in, navigate to Secrets, and return with Back. The retained attempt blocks a second start and asks an administrator to investigate. The fixture holds the response; it does not prove provider persistence.",
+  },
   createOAuthReady: {
     group: "Pages/Create Agent",
     name: "ChatGPT login ready for plugin discovery (Experimental)",
@@ -4053,6 +4062,16 @@ export const scenarios = {
     pluginDiscovery,
     description:
       "Plugin browsing uses the Agent's saved credential source without another login. Saving plugin selections never replaces authentication.",
+  },
+  authOAuthStartNavigation: {
+    group: "Components/Credentials",
+    name: "ChatGPT replacement interrupted by navigation (Experimental)",
+    path: `${draft}&tab=credentials`,
+    deployed: true,
+    auth: "oauth",
+    rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
+    description:
+      "Start a replacement sign-in, navigate to Secrets, and return with Back. The saved authentication remains; the unconfirmed replacement cannot start twice.",
   },
   authOAuthReconnect: {
     group: "Components/Credentials",
