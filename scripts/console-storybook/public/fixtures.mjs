@@ -276,6 +276,7 @@ export function installFixture(scenario, evidence) {
           createdAt,
         },
       ];
+  const namespaceDeletionReads = new Map();
   const backends = scenario.emptyBackends
     ? []
     : [{ id: "chatgpt-demo", name: "ChatGPT", type: "chatgpt" }];
@@ -807,7 +808,15 @@ export function installFixture(scenario, evidence) {
           : "SANDBOX_POLICY_CEILING_CHANGED",
     };
   }
-  const response = (data, status = 200, errorCode, meta = {}, errorMessage, details) =>
+  const response = (
+    data,
+    status = 200,
+    errorCode,
+    meta = {},
+    errorMessage,
+    details,
+    remainingResources,
+  ) =>
     new Response(
       JSON.stringify({
         ...(errorCode
@@ -816,6 +825,7 @@ export function installFixture(scenario, evidence) {
                 code: errorCode,
                 message: errorMessage ?? "The selected preview simulates this failure.",
                 ...(details ? { details } : {}),
+                ...(remainingResources ? { remainingResources } : {}),
               },
             }
           : { data }),
@@ -1015,6 +1025,61 @@ export function installFixture(scenario, evidence) {
       }
       return response(namespaces);
     }
+    const namespaceMatch = path.match(/^\/namespaces\/([^/]+)$/);
+    if (namespaceMatch) {
+      const item = namespaces.find((namespace) => namespace.id === namespaceMatch[1]);
+      if (!item) {
+        return error(404, "NOT_FOUND");
+      }
+      if (method === "DELETE") {
+        if (scenario.namespaceDeleteOutcome === "blocked") {
+          return response(
+            null,
+            409,
+            "NAMESPACE_NOT_EMPTY",
+            {},
+            "The requested Namespace is not empty. It still contains Agents, Configurations and Secrets.",
+            undefined,
+            [
+              { kind: "Agents", count: 1, ids: ["agt_00000000-0000-4000-8000-000000000003"] },
+              {
+                kind: "Configurations",
+                count: 1,
+                ids: ["cfg_00000000-0000-4000-8000-000000000004"],
+              },
+              { kind: "Secrets", count: 1, ids: ["sec_00000000-0000-4000-8000-000000000005"] },
+            ],
+          );
+        }
+        if (scenario.namespaceDeleteOutcome === "forbidden") {
+          return error(
+            403,
+            "FORBIDDEN",
+            "Not authorized: Namespace delete is required on this Namespace.",
+          );
+        }
+        item.status = "deleting";
+        namespaceDeletionReads.set(item.id, 0);
+        if (scenario.namespaceDeleteOutcome === "pending") {
+          await new Promise((resolve) => setTimeout(resolve, 20000));
+        }
+        if (scenario.namespaceDeleteOutcome === "unknown") {
+          return error(503, "DEPENDENCY_UNAVAILABLE");
+        }
+        return response(item, 202);
+      }
+      if (method === "GET") {
+        if (item.status === "deleting" && scenario.namespaceDeleteOutcome === "complete") {
+          const reads = (namespaceDeletionReads.get(item.id) ?? 0) + 1;
+          namespaceDeletionReads.set(item.id, reads);
+          if (reads > 1) {
+            namespaces.splice(namespaces.indexOf(item), 1);
+            return error(404, "NOT_FOUND");
+          }
+        }
+        return response(item);
+      }
+    }
     if (path === "/backends" && method === "GET") {
       return response(backends);
     }
@@ -1029,6 +1094,7 @@ export function installFixture(scenario, evidence) {
       if (ns !== namespaceId) {
         if (resource === "permissions" && namespaces.some((item) => item.id === ns)) {
           return response({
+            delete: !scenario.namespaceDeleteDenied,
             agents: { create: true },
             secrets: { create: true },
             installation: { administer: !scenario.observabilityDenied },
@@ -1301,6 +1367,7 @@ export function installFixture(scenario, evidence) {
       }
       if (resource === "permissions" && method === "GET") {
         return response({
+          delete: !scenario.namespaceDeleteDenied,
           agents: {
             create: !scenario.readOnlyPermissionSummary && !scenario.agentCreateRestricted,
           },

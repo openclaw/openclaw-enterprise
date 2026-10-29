@@ -189,7 +189,7 @@ import {
 } from "../workspace-setup-runtime.ts";
 import { requireHarnessAuthMethod } from "../harness-auth-method.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
-import { managedInstalls } from "../../plugin/managed-catalog.ts";
+import { managedInstalls, requireManagedCredentialRuntime } from "../../plugin/managed-catalog.ts";
 import {
   validatePlaintextNativeGateway,
   validateRoutableNativeListener,
@@ -6298,6 +6298,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const sandboxDriver = this.sandboxDriverForRevision(revision);
     const providerOwnsHarnessEndpoint = sandboxDriver?.harnessEndpoint !== undefined;
+    requireManagedCredentialRuntime(
+      revision.plugins?.plugins,
+      sandboxDriver?.implementation,
+      this.credentialGatewayDriver?.implementation,
+    );
     requireNativeWorkerSandbox(revision.harness, sandboxDriver);
     if (sandboxDriver !== undefined && embedded) {
       throw new ConfigurationFailure("SandboxDriver support is limited to dedicated Harnesses.");

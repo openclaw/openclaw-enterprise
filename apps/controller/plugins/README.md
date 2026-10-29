@@ -7,18 +7,18 @@ Each package has a [plugin.json](./oce-google-workspace/plugin.json) at its root
 - [Google Workspace](./oce-google-workspace/ai.openclaw.oce/release.json) pins the ClawHub skill and Linux `gog` binaries.
 - [Slack](./oce-slack/mcp.json) declares Slack’s hosted MCP server. The [release](./oce-slack/ai.openclaw.oce/release.json) pins the descriptor. Once connected, OpenClaw discovers the tools Slack publishes through MCP `tools/list`. The worker stages the server with `enabled: false` until OCE supports binding a Slack user connection. See [Slack MCP](https://docs.slack.dev/ai/slack-mcp-server/).
 
-Slack’s account slot pins the OAuth issuer and protected resource that the connection template must match. The planned connection flow uses the MCP client to discover OAuth metadata from the server’s `WWW-Authenticate` challenge, record the approved scopes on the connection template, and send the resource in authorization and token requests. Slack enforces the user’s grant when a tool is called. Slack requires a preregistered OAuth client. Its authorization and token endpoints are on `slack.com`, while its issuer and protected resource are `https://mcp.slack.com`. [Slack resource metadata](https://mcp.slack.com/.well-known/oauth-protected-resource) · [Slack authorization server metadata](https://mcp.slack.com/.well-known/oauth-authorization-server)
+Slack’s release reserves an `account` slot for a future worker binding. Installing the package does not attach a credential or enable the MCP server.
 
 The Plugin Driver registers each package by version. Publish changed release bytes under a new version so existing Agent selections continue to identify the reviewed release.
 
 The package’s OCE extension declares `policyScope: "enablement_only"`. The Plugin Driver advertises this scope for the versioned plugin ID so the Console can render the same enable switch as a Codex plugin before catalog discovery completes. OCC refuses tool approvals, reviewers, and per-tool overrides for these packages.
 
-Each release declares the `account` credential slot for a future binding. It names
-the worker placeholder and the HTTP routes or MCP server that may receive it.
-Google’s public discovery request takes no credential. The installer reads the
-package without binding this slot. A binding implementation must give the Harness
-an opaque placeholder and check its request against the release before substituting
-a bearer at egress. An absent binding grants no credentialed route.
+Google Workspace’s optional `account` slot refers to a credential attached to the Agent.
+OpenShell supplies the worker with a placeholder. The request guard checks the
+[pinned operation map](./oce-google-workspace/ai.openclaw.oce/operations.json) and the source’s host, path and scope limits before
+OpenShell substitutes the bearer. The Agent can also attach credentials for use
+outside the plugin. The [operator guide](../../../docs/guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+describes registration and verification. See the [operation map generator](../../../scripts/google-operation-map/README.md) for coverage and regeneration.
 
 The package follows the Agent Plugins JSON schema and keeps skills beside the manifest.
 For the packaging conventions, see the [OpenAI plugin structure](https://developers.openai.com/plugins/build/plugins#plugin-structure)

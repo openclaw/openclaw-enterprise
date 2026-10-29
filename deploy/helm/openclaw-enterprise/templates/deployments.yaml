@@ -634,12 +634,26 @@ spec:
             periodSeconds: 1
             failureThreshold: 120
           {{- else }}
+          # Each worker probe starts a Node process inside the worker's CPU limit. It takes
+          # about 0.6 s when the worker uses its whole quota and several seconds when the
+          # node is overloaded, so the default 1 s timeout restarted healthy workers.
+          # Liveness detects a stuck run loop from the marker age, not from probe latency.
           readinessProbe:
             exec:
               command: [node, scripts/production-healthcheck.mjs, worker, ready]
+            timeoutSeconds: 5
           livenessProbe:
             exec:
               command: [node, scripts/production-healthcheck.mjs, worker]
+            timeoutSeconds: 5
+          # Like the API, a slow boot gets 2 min before liveness starts. A 5 s period keeps
+          # the Node probe from taking CPU from the booting worker.
+          startupProbe:
+            exec:
+              command: [node, scripts/production-healthcheck.mjs, worker]
+            timeoutSeconds: 5
+            periodSeconds: 5
+            failureThreshold: 24
           {{- end }}
         {{- if and (eq $component "worker") $repositoryBroker }}
       containers:

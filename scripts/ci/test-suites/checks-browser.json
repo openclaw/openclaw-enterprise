@@ -28,7 +28,8 @@
     "tests/browser/console-agent-plugin-refusals.test.mjs",
     "tests/browser/docs-compute-matrix.test.mjs",
     "tests/browser/console-namespace-not-ready.test.mjs",
-    "tests/browser/console-secrets.test.ts"
+    "tests/browser/console-secrets.test.ts",
+    "tests/browser/console-namespace-delete.test.ts"
   ],
   "files": [
     {
@@ -112,6 +113,9 @@
     },
     {
       "path": "tests/browser/console-secrets.test.ts"
+    },
+    {
+      "path": "tests/browser/console-namespace-delete.test.ts"
     }
   ]
 }

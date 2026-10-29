@@ -3147,6 +3147,9 @@ export class OpenClawController {
       });
       this.validatePluginPolicies(plugins, pluginApprovers);
       this.validatePluginConfiguration(plugins, configurationInput.values);
+      // Provisioning creates the Agent before it has tool sources. Bind the account
+      // on the saved Agent after the initial install.
+      this.validatePluginCredentialSources(plugins, []);
       await this.authorizeProvisioningSources(
         state,
         principalId,
@@ -8441,9 +8444,32 @@ export class OpenClawController {
         throw new AgentDeletingError();
       }
       const driver = this.pluginDriver();
+      const sources: CredentialSource[] = [];
+      if (driver.credentials && agent.executionMode === "dedicated") {
+        for (const { sourceId } of agent.credentialSources ?? []) {
+          const ref = { kind: "credential_source" as const, namespaceId, id: sourceId };
+          if (
+            (await this.canRead(principalId, ref)) &&
+            (await this.authorizationDecision(principalId, "operate", ref)).decision.allowed &&
+            (await this.authorizationDecision(agent.servicePrincipalId, "operate", ref)).decision
+              .allowed
+          ) {
+            const source = await state.credentialSources.findCredentialSource(
+              namespaceId,
+              sourceId,
+            );
+            if (source?.state === "ready") {
+              sources.push(source);
+            }
+          }
+        }
+      }
       return immutableCopy({
         driver: { id: driver.id, implementation: driver.implementation },
         ...driver.policyCapabilities,
+        ...(driver.credentials && agent.executionMode === "dedicated"
+          ? { credentialSlots: driver.credentials.choices(sources) }
+          : {}),
         discoveryCredential: driver.discoveryCredential ?? "required",
       });
     });
@@ -9447,6 +9473,7 @@ export class OpenClawController {
         namespace.id,
         credentialSources ?? [],
         harnessAuth,
+        plugins,
       );
       this.validatePluginPolicies(plugins, pluginApprovers);
       const agentId = this.nextIdentifier("agent");
@@ -9841,13 +9868,19 @@ export class OpenClawController {
         rejectCrossNamespaceSecretSources(namespace.id, undefined, requestedAuth);
         await this.authorizeHarnessAuthSource(state, principalId, namespace.id, requestedAuth);
       }
-      if (requestedSources !== undefined) {
+      if (
+        requestedSources !== undefined ||
+        (plugins !== undefined &&
+          Object.values(plugins).some((p) => p.driverPolicy !== undefined) &&
+          this.pluginDriver().credentials)
+      ) {
         await this.authorizeAgentCredentialSources(
           state,
           principalId,
           namespace.id,
-          requestedSources,
+          requestedSources ?? agent.credentialSources ?? [],
           requestedAuth === undefined ? previousAuth : requestedAuth,
+          plugins ?? agent.plugins,
         );
       } else if (requestedAuth !== undefined) {
         this.assertHarnessSourceListed(agent.credentialSources ?? [], requestedAuth);
@@ -11908,7 +11941,9 @@ export class OpenClawController {
     namespaceId: string,
     bindings: readonly AgentCredentialSourceBinding[],
     harnessAuth: HarnessAuthBinding | null | undefined,
+    plugins?: PluginDesiredState,
   ): Promise<void> {
+    const sources: CredentialSource[] = [];
     for (const { sourceId } of bindings) {
       await this.authorize(principalId, "operate", {
         kind: "credential_source",
@@ -11932,8 +11967,24 @@ export class OpenClawController {
         throw new CredentialProxyAdmissionError("sourcesWithoutProxy");
       }
       this.credentialSourceOwner(source);
+      sources.push(source);
     }
     this.assertHarnessSourceListed(bindings, harnessAuth);
+    this.validatePluginCredentialSources(plugins, sources, harnessAuth);
+  }
+
+  private validatePluginCredentialSources(
+    plugins: PluginDesiredState | undefined,
+    sources: readonly CredentialSource[],
+    harnessAuth?: HarnessAuthBinding | null,
+  ): void {
+    if (plugins && Object.keys(plugins).length) {
+      this.pluginDriver().credentials?.validate(
+        plugins,
+        sources,
+        harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined,
+      );
+    }
   }
 
   /**
@@ -11948,6 +11999,7 @@ export class OpenClawController {
   ): Promise<readonly CredentialSourceSnapshot[]> {
     const bindings = agent.credentialSources ?? [];
     if (bindings.length === 0) {
+      this.validatePluginCredentialSources(agent.plugins, [], agent.harnessAuth);
       return [];
     }
     // A state refusal, so HTTP keeps the message instead of the generic "already exists".
@@ -11962,6 +12014,7 @@ export class OpenClawController {
       agent.namespaceId,
       bindings,
       agent.harnessAuth,
+      agent.plugins,
     );
     const snapshots: CredentialSourceSnapshot[] = [];
     for (const { sourceId } of bindings) {
@@ -14243,7 +14296,10 @@ export class OpenClawController {
       return;
     }
     const driver = this.pluginDriver();
-    driver.validatePlacement?.(plugins, harness, this.selectedDriver("compute").implementation);
+    driver.validatePlacement?.(plugins, harness, this.selectedDriver("compute").implementation, {
+      sandbox: this.selections.get("sandbox")?.implementation,
+      gateway: this.selections.get("credential_gateway")?.implementation,
+    });
     const required = pluginRuntimeHarnessRequirement(driver.implementation, harness);
     if (required !== undefined) {
       throw new ConfigurationHarnessError(

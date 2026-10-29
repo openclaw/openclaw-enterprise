@@ -183,7 +183,7 @@ test("OpenClaw Plugin Driver lists the vetted Diffs catalog entry", async () => 
   });
 });
 
-test("dedicated OpenClaw admits one managed installation and refuses credential attachment", async () => {
+test("dedicated OpenClaw admits one managed package and keeps Slack installation-only", async () => {
   const driver = new OCCPluginDriver();
   const dedicated = context("dedicated");
   const [google, slack] = await driver.listCatalog({
@@ -195,6 +195,13 @@ test("dedicated OpenClaw admits one managed installation and refuses credential 
   assert.equal(driver.policyCapabilities.policyScopeByPlugin[slack.id], "enablement_only");
   assert.deepEqual((await driver.discoverCatalog({ q: "SLACK" })).plugins, [slack]);
   driver.validatePolicies({ [slack.id]: { enabled: false } });
+  assert.throws(
+    () =>
+      driver.validatePolicies({
+        [slack.id]: { enabled: true, driverPolicy: { credentials: { account: "cs_slack" } } },
+      }),
+    /Slack supports plugin enablement only/,
+  );
   assert.throws(
     () =>
       driver.validatePolicies({ [google.id]: { enabled: true }, [slack.id]: { enabled: true } }),
@@ -210,7 +217,7 @@ test("dedicated OpenClaw admits one managed installation and refuses credential 
       driver.validatePolicies({
         [google.id]: { enabled: true, credentialSourceId: "src_personal" },
       }),
-    /supports plugin enablement only/,
+    /optional credential slot/,
   );
 });
 

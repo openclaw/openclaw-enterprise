@@ -1,0 +1,98 @@
+{{- $name := "openclaw-enterprise-plugin-request-guard" }}
+{{- $selector := dict "app.kubernetes.io/name" .Chart.Name "app.kubernetes.io/instance" .Release.Name }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- toYaml $selector | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- toYaml $selector | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: plugin-request-guard
+          image: {{ .Values.image | quote }}
+          args: ["apps/controller/src/plugin-request-guard.ts"]
+          env:
+            - name: OCC_PLUGIN_REQUEST_AUTHORITY_PORT
+              value: {{ .Values.port | quote }}
+            - name: OCC_PLUGIN_REQUEST_AUTHORITY_ISSUER
+              value: {{ .Values.issuer | quote }}
+            - name: OCC_PLUGIN_REQUEST_AUTHORITY_KEY_ID
+              value: {{ .Values.keyId | quote }}
+          ports:
+            - name: plugin-requests
+              containerPort: {{ .Values.port }}
+          readinessProbe:
+            tcpSocket:
+              port: plugin-requests
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 25m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          volumeMounts:
+            - name: trust
+              mountPath: /etc/openclaw/egress
+              readOnly: true
+      volumes:
+        - name: trust
+          projected:
+            defaultMode: 0440
+            sources:
+              - secret:
+                  name: {{ .Values.tlsSecretName | quote }}
+                  items:
+                    - { key: tls.crt, path: tls/tls.crt }
+                    - { key: tls.key, path: tls/tls.key }
+              - secret:
+                  name: {{ .Values.issuerSecretName | quote }}
+                  items:
+                    - { key: public.pem, path: issuer/issuer.pub }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- toYaml $selector | nindent 4 }}
+  ports:
+    - name: plugin-requests
+      port: {{ .Values.port }}
+      targetPort: plugin-requests
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $selector | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- toYaml .Values.clients | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.port }}
+  egress: []

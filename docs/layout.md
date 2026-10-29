@@ -102,6 +102,7 @@ See the [Agent repository flow](flows/agent-repository-credentials.md).
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `deploy/helm/openclaw-enterprise/`                       | Helm chart for Kubernetes installation.                                                          |
 | `deploy/helm/openclaw-execution/`                        | Execution-cluster access roles and authenticated Harness routing infrastructure.                 |
+| `deploy/helm/openclaw-plugin-request-guard/`             | Shared OpenShell request middleware for managed plugins in an execution cluster.                 |
 | `deploy/runtime/`, `deploy/logging/`, `deploy/examples/` | Runtime packaging, logging configuration, and deployment examples.                               |
 | `deploy/presets/`                                        | Installable Agent Preset requests; see [standard Codex](guides/topics/standard-codex-preset.md). |
 | `Dockerfile`, `compose*.yaml`                            | Controller image and local stack definitions or overlays.                                        |

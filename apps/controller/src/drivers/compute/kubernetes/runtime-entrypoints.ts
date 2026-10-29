@@ -6,6 +6,7 @@ import {
   RUNTIME_FAILURE_CHECKS,
 } from "../../../../../../packages/contracts/src/runtime-failure.mjs";
 
+import { readFileSync } from "node:fs";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
 import { nodeProgramArguments } from "../node-program.ts";
@@ -233,6 +234,18 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
 }
 `;
 
+// The bootstrap also needs the reserved alias when the Agent installs no Google release.
+// Read it in the controller so an unselected worker need not have the package on disk.
+const googleAccountEnv: string = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../../../plugins/oce-google-workspace/ai.openclaw.oce/release.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+).credentials.account.delivery.env;
+
 const MANAGED_INSTALL_HELPERS = String.raw`
 function verifiedPluginFile(path, expected) {
   const bytes = require("node:fs").readFileSync(path);
@@ -259,7 +272,7 @@ function managedPluginInstallation() {
       const instructions = directory + "/SKILL.md";
       skill = { directory, instructions };
     }
-    install = { id, root, release, skills, skill };
+    install = { name, id, root, release, skills, skill };
   }
   return install;
 }
@@ -4734,6 +4747,18 @@ let nodeStateCurrent = outdatedNodeDatabases.length === 0;
 
 const install = managedPluginInstallation();
 const release = install?.release;
+const googleAlias = ${JSON.stringify(googleAccountEnv)};
+const googleCredentialEnv = process.env.OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV;
+const googleMarker = process.env[googleAlias];
+const scopedGoogleMarker = /^openshell:resolve:env:s[0-9a-f]{64}_([A-Z][A-Z0-9_]*)$/.exec(googleMarker ?? "")?.[1] === googleAlias;
+if (googleCredentialEnv !== undefined && (
+  googleCredentialEnv !== googleAlias ||
+  install?.name !== "google" || release?.credentials?.account?.delivery?.env !== googleCredentialEnv ||
+  (googleMarker !== undefined && !scopedGoogleMarker)
+)) throw new Error("The selected Google account requires its scoped OpenShell credential placeholder.");
+// OpenShell supplies a scoped marker for an attached provider, including an independent
+// Agent credential. A withdrawn provider stops supplying it when this container restarts.
+if (!scopedGoogleMarker) delete process.env[googleAlias];
 const pluginBin = release?.capabilities.harness.includes("cli") ? join(install.root, "bin") : undefined;
 if (pluginBin) {
   const architecture = { x64: "linux-amd64", arm64: "linux-arm64" }[process.arch];

@@ -11,16 +11,21 @@ Codex Agents use a different catalog and approval policy; see
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
 Use **Configure plugins** to edit saved selections and tool policy. On a dedicated
 OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, choose
-**Slack** or **Google Workspace**, add it, and save. Deploy a new version.
-To inspect Slack setup, run the following in the dedicated worker container. The node
-configuration shows `https://mcp.slack.com/mcp` with `enabled: false` until a Slack
-user connection can be attached.
+**Google Workspace** and add it. Leave **Install without an account** selected
+to verify the installation with `gog --version`. To make Google API calls, choose a ready
+**Google account**, save the selection and deploy. The worker receives an
+OpenShell placeholder for that account. The Gateway loads the skill. The worker can use mapped operations within the account’s configured host, path and OAuth scopes. A command that calls multiple Google services may need more destinations than the selected source permits.
+
+The picker lists compatible sources attached to the Agent. Other sources can stay attached with their own authority. OpenShell requires distinct placeholder names and refuses another credential on a host covered by the Google request guard. The caller needs
+`read` and `operate` on the source, and the Agent needs `operate`. If the
+package digest changes, select the account again. Clearing the slot or removing
+the plugin takes effect on the next deployment. The Agent keeps its separately attached credentials. To stop a running version from using a credential, [withdraw the source](../../reference/credential-sources/withdrawal.md). [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+
+To deploy Slack, select **Slack**, add it, save the selection and deploy. Inspect the server on the dedicated worker with the command below. It shows `https://mcp.slack.com/mcp` with `enabled: false`. This release stages the server without an account.
 
 ```sh
 OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.slack --json
 ```
-
-For Google, run `gog --version` on the worker.
 
 Dedicated Codex Agents with a supported login can browse their app catalog.
 For other Agents, use **Plugin selections JSON** to enter a known plugin ID.

@@ -26,6 +26,7 @@ import {
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
   commandOutput,
+  gatewayStateVolume,
   image,
   imageTestOptions,
   openClawGatewaySpawnedRequest,
@@ -55,7 +56,7 @@ async function startGoogleGateway(t, enabled, workspaceNodeId) {
 
 // Run the production worker bootstrap with its packaged files and child environment. The child
 // inspects the installed plugin in place of enrolling; the model probe uses a fixture.
-function runManagedWorker(plugin, childArgs, digest, mounts = []) {
+function runManagedWorker(plugin, childArgs, digest, mounts = [], environment = []) {
   const launch = `
 const cp = require("node:child_process"), realSpawn = cp.spawn;
 cp.spawnSync = () => ({status:0,stdout:JSON.stringify({auth:{probes:{results:[{provider:"openai",model:"openai/test",source:"env",status:"ok"}]}}})});
@@ -86,6 +87,7 @@ ${NATIVE_WORKER_ENTRYPOINT}`;
         ? []
         : ["-e", `OPENCLAW_MANAGED_${plugin}_RELEASE_SHA256=${digest}`]),
       ...mounts,
+      ...environment.flatMap((entry) => ["--env", entry]),
       "--entrypoint",
       "node",
       image,
@@ -119,13 +121,38 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
       // Exercise the production worker bootstrap in the real image. Substitute its model probe and
       // enrollment peer; the child resolves and executes the installed binary with the actual launch env.
       const probe = `const r = require("node:child_process").spawnSync("gog", ["--version"], {encoding:"utf8"});
-console.log(JSON.stringify(r.error ? {code:r.error.code} : {version:r.stdout.trim().split(" ")[0]}));
+console.log(JSON.stringify({...(r.error ? {code:r.error.code} : {version:r.stdout.trim().split(" ")[0]}), markerVisible:process.env.GOG_ACCESS_TOKEN===undefined?undefined:"present"}));
 process.exit(r.error ? 0 : r.status);`;
-      const worker = (digest, mounts) => runManagedWorker("GOOGLE", ["-e", probe], digest, mounts);
-      assert.deepEqual(JSON.parse((await worker(undefined)).stdout.trim()), { code: "ENOENT" });
+      const worker = (digest, mounts, environment) =>
+        runManagedWorker("GOOGLE", ["-e", probe], digest, mounts, environment);
+      const marker =
+        "GOG_ACCESS_TOKEN=openshell:resolve:env:s" + "a".repeat(64) + "_GOG_ACCESS_TOKEN";
+      assert.deepEqual(JSON.parse((await worker(undefined, [], [marker])).stdout.trim()), {
+        code: "ENOENT",
+        markerVisible: "present",
+      });
       assert.deepEqual(JSON.parse((await worker(expected)).stdout.trim()), {
         version: "v" + version,
       });
+      const bound = "OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV=GOG_ACCESS_TOKEN";
+      assert.deepEqual(JSON.parse((await worker(expected, [], [marker])).stdout), {
+        version: "v" + version,
+        markerVisible: "present",
+      });
+      assert.deepEqual(JSON.parse((await worker(expected, [], [bound])).stdout), {
+        version: "v" + version,
+      });
+      assert.deepEqual(JSON.parse((await worker(expected, [], ["GOG_ACCESS_TOKEN=raw"])).stdout), {
+        version: "v" + version,
+      });
+      assert.deepEqual(JSON.parse((await worker(expected, [], [bound, marker])).stdout), {
+        version: "v" + version,
+        markerVisible: "present",
+      });
+      await assert.rejects(
+        worker(expected, [], [bound, "GOG_ACCESS_TOKEN=not-an-issued-placeholder"]),
+        (error) => /requires its scoped OpenShell credential placeholder/.test(error.stderr),
+      );
       await assert.rejects(worker("0".repeat(64)), (error) =>
         /image integrity check: \/usr\/local\/lib\/oce\/plugins\/google\/release\.json/.test(
           error.stderr,
@@ -147,23 +174,43 @@ process.exit(r.error ? 0 : r.status);`;
   test(
     "the dedicated worker configures Slack's hosted MCP server only for the selected release",
     imageTestOptions,
-    async () => {
-      // Use the native CLI with the enrolling node's config. This inspects installation offline.
-      const inspect = (digest, mounts) =>
-        runManagedWorker(
+    async (t) => {
+      // Keep the node state across both revisions and mark it so a wholesale reset cannot
+      // masquerade as a successful removal. Inspect the generated config with the native CLI.
+      const volume = await gatewayStateVolume(t, "/tmp/node", {
+        seed: "echo retained > /tmp/node/enrollment-sentinel",
+      });
+      const inspect = async (digest, mounts = []) => {
+        const result = await runManagedWorker(
           "SLACK",
           ["/app/openclaw.mjs", "config", "get", "nodeHost", "--json"],
           digest,
-          mounts,
+          ["-v", volume + ":/tmp/node", ...mounts],
         );
+        return JSON.parse(result.stdout);
+      };
       const { releaseSha256 } = managedSlackInstall;
-      assert.equal(JSON.parse((await inspect(undefined)).stdout).mcp?.servers?.slack, undefined);
-      const { mcp } = JSON.parse((await inspect(releaseSha256)).stdout);
-      assert.deepEqual(mcp.servers.slack, {
+      const selected = await inspect(releaseSha256);
+      assert.deepEqual(selected.mcp.servers.slack, {
         enabled: false,
         transport: "streamable-http",
         url: "https://mcp.slack.com/mcp",
       });
+      const deselected = await inspect(undefined);
+      assert.equal(deselected.mcp?.servers?.slack, undefined);
+      const sentinel = await runDocker([
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "-v",
+        volume + ":/tmp/node:ro",
+        "--entrypoint",
+        "cat",
+        image,
+        "/tmp/node/enrollment-sentinel",
+      ]);
+      assert.equal(sentinel.stdout.trim(), "retained");
       const mcpPath = "/usr/local/lib/oce/plugins/slack/mcp.json";
       const replacement = fileURLToPath(
         new URL("../../apps/controller/plugins/oce-slack/plugin.json", import.meta.url),
@@ -278,6 +325,7 @@ process.exit(r.error ? 0 : r.status);`;
         "tests/helpers/available-port.mjs",
         "tests/helpers/reuse-port-preload.mjs",
         "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+        "apps/controller/plugins/oce-google-workspace/ai.openclaw.oce/release.json",
         "apps/controller/src/drivers/compute/embedded-gateway-owner.ts",
         "apps/controller/src/drivers/compute/gateway-tool-policy.ts",
         "apps/controller/src/drivers/compute/harness-egress-enrollment.ts",

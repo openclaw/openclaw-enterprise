@@ -1229,7 +1229,7 @@ p {
 }
 /* Namespace rows are list items; each cell names itself for a screen reader. */
 .namespace-table {
-  --namespace-columns: minmax(0, 1fr) 10rem 14rem;
+  --namespace-columns: minmax(0, 1fr) 8rem 11rem 10rem;
 }
 .namespace-table-head,
 .namespace-row {
@@ -1255,6 +1255,69 @@ p {
 .namespace-cell-created {
   color: var(--color-text);
 }
+.namespace-table-head > :last-child {
+  text-align: right;
+}
+.namespace-cell-actions {
+  position: relative;
+  z-index: 1;
+  justify-self: end;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.namespace-row-feedback {
+  grid-column: 1 / -1;
+  position: relative;
+  z-index: 1;
+}
+.namespace-row-feedback:empty,
+.namespace-deletion-outcome:empty {
+  display: none;
+}
+.namespace-row-feedback .status {
+  margin: 0;
+}
+.namespace-deletion-outcome {
+  margin-bottom: var(--space-4);
+}
+.namespace-delete-identity {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  margin-block: var(--space-5);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow-wrap: anywhere;
+}
+.namespace-delete-consequence {
+  font-weight: var(--weight-semibold);
+}
+.namespace-delete-dialog details {
+  margin-top: var(--space-4);
+}
+.namespace-delete-blockers {
+  padding: 0;
+  list-style: none;
+}
+.namespace-delete-blockers > li {
+  padding-block: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+.namespace-delete-blockers .resource-id {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.namespace-delete-blockers pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.namespace-delete-resource {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
 .namespace-cell-label {
   position: absolute;
   width: 1px;
@@ -1265,7 +1328,7 @@ p {
 }
 @media (max-width: 1100px) {
   .namespace-table {
-    --namespace-columns: minmax(0, 1fr) 9rem 12rem;
+    --namespace-columns: minmax(0, 1fr) 7rem 9rem 8rem;
   }
 }
 /* Phone: the badge sits beside the name and Created goes underneath, labelled. */
@@ -1278,15 +1341,28 @@ p {
     gap: var(--space-2) var(--space-3);
     padding: var(--space-4);
   }
+  .namespace-cell-name {
+    grid-column: 1 / -1;
+  }
   .namespace-cell-status {
-    grid-column: 2;
-    grid-row: 1;
-    align-self: start;
+    grid-column: 1;
+    grid-row: 2;
+    align-self: center;
   }
   .namespace-cell-created {
-    grid-column: 1 / -1;
+    grid-column: 1;
+    grid-row: 3;
     color: var(--color-text-muted);
     font-size: var(--text-sm);
+  }
+  .namespace-cell-actions {
+    grid-column: 2;
+    grid-row: 2 / 4;
+    align-self: center;
+    max-width: 10rem;
+  }
+  .namespace-cell-name .resource-id {
+    overflow-wrap: anywhere;
   }
   .namespace-cell-label {
     position: static;
@@ -2523,11 +2599,11 @@ select:not([multiple])[size="1"] {
   display: inline-block;
   margin: var(--space-2) var(--space-2) 0 0;
 }
-.agent-row-actions {
+.resource-row-actions {
   display: flex;
   gap: var(--space-2);
 }
-.agent-row-actions .icon-button {
+.resource-row-actions .icon-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2536,12 +2612,12 @@ select:not([multiple])[size="1"] {
   padding: 0;
   color: var(--muted);
 }
-.agent-row-actions .icon-button:not(:disabled):hover {
+.resource-row-actions .icon-button:not(:disabled):hover {
   border-color: var(--danger);
   background: var(--danger-subtle);
   color: var(--danger);
 }
-.agent-row-actions .icon-button:disabled {
+.resource-row-actions .icon-button:disabled {
   cursor: not-allowed;
 }
 .action-icon {

@@ -1284,6 +1284,10 @@ test("console retained views clear after session expiry and exact Agent denial",
   await page.getByText("Denied retained Agent", { exact: true }).waitFor();
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  // Each row reads its Namespace delete permission after the list shows. If that read reached
+  // the API after the expiry below, its 401 would show the expired sign-in before the Agents
+  // click. Expire only once the page has no read in flight, so the held return finds it.
+  await waitForSettledView(page);
   expireSessions(fixture);
   const sessionPattern = "**/api/auth/session";
   const expiredSession = await holdRoute(t, page, sessionPattern, (route, response) =>
@@ -2128,7 +2132,7 @@ test("Namespaces rows open their Agents and status badges use words with a tone"
   for (const [namespace, label, tone] of [
     [ready, "Ready", "success"],
     [provisioning, "Provisioning", "warning"],
-    [retiring, "Deleting", "warning"],
+    [retiring, "Deleting…", "warning"],
   ]) {
     const row = list.getByRole("listitem").filter({ hasText: namespace.id });
     const link = row.getByRole("link", { name: namespace.name, exact: true });

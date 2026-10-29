@@ -72,6 +72,17 @@ export async function openShellOnlineWire(
     ),
   );
   t.after(() => server.forceShutdown());
+  const client = openShellMiddlewareClient(t, port, caBundle);
+  return {
+    keys,
+    client,
+    endpoint: `https://localhost:${port}`,
+    certFile: rootCertificatePath,
+    close: () => server.forceShutdown(),
+  };
+}
+
+export function openShellMiddlewareClient(t, port, caBundle) {
   // An independently supplied released OpenShell proto can serve as the client decoder.
   const proto =
     process.env.OCC_TEST_OPENSHELL_MIDDLEWARE_PROTO ??
@@ -92,11 +103,5 @@ export async function openShellOnlineWire(
     grpc.loadPackageDefinition(definition).openshell.middleware.v1.SupervisorMiddleware;
   const client = new Client(`localhost:${port}`, grpc.credentials.createSsl(Buffer.from(caBundle)));
   t.after(() => client.close());
-  return {
-    keys,
-    client,
-    endpoint: `https://localhost:${port}`,
-    certFile: rootCertificatePath,
-    close: () => server.forceShutdown(),
-  };
+  return client;
 }

@@ -438,8 +438,8 @@ test("the sign-in page leaves the footer out without a build commit", async (t) 
   assert.equal(await page.locator("#app").evaluate((node) => node.lastChild?.nodeType), 1);
 });
 
-// Namespaces (UX spec 3.12): one table card with Namespace, Status and Created columns. Rows stay
-// list items that open the Namespace's Agents, from the pointer or the keyboard.
+// Namespace rows group names, statuses, dates and deletion controls under matching headers.
+// They remain list items that open the Namespace's Agents from the pointer or keyboard.
 test("Namespaces read as a table whose rows open each Namespace's Agents", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -461,6 +461,7 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
     "Namespace",
     "Status",
     "Created",
+    "Actions",
   ]);
   assert.equal(
     (await style(head, "backgroundColor")).backgroundColor,
@@ -469,6 +470,7 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
   const columns = await head
     .locator("span")
     .evaluateAll((nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().left)));
+  const actionsHeader = await visibleBox(head.locator("span").last());
 
   for (const [namespace, label, tone] of [
     [ready, "Ready", "success"],
@@ -489,11 +491,18 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
     // The column name is read with the value but shown only by the head row.
     assert.match((await created.textContent()) ?? "", /^Created \S/);
     assert.ok((await visibleBox(created.locator(".namespace-cell-label"))).width <= 1);
-    // Each cell starts under its column's name.
+    // Names, statuses and dates align left; deletion controls align right under Actions.
     const lefts = await Promise.all(
       [link, badge, created].map(async (node) => Math.round((await visibleBox(node)).x)),
     );
-    assert.deepEqual(lefts, columns);
+    assert.deepEqual(lefts, columns.slice(0, 3));
+    const remove = await visibleBox(
+      row.getByRole("button", { name: `Delete ${namespace.name}`, exact: true }),
+    );
+    assert.equal(
+      Math.round(remove.x + remove.width),
+      Math.round(actionsHeader.x + actionsHeader.width),
+    );
   }
 
   // The keyboard reaches each row's link; the ring is drawn inside the table's clipped corners.
@@ -514,7 +523,7 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
   await page.keyboard.press("Enter");
   await page.waitForURL(`**/console/agents?namespace=${provisioning.id}`);
 
-  // A phone stacks each row: the badge beside the name and the labelled date beneath.
+  // A phone puts status and the labelled date below the name, beside the deletion control.
   await page.goBack();
   await list.waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
@@ -525,8 +534,15 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
   const name = await visibleBox(phoneRow.locator(".resource-name"));
   const status = await visibleBox(phoneRow.locator(".badge"));
   const date = await visibleBox(phoneRow.locator(".namespace-cell-created"));
-  assert.ok(status.x > name.x && Math.abs(status.y - name.y) < 16, "badge beside the name");
-  assert.ok(date.y > name.y + name.height, "date beneath the name");
+  const remove = await visibleBox(
+    phoneRow.getByRole("button", { name: `Delete ${ready.name}`, exact: true }),
+  );
+  assert.ok(status.y >= name.y + name.height, "status beneath the name");
+  assert.ok(date.y >= status.y + status.height, "date beneath the status");
+  assert.ok(
+    remove.x >= Math.max(status.x + status.width, date.x + date.width),
+    "deletion control beside status and date",
+  );
   assert.ok(
     (await page.evaluate(() => globalThis.document.documentElement.scrollWidth)) <= 390,
     "nothing scrolls sideways",

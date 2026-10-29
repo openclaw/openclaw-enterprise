@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-27
-last_updated_session: authoring-run/008c4288-2df5-4712-a902-c0f0ed7608f1
+updated: 2026-10-28
+last_updated_session: authoring-run/c087e31e-0fa9-4e3c-b838-1d07f0e65106
 ---
 
 # Agent Plugin Deployment Flow
@@ -135,9 +135,11 @@ Installation uses `GET /installation`; Agent editors use
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC revalidates the Configuration and selections, snapshots the Driver and policies, and queues the Agent revision. Startup resolves native metadata.
+OCC revalidates Configuration and selections, snapshots Driver and policies, and queues the revision. Startup resolves native metadata.
 
-Kubernetes sends the [release digest](../../apps/controller/plugins/README.md) to both roles. Google verifies its Gateway skill and worker CLI. The Slack worker stages verified `mcp.json` for discovery after connection.
+For Google Workspace, the Gateway loads the skill. The Sandbox Driver binds the selected Agent credential’s host, path and scopes to the pinned release. OpenShell injects a bearer after the cluster’s shared guard checks each `gog` request against the binding and release operation map. Withdrawal detaches the credential. Worker recovery preserves other attachments. [Deployment and inspection](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+
+For Slack, the worker verifies the pinned MCP descriptor and stages the server with `enabled: false`.
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -363,14 +365,10 @@ establish starvation.
 
 ## Changelog
 
+- 2026-10-28 22:10: Move Google request checks to the shared execution-cluster guard. (authoring-run/c087e31e-0fa9-4e3c-b838-1d07f0e65106 - ce4688a9)
+
+- 2026-10-28 20:30: Trace independent credential attachment, Google request authorization and recovery after withdrawal. (authoring-run/eb0c7e7c-b271-4619-851b-f117782bdded - dbe0d78a)
+
 - 2026-10-28 14:40: Trace worker installation and discovery of Slack MCP tools. (authoring-run/55da35a7-f123-436e-9c32-65036b85894d - 0ba3c0fd5a26a82dba6551f04b74a697c5324fdd)
-
-- 2026-10-27 16:32: Trace the Google package from selection to worker installation. (authoring-run/008c4288-2df5-4712-a902-c0f0ed7608f1 - 838c18304a845fc025e0639aaa223b9ef9d6ef3e)
-
-- 2026-10-27 15:00: Repeat a stop signal that OpenClaw ignored during an in-place restart (finding 2711). (fix-2711-gateway-stop)
-
-- 2026-10-27 03:30: Check the Gateway tool policy at Configuration save and for embedded Agents on every Compute, not on maintenance passes (findings 2688, 2689, 2694, 2695). (fix-2688-policy)
-
-- 2026-10-26 20:21: Stop hosted reads on disconnect and clarify credential checks and catalog results. (authoring-run/dc13892f-22e2-4838-b5d7-a716768e7243 - cbad284a4d3d5f567e96e6c3dbb3fc5e7b86b14e)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

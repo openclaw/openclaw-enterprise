@@ -1431,6 +1431,101 @@ export const scenarios = {
       "Reset, then cancel a new form with Escape. No Namespace is created and focus returns to Create Namespace.",
     ],
   },
+  namespaceDelete: {
+    group: "Pages/Namespaces",
+    name: "Delete Namespace",
+    path: "/console/namespaces",
+    emptyAgents: true,
+    namespaceDeleteOutcome: "complete",
+    description:
+      "Use the same trash icon as the Agents table, confirm the exact Namespace, and watch simulated cleanup finish.",
+    steps: [
+      "Select Engineering's trash icon, then Delete Namespace. The row stays Deleting until the next status reads confirm removal.",
+    ],
+  },
+  namespaceDeleteConfirmation: {
+    group: "Pages/Namespaces",
+    name: "Delete confirmation",
+    path: "/console/namespaces",
+    namespaceDeleteOutcome: "complete",
+    actions: [{ selector: '[aria-label="Delete Engineering"]', click: true }],
+    description:
+      "The confirmation identifies the Namespace and explains reserved names, asynchronous cleanup, and default Presets. Cancel restores focus to the trash icon.",
+  },
+  namespaceDeleteMobile: {
+    group: "Pages/Namespaces",
+    name: "Delete confirmation mobile",
+    path: "/console/namespaces",
+    mobile: true,
+    namespaceDeleteOutcome: "complete",
+    actions: [{ selector: '[aria-label="Delete Engineering"]', click: true }],
+    description: "The same confirmation becomes a bottom sheet at phone width.",
+  },
+  namespaceDeleteBlocked: {
+    group: "Pages/Namespaces",
+    name: "Delete blocked by resources",
+    path: "/console/namespaces",
+    namespaceDeleteOutcome: "blocked",
+    actions: [
+      { selector: '[aria-label="Delete Engineering"]', click: true },
+      { click: "Delete Namespace" },
+    ],
+    description:
+      "A simulated NAMESPACE_NOT_EMPTY response names remaining resources. Open Agents or Secrets, or inspect Configuration cleanup commands.",
+  },
+  namespaceDeleteDenied: {
+    group: "Pages/Namespaces",
+    name: "Delete permission denied",
+    path: "/console/namespaces",
+    namespaceDeleteDenied: true,
+    description:
+      "The advisory permission answer disables deletion and explains the exact required grant.",
+  },
+  namespaceDeleteRefused: {
+    group: "Pages/Namespaces",
+    name: "Delete permission changed",
+    path: "/console/namespaces",
+    namespaceDeleteOutcome: "forbidden",
+    actions: [
+      { selector: '[aria-label="Delete Engineering"]', click: true },
+      { click: "Delete Namespace" },
+    ],
+    description:
+      "A write can still be refused after the advisory read. The row shows the reason and request ID.",
+  },
+  namespaceDeletePending: {
+    group: "Pages/Namespaces",
+    name: "Delete request pending",
+    path: "/console/namespaces",
+    namespaceDeleteOutcome: "pending",
+    actions: [
+      { selector: '[aria-label="Delete Engineering"]', click: true },
+      { click: "Delete Namespace" },
+    ],
+    description:
+      "The pending write blocks dismissal and navigation. Its timeout requires a status read before another attempt.",
+  },
+  namespaceDeleteUnknown: {
+    group: "Pages/Namespaces",
+    name: "Delete outcome unknown",
+    path: "/console/namespaces",
+    namespaceDeleteOutcome: "unknown",
+    actions: [
+      { selector: '[aria-label="Delete Engineering"]', click: true },
+      { click: "Delete Namespace" },
+    ],
+    description:
+      "An unconfirmed write requires Refresh status. The Console does not replay deletion or assume it started.",
+  },
+  namespaceDeleteRetry: {
+    group: "Pages/Namespaces",
+    name: "Delete cleanup recovery",
+    path: "/console/namespaces",
+    namespaceStatus: "deleting",
+    namespaceDeleteOutcome: "stalled",
+    description:
+      "An existing deleting Namespace keeps status and deliberate retry controls. Only the backend decides whether retry is allowed.",
+  },
   namespacesUnavailable: {
     group: "Pages/Namespaces",
     name: "Unavailable selection",

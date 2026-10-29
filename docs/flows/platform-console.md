@@ -43,6 +43,7 @@ graph TD
     DBG --> F
     D --> E["Request current page resource"]
     E --> NC["Create Namespace"]
+    E --> ND["Confirm deletion"]
     E --> SEC["Manage Namespace Secret metadata and values"]
     E --> E1["Edit starter JSON and select associations"]
     E1 --> S1["Select Secret or open creation modal"]
@@ -54,6 +55,7 @@ graph TD
     E2 --> E5["Confirm Agent stop"]
   end
   subgraph Controller["Controller API"]
+    ND --> NDELETE["Authorize DELETE; check contents"]
     E --> F["Authenticate and authorize exact scope"]
     F -->|Agents or Namespaces| G["OCC reads and filters by IAM"]
     F -->|Backends and Installation admin| H["Project loaded Backend IDs and types"]
@@ -75,6 +77,9 @@ graph TD
     E5 --> P2["POST exact Agent stop"]
   end
   subgraph Result["Browser result"]
+    NDELETE -->|nonempty| NB["Show blockers and cleanup links"]
+    NDELETE -->|accepted| NP["Poll Namespace until removed"]
+    NDELETE -->|uncertain| NRD["Require status refresh before retry"]
     G --> I["Accept only current navigation response"]
     H --> I
     NPOST -->|201| NSUCCESS["Creation accepted"]
@@ -225,6 +230,13 @@ relisted. Closing refocuses the opener; a 403 disables it per account, across
 navigation, until Refresh (`fromRefresh`). Pending writes block dismissal; 400s
 mark names; conflicts keep input; unconfirmed responses need inspection.
 
+`namespace-deletion.mts` blocks navigation and dismissal during writes; OCC rechecks
+IAM and contents. `http/errors.ts` limits blockers to 20
+IDs per kind. Poll every three seconds after `202`; `404` removes the row;
+`console.mjs` repairs selection and views. `403` reports lost access.
+Uncertain writes require **Refresh status** before retry.
+See [deletion](../guides/console/delete-namespace.md).
+
 Agents, Secrets and Create Agent read Namespace permissions. False `agents.create` or an Agent-refusing
 [Namespace status](../reference/namespaces.md#lifecycle) explains why, rechecking on return; failed reads keep creation open.
 Refused `GET /installation` saves only drafts. `agents/collection.mts` polls provisioning Namespaces;
@@ -348,10 +360,8 @@ gateway startup and file availability.
 
 ## Related docs
 
+- [Namespaces](../reference/namespaces.md)
 - [Authentication](../reference/authentication.md)
-- [Configuration and Agent revision](configuration-driver.md)
-- [Docker development](docker-compose-development.md)
-- [Production startup](production-startup.md)
 
 ## Manual Notes
 
@@ -360,6 +370,9 @@ gateway startup and file availability.
 ## Changelog
 
 - 2026-10-28 13:01: Keep a held press on one Agent’s copy button from activating another Agent’s button after navigation. (fix-3678 - 594de5868)
+
+- 2026-10-27 14:42: Trace Namespace deletion and recovery. (authoring-run/20fc7b4c-0501-4d3e-9f0c-16a3fd016866 - 0402f1cf1)
+
 - 2026-10-21 22:22: Connect console themes to API startup and the shared shell. (authoring-run/634a754f-a79e-4aac-94fe-0646caf6a287 - 2c9e7f6c4)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

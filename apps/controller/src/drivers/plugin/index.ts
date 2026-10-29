@@ -5,7 +5,13 @@ import {
   requireConfiguration,
   ConfigurationValidationError,
 } from "@openclaw-enterprise/contracts";
-import { managedInstalls } from "./managed-catalog.ts";
+import {
+  managedCredentialBinding,
+  managedGoogleInstall,
+  managedInstalls,
+  managedPluginCredentials,
+  requireManagedCredentialRuntime,
+} from "./managed-catalog.ts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
 import {
   type JSONSchema,
@@ -357,6 +363,7 @@ class BundledPluginDriverBase {
 
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   readonly discoveryCredential = "none" as const;
+  readonly credentials = managedPluginCredentials;
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
     policyScopeByPlugin: Object.fromEntries(
@@ -380,12 +387,20 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
       );
     }
     const policy = selections[managed.id]!;
+    const supportsCredentials = managed === managedGoogleInstall;
     if (
       typeof policy.enabled !== "boolean" ||
-      Object.keys(policy).some((key) => key !== "enabled")
+      Object.keys(policy).some(
+        (key) => key !== "enabled" && !(supportsCredentials && key === "driverPolicy"),
+      )
     ) {
-      throw new ConfigurationHarnessError(`${managed.entry.name} supports plugin enablement only.`);
+      throw new ConfigurationHarnessError(
+        supportsCredentials
+          ? "The Google Workspace package supports enablement and an optional credential slot."
+          : `${managed.entry.name} supports plugin enablement only.`,
+      );
     }
+    managedCredentialBinding(selections);
     this.validate("openclaw", {}, defaultApprovers);
   }
 
@@ -437,6 +452,10 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     selections: PluginDesiredState,
     harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
     computeImplementation: string,
+    credentialRuntime?: {
+      readonly sandbox: string | undefined;
+      readonly gateway: string | undefined;
+    },
   ): void {
     const pkg = managedInstalls.find(({ id }) => Object.hasOwn(selections, id));
     if (!pkg) {
@@ -449,6 +468,11 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     if (!placement.computeImplementations.includes(computeImplementation)) {
       throw new ConfigurationHarnessError(`${pkg.entry.name} requires Kubernetes Compute.`);
     }
+    requireManagedCredentialRuntime(
+      selections,
+      credentialRuntime?.sandbox,
+      credentialRuntime?.gateway,
+    );
   }
 
   validateAgentConfiguration(

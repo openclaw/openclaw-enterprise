@@ -119,6 +119,10 @@
                     "label": "Create a Namespace"
                   },
                   {
+                    "page": "guides/console/delete-namespace",
+                    "label": "Delete a Namespace"
+                  },
+                  {
                     "page": "guides/console/agent-details",
                     "label": "Console Walkthrough"
                   },

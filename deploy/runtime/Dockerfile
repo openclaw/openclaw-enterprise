@@ -185,10 +185,15 @@ COPY deploy/runtime/openclaw-terminated-gateway-namespace.patch /tmp/openclaw-te
 RUN echo '570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-terminated-gateway-namespace.patch
 
+# Forward the scoped Google placeholder and the OpenShell TLS root to native worker children.
+COPY deploy/runtime/openclaw-google-worker-placeholder.patch /tmp/openclaw-google-worker-placeholder.patch
+RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp/openclaw-google-worker-placeholder.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-google-worker-placeholder.patch
+
 # Run the bridge tests alongside the build using the same patched source.
 # Packaging mounts this stage so a failed test still blocks the runtime image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
-# One runner invocation for both Node test files: the runner compiles the whole
+# One runner invocation for the Node test files: the runner compiles the whole
 # source tree for its workers first (about a minute), and a second invocation on
 # a fresh .artifacts mount would compile it again. The test runner restores its
 # cache by renaming directories; a fresh mount keeps those renames off the
@@ -196,7 +201,7 @@ FROM openclaw-patched-source AS openclaw-bridge-tests
 RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
-    src/infra/gateway-lock-recovery.test.ts
+    src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts
 # Type-check the two UI test graphs touched by the bridge. The upstream runner
 # generates its database types and compiler cache under .artifacts.
 RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
