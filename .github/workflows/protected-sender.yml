@@ -10,6 +10,7 @@ on:
       - "apps/controller/src/drivers/egress-proxy/**"
       - "tests/integration/strands-protected-sender.test.ts"
       - "tests/helpers/static-egress.mjs"
+      - "tests/helpers/strands-sender-client.ts"
       - "tests/helpers/certificates.mjs"
       - ".github/workflows/protected-sender.yml"
 
