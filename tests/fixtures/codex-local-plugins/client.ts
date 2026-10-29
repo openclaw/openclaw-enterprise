@@ -18,8 +18,8 @@ async function verifyEnvironment() {
 }
 
 function pluginApi({ rpc }: Session) {
-  type Skill = { pluginId?: string; path: string; enabled: boolean };
-  const skills = async () =>
+  type Skill = { pluginId?: string; description: string; path: string; enabled: boolean };
+  const skills = async (installedPath?: string) =>
     (
       await rpc<{ data: { skills: Skill[] }[] }>("skills/list", {
         cwds: ["/tmp/workspace"],
@@ -27,7 +27,13 @@ function pluginApi({ rpc }: Session) {
       })
     ).data
       .flatMap((entry) => entry.skills)
-      .filter((skill) => skill.pluginId?.endsWith("@oce-fixture"));
+      .filter(
+        (skill) =>
+          skill.pluginId?.endsWith("@oce-fixture") ||
+          skill.path === installedPath ||
+          skill.description === "Harmless selected greeting." ||
+          skill.description === "Harmless excluded greeting.",
+      );
   const detail = (pluginName: string) =>
     rpc<{ plugin: { summary: { installed: boolean; enabled: boolean }; skills: unknown[] } }>(
       "plugin/read",
@@ -106,6 +112,7 @@ async function verifyPreparation(
   assert.equal(loaded.length, 1);
   assert.equal(loaded[0]!.pluginId, "selected@oce-fixture");
   assert.equal(loaded[0]!.enabled, true);
+  assert.equal(loaded[0]!.description, "Harmless selected greeting.");
   const path = await fs.realpath(loaded[0]!.path);
   assert.ok(path.startsWith(process.env.CODEX_HOME! + "/"));
   assert.equal(
@@ -130,7 +137,7 @@ async function verifyPreparation(
     // Each denial must remove an active skill, including omission after disable.
     await writePlugins({ "selected@oce-fixture": { enabled: true } });
     assert.deepEqual(
-      (await skills()).map((skill) => [skill.pluginId, skill.enabled]),
+      (await skills(loaded[0]!.path)).map((skill) => [skill.pluginId, skill.enabled]),
       [["selected@oce-fixture", true]],
       "selected skill must be active before each denial",
     );
@@ -146,7 +153,11 @@ async function verifyPreparation(
       // Native config may serialize an absent optional field as null.
       assert.equal(enabled ?? null, null, "omission must remove explicit enablement");
     }
-    assert.deepEqual(await skills(), [], "disabled and omitted selections must not load");
+    assert.deepEqual(
+      await skills(loaded[0]!.path),
+      [],
+      "disabled and omitted selections must not load",
+    );
   }
 }
 
