@@ -1,7 +1,7 @@
 ---
 created: "2026-10-28"
 updated: "2026-10-29"
-last_updated_session: "authoring-run/f406ee95-ac9b-425f-a93b-40517d3ca6d4"
+last_updated_session: "authoring-run/afb2c16f-3c1e-4c3e-997c-7980211797c2"
 ---
 
 # Tenant restore flow
@@ -79,8 +79,10 @@ unsupported bindings, including group, Installation-wide, and resource-less
 bindings, for manual recovery without creating grants.
 
 Running source Agents are deployed unless `--no-deploy` was selected. Failed
-deployments or bindings that require manual recovery cause `main` to exit 4. Exit
-0 does not mean old Agent revision bindings were restored. Workspace recovery
+deployments or bindings that require manual recovery cause `main` to exit 4.
+The map does not record reported bindings, so each rerun reports them again and
+exits 4, also after the operator re-creates them by hand. Exit 0 does not mean
+old Agent revision bindings were restored. Workspace recovery
 and issuing service-account credentials remain operator steps in the migration
 guide.
 
@@ -90,7 +92,8 @@ Compare a restored Preset's `template.agent.harnessAuth.source` with the saved
 Namespace and service-account IDs. Read that account in the destination Namespace;
 a stale source ID returns 404 even when the import command completed successfully.
 The conformance workflow exercises real controller HTTP handlers with in-memory
-state, including current and released authentication spellings and resumed imports.
+state, including current and released authentication spellings, resumed imports,
+and the `import` command's exit codes over loopback HTTP.
 It does not establish PostgreSQL persistence, issued credentials, or live deployment.
 
 ## Related docs
@@ -105,5 +108,6 @@ It does not establish PostgreSQL persistence, issued credentials, or live deploy
 
 ## Changelog
 
+- 2026-10-29 18:49: State that reported access bindings are reported again on every rerun. (authoring-run/afb2c16f-3c1e-4c3e-997c-7980211797c2 - 2de02b7f99)
 - 2026-10-29 18:02: Report access bindings that require manual recovery and distinguish omitted Agent revision bindings. (authoring-run/f406ee95-ac9b-425f-a93b-40517d3ca6d4 - ce529eed9989d495816d222fa6b383d18e0a5281)
 - 2026-10-28 22:27: Record tenant restore ordering and remap Preset authentication after service-account IDs exist. (authoring-run/a5ca040d-695b-43c5-b18c-d6b1938aa6c5 - 478e0cfcda4849e519a3224f5d05b2a4fb6a5bca)
