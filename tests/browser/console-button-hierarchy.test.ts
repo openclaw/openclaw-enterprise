@@ -87,6 +87,15 @@ async function failedRedeploy(fixture: ConsoleFixture, namespace: NamespaceWire)
   return { agent, active, route };
 }
 
+// A Workspace view is ready once its first file's Save and the recovery's primary show.
+async function workspaceReady(page: Page, primary: string) {
+  await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).waitFor();
+  await page
+    .getByRole("region", { name: "Deployment needs attention" })
+    .getByRole("link", { name: primary })
+    .waitFor();
+}
+
 test("Agents, Agent detail, Workspace, Create Agent and Logs each show at most one primary action at 1440 and 390", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Primary actions", {
     computeDriver: createRuntimeLogComputeDriver(),
@@ -137,27 +146,20 @@ test("Agents, Agent detail, Workspace, Create Agent and Logs each show at most o
         primary: "Deploy again",
       },
       {
-        // Each Workspace file's Save is secondary: the draft's Deploy new version stays the one
-        // primary (finding 1968).
-        name: "Agent detail, draft, Workspace",
-        url: detailUrl(fixture, namespace.id, draft.id, "draft", "workspace"),
-        ready: async () => {
-          await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).waitFor();
-          await page.getByRole("button", { name: "Deploy new version" }).waitFor();
-        },
-        primary: "Deploy new version",
-      },
-      {
+        // Each Workspace file's Save is secondary, so the failed deployment's recovery stays the
+        // view's one primary (finding 1968).
         name: "Agent detail, failed, Workspace",
         url: detailUrl(fixture, namespace.id, failed.id, active.revision.id, "workspace"),
-        ready: async () => {
-          await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).waitFor();
-          await page
-            .getByRole("region", { name: "Deployment needs attention" })
-            .getByRole("link", { name: "Deploy again" })
-            .waitFor();
-        },
+        ready: () => workspaceReady(page, "Deploy again"),
         primary: "Deploy again",
+      },
+      {
+        // The draft's live workspace view offers no Deploy again, so the recovery's Logs link
+        // is its primary.
+        name: "Agent detail, failed, draft, Workspace",
+        url: detailUrl(fixture, namespace.id, failed.id, "draft", "workspace"),
+        ready: () => workspaceReady(page, "Open v2 Logs"),
+        primary: "Open v2 Logs",
       },
       {
         name: "Create Agent",
