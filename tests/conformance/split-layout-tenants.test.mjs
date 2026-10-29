@@ -320,6 +320,62 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
     bindingCount,
   );
 
+  // Released forms belong only in the bundle; the live grant inventory must not grow.
+  const resourceLess = { ...seeded.binding, id: "legacy-resource-less" };
+  delete resourceLess.resourceKind;
+  delete resourceLess.resourceId;
+  const manual = [
+    { ...seeded.binding, id: "legacy-group", subjectKind: "group" },
+    {
+      ...seeded.binding,
+      id: "legacy-installation",
+      resourceKind: "installation",
+      resourceId: installationId,
+    },
+    resourceLess,
+  ];
+  const revisions = ["identity", "group", "service_account"].map((subjectKind) => ({
+    ...seeded.binding,
+    id: `legacy-revision-${subjectKind}`,
+    subjectKind,
+    resourceKind: "agent_revision",
+    resourceId: "old-revision",
+  }));
+  const legacy = structuredClone(bundle);
+  legacy.namespaces.find(({ id }) => id === seeded.namespace.id).accessBindings = [
+    seeded.binding,
+    ...manual,
+    ...revisions,
+  ];
+  const state = structuredClone(saved);
+  const messages = [];
+  const beforeLegacy = (await fixture.api.expect("GET", `${base}/iam/access-bindings`)).data;
+  const result = await importTenants(fixture.api, legacy, values, {
+    ...options,
+    state,
+    save: () => {},
+    log: (message) => messages.push(message),
+  });
+  assert.equal(result.complete, true);
+  assert.deepEqual(
+    result.skippedBindings.map((entry) => entry.split(":")[0]),
+    manual.map(({ id }) => `team-a/${id}`),
+  );
+  const revisionLogs = messages.filter((message) => message.includes("legacy-"));
+  assert.equal(revisionLogs.length, revisions.length);
+  for (const { id } of revisions) {
+    assert.ok(
+      revisionLogs.some((message) => message.includes(id)),
+      id,
+    );
+  }
+  assert.deepEqual(state, saved);
+  assert.ok(beforeLegacy.some(({ id }) => id === state.ids[seeded.binding.id]));
+  assert.deepEqual(
+    (await fixture.api.expect("GET", `${base}/iam/access-bindings`)).data,
+    beforeLegacy,
+  );
+
   // Renaming onto a populated live Namespace is refused instead of merging into it.
   await assert.rejects(
     importTenants(fixture.api, bundle, values, {

@@ -1,7 +1,7 @@
 ---
 created: "2026-10-28"
-updated: "2026-10-28"
-last_updated_session: "authoring-run/a5ca040d-695b-43c5-b18c-d6b1938aa6c5"
+updated: "2026-10-29"
+last_updated_session: "authoring-run/f406ee95-ac9b-425f-a93b-40517d3ca6d4"
 ---
 
 # Tenant restore flow
@@ -34,7 +34,10 @@ graph TD
     F --> G["Create or reuse service accounts; save IDs"]
     G --> H["Remap and create Preset templates"]
     H --> I["Restore Roles, Agents and access bindings"]
-    I --> J["Attempt selected deployments; report result"]
+    I --> J["Attempt selected deployments"]
+    J --> K{"Manual recovery needed?"}
+    K -->|Yes| L["Report failed deployments or unrecovered bindings; exit 4"]
+    K -->|No| M["Exit 0; old Agent revision bindings may be omitted"]
 ```
 
 ## Execution Trace
@@ -70,11 +73,16 @@ by an earlier import. Inspect such a template before retrying a historical impor
 `scripts/split-layout-tenants.mjs:importTenants`
 
 Roles and service accounts exist before Agent creation. Agent IDs and service
-principal IDs enter the map before access bindings are restored. Running source
-Agents are deployed unless `--no-deploy` was selected. The helper reports failed
-deployments and access bindings requiring manual recovery; `main` exits 4 for
-those results. Workspace recovery and issuing service-account credentials remain
-operator steps in the migration guide.
+principal IDs enter the map before access bindings are restored. The helper logs
+and omits bindings to old Agent revisions for every subject. It reports other
+unsupported bindings, including group, Installation-wide, and resource-less
+bindings, for manual recovery without creating grants.
+
+Running source Agents are deployed unless `--no-deploy` was selected. Failed
+deployments or bindings that require manual recovery cause `main` to exit 4. Exit
+0 does not mean old Agent revision bindings were restored. Workspace recovery
+and issuing service-account credentials remain operator steps in the migration
+guide.
 
 ## Debugging and Verification
 
@@ -97,4 +105,5 @@ It does not establish PostgreSQL persistence, issued credentials, or live deploy
 
 ## Changelog
 
+- 2026-10-29 18:02: Report access bindings that require manual recovery and distinguish omitted Agent revision bindings. (authoring-run/f406ee95-ac9b-425f-a93b-40517d3ca6d4 - ce529eed9989d495816d222fa6b383d18e0a5281)
 - 2026-10-28 22:27: Record tenant restore ordering and remap Preset authentication after service-account IDs exist. (authoring-run/a5ca040d-695b-43c5-b18c-d6b1938aa6c5 - 478e0cfcda4849e519a3224f5d05b2a4fb6a5bca)
