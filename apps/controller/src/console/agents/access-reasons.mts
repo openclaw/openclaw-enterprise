@@ -61,8 +61,8 @@ export const NAMESPACE_CREATE_DENIED = onlyAdministratorCreates(
 );
 // Namespace IAM Roles grant only namespace:read on the Namespace itself, so no grant lets a member
 // delete one: the reason names who can, not a grant to ask for (finding D788).
-export const namespaceDeleteDenied = (name: string) =>
-  `Only an Installation administrator can delete a Namespace. Ask one to delete ${name}.`;
+export const NAMESPACE_DELETE_DENIED =
+  "Only an Installation administrator can delete a Namespace. Ask one to delete this Namespace.";
 
 // POST /agents/{id}/stop authorizes Agent operate; DELETE /agents/{id} authorizes Agent delete.
 export const AGENT_STOP_DENIED = notIncluded("stopping this Agent", "Agent operate on it");

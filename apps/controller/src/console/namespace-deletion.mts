@@ -12,7 +12,7 @@ import {
 import type { NamespacePageContext } from "./namespaces.mjs";
 import { resourceActionIcon } from "./resource-actions.mjs";
 import { describeFailure } from "./agents/list.mjs";
-import { namespaceDeleteDenied } from "./agents/access-reasons.mjs";
+import { NAMESPACE_DELETE_DENIED } from "./agents/access-reasons.mjs";
 
 interface DeletionContext extends NamespacePageContext {
   onRemoved(namespace: Namespace): void;
@@ -88,7 +88,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
     refresh.disabled = pending || checking;
     let text = message;
     if (!text && denied) {
-      text = namespaceDeleteDenied(namespace.name);
+      text = NAMESPACE_DELETE_DENIED;
     } else if (!text && deleting) {
       text =
         "Deletion started. Cleanup runs in the background. If it does not finish, ask an operator to check teardown before requesting deletion again.";
@@ -450,7 +450,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         requestId = error.requestId;
         if (error.status === 403) {
           denied = true;
-          message = error.serverMessage ?? namespaceDeleteDenied(namespace.name);
+          message = error.serverMessage ?? NAMESPACE_DELETE_DENIED;
         } else if (error.status === 400 || error.status === 409 || error.status === 429) {
           message = describeFailure(cause, { mutation: true });
         } else {

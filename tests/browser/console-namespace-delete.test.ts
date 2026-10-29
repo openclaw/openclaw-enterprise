@@ -4,7 +4,7 @@ import type { AuditEvent } from "../../packages/contracts/src/index.ts";
 import { DeletionRetryOwnedError } from "../../packages/occ/src/index.ts";
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
-import { namespaceDeleteDenied } from "../helpers/refusal-text.mjs";
+import { NAMESPACE_DELETE_DENIED } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture, grantMember, memberRole } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -168,7 +168,7 @@ test("Namespace deletion permission is advisory and a later revocation is enforc
     .getByRole("button", {
       name: "Delete Restricted cleanup",
       exact: true,
-      description: namespaceDeleteDenied("Restricted cleanup"),
+      description: NAMESPACE_DELETE_DENIED,
     })
     .waitFor();
   assert.equal(await remove.isDisabled(), true);
