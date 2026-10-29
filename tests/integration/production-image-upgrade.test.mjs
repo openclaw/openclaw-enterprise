@@ -236,7 +236,9 @@ fi
     },
   );
 
-  // Preserve ordered mapping documents, but refuse a scalar hidden before them.
+  // This fixture's yq only cats JSON streams; jq's object validation is real.
+  // Explicit null is the JSON output real yq emits for a trailing empty document.
+  // Preserve ordered mapping documents, but refuse non-mappings anywhere.
   const installationDocuments = `${installationDocument}\n${JSON.stringify({ name: "second" })}\n`;
   try {
     await writeFile(liveInstallation, installationDocuments, { mode: 0o600 });
@@ -252,9 +254,14 @@ fi
       },
     );
 
-    await writeFile(protectedFiles.installation, `42\n${installationDocuments}`, { mode: 0o600 });
+    // Two valid maps in a different order remain a genuine baseline difference.
+    await writeFile(
+      protectedFiles.installation,
+      `${JSON.stringify({ name: "second" })}\n${installationDocument}\n`,
+      { mode: 0o600 },
+    );
     await assert.rejects(
-      execute(upgradeScript, upgradeArguments(join(directory, "scalar-document-evidence")), {
+      execute(upgradeScript, upgradeArguments(join(directory, "different-mappings-evidence")), {
         cwd: repository,
         env: environment,
       }),
@@ -264,6 +271,25 @@ fi
         return true;
       },
     );
+
+    for (const [name, documents] of [
+      ["scalar", `42\n${installationDocuments}`],
+      ["trailing-null", `${installationDocuments}null\n`],
+    ]) {
+      await writeFile(protectedFiles.installation, documents, { mode: 0o600 });
+      await assert.rejects(
+        execute(upgradeScript, upgradeArguments(join(directory, `${name}-document-evidence`)), {
+          cwd: repository,
+          env: environment,
+        }),
+        (error) => {
+          assert.equal(error.code, 1);
+          assert.match(error.stderr, /Cannot compare upgrade YAML:.*only YAML mappings/);
+          assert.doesNotMatch(error.stderr, /differs from the live Secret|jq:|Error:/);
+          return true;
+        },
+      );
+    }
   } finally {
     await writeFile(liveInstallation, installationDocument, { mode: 0o600 });
     await writeFile(protectedFiles.installation, installationDocument, { mode: 0o600 });

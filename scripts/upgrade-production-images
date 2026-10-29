@@ -256,10 +256,13 @@ matches_yaml() {
   local actual=$1
   local expected=$2
   local actual_text
-  yaml_object "$actual" "$evidence_dir/compare-actual.json" || return 1
+  # Callers include negated conditions and recovery alternatives: unusable input
+  # must terminate here, never enter a branch reserved for valid inequality.
+  local unusable='Cannot compare upgrade YAML: both inputs must be readable and contain only YAML mappings (no empty documents). Check that the evidence directory is writable.'
+  yaml_object "$actual" "$evidence_dir/compare-actual.json" 2>/dev/null || die "$unusable"
   actual_text=$yaml_object_text
-  yaml_object "$expected" "$evidence_dir/compare-expected.json" || return 1
-  [[ -s "$evidence_dir/compare-actual.json" && -s "$evidence_dir/compare-expected.json" ]] || return 1
+  yaml_object "$expected" "$evidence_dir/compare-expected.json" 2>/dev/null || die "$unusable"
+  [[ -s "$evidence_dir/compare-actual.json" && -s "$evidence_dir/compare-expected.json" ]] || die "$unusable"
   [[ "$actual_text" == "$yaml_object_text" ]]
 }
 
