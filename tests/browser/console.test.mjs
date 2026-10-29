@@ -2331,6 +2331,8 @@ test("header Namespace selection leaves Agent detail and creation for the select
 // admission or navigation, including a reload of the same Namespace already in the URL.
 async function rejectStaleNamespaceOption(page, selector, staleId, requests) {
   const url = page.url();
+  // Count after a settle, so requests the page started earlier are already logged.
+  await settlePageRequests(page);
   const count = requests.length;
   await selector.evaluate((select, id) => {
     const option = new globalThis.Option("Stale selection", id);
@@ -2463,6 +2465,9 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
       );
       assert.equal(readable.includes(beta.id), true, "fresh admission includes readable Namespace");
       await page.getByRole("heading", { name: "Namespace unavailable", exact: true }).waitFor();
+      // The inline heading already shows while admission is pending. Wait for the admitted
+      // render, whose list reads each row's permission answer, before the stale-option check.
+      await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
       assert.equal(await selector.locator(`option[value="${alpha.id}"]`).count(), 0);
       await rejectStaleNamespaceOption(page, selector, alpha.id, requests);
       await selector.selectOption(beta.id);
