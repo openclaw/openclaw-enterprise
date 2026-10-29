@@ -86,22 +86,46 @@ after the upgrade: a new UID means the volume and its Agent data were replaced.
 
 ## Record the OCC inventory
 
+On controllers that support it, record the installation-wide deployment inventory:
+
 ```bash
-"${occ_json[@]}" installation get >"$BASELINE/installation.json"
 "${occ_json[@]}" installation deployment-inventory >"$BASELINE/deployment-inventory.json"
-"${occ_json[@]}" namespace list >"$BASELINE/occ-namespaces.json"
-jq -r '.[].id' "$BASELINE/occ-namespaces.json" | while read -r ns; do
-  "${occ_json[@]}" --namespace "$ns" agent list >"$BASELINE/occ-$ns-agents.json"
-  "${occ_json[@]}" --namespace "$ns" secret list >"$BASELINE/occ-$ns-secrets.json"
-  "${occ_json[@]}" --namespace "$ns" iam role list >"$BASELINE/occ-$ns-roles.json"
-  "${occ_json[@]}" --namespace "$ns" iam access-binding list >"$BASELINE/occ-$ns-access-bindings.json"
-done
 ```
 
-The deployment inventory lists every Namespace, Agent, desired state and selected
-version. A controller that predates `deployment-inventory` cannot answer it;
-the per-Namespace `agent list` records the same Agents. `secret list` returns
-metadata only.
+Require this read to succeed. It requires Installation `administer` and read
+access to each Namespace and Agent. For a running Agent with a selected revision
+and no deployment in progress, it also checks Agent `deploy` and revision read
+access. An authorization or connection failure does not mean the endpoint is
+unavailable on that release.
+
+If the controller predates this endpoint, obtain the expected Namespace and Agent
+IDs, desired states and selected revisions from an independent inventory held by
+the resource or database owner. Include stopped Agents. Compare those records
+with the lists below before changing production. If an ID or state is missing
+or the expected inventory is unknown, stop. This fallback does not replace the
+deployment inventory required by the image helper for a runtime upgrade.
+
+For either release, collect the remaining records in Bash:
+
+```bash
+(
+  set -euo pipefail
+  "${occ_json[@]}" installation get >"$BASELINE/installation.json"
+  "${occ_json[@]}" namespace list >"$BASELINE/occ-namespaces.json"
+  jq -r '.[].id' "$BASELINE/occ-namespaces.json" | while read -r ns; do
+    "${occ_json[@]}" --namespace "$ns" agent list >"$BASELINE/occ-$ns-agents.json"
+    jq -e 'all(.[]; .configurationReadError == null)' "$BASELINE/occ-$ns-agents.json" >/dev/null
+    "${occ_json[@]}" --namespace "$ns" secret list >"$BASELINE/occ-$ns-secrets.json"
+    "${occ_json[@]}" --namespace "$ns" iam role list >"$BASELINE/occ-$ns-roles.json"
+    "${occ_json[@]}" --namespace "$ns" iam access-binding list >"$BASELINE/occ-$ns-access-bindings.json"
+  done
+)
+```
+
+Treat a failed command or unreadable saved configuration as an incomplete
+baseline. Even on success, ordinary Namespace and Agent lists omit resources
+the caller cannot read. Reconcile IDs and states with the expected inventory;
+matching counts alone do not establish coverage. `secret list` returns metadata only.
 
 ## Record the database
 
