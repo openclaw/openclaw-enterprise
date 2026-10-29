@@ -2049,12 +2049,100 @@ select:not([multiple])[size="1"] {
   }
 }
 .agent-version-layout {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  align-items: start;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
 }
 .agent-version-layout > * {
   min-width: 0;
+}
+.agent-version-layout--agent {
+  grid-template-columns: minmax(0, 1fr);
+}
+.agent-version-layout > .revision-selector {
+  position: sticky;
+  top: 0;
+  max-height: 80dvh;
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+.agent-revision-list {
+  display: grid;
+  gap: var(--space-2);
+}
+.agent-revision-list .eyebrow {
+  margin: 0 0 var(--space-1);
+}
+.agent-revision-list .agent-revision-history-title {
+  margin-top: var(--space-5);
+}
+.agent-revision-choice {
+  display: grid;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-3);
+  border: 1px solid transparent;
+  background: transparent;
+  text-align: left;
+}
+.agent-revision-choice[aria-current="true"] {
+  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
+}
+.agent-revision-label {
+  font-weight: var(--weight-semibold);
+}
+.agent-revision-date {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.agent-version-detail {
+  min-width: 0;
+  border-left: 1px solid var(--color-border);
+}
+.agent-version-layout--agent .agent-version-detail {
+  border-left: 0;
+}
+.agent-revision-context {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: var(--space-5) var(--space-6) 0;
+  border-bottom: 1px solid var(--color-border);
+  border-radius: 0 var(--radius-lg) 0 0;
+  background: var(--color-surface);
+}
+.agent-revision-context .agent-tabs {
+  margin: var(--space-3) 0 0;
+  border-bottom: 0;
+}
+.agent-version-detail > :not(.agent-revision-context):not(:empty) {
+  margin: var(--space-5) var(--space-6);
+}
+.agent-version-detail .agent-card {
+  border: 0;
+  padding: 0;
+}
+.agent-version-heading h2 {
+  display: inline;
+  margin-right: var(--space-3);
+  font-size: var(--text-xl);
+  line-height: var(--text-xl--line-height);
+}
+.agent-revision-state {
+  vertical-align: middle;
+}
+.agent-revision-scope {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.agent-scope-tabs {
+  margin-top: var(--space-5);
 }
 .agent-version-summary {
   display: grid;
@@ -2062,9 +2150,6 @@ select:not([multiple])[size="1"] {
 }
 .agent-version-summary > * {
   margin: 0;
-}
-.agent-version-summary > .agent-draft-actions {
-  order: -1;
 }
 .version-evidence {
   display: grid;
@@ -2074,8 +2159,7 @@ select:not([multiple])[size="1"] {
 .agent-version-summary:empty {
   display: none;
 }
-.agent-version-summary .agent-version-heading .eyebrow,
-.agent-version-summary .agent-version-heading h2 {
+.agent-version-heading .eyebrow {
   display: none;
 }
 .agent-version-heading {
@@ -2098,7 +2182,7 @@ select:not([multiple])[size="1"] {
   overflow-wrap: anywhere;
 }
 .agent-version-toolbar {
-  display: flex;
+  display: none;
   align-items: center;
   gap: var(--space-4);
   flex-wrap: wrap;
@@ -2125,6 +2209,42 @@ select:not([multiple])[size="1"] {
 }
 .agent-version-context {
   margin: var(--space-3) 0 0;
+}
+.revision-selector > .version-older {
+  margin-top: var(--space-4);
+  width: 100%;
+}
+@media (max-width: 1100px) {
+  .agent-version-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .agent-version-layout > .revision-selector {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .agent-revision-list {
+    display: none;
+  }
+  .agent-version-toolbar {
+    display: flex;
+  }
+  .agent-version-detail {
+    border-left: 0;
+  }
+  .revision-selector > .version-older {
+    width: auto;
+  }
+}
+@media (max-width: 520px) {
+  .agent-revision-context {
+    position: static;
+    padding: var(--space-4) var(--space-4) 0;
+  }
+  .agent-version-detail > :not(.agent-revision-context):not(:empty) {
+    margin: var(--space-4);
+  }
 }
 .version-older[aria-disabled="true"] {
   opacity: 0.6;

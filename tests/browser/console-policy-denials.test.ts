@@ -120,7 +120,9 @@ test("the Policy denials page controls policy editing and disabling preserves sa
   const viewLimits = card.getByRole("button", { name: "View network limits", exact: true });
   assert.equal(await hasFocus(viewLimits), true);
   // Focus the reader moves on before the close event fires stays where they put it.
-  const tab = page.getByRole("tab", { selected: true });
+  const tab = page
+    .getByRole("tablist", { name: "Selected revision details" })
+    .getByRole("tab", { selected: true });
   await viewLimits.click();
   assert.equal(
     await focusKeptOverClose(limits.getByRole("button", { name: "Done", exact: true }), tab),

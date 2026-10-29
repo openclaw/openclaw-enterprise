@@ -261,7 +261,10 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.equal(await slackSelectionValue(allowedUsers), "UNEW123");
 
     await page.getByRole("button", { name: "Save configuration" }).click();
-    await page.getByText(/Configuration .*generation 2/).waitFor();
+    await page
+      .locator(".agent-draft-actions")
+      .getByText(/Configuration .*generation 2/)
+      .waitFor();
     for (const value of [secretValue, slackAppSecretValue, slackBotSecretValue]) {
       await expectNoText(page, value);
     }
@@ -384,7 +387,10 @@ describe("Agent channels", { concurrency: 3 }, () => {
     await dialog.getByLabel("Require a mention").uncheck();
     await waitForEnabled(save);
     await save.click();
-    await page.getByText(/Configuration .*generation 2/).waitFor();
+    await page
+      .locator(".agent-draft-actions")
+      .getByText(/Configuration .*generation 2/)
+      .waitFor();
     const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
     const stored = (await fixture.request("GET", configurationPath)).data.values.channels.slack;
     assert.deepEqual(stored, {
@@ -562,7 +568,10 @@ describe("Agent channels", { concurrency: 3 }, () => {
       [],
     );
     save.release();
-    await page.getByText(/Configuration .*generation 2/).waitFor();
+    await page
+      .locator(".agent-draft-actions")
+      .getByText(/Configuration .*generation 2/)
+      .waitFor();
     assert.deepEqual(
       accessBindingPostRequests(requests, namespace.id).map(({ body }) => body.resourceId),
       [slackAppSecret.id, slackBotSecret.id],
@@ -662,7 +671,10 @@ describe("Agent channels", { concurrency: 3 }, () => {
     } finally {
       grant.release();
     }
-    await page.getByText(/Configuration .*generation 2/).waitFor();
+    await page
+      .locator(".agent-draft-actions")
+      .getByText(/Configuration .*generation 2/)
+      .waitFor();
 
     const configuration = await fixture.request(
       "GET",
@@ -714,7 +726,10 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.equal(await saveButton.isDisabled(), true);
     await dialog.getByLabel("Require a mention", { exact: true }).uncheck();
     await saveButton.click();
-    await page.getByText(/Configuration .*generation 2/).waitFor();
+    await page
+      .locator(".agent-draft-actions")
+      .getByText(/Configuration .*generation 2/)
+      .waitFor();
 
     const configuration = await fixture.request(
       "GET",
@@ -1036,7 +1051,10 @@ describe("Agent channels", { concurrency: 3 }, () => {
     );
     await page.getByRole("button", { name: "Reload draft" }).click();
     await dialog.waitFor({ state: "hidden" });
-    await page.getByText(/Configuration .*generation 2/).waitFor();
+    await page
+      .locator(".agent-draft-actions")
+      .getByText(/Configuration .*generation 2/)
+      .waitFor();
     await page.getByRole("tab", { name: "Credentials", exact: true }).click();
     const appToken = page.getByLabel("Slack app token");
     await appToken.waitFor();

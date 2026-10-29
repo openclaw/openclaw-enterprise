@@ -320,7 +320,7 @@ test("active Agent can deploy the current saved draft as a new version", async (
   );
   await page
     .getByLabel("Viewing version", { exact: true })
-    .getByRole("option", { selected: true })
+    .getByRole("option", { includeHidden: true, selected: true })
     .filter({ hasText: /^v1/ })
     .waitFor({ state: "attached" });
 

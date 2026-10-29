@@ -1241,28 +1241,37 @@ export async function renderAgentDetail(
   }
   const selector = element("section", {
     className: "revision-selector",
-    "aria-label": "Version being viewed",
+    "aria-label": "Agent revision selection",
   });
   const content = element("div");
   const detailPane = element("div", { className: "agent-version-detail" });
   const detailHeading = element("div", { className: "agent-version-heading" });
+  const agentSectionHeading = element("div", { className: "agent-section-heading" });
+  const revisionContext = element("div", { className: "agent-revision-context" }, detailHeading);
+  const agentScopeTabs = element("div", {
+    className: "agent-tabs agent-scope-tabs",
+    role: "tablist",
+    "aria-label": "Agent sections",
+  });
   const versionEvidence = element("div", { className: "version-evidence" });
-  // Keep the viewed version and draft actions above the full-width tabs.
+  // Draft deployment keeps its existing owner below the revision's navigation.
   const versionSummary = element("div", { className: "agent-version-summary" });
-  // Agent-wide tabs do not imply a selected version, so hide their version controls.
   function setLayoutShape() {
     const agentWide = ["workspace", "access"].includes(selectedTab);
     selector.hidden = agentWide;
     versionSummary.hidden = agentWide;
+    tabs.hidden = agentWide;
+    revisionContext.hidden = agentWide;
+    agentSectionHeading.hidden = !agentWide;
+    versionLayout.classList.toggle("agent-version-layout--agent", agentWide);
+    revisionsSection.setAttribute("aria-selected", String(!agentWide));
+    revisionsSection.tabIndex = agentWide ? -1 : 0;
+    versionLayout.setAttribute(
+      "aria-labelledby",
+      agentWide ? `${tabIds}-${selectedTab}` : revisionsSection.id,
+    );
   }
-  const versionLayout = element(
-    "div",
-    { className: "agent-version-layout" },
-    selector,
-    versionSummary,
-    detailPane,
-  );
-  setLayoutShape();
+  const versionLayout = element("div", { className: "agent-version-layout" }, selector, detailPane);
   // The stand-in has the folded panel's one row, so the panel that replaces it moves nothing
   // when the bounded reveal shows the page before the latest record is read (finding 2163).
   const deploymentStatus = element(
@@ -1434,10 +1443,26 @@ export async function renderAgentDetail(
   // A tab list (UX plan C7): one Tab stop on the selected tab, Left/Right (and Home/End) move
   // focus between tabs, Enter or Space opens one. Opening still changes the URL's `tab=`.
   const tabIds = `agent-tabs-${crypto.randomUUID()}`;
+  versionLayout.id = `${tabIds}-sections-panel`;
+  versionLayout.setAttribute("role", "tabpanel");
+  const revisionsSection = button(
+    "Revisions",
+    () => {
+      if (["workspace", "access"].includes(selectedTab)) {
+        change(selected, "configuration");
+      }
+    },
+    {
+      id: `${tabIds}-revisions`,
+      role: "tab",
+      "aria-controls": versionLayout.id,
+    },
+  );
+  agentScopeTabs.append(revisionsSection);
   const tabs = element("div", {
     className: "agent-tabs",
     role: "tablist",
-    "aria-label": "Agent configuration views",
+    "aria-label": "Selected revision details",
   });
   content.id = `${tabIds}-panel`;
   content.setAttribute("role", "tabpanel");
@@ -1467,46 +1492,54 @@ export async function renderAgentDetail(
       },
     );
     tabControls.set(id, control);
-    tabs.append(control);
+    if (["workspace", "access"].includes(id)) {
+      control.setAttribute("aria-controls", versionLayout.id);
+      agentScopeTabs.append(control);
+    } else {
+      tabs.append(control);
+    }
   }
-  tabs.addEventListener("keydown", (event) => {
-    const enabled = [...tabControls.values()].filter(
-      (control) => !control.disabled && !control.hidden,
-    );
-    const at = enabled.findIndex((control) => control === document.activeElement);
-    const next = {
-      ArrowLeft: at - 1,
-      ArrowRight: at + 1,
-      Home: 0,
-      End: enabled.length - 1,
-    }[event.key];
-    if (at === -1 || next === undefined || event.altKey || event.ctrlKey || event.metaKey) {
-      return;
-    }
-    event.preventDefault();
-    const control = enabled[(next + enabled.length) % enabled.length];
-    if (!control) {
-      return;
-    }
-    for (const other of tabControls.values()) {
-      other.tabIndex = other === control ? 0 : -1;
-    }
-    // focus() leaves a partly visible tab where it is; scrolling it into view honours the strip's
-    // scroll padding, so the tab and its ring clear the faded edge.
-    control.focus({ preventScroll: true });
-    control.scrollIntoView({ block: "nearest", inline: "nearest" });
-  });
-  // Tabbing back in lands on the selected tab, wherever the arrows left focus. Checked once focus
-  // has moved: a window losing focus leaves it on the tab, so the arrowed-to stop stays.
-  tabs.addEventListener("focusout", () => {
-    queueMicrotask(() => {
-      if (!tabs.contains(document.activeElement)) {
-        for (const [id, control] of tabControls) {
-          control.tabIndex = id === selectedTab ? 0 : -1;
-        }
+  setLayoutShape();
+  for (const strip of [agentScopeTabs, tabs]) {
+    strip.addEventListener("keydown", (event) => {
+      const enabled = [...strip.querySelectorAll<HTMLButtonElement>('[role="tab"]')].filter(
+        (control) => !control.disabled && !control.hidden,
+      );
+      const at = enabled.findIndex((control) => control === document.activeElement);
+      const next = {
+        ArrowLeft: at - 1,
+        ArrowRight: at + 1,
+        Home: 0,
+        End: enabled.length - 1,
+      }[event.key];
+      if (at === -1 || next === undefined || event.altKey || event.ctrlKey || event.metaKey) {
+        return;
       }
+      event.preventDefault();
+      const control = enabled[(next + enabled.length) % enabled.length];
+      if (!control) {
+        return;
+      }
+      for (const other of enabled) {
+        other.tabIndex = other === control ? 0 : -1;
+      }
+      // focus() leaves a partly visible tab where it is; scrolling it into view honours the strip's
+      // scroll padding, so the tab and its ring clear the faded edge.
+      control.focus({ preventScroll: true });
+      control.scrollIntoView({ block: "nearest", inline: "nearest" });
     });
-  });
+    // Tabbing back in lands on the selected tab, wherever the arrows left focus. Checked once focus
+    // has moved: a window losing focus leaves it on the tab, so the arrowed-to stop stays.
+    strip.addEventListener("focusout", () => {
+      queueMicrotask(() => {
+        if (!strip.contains(document.activeElement)) {
+          for (const control of strip.querySelectorAll<HTMLButtonElement>('[role="tab"]')) {
+            control.tabIndex = control.getAttribute("aria-selected") === "true" ? 0 : -1;
+          }
+        }
+      });
+    });
+  }
   // On a narrow screen the strip scrolls sideways; an edge with more tabs past it fades.
   const fadeTabEdges = () => {
     tabs.toggleAttribute("data-more-before", tabs.scrollLeft > 0);
@@ -1516,8 +1549,15 @@ export async function renderAgentDetail(
     );
   };
   tabs.addEventListener("scroll", fadeTabEdges, { passive: true });
-  versionSummary.append(detailHeading);
-  detailPane.append(tabs, tabNotice, deploymentPanels, content);
+  revisionContext.append(tabs);
+  detailPane.append(
+    agentSectionHeading,
+    revisionContext,
+    versionSummary,
+    tabNotice,
+    deploymentPanels,
+    content,
+  );
   if (selected !== "draft") {
     detailPane.append(pageDisclosure);
   }
@@ -1559,6 +1599,7 @@ export async function renderAgentDetail(
     nativeAdmin.section,
     deploymentAttention,
     overviewStatus,
+    agentScopeTabs,
     versionLayout,
   );
   // Recovery or native administration can appear above the facts. Keep the Agent heading and
@@ -1745,6 +1786,9 @@ export async function renderAgentDetail(
   }
   const revealTimer = setTimeout(showDetail, FIRST_ACTIVITY_WAIT_MS);
   function revealSelectedTab() {
+    if (tabs.hidden) {
+      return;
+    }
     const strip = tabs.getBoundingClientRect();
     // A tab that has focus (moved there with the arrows) stays in view over the selected one.
     const shown = tabs.contains(document.activeElement)
@@ -1908,16 +1952,49 @@ export async function renderAgentDetail(
       // Deployment polls call this too; an unchanged notice is left untouched.
       setText(notice, versionNotice());
     }
+    const state = detailHeading.querySelector(".agent-revision-state");
+    if (state) {
+      setText(state, revisionStateLabel());
+      if (selected === "draft") {
+        setText(detailHeading.querySelector("h2")!, draftHeading());
+        setText(detailHeading.querySelector(".eyebrow")!, draftConfigurationLabel());
+        setText(detailHeading.querySelector(".agent-revision-scope")!, draftScope());
+      }
+    }
+  }
+
+  function draftHeading() {
+    return draftReadOnly() ? "Next revision draft" : "Build next revision";
+  }
+
+  function draftConfigurationLabel() {
+    return configurationReadOnly() ? "Read-only Configuration" : "Editable Configuration";
+  }
+
+  function draftScope() {
+    if (draftReadOnly()) {
+      return "Read-only draft. These tabs describe the saved settings for the next revision.";
+    }
+    if (configurationReadOnly()) {
+      return "Configuration is read-only. Other draft settings follow your permissions.";
+    }
+    return "Edit the saved draft, then deploy it as a new revision.";
+  }
+
+  function revisionStateLabel() {
+    if (selected === "draft") {
+      return draftReadOnly() ? "Draft · Read-only" : "Draft";
+    }
+    return versionNotice().split(" · ")[0]?.replace(" version", "") ?? "Read-only";
   }
 
   function renderDetailHeading() {
     detailHeading.hidden = false;
-    // Agent-wide headings introduce their tab; version metadata stays above the tabs.
-    const agentWide = ["access", "workspace"].includes(selectedTab);
-    if (agentWide && detailHeading.parentElement !== detailPane) {
-      detailPane.prepend(detailHeading);
-    } else if (!agentWide && detailHeading.parentElement !== versionSummary) {
-      versionSummary.prepend(detailHeading);
+    const headingOwner = ["workspace", "access"].includes(selectedTab)
+      ? agentSectionHeading
+      : revisionContext;
+    if (detailHeading.parentElement !== headingOwner) {
+      headingOwner.prepend(detailHeading);
     }
     if (selectedTab === "access") {
       detailHeading.replaceChildren(
@@ -1949,13 +2026,6 @@ export async function renderAgentDetail(
       );
       return;
     }
-    // A draft's next-step card names it and its Configuration, so the heading steps aside for it
-    // (UX spec 3.7).
-    if (selected === "draft" && versionSummary.querySelector(":scope > .agent-draft-actions")) {
-      detailHeading.replaceChildren();
-      detailHeading.hidden = true;
-      return;
-    }
     const snapshot = viewedSnapshot;
     const heading = element(
       "div",
@@ -1963,7 +2033,7 @@ export async function renderAgentDetail(
       element(
         "span",
         { className: "eyebrow" },
-        selected === "draft" ? "Editable Configuration" : "Immutable snapshot",
+        selected === "draft" ? draftConfigurationLabel() : "Immutable snapshot",
       ),
       element(
         "h2",
@@ -1972,12 +2042,20 @@ export async function renderAgentDetail(
           ? { className: "delayed-status" }
           : {},
         selected === "draft"
-          ? "Create new version"
+          ? draftHeading()
           : snapshot && "revision" in snapshot
-            ? `Version v${snapshot.revision}`
+            ? `Revision v${snapshot.revision}`
             : detailLoadFinished
               ? "Version unavailable"
               : "Loading version details…",
+      ),
+      element("span", { className: "badge agent-revision-state" }, revisionStateLabel()),
+      element(
+        "p",
+        { className: "muted agent-revision-scope" },
+        selected === "draft"
+          ? draftScope()
+          : "Read-only snapshot. These tabs describe this revision.",
       ),
     );
     const detailsOpen =
@@ -1985,7 +2063,7 @@ export async function renderAgentDetail(
     const metadata = element(
       "details",
       { className: "agent-version-metadata", ...(detailsOpen ? { open: true } : {}) },
-      element("summary", {}, "Version details"),
+      element("summary", {}, "Revision details"),
     );
     if (snapshot) {
       if (selected !== "draft") {
@@ -2043,6 +2121,12 @@ export async function renderAgentDetail(
         labels.push("Failed");
       }
       setText(option, labels.join(" · "));
+      const row = [...selector.querySelectorAll<HTMLButtonElement>("[data-revision]")].find(
+        (control) => control.dataset.revision === revision.id,
+      );
+      if (row) {
+        setText(row.querySelector(".agent-revision-label")!, labels.join(" · "));
+      }
     }
   }
   function labelDraftEntry() {
@@ -2055,15 +2139,32 @@ export async function renderAgentDetail(
           : "Draft · Editable Configuration",
       );
     }
+    const row = selector.querySelector('[data-revision="draft"] .agent-revision-label');
+    if (row) {
+      setText(row, configurationReadOnly() ? "Draft · Read-only" : "Draft · Editable");
+    }
+  }
+  function revisionTab(revision: string) {
+    if (
+      ["workspace", "access"].includes(selectedTab) ||
+      (revision === "draft" && selectedTab === "logs") ||
+      (revision !== "draft" && ["repositories", "credentials"].includes(selectedTab))
+    ) {
+      return "configuration";
+    }
+    return selectedTab;
   }
   function renderVersions(
     revisions: Revision[],
     snapshot: Snapshot | null,
     historyError: unknown = null,
   ) {
-    let focus: "older" | "chooser" | null = null;
+    let focus: string | null = null;
     if (selector.contains(document.activeElement)) {
-      focus = document.activeElement?.classList.contains("version-older") ? "older" : "chooser";
+      const active = document.activeElement as HTMLElement;
+      focus =
+        active.dataset.revision ??
+        (active.classList.contains("version-older") ? "older" : "chooser");
     }
     revisionControls.clear();
     const chooser = element(
@@ -2092,9 +2193,40 @@ export async function renderAgentDetail(
         showLeaveBlock();
         return;
       }
-      change(chooser.value, "configuration");
+      change(chooser.value, revisionTab(chooser.value));
     });
     trackRevisionControl(chooser);
+    const history = element("div", { className: "agent-revision-list" });
+    const revisionChoice = (id: string, label: string, caption: string) => {
+      const control = button(
+        element("span", { className: "agent-revision-label" }, label),
+        () => change(id, revisionTab(id)),
+        {
+          className: "agent-revision-choice",
+          "data-revision": id,
+          ...(id === selected ? { "aria-current": "true" } : {}),
+        },
+      );
+      control.append(element("span", { className: "agent-revision-date" }, caption));
+      trackRevisionControl(control);
+      return control;
+    };
+    history.append(
+      element("p", { className: "eyebrow" }, "Build next revision"),
+      revisionChoice("draft", "Draft", "Saved Configuration"),
+      element("p", { className: "eyebrow agent-revision-history-title" }, "Revision history"),
+      ...revisions.map((revision) =>
+        revisionChoice(revision.id, `v${revision.revision}`, displayDate(revision.createdAt)),
+      ),
+    );
+    if (
+      selected !== "draft" &&
+      !revisions.some((revision) => revision.id === selected) &&
+      snapshot &&
+      "revision" in snapshot
+    ) {
+      history.append(revisionChoice(selected, `v${snapshot.revision}`, "Viewed revision"));
+    }
     const older =
       olderCursor && !historyError
         ? button(
@@ -2115,6 +2247,7 @@ export async function renderAgentDetail(
       viewing = viewed ? displayDate(viewed.createdAt) : "";
     }
     selector.replaceChildren(
+      history,
       element(
         "div",
         { className: "agent-version-toolbar" },
@@ -2124,9 +2257,9 @@ export async function renderAgentDetail(
           element("label", { for: chooser.id }, "Viewing version"),
           chooser,
         ),
-        older,
         element("span", { className: "agent-version-date" }, viewing),
       ),
+      ...(older ? [older] : []),
       element("p", { className: "agent-version-context" }, versionContext()),
       ...(olderError
         ? [statusBlock("danger", null, `Older versions unavailable. ${message(olderError)}`)]
@@ -2150,7 +2283,19 @@ export async function renderAgentDetail(
     markVersionOutcomes();
     updateNavigationControls();
     if (focus) {
-      (focus === "older" && older ? older : chooser).focus({ preventScroll: true });
+      const row = [...history.querySelectorAll<HTMLButtonElement>("[data-revision]")].find(
+        (control) => control.dataset.revision === focus,
+      );
+      const selectedRow =
+        history.querySelector<HTMLButtonElement>('[aria-current="true"]') ??
+        history.querySelector<HTMLButtonElement>("button");
+      // The last paging button disappears; desktop history has no visible native chooser.
+      const fallback = chooser.getClientRects().length > 0 ? chooser : selectedRow;
+      const control = focus === "older" && older ? older : (row ?? fallback);
+      control?.focus({ preventScroll: true });
+      if (control && control === selectedRow) {
+        control.scrollIntoView({ block: "nearest" });
+      }
     }
   }
 
@@ -4004,10 +4149,12 @@ export async function renderAgentDetail(
       }
       mountedTab = null;
     }
-    // A tab the reader chose keeps its strip where it was used: the version evidence above it
-    // hides for Workspace and Logs and returns for the others (finding 1518). At the top of the
-    // page the heading stays in view instead.
-    const stripTop = activated && window.scrollY > 0 ? tabs.getBoundingClientRect().top : null;
+    // Section switches hide the revision strip, so use the always-visible Agent sections as
+    // their scroll anchor. Revision-to-revision tabs keep their own strip in place.
+    const scrollAnchor =
+      tabs.hidden || ["workspace", "access"].includes(selectedTab) ? agentScopeTabs : tabs;
+    const stripTop =
+      activated && window.scrollY > 0 ? scrollAnchor.getBoundingClientRect().top : null;
     renderDetailHeading();
     deploymentPanels.hidden = selectedTab !== "deployment";
     versionRecord?.render();
@@ -4017,7 +4164,7 @@ export async function renderAgentDetail(
       selectedTab === "deployment" || !deploymentAttention.dataset.message;
     setLayoutShape();
     if (stripTop !== null) {
-      const moved = tabs.getBoundingClientRect().top - stripTop;
+      const moved = scrollAnchor.getBoundingClientRect().top - stripTop;
       if (Math.abs(moved) >= 1) {
         window.scrollBy({ top: moved, left: 0, behavior: "instant" });
       }
