@@ -215,19 +215,37 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     }
   }
 
-  private async request<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  private async request<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+    mutation = false,
+  ): Promise<T> {
     const parent = currentComputeAbortSignal();
     const signal = AbortSignal.any([AbortSignal.timeout(30_000), ...(parent ? [parent] : [])]);
+    let submitted = false;
+    let abort: (() => void) | undefined;
     try {
       signal.throwIfAborted();
-      const result = await operation(signal);
+      const cancelled = new Promise<never>((_resolve, reject) => {
+        abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+      });
+      // Mutation callbacks submit immediately; their response verification remains
+      // inside this boundary. Pre-aborted requests never reach submission.
+      submitted = mutation;
+      const result = await Promise.race([operation(signal), cancelled]);
       signal.throwIfAborted();
       return result;
     } catch {
       // Do not expose AWS diagnostics, values, or credentials. Never recover by name.
       throw new DependencyUnavailableError(
-        "AWS Secret operation failed; mutation outcome may be unknown.",
+        submitted
+          ? "AWS Secret mutation may have applied; reconciliation required."
+          : "AWS Secret operation failed; no mutation was submitted.",
       );
+    } finally {
+      if (abort) {
+        signal.removeEventListener("abort", abort);
+      }
     }
   }
 
@@ -250,8 +268,8 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     if (caller.Account !== this.options.accountId) {
       throw new ScopeViolationError("AWS caller account does not match Secret configuration.");
     }
-    const result = await this.request((abortSignal) =>
-      clients.secrets.send(
+    return this.request(async (abortSignal) => {
+      const result = await clients.secrets.send(
         new CreateSecretCommand({
           Name: name,
           SecretString: value,
@@ -260,35 +278,36 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
           ...(this.options.kmsKeyId ? { KmsKeyId: this.options.kmsKeyId } : {}),
         }),
         { abortSignal },
-      ),
-    );
-    this.checkArn(result.ARN, name);
-    if (result.Name !== name || result.VersionId !== token) {
-      throw new ScopeViolationError("Secret create response does not match its binding.");
-    }
-    const suffix = Buffer.from(result.ARN.slice(-6), "ascii").toString("hex");
-    const reference = Object.freeze({
-      namespaceName: this.location(identity),
-      name: `aws-sm-${suffix}.${this.digest(result.ARN).slice(0, 32)}.${this.digest(result.ARN).slice(32)}`,
-      uid,
-      key: "SecretString",
-    });
-    const observed = await this.owned(
-      {
-        ...identity,
-        backendRef: reference,
-        driverId: this.id,
-        createdAt: new Date().toISOString(),
-      },
-      false,
-      clients.secrets,
-    );
-    if (this.current(observed) !== token) {
-      throw new DependencyUnavailableError(
-        "Secret changed during creation; outcome may be unknown.",
       );
-    }
-    return reference;
+      abortSignal.throwIfAborted();
+      this.checkArn(result.ARN, name);
+      if (result.Name !== name || result.VersionId !== token) {
+        throw new ScopeViolationError("Secret create response does not match its binding.");
+      }
+      const suffix = Buffer.from(result.ARN.slice(-6), "ascii").toString("hex");
+      const reference = Object.freeze({
+        namespaceName: this.location(identity),
+        name: `aws-sm-${suffix}.${this.digest(result.ARN).slice(0, 32)}.${this.digest(result.ARN).slice(32)}`,
+        uid,
+        key: "SecretString",
+      });
+      const observed = await this.owned(
+        {
+          ...identity,
+          backendRef: reference,
+          driverId: this.id,
+          createdAt: new Date().toISOString(),
+        },
+        false,
+        clients.secrets,
+      );
+      if (this.current(observed) !== token) {
+        throw new DependencyUnavailableError(
+          "Secret changed during creation; outcome may be unknown.",
+        );
+      }
+      return reference;
+    }, true);
   }
 
   private async owned(
@@ -344,25 +363,26 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
       throw new DependencyUnavailableError("Secret rotation is pending.");
     }
     const token = randomUUID();
-    const result = await this.request((abortSignal) =>
-      this.client.send(
+    const binding = this.binding(secret);
+    await this.request(async (abortSignal) => {
+      const result = await this.client.send(
         new PutSecretValueCommand({
-          SecretId: this.binding(secret).arn,
+          SecretId: binding.arn,
           SecretString: value,
           ClientRequestToken: token,
           VersionStages: ["AWSCURRENT"],
         }),
         { abortSignal },
-      ),
-    );
-    if (
-      result.ARN !== this.binding(secret).arn ||
-      result.Name !== this.binding(secret).name ||
-      result.VersionId !== token ||
-      !result.VersionStages?.includes("AWSCURRENT")
-    ) {
-      throw new DependencyUnavailableError("Secret update response does not match its binding.");
-    }
+      );
+      if (
+        result.ARN !== binding.arn ||
+        result.Name !== binding.name ||
+        result.VersionId !== token ||
+        !result.VersionStages?.includes("AWSCURRENT")
+      ) {
+        throw new DependencyUnavailableError("Secret update response does not match its binding.");
+      }
+    }, true);
   }
 
   async delete(secret: Secret): Promise<void> {
@@ -370,22 +390,21 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     if (result.DeletedDate) {
       return;
     }
-    const deleted = await this.request((abortSignal) =>
-      this.client.send(
+    const binding = this.binding(secret);
+    await this.request(async (abortSignal) => {
+      const deleted = await this.client.send(
         new DeleteSecretCommand({
-          SecretId: this.binding(secret).arn,
+          SecretId: binding.arn,
           RecoveryWindowInDays: 30,
         }),
         { abortSignal },
-      ),
-    );
-    if (
-      deleted.ARN !== this.binding(secret).arn ||
-      deleted.Name !== this.binding(secret).name ||
-      !deleted.DeletionDate
-    ) {
-      throw new DependencyUnavailableError("Secret deletion response does not match its binding.");
-    }
+      );
+      if (deleted.ARN !== binding.arn || deleted.Name !== binding.name || !deleted.DeletionDate) {
+        throw new DependencyUnavailableError(
+          "Secret deletion response does not match its binding.",
+        );
+      }
+    }, true);
   }
 
   private async read(secret: Secret): Promise<VersionedSecretValue> {

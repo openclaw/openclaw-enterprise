@@ -222,6 +222,10 @@ including deletion; an operator must reconcile lost resources. Restoration uses
 AWS administration and does not recreate deleted OCC metadata. The Driver never
 force-deletes, restores, or adopts a replacement automatically. Requests have a
 30-second timeout, respect protected-read lifetimes, and disable SDK retries.
+Credential acquisition also settles on cancellation or deadline; a late provider
+result cannot resume creation. Provider, STS, and read-only failures report no
+mutation submission. Failures after mutation submission, including post-create
+binding and ownership verification, report that reconciliation is required.
 Failed mutations may have applied: reconcile AWS audit records and owned resources
 before retrying. A failed create may leave an orphan; it is not blindly deleted.
 Repeating creation for the same OCC ID uses the same name and version token;
