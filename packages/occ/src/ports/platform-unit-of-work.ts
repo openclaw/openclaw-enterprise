@@ -28,6 +28,7 @@ export function bindPlatformUnitOfWork(
       "listNamespaces",
       "createNamespace",
       "lockNamespace",
+      "lockCreatedNamespaceCount",
       "hasAgents",
       "hasConfigurations",
       "listConfigurationIds",
@@ -144,6 +145,10 @@ export function bindPlatformUnitOfWork(
       "listServicePrincipals",
       "getServicePrincipal",
       "createServicePrincipal",
+      "listGroupMembers",
+      "createGroupMembership",
+      "deleteGroupMembership",
+      "createNamespaceWideBinding",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
       "findStandingExecution",

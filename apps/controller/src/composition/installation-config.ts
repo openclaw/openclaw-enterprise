@@ -138,6 +138,8 @@ export interface SelectedDriverConfiguration<T = ConfigurationRecord> {
 export interface InstallationStartupConfiguration {
   readonly repository?: SelectedDriverConfiguration;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
+  /** RFC-0026 Default users; see the configuration reference. */
+  readonly defaultUser?: { readonly namespaceLimit: number };
   readonly occ: { readonly cluster: string };
   readonly logging: LoggingConfiguration;
   readonly presets?: { readonly includeDefaults: boolean; readonly files?: readonly string[] };
@@ -196,12 +198,16 @@ export function installationControllerOptions(
   ControllerOptions,
   | "driverConfigurations"
   | "sandboxNetworkPolicyCeiling"
+  | "defaultUserNamespaceLimit"
   | "nativeWorkerSupport"
   | "credentialProxyCapacity"
 > {
   return {
     driverConfigurations: installationDriverConfigurations(installation),
     sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
+    ...(installation?.defaultUser === undefined
+      ? {}
+      : { defaultUserNamespaceLimit: installation.defaultUser.namespaceLimit }),
     ...(installation?.runtime === undefined
       ? {}
       : { nativeWorkerSupport: installation.runtime.nativeWorkerSupport }),
@@ -377,6 +383,23 @@ function credentialProxyCapacityConfiguration(input: unknown): CredentialProxyCa
     );
   }
   return resolved.capacity;
+}
+
+function defaultUserConfiguration(value: unknown): { readonly namespaceLimit: number } | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const configuration = object(value, "defaultUser");
+  closed(configuration, ["namespaceLimit"], "defaultUser");
+  const namespaceLimit = configuration.namespaceLimit;
+  if (
+    typeof namespaceLimit !== "number" ||
+    !Number.isSafeInteger(namespaceLimit) ||
+    namespaceLimit < 0
+  ) {
+    throw new Error("defaultUser.namespaceLimit must be a nonnegative integer.");
+  }
+  return Object.freeze({ namespaceLimit });
 }
 
 function runtimeConfiguration(
@@ -658,6 +681,7 @@ export async function loadInstallationConfiguration(options: {
     validateSandboxNetworkGrants(sandboxNetworkPolicyCeiling, "/sandboxNetworkPolicyCeiling");
   }
   const observability = observabilityConfiguration(configuration.observability);
+  const defaultUser = defaultUserConfiguration(configuration.defaultUser);
   const runtime = runtimeConfiguration(configuration.runtime);
   const drivers = object(configuration.drivers, "drivers");
   if (Object.hasOwn(drivers, "conduit")) {
@@ -1080,6 +1104,7 @@ export async function loadInstallationConfiguration(options: {
   const installation = Object.freeze({
     occ: Object.freeze({ cluster }),
     ...(sandboxNetworkPolicyCeiling === undefined ? {} : { sandboxNetworkPolicyCeiling }),
+    ...(defaultUser === undefined ? {} : { defaultUser }),
     presets: Object.freeze({ includeDefaults }),
     logging,
     ...(observability === undefined ? {} : { observability }),

@@ -143,6 +143,11 @@ export const IAMRoleParams = Type.Object(
   { additionalProperties: false },
 );
 
+export const DefaultUserParams = Type.Object(
+  { principalId: Type.String({ minLength: 1, maxLength: 200 }) },
+  { additionalProperties: false },
+);
+
 export const IAMAccessBindingParams = Type.Object(
   { namespaceId: NamespaceId, bindingId: IAMAccessBindingId },
   { additionalProperties: false },
@@ -1152,6 +1157,7 @@ export type ServiceAccountParams = Type.Static<typeof ServiceAccountParams>;
 export type SecretParams = Type.Static<typeof SecretParams>;
 export type IAMRoleParams = Type.Static<typeof IAMRoleParams>;
 export type IAMAccessBindingParams = Type.Static<typeof IAMAccessBindingParams>;
+export type DefaultUserParams = Type.Static<typeof DefaultUserParams>;
 export type IAMServicePrincipalParams = Type.Static<typeof IAMServicePrincipalParams>;
 export type AgentParams = Type.Static<typeof AgentParams>;
 export type RevisionParams = Type.Static<typeof RevisionParams>;

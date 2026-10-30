@@ -1856,6 +1856,7 @@ async function canonicalData(db) {
     ],
     agent_revisions: ["gateway_managed_mode"],
     controller_work: ["work_kind"],
+    namespaces: ["created_by"],
   };
   const hasPresets =
     (await db.app.query("SELECT to_regclass('occ.presets') AS relation")).rows[0].relation !== null;
@@ -1885,9 +1886,32 @@ async function canonicalData(db) {
         `SELECT to_jsonb(t) - $1::pg_catalog.text[] AS value FROM occ."${table}" t ORDER BY to_jsonb(t)::pg_catalog.text`,
         [migrationOwnedColumns[table] ?? []],
       )
-    ).rows;
+    ).rows.filter(({ value }) => !BUILT_IN_IAM_ROW_IDS.includes(value.id));
   }
   return result;
+}
+
+// 0065 seeds these Roles, Group, and binding; canonicalData compares only pre-existing rows.
+const BUILT_IN_IAM_ROW_IDS = [
+  "role_builtin_default_user",
+  "role_builtin_namespace_member",
+  "role_builtin_namespace_owner",
+  "group_builtin_default_users",
+  "binding_builtin_default_users",
+];
+
+async function assertBuiltInIAMSeeded(db) {
+  const seeded = await db.app.query(
+    `SELECT id FROM occ.iam_roles WHERE id = ANY($1)
+     UNION ALL SELECT id FROM occ.iam_groups WHERE id = ANY($1)
+     UNION ALL SELECT id FROM occ.iam_access_bindings WHERE id = ANY($1)
+     ORDER BY id`,
+    [BUILT_IN_IAM_ROW_IDS],
+  );
+  assert.deepEqual(
+    seeded.rows.map(({ id }) => id),
+    [...BUILT_IN_IAM_ROW_IDS].sort(),
+  );
 }
 
 test(
@@ -2014,6 +2038,7 @@ test(
         await assertCompletedHistory(db, receipts);
         await assertUpgradedRevisionReadable(db);
         assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
+        await assertBuiltInIAMSeeded(db);
         await assertUpgradedAuthentication(db);
         if (history === "preGatewayManagedMode") {
           await db.app.query(

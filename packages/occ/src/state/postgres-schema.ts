@@ -37,7 +37,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import type { PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import type { AnyPgColumn, PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 
 export const occSchema = pgSchema("occ");
 
@@ -87,8 +87,15 @@ export const namespaces = occSchema.table(
     status: text("status").notNull().default("provisioning"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdBy: text("created_by").references((): AnyPgColumn => iamIdentities.id, {
+      onUpdate: "restrict",
+      onDelete: "restrict",
+    }),
   },
   (table) => [
+    index("namespaces_created_by")
+      .on(table.createdBy)
+      .where(sql`${table.createdBy} IS NOT NULL`),
     uniqueIndex("namespaces_existing_namespace_unique")
       .on(table.existingNamespace)
       .where(sql`${table.existingNamespace} IS NOT NULL AND ${table.deletedAt} IS NULL`),
@@ -1149,6 +1156,24 @@ export const iamAccessBindings = occSchema.table(
       "iam_access_bindings_resource_pair",
       sql`(${table.resourceKind} IS NULL) = (${table.resourceId} IS NULL)`,
     ),
+    check(
+      "iam_access_bindings_built_in_role_shape",
+      sql`CASE ${table.roleId}
+        WHEN 'role_builtin_default_user' THEN
+          ${table.id} = 'binding_builtin_default_users'
+          AND ${table.groupSubjectId} = 'group_builtin_default_users'
+          AND ${table.namespaceId} IS NULL AND ${table.resourceKind} IS NULL
+        WHEN 'role_builtin_namespace_member' THEN
+          ${table.namespaceId} IS NOT NULL AND ${table.resourceKind} IS NULL
+        WHEN 'role_builtin_namespace_owner' THEN
+          ${table.namespaceId} IS NOT NULL AND ${table.identitySubjectId} IS NOT NULL
+          AND ${table.resourceKind} IS NULL
+        ELSE true
+      END`,
+    ),
+    uniqueIndex("iam_access_bindings_one_namespace_owner")
+      .on(table.namespaceId)
+      .where(sql`${table.roleId} = 'role_builtin_namespace_owner'`),
   ],
 );
 

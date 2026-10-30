@@ -19,7 +19,7 @@ export const agentPrincipalDenied = (agent, target, grant = "Secret operate") =>
 // A denial echoes the ID its request sent, so a real and an unknown ID get answers that match once
 // each answer's own ID is hidden: the text never says whether the resource exists.
 export const sentIdHidden = (text, id) => text.replaceAll(id, "<id>");
-// A create needs the collection grant, which no Role can hold: only an Installation
+// A create needs the collection grant, which only the built-in Roles hold: an Installation
 // administrator creates one. `kinds` is the plural, such as "Secrets".
 export const createDenied = (kind, namespaceId, kinds = `${kind}s`) =>
   `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Only an Installation administrator can create ${kinds}: ask one to create it.`;
@@ -28,7 +28,7 @@ export const createDenied = (kind, namespaceId, kinds = `${kind}s`) =>
 export const createRestricted = (kind, namespaceId) =>
   `Not authorized: a Restriction in Namespace ${namespaceId} denies ${kind} create, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it, or create the ${kind} in another Namespace.`;
 export const NAMESPACE_CREATE_DENIED =
-  "Not authorized: this needs Namespace create. Only an Installation administrator can create Namespaces: ask one to create it.";
+  "Not authorized: this needs Namespace create. Ask an Installation administrator to create the Namespace or to add you to Default users.";
 export const INSTALLATION_ADMINISTER_DENIED =
   "Not authorized: this needs Installation administer. Ask an Installation administrator to do it for you or to grant it.";
 // An Agent create or update whose gatewayManagedMode alone needs Installation administer names the

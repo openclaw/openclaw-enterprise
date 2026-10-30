@@ -2,8 +2,12 @@ import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { isImmutableSnapshot, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import {
+  BUILT_IN_ROLE_IDS,
+  BUILT_IN_ROLES,
+  DEFAULT_USERS_GROUP_ID,
   PERMISSION_ACTIONS,
   RESOURCE_KINDS,
+  isBuiltInRoleId,
   type AccessBinding,
   type AuthorizationDecision,
   type AuthorizationEvidence,
@@ -11,7 +15,9 @@ import {
   type Group,
   type GroupMembership,
   type IAMDriver,
+  type IAMGroupMemberInput,
   type IAMManagedAccessBindingInput,
+  type IAMNamespaceOwnerBindingInput,
   type IAMManagedRoleInput,
   type IAMManagedServicePrincipalInput,
   type IAMPolicyManagementContext,
@@ -102,6 +108,25 @@ export function createBootstrapAdministratorSeed(
         subjectKind: "identity",
         subjectId: servicePrincipal.id,
         roleId: administratorRole.id,
+      },
+    ],
+  };
+}
+
+/**
+ * The built-in Roles, the Default users Group, and its binding, as migration 0065 stores them.
+ * In-memory fixtures add these rows to their own NativeIAMState.
+ */
+export function builtInNativeIAMState(): Pick<NativeIAMState, "roles" | "groups" | "bindings"> {
+  return {
+    roles: BUILT_IN_ROLES.map((role) => ({ ...role, permissions: [...role.permissions] })),
+    groups: [{ id: DEFAULT_USERS_GROUP_ID, name: "Default users" }],
+    bindings: [
+      {
+        id: "binding_builtin_default_users",
+        subjectKind: "group",
+        subjectId: DEFAULT_USERS_GROUP_ID,
+        roleId: BUILT_IN_ROLE_IDS.defaultUser,
       },
     ],
   };
@@ -232,9 +257,9 @@ export function validateAuthAccountPrincipalSeed(
     if (role === undefined) {
       throw new AuthAccountRoleNotFoundError(binding.roleId);
     }
-    // A caller-supplied Namespace Role is a request error; the binding shape
+    // A caller-supplied Namespace or built-in Role is a request error; the binding shape
     // below is built by createAuthPrincipalSeed, so a mismatch is an internal fault.
-    if (role.namespaceId !== undefined) {
+    if (role.namespaceId !== undefined || isBuiltInRoleId(role.id)) {
       throw new AuthAccountRoleInvalidError(binding.roleId);
     }
     if (
@@ -1314,6 +1339,67 @@ export class NativeIAMDriver implements IAMDriver {
         namespaceId: input.namespaceId,
       })),
     });
+  }
+
+  async listGroupMembers(
+    context: IAMPolicyReadContext,
+    groupId: string,
+  ): Promise<readonly string[]> {
+    const repository = this.policyRepository(context, ["listGroupMembers"]);
+    this.assertIdentifier(groupId, "Group");
+    return Object.freeze([...(await repository.listGroupMembers(groupId))]);
+  }
+
+  async addGroupMember(
+    context: IAMPolicyManagementContext,
+    input: IAMGroupMemberInput,
+  ): Promise<boolean> {
+    const repository = this.policyRepository(context, ["createGroupMembership"]);
+    this.assertGroupMember(input);
+    return repository.createGroupMembership(input.groupId, input.principalId);
+  }
+
+  async removeGroupMember(
+    context: IAMPolicyManagementContext,
+    input: IAMGroupMemberInput,
+  ): Promise<boolean> {
+    const repository = this.policyRepository(context, ["deleteGroupMembership"]);
+    this.assertGroupMember(input);
+    return repository.deleteGroupMembership(input.groupId, input.principalId);
+  }
+
+  async createNamespaceOwnerBinding(
+    context: IAMPolicyManagementContext,
+    input: IAMNamespaceOwnerBindingInput,
+  ): Promise<Readonly<AccessBinding>> {
+    const repository = this.policyRepository(context, ["createNamespaceWideBinding"]);
+    assertCondition(
+      typeof input === "object" &&
+        input !== null &&
+        exactKeys(input, ["id", "namespaceId", "principalId"]),
+      "Namespace owner binding input contains unsupported fields",
+    );
+    this.assertIdentifier(input.id, "AccessBinding");
+    this.assertNamespace(input.namespaceId);
+    this.assertIdentifier(input.principalId, "Principal");
+    return immutableBinding(
+      await repository.createNamespaceWideBinding({
+        id: input.id,
+        namespaceId: input.namespaceId,
+        subjectKind: "identity",
+        subjectId: input.principalId,
+        roleId: BUILT_IN_ROLE_IDS.namespaceOwner,
+      }),
+    );
+  }
+
+  private assertGroupMember(input: IAMGroupMemberInput): void {
+    assertCondition(
+      typeof input === "object" && input !== null && exactKeys(input, ["groupId", "principalId"]),
+      "Group member input contains unsupported fields",
+    );
+    this.assertIdentifier(input.groupId, "Group");
+    this.assertIdentifier(input.principalId, "Principal");
   }
 
   private policyRepository<Repository extends IAMPolicyReadRepository>(

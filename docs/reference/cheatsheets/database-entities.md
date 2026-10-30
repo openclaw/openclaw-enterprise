@@ -26,6 +26,8 @@ Stores the single OCC Installation record.
 ### `namespaces`
 
 Tracks platform Namespaces, their lifecycle status, and any existing Kubernetes namespace they use.
+`created_by` names the [Default users](../authorization/default-users.md) member
+who created and owns the Namespace; the application role cannot update it.
 
 - `id`
 - `name`
@@ -33,6 +35,7 @@ Tracks platform Namespaces, their lifecycle status, and any existing Kubernetes 
 - `status`
 - `created_at`
 - `deleted_at`
+- `created_by`
 
 ### `agents`
 
@@ -338,7 +341,8 @@ Stores human Principals and service identities, including those owned by an Agen
 
 ### `iam_groups`
 
-Defines native IAM groups at Installation or Namespace scope.
+Defines native IAM groups at Installation or Namespace scope, including the
+built-in, immutable Default users Group.
 
 - `id`
 - `namespace_id`
@@ -346,7 +350,8 @@ Defines native IAM groups at Installation or Namespace scope.
 
 ### `iam_group_memberships`
 
-Links human Principals to their native IAM groups.
+Links human Principals to their native IAM groups. Rows can be deleted but not
+updated.
 
 - `namespace_id`
 - `group_id`
@@ -354,7 +359,8 @@ Links human Principals to their native IAM groups.
 
 ### `iam_roles`
 
-Defines native IAM roles as sets of actions and resource kinds.
+Defines native IAM roles as sets of actions and resource kinds, including the
+three immutable [built-in Roles](../authorization/default-users.md#built-in-roles).
 
 - `id`
 - `namespace_id`
@@ -364,6 +370,8 @@ Defines native IAM roles as sets of actions and resource kinds.
 ### `iam_access_bindings`
 
 Grants a native IAM role to an identity or group, optionally for a specific resource.
+A check constraint limits how the built-in Roles can be bound, and a unique index
+allows one Namespace owner binding for each Namespace.
 
 - `id`
 - `namespace_id`

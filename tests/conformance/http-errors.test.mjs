@@ -1547,11 +1547,13 @@ test("a caller denial names each checked grant without disclosing a Restriction 
         /restriction-1|binding-1|role-1|prn_caller|matching|binding grants/,
         label,
       );
-      // No Role can hold create, so a create denial never asks for a grant (finding 2581).
+      // Only built-in Roles hold create, so a create denial never asks for a grant (finding 2581).
       if (action === "create" && kind !== "installation") {
         assert.match(
           restricted,
-          /Only an Installation administrator can create .+: ask one to create it\.$/,
+          kind === "namespace"
+            ? /Ask an Installation administrator to create the Namespace or to add you to Default users\.$/
+            : /Only an Installation administrator can create .+: ask one to create it\.$/,
           label,
         );
         assert.doesNotMatch(restricted, /grant/, label);

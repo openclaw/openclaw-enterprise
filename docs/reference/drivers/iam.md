@@ -47,6 +47,26 @@ original transaction; policy and audit must commit or roll back together.
 OCC rejects a write before invoking a Driver without that declaration. Reads
 remain available when their methods are implemented.
 
+### Group membership and Namespace owner operations
+
+These optional methods support [Default users](../authorization/default-users.md).
+The write methods have the same transaction requirement as Namespace policy
+writes. OCC returns `503 DEPENDENCY_UNAVAILABLE` when a needed method is absent.
+
+| Method                                        | Contract                                                                                                                                        |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `listGroupMembers(context, groupId)`          | Returns the Principal IDs in one Installation-level Group.                                                                                      |
+| `addGroupMember(context, input)`              | Takes `groupId` and `principalId`. Returns `false` when the Principal is already a member. The repository refuses a non-Installation Principal. |
+| `removeGroupMember(context, input)`           | Takes `groupId` and `principalId`. Returns `false` when the Principal was not a member.                                                         |
+| `createNamespaceOwnerBinding(context, input)` | Takes binding `id`, `namespaceId`, and `principalId`. Binds that identity to the built-in Namespace owner Role, Namespace-wide, and returns it. |
+
+OCC calls the membership methods for the Default users routes and calls
+`createNamespaceOwnerBinding` when a member creates a Namespace. The supplied
+`IAMPolicyRepository` provides `listGroupMembers`, `createGroupMembership`,
+`deleteGroupMembership`, and `createNamespaceWideBinding` for these methods.
+The repository accepts a Namespace-wide binding only for one identity in a
+`provisioning` or `ready` Namespace.
+
 ## IAM
 
 The authentication system verifies credentials; the IAM Driver resolves the
@@ -97,12 +117,13 @@ supported resource actions and Restrictions.
 
 ## Troubleshooting
 
-| Symptom                                      | What to check                                                                                                                                    |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Valid credentials do not resolve an identity | Check the issuer and subject, Namespace scope, and that exactly one matching identity was provisioned. Signing in does not provision a Role.     |
-| A known identity is denied                   | Check the exact action and resource, applicable bindings and Roles, and overriding Restrictions. For a ServicePrincipal, check its own bindings. |
-| Previously queued work is denied             | Check whether the original caller or its grant was revoked. Restore only the intended permission or start a newly authorized operation.          |
-| IAM or policy storage is unavailable         | Restore the dependency and retry; never turn an error or malformed decision into an allow.                                                       |
+| Symptom                                                            | What to check                                                                                                                                    |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Valid credentials do not resolve an identity                       | Check the issuer and subject, Namespace scope, and that exactly one matching identity was provisioned. Signing in does not provision a Role.     |
+| A known identity is denied                                         | Check the exact action and resource, applicable bindings and Roles, and overriding Restrictions. For a ServicePrincipal, check its own bindings. |
+| Previously queued work is denied                                   | Check whether the original caller or its grant was revoked. Restore only the intended permission or start a newly authorized operation.          |
+| IAM or policy storage is unavailable                               | Restore the dependency and retry; never turn an error or malformed decision into an allow.                                                       |
+| Default users routes or a member's Namespace creation return `503` | Check that the Driver implements the Group membership and owner methods and declares `namespacePolicyTransaction: "platform-unit-of-work"`.      |
 
 ## Implementations
 

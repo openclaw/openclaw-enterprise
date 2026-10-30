@@ -19,6 +19,7 @@
 - [IAM access bindings](#iam-access-bindings)
 - [IAM roles](#iam-roles)
 - [IAM service principals](#iam-service-principals)
+- [IAM](#iam)
 - [Secrets](#secrets)
 - [Service accounts](#service-accounts)
 - [Service account credentials](#service-account-credentials)
@@ -179,6 +180,12 @@
 - [`listIAMServicePrincipals`](../api.md#get-namespacesnamespaceidiamserviceprincipals): List the Namespace's non-Agent ServicePrincipals.
 - [`getIAMServicePrincipal`](../api.md#get-namespacesnamespaceidiamserviceprincipalsserviceprincipalid): Get an exact Namespace ServicePrincipal.
 - [`createIAMServicePrincipal`](../api.md#post-namespacesnamespaceidiamserviceprincipals): Create a Namespace ServicePrincipal with no grants for automation or CLI keys.
+
+### IAM
+
+- [`listDefaultUsers`](../api.md#get-iamdefaultusers): List the Principals in the built-in Default users Group.
+- [`addDefaultUser`](../api.md#put-iamdefaultusersprincipalid): Add an Installation Principal to Default users so it can create Namespaces.
+- [`removeDefaultUser`](../api.md#delete-iamdefaultusersprincipalid): Remove a Principal from Default users; the Namespaces it owns remain.
 
 ### Secrets
 

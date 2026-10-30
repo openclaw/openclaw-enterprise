@@ -57,9 +57,13 @@ unsupported settings, and unavailable Drivers stop startup before requests run.
 
 The optional `sandboxNetworkPolicyCeiling` array delegates bounded per-Agent
 network additions. It grants no default access; an absent or empty array delegates
-none. API and worker must use the same trusted value. See
+none. See
 [Sandbox policies](sandbox-policies.md#authority-and-admission) for
 its grant schema and authorization boundaries.
+
+The optional `defaultUser.namespaceLimit` nonnegative integer sets how many
+Namespaces each [Default users](authorization/default-users.md#create-a-namespace-as-a-member)
+member can own at one time. Absent means `1`; `0` lets members create none.
 
 The optional `observability` block sets one external console destination:
 
