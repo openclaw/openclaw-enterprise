@@ -139,7 +139,7 @@ type DetailContext = ConsolePageContext & {
   namespaceId: string;
   agentId: string;
   onProtectedReadDenied(error: unknown, receipt: HTMLElement): void;
-  isKept?(): boolean;
+  isPageCurrent?(): boolean;
 };
 type Permissions = Static<typeof AgentCallerPermissionsResponse>["data"];
 type RevisionPage = Awaited<ReturnType<typeof readRevisionPage>>;
@@ -4228,11 +4228,11 @@ export async function renderAgentDetail(
     const tabContext: DetailContext = {
       ...context,
       isCurrent: () => context.isCurrent() && mountedTab === state,
-      isKept: () =>
-        context.isCurrent() && (mountedTab === state || retainedTabs.get(state.id) === state),
+      isPageCurrent: () => context.isCurrent(),
       request: async (readPath, options) => {
         const read = (options?.method ?? "GET") === "GET";
         const keeps = options?.keepsTab === true;
+        const showsOutcome = keeps || options?.showsOutcome === true;
         const unchanged = state.mutations === context.mutationVersion();
         state.pending += 1;
         if (keeps) {
@@ -4240,8 +4240,9 @@ export async function renderAgentDetail(
         }
         try {
           const reply = context.request(readPath, options);
-          // The tab shows its own kept write, so that write alone does not make it stale.
-          if (keeps && unchanged) {
+          // The tab shows this write's outcome itself, so that write alone does not make it
+          // stale: a second OAuth start after a poll or Cancel login is kept too (finding 2981).
+          if (showsOutcome && unchanged) {
             state.mutations = context.mutationVersion();
           }
           const result = await reply;
@@ -4250,9 +4251,9 @@ export async function renderAgentDetail(
           }
           return result;
         } catch (error) {
-          // A kept write shows its own outcome, as a refused OAuth start does: the tab stays
-          // reusable, so a retry can still be kept (finding 2980).
-          if (!keeps) {
+          // The tab shows this write's refusal, as of an OAuth start: it stays reusable, so a
+          // retry can still be kept (finding 2980).
+          if (!showsOutcome) {
             state.reusable = false;
           }
           // Any tab's refusal of a read the page had the grant for, not only Logs', makes the next
@@ -4829,6 +4830,7 @@ export async function renderAgentDetail(
         servicePrincipalId: agent.servicePrincipalId,
       };
       let syncUnsavedAuthentication = () => {};
+      let recordAuthentication = () => {};
       const auth = createHarnessAuthFields(
         { ...context, secretsOperateDenied },
         agent.harnessAuth,
@@ -4837,6 +4839,7 @@ export async function renderAgentDetail(
           agentName: agent.name,
           draft: retained?.fields,
           onChange: () => syncUnsavedAuthentication(),
+          onStartSettled: () => recordAuthentication(),
         },
       );
       const feedback = element("p", { role: "status", className: "hint" }, savedNotice);
@@ -5034,7 +5037,7 @@ export async function renderAgentDetail(
       form.addEventListener("input", () => syncUnsavedAuthentication());
       form.addEventListener("change", () => syncUnsavedAuthentication());
       syncUnsavedAuthentication();
-      context.drafts.track("authentication", () => {
+      const captureAuthentication = () => {
         const fields = auth.capture();
         return pending ||
           outcomeUnknown ||
@@ -5049,7 +5052,11 @@ export async function renderAgentDetail(
               ...(grantProblem ? { grantProblem } : {}),
             }
           : undefined;
-      });
+      };
+      context.drafts.track("authentication", captureAuthentication);
+      // An OAuth start answered after this tab was left updates the draft a rebuilt tab reads,
+      // unless a newer Credentials tab tracks it (finding 2981).
+      recordAuthentication = () => context.drafts.record("authentication", captureAuthentication);
       if (savedAuthentication) {
         save.textContent = "Retry credential access";
         setAuthUnavailable(true);
