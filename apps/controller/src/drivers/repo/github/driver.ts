@@ -16,7 +16,7 @@ import {
 import { githubInstallationProfile } from "./credentials/registry.ts";
 import { encodeRepositoryCredentialSessionFiles } from "./credentials/client/config.ts";
 import type { SessionStatus } from "../credentials/service-contracts.ts";
-import { sameBinding } from "../credentials/sessions.ts";
+import { sameBinding } from "../credentials/grant-identity.ts";
 import { hasControlCharacter } from "../credentials/client-contracts.ts";
 
 function publicStatus(status: SessionStatus): RepositoryCredentialSessionStatus {
