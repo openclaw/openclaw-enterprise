@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
 updated: 2026-10-30
-last_updated_session: authoring-run/ba84d894-356c-419d-ab61-c51ce59bdec6
+last_updated_session: authoring-run/264fbe79-1af9-492d-aa8b-c020cde317f2
 ---
 
 # Credential source refresh Flow
@@ -131,25 +131,24 @@ marks the source `ready` with its audit event.
 For a type declaring `deviceAuthorization.harnessId`, OCC registers the empty
 source, asks the paired Refresh Driver to start login, then stores the opaque
 handle, actor, source, and Driver IDs in the session Secret.
-The HTTP handler in `apps/controller/src/index.ts` records the successful start
-before sending the session reference. The audit event identifies the Agent or
-Namespace, not the session Secret.
+The HTTP handler in `apps/controller/src/index.ts` audits the successful start,
+naming the Agent or Namespace but not the session Secret, before replying.
 
 `apps/controller/src/console/agents/device-login.mts:createDeviceLogin` records
 `start_unconfirmed` before sending a start. Both authentication forms retain it
-across navigation; Agent detail keeps its Credentials tab during a start. Until
-the page is left, a usable reply supplies the challenge; a refusal permits
-retry. Unconfirmed attempts cannot start again,
-poll, or cancel. See
+across navigation. Agent detail keeps its Credentials tab during a start; its
+draft records a later reply unless a newer tab owns it. Until the page is left,
+a usable reply supplies the challenge; a refusal permits retry.
+Unconfirmed attempts cannot start again, poll, or cancel. See
 [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 Compare-and-swap serializes known-session polls. OCC rechecks scope and both
 Driver selections before completion. Uncertain exchanges close the handle but
 keep the source.
 
 `apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
-starts the issuer request from the API Pods. The start, poll, and token-exchange
+starts the issuer request from the API Pods. Start, poll, and token-exchange
 requests use fixed `auth.openai.com` endpoints and refuse redirects, so login
-material never reaches a redirect target. It preserves the existing
+material never reaches a redirect target. It keeps the
 `DeviceAuthorizationStartError` distinction: connection failure or timeout is
 `unreachable`; HTTP rejection, malformed replies, and `AbortError` are
 `unavailable`. The HTTP handler returns `503 DEPENDENCY_UNAVAILABLE`, naming
@@ -160,11 +159,10 @@ failure class, never provider messages, response bodies, or nested causes.
 `apps/controller/src/drivers/credential-refresh/openshell.ts:pollDeviceAuthorization`
 performs the Codex exchange, configures OpenShell with refresh material, and
 stores trusted account metadata. Before acquiring a code, its issuer polling
-returns pending on HTTP `429`, `5xx`, or a fetch connection failure; OCC retains
-the handle and its polling interval. An aborted initial poll, including OCC's
-internal timeout, closes the session, is not retried as pending, and
-requires a fresh login. Failures from code acquisition onward likewise close the
-session without replay. OpenShell owns
+returns pending on HTTP `429`, `5xx`, or a fetch connection failure; OCC keeps
+the handle and interval. An aborted initial poll, including OCC's internal
+timeout, is not pending: it and any failure from code acquisition onward close
+the session without replay. OpenShell owns
 future refresh and successor persistence. After handoff, polls read existing state:
 unfinished refresh stays pending; a persistent uncertain marker needs operator inspection.
 Ready confirms a usable token. Later versions attach the existing provider
@@ -176,8 +174,8 @@ ordinary Backend identity, then calls `GetProviderCredentials` through the
 separate operator-TLS channel. OpenShell may refresh to satisfy its five-minute
 remaining-lifetime requirement. Only access credentials enter the callback; it
 rechecks the caller's authority and saved-Agent binding/grant before provider I/O.
-Closing or expiring the login session does not disable source-based discovery.
-Cancellation or a failed recheck cannot undo gateway refresh already started.
+Closing or expiring the login session leaves source-based discovery enabled.
+Cancellation or a failed recheck cannot undo a started gateway refresh.
 
 ### 3. Background refresh
 
@@ -339,6 +337,8 @@ detached reads. Clearing bytes cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 12:27: Record late starts. (authoring-run/264fbe79-1af9-492d-aa8b-c020cde317f2 - cd2a58116a69f1a6d68a572a226ef8945408ef54)
 
 - 2026-10-30 11:39: Keep pending-start tabs. (authoring-run/ba84d894-356c-419d-ab61-c51ce59bdec6 - 01c78bee6b7eac13f95585291232ff763edb7828)
 

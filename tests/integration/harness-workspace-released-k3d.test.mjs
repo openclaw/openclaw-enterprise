@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { harnessWorkspacePreparationScript } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   createKubernetesClient,
+  explicitK3dSelection,
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
@@ -17,10 +18,7 @@ import {
 // stored. This uses the real kubelet, storage provisioner and kernel permission checks.
 
 const execute = promisify(execFile);
-const selection = {
-  kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
-  kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
-};
+const selection = explicitK3dSelection();
 const image = process.env.OCC_TEST_KUBERNETES_IMAGE;
 const requested = [...Object.values(selection), image].some(Boolean);
 const claimName = "workspace";

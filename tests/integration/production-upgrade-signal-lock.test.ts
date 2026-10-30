@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, rmdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, rmdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
@@ -16,8 +16,7 @@ const revision = execFileSync("git", ["rev-parse", "HEAD"], {
 }).trim();
 
 async function setup(t: TestContext) {
-  const directory = await mkdtemp(join(tmpdir(), "upgrade-signal-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "upgrade-signal-");
   const bin = join(directory, "bin");
   const evidence = join(directory, "evidence");
   const lock = join(evidence, ".upgrade-lock");

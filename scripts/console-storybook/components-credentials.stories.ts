@@ -182,3 +182,5 @@ export const AuthOAuthStartNavigation = story("authOAuthStartNavigation");
 export const AuthOAuthStartTabSwitch = story("authOAuthStartTabSwitch");
 
 export const AuthOAuthStartTabSwitchRefused = story("authOAuthStartTabSwitchRefused");
+
+export const AuthOAuthRestartTabSwitch = story("authOAuthRestartTabSwitch");

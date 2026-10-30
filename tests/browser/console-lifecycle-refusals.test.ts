@@ -832,6 +832,48 @@ test("a refused Request deletion again names the Agent, not the API's denial", a
   await expectReachableReason(page, repeat, (await alert.textContent())?.trim() ?? "");
 });
 
+// A row refusal that is not about grants is kept for a refocus that rebuilds the list (finding
+// D812), and only until Refresh. Refresh reread the row, so a later refocus rebuild must not show
+// that refusal again or hold the row's icons for it.
+test("Refresh drops a kept Agents list row refusal for later refocus rebuilds", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refreshed row refusal");
+  const agent = await fixture.createAgent(namespace.id, "Kept Row", nativeValues("kept-row"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  const id = "req_00000000-0000-4000-8000-000000000b06";
+  // The owner holds every grant; only this one Stop is refused, for a caller-state reason.
+  await fulfillMethod(
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/stop`,
+    "POST",
+    apiErrorResponse(403, "FORBIDDEN", "The acting identity is unavailable.", { requestId: id }),
+  );
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const row = page.getByRole("row").filter({ hasText: "Kept Row" });
+  const stop = row.getByRole("button", { name: "Stop Kept Row", exact: true });
+  await waitForEnabled(stop);
+  await stop.click();
+  await page
+    .getByRole("dialog", { name: "Stop Kept Row?" })
+    .getByRole("button", { name: "Stop Agent" })
+    .click();
+  const alert = page.getByRole("alert").filter({ hasText: `Request ID: ${id}` });
+  await alert.waitFor();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await waitForEnabled(stop);
+  assert.equal(await alert.count(), 0);
+
+  // Another Agent added since makes the refocus rebuild the list.
+  await fixture.createAgent(namespace.id, "Added Row", nativeValues("added-row"));
+  await tagView(page);
+  await refocus(page);
+  await taggedView(page).waitFor({ state: "detached" });
+  await page.locator(settledView).getByRole("link", { name: "Added Row", exact: true }).waitFor();
+  assert.equal(await alert.count(), 0, "the refreshed refusal stays dropped");
+  assert.equal(await row.getByText("Not stopped: see above", { exact: true }).count(), 0);
+  await waitForEnabled(stop);
+});
+
 // After the API refused a Create Secret, the dialog's Show value toggle was natively disabled
 // with no reason, and the page's Create Secret still offered another attempt the API would
 // refuse (r57 rows 14 and 15).

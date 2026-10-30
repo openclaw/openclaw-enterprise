@@ -115,7 +115,12 @@ export function createHarnessAuthFields(
   context: HarnessAuthContext,
   binding: AuthBinding,
   harnessId: ReturnType<typeof configuredHarnessId>,
-  options: { draft?: HarnessAuthDraft | undefined; agentName?: string; onChange?(): void } = {},
+  options: {
+    draft?: HarnessAuthDraft | undefined;
+    agentName?: string;
+    onChange?(): void;
+    onStartSettled?(): void;
+  } = {},
 ) {
   const method = element(
     "select",
@@ -209,6 +214,7 @@ export function createHarnessAuthFields(
         options.onChange?.();
       }
     },
+    onStartSettled: () => options.onStartSettled?.(),
   });
   const currentOAuth = element(
     "p",
