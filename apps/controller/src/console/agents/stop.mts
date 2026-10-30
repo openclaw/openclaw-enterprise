@@ -367,7 +367,7 @@ export function createAgentStop(
       if (error.status === 403) {
         // As for Delete: a refusal about grants names the Agent, the grant and who gives it;
         // another shows as written (findings 2534, 2955). Stop stays unavailable, described by
-        // it, until a newer permission answer allows operate.
+        // it, until a permission answer read after it allows operate (finding 2966).
         text = (!grantRefusal(cause) && error.serverMessage) || stopRefused(state.agent.name);
         refused = true;
         refusedAfterReads = permissionReadsStarted();
