@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-10-29"
-last_updated_session: "fix-2881"
+last_updated_session: "01a1891d-5b6b-7071-b482-793a9dd01044"
 ---
 
 # Agent sandbox policy flow
@@ -55,7 +55,8 @@ returns its result without a later table-format error.
 
 `OpenClawController.discoverConfigurations` filters registry contributions by the
 server-selected Driver, scope, and resource-owner read authority. Installation
-inspection exposes startup schemas without values. Agent discovery and policy GET
+inspection exposes [Driver-projected startup values](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
+Agent discovery and policy GET
 use the same descriptor with owner-generated facet action URLs and current
 availability. The registry never selects a Driver from submitted additions.
 
@@ -242,6 +243,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-29 12:37: Link Installation inspection to its startup projection owner. (01a1891d-5b6b-7071-b482-793a9dd01044 - 32b59e204e)
 
 - 2026-10-29 18:30: An Agent update with repository bindings authorizes SandboxPolicy `read` before the overlap refusal that names a saved grant (finding 2881).
 

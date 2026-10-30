@@ -18,6 +18,7 @@
   },
   "fileConcurrency": 3,
   "parallelFiles": [
+    "tests/integration/production-upgrade-signal-lock.test.ts",
     "tests/integration/codex-model-probe.test.mjs",
     "tests/integration/production-image-upgrade-recovery.test.mjs",
     "tests/integration/docker-compute-token-retry.test.mjs",
@@ -33,6 +34,9 @@
     "tests/integration/oidc-ca-trust.test.mjs"
   ],
   "files": [
+    {
+      "path": "tests/integration/production-upgrade-signal-lock.test.ts"
+    },
     {
       "path": "tests/integration/container-publication-workflow.test.mjs",
       "expectedTests": [

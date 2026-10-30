@@ -447,14 +447,16 @@ test("a permanently disabled button says not allowed, not busy", async (t) => {
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   await dialog.getByText("Plugin browsing is unavailable with API-key authentication.").waitFor();
   // An API key can never browse the catalog, so Load plugins stays disabled: nothing is pending.
+  // Its reason shows, so it stays focusable (aria-disabled, finding 2899) and fades its label,
+  // not the whole button, which would dim its focus ring (finding 2863).
   const load = dialog.getByRole("button", { name: "Load plugins" });
   assert.equal(await load.isDisabled(), true);
   assert.deepEqual(
     await load.evaluate((node) => {
       const style = globalThis.getComputedStyle(node);
-      return [style.cursor, style.opacity];
+      return [style.cursor, style.opacity, node.getAttribute("aria-disabled")];
     }),
-    ["not-allowed", "0.6"],
+    ["not-allowed", "1", "true"],
   );
 });
 

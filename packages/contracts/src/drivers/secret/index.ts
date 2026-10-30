@@ -1,6 +1,6 @@
-import type { CredentialInputRead, VersionedSecretValue } from "./credential-proxy.ts";
-import type { Driver } from "./driver.ts";
-import type { Secret, SecretBackendRef, SecretIdentity } from "./index.ts";
+import type { CredentialInputRead, VersionedSecretValue } from "../credential-proxy/index.ts";
+import type { Driver } from "../index.ts";
+import type { Secret, SecretBackendRef, SecretIdentity } from "../../index.ts";
 
 export interface SecretDriver extends Driver {
   readonly capability: "secret";

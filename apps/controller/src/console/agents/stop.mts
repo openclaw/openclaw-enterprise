@@ -6,6 +6,7 @@ import {
   mayReturnFocus,
   setHidden,
   setText,
+  setUnavailable,
   statusBlock,
   requestIdLine,
 } from "../dom.mjs";
@@ -13,6 +14,7 @@ import {
   type AgentLifecycleContext,
   type LifecycleError,
   cancelsFirstDeployment,
+  grantRefusal,
   stopConfirmation,
 } from "./lifecycle-confirmation.mjs";
 import { AGENT_STOP_DENIED, stopRefused } from "./access-reasons.mjs";
@@ -25,6 +27,7 @@ export function createAgentStop(
   onDeleting: (options: { focus: boolean }) => void,
   onAgentChanged: (next: AgentRead) => void,
   allowed?: Promise<boolean | undefined>,
+  permissionReadsStarted: () => number = () => 0,
 ) {
   // One row of the Agent page's danger zone (UX spec 3.9); the confirmation carries the detail.
   const section = element("section", {
@@ -32,8 +35,10 @@ export function createAgentStop(
     "aria-labelledby": "agent-stop-title",
   });
   const permissionNotice = AGENT_STOP_DENIED;
-  const STOP_REFUSED = stopRefused("this Agent");
   let restrictConfirmation: (() => void) | undefined;
+  // The count of the page's permission reads started before the last refused Stop. Only a read
+  // started after it can lift the refusal (finding 2966).
+  let refusedAfterReads = 0;
   const feedback = element("div", { className: "danger-zone-feedback" });
   const actions = element("div", { className: "danger-zone-actions" });
   const stop = button("Stop Agent", openConfirmation, { className: "danger" });
@@ -99,6 +104,15 @@ export function createAgentStop(
         ? "Cancels the deployment in progress. The Agent stays and can be deployed again."
         : "Stops the running version. The Agent stays and can be deployed again.",
     );
+    const forbiddenNote = state.forbidden ? statusBlock("info", null, permissionNotice) : null;
+    const errorNote = state.error
+      ? element(
+          "div",
+          { className: "status", "data-tone": "danger", role: "alert", id: "agent-stop-error" },
+          element("p", { className: "status-body" }, state.error.text),
+          state.error.requestId ? requestIdLine(state.error.requestId) : null,
+        )
+      : null;
     // A running Agent's row is the title, its sentence and Stop; the overview already shows the
     // current version. After a stop request the row reports what Refresh reads back.
     feedback.replaceChildren(
@@ -140,21 +154,28 @@ export function createAgentStop(
             ),
           ]
         : []),
-      ...(state.forbidden ? [statusBlock("info", null, permissionNotice)] : []),
+      ...(forbiddenNote ? [forbiddenNote] : []),
       ...(state.notice ? [statusBlock("info", null, state.notice)] : []),
-      ...(state.error
-        ? [
-            element(
-              "div",
-              { className: "status", "data-tone": "danger", role: "alert" },
-              element("p", { className: "status-body" }, state.error.text),
-              state.error.requestId ? requestIdLine(state.error.requestId) : null,
-            ),
-          ]
-        : []),
+      ...(errorNote ? [errorNote] : []),
     );
-    stop.disabled = requested || state.pending || state.needsRefresh || state.forbidden || idle;
-    repeat.disabled = state.pending || state.needsRefresh || state.forbidden;
+    // A refused Stop or Request Stop again stays in the Tab order, described by the note or the
+    // API refusal that says why (findings 2935, 2955). A pending one stays natively disabled.
+    // After an uncertain outcome (needsRefresh) neither is shown: the row offers only Refresh.
+    const refused = state.error?.refused === true;
+    const refusal = forbiddenNote ?? (refused ? errorNote : null);
+    const stopUnavailable =
+      requested || state.pending || state.needsRefresh || state.forbidden || idle || refused;
+    const stopReason = requested || state.pending || state.needsRefresh ? null : refusal;
+    setUnavailable(stop, stopUnavailable && stopReason !== null, stopReason);
+    if (stopUnavailable && stopReason === null) {
+      stop.disabled = true;
+    }
+    const repeatUnavailable = state.pending || state.needsRefresh || state.forbidden || refused;
+    const repeatReason = state.pending || state.needsRefresh ? null : refusal;
+    setUnavailable(repeat, repeatUnavailable && repeatReason !== null, repeatReason);
+    if (repeatUnavailable && repeatReason === null) {
+      repeat.disabled = true;
+    }
     refresh.disabled = state.pending;
     refresh.textContent = state.pending ? "Checking…" : "Refresh stop status";
     // An Agent created through the API starts stopped and has no version until its first
@@ -174,13 +195,22 @@ export function createAgentStop(
     // After a request, a disabled Stop beside Request Stop again only adds noise, and an
     // uncertain outcome offers only Refresh (finding 1899).
     if (neverStarted || (idle && !state.used)) {
-      actions.replaceChildren();
+      showActions();
     } else if (state.needsRefresh) {
-      actions.replaceChildren(refresh);
+      showActions(refresh);
     } else if (requested) {
-      actions.replaceChildren(repeat, refresh);
+      showActions(repeat, refresh);
     } else {
-      actions.replaceChildren(stop);
+      showActions(stop);
+    }
+  }
+
+  // Replacing the same controls would detach the focused one: a re-grant that lifts a refused
+  // Stop dropped keyboard focus to the page (r54 row 11).
+  function showActions(...controls: HTMLButtonElement[]) {
+    const shown = actions.children;
+    if (shown.length !== controls.length || controls.some((control, i) => shown[i] !== control)) {
+      actions.replaceChildren(...controls);
     }
   }
 
@@ -333,8 +363,14 @@ export function createAgentStop(
       }
       dialog.close();
       let text;
+      let refused = false;
       if (error.status === 403) {
-        text = STOP_REFUSED;
+        // As for Delete: a refusal about grants names the Agent, the grant and who gives it;
+        // another shows as written (findings 2534, 2955). Stop stays unavailable, described by
+        // it, until a permission answer read after it allows operate (finding 2966).
+        text = (!grantRefusal(cause) && error.serverMessage) || stopRefused(state.agent.name);
+        refused = true;
+        refusedAfterReads = permissionReadsStarted();
       } else if (error.status === 404) {
         state.needsRefresh = true;
         text =
@@ -352,7 +388,7 @@ export function createAgentStop(
         text =
           "Outcome unknown. Stop may have been accepted. Refresh stop status before trying again.";
       }
-      state.error = { text, requestId: error.requestId };
+      state.error = { text, requestId: error.requestId, refused };
     } finally {
       if (context.isCurrent()) {
         state.pending = false;
@@ -397,8 +433,9 @@ export function createAgentStop(
       if (!dialog.open || state.pending) {
         return;
       }
-      confirm.disabled = true;
       description.textContent = permissionNotice;
+      // The confirmation stays in the Tab order, described by the refusal (finding 2935).
+      setUnavailable(confirm, true, description);
       cancel.focus();
     };
     restrictConfirmation = showRestriction;
@@ -443,17 +480,24 @@ export function createAgentStop(
 
   // The page passes each newer Agent operate answer it reads, so a grant or revocation seen by
   // Logs applies without a reload (finding 2328). Only a denial hides the row; a missing answer
-  // keeps it, and the API still decides.
-  function applyOperate(permitted: boolean | undefined) {
+  // keeps it, and the API still decides. A refused Stop stays unavailable until an answer read
+  // after it allows Agent operate (findings 2955, 2966): `read` is the page's count of
+  // permission reads when this answer's read started.
+  function applyOperate(permitted: boolean | undefined, read: number) {
+    if (!context.isCurrent()) {
+      return;
+    }
+    const regranted =
+      permitted === true && state.error?.refused === true && read > refusedAfterReads;
     const forbidden = permitted === false;
-    if (forbidden === state.forbidden || !context.isCurrent()) {
+    if (forbidden === state.forbidden && !regranted) {
       return;
     }
     state.forbidden = forbidden;
     if (forbidden) {
       restrictConfirmation?.();
-    } else if (state.error?.text === STOP_REFUSED) {
-      // An earlier refusal no longer describes this viewer's access.
+    } else if (regranted) {
+      // The refusal no longer describes this viewer's access.
       state.error = null;
     }
     render();
@@ -463,15 +507,16 @@ export function createAgentStop(
 
   render();
   void allowed?.then((permitted) => {
-    if (!operateAnswered) {
-      applyOperate(permitted);
+    // The first answer was requested before any Stop, so it never lifts a refusal.
+    if (!operateAnswered && permitted === false) {
+      applyOperate(permitted, 0);
     }
   });
   return {
     section,
-    applyOperate(permitted: boolean | undefined) {
+    applyOperate(permitted: boolean | undefined, read: number) {
       operateAnswered = true;
-      applyOperate(permitted);
+      applyOperate(permitted, read);
     },
     // The detail page reports whether its version list loaded empty (true), loaded with
     // versions (false), or failed (null).

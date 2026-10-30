@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-10-29"
-last_updated_session: authoring-run/c31ef130-d72e-46b4-93b5-a7966b286dbf
+updated: "2026-10-30"
+last_updated_session: authoring-run/43b61103-4082-4fc2-b9a0-511a18ebc761
 ---
 
 # Agent repository credential flow
@@ -140,8 +140,8 @@ grants and an absolute deadline unaffected by renewal or recovery.
 `validateRepositoryBrokerNetworkProxy` then refuses a Codex proxy setting that
 blocks the broker, as Agent save does.
 
-`apps/controller/src/composition/repository-credentials/platform.ts:composeRepositoryAccess`
-constructs `GitHubRepositoryPolicy`, with its ID pinned by the GitHub Backend's `repo`
+`apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
+selects `GitHubRepositoryPolicy`, with its ID pinned by the GitHub Backend's `repo`
 member. Protected installations select `repository.preparedGitHub` and the installed
 Sandbox/Credential Proxy Driver. OCC creates finite sessions without a native sender,
 control socket, broker CA or session files.
@@ -391,6 +391,8 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 03:58: Load the native repository transport only for explicit native delivery. (authoring-run/43b61103-4082-4fc2-b9a0-511a18ebc761 - 87ed6c37e543e5501eae6285450d01d03d8abe7d)
 
 - 2026-10-29 21:00: Keep an existing Agent's new version running when its first GitHub token is still pending at the convergence deadline (`REPOSITORY_GIT_TOKEN_PENDING`). (finding 2894)
 

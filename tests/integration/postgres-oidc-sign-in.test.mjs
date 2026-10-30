@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { createHash, createHmac } from "node:crypto";
+import { createHmac } from "node:crypto";
 import test from "node:test";
 import {
   assertConsoleSignIn,
   assertExternalSignInRefused,
   attachProvider,
+  changeAccount,
   clientAddresses,
-  composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
   fakeGoogle,
@@ -20,18 +20,17 @@ import {
   memoryLogger,
   oidcSignIn,
   oidcUpgradeSettings,
-  onboardPasswordAccounts,
   passwordSignIn,
-  postgresSignInState,
   readAccount,
   signedInHeaders,
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
+import { providerInstanceId } from "../helpers/human-login-transport.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "oidc-recovery@example.test";
-const password = "oidc-member-password";
 const authSecret = "oidc-sign-in-auth-test-secret-at-least-32-bytes";
 const clientId = "fixture-oidc-client";
 const clientSecret = "fixture-oidc-client-secret";
@@ -45,8 +44,7 @@ const secrets = {
   "occ-github-login/client-id": "oidc-suite-github-client-id",
   "occ-github-login/client-secret": "oidc-suite-github-client-secret",
 };
-const digest = (value) => createHash("sha256").update(value).digest("hex");
-const instance = (issuer) => `oidc:${digest(`${issuer.issuer}\0${clientId}`)}`;
+const instance = (issuer) => providerInstanceId("oidc", { issuer: issuer.issuer, clientId });
 const oidcProviderId = instance(fixtureOidcIssuer);
 // An issuer change on the same host: a new provider instance.
 const movedIssuer = Object.freeze({
@@ -72,18 +70,21 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
+    const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app],
+      {
+        email: "oidc-recovery@example.test",
+        password: "oidc-member-password",
+        secrets,
+        // The side-by-side subtest starts GitHub; until then no GitHub stand-in runs.
+        github: false,
+      },
+    );
     const idp = fakeOidc(t, { clientId, clientSecret });
     const address = clientAddresses("198.20");
     // Password onboarding on the default install, before OIDC is configured.
-    const { admin, accounts } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
+    const { admin, accounts } = await onboard({
       remoteAddress: address(),
       accounts: Object.fromEntries(
         ["member", "disabled", "both", "stranded"].map((name) => [
@@ -115,19 +116,23 @@ test(
       const cookie = await assertConsoleSignIn(app, signIn.callback, userId);
       return { ...signIn, cookie };
     }
+    // A console browser at a fresh client address starts sign-in with `provider`.
+    const startSignIn = (provider = "oidc") =>
+      injectLocalhost(app, "POST", `/api/auth/providers/${provider}/start`, {
+        remoteAddress: address(),
+        headers: { origin },
+      });
 
     await t.test(
       "recovery-only OIDC activates the guarded profile and reports uncovered accounts",
       async () => {
         const log = memoryLogger();
-        app = await composeProductionSignIn(t, {
-          databaseUrl,
-          settings: recoveryOnly(
+        app = await composeApp(
+          recoveryOnly(
             oidcUpgradeSettings(admin.id, fixtureOidcIssuer, { displayName: "Acme SSO" }),
           ),
-          secrets,
-          logger: log.logger,
-        });
+          { logger: log.logger },
+        );
         const [warning, ...rest] = coverageWarnings(log);
         assert.deepEqual(rest, []);
         assert.equal(warning.code, "EXTERNAL_IDENTITY_MISSING");
@@ -151,20 +156,10 @@ test(
         assert.equal((await passwordSignIn(app, origin, member, address())).statusCode, 401);
         adminHeaders = await signedInHeaders(app, origin, admin, address());
         for (const provider of ["github", "google"]) {
-          const start = await app.inject({
-            method: "POST",
-            url: `/api/auth/providers/${provider}/start`,
-            remoteAddress: address(),
-            headers: { origin },
-          });
+          const start = await startSignIn(provider);
           assert.equal(start.statusCode, 403, `${provider} stays unconfigured`);
         }
-        const start = await app.inject({
-          method: "POST",
-          url: "/api/auth/providers/oidc/start",
-          remoteAddress: address(),
-          headers: { origin },
-        });
+        const start = await startSignIn();
         assert.equal(start.statusCode, 200, start.body);
         const authorize = new URL(start.json().data.url);
         assert.equal(
@@ -203,12 +198,10 @@ test(
       const signIn = await assertSignIn(memberSubject, member.id);
       const setCookies = [signIn.callback.headers["set-cookie"]].flat();
       assert.ok(setCookies.some((cookie) => cookie.startsWith("__Host-occ_login_receipt=")));
-      const exchanged = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/oidc/result",
+      const exchanged = await injectLocalhost(app, "POST", "/api/auth/providers/oidc/result", {
         remoteAddress: address(),
-        headers: { cookie: signIn.cookie, origin },
-        payload: { attemptId: signIn.attemptId },
+        session: { cookie: signIn.cookie, origin },
+        body: { attemptId: signIn.attemptId },
       });
       assert.equal(exchanged.statusCode, 200, exchanged.body);
       assert.equal(
@@ -271,12 +264,7 @@ test(
 
     await t.test("a rotated signing key verifies on the next callback", async () => {
       // An authorization issued under the old key fails once that key is withdrawn.
-      const start = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/oidc/start",
-        remoteAddress: address(),
-        headers: { origin },
-      });
+      const start = await startSignIn();
       const { url } = start.json().data;
       const code = idp.authorize(url, { subject: memberSubject });
       idp.rotate();
@@ -309,12 +297,7 @@ test(
     await t.test("disabling an account ends its session and refuses OIDC", async () => {
       assert.equal((await attach(disabled.id, disabledSubject)).statusCode, 200);
       const { cookie } = await assertSignIn(disabledSubject, disabled.id);
-      const disable = await app.inject({
-        method: "POST",
-        url: `/api/auth/accounts/${disabled.id}/disable`,
-        headers: adminHeaders,
-        payload: { expectedVersion: (await readAccount(app, adminHeaders, disabled.id)).version },
-      });
+      const disable = await changeAccount(app, adminHeaders, disabled.id, "disable");
       assert.equal(disable.statusCode, 200, disable.body);
       assert.equal(await currentSession(app, cookie), null);
       // The IdP proved this identity, and it is attached: the person is told the account is
@@ -340,10 +323,7 @@ test(
       await app.close();
       app = undefined;
       const log = memoryLogger();
-      app = await composeProductionSignIn(t, {
-        databaseUrl,
-        settings: recoveryOnly(oidcUpgradeSettings(admin.id)),
-        secrets,
+      app = await composeApp(recoveryOnly(oidcUpgradeSettings(admin.id)), {
         logger: log.logger,
       });
       const [warning] = coverageWarnings(log);
@@ -357,11 +337,9 @@ test(
       app = undefined;
       idp.issuer = movedIssuer;
       idp.tokenAuth = "client_secret_basic";
-      app = await composeProductionSignIn(t, {
-        databaseUrl,
-        settings: oidcUpgradeSettings(admin.id, movedIssuer, { tokenAuth: "client_secret_basic" }),
-        secrets,
-      });
+      app = await composeApp(
+        oidcUpgradeSettings(admin.id, movedIssuer, { tokenAuth: "client_secret_basic" }),
+      );
       adminHeaders = await signedInHeaders(app, origin, admin, address());
       // The old instance is no longer configured, so its session ends at once.
       assert.equal(await currentSession(app, before), null, "the issuer change ends it");
@@ -399,14 +377,10 @@ test(
           clientId: googleClientId,
           clientSecret: "oidc-suite-google-client-secret",
         });
-        app = await composeProductionSignIn(t, {
-          databaseUrl,
-          settings: {
-            ...githubUpgradeSettings(admin.id),
-            ...googleUpgradeSettings(admin.id),
-            ...oidcUpgradeSettings(admin.id),
-          },
-          secrets,
+        app = await composeApp({
+          ...githubUpgradeSettings(admin.id),
+          ...googleUpgradeSettings(admin.id),
+          ...oidcUpgradeSettings(admin.id),
         });
         adminHeaders = await signedInHeaders(app, origin, admin, address());
         const discovery = (await app.inject({ url: "/api/auth/providers" })).json().data;
@@ -440,12 +414,10 @@ test(
         ]) {
           const cookie = cookieHeaderFromSetCookie(signIn.callback.headers["set-cookie"]);
           const confirm = (name, headers = {}, payload = { attemptId: signIn.attemptId }) =>
-            app.inject({
-              method: "POST",
-              url: `/api/auth/providers/${name}/result`,
+            injectLocalhost(app, "POST", `/api/auth/providers/${name}/result`, {
               remoteAddress: address(),
               headers: { origin, cookie, ...headers },
-              payload,
+              body: payload,
             });
           // All providers are configured and the session/attempt are valid. Only
           // the callback's provider may exchange this receipt, without consuming

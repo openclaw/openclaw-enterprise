@@ -22,8 +22,11 @@ note under it says so.
 
 ## Inspect consumers
 
-Select a Secret name to read its ID and current consumers. Agents show by name,
-with their IDs, and link to their console pages. Configurations, CredentialSources, and pending provisioning
+Select a Secret name to read its ID and current consumers. Agents found in the
+subsequent readable Agent list show by name, with their IDs, and link to their
+console pages. If an Agent is no longer listed, its row omits the identity and
+asks you to reopen the Secret to check again. This does not establish why it is
+absent. Configurations, CredentialSources, and pending provisioning
 requests show their IDs; manage those references through their supported APIs or
 CLI commands. Hidden consumers appear as a count, and incomplete results are
 marked. Ask an administrator to inspect references you cannot read.

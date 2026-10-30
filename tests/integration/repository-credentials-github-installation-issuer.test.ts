@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:https";
 import test from "node:test";
-import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/credentials/grants.ts";
+import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/credentials/origin.ts";
 import type {
   GitHubPreparationAdmission,
   GitHubPreparationStore,

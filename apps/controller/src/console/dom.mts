@@ -530,7 +530,8 @@ export function describeDisabled(
   }
 }
 
-type UnavailableControl = HTMLButtonElement | HTMLInputElement;
+type UnavailableControl =
+  HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 
 const guardedControls = new WeakSet<UnavailableControl>();
 
@@ -544,6 +545,34 @@ function blockUnavailable(event: Event) {
   }
 }
 
+// A select or text field also changes on keys and edits, not only on a click (finding 2899): a
+// select's mouse press opens its list, and every key but Tab, Escape and a shortcut chooses
+// another option; a text field's Enter submits its form and its arrows open a combobox list,
+// while its edits come as beforeinput. Escape still closes a dialog.
+function blockUnavailableKey(event: Event) {
+  const { key, ctrlKey, metaKey } = event as KeyboardEvent;
+  if (
+    event.currentTarget instanceof HTMLSelectElement
+      ? !["Tab", "Escape"].includes(key) && !ctrlKey && !metaKey
+      : ["Enter", "ArrowUp", "ArrowDown"].includes(key)
+  ) {
+    blockUnavailable(event);
+  }
+}
+
+function guardUnavailable(control: UnavailableControl) {
+  control.addEventListener("click", blockUnavailable, { capture: true });
+  if (control instanceof HTMLButtonElement || ["checkbox", "radio"].includes(control.type)) {
+    return;
+  }
+  control.addEventListener("keydown", blockUnavailableKey, { capture: true });
+  control.addEventListener(
+    control instanceof HTMLSelectElement ? "mousedown" : "beforeinput",
+    blockUnavailable,
+    { capture: true },
+  );
+}
+
 function reasonShown(reason: HTMLElement | string | null | undefined) {
   if (!reason) {
     return false;
@@ -552,14 +581,14 @@ function reasonShown(reason: HTMLElement | string | null | undefined) {
 }
 
 /**
- * Disables or enables a button or checkbox that has a visible reason when it is unavailable
- * (findings 2714, 2878). A disabled control whose `reason` shows text stays in the Tab order
- * (aria-disabled, not disabled) and is described by the reason (describeDisabled), so a keyboard
- * reader reaches why; a click, Enter or Space does nothing, and its form does not submit. With no
- * reason to read it is natively disabled, unless it has focus: disabling the focused control
- * would drop focus to the page. A reason that is already part of the control's own description
- * (its help) is not linked again. Call it wherever the control's state or its reason changes,
- * after the reason's text is set.
+ * Disables or enables a button, checkbox, select or text field that has a visible reason when it
+ * is unavailable (findings 2714, 2878, 2899). A disabled control whose `reason` shows text stays
+ * in the Tab order (aria-disabled, not disabled) and is described by the reason
+ * (describeDisabled), so a keyboard reader reaches why; a click, Enter, Space or edit does
+ * nothing, and its form does not submit. With no reason to read it is natively disabled, unless
+ * it has focus: disabling the focused control would drop focus to the page. A reason that is
+ * already part of the control's own description (its help) is not linked again. Call it wherever
+ * the control's state or its reason changes, after the reason's text is set.
  */
 export function setUnavailable(
   control: UnavailableControl,
@@ -568,7 +597,7 @@ export function setUnavailable(
 ) {
   if (!guardedControls.has(control)) {
     guardedControls.add(control);
-    control.addEventListener("click", blockUnavailable, { capture: true });
+    guardUnavailable(control);
   }
   const reachable = unavailable && (reasonShown(reason) || document.activeElement === control);
   control.disabled = unavailable && !reachable;
@@ -777,8 +806,14 @@ export function validateFields(controls: Iterable<Element | null | undefined>) {
 }
 
 // Form.elements can include fieldsets and other elements that do not participate in validation.
+// An unavailable control (setUnavailable) is not checked, as a disabled one is not.
 function willValidate(control: Element | null | undefined): control is FormControl {
-  return !!control && "willValidate" in control && control.willValidate === true;
+  return (
+    !!control &&
+    "willValidate" in control &&
+    control.willValidate === true &&
+    control.getAttribute("aria-disabled") !== "true"
+  );
 }
 
 /**

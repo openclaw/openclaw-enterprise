@@ -8,6 +8,7 @@ import {
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import {
   apiRequests,
@@ -43,9 +44,7 @@ import { restrict } from "../helpers/iam-grants.mjs";
 const browser = fileBrowser();
 
 test("A dedicated OpenClaw Agent can enable and disable Google Workspace without a connection", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Package installation", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Package installation");
   for (const driver of [
     new OCCPluginDriver(),
     createTestKubernetesComputeDriver("compute-google-package"),
@@ -945,9 +944,7 @@ test("No Slack approvers does not ask the operator to select hidden people", asy
 });
 
 test("plugin prefetch remains usable after leaving during its debounce", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Plugin return", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Plugin return");
   for (const driver of [
     new OCCPluginDriver(),
     createTestKubernetesComputeDriver("compute-plugin-return"),

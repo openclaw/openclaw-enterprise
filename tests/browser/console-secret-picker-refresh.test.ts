@@ -4,7 +4,7 @@ import type {
   SecretDetailResponse,
   SecretListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 import {

@@ -120,7 +120,6 @@ test(
           publicCaPath: fixture.tls.certFile,
         },
       },
-      protectedGit: false,
     });
     const driver = { policy: composed.repositoryPolicy, sender: composed.nativeRepositorySender };
     assert.deepEqual(driver.policy.resolve(selection), resolution);

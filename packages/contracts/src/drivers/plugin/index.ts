@@ -1,4 +1,4 @@
-import type { Driver } from "./driver.ts";
+import type { Driver } from "../index.ts";
 import type {
   Agent,
   AgentPluginCredentialSlot,
@@ -11,7 +11,7 @@ import type {
   PluginDesiredState,
   PluginPolicyCapabilities,
   RevisionHarnessDescriptor,
-} from "./index.ts";
+} from "../../index.ts";
 
 export interface PluginDriverContext {
   readonly namespace: Readonly<Namespace>;

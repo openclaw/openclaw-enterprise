@@ -1,5 +1,5 @@
 import type { PreparedTokenSource } from "./prepared-token.ts";
-import type { CredentialSourceControl, EgressRoute } from "./credential-proxy.ts";
+import type { CredentialSourceControl, EgressRoute } from "./drivers/credential-proxy/index.ts";
 
 export const preparedGitHubType = "github-app-metadata";
 export const preparedGitHubProviderRef = { id: preparedGitHubType, generation: 1 } as const;

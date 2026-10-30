@@ -22,10 +22,14 @@ code. Rows remain after resume; they record client failures, not whether a
 request took effect. Reconcile live state as described below before resuming.
 Other failures and killed processes might not produce a row.
 
-If a killed process leaves `.upgrade-lock`, first establish that no helper or
-its child commands are still running, then remove that empty directory and
-resume. This lock covers only processes sharing this evidence directory; it
-cannot stop other operators or automation.
+The helper retains `.upgrade-lock` on `SIGHUP`, `SIGINT`, or `SIGTERM`; an
+interrupted caller does not prove that its child or remote operation stopped.
+Before removing the lock, establish that no helper or child command is still
+running and reconcile unfinished operations and temporary preflight resources.
+Then remove the empty lock directory and resume with this evidence directory only
+if preparation completed (`prepared` exists); otherwise, start with a fresh
+private evidence directory. This lock covers only processes
+sharing this evidence directory; it cannot stop other operators or automation.
 
 A Helm failure or disconnected response does not prove that the migration
 rolled back. Read the current Helm status and history, inspect the initialization
@@ -103,6 +107,8 @@ the previous controller image after the check below.
 Before selecting an older controller or runtime image, verify it can read all
 state written by the candidate and restore compatible data if required. Never
 delete Agents, versions, PVCs, or the bootstrap volume to force recovery.
+
+For stalled ReplicaSet creation, check [namespace object capacity](upgrade-checklist.md#check-replicaset-capacity).
 
 ## Correct a refused Agent deployment
 
