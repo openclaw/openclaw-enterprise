@@ -55,9 +55,7 @@ export async function standingGitOrigin(
     beforeIssue,
     installationAccess,
     ...(selection && {
-      expectedRepositoryIds: selection.entries
-        .slice(0, 2)
-        .map((entry) => Number(entry.repositoryId)),
+      expectedRepositoryIds: selection.selectedRepositoryIds.map(Number),
       additionalRepositories: selection.entries.slice(1),
       additionalPermissions: [selection.permissions],
     }),
