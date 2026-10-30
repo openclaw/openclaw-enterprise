@@ -36,6 +36,7 @@ import {
 } from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
+  deploymentStatusResponse,
   detailUrl,
   expectReachableReason,
   fileBrowser,
@@ -1730,7 +1731,21 @@ test("Logs of a stopped version show a redeploy from elsewhere that failed", asy
   await shows(/Selected for service\s+None/);
 
   // It deploys a new version, which runs with no version selected while its deployment is queued.
+  // The in-memory app has no worker records, so the record is the API's shape, fulfilled.
   const deployed = await fixture.deployAgent(namespace.id, agent.id);
+  await page.route(`${fixture.origin}${agentPath}/deployments/${deployed.id}`, (route) =>
+    route.fulfill(
+      deploymentStatusResponse(
+        {
+          id: deployed.id,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          createdAt: deployed.createdAt,
+        },
+        { status: "queued" },
+      ),
+    ),
+  );
   const queued = await poll();
   await shows(/Latest visible deployment\s+v2\s+·\s+Queued/);
   assert.equal(await poll(), queued);
