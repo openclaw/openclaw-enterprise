@@ -65,6 +65,10 @@ security/runtime holds until the amended behavior is proved.
    unbound existing state and selector drift explicitly. Distinguish never-attempted,
    attempted/unknown, and bound stages; deletion before first ensure and during
    partial preparation must not invent IDs or turn uncertainty into absence.
+   Preserve initial operator-owned preparation under the exact preprovisioned
+   Namespace UID: bind observed existing Workspace/resource immutable IDs after
+   selected-target, ownership and approved-policy checks, before readiness.
+   Never use that authority to adopt an earlier controller creation attempt.
    No silent compatibility
    state or provider-specific core branches.
 5. Implement staged Kubernetes/OpenShell teardown. Await persisted provider

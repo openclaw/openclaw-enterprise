@@ -166,6 +166,16 @@ targets, such as limits or rotated credentials, do not invalidate cleanup.
 Changed selectors, unknown payload versions, absent required IDs, or mismatched
 incarnations fail explicitly.
 
+Explicit operator-owned preparation is distinct from recovering an unknown
+controller creation. For the selected preprovisioned Namespace UID, initial
+readback can bind an existing operator Workspace ID and configured resource UIDs
+before any controller creation attempt. Require the selected Backend target and
+exact OCC ownership. Configured operator NetworkPolicies also require their
+approved content, but cannot require a newly allocated OCC creation nonce.
+Await the binding checkpoint before readiness or later effects; subsequent
+identity changes refuse. This grants no automatic Namespace teardown authority
+and cannot adopt an attempted, refused, or unknown controller creation.
+
 Before creation, save a unique creation intent/nonce. Kubernetes creates carry
 that nonce and ownership metadata; readback must match it before an observed UID
 is bound. Provider creation uses an operation identity only where its supported
@@ -198,6 +208,10 @@ reading the same journal, not by repeating an unbound create.
    physical Namespace: complete only after owned-resource removal and exact claim
    release. A preprovisioned operator-owned Namespace keeps its existing automatic
    teardown refusal; a journal grants no additional deletion authority.
+   While the original Namespace terminates, saved full child completion or no
+   selected child permits waiting without tenant reads. An unconfirmed child can
+   progress while authorized; tenant-preflight denial remains pending so later
+   absence can resume exact cleanup. Termination is never provider confirmation.
 6. External claim release first saves its intent, including Namespace UID and
    original ownership. A UID/resourceVersion-conditional patch removes only this
    OCC claim and writes a release witness containing this lifecycle ID in the
