@@ -704,7 +704,7 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
       template: {
         agent: {
           name: "Recovered repository and plugin Agent",
-          executionMode: "embedded",
+          executionMode: "dedicated",
           harnessAuth: { method: "api_key", source: secret.ref },
           repositoryAccess: {
             defaultProfile: "git-read",
@@ -712,7 +712,9 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
           },
           plugins: initialPlugins,
         },
-        configuration: { values: nativeValues("repository-plugin-recovery") },
+        configuration: {
+          values: nativeValues("repository-plugin-recovery", { harnessId: "codex" }),
+        },
       },
     },
   });
