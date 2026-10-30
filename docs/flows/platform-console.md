@@ -271,6 +271,7 @@ exclude passwords. Secret saves update the shared snapshot.
 `agents/detail.mts:boundSecretsDenied` reuses Deploy's authorized names.
 Configuration excludes Harness-only Secrets; Plugins/Credentials include them.
 Epochs fence publication; rechecks clear names and refresh authorized reads.
+Deploy keeps its last Secret operate answer until the refreshed one lands.
 Late names preserve state/focus; metadata failures keep IDs; unknown grants stay generic.
 
 [Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
@@ -369,6 +370,8 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 14:30: Keep Deploy's last Secret operate answer while a recheck rereads it. (bughunt-1030g - a382326dde)
 
 - 2026-10-30 11:02: Name denied Secrets. (b03beb3e-57d1-47cf-829f-e31955a47d3c - f5d5dfda697a9e0d41c88a4e570dafcce768ec7b)
 

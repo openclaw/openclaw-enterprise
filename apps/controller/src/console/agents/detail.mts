@@ -3248,10 +3248,10 @@ export async function renderAgentDetail(
       );
     }
     if (generation === detailsGeneration) {
+      // Deploy keeps the last answer until the reread lands. Clearing it first enabled Deploy
+      // and said "Ready to deploy." on every refocus while the Secrets were read (finding 2987).
       refreshDeniedSecretNames = () => {
         if (generation === detailsGeneration && context.isCurrent()) {
-          deploySecretsDenied = { names: [], unreadable: 0 };
-          updateDeployControls();
           void readDeploySecretsDenied();
         }
       };
