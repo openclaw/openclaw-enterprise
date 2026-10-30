@@ -133,6 +133,60 @@ for (const action of ["Stop", "Delete"] as const) {
   });
 }
 
+// The page's first permission answer was requested before any Stop or Delete, so it never lifts a
+// refusal, even when it answers after a grant that allows the action: only a read started after
+// the refusal speaks for this viewer's access now (finding 2955).
+for (const action of ["Stop", "Delete"] as const) {
+  test(`a first permission answer that arrives after an Agent page ${action} refusal keeps it`, async (t) => {
+    const stopping = action === "Stop";
+    const name = `Early answer ${action.toLowerCase()}`;
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
+    const agent = await fixture.createAgent(namespace.id, name, nativeValues(`early-${action}`));
+    const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    const member = await fixture.createNamespaceMember(MEMBER, namespace.id, AGENT_READ);
+    const { page } = await newPage(t, fixture, { browser });
+    const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    const permissionsUrl = `${fixture.origin}${agentPath}/permissions`;
+    await routeOperateDenials(page, fixture.origin, agentPath, active.revision.id);
+    // The first read waits until released; any reread fails and says nothing.
+    await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
+    const firstAnswer = await holdRequests(t, page, permissionsUrl, { once: true, method: "GET" });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+      member.credentials,
+    );
+    const row = page.getByRole("region", { name: `${action} Agent`, exact: true });
+    const control = row.getByRole("button", { name: `${action} Agent`, exact: true });
+    await waitForEnabled(control);
+    await control.click();
+    await page
+      .getByRole("dialog", { name: stopping ? "Stop this Agent?" : `Delete ${name}?` })
+      .getByRole("button", {
+        name: stopping ? "Stop Agent" : "Permanently delete Agent",
+        exact: true,
+      })
+      .click();
+    const alert = row.getByRole("alert");
+    await alert
+      .getByText(stopping ? stopRefused(name) : deleteRefused(name), { exact: true })
+      .waitFor();
+    const refusal = (await alert.textContent())?.trim() ?? "";
+    // The grant reaches the API before the held first read, so that read allows the action.
+    const grant = stopping ? "operate" : "delete";
+    grantMember(fixture, MEMBER, [[grant, "agent"]]);
+    const answered = page.waitForResponse(
+      (reply) => reply.url() === permissionsUrl && reply.status() === 200,
+    );
+    firstAnswer.release();
+    assert.equal((await (await answered).json()).data[grant], true);
+    await nextFrames(page);
+    assert.equal(await control.getAttribute("aria-disabled"), "true");
+    assert.equal(await accessibleDescription(control), refusal);
+  });
+}
+
 // Request Stop again on an Agent already stopped follows the same rule as Stop: the API's grant
 // refusal names the Agent, and the control stays unavailable, described by it (finding 2955).
 test("a refused Request Stop again names the Agent and stays unavailable", async (t) => {
@@ -307,6 +361,65 @@ test("an Agents list row refusal describes the row's icon, and an unavailable ic
     .click();
   await page.getByText("Deletion requested for Refused Row.", { exact: false }).waitFor();
   assert.equal(await page.locator("[aria-describedby~='agent-row-refusal']").count(), 0);
+});
+
+// A row's permission answer requested before its refusal never lifts it, even when it answers
+// after a grant (finding 2955). A read started after the refusal that allows the action lifts it,
+// and the row shows that at once, also when that answer restricts nothing.
+test("an Agents list row refusal lifts only for a permission answer read after it", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Row answer order");
+  const names = ["Early Answer Row", "Fresh Answer Row"] as const;
+  const urls: string[] = [];
+  for (const name of names) {
+    const agent = await fixture.createAgent(namespace.id, name, nativeValues(name));
+    await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    urls.push(`${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`);
+  }
+  const member = await fixture.createNamespaceMember(MEMBER, namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture, { browser });
+  // Both rows' first answers are held, so Delete stays available and the real API refuses it.
+  const [early, fresh] = await Promise.all(
+    urls.map((url) => holdRequests(t, page, url, { once: true, method: "GET" })),
+  );
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`, member.credentials);
+  const rows = names.map((name) => page.getByRole("row").filter({ hasText: name }));
+  const [earlyDelete, freshDelete] = names.map((name, index) =>
+    rows[index]!.getByRole("button", { name: `Delete ${name}`, exact: true }),
+  );
+  for (const [index, name] of names.entries()) {
+    const remove = [earlyDelete, freshDelete][index]!;
+    await waitForEnabled(remove);
+    await remove.click();
+    await page
+      .getByRole("dialog", { name: `Delete ${name}?` })
+      .getByRole("button", { name: "Permanently delete Agent", exact: true })
+      .click();
+    await page
+      .getByRole("alert")
+      .filter({ hasText: deleteRefused(name) })
+      .waitFor();
+    assert.equal(await remove.getAttribute("aria-disabled"), "true");
+  }
+  assert.equal(fresh.wasRequested(), true);
+  grantMember(fixture, MEMBER, [
+    ["operate", "agent"],
+    ["delete", "agent"],
+  ]);
+  // The early row's held read reaches the API after the grant and allows delete, but it was
+  // requested before the refusal.
+  const earlyAnswered = page.waitForResponse(
+    (reply) => reply.url() === urls[0] && reply.status() === 200,
+  );
+  early.release();
+  assert.equal((await (await earlyAnswered).json()).data.delete, true);
+  // A search that hides the fresh row retires its held read; showing it again reads anew, and
+  // that answer, which restricts nothing, makes its Delete available.
+  const search = page.getByRole("searchbox", { name: "Search Agents" });
+  await search.fill("Early");
+  await rows[1]!.waitFor({ state: "detached" });
+  await search.fill("");
+  await waitForEnabled(freshDelete);
+  assert.equal(await earlyDelete.getAttribute("aria-disabled"), "true");
 });
 
 // The Agents list worded every refused row Stop or Delete as a missing grant, in the alert and in
