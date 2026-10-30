@@ -4,6 +4,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import { button, element, statusBlock } from "../dom.mjs";
+import { createRequestTurns, type RequestInTurn } from "../request-turns.mjs";
 import { notIncluded } from "./access-reasons.mjs";
 import { namedRefusal, namespacePath } from "./list.mjs";
 
@@ -60,15 +61,15 @@ function lookup(
   }) as Promise<ChannelDirectoryResult>;
 }
 
-// A view's name lookups, one at a time. The lookup authorizes Secret operate on the bot token
-// Secret, which an Installation administrator may hold only through that administration; revoked
-// before she opened Edit Slack, its fields sent their lookups at once and each refusal was
-// audited (finding 2939). Each lookup waits for the one before it to settle. A refusal answers
-// the lookups already waiting for the same Secret unsent, so each field shows that refusal's
-// reason; once none are waiting, a later lookup asks again. A lookup whose view is no longer
+// A view's name lookups. The lookup authorizes Secret operate on the bot token Secret, which an
+// Installation administrator may hold only through that administration; revoked before she
+// opened Edit Slack, its fields sent their lookups at once and each refusal was audited (finding
+// 2939). The first lookup goes alone, and once one succeeds the rest go at once. A refusal answers
+// the lookups waiting behind it for the same Secret unsent, so each field shows that refusal's
+// reason; once none are pending, a later lookup asks again. A lookup whose view is no longer
 // current is not sent.
 interface NameLookupTurns {
-  tail: Promise<void>;
+  inTurn: RequestInTurn;
   refusals: Map<string, unknown>;
 }
 const nameLookupTurns = new WeakMap<SlackDirectoryContext, NameLookupTurns>();
@@ -79,35 +80,25 @@ function nameLookupInTurn(
 ) {
   let turns = nameLookupTurns.get(context);
   if (!turns) {
-    turns = { tail: Promise.resolve(), refusals: new Map() };
+    const refusals = new Map<string, unknown>();
+    turns = { inTurn: createRequestTurns(() => refusals.clear()), refusals };
     nameLookupTurns.set(context, turns);
   }
-  const queue = turns;
-  const turn = queue.tail.then(() => {
-    if (queue.refusals.has(scope)) {
-      return Promise.reject(queue.refusals.get(scope));
+  const { refusals } = turns;
+  return turns.inTurn(() => {
+    if (refusals.has(scope)) {
+      return Promise.reject(refusals.get(scope));
     }
     if (!context.isCurrent()) {
       return Promise.reject(new Error("The view is no longer shown."));
     }
     return send().catch((cause: unknown) => {
       if (requestFailure(cause).status === 403) {
-        queue.refusals.set(scope, cause);
+        refusals.set(scope, cause);
       }
       throw cause;
     });
   });
-  const settled = turn.then(
-    () => undefined,
-    () => undefined,
-  );
-  queue.tail = settled;
-  void settled.then(() => {
-    if (queue.tail === settled) {
-      queue.refusals.clear();
-    }
-  });
-  return turn;
 }
 
 export function isSlackId(value: string, kind: DirectoryKind) {

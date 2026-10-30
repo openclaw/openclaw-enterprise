@@ -44,6 +44,7 @@ const CONSOLE_ASSETS = new Map([
       "configuration-fields.mts",
       "driver-configurations.mts",
       "view-lifetime.mts",
+      "request-turns.mts",
       "navigation.mts",
       "shell.mts",
       "namespaces.mts",
