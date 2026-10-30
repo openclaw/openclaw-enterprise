@@ -6,17 +6,13 @@ import { connect } from "node:net";
 import { connect as connectTls } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 import { gzipSync } from "node:zlib";
-import {
-  fixtureRepository,
-  startGitHubFixture,
-} from "../fixtures/repository-credentials/github.mjs";
-import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
+import { listen } from "../fixtures/repository-credentials/process.mjs";
 import {
   appModule,
   eventually,
-  createLoopbackServiceConfiguration,
+  startTokenServiceScope,
 } from "../fixtures/repository-credentials/service.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.mjs";
 
 const discovery = `/${fixtureRepository}.git/info/refs?service=git-upload-pack`;
@@ -31,22 +27,20 @@ const completed = (bytes = 4) => ({ kind: "completed", status: 200, bytes, compl
 // The peer controls only application bytes and when it reads or writes them.
 // The listener, route policy, credential ownership and TLS sender are production code.
 async function startTransport(t, onRequest, limits = {}, { log } = {}) {
-  const resources = createTestResourceScope(t);
-  const { createSystemClock } = await appModule("drivers/repo/credentials/clock");
-  const clock = createSystemClock();
-  const tls = await createTlsMaterial(resources);
-  // One exchange slot makes leaked reservations visible to the following request.
-  const config = await createLoopbackServiceConfiguration(resources, {
-    exchanges: 1,
-    exchangesPerSession: 1,
-    exchangeMs: 10000,
-    firstHeaderMs: 5000,
-    gitFetchExchangeMs: limits.exchangeMs ?? 10000,
-    gitFetchFirstHeaderMs: limits.firstHeaderMs ?? 5000,
-    gitFetchStallMs: limits.stallMs ?? 5000,
-    ...limits,
+  const { resources, clock, tls, config, github } = await startTokenServiceScope(t, {
+    clock: "system",
+    // One exchange slot makes leaked reservations visible to the following request.
+    limits: {
+      exchanges: 1,
+      exchangesPerSession: 1,
+      exchangeMs: 10000,
+      firstHeaderMs: 5000,
+      gitFetchExchangeMs: limits.exchangeMs ?? 10000,
+      gitFetchFirstHeaderMs: limits.firstHeaderMs ?? 5000,
+      gitFetchStallMs: limits.stallMs ?? 5000,
+      ...limits,
+    },
   });
-  const github = await startGitHubFixture(resources, { clock, tls });
   const received = [];
   const upstream = createServer(tls, (incoming, outgoing) => {
     incoming.on("error", () => {});

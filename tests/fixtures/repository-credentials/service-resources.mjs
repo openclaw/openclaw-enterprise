@@ -83,8 +83,14 @@ export async function startServiceListeners(
   ]);
   const service = createCredentialService({ config, factory, clock, providerQueue });
   let listeners;
+  let closing = false;
+  // Registered first, so it runs last: teardown must have closed the listeners it started.
+  resources.after(() => assert.ok(listeners === undefined || closing, "listeners never closed"));
   // Separate hooks retain every cleanup failure and keep upstreams alive for revocation.
-  resources.after(() => listeners?.close());
+  resources.after(() => {
+    closing = true;
+    return listeners?.close();
+  });
   resources.after(() => shutdownService(service, clock));
   resources.after(() => listeners?.stopAdmission());
   listeners = await startListeners({
