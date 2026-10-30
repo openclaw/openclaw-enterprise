@@ -3747,18 +3747,33 @@ async function preflightIdentities(f) {
   const records = [];
   for (const slot of ["networkpolicy", "secret", "api", "worker"]) {
     const filename = join(f.evidence, `preflight-${slot}-identity.json`);
-    if (!existsSync(filename)) {
-      continue;
+    let handle;
+    try {
+      handle = await open(
+        filename,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        continue;
+      }
+      throw error;
     }
-    assert.equal(statSync(filename).mode & 0o777, 0o600);
-    const text = await readFile(filename, "utf8");
-    const record = JSON.parse(text);
-    assert.deepEqual(Object.keys(record).sort(), ["kind", "name", "uid"]);
-    assert.doesNotMatch(
-      text,
-      /private-response-marker|private-manifest-sentinel|private-secret-sentinel|installation.yaml|apiVersion|spec|data/,
-    );
-    records.push(record);
+    try {
+      const stats = await handle.stat();
+      assert.ok(stats.isFile());
+      assert.equal(stats.mode & 0o777, 0o600);
+      const text = await handle.readFile("utf8");
+      const record = JSON.parse(text);
+      assert.deepEqual(Object.keys(record).sort(), ["kind", "name", "uid"]);
+      assert.doesNotMatch(
+        text,
+        /private-response-marker|private-manifest-sentinel|private-secret-sentinel|installation.yaml|apiVersion|spec|data/,
+      );
+      records.push(record);
+    } finally {
+      await handle.close();
+    }
   }
   return records;
 }
