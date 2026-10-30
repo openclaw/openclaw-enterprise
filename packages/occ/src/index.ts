@@ -7796,6 +7796,14 @@ export class OpenClawController {
   ) {
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
     await this.authorize(principalId, "create", { kind: "secret", id: namespaceId, namespaceId });
+    // The source registration below checks credential source create again. Checking it here too
+    // means a caller who can never start gets the 403 naming that grant, not the Driver-selection
+    // 501, and no Gateway call (finding 2995).
+    await this.authorize(principalId, "create", {
+      kind: "credential_source",
+      id: namespaceId,
+      namespaceId,
+    });
     if (!this.selections.has("credential_gateway") || !this.selections.has("credential_refresh")) {
       throw new NotImplementedError(
         "agent_device_authorization",

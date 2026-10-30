@@ -15,7 +15,7 @@ import {
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
-import { DEVICE_LOGIN_NOT_CONFIGURED } from "../helpers/refusal-text.mjs";
+import { createDenied, DEVICE_LOGIN_NOT_CONFIGURED } from "../helpers/refusal-text.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 const plugin = {
@@ -699,4 +699,54 @@ test("device login without a Credential Gateway and Refresh Driver names them an
     code: "NOT_IMPLEMENTED",
     message: DEVICE_LOGIN_NOT_CONFIGURED,
   });
+});
+
+// Finding 2995: the start checks every grant it needs before the Driver selection. A Namespace
+// member who may create Agents and Secrets still lacks credential source create, which no
+// Namespace Role can grant, so they can never start. They get the 403 naming that grant whether
+// or not the Installation selects the Drivers, with one audited denial. The administrator, who holds
+// every grant, still gets the Driver-selection 501 (the test above).
+test("a member who can never start device login gets the grant refusal before the Driver check", async (t) => {
+  const bare = await createConsoleAppFixture(t);
+  await bare.bootstrap();
+  const bareNamespace = await bare.createNamespace("No device login drivers", { ready: true });
+  const selected = await createFixture(t);
+  for (const [fixture, namespace] of [
+    [bare, bareNamespace],
+    [selected, selected.namespace],
+  ]) {
+    const member = await fixture.createAccountWithPolicy("device-login-member", (principal) => {
+      grantRole(fixture.policy, principal.id, {
+        id: `device-login-member-${namespace.id}`,
+        namespaceId: namespace.id,
+        permissions: { namespace: ["read"], agent: ["create"], secret: ["create"] },
+      });
+    });
+    const session = await fixture.signIn(member.credentials);
+    const path = `/namespaces/${namespace.id}/agents/device-authorizations`;
+    const before = fixture.auditSink.events.length;
+    const refused = await fixture.request("POST", path, { session, body: { harnessId: "codex" } });
+    assert.equal(refused.status, 403, JSON.stringify(refused.body));
+    assert.equal(refused.body.error.code, "FORBIDDEN");
+    assert.equal(refused.body.error.message, createDenied("CredentialSource", namespace.id));
+    const denials = fixture.auditSink.events
+      .slice(before)
+      .filter((event) => event.action === "openclaw.agents.device_authorization.start");
+    assert.equal(denials.length, 1, "a refused start records one audited denial");
+    assert.equal(denials[0].outcome, "denied");
+    assert.deepEqual(denials[0].authorization, {
+      principalId: member.principal.id,
+      action: "create",
+      resource: { kind: "credential_source", id: namespace.id, namespaceId: namespace.id },
+    });
+    // A refused start registers no source and saves no login Secret.
+    assert.deepEqual(
+      (await fixture.request("GET", `/namespaces/${namespace.id}/credential-sources`)).data,
+      [],
+    );
+    assert.deepEqual(
+      (await fixture.request("GET", `/namespaces/${namespace.id}/secrets`)).data,
+      [],
+    );
+  }
 });
