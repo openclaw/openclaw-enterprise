@@ -38,7 +38,7 @@ Prepare:
 - the OCC CLI from the same release, installed at the path you pass as `--occ`
   (`/secure/occ/bin/occ` below): its
   [release binary](../cli.md#connect-to-your-installation), or `bin/occ` from
-  `pnpm cli:build` in that checkout. The helper reads the deployment inventory
+  `go build -trimpath -o bin/occ ./cmd/occ` in that checkout. The helper reads the deployment inventory
   and deploys Agents through it, and an older CLI can lack those commands;
 - a [pre-upgrade baseline](upgrade-baseline.md) of Helm, Kubernetes, OCC and
   database state;

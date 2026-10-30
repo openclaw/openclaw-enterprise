@@ -6,6 +6,7 @@ import test from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { createSlackProxyServer } from "../../apps/controller/src/slack-proxy.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
+import { listen as listenServer } from "../helpers/listen.mjs";
 import { connectThroughProxy, startSlackProxy } from "../helpers/slack-proxy.mjs";
 
 // The bundled Slack proxy (apps/controller/src/slack-proxy.mjs) relays CONNECT tunnels only.
@@ -28,18 +29,7 @@ function bound(promise, what, ms = WAIT_MS) {
 
 async function listen(t, onConnection, options = {}) {
   const server = net.createServer(options, onConnection);
-  const sockets = new Set();
-  server.on("connection", (socket) => {
-    sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    server.close();
-  });
+  await listenServer(t, server);
   return server;
 }
 

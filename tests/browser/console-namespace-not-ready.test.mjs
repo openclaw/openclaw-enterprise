@@ -13,6 +13,7 @@ import {
   revokeAdministratorGrant,
   revokeMemberGrant,
   apiRequests,
+  expectReachableReason,
   fileBrowser,
   login,
   nativeValues,
@@ -23,7 +24,7 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 
 // On a first run the only Namespace is still provisioning. The Agents page and Create Agent never
 // said so, and the first sign was the Secret dialog's refusal; a deleting Namespace could be the
@@ -139,6 +140,13 @@ test("Create Agent names a provisioning Namespace's status before any start", as
   const create = view.getByRole("button", { name: "Create Agent", exact: true });
   assert.equal(await create.isDisabled(), true);
   assert.equal(await create.getAttribute("aria-describedby"), "create-agent-capability-status");
+  // It stays in the Tab order, described by that reason, and submits nothing (class of finding
+  // 2899).
+  await expectReachableReason(
+    page,
+    create,
+    (await page.locator("#create-agent-capability-status").textContent())?.trim(),
+  );
   // An Embedded OpenClaw draft still saves (#2867).
   await view.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   await view

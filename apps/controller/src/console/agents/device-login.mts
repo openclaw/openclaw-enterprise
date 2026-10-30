@@ -206,28 +206,39 @@ export function createDeviceLogin({
     if (busy || disabled || login || !active) {
       return;
     }
+    // Navigation captures the draft before aborting the view's requests. Retain the
+    // attempt now, because a committed start may lose its response when the view leaves.
+    login = { status: "start_unconfirmed" };
     busy = true;
     error = "";
     update();
+    // An Agent tab left meanwhile is kept for this start, so its reply still lands in that tab
+    // and shows when the reader returns (finding 2980). Leaving the page drops the reply.
+    const kept = () => context.isKept?.() ?? context.isCurrent();
     try {
-      const result = await context.request(base, { method: "POST", body: { harnessId: "codex" } });
-      if (context.isCurrent()) {
+      const result = await context.request(base, {
+        method: "POST",
+        body: { harnessId: "codex" },
+        keepsTab: true,
+      });
+      if (kept()) {
         accept(result);
       }
     } catch (failure) {
-      if (context.isCurrent()) {
+      if (kept()) {
         const { status } = requestFailure(failure);
         if (status === undefined || (status >= 200 && status < 300)) {
           // A lost or unusable successful reply can follow a committed start. Never repeat it.
           login = { status: "start_unconfirmed" };
           onChange?.(null);
         } else {
+          login = null;
           fail(failure, "start");
         }
       }
     } finally {
       busy = false;
-      if (context.isCurrent()) {
+      if (kept()) {
         update();
       }
     }

@@ -247,8 +247,8 @@ a.overview-primary:hover {
   color: var(--color-danger);
   border-color: var(--color-danger);
 }
-button.button--danger:not(:disabled):hover,
-button.danger:not(:disabled):hover {
+button.button--danger:not(:disabled, [aria-disabled="true"]):hover,
+button.danger:not(:disabled, [aria-disabled="true"]):hover {
   color: var(--color-danger);
   background: var(--color-danger-subtle);
 }
@@ -640,9 +640,9 @@ p {
   padding: var(--space-6) var(--space-4) var(--space-4);
   display: flex;
   flex-direction: column;
-  position: sticky;
-  top: 0;
-  height: 100dvh;
+  position: relative;
+  min-height: 100dvh;
+  align-self: stretch;
   z-index: 3;
 }
 .sidebar .brand,
@@ -1430,6 +1430,228 @@ p {
 .settings-page .hint {
   margin: var(--space-3) 0 0;
 }
+.driver-configurations {
+  margin-top: var(--space-8);
+  min-width: 0;
+}
+.driver-configurations-heading,
+.driver-configurations-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.driver-configurations-heading h2 {
+  margin: 0;
+}
+.driver-configurations-heading p {
+  margin: var(--space-1) 0 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+.driver-read-only,
+.driver-value-redacted {
+  display: inline-block;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  background: var(--color-surface-2);
+}
+.driver-read-only {
+  flex: none;
+}
+.driver-configurations-help {
+  margin: var(--space-5) 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+.driver-configurations-toolbar {
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+.driver-configuration-views {
+  display: flex;
+  padding: var(--space-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+}
+.driver-configuration-views button {
+  min-height: var(--control-h-sm);
+  padding: var(--space-1) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+.driver-configuration-views button[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--text-strong);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.driver-configuration {
+  min-width: 0;
+  margin-top: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.driver-configuration > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  list-style: none;
+  cursor: pointer;
+  text-decoration: none;
+  border-radius: var(--radius-md);
+}
+.driver-configuration > summary::-webkit-details-marker {
+  display: none;
+}
+.driver-configuration > summary::before {
+  content: "›";
+  flex: none;
+  color: var(--muted);
+  font-size: var(--text-xl);
+  line-height: 1;
+}
+.driver-configuration[open] > summary::before {
+  transform: rotate(90deg);
+}
+.driver-configuration > summary:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+.driver-configuration-identity {
+  min-width: 0;
+}
+.driver-configuration-title,
+.driver-configuration-id {
+  display: block;
+}
+.driver-configuration-title {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+}
+.driver-configuration-id,
+.driver-configuration-count {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+.driver-configuration-id {
+  margin-top: var(--space-1);
+  overflow-wrap: anywhere;
+}
+.driver-configuration-count {
+  margin-left: auto;
+  flex: none;
+}
+.driver-configuration-body {
+  min-width: 0;
+  margin: 0 var(--space-4);
+  padding: var(--space-1) 0 var(--space-3);
+  border-top: 1px solid var(--line);
+}
+.driver-configuration-body > p {
+  margin: var(--space-3) 0;
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+.driver-configuration-fields {
+  margin: 0;
+  min-width: 0;
+}
+.driver-configuration-field {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.4fr);
+  align-items: start;
+  gap: var(--space-4);
+  padding-block: var(--space-3);
+}
+.driver-configuration-field + .driver-configuration-field {
+  border-top: 1px solid var(--line);
+}
+.driver-configuration-field dt {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.driver-field-key {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+.driver-configuration-field dd {
+  min-width: 0;
+  margin: 0;
+}
+.driver-configuration-fields .driver-configuration-fields {
+  padding-left: min(var(--space-3), 3%);
+  border-left: 1px solid var(--line);
+}
+.driver-configuration-fields .driver-configuration-fields .driver-configuration-field {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}
+.driver-value {
+  display: inline-block;
+  max-width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+}
+.driver-value-list {
+  margin: 0;
+  padding-left: min(var(--space-5), 5%);
+  min-width: 0;
+}
+.driver-value-list > li {
+  padding-block: var(--space-1);
+}
+.driver-value-list > li::marker {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+.driver-configuration-json {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+}
+@media (max-width: 520px) {
+  .driver-configurations-heading {
+    align-items: flex-start;
+  }
+  .driver-configuration-field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-2);
+  }
+  .driver-configuration-count {
+    flex-shrink: 1;
+    text-align: right;
+  }
+  .driver-configuration-views button {
+    min-height: var(--touch-min);
+  }
+}
 @media (max-width: 520px) {
   .settings-account {
     flex-direction: column;
@@ -1516,6 +1738,9 @@ p {
     display: none;
     position: fixed;
     inset: 0 auto 0 0;
+    height: 100dvh;
+    min-height: 0;
+    overflow-y: auto;
     width: min(310px, 88vw);
   }
   .shell.drawer-open .sidebar {
@@ -1874,6 +2099,47 @@ select:not([multiple])[size="1"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* An unavailable control that has a reason stays focusable so the reason is reachable (the
+   Open Agent UI, finding 2714; dom.mts setUnavailable, finding 2878). It looks like
+   button:disabled, but its label, fill and edge fade instead of the button, so its focus ring
+   keeps full contrast (finding 2863). */
+button.control-unavailable {
+  cursor: not-allowed;
+  color: color-mix(in srgb, currentColor 60%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-border-strong) 60%, var(--color-surface));
+}
+.agent-ui-unavailable[aria-disabled="true"],
+button.control-unavailable:is(.primary, .button--primary) {
+  cursor: not-allowed;
+  color: var(--color-on-accent);
+  background: color-mix(in srgb, var(--color-accent) 60%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-surface));
+}
+/* An unavailable checkbox fades as a disabled one does; its label draws the focus ring, which the
+   fade would dim on the checkbox itself. */
+input[type="checkbox"].control-unavailable {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+input[type="checkbox"].control-unavailable:focus-visible {
+  outline: none;
+}
+label:has(> input[type="checkbox"].control-unavailable) {
+  width: fit-content;
+}
+label:has(> input[type="checkbox"].control-unavailable:focus-visible) {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+  border-radius: var(--radius-sm);
+}
+/* An unavailable select or text field fades its text, not the field, so its focus ring keeps full
+   contrast (finding 2899). */
+select.control-unavailable,
+textarea.control-unavailable,
+input.control-unavailable:not([type="checkbox"], [type="radio"]) {
+  cursor: not-allowed;
+  color: color-mix(in srgb, var(--text) 60%, var(--color-surface));
+}
 .native-admin-access .overview-text-button {
   margin-top: var(--space-1);
   text-decoration: underline;
@@ -1889,11 +2155,20 @@ select:not([multiple])[size="1"] {
   background: var(--color-surface);
   border-color: var(--color-border-strong);
 }
+/* An unavailable Deploy there fades as a secondary button does. */
 [aria-live="polite"]:has(
     > .deployment-recovery:not([hidden]) .deployment-recovery-actions:not([hidden])
   )
   .agent-draft-actions
-  :is(.primary, .button--primary):not(:disabled):hover {
+  :is(.primary, .button--primary).control-unavailable {
+  color: color-mix(in srgb, var(--color-text-strong) 60%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-border-strong) 60%, var(--color-surface));
+}
+[aria-live="polite"]:has(
+    > .deployment-recovery:not([hidden]) .deployment-recovery-actions:not([hidden])
+  )
+  .agent-draft-actions
+  :is(.primary, .button--primary):not(:disabled, [aria-disabled="true"]):hover {
   background: var(--color-surface-hover);
 }
 /* A failed deployment is a full-width danger status block (spec 3.4): the stripe and wash come
@@ -2635,6 +2910,7 @@ select:not([multiple])[size="1"] {
   cursor: not-allowed;
 }
 .resource-row-actions .icon-button[aria-disabled="true"] {
+  color: var(--muted);
   background: color-mix(in srgb, var(--color-surface) 60%, transparent);
   border-color: color-mix(in srgb, var(--color-border-strong) 60%, transparent);
 }
@@ -2761,10 +3037,18 @@ select:not([multiple])[size="1"] {
   color: var(--danger);
   border-color: var(--danger);
 }
-.deletion-note .danger:not(:disabled):hover,
-.stop-note .danger:not(:disabled):hover {
+.deletion-note .danger:not(:disabled, [aria-disabled="true"]):hover,
+.stop-note .danger:not(:disabled, [aria-disabled="true"]):hover {
   background: var(--danger-subtle);
   color: var(--danger);
+}
+/* An unavailable Stop or Delete Agent that stays in the Tab order (findings 2935, 2951) fades its
+   label and edge, as other unavailable buttons do; the rule above would keep its full danger
+   color, so it would look usable. */
+.deletion-note .danger.control-unavailable,
+.stop-note .danger.control-unavailable {
+  color: color-mix(in srgb, var(--danger) 60%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--danger) 60%, var(--color-surface));
 }
 /* Danger zone (UX spec 3.9): one card at the end of the Agent page with a row each for Stop and
    Delete: title and one sentence, the outlined danger button at the right, and any status the
@@ -2841,10 +3125,18 @@ select:not([multiple])[size="1"] {
   border-color: var(--color-danger);
   color: var(--color-on-accent);
 }
-.dialog.agent-stop-dialog button.danger:not(:disabled):hover,
-.dialog.agent-delete-dialog button.danger:not(:disabled):hover {
+.dialog.agent-stop-dialog button.danger:not(:disabled, [aria-disabled="true"]):hover,
+.dialog.agent-delete-dialog button.danger:not(:disabled, [aria-disabled="true"]):hover {
   background: var(--color-danger);
   color: var(--color-on-accent);
+}
+/* A refused confirmation stays in the Tab order (finding 2935): its fill and edge fade, as an
+   unavailable primary button's do, so its focus ring keeps full contrast. */
+.dialog.agent-stop-dialog button.danger.control-unavailable,
+.dialog.agent-delete-dialog button.danger.control-unavailable {
+  cursor: not-allowed;
+  background: color-mix(in srgb, var(--color-danger) 60%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-danger) 60%, var(--color-surface));
 }
 .agent-kept-resources {
   margin-top: var(--space-3);
@@ -4265,6 +4557,7 @@ html:has(#create-agent-form) {
 
 /* Held back until the Logs view's first reads settle (finding 1413). */
 .agent-logs-pending > .runtime-strip,
+.agent-logs-pending > .log-running-version,
 .agent-logs-pending > .log-viewer {
   display: none;
 }
@@ -4279,6 +4572,13 @@ html:has(#create-agent-form) {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
   gap: var(--space-3);
   margin: var(--space-2) 0 var(--space-5);
+}
+/* Names the version selected for service when the viewed one has no running Pod (finding 2975). */
+.log-running-version {
+  margin: 0 0 var(--space-5);
+}
+.log-running-version:empty {
+  display: none;
 }
 .runtime-pod {
   min-width: 0;
@@ -4368,11 +4668,12 @@ html:has(#create-agent-form) {
   border-radius: var(--radius-sm);
   background: var(--surface);
 }
-.log-picker select:not(:disabled):hover,
+.log-picker select:not(:disabled, [aria-disabled="true"]):hover,
 .log-search input:hover {
   border-color: var(--input-border);
 }
-.log-picker select:disabled {
+.log-picker select:disabled,
+.log-picker select.control-unavailable {
   color: var(--muted);
 }
 .log-pod-picker {
@@ -4397,7 +4698,8 @@ html:has(#create-agent-form) {
   height: 15px;
   margin: 0;
 }
-.log-option:has(input:disabled) {
+.log-option:has(input:disabled),
+.log-option:has(input.control-unavailable) {
   color: var(--muted);
 }
 .log-actions {

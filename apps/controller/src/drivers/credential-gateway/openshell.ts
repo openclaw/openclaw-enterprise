@@ -15,6 +15,7 @@ import type {
   CredentialSourceToken,
 } from "@openclaw-enterprise/contracts";
 import {
+  configurationSettingMessage,
   CredentialSourceConfigError,
   CredentialSourceRegistrationConfigError,
   CredentialSourceRevisionError,
@@ -36,6 +37,7 @@ import {
   managedSlotAcceptsSource,
 } from "../plugin/managed-catalog.ts";
 
+import { nativeOpenAiModelSelections } from "../native-openai-catalog.ts";
 import { normalizeOpenAiBaseUrl, openAiBaseUrlSpellingMessage } from "../openai-endpoint.ts";
 
 import {
@@ -618,6 +620,27 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
           // The Gateway reads native rate limits when recovering a usage-limit error.
           "/backend-api/wham/usage",
         ].map((path) => ({ host: "chatgpt.com", port: 443, protocol: "rest", path })),
+        {
+          host: "chatgpt.com",
+          port: 443,
+          protocol: "rest",
+          path: "/backend-api/ps/plugins/**",
+          // Shared by this source's Agents: catalog/detail reads and installation only.
+          // Bundle downloads remain credential-free and need their own egress allowance.
+          rules: [
+            { allow: { method: "GET", path: "/backend-api/ps/plugins/*" } },
+            { allow: { method: "POST", path: "/backend-api/ps/plugins/*/install" } },
+          ],
+        },
+        // Native app metadata and hosted tools use separate POST endpoints.
+        // The shared source profile does not replace managed app/tool policy.
+        ...["/backend-api/ps/apps/batch", "/backend-api/ps/mcp"].map((path) => ({
+          host: "chatgpt.com",
+          port: 443,
+          protocol: "rest",
+          path,
+          rules: [{ allow: { method: "POST", path } }],
+        })),
       ],
       binaries: options.binaries,
       inferenceCapable: true,
@@ -836,6 +859,60 @@ function sourceBaseUrl(config: Readonly<Record<string, string>>): string {
     throw new StoredCredentialSourceConfigError(OPENAI_BASE_URL_CONFIG);
   }
   return baseUrl;
+}
+
+/**
+ * A host and any explicit port for a refusal: never credentials or a path, and short enough
+ * for the 256-character cap.
+ */
+function shownHost(value: unknown): string {
+  const host = typeof value === "string" && URL.canParse(value) ? new URL(value).host : undefined;
+  if (!host) {
+    return "none";
+  }
+  const characters = Array.from(host);
+  return characters.length <= 48 ? host : `${characters.slice(0, 47).join("")}…`;
+}
+
+/**
+ * Dedicated native OpenClaw sends each selected model's requests to its catalog endpoint, and
+ * the source's profile admits only the source endpoint. Compute renders only the selected
+ * entries into the native worker's catalog, so an unselected entry is not checked (finding
+ * 1686). Compute refuses every other catalog shape before this; it stays fail-closed here.
+ */
+function requireSourceEndpointForSelectedModels(
+  configuration: Readonly<Record<string, unknown>> | undefined,
+  endpoint: string,
+): void {
+  const selections =
+    configuration === undefined ? undefined : nativeOpenAiModelSelections(configuration);
+  if (
+    selections === undefined ||
+    selections.length === 0 ||
+    selections.some(
+      ({ provider, id, matches }) => provider !== "openai" || !id || matches.length !== 1,
+    )
+  ) {
+    throw new ScopeViolationError(
+      "Dedicated native OpenClaw model endpoints must match the bound credential source endpoint.",
+    );
+  }
+  const provider = asRecord(asRecord(asRecord(configuration?.models)?.providers)?.openai);
+  for (const { matches } of selections) {
+    const { entry, index } = matches[0]!;
+    const own = entry.baseUrl !== undefined && entry.baseUrl !== null;
+    const written = own ? entry.baseUrl : provider?.baseUrl;
+    if (typeof written !== "string" || normalizeOpenAiBaseUrl(written) !== endpoint) {
+      throw new ScopeViolationError(
+        configurationSettingMessage(
+          own
+            ? `models.providers.openai.models.${index}.baseUrl`
+            : "models.providers.openai.baseUrl",
+          `must be the bound credential source endpoint, path included (source host ${shownHost(endpoint)}, written host ${shownHost(written)})`,
+        ),
+      );
+    }
+  }
 }
 
 /** Stores OCC credential sources as OpenShell providers; the supervisor injects them. */
@@ -1141,22 +1218,10 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
           );
         }
         if (context.revision.harness.id === "openclaw") {
-          const providers = asRecord(asRecord(context.revision.configuration?.models)?.providers);
-          const provider = asRecord(providers?.openai);
-          const catalog = provider?.models;
-          const endpoint = sourceBaseUrl(source.config);
-          if (
-            !Array.isArray(catalog) ||
-            catalog.length === 0 ||
-            catalog.some((model) => {
-              const written = asRecord(model)?.baseUrl ?? provider?.baseUrl;
-              return typeof written !== "string" || normalizeOpenAiBaseUrl(written) !== endpoint;
-            })
-          ) {
-            throw new ScopeViolationError(
-              "Dedicated native OpenClaw model endpoints must match the bound credential source endpoint.",
-            );
-          }
+          requireSourceEndpointForSelectedModels(
+            context.revision.configuration,
+            sourceBaseUrl(source.config),
+          );
         }
       }
       // Two sources cannot place their placeholders in the same Sandbox variable.

@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -6,6 +7,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
+import { withNativeAdminGateway } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { PROVISIONING_NOT_COMPLETED } from "../helpers/refusal-text.mjs";
 import {
@@ -118,6 +120,61 @@ export async function openAdvancedSettings(page) {
   }
 }
 
+// Create Agent's access slot above the form. A refused Installation read's answer is one status
+// block there, never the grey hint under the fields (finding 2092): its text appears once on the
+// page. `retry` says whether the block offers Retry permission check as its action.
+export async function expectCreateAccess(page, { tone, body, retry = false }) {
+  const access = page.locator("#create-agent-access");
+  await access.locator(".status-body").getByText(body, { exact: true }).waitFor();
+  assert.deepEqual(
+    await access.evaluate((node) => ({
+      role: node.getAttribute("role"),
+      tone: node.getAttribute("data-tone"),
+      label: node.querySelector(".status-label")?.textContent,
+      body: [...node.querySelectorAll(".status-body")].map((line) => line.textContent),
+      next: node.nextElementSibling?.id,
+    })),
+    {
+      role: tone === "info" ? "status" : "alert",
+      tone,
+      label: "Your access",
+      body: [body],
+      next: "create-agent-form",
+    },
+  );
+  assert.equal(await page.getByText(body, { exact: true }).count(), 1);
+  assert.equal(
+    await access.getByRole("button", { name: "Retry permission check", exact: true }).isVisible(),
+    retry,
+  );
+  // The capability retry under the fields never stands in for the permission retry.
+  assert.equal(
+    await page.getByRole("button", { name: "Retry capability check", exact: true }).count(),
+    0,
+  );
+  return access;
+}
+
+// Create Agent with a permission answer that refuses Agent create: the refusal takes the form's
+// place, with no start choices and no access block, whether the page loaded with that answer or a
+// permission retry brought it (findings 1521, 2908). Returns the refusal.
+export async function expectCreateRefused(page, body) {
+  const refusal = page.locator(".state-panel").filter({
+    has: page.getByRole("heading", { name: "Creating Agents is not available", exact: true }),
+  });
+  await refusal.waitFor();
+  assert.deepEqual(
+    await refusal.evaluate((node) => ({
+      status: [...node.querySelectorAll('[role="status"]')].map((line) => line.textContent),
+      form: node.ownerDocument.querySelectorAll("#create-agent-form").length,
+      access: node.ownerDocument.querySelectorAll("#create-agent-access").length,
+    })),
+    { status: [body], form: 0, access: 0 },
+  );
+  assert.equal(await page.getByRole("button", { name: /^Start (with|without) / }).count(), 0);
+  return refusal;
+}
+
 // Create Agent stays disabled while the form reads Installation capabilities and repository
 // choices. Waits until the live form has both; a retained preview of an earlier form is inert
 // and shows that form's settled reads. A capability retry keeps the failure text until it ends.
@@ -137,6 +194,34 @@ export async function waitForCreateFormReads(page) {
 
 export async function expectNativeAdminHidden(page) {
   assert.equal(await page.locator(".native-admin-access").isVisible(), false);
+  assert.equal(
+    await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
+    false,
+  );
+}
+
+// Unavailable native admin access keeps an "Open Agent UI" button in the Tab order, marked
+// aria-disabled and described by its reason, so a keyboard user reaches why it cannot open
+// (finding 2714). A natively disabled button takes no focus.
+export async function expectNativeAdminUnavailable(page, reason) {
+  const control = page.getByRole("button", { name: "Open Agent UI", exact: true });
+  await control.focus();
+  assert.deepEqual(
+    await control.evaluate((node) => {
+      const document = node.ownerDocument;
+      const description = (node.getAttribute("aria-describedby") ?? "")
+        .split(/\s+/)
+        .map((id) => document.getElementById(id)?.textContent?.trim() ?? "")
+        .filter(Boolean)
+        .join(" ");
+      return {
+        focused: document.activeElement === node,
+        ariaDisabled: node.getAttribute("aria-disabled"),
+        description,
+      };
+    }),
+    { focused: true, ariaDisabled: "true", description: reason },
+  );
   assert.equal(
     await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
     false,
@@ -307,6 +392,7 @@ export function nativeSandboxDriver(facets = ["networking", "filesystem", "proce
     id: "console-native-sandbox",
     capability: "sandbox",
     implementation: "console-native",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets,
     async provisionHarness() {
       assert.fail("provisioning admission must leave effects to the worker");
@@ -523,6 +609,10 @@ function repositoryPolicyDriver(
   );
 }
 
+// A button the reader can press: an unavailable one is natively disabled, or aria-disabled
+// while a visible reason says why (finding 2878).
+export const LIVE_BUTTON = 'button:not([disabled], [aria-disabled="true"])';
+
 // Back, in-app navigation and reloads can first restore an inert copy of the old view with its
 // controls disabled, until revalidation re-enables it or replaces it with a rebuilt view. Only a
 // live control shows the current view, including any draft it restored.
@@ -531,36 +621,19 @@ export async function waitForLiveControls(page, ids) {
     (controlIds) =>
       controlIds.every((id) => {
         const control = globalThis.document.getElementById(id);
-        return control && !control.disabled && !control.closest("[inert]");
+        return (
+          control &&
+          !control.disabled &&
+          control.getAttribute("aria-disabled") !== "true" &&
+          !control.closest("[inert]")
+        );
       }),
     ids,
   );
 }
 
 export function nativeAdminValues(marker, origin) {
-  const values = nativeValues(marker);
-  return {
-    ...values,
-    gateway: {
-      ...(values.gateway ?? {}),
-      controlUi: {
-        ...(values.gateway?.controlUi ?? {}),
-        enabled: true,
-        allowedOrigins: [origin],
-      },
-      auth: {
-        mode: "trusted-proxy",
-        trustedProxy: {
-          userHeader: "x-occ-identity",
-          allowUsers: ["occ-workspace-files"],
-          deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
-        },
-        identityScopes: {
-          "occ-workspace-files": ["operator.admin"],
-        },
-      },
-    },
-  };
+  return withNativeAdminGateway(nativeValues(marker), origin);
 }
 
 // Without a caller-permission summary the console keeps controls enabled, so the API's own

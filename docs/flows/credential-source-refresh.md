@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-27
-last_updated_session: authoring-run/0430a401-05fb-4e0b-9166-a02b77498311
+updated: 2026-10-30
+last_updated_session: authoring-run/ba84d894-356c-419d-ab61-c51ce59bdec6
 ---
 
 # Credential source refresh Flow
@@ -129,25 +129,27 @@ marks the source `ready` with its audit event.
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
 For a type declaring `deviceAuthorization.harnessId`, OCC registers the empty
-source before asking the paired Refresh Driver to start device login. It then
-stores the opaque handle, actor, source, and Driver IDs in the session Secret.
+source, asks the paired Refresh Driver to start login, then stores the opaque
+handle, actor, source, and Driver IDs in the session Secret.
 The HTTP handler in `apps/controller/src/index.ts` records the successful start
 before sending the session reference. The audit event identifies the Agent or
 Namespace, not the session Secret.
 
-`apps/controller/src/console/agents/device-login.mts:createDeviceLogin` keeps
-`start_unconfirmed` in the form draft if the start has no response status or its
-successful response is unusable. The form blocks another start. Without a
-confirmed session reference, it also cannot poll or cancel. See
+`apps/controller/src/console/agents/device-login.mts:createDeviceLogin` records
+`start_unconfirmed` before sending a start. Both authentication forms retain it
+across navigation; Agent detail keeps its Credentials tab during a start. Until
+the page is left, a usable reply supplies the challenge; a refusal permits
+retry. Unconfirmed attempts cannot start again,
+poll, or cancel. See
 [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
-For a known session, compare-and-swap permits one poll at a time. OCC rechecks scope and
-both Driver selections before accepting completion. An uncertain exchange closes
-the handle without removing the source or repeating the exchange.
+Compare-and-swap serializes known-session polls. OCC rechecks scope and both
+Driver selections before completion. Uncertain exchanges close the handle but
+keep the source.
 
 `apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
 starts the issuer request from the API Pods. The start, poll, and token-exchange
 requests use fixed `auth.openai.com` endpoints and refuse redirects, so login
-material is never forwarded to a redirect target. It preserves the existing
+material never reaches a redirect target. It preserves the existing
 `DeviceAuthorizationStartError` distinction: connection failure or timeout is
 `unreachable`; HTTP rejection, malformed replies, and `AbortError` are
 `unavailable`. The HTTP handler returns `503 DEPENDENCY_UNAVAILABLE`, naming
@@ -160,11 +162,11 @@ performs the Codex exchange, configures OpenShell with refresh material, and
 stores trusted account metadata. Before acquiring a code, its issuer polling
 returns pending on HTTP `429`, `5xx`, or a fetch connection failure; OCC retains
 the handle and its polling interval. An aborted initial poll, including OCC's
-internal timeout, closes the session and requires a fresh login; it is not
-retried as pending. Failures from code acquisition onward likewise close the
+internal timeout, closes the session, is not retried as pending, and
+requires a fresh login. Failures from code acquisition onward likewise close the
 session without replay. OpenShell owns
-future refresh and successor persistence. Polling uses existing state after handoff; unfinished refresh stays
-pending, while a persistent uncertain marker needs operator inspection.
+future refresh and successor persistence. After handoff, polls read existing state:
+unfinished refresh stays pending; a persistent uncertain marker needs operator inspection.
 Ready confirms a usable token. Later versions attach the existing provider
 without reseeding credentials; account metadata changes require a new login and
 version.
@@ -185,8 +187,8 @@ OpenShell re-mints the token before it expires and writes it to the provider.
 The Sandbox proxy substitutes the current token for the stable placeholder on
 each request, so a running Harness needs no restart. OCC makes no call.
 `GET` on the source adds `refreshStatus` to the gateway status; OpenShell's
-`refreshed` state reports `ready`, its error states report `failed` with a
-recovery action, and missing established refresh state reports `failed`. OCC finds the
+`refreshed` state reports `ready`; its error states (with a recovery action) and
+missing established refresh state report `failed`. OCC finds the
 type through `refreshDriverForSource`, which tolerates a type the catalog no
 longer offers: that source keeps its gateway status without `refresh`.
 
@@ -202,10 +204,10 @@ its Secrets and checks the gateway status. For a `refresh` type it calls
 `configureRefresh` with a new request ID, then `rotate`, instead of the
 gateway's `updateSource`. A non-`ready` mint returns `503` before OCC replaces
 the Secret references, but OpenShell keeps the new material, the next `GET`
-reports the failed mint, and OCC records a `failure` audit event. OpenShell
-starts a new authorization epoch on each reconfiguration, even one whose mint
-fails, which revokes the stable placeholders of running Sandboxes, so Agents
-need a redeploy.
+reports the failed mint, and OCC records a `failure` audit event. Each
+reconfiguration, even one whose mint fails, starts a new OpenShell authorization
+epoch that revokes running Sandboxes' stable placeholders, so Agents need a
+redeploy.
 
 `packages/occ/src/index.ts:rotateCredentialSource`
 
@@ -225,7 +227,7 @@ then the gateway's `removeSource`. Before `DeleteProviderRefresh`,
 checks the exact source Namespace and paired Gateway ID, then the current
 provider's manager/source labels and profile identity. A missing provider is
 already clean; a foreign provider or failed lookup refuses cleanup. The deletion
-RPC retains `allow_missing`. Explicit rotation uses the same guard but refuses absence. The check protects against
+RPC retains `allow_missing`. Explicit rotation uses the same guard but refuses absence. It guards against
 out-of-band provider drift; lookup and mutation are not atomic. A failure leaves
 the record `deleting` for retry.
 
@@ -337,6 +339,12 @@ detached reads. Clearing bytes cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 11:39: Keep pending-start tabs. (authoring-run/ba84d894-356c-419d-ab61-c51ce59bdec6 - 01c78bee6b7eac13f95585291232ff763edb7828)
+
+- 2026-10-29 16:08: Qualify retry visibility. (authoring-run/91cf4dad-e612-4f33-8307-7989dfcd611e - 0dae5b3d5a3d4be177e8edad6d1baa07aa0747ed)
+
+- 2026-10-29 14:58: Retain unconfirmed Console starts across navigation. (authoring-run/f0c1d1b2-80e6-4a5b-9dce-e888c5e30bb2 - 2de02b7f995d5401c9a300b1e350b9f80be1073d)
 
 - 2026-10-27 19:10: Clarify GitHub token renewal and withdrawal. (authoring-run/0430a401-05fb-4e0b-9166-a02b77498311 - d0d593e0f6b4d2c8c1282f0f05e4d83aa607608f)
 

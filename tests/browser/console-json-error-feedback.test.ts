@@ -7,6 +7,7 @@ import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import {
   detailUrl,
   fileBrowser,
@@ -63,9 +64,7 @@ async function leaveAndReturn(page: Page) {
 }
 
 test("a refused or stale Configuration save is an error; editing again is a hint", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Configuration feedback", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Configuration feedback");
   const agent = await fixture.createAgent(namespace.id, "Feedback Agent", nativeValues("saved"));
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   const { page } = await newPage(t, fixture, { browser });
@@ -117,9 +116,7 @@ test("a refused or stale Configuration save is an error; editing again is a hint
 });
 
 test("an unknown Configuration save outcome stays an error when the editor is rebuilt", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Unknown feedback", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Unknown feedback");
   const agent = await fixture.createAgent(namespace.id, "Unknown Agent", nativeValues("saved"));
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   const { page } = await newPage(t, fixture, { browser });
@@ -152,9 +149,9 @@ test("an unknown Configuration save outcome stays an error when the editor is re
 });
 
 test("Create Agent: Reset template clears a JSON error; a primary or fallback model mismatch focuses the JSON", async (t) => {
-  const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Create JSON feedback", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Create JSON feedback", {
+    defaultPresets: [defaultCodexPreset],
+  });
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();

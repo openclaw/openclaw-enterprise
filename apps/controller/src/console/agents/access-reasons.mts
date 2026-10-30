@@ -204,6 +204,9 @@ export const SANDBOX_POLICY_READ_DENIED = notIncluded(
   "reading this Agent’s network policy or its suggestions",
   "SandboxPolicy read on it",
 );
+// Deploy also checks SandboxPolicy read on that policy when it has saved rules (finding 2151). The
+// API's denial names the policy by its raw ID; the Agent page names it in words (finding D801).
+export const DEPLOY_SANDBOX_POLICY_READ_DENIED = `Deploying this Agent needs SandboxPolicy read on its network policy, which your access does not include. ${askAdministratorTo("grant it")}`;
 
 // Log text authorizes Agent read_logs, or Agent administer in its place, plus Agent read. The API
 // and the CLI name the grant in these words (finding 2599); the page is open, so Agent read is held.
@@ -225,6 +228,9 @@ export function runtimeStatusDenied(grants: {
   }
   return `Runtime status requires Agent operate on this Agent and AgentRevision read on this version. ${askAdministratorTo("grant them")}`;
 }
+// A version the page could not read: its runtime status would be refused too, so the Logs tab
+// says so in words instead of sending that read (finding D794).
+export const RUNTIME_STATUS_VERSION_UNREADABLE = `You cannot read this version, so its runtime status is not shown. ${askForGrant("AgentRevision read on it")}`;
 
 // Reading a workspace file authorizes Agent read; saving one and running diagnostics, Agent
 // operate.

@@ -16,6 +16,7 @@ import {
   settlePageRequests,
   trackSettledFetches,
   waitForEnabled,
+  waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { submitCreateAgent } from "./console-agents-test-support.mjs";
@@ -473,6 +474,225 @@ test("Codex sign-in can retry a refused start but cannot repeat one with an unre
       .map(({ method, path }) => [method, path]),
     [["POST", beginPath]],
   );
+});
+
+// Hold a real committed start at the browser boundary: navigating away aborts its
+// response, but must not erase the attempt from either authentication form's draft.
+for (const savedAgent of [false, true]) {
+  test(`an interrupted OAuth start stays blocked after returning to ${savedAgent ? "Agent credentials" : "Create Agent"}`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth navigation");
+    const { gateway, refresh } = createDeviceCredentialDrivers({ approve: async () => false });
+    for (const driver of [gateway, refresh]) {
+      fixture.controller.registerDriver(driver);
+      fixture.controller.selectDriver(driver.capability, driver.id);
+    }
+    const agent = savedAgent
+      ? await fixture.createAgent(
+          namespace.id,
+          "OAuth navigation",
+          nativeValues("oauth-navigation", { harnessId: "codex" }),
+          { executionMode: "dedicated" },
+        )
+      : null;
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await trackSettledFetches(page);
+    await login(
+      page,
+      fixture,
+      agent
+        ? `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`
+        : `/console/agents/new?namespace=${namespace.id}`,
+    );
+    if (!agent) {
+      await page.getByRole("button", { name: "Start without Preset" }).click();
+    }
+    const methodLabel = agent ? "Authentication source" : "Authentication method";
+    await page.getByLabel(methodLabel).selectOption("credential_source");
+    const committed = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    t.after(() => release.resolve());
+    const beginPath = `/namespaces/${namespace.id}/agents${agent ? `/${agent.id}` : ""}/device-authorizations`;
+    await page.route(`**${beginPath}`, async (route) => {
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      committed.resolve((await response.json()).data.session.id);
+      await release.promise;
+      await route.fulfill({ response }).catch(() => {});
+    });
+    await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
+    const sessionId = await committed.promise;
+    assert.equal(gateway.sources.size, 1);
+    assert.equal(
+      (await fixture.request("GET", `/namespaces/${namespace.id}/secrets/${sessionId}`)).status,
+      200,
+    );
+    await page.getByRole("link", { name: "Secrets", exact: true }).click();
+    await page.waitForURL("**/console/secrets?**");
+    release.resolve();
+    await waitForSettledFetches(page, beginPath, 1);
+    await page.goBack();
+    await page.getByLabel(methodLabel).waitFor();
+    const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
+    assert.equal(await start.isDisabled(), true, "the committed start lost its confirmation");
+    await page
+      .getByText(
+        /may have started.*until an Installation administrator investigates the pending attempt/i,
+      )
+      .waitFor();
+    assert.equal(
+      await page.getByRole("button", { name: "Cancel login", exact: true }).isVisible(),
+      false,
+    );
+    // Method changes rerender controls; even a delivered click cannot repeat the write.
+    await page.getByLabel(methodLabel).selectOption("api_key");
+    await page.getByLabel(methodLabel).selectOption("credential_source");
+    await start.dispatchEvent("click");
+    await settlePageRequests(page);
+    assert.equal(
+      requests.filter(({ method, path }) => method === "POST" && path === beginPath).length,
+      1,
+    );
+    assert.equal(gateway.sources.size, 1);
+  });
+}
+
+// A start's reply that lands after the reader switched to another tab of the same Agent page
+// belongs to the Credentials tab, which is kept while the start is pending (finding 2980). Before
+// the fix, the reply was dropped and the return rebuilt the tab from its draft: a usable challenge
+// showed as an unconfirmed start that only an administrator could clear, and a confirmed refusal
+// as the same, instead of permitting a retry.
+for (const refused of [false, true]) {
+  test(`an OAuth start ${refused ? "refused" : "answered"} while another Agent tab shows lands in Credentials`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth tab switch");
+    const { gateway, refresh } = createDeviceCredentialDrivers({ approve: async () => false });
+    for (const driver of [gateway, refresh]) {
+      fixture.controller.registerDriver(driver);
+      fixture.controller.selectDriver(driver.capability, driver.id);
+    }
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "OAuth tab switch",
+      nativeValues("oauth-tab-switch", { harnessId: "codex" }),
+      { executionMode: "dedicated" },
+    );
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await trackSettledFetches(page);
+    await login(
+      page,
+      fixture,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+    );
+    await page.getByLabel("Authentication source").selectOption("credential_source");
+    // The real Native IAM Driver refuses the start without Secret create.
+    if (refused) {
+      revokeAdministratorGrant(fixture, ["create", "secret"]);
+    }
+    const answered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    t.after(() => release.resolve());
+    const beginPath = `/namespaces/${namespace.id}/agents/${agent.id}/device-authorizations`;
+    // Hold the API's real answer at the browser boundary until another tab shows.
+    await page.route(`**${beginPath}`, async (route) => {
+      const response = await route.fetch();
+      answered.resolve({ status: response.status(), body: await response.json() });
+      await release.promise;
+      await route.fulfill({ response }).catch(() => {});
+    });
+    await waitForIdleFetches(page);
+    await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
+    const { status, body } = await answered.promise;
+    assert.equal(status, refused ? 403 : 200);
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true, selected: true }).waitFor();
+    release.resolve();
+    await waitForSettledFetches(page, beginPath, 1);
+
+    await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+    await page.getByLabel("Authentication source").waitFor();
+    const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
+    if (refused) {
+      // A confirmed refusal permits a retry, as it does while the tab shows.
+      await page.getByText(AGENT_DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
+      assert.equal(await start.isEnabled(), true, "a confirmed refusal blocked a retry");
+    } else {
+      // The delivered challenge shows: its code, and Cancel login for this known session.
+      await page
+        .getByText("Waiting for you to complete sign-in in the other tab…", { exact: true })
+        .waitFor();
+      assert.equal(await page.locator(".device-login-code").textContent(), body.data.userCode);
+      assert.equal(
+        await page.getByRole("button", { name: "Cancel login", exact: true }).isEnabled(),
+        true,
+      );
+      assert.equal(await start.isVisible(), false);
+    }
+    await expectNoText(page, /may have started/i);
+    await settlePageRequests(page);
+    assert.equal(
+      requests.filter(({ method, path }) => method === "POST" && path === beginPath).length,
+      1,
+    );
+    assert.equal(gateway.sources.size, refused ? 0 : 1);
+  });
+}
+
+// A refused start shown in the tab permits a retry, and that retry is kept like a first start: the
+// refusal must not stop the tab from being parked while the retry is pending (finding 2980).
+test("a retried OAuth start answered while another Agent tab shows lands in Credentials", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth retry tab switch");
+  const { gateway, refresh } = createDeviceCredentialDrivers({ approve: async () => false });
+  for (const driver of [gateway, refresh]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "OAuth retry tab switch",
+    nativeValues("oauth-retry-tab-switch", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  await page.getByLabel("Authentication source").selectOption("credential_source");
+  const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
+  // The real Native IAM Driver refuses the first start without Secret create.
+  const restoreCreate = revokeAdministratorGrant(fixture, ["create", "secret"]);
+  await start.click();
+  await page.getByText(AGENT_DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
+  restoreCreate();
+  await waitForEnabled(start);
+  const answered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  const beginPath = `/namespaces/${namespace.id}/agents/${agent.id}/device-authorizations`;
+  await page.route(`**${beginPath}`, async (route) => {
+    const response = await route.fetch();
+    answered.resolve(await response.json());
+    await release.promise;
+    await route.fulfill({ response }).catch(() => {});
+  });
+  await waitForIdleFetches(page);
+  await start.click();
+  const body = await answered.promise;
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true, selected: true }).waitFor();
+  release.resolve();
+  await waitForSettledFetches(page, beginPath, 2);
+
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  await page
+    .getByText("Waiting for you to complete sign-in in the other tab…", { exact: true })
+    .waitFor();
+  assert.equal(await page.locator(".device-login-code").textContent(), body.data.userCode);
+  await expectNoText(page, /may have started/i);
+  assert.equal(gateway.sources.size, 1);
 });
 
 // A refused device login names what the API checked for that request (finding 2577). Create

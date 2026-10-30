@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -346,5 +347,57 @@ func TestDevelopmentImageImportRefusesWhatItCannotVerify(t *testing.T) {
 				t.Fatalf("staging image removal = %v for staging-exists = %v:\n%s", removed, tc.stagingExists, strings.Join(commands(), "\n"))
 			}
 		})
+	}
+}
+
+// A digest-pinned development image is a manifest list on Docker's containerd
+// image store, so the staging tag must move to the platform child the
+// registry's list names before the archive is saved.
+func TestDevelopmentImageImportTagsThePlatformChildOfAManifestList(t *testing.T) {
+	state := kubernetesOnlyOpenShellState(t)
+	image := "ghcr.io/openclaw/runtime@" + profileTestDigest
+	child := "sha256:" + strings.Repeat("c", 64)
+	resolved := "ghcr.io/openclaw/runtime@" + child
+	// The staging name mirrors importDevelopmentImage on purpose, so the tag
+	// that reaches the cluster is pinned.
+	sum := sha256.Sum256([]byte(image))
+	staging := fmt.Sprintf("openclaw-development/import-%x:%s", sum[:6], state.Cluster)
+	recorded := "localhost/" + staging
+	reference := strings.TrimSuffix(recorded, ":"+state.Cluster) + "@" + child
+	server := "k3d-" + state.Cluster + "-server-0"
+	// Podman's `manifest inspect --verbose` prints the bare OCI index.
+	listing := `{"schemaVersion":2,"manifests":[{"digest":"` + child + `","platform":{"os":"linux","architecture":"amd64"}},{"digest":"sha256:` + strings.Repeat("d", 64) + `","platform":{"os":"linux","architecture":"arm64"}}]}`
+	commands := fakeProfileCommands(t, map[string]string{
+		"podman": `"image inspect ` + staging + `") exit 1 ;;
+"tag ` + image + ` ` + staging + `") ;;
+"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + recorded + `"]' ;;
+"image inspect --format {{.Os}}/{{.Architecture}} ` + recorded + `") echo linux/amd64 ;;
+"manifest inspect --verbose ` + image + `") printf '%s\n' '` + listing + `' ;;
+"image inspect ` + resolved + `") exit 1 ;;
+"pull ` + resolved + `") ;;
+"tag ` + resolved + ` ` + recorded + `") ;;
+"image save --output "*" ` + recorded + `") printf archive > "$4" ;;
+"exec ` + server + ` ctr -n k8s.io images list") echo "` + recorded + ` application/vnd.oci.image.manifest.v1+json ` + child + `" ;;
+"exec ` + server + ` ctr -n k8s.io images tag ` + recorded + ` ` + reference + `") ;;
+"image rm ` + recorded + `") ;;`,
+		"k3d": `"image import --mode direct "*" -c ` + state.Cluster + `") ;;`,
+	})
+	r := newRunner(Options{Repository: state.Repository})
+	r.engine = "podman"
+
+	got, err := r.importDevelopmentImage(context.Background(), state, image)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, strings.Join(commands(), "\n"))
+	}
+	calls := commands()
+	if !slices.Contains(calls, "podman tag "+resolved+" "+recorded) {
+		t.Fatalf("staging tag never moved to the platform child: %v", calls)
+	}
+	save := "podman image save --output " + filepath.Join(state.directory, developmentImportArchive(recorded)) + " " + recorded
+	if !slices.Contains(calls, save) {
+		t.Fatalf("the platform child was not saved without a platform filter: %v", calls)
+	}
+	if got != reference {
+		t.Fatalf("unexpected runtime reference: %q", got)
 	}
 }

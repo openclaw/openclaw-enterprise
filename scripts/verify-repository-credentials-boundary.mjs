@@ -211,12 +211,15 @@ const reviewedImports = {
     "node:http": ["createServer"],
     "node:fs/promises": ["chmod", "lstat", "mkdir", "realpath", "unlink"],
   },
+  "backends/repository-credentials/control-socket.ts": {
+    "node:net": ["connect"],
+    "node:fs/promises": ["lstat", "unlink"],
+  },
   "drivers/repo/credentials/lifecycle.ts": { "node:crypto": ["randomUUID"] },
   "drivers/repo/credentials/server.ts": {
     "node:fs/promises": ["chmod", "lstat", "realpath", "unlink"],
     "node:http": ["createServer"],
     "node:https": ["createServer"],
-    "node:net": ["connect"],
   },
   "drivers/repo/credentials/sessions.ts": {
     "node:crypto": ["createHash", "randomBytes", "randomUUID"],
@@ -243,6 +246,10 @@ const ordinaryBuiltins = new Set([
 // Restrict imports and re-exports inside scanned credential source. The worker
 // entrypoint is outside that source; packaging and runtime tests cover that boundary.
 const capabilityConsumers = {
+  "backends/repository-credentials/control-socket.ts": {
+    "backends/repository-credentials/private-request-server.ts": ["prepareControlSocket"],
+    "drivers/repo/credentials/server.ts": ["prepareControlSocket"],
+  },
   "composition/repository-credentials/public-ca.ts": {
     "composition/repository-credentials/config.ts": ["loadPublicCa"],
     "composition/repository-credentials/platform.ts": ["loadPublicCa"],
@@ -348,6 +355,7 @@ const reviewedProcessMembers = {
   "repository-credentials.ts": ["argv", "exitCode", "stderr", "stdout"],
   "repository-credentials.mjs": ["exitCode", "stderr"],
   "drivers/repo/credentials/server.ts": ["getuid"],
+  "backends/repository-credentials/control-socket.ts": ["getuid"],
   "backends/repository-credentials/private-request-server.ts": ["getuid"],
 };
 const runtimeTypeScript = new Set([

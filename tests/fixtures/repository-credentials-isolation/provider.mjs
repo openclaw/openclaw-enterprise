@@ -24,9 +24,10 @@ async function holdOnce() {
   held = true;
   await writeFile("/state/held", "ready", { mode: 0o600 });
   // The host releases explicitly; this backstop stays under the gateway's 30 s
-  // first-header deadline so a slow probe does not fail the held request.
+  // first-header deadline so a slow probe does not fail the held request. The deadline
+  // is checked after each read, so a release during the last wait is still seen.
   const deadline = Date.now() + 25000;
-  while (Date.now() < deadline) {
+  for (;;) {
     try {
       await lstat("/state/release-hold");
       return;
@@ -34,6 +35,9 @@ async function holdOnce() {
       if (error.code !== "ENOENT") {
         throw error;
       }
+    }
+    if (Date.now() >= deadline) {
+      break;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }

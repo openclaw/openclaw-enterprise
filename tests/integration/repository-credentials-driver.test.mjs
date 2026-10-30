@@ -1,4 +1,5 @@
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import { composeRepositoryAccess } from "../../apps/controller/src/composition/repository-credentials/platform.ts";
 import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
@@ -23,7 +24,11 @@ function driverFor(registry, socket, sessionDurationSeconds = 3600, publicCa) {
     drivers: { repo: "repository-credentials" },
   };
   return {
-    policy: new GitHubRepositoryPolicy(backend, registry, { sessionDurationSeconds }),
+    policy: new GitHubRepositoryPolicy(
+      { id: backend.id, drivers: { repo: backend.drivers.repo } },
+      registry,
+      { sessionDurationSeconds },
+    ),
     sender: new GitHubNativeRepositorySender(backend, {
       ...(publicCa === undefined ? {} : { publicCa }),
     }),
@@ -82,13 +87,14 @@ test(
     });
     const signal = new AbortController().signal;
     const local = driverFor(fixture.registry, "/nonexistent/repository-control.sock");
-    const resolution = local.policy.resolve({
+    const selection = {
       namespaceId: fixture.namespaceId,
       bindings: [
         { repositoryRef: "repo-a", profile: "git-write" },
         { repositoryRef: "repo-b", profile: "git-write" },
       ],
-    });
+    };
+    const resolution = local.policy.resolve(selection);
     assert.equal(resolution.sessionDurationSeconds, 3600);
     assert.throws(
       () =>
@@ -98,11 +104,32 @@ test(
         }),
       ScopeViolationError,
     );
-    const driver = driverFor(
-      fixture.registry,
-      fixture.config.gateway.controlSocket,
-      3600,
-      fixture.tls.ca,
+    const composed = await composeRepositoryAccess({
+      backend: {
+        id: fixture.backendId,
+        type: "github",
+        drivers: { repo: "repository-credentials" },
+        configuration: { registryPath: fixture.registryFile },
+      },
+      selection: {
+        id: "repository-credentials",
+        implementation: "github",
+        configuration: {
+          sessionDurationSeconds: 3600,
+          controlSocket: fixture.config.gateway.controlSocket,
+          publicCaPath: fixture.tls.certFile,
+        },
+      },
+    });
+    const driver = { policy: composed.repositoryPolicy, sender: composed.nativeRepositorySender };
+    assert.deepEqual(driver.policy.resolve(selection), resolution);
+    assert.throws(
+      () =>
+        driver.policy.resolve({
+          namespaceId: `${fixture.namespaceId}-unauthorized`,
+          bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
+        }),
+      ScopeViolationError,
     );
     const client = new UnixRepositoryCredentialControlClient({
       controlSocket: fixture.config.gateway.controlSocket,

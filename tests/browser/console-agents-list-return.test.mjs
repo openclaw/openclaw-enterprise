@@ -9,11 +9,13 @@ import {
   nativeValues,
   newPage,
   persistedDeploymentError,
+  settledView,
   trackSettledFetches,
   waitForCondition,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { refocus, tagView, viewTag } from "./console-refocus-helpers.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
@@ -27,7 +29,6 @@ const browser = fileBrowser();
 const AGENTS = 12;
 const READING = "Reading deployment…";
 const activeView = '.content [aria-live="polite"]:not([inert])';
-const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
 const revisionsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/revisions`;
 const deploymentsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/deployments/*`;
 
@@ -125,17 +126,6 @@ const revealed = (page) =>
     deployments: globalThis.__revealed.deployments,
     agents: [...globalThis.__revealed.agents].sort(),
   }));
-
-function tagView(page) {
-  return page.evaluate(() => {
-    globalThis.document.querySelector('.content [aria-live="polite"]').dataset.listTag = "kept";
-  });
-}
-const viewTag = (page) =>
-  page.evaluate(
-    () =>
-      globalThis.document.querySelector('.content [aria-live="polite"]')?.dataset.listTag ?? null,
-  );
 
 async function openAgent(page, agent) {
   await page.locator(settledView).getByRole("link", { name: agent.name, exact: true }).click();
@@ -279,6 +269,87 @@ test("A return rereads only the rows the search shows", async (t) => {
     [...new Set(revisions)],
     [`/namespaces/${namespace.id}/agents/${target.id}/revisions`],
   );
+});
+
+// A row read in the page, by kind and Agent; null for any other request.
+function rowReadOf(request) {
+  const match = new URL(request.url()).pathname.match(
+    /\/agents\/([^/]+)\/(permissions|revisions|deployments)(?:\/|$)/,
+  );
+  return match ? { agent: match[1], kind: match[2] } : null;
+}
+
+// A long list queues most of its row reads in the browser. A search that hides a row must retire
+// its unfinished reads, not send them after the matching row's, and a row shown again reads once.
+test("A search retires the unfinished reads of the rows it hides, and clearing it reads each once", async (t) => {
+  const { namespace, agents, page } = await openTeamList(t, "Team search retire");
+  const [, , target] = agents;
+  const rows = await holdRowReads(t, page, namespace);
+  const permissions = await holdRequests(
+    t,
+    page,
+    `**/namespaces/${namespace.id}/agents/*/permissions`,
+  );
+  const issued = new Set();
+  const cancelled = new Set();
+  const finished = [];
+  page.on("request", (request) => {
+    if (rowReadOf(request)) {
+      issued.add(request.url());
+    }
+  });
+  page.on("requestfailed", (request) => {
+    if (rowReadOf(request)) {
+      cancelled.add(request.url());
+    }
+  });
+  page.on("requestfinished", (request) => {
+    const read = rowReadOf(request);
+    if (read) {
+      finished.push(`${read.kind} ${read.agent}`);
+    }
+  });
+  const reads = (selected) =>
+    selected
+      .flatMap((agent) =>
+        ["deployments", "permissions", "revisions"].map((k) => `${k} ${agent.id}`),
+      )
+      .sort();
+  const search = page.getByRole("searchbox", { name: "Search Agents" });
+
+  // A reload reads every row again, and the holds keep those reads unfinished.
+  await page.reload();
+  await page.locator(settledView).getByRole("link", { name: agents[0].name }).waitFor();
+  await waitForCondition(
+    () => issued.size === AGENTS * 2,
+    "every row's permissions and revisions reads were issued",
+  );
+
+  // The page cancels the held reads of the 11 rows the search hides before any is answered.
+  await search.fill(target.name);
+  assert.equal(await page.locator(activeView).locator(".agent-table tbody tr").count(), 1);
+  await waitForCondition(
+    () => cancelled.size === (AGENTS - 1) * 2,
+    "the page cancelled the hidden rows' unfinished reads",
+  );
+  rows.release();
+  permissions.release();
+  const row = page.locator(activeView).getByRole("row").filter({ hasText: target.name });
+  await row.locator(".agent-deployment a").waitFor();
+  await waitForCondition(() => finished.length >= 3, "the shown row's reads finished");
+  assert.deepEqual(
+    [...finished].sort(),
+    reads([target]),
+    "only the row the search shows finished its reads",
+  );
+
+  // Showing the other rows again reads each once; the row that finished does not read again.
+  finished.length = 0;
+  await search.fill("");
+  await page.getByText(READING).first().waitFor({ state: "detached" });
+  const others = agents.filter((agent) => agent.id !== target.id);
+  await waitForCondition(() => finished.length >= others.length * 3, "the other rows' reads");
+  assert.deepEqual([...finished].sort(), reads(others), "each retired row read once");
 });
 
 // Back from a deployment link restores focus in that cell, not a link to the old revision.
@@ -587,7 +658,7 @@ test("A list resumed while its rows wait to fill shows only the new rereads", as
   await land(50);
   assert.equal(await readingCells(), 3);
   const rereads = await holdRowReads(t, page, namespace);
-  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await refocus(page);
   await rereads.revisions.requested;
   await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
   await page.clock.runFor(200);
@@ -609,7 +680,7 @@ test("A list held by a refocus while its rows wait to fill paints no earlier ans
     once: true,
   });
   const rereads = await holdRowReads(t, page, namespace);
-  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await refocus(page);
   await list.requested;
   await page.clock.runFor(200);
   // The held view is inert, so read it directly: deploymentCells reads only the active view.

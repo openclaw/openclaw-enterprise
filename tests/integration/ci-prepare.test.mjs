@@ -1696,6 +1696,44 @@ for (let index = 0; index < Number(times); index += 1) {
     );
   });
 
+  test("focused CI selection fails before tool setup or lane preparation", async () => {
+    const action = loadYaml(
+      await readFile(join(repositoryRoot, ".github/actions/run-ci-lane/action.yml"), "utf8"),
+    );
+    const steps = action.runs.steps;
+    const index = steps.findIndex((step) => step.name === "Validate focused test selection");
+    assert.ok(index >= 0);
+    const validation = steps[index];
+    assert.equal(validation.if, "inputs.test-file != ''");
+    assert.notEqual(validation["continue-on-error"], true);
+    for (const name of [
+      "Set up CI tools",
+      "Build Go CLI for development installation proof",
+      "Prepare lane",
+    ]) {
+      assert.ok(
+        index < steps.findIndex((step) => step.name === name),
+        `Validate selection before ${name}`,
+      );
+    }
+    // Execute the action's real guard, using a real manifest member and a file owned by another lane.
+    for (const [file, status] of [
+      ["tests/integration/local-first-agent-openshell-real.test.mjs", 0],
+      ["tests/integration/ci-runner.test.mjs", 1],
+      ["tests/integration/../integration/local-first-agent-openshell-real.test.mjs", 1],
+    ]) {
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", validation.run], {
+        cwd: repositoryRoot,
+        env: { ...process.env, CI_SELECTED_LANE: "openshell", CI_SELECTED_TEST_FILE: file },
+        encoding: "utf8",
+      });
+      assert.equal(result.status, status, result.stderr);
+      if (status !== 0) {
+        assert.match(result.stderr, /invalid-file-selection/);
+      }
+    }
+  });
+
   test("Kubernetes test helper passes an explicit Codex localhost seccomp profile into runtime config", () => {
     const profile = "openclaw/codex-bwrap.json";
     const configuration = createKubernetesInstallationConfiguration({

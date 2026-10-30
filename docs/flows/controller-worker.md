@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-26
-last_updated_session: fix-1692
+updated: 2026-10-29
+last_updated_session: authoring-run/85796888-a7be-4de9-bdcb-ca8f7ef74264
 ---
 
 # Controller Worker Flow
@@ -356,7 +356,9 @@ exhausting attempts close the item and schedule another while the version stays
 selected and running within its credential deadline; outages never retire it. Each
 claim reauthorizes its actor. Successor keys use strictly later time buckets despite clock skew.
 
-`worker.completed` reports the target, outcome, and code; polling continues.
+`worker.completed` reports the target, outcome, and code. On `namespace.ensure`,
+it can also report a [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)
+from the current pass. The hint stays out of the Driver observation.
 A Namespace pass that observes the same pending state this worker last audited,
 such as a terminating namespace, writes no new lifecycle audit or `reconcile` row;
 a changed pending state or the terminal pass does.
@@ -421,6 +423,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
+- 2026-10-29 20:37: Document the tenant access log hint. (authoring-run/85796888-a7be-4de9-bdcb-ca8f7ef74264 - 03372ea89128)
 - 2026-10-11 11:30: Predecessor stops yield their Gateway drain. (fix-1090)
 
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.

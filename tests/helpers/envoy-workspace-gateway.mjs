@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID, X509Certificate } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import dns from "node:dns";
+import { connect } from "node:net";
+import { basename } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { connect as connectTls } from "node:tls";
+import { availablePort } from "./available-port.mjs";
 import { request as requestHttps } from "node:https";
 import { promisify } from "node:util";
 
@@ -151,6 +157,229 @@ export async function ensureEnvoyGatewayControllers({ kubectl, waitFor }) {
       ? true
       : undefined;
   });
+}
+
+// Host-run fixture workers need a TLS-preserving route to the private Gateway.
+// This relay forwards bytes to the real Envoy listener and restores its scoped DNS override.
+async function waitForLoopbackPort(port, waitFor) {
+  await waitFor("host-side Gateway routing relay", async () => {
+    try {
+      await new Promise((resolve, reject) => {
+        const socket = connect({ host: "127.0.0.1", port });
+        socket.once("connect", () => {
+          socket.destroy();
+          resolve();
+        });
+        socket.once("error", reject);
+      });
+      return true;
+    } catch {
+      return undefined;
+    }
+  });
+}
+
+async function waitForWorkspaceGatewayTls(hostname, port, waitFor) {
+  await waitFor("host-side Gateway TLS path", async () => {
+    try {
+      await new Promise((resolve, reject) => {
+        const socket = connectTls({ host: hostname, port, servername: hostname });
+        const timeout = setTimeout(
+          () => socket.destroy(new Error("Gateway TLS probe timed out.")),
+          5_000,
+        );
+        timeout.unref();
+        socket.once("secureConnect", () => {
+          clearTimeout(timeout);
+          socket.destroy();
+          resolve();
+        });
+        socket.once("error", (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+      });
+      return true;
+    } catch {
+      return undefined;
+    }
+  });
+}
+
+export async function startWorkspaceGatewayHostRelay(
+  context,
+  workspaceGateway,
+  { kubectl, resources, waitFor, startPortForwardTarget, gatewayImage },
+) {
+  const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
+  // Docker Desktop and Podman Machine host networking stays in their Linux VM.
+  // Publish to macOS loopback and use the engine's host alias for the port-forward.
+  const usesContainerVm = process.platform === "darwin";
+  const relayHost = usesContainerVm
+    ? basename(containerEngine) === "podman"
+      ? "host.containers.internal"
+      : "host.docker.internal"
+    : "127.0.0.1";
+  const dockerRuntimeImage = process.env.OCC_DOCKER_RUNTIME_IMAGE;
+  assert.ok(
+    dockerRuntimeImage,
+    "OCC_DOCKER_RUNTIME_IMAGE is required for the loopback-only Gateway routing relay.",
+  );
+  const gatewayHostname = nonempty(workspaceGateway.routing.hostname, "Gateway hostname");
+  const services = await resources(
+    "services",
+    workspaceGateway.routing.envoyNamespace,
+    "-l",
+    `gateway.envoyproxy.io/owning-gateway-namespace=${workspaceGateway.routing.gatewayNamespace},gateway.envoyproxy.io/owning-gateway-name=${workspaceGateway.routing.gatewayName}`,
+  );
+  const envoyService = services.find((service) =>
+    service.spec?.ports?.some(({ port }) => port === 443),
+  );
+  assert.ok(envoyService, "the workspace Gateway must expose an Envoy HTTPS Service.");
+  assert.match(
+    envoyService.spec.clusterIP ?? "",
+    /^(?:\d{1,3}\.){3}\d{1,3}$/,
+    "the disposable k3d Gateway must expose an IPv4 ClusterIP.",
+  );
+  const endpointPort = usesContainerVm ? await availablePort() : 443;
+  if (usesContainerVm) {
+    const envoyHttpsPort = envoyService.spec.ports.find(({ port }) => port === 443);
+    assert.ok(envoyHttpsPort, "the workspace Gateway Service must retain its HTTPS port.");
+    await kubectl(
+      "patch",
+      "service",
+      envoyService.metadata.name,
+      "--namespace",
+      workspaceGateway.routing.envoyNamespace,
+      "--type=json",
+      "--patch",
+      JSON.stringify([
+        {
+          op: "add",
+          path: "/spec/ports/-",
+          value: {
+            name: "oce-host-relay",
+            protocol: envoyHttpsPort.protocol ?? "TCP",
+            port: endpointPort,
+            targetPort: envoyHttpsPort.targetPort ?? envoyHttpsPort.port,
+          },
+        },
+      ]),
+    );
+  }
+  const relayPod = `oce-routing-relay-${hash(randomUUID())}`;
+  const relayLabels = Object.entries(workspaceGateway.apiPodLabels)
+    .map(([name, value]) => `${name}=${value}`)
+    .join(",");
+  const inClusterRelayProgram = [
+    'const net = require("node:net");',
+    "const server = net.createServer((client) => {",
+    `  const upstream = net.connect({ host: ${JSON.stringify(envoyService.spec.clusterIP)}, port: 443 });`,
+    "  client.pipe(upstream).pipe(client);",
+    '  client.on("error", () => upstream.destroy());',
+    '  upstream.on("error", () => client.destroy());',
+    "});",
+    'server.listen(8443, "0.0.0.0");',
+  ].join("\n");
+  await kubectl(
+    "run",
+    relayPod,
+    "--namespace",
+    workspaceGateway.routing.gatewayNamespace,
+    `--image=${gatewayImage}`,
+    "--image-pull-policy=IfNotPresent",
+    "--restart=Never",
+    `--labels=${relayLabels}`,
+    "--command",
+    "--",
+    "node",
+    "-e",
+    inClusterRelayProgram,
+  );
+  await kubectl(
+    "wait",
+    "--namespace",
+    workspaceGateway.routing.gatewayNamespace,
+    "--for=condition=Ready",
+    `pod/${relayPod}`,
+    "--timeout=180s",
+  );
+  const forwarding = await startPortForwardTarget(
+    workspaceGateway.routing.gatewayNamespace,
+    `pod/${relayPod}`,
+    "0:8443",
+  );
+  const forwardedPort = Number(new URL(forwarding.url).port);
+  const relayName = `oce-openshell-routing-${hash(randomUUID())}`;
+  // Bind/startup failure must still close the forwarding process and owned relay.
+  context.after(async () => {
+    await Promise.allSettled([
+      forwarding.stop(),
+      executeFile(containerEngine, ["stop", "--timeout", "2", relayName]),
+    ]);
+  });
+  const relayProgram = [
+    'const net = require("node:net");',
+    "const targetPort = Number(process.argv[1]);",
+    "const server = net.createServer((client) => {",
+    `  const upstream = net.connect({ host: ${JSON.stringify(relayHost)}, port: targetPort });`,
+    "  client.pipe(upstream).pipe(client);",
+    '  client.on("error", () => upstream.destroy());',
+    '  upstream.on("error", () => client.destroy());',
+    "});",
+    `server.listen(443, ${JSON.stringify(usesContainerVm ? "0.0.0.0" : "127.0.0.1")});`,
+    'process.on("SIGTERM", () => server.close(() => process.exit(0)));',
+  ].join("\n");
+  await executeFile(containerEngine, [
+    "run",
+    "--rm",
+    "-d",
+    "--name",
+    relayName,
+    ...(usesContainerVm ? ["--publish", `127.0.0.1:${endpointPort}:443`] : ["--network", "host"]),
+    "--user",
+    "0",
+    "--stop-timeout",
+    "2",
+    "--entrypoint",
+    "node",
+    dockerRuntimeImage,
+    "-e",
+    relayProgram,
+    String(forwardedPort),
+  ]);
+  await delay(250);
+  let relayRunning = false;
+  try {
+    const inspected = await executeFile(containerEngine, [
+      "inspect",
+      "--format={{.State.Running}}",
+      relayName,
+    ]);
+    relayRunning = inspected.stdout.trim() === "true";
+  } catch {
+    // --rm removes a relay that cannot bind its loopback listener.
+  }
+  assert.equal(relayRunning, true, "the exact host routing relay must own loopback port 443.");
+  const originalLookup = dns.lookup;
+  dns.lookup = function lookup(hostname, options, callback) {
+    if (hostname !== gatewayHostname) {
+      return originalLookup.call(dns, hostname, options, callback);
+    }
+    if (typeof options === "function") {
+      return options(null, "127.0.0.1", 4);
+    }
+    if (options?.all === true) {
+      return callback(null, [{ address: "127.0.0.1", family: 4 }]);
+    }
+    return callback(null, "127.0.0.1", 4);
+  };
+  context.after(() => {
+    dns.lookup = originalLookup;
+  });
+  await waitForLoopbackPort(endpointPort, waitFor);
+  await waitForWorkspaceGatewayTls(gatewayHostname, endpointPort, waitFor);
+  return endpointPort;
 }
 
 export async function createEnvoyWorkspaceGatewayPlan(

@@ -16,6 +16,9 @@ export type AgentAccessContext = Pick<
   // The IDs of readable Secrets the caller may not operate, which binding one to the Agent needs
   // (finding 2453); undefined when the answer is unknown. Secret fields mark and refuse them.
   secretsOperateDenied?: SecretsOperateDenied | undefined;
+  // Whether the view is shown or kept to be shown again: an Agent tab kept for its pending
+  // `keepsTab` write (finding 2980). Without it, only a shown view is.
+  isKept?(): boolean;
 };
 
 // Reads the Secret operate answer, which pages cache. `fresh` drops the cached answer first: a
@@ -232,14 +235,18 @@ export async function credentialOperateGrants(
   kind: CredentialReference["kind"],
   ids: readonly string[],
 ) {
-  const [roles, bindings] = await Promise.all([
-    context
-      .request(iamPath(context, "roles"), INSTALLATION_ADMINISTRATION)
-      .then((value) => policyList(value, policyRole)),
-    context
-      .request(iamPath(context, "access-bindings"), INSTALLATION_ADMINISTRATION)
-      .then((value) => policyList(value, policyBinding)),
-  ]);
+  // The two lists are read one at a time: a reader whose administration ended is refused, and
+  // audited, once. The page confirms administration when it loads, and a grant read can come much
+  // later (the Credentials tab's first open, a reread after a Slack Secret save): a first
+  // Credentials open after a revoke was refused twice (finding 2919), as the Access tab was (D804).
+  const roles = policyList(
+    await context.request(iamPath(context, "roles"), INSTALLATION_ADMINISTRATION),
+    policyRole,
+  );
+  const bindings = policyList(
+    await context.request(iamPath(context, "access-bindings"), INSTALLATION_ADMINISTRATION),
+    policyBinding,
+  );
   const grants = new Map<string, boolean | undefined>();
   for (const id of ids) {
     let granted: boolean | undefined = false;

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-29
-last_updated_session: authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25
+updated: 2026-10-30
+last_updated_session: b03beb3e-57d1-47cf-829f-e31955a47d3c
 ---
 
 # Platform console request flow
@@ -152,8 +152,8 @@ interrupt loading. Other Agent routes preserve the page or show loading after
 400 ms. Visible loading lasts at least 300 ms (`loadingMinimumMs`). Other first
 visits and Refresh show loading after 250 ms.
 
-Return and refocus checks keep the page inert, its header visible, and Namespace selection disabled;
-after one second they show **Still checking…**. The Console retains up to 16 views by
+Return and refocus checks, not Tab laps, hold the page inert (header visible, Namespace selection
+disabled), showing **Still checking…** after one second. The Console retains up to 16 views by
 route, Namespace, and session owner. Matching user and GET dependencies restore
 DOM, handlers, drafts, and debug disclosures. Changed data, newly readable
 Namespaces, and Refresh rebuild. Discovery state is not retained. Pending/failed reads, passwords, and
@@ -169,6 +169,8 @@ not row reads. The newest readable revisions page supplies each row;
 `deniedReadsFor` retains 403s. Reused deployment cells show **Reading deployment…**
 after 250 ms, for at least 150 ms, before fresh results. Back/refocus focuses the
 cell, not the old version link. Unfinished/failed row reads resume without blocking reuse.
+A search cancels the unfinished reads of rows it hides (`collection.mts:retireHidden`); a row
+shown again reads once.
 
 Changed users or session keys clear retained views and drafts before private
 reads. Missing sessions open login; failed reads offer Retry. The
@@ -250,27 +252,26 @@ channels and credentials; [workspace files](platform-console/agent-workspace-fil
 owns DM policies and channel-only reply defaults. Admission snapshots native values;
 Kubernetes `prepareRevision` carries them into `openclaw.json` without adding defaults.
 
-`apps/controller/src/console/agents/detail.mts:renderAgentDetail` registers tab
-navigation with `console.mjs:loadPage`. For one Agent, Namespace, and
-version, tab clicks/history replace tab content; shell, native-admin panel,
-and version controls stay mounted. Configuration and Agent revision reads are shared;
-direct Workspace URLs start neither. Refresh, version changes, and successful
-channel/authentication edits reload fully. A `403` on the configuration or Agent revision
-read is an audited denial, so `console.mjs:deniedReadsFor` remembers that path in tab
-`sessionStorage` for the session owner; later views show **Configuration unavailable**
-without asking again, and **Retry** forgets the path and rereads. Logout clears it.
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail` registers tabs
+with `console.mjs:loadPage`. Within one Agent, Namespace and version, tabs replace
+content; shell, native-admin and version controls remain mounted. Configuration
+and revision reads are shared; direct Workspace URLs start neither. Refresh,
+version changes and successful channel/authentication edits reload fully.
+`console.mjs:deniedReadsFor` remembers audited Configuration/revision `403` paths
+in owner-scoped tab `sessionStorage`. Later views show **Configuration unavailable**
+without rereading; **Retry** forgets and rereads. Logout clears denials.
 
-`agents/detail.mts:renderTab` brings a clipped selected tab into the horizontal
-strip without moving page focus or vertical scroll. A strip ResizeObserver repeats
-this on viewport changes, disconnects for inactive or detached views, and re-arms
-through the retained view's resume hook.
-Completed tabs retain their DOM and draft capture callbacks within the detail view.
-Returning restores loaded controls and expanded disclosures. Pending or failed
-reads, password values, and mutations invalidate tab reuse. Each tab checks it
-is mounted before applying a response; late reads cannot overwrite another tab.
-Password values clear while [draft captures](platform-console/agent-editing.md#4-render-draft-revision-or-channels) retain edits. Channel
-Secret saves update the shared draft snapshot used by other tabs and deployment
-preflight.
+`agents/detail.mts:renderTab` reveals clipped tabs horizontally without changing
+focus or vertical scroll. Its ResizeObserver repeats on resize, disconnects for
+inactive/detached views, and re-arms on resume.
+Tabs retain DOM/drafts except during pending/failed reads, passwords or mutations;
+unmounted responses are ignored.
+[Draft captures](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
+exclude passwords. Secret saves update the shared snapshot.
+`agents/detail.mts:boundSecretsDenied` reuses Deploy's authorized names.
+Configuration excludes Harness-only Secrets; Plugins/Credentials include them.
+Epochs fence publication; rechecks clear names and refresh authorized reads.
+Late names preserve state/focus; metadata failures keep IDs; unknown grants stay generic.
 
 [Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
 owns receipts and draft retirement.
@@ -298,11 +299,11 @@ focus fell to the body, using `preventScroll` to preserve return position. An Ag
 opened from the list focuses its heading when the title renders. Tabs (one Tab
 stop; arrows move) and focused controls keep focus. Navigation, Namespace changes, and logout invalidate
 reads; generations reject late responses. Refocus coalesces events.
-`revalidateMountedAgent` rechecks session, Namespace, Agent, and version;
+`revalidateMountedAgent` rechecks session, Namespace, Agent, version, and
+[permission answer](platform-console/agent-stop-and-deletion.md#stop-agent);
 unchanged access preserves controls, input, and saves.
-The same owner’s exact draft Configuration refusal preserves the partial Agent
-after reload/refocus on repeated 403 if that mounted path was never readable.
-Refocus sends a fresh GET.
+Refocus sends a fresh GET. A repeated 403 on a never-readable draft Configuration
+keeps the partial Agent; a version proved unreadable is not read again.
 Lost access scrubs; Agent, session, and scope failures clear their protected views.
 Other pages revalidate before reuse, including a shown 403 or 404; forms defer the check.
 Returning to the tab restores focus after the unchanged view is admitted, if the control
@@ -369,6 +370,12 @@ gateway startup and file availability.
 
 ## Changelog
 
+- 2026-10-30 11:02: Name denied Secrets. (b03beb3e-57d1-47cf-829f-e31955a47d3c - f5d5dfda697a9e0d41c88a4e570dafcce768ec7b)
+
+- 2026-10-30 09:32: Name authorized bound Secrets in the Configuration save permission hint. (b03beb3e-57d1-47cf-829f-e31955a47d3c - 755ff77baa3377441be0938302030386fa985c75)
+
+- 2026-10-29 22:18: Cancel the unfinished row reads of Agents a search hides. (authoring-run/6f6ebb4a-7c4c-4bd7-a11c-8381c411c816 - 225ce0ebaf1dd14c01c5c50ccf8ac420e13c72a4)
+
 - 2026-10-29 12:23: Retire denied Save views. (authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25 - 5d8c060238a58)
 
 - 2026-10-29 12:06: Clarify denials. (authoring-run/d43e9380-649f-4966-80a0-1fedecf36e05 - 4d68e053e69a1)
@@ -379,11 +386,5 @@ gateway startup and file availability.
 - 2026-10-29 10:33: Close row confirmations after Namespace loss. (authoring-run/615bd51e-99c7-4208-bfdd-9816f2ea20b8 - b3e4d127b04f2a5eb1e74ba619f9d720d40e7f33)
 
 - 2026-10-29 10:25: Clear rows after Namespace access loss. (authoring-run/2fac9913-c631-4243-8ad0-758beda7f031 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
-
-- 2026-10-28 13:01: Keep a held press on one Agent’s copy button from activating another Agent’s button after navigation. (fix-3678 - 594de5868)
-
-- 2026-10-27 14:42: Trace Namespace deletion and recovery. (authoring-run/20fc7b4c-0501-4d3e-9f0c-16a3fd016866 - 0402f1cf1)
-
-- 2026-10-21 22:22: Connect console themes to API startup and the shared shell. (authoring-run/634a754f-a79e-4aac-94fe-0646caf6a287 - 2c9e7f6c4)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

@@ -35,6 +35,7 @@
     "tests/integration/agent-create-validate-api.test.mjs",
     "tests/integration/repository-credentials-service-loss.test.mjs",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/local-first-agent-session-identity.test.ts",
     "tests/integration/k3d-launcher.test.mjs",
     "tests/integration/password-sign-in-admission.test.mjs",
     "tests/integration/google-login-transport.test.mjs",
@@ -92,6 +93,7 @@
     "tests/conformance/repository-credentials-registry.test.mjs",
     "tests/integration/ci-openshell.test.mjs",
     "tests/conformance/repository-credentials-sessions.test.mjs",
+    "tests/conformance/repository-credentials-admission.test.ts",
     "tests/integration/dev-codex-seccomp-failure.test.mjs",
     "tests/conformance/runtime-probe-cpu-counter.test.mjs",
     "tests/conformance/runtime-gateway-state-migration.test.mjs",
@@ -178,6 +180,9 @@
         "before-commit Compute Drivers must expose an activation operation",
         "Compute Driver maintenance intervals must be positive safe integers"
       ]
+    },
+    {
+      "path": "tests/integration/local-first-agent-session-identity.test.ts"
     },
     {
       "path": "tests/integration/ci-runner.test.mjs"
@@ -366,6 +371,9 @@
     },
     {
       "path": "tests/conformance/repository-credentials-sessions.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-admission.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-custody.test.ts"

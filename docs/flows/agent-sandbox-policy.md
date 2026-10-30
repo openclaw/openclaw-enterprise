@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-10-26"
-last_updated_session: "authoring-run/0f3c367f-75d3-40f0-bcfa-3b649b78721f"
+updated: "2026-10-29"
+last_updated_session: "01a1891d-5b6b-7071-b482-793a9dd01044"
 ---
 
 # Agent sandbox policy flow
@@ -55,7 +55,8 @@ returns its result without a later table-format error.
 
 `OpenClawController.discoverConfigurations` filters registry contributions by the
 server-selected Driver, scope, and resource-owner read authority. Installation
-inspection exposes startup schemas without values. Agent discovery and policy GET
+inspection exposes [Driver-projected startup values](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
+Agent discovery and policy GET
 use the same descriptor with owner-generated facet action URLs and current
 availability. The registry never selects a Driver from submitted additions.
 
@@ -85,6 +86,9 @@ For an Agent with repository bindings (or a Git-bound active revision), Driver
 admission gets `repositoryCredentials`: the OpenShell Driver with its Git route
 refuses a grant or default reaching `github.com` or a name under it, or naming an
 IP address, with a `409` naming it. Adding a binding beside such a saved grant, deploy, and provisioning refuse it too.
+With saved additions, deploy and an Agent update that leaves repository bindings
+authorize SandboxPolicy `read` first, so only a caller who may read the grant
+sees it named (findings 2151, 2881).
 `apps/controller/src/http/sandbox-policy.ts` records the
 nonsecret approved additions with their version in the same transaction.
 The required facet argument currently admits `networking` only. Other facets
@@ -108,8 +112,9 @@ cleans its exact IAM access.
 into `AgentRevision.sandboxPolicy`. The OpenShell Driver provisions from this
 snapshot rather than re-reading changed defaults.
 
-`applyAgentSandboxPolicy` requires the exact active revision and supporting
-Driver. It persists a pending application and durable Agent-target work in one
+`applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
+`update` and `read` before any refusal that names saved additions, then requires
+the exact active revision and supporting Driver. It persists a pending application and durable Agent-target work in one
 transaction. Neither saving nor enqueueing establishes enforcement.
 
 ### 3. Reconcile provider effects
@@ -238,6 +243,12 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-29 12:37: Link Installation inspection to its startup projection owner. (01a1891d-5b6b-7071-b482-793a9dd01044 - 32b59e204e)
+
+- 2026-10-29 18:30: An Agent update with repository bindings authorizes SandboxPolicy `read` before the overlap refusal that names a saved grant (finding 2881).
+
+- 2026-10-29 12:00: Live application authorizes SandboxPolicy `read` before admitting the saved additions (finding 2874).
 
 - 2026-10-26 10:49: Combine the accompanying policy UX controls with upstream permission hints, unavailable Sandbox log handling, and application failure explanations. (authoring-run/0f3c367f-75d3-40f0-bcfa-3b649b78721f - e89a4e37a0b3dff75739cf6988028f81cd96f5ac)
 

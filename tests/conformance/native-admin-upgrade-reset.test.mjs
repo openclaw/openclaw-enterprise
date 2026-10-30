@@ -4,19 +4,35 @@ import net from "node:net";
 import https from "node:https";
 import { EventEmitter, once } from "node:events";
 import { IncomingMessage } from "node:http";
-import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { createNativeAdminAccess } from "../../apps/controller/src/http/native-admin.ts";
+import { selfSigned } from "../helpers/certificates.mjs";
+import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const Fastify = require("fastify");
+
+// The active revision these cases authorize: an Agent Gateway with the native admin opt-in,
+// its Control UI allowed only from `origin`.
+function nativeAdminRevision(origin) {
+  return {
+    id: "rev_a",
+    compute: { id: "compute_test", implementation: "native-admin-reset-test" },
+    configuration: {
+      gateway: {
+        auth: nativeAdminGatewayAuth(),
+        controlUi: { enabled: true, allowedOrigins: [origin] },
+      },
+    },
+  };
+}
 
 function within(promise, description, milliseconds = 1_500) {
   let timer;
@@ -54,37 +70,11 @@ async function transportOwner(t, { authorize, append }) {
       await rm(directory, { recursive: true, force: true });
     }
   });
-  const keyPath = join(directory, "tls.key");
-  const certPath = join(directory, "tls.crt");
-  const generated = spawnSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "ec",
-      "-pkeyopt",
-      "ec_paramgen_curve:prime256v1",
-      "-nodes",
-      "-days",
-      "1",
-      "-keyout",
-      keyPath,
-      "-out",
-      certPath,
-      "-subj",
-      "/CN=localhost",
-      "-addext",
-      "subjectAltName=DNS:localhost,IP:127.0.0.1",
-    ],
-    { encoding: "utf8", timeout: 10_000 },
-  );
-  assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
-  const cert = await readFile(certPath, "utf8");
+  const { key, cert } = await selfSigned(directory);
   setDefaultCACertificates([...previousCertificates, cert]);
   const peerClosed = pendingValue();
   let gatewayConnections = 0;
-  gateway = https.createServer({ key: await readFile(keyPath), cert });
+  gateway = https.createServer({ key, cert });
   gateway.on("connection", (socket) => {
     gatewayConnections += 1;
     sockets.add(socket);
@@ -108,24 +98,7 @@ async function transportOwner(t, { authorize, append }) {
   const domain = "agents.example.com";
   const host = deriveNativeAdminHost(installationId, agent, domain);
   const origin = `https://${host}`;
-  const revision = {
-    id: "rev_a",
-    compute: { id: "compute_test", implementation: "native-admin-reset-test" },
-    configuration: {
-      gateway: {
-        auth: {
-          mode: "trusted-proxy",
-          trustedProxy: {
-            userHeader: "x-occ-identity",
-            allowUsers: ["occ-workspace-files"],
-            deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
-          },
-          identityScopes: { "occ-workspace-files": ["operator.admin"] },
-        },
-        controlUi: { enabled: true, allowedOrigins: [origin] },
-      },
-    },
-  };
+  const revision = nativeAdminRevision(origin);
   const denied = new Error("The exact platform operation was not authorized.");
   denied.name = "AuthorizationDeniedError";
   denied.authorization = {
@@ -482,24 +455,7 @@ function denialOwner(t, overrides = {}) {
   const domain = "agents.example.com";
   const host = deriveNativeAdminHost(installationId, agent, domain);
   const origin = `https://${host}`;
-  const revision = {
-    id: "rev_a",
-    compute: { id: "compute_test", implementation: "native-admin-reset-test" },
-    configuration: {
-      gateway: {
-        auth: {
-          mode: "trusted-proxy",
-          trustedProxy: {
-            userHeader: "x-occ-identity",
-            allowUsers: ["occ-workspace-files"],
-            deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
-          },
-          identityScopes: { "occ-workspace-files": ["operator.admin"] },
-        },
-        controlUi: { enabled: true, allowedOrigins: [origin] },
-      },
-    },
-  };
+  const revision = nativeAdminRevision(origin);
   const denied = new Error("The exact platform operation was not authorized.");
   denied.name = "AuthorizationDeniedError";
   denied.authorization = {
@@ -1179,24 +1135,7 @@ for (const phase of ["admission", "gateway key"]) {
         gates[name] = () => resolve(value);
       });
     };
-    const revision = {
-      id: "rev_a",
-      compute: { id: "compute_test", implementation: "native-admin-reset-test" },
-      configuration: {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            trustedProxy: {
-              userHeader: "x-occ-identity",
-              allowUsers: ["occ-workspace-files"],
-              deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
-            },
-            identityScopes: { "occ-workspace-files": ["operator.admin"] },
-          },
-          controlUi: { enabled: true, allowedOrigins: [origin] },
-        },
-      },
-    };
+    const revision = nativeAdminRevision(origin);
     const selection = { agent, revision };
     const crashes = [];
     const onUncaught = (error) => {

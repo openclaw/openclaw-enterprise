@@ -6,7 +6,7 @@ import type {
   PlatformReadView,
   PlatformStateStore,
 } from "../../packages/occ/src/state/platform-state.ts";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import {
   AGENT_READ,
   detailUrl,
@@ -108,9 +108,10 @@ async function deploymentFixture(t: TestContext) {
         }),
       ),
   });
-  const fixture = await createConsoleAppFixture(t, { recordOperations: true, wrapState });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Keyboard activity", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Keyboard activity", {
+    recordOperations: true,
+    wrapState,
+  });
   const agent = await fixture.createAgent(namespace.id, "Keyboard reader", nativeValues("reader"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   revisionId = revision.id;

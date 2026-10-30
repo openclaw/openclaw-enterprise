@@ -361,36 +361,52 @@ test("deployed identity requires the qualified images on a ready, owned worker P
   assert.equal(success.podUid, "pod-uid");
   assert.equal(success.controller.imageId, `containerd://image@${controller.manifestDigest}`);
 
-  // The script reports every refusal the same way, so each case changes one field
-  // that only one check refuses (a removed check would let it qualify).
+  // Image mismatches name the container and check; other refusals stay generic.
+  // Each case changes one field that only one check refuses.
   const refused = {
     code: 1,
+    stdout: "",
     stderr: "deployed controller or broker identity verification failed\n",
   };
   const pods = (f) => f.pods.items;
   const worker = (f) => pods(f)[0].status.initContainerStatuses[0];
   const brokerStatus = (f) => pods(f)[0].status.containerStatuses[0];
+  const hostile = "PRIVATE-IMAGE-MARKER\n\u001b[31m";
   const unknownComponent = (f) => {
-    f.deployment.metadata.labels["app.kubernetes.io/component"] = "other";
+    f.deployment.metadata.labels["app.kubernetes.io/component"] = hostile;
     pods(f)[0].spec.initContainers = [];
-    pods(f)[0].spec.containers.push({ name: "other", image: controller.image });
+    pods(f)[0].spec.containers.push({ name: hostile, image: controller.image });
     pods(f)[0].status.initContainerStatuses = [];
-    pods(f)[0].status.containerStatuses.push(status("other", controller.manifestDigest));
+    pods(f)[0].status.containerStatuses.push(status(hostile, controller.manifestDigest));
   };
-  const refuses = async (change, { component = "worker", release = "oce" } = {}) => {
+  const refuses = async (
+    change,
+    { component = "worker", release = "oce", stderr = refused.stderr } = {},
+  ) => {
     const f = structuredClone(files);
     change(f);
     for (const [name, value] of Object.entries(f)) {
       await writeFile(paths[name], JSON.stringify(value));
     }
     const changed = [deployedScript, component, ...args.slice(2, 7), release];
-    await assert.rejects(execute("python3", changed), refused);
+    await assert.rejects(execute("python3", changed), { ...refused, stderr });
   };
+  // A ready Pod with a different broker image must not qualify the rollout.
+  // Exact stderr also proves hostile evidence cannot leak into diagnostics.
+  await refuses((f) => (pods(f)[0].spec.containers[0].image = hostile), {
+    stderr: "repository-credentials: Pod declared image reference does not match qualified image\n",
+  });
+  for (const imageID of [`containerd://${hostile}@${digest("0")}`, hostile]) {
+    await refuses((f) => (brokerStatus(f).imageID = imageID), {
+      stderr:
+        "repository-credentials: running CRI image ID does not match any qualified OCI root/manifest/config digest\n",
+    });
+  }
+  await refuses((f) => (worker(f).imageID = `containerd://${hostile}@${digest("0")}`), {
+    stderr:
+      "worker: running CRI image ID does not match any qualified OCI root/manifest/config digest\n",
+  });
   for (const change of [
-    // A ready Pod with a different broker image must not qualify the rollout.
-    (f) => (brokerStatus(f).imageID = `containerd://image@${digest("0")}`),
-    (f) => (brokerStatus(f).imageID = "containerd://image"),
-    (f) => (pods(f)[0].spec.containers[0].image = `broker@${digest("0")}`),
     (f) => pods(f)[0].spec.containers.push({ ...pods(f)[0].spec.containers[0] }),
     (f) => pods(f)[0].status.containerStatuses.push({ ...brokerStatus(f) }),
     (f) => (brokerStatus(f).ready = false),
@@ -409,7 +425,6 @@ test("deployed identity requires the qualified images on a ready, owned worker P
       pods(f)[0].status.initContainerStatuses.push(brokerStatus(f));
       pods(f)[0].status.containerStatuses = [];
     },
-    (f) => (worker(f).imageID = `containerd://image@${digest("0")}`),
     (f) => (f.deployment.metadata.labels["app.kubernetes.io/instance"] = "other"),
     (f) => (f.deployment.metadata.labels["app.kubernetes.io/component"] = "api"),
     (f) => {
@@ -452,6 +467,6 @@ test("deployed identity requires the qualified images on a ready, owned worker P
   ]) {
     await refuses(change);
   }
-  await refuses(unknownComponent, { component: "other" });
+  await refuses(unknownComponent, { component: hostile });
   await refuses(() => {}, { release: "other" });
 });

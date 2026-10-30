@@ -3,21 +3,12 @@ import assert from "node:assert/strict";
 import { request } from "node:https";
 import { access } from "node:fs/promises";
 import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.ts";
-import {
-  createResourceScope,
-  createTestResourceScope,
-} from "../fixtures/repository-credentials/resources.mjs";
-import {
-  temporaryDirectory,
-  createTlsMaterial,
-} from "../fixtures/repository-credentials/process.mjs";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
-import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
+import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
+import { startTokenServiceScope } from "../fixtures/repository-credentials/service.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import {
-  createGitHubTokenServiceFactory,
-  startServiceListeners,
+  startStaticTokenService,
   writeSessionClientConfiguration,
 } from "../fixtures/repository-credentials/service-resources.mjs";
 import {
@@ -589,26 +580,14 @@ test(
   "service resource factories dispose development sessions before closing local upstreams",
   { timeout: 15000 },
   async (t) => {
-    const resources = createTestResourceScope(t);
-    const clock = createControlledClock();
-    const tls = await createTlsMaterial(resources);
-    const config = await createLoopbackServiceConfiguration(resources);
-    const github = await startGitHubFixture(resources, { clock, tls });
+    const { resources, clock, tls, config, github } = await startTokenServiceScope(t);
     const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
-    const token = `gho_${"t".repeat(36)}`;
-    github.acceptStatic(token);
-    const factory = await createGitHubTokenServiceFactory(resources, {
+    const { service, listeners } = await startStaticTokenService(resources, {
       config,
-      clock,
-      token,
-      trustedEndpoints: { apiOrigin: github.origin, gitOrigin: git.origin, ca: tls.ca },
-    });
-    const { service, listeners } = await startServiceListeners(resources, {
-      config,
-      factory,
       clock,
       tls,
-      upstreamOrigins: [github.origin, git.origin],
+      github,
+      gitOrigin: git.origin,
     });
     const opened = service.open({ durationSeconds: 86400, profile: "git-full" });
     const clientDirectory = await writeSessionClientConfiguration(resources, {

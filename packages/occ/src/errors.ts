@@ -1397,16 +1397,16 @@ export class StoredCredentialSourceConfigError extends ResourceStateConflictErro
 }
 
 /**
- * The selected Credential Gateway's catalog lacks a source type: registration names one it does
- * not offer, or a configuration change dropped an existing source's type (OpenShell offers
- * `bearer-token` only with `toolBinaries`). An Installation property, raised only after the
- * caller's grant and the source lookup, so it reveals nothing a 403 or 404 hides. The fixed
- * message names the fix.
+ * The selected credential owner does not offer the source type. This Installation property
+ * is reported only after the caller's grant and source lookup, so it reveals nothing a 403
+ * or 404 hides. The message identifies the configuration to check.
  */
 export class CredentialSourceTypeNotOfferedError extends ResourceStateConflictError {
-  constructor() {
+  constructor(owner: "gateway" | "proxy" = "gateway") {
     super(
-      "The Credential Gateway does not offer this credential source type. An Installation administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
+      owner === "proxy"
+        ? "The Credential Proxy does not offer this credential source type. An Installation administrator must check the selected Credential Proxy's provider configuration and any required token issuer."
+        : "The Credential Gateway does not offer this credential source type. An Installation administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
     );
     this.name = "CredentialSourceTypeNotOfferedError";
   }

@@ -11,7 +11,7 @@ import { sameValue } from "../carry.mjs";
 import {
   element,
   button,
-  describeDisabled,
+  setUnavailable,
   focusSaveOutcome,
   setStatusTone,
   validateFields,
@@ -330,8 +330,24 @@ const GRANT_WARNINGS: Record<SecretGrantProblem, (subject: GrantWarningSubject) 
     `${saved} saved, but this session did not verify that this Agent can use ${credential}. Granting access ${ADMINISTRATOR_STEP(administratorStep)}`,
 };
 
-export function grantWarning(problem: SecretGrantProblem, subject: GrantWarningSubject) {
-  return GRANT_WARNINGS[problem](subject);
+// A reader this page offers no Retry, such as an administrator whose access ended after the policy
+// read or after a grant request failed, is told who grants a missing or unconfirmed grant instead
+// of a step they cannot take (finding 2949). Refused and unverified grants already name them.
+const NO_RETRY_GRANT_WARNINGS: Partial<
+  Record<SecretGrantProblem, (subject: GrantWarningSubject) => string>
+> = {
+  unconfirmed: ({ saved, access, administratorStep }) =>
+    `${saved} saved, but ${access} could not be confirmed. Confirming access ${ADMINISTRATOR_STEP(administratorStep)}`,
+  missing: ({ bound, administratorStep }) =>
+    `This Agent has no access to ${bound}, so deploying it would be refused. Granting it ${ADMINISTRATOR_STEP(administratorStep)}`,
+};
+
+export function grantWarning(
+  problem: SecretGrantProblem,
+  subject: GrantWarningSubject,
+  canRetry = true,
+) {
+  return ((!canRetry && NO_RETRY_GRANT_WARNINGS[problem]) || GRANT_WARNINGS[problem])(subject);
 }
 
 // The harness authentication source's grant. A refusal reports the refused request, not the
@@ -782,10 +798,15 @@ export function createChannelSecretsPanel({
     );
   }
 
+  // Retry Secret access is offered only to a reader who may save the bindings.
+  function slackGrantWarning() {
+    return grantWarning(state.grantProblem, SLACK_GRANT, !readOnly());
+  }
+
   function updateGrantWarning(secretBindings = state.configuration.secretBindings ?? {}) {
     prunePendingSecretGrants(secretBindings);
     const pending = pendingSecretGrants(secretBindings);
-    state.saveGrantWarning = pending.length ? grantWarning(state.grantProblem, SLACK_GRANT) : "";
+    state.saveGrantWarning = pending.length ? slackGrantWarning() : "";
     // The page keeps the outstanding grants across rebuilds of this panel.
     onOutstandingGrants?.(
       pending.length ? { secrets: pending, problem: state.grantProblem } : null,
@@ -1014,7 +1035,7 @@ export function createChannelSecretsPanel({
         !state.unsavedSecrets && pendingSecretGrants().length
           ? "Retry Secret access"
           : "Save channel Secrets";
-      save.disabled = !canSaveChannelSecrets();
+      const saveUnavailable = !canSaveChannelSecrets();
       // A session that cannot grant gets no Retry the API would refuse (finding 2263). A reader
       // gets no Save the API would refuse either (finding 2432).
       readOnlyNote.hidden = listOnly || !readOnly();
@@ -1030,7 +1051,7 @@ export function createChannelSecretsPanel({
       // nothing changed. While a save runs, or after one that needs Reload draft, the status or
       // error line says why instead.
       let saveReason = "";
-      if (!save.hidden && save.disabled && canEnterChannelCredentials()) {
+      if (!save.hidden && saveUnavailable && canEnterChannelCredentials()) {
         saveReason = formBindings.some(
           (binding) => secretIdForBinding(draft.secretBindings[binding.key]) === null,
         )
@@ -1039,8 +1060,10 @@ export function createChannelSecretsPanel({
       }
       saveHint.textContent = saveReason;
       saveHint.hidden = saveReason === "";
-      describeDisabled(
+      // Unavailable Save stays in the Tab order while one of these says why (finding 2878).
+      setUnavailable(
         save,
+        saveUnavailable,
         [saveHint, status, error].find((reason) => !reason.hidden && reason.textContent?.trim()),
       );
     };
@@ -1456,10 +1479,7 @@ export function createChannelSecretsPanel({
   }
   return {
     // What the Channels tab says while saved Slack Secrets wait for the Agent's grant.
-    grantWarning: () =>
-      state.saving || !pendingSecretGrants().length
-        ? ""
-        : grantWarning(state.grantProblem, SLACK_GRANT),
+    grantWarning: () => (state.saving || !pendingSecretGrants().length ? "" : slackGrantWarning()),
     section: channelEnabled(values, "slack") || state.carriedNote ? section : null,
     canDeploy,
     credentialsReady,
@@ -1468,6 +1488,15 @@ export function createChannelSecretsPanel({
     checkingGrants: () => state.checkingGrants,
     // The permission answer changed what this caller may edit: update the form in place.
     applyAccess() {
+      // The answer can take Retry away: a missing or unconfirmed grant's warning then names who
+      // grants it.
+      // Only the words change: the outstanding grants stay as they are.
+      if (state.saveGrantWarning) {
+        state.saveGrantWarning = slackGrantWarning();
+        if (shown.error && (!state.saveError || state.saveError.step === "grant")) {
+          shown.error.textContent = saveErrorText();
+        }
+      }
       shown.updateControls?.();
     },
     mutationPending: () => state.saving || state.outcomeUnknown || state.reloadRequired,
