@@ -1,8 +1,9 @@
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { closeWorkerComposition } from "../../apps/controller/src/worker/shutdown.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { writeFile } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import test, { after } from "node:test";
@@ -828,5 +829,81 @@ test(
       events.some(({ event }) => event === "worker.health"),
       false,
     );
+  },
+);
+
+// Finding 2997: worker.mjs removed its readiness marker and closed the worker's parts while the
+// worker loop still ran. A health check in flight then rewrote the marker, which outlived the
+// process, and the loop could claim work after the Git owner had closed. Shutdown now stops the
+// loop and waits for its health check before it removes the marker and closes the parts, and
+// it closes the worker's database pool last.
+test(
+  "worker shutdown waits for the health check in flight before it removes readiness and closes parts",
+  requiresPostgres,
+  async (context) => {
+    const directory = await temporaryDirectory(context, "occ-worker-readiness-");
+    const readinessPath = join(directory, "ready");
+    let held;
+    const fixture = await setup(context, {
+      // worker.mjs's readiness writer, with a seam that holds one health check before it writes.
+      async onHealthy() {
+        const tick = held;
+        held = undefined;
+        if (tick !== undefined) {
+          tick.entered.resolve();
+          await tick.release.promise;
+        }
+        await writeFile(readinessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 });
+      },
+    });
+    const events = [];
+    await fixture.start(fixture.compute, {
+      emit: ({ event }) => {
+        if (event === "worker.health" || event === "worker.stopped") {
+          events.push(event);
+        }
+      },
+    });
+    const worker = [...fixture.database.workers].at(-1);
+    await waitFor("the first readiness marker", async () =>
+      (await stat(readinessPath).catch(() => undefined)) === undefined ? undefined : true,
+    );
+
+    const tick = { entered: Promise.withResolvers(), release: Promise.withResolvers() };
+    held = tick;
+    try {
+      // The next idle health check (at most a second away) is now held before its write.
+      await tick.entered.promise;
+      events.length = 0;
+      const step = (name) => async () => {
+        events.push(name);
+      };
+      const closing = closeWorkerComposition({
+        readinessPath,
+        repositoryGitTransport: { close: step("transport") },
+        preparedRepositoryGit: { close: step("prepared") },
+        receiptServer: { close: step("receipt") },
+        closeMetrics: step("metrics"),
+        preparedGitHub: { close: step("github") },
+        worker,
+      });
+      tick.release.resolve();
+      await closing;
+    } finally {
+      tick.release.resolve();
+    }
+
+    // The held check finished before any part closed, and the worker closed after them all.
+    assert.deepEqual(events, [
+      "worker.health",
+      "transport",
+      "prepared",
+      "receipt",
+      "metrics",
+      "github",
+      "worker.stopped",
+    ]);
+    // The marker that check wrote is gone, so a stopped worker never reports ready.
+    await assert.rejects(stat(readinessPath), { code: "ENOENT" });
   },
 );

@@ -1201,6 +1201,7 @@ export class ControllerWorker {
   private installation: Readonly<Installation> | undefined;
   private loop: Promise<void> | undefined;
   private stopping = false;
+  private closing = false;
   private lastHealthAt = 0;
   private pendingHealth: Promise<void> | undefined;
   private lastProgressAt = 0;
@@ -1465,13 +1466,25 @@ export class ControllerWorker {
     this.loop = this.run();
   }
 
+  /**
+   * Stop claiming work and running health checks. Resolves once the pass and the health check
+   * in flight end, so shutdown closes the worker's other parts only after the loop that uses
+   * them (finding 2997). The database pool stays open until `stop()`.
+   */
+  stopLoop(): Promise<void> {
+    if (!this.stopping) {
+      this.stopping = true;
+      this.abort.abort();
+    }
+    return this.loop ?? Promise.resolve();
+  }
+
   async stop(): Promise<void> {
-    if (this.stopping) {
+    if (this.closing) {
       return;
     }
-    this.stopping = true;
-    this.abort.abort();
-    await this.loop;
+    this.closing = true;
+    await this.stopLoop();
     // A failed protected Driver close must not leave the database pool open.
     await closeResources(this.protectedDriver, this.state);
     this.emit({ event: "worker.stopped" });

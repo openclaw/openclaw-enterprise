@@ -155,5 +155,7 @@ test(
     // The worker stop ran to its end, and no shutdown step reported a failure.
     assert.equal(logged.at(-1), "worker.stopped", output);
     assert.equal(logged.includes("worker.error"), false, output);
+    // The loop stopped before the marker's removal, so no health check rewrote it (finding 2997).
+    assert.equal(await exists(readinessPath), false, "the readiness marker outlived the worker");
   },
 );
