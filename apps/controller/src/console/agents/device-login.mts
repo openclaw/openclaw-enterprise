@@ -212,13 +212,20 @@ export function createDeviceLogin({
     busy = true;
     error = "";
     update();
+    // An Agent tab left meanwhile is kept for this start, so its reply still lands in that tab
+    // and shows when the reader returns (finding 2980). Leaving the page drops the reply.
+    const kept = () => context.isKept?.() ?? context.isCurrent();
     try {
-      const result = await context.request(base, { method: "POST", body: { harnessId: "codex" } });
-      if (context.isCurrent()) {
+      const result = await context.request(base, {
+        method: "POST",
+        body: { harnessId: "codex" },
+        keepsTab: true,
+      });
+      if (kept()) {
         accept(result);
       }
     } catch (failure) {
-      if (context.isCurrent()) {
+      if (kept()) {
         const { status } = requestFailure(failure);
         if (status === undefined || (status >= 200 && status < 300)) {
           // A lost or unusable successful reply can follow a committed start. Never repeat it.
@@ -231,7 +238,7 @@ export function createDeviceLogin({
       }
     } finally {
       busy = false;
-      if (context.isCurrent()) {
+      if (kept()) {
         update();
       }
     }

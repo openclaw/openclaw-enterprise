@@ -139,6 +139,7 @@ type DetailContext = ConsolePageContext & {
   namespaceId: string;
   agentId: string;
   onProtectedReadDenied(error: unknown, receipt: HTMLElement): void;
+  isKept?(): boolean;
 };
 type Permissions = Static<typeof AgentCallerPermissionsResponse>["data"];
 type RevisionPage = Awaited<ReturnType<typeof readRevisionPage>>;
@@ -217,6 +218,8 @@ interface MountedTab {
   reusable: boolean;
   loading: boolean;
   pending: number;
+  // Pending `keepsTab` writes, which do not stop the tab from being parked (finding 2980).
+  keeping: number;
   mutations: number;
   resumeDrafts?(): void;
   showBlock?(): void;
@@ -4146,7 +4149,7 @@ export async function renderAgentDetail(
           input.dispatchEvent(new Event("input", { bubbles: true }));
         }
       }
-      if (mountedTab.reusable && !mountedTab.loading && mountedTab.pending === 0) {
+      if (mountedTab.reusable && !mountedTab.loading && mountedTab.pending === mountedTab.keeping) {
         mountedTab.nodes = [...content.childNodes];
         // Its editor's block note returns with it, not the last built tab's (finding 1962).
         mountedTab.showBlock = showDraftEditorNavigationBlock;
@@ -4206,17 +4209,30 @@ export async function renderAgentDetail(
       reusable: true,
       loading: true,
       pending: 0,
+      keeping: 0,
       mutations: context.mutationVersion(),
     };
     mountedTab = state;
     const tabContext: DetailContext = {
       ...context,
       isCurrent: () => context.isCurrent() && mountedTab === state,
+      isKept: () =>
+        context.isCurrent() && (mountedTab === state || retainedTabs.get(state.id) === state),
       request: async (readPath, options) => {
         const read = (options?.method ?? "GET") === "GET";
+        const keeps = options?.keepsTab === true;
+        const unchanged = state.mutations === context.mutationVersion();
         state.pending += 1;
+        if (keeps) {
+          state.keeping += 1;
+        }
         try {
-          const result = await context.request(readPath, options);
+          const reply = context.request(readPath, options);
+          // The tab shows its own kept write, so that write alone does not make it stale.
+          if (keeps && unchanged) {
+            state.mutations = context.mutationVersion();
+          }
+          const result = await reply;
           if (read) {
             allowedReads.add(readPath);
           }
@@ -4231,6 +4247,9 @@ export async function renderAgentDetail(
           throw error;
         } finally {
           state.pending -= 1;
+          if (keeps) {
+            state.keeping -= 1;
+          }
         }
       },
     };
