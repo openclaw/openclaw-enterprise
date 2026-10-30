@@ -768,6 +768,9 @@ export async function renderAgentDetail(
   // The Agent as last read; Stop and finished deployments update it in place.
   let currentAgent = agent;
   let currentRuntimeState = agent.desiredRuntimeState;
+  // Counts the Agent states applied to the page, so a reread can tell whether a newer one
+  // landed while it was in flight (finding 2998).
+  let agentUpdates = 0;
   let visibleRevisions: Revision[] = [];
   // True once the readable version list loaded; until then nothing counts as hidden.
   let visibleRevisionsLoaded = false;
@@ -2226,6 +2229,7 @@ export async function renderAgentDetail(
       showDeleting();
       return;
     }
+    agentUpdates += 1;
     agentRereadFailed = false;
     const revisionChanged = freshAgent.activeRevisionId !== currentRevisionId;
     const workspaceAvailabilityChanged =
@@ -2272,8 +2276,13 @@ export async function renderAgentDetail(
   // When this reread last listed the versions to look for a newer one.
   let newerVersionListedAt = Number.NEGATIVE_INFINITY;
   async function rereadServing() {
+    // A Stop accepted on this page, or a finished deployment's reread, can land while this read
+    // is in flight. Its answer is then older than the page: applying it showed "Stop Agent" and
+    // "Not running" again over "Stop requested" until the next poll (finding 2998).
+    const updates = agentUpdates;
+    const superseded = () => !context.isCurrent() || deleting || agentUpdates !== updates;
     const fresh = await readAgent();
-    if (!context.isCurrent() || deleting) {
+    if (superseded()) {
       return;
     }
     const changed =
@@ -2304,7 +2313,7 @@ export async function renderAgentDetail(
       newerVersionListedAt = Date.now();
     }
     const page = unknownVersion ? revisionsForPage(await readRevisionPage(request, path)) : null;
-    if (!context.isCurrent() || deleting) {
+    if (superseded()) {
       return;
     }
     // A list with no new version or outcome changes nothing: the version chooser is not

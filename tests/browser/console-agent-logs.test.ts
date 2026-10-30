@@ -1970,6 +1970,77 @@ test("Logs show a second redeploy from elsewhere after a failed one, then its ow
   await shows(/Latest visible deployment\s+v4\s+·\s+Queued/);
 });
 
+// Finding 2998. Each Logs status poll rereads the Agent while the viewed version has no running
+// Pod. A reread sent before this page's own Stop and answered after it carried the running state
+// from before the Stop: the page showed "Not running" and offered Stop Agent again over "Stop
+// requested" until the next poll. An answer that a newer Agent state overtook is now dropped.
+test("a Logs reread answered after this page's Stop keeps the Stop", async (t) => {
+  const logs = await logsFixture(t);
+  const { fixture, namespace, agent } = logs;
+  const { agentPath, page, shows, poll } = await openStoppedLogs(t, logs);
+  // Another session deploys v2, which stays queued: the Agent runs with no version selected.
+  const deployed = await fixture.deployAgent(namespace.id, agent.id);
+  await page.route(`${fixture.origin}${agentPath}/deployments/${deployed.id}`, (route) =>
+    route.fulfill(
+      deploymentStatusResponse(
+        {
+          id: deployed.id,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          createdAt: deployed.createdAt,
+        },
+        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
+      ),
+    ),
+  );
+  await poll();
+  await shows(/Latest visible deployment\s+v2\s+·\s+Queued/);
+  const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
+  const stop = stopRow.getByRole("button", { name: "Stop Agent", exact: true });
+  await stop.waitFor();
+
+  // The next poll's Agent read takes the server's answer now, while the Agent still runs, and
+  // is answered only after this page's Stop.
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  let markHeld!: () => void;
+  const held = new Promise<void>((resolve) => (markHeld = resolve));
+  let holding = true;
+  await page.route(`${fixture.origin}${agentPath}`, async (route) => {
+    if (!holding || route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    holding = false;
+    const response = await route.fetch();
+    markHeld();
+    await released;
+    await route.fulfill({ response });
+  });
+  const agentReads = await settledFetches(page, agentPath);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await page.clock.runFor(10_000);
+  await held;
+
+  await stop.click();
+  await page
+    .getByRole("dialog", { name: "Stop this Agent?" })
+    .getByRole("button", { name: "Stop Agent", exact: true })
+    .click();
+  const requested = stopRow.getByText(/^Stop requested\./);
+  await requested.waitFor();
+  assert.equal((await fixture.request("GET", agentPath)).data.desiredRuntimeState, "stopped");
+
+  // The pre-Stop answer lands: the page keeps the Stop it accepted.
+  release();
+  await waitForSettledFetches(page, agentPath, agentReads + 1);
+  await waitForIdleFetches(page);
+  await shows(/Runtime\s+Stop requested/);
+  assert.equal(await requested.count(), 1);
+  assert.equal(await stop.count(), 0);
+  assert.equal(await stopRow.getByRole("button", { name: "Request Stop again" }).count(), 1);
+});
+
 // Finding 2988. A caller with read on some versions only is never listed a newer one it cannot
 // read, so the Agent ran with no version selected beside the listed v1's "Completed", and each
 // 10 s poll listed the versions again and rebuilt the version chooser, which closed it if open.
