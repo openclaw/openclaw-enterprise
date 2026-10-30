@@ -140,7 +140,7 @@ Installation administrator's console reads that access, **Deploy new version** w
 message names deployment as the next step only after the Agent's access is confirmed. **Retry Secret
 access** stays available for all of them. When your access no longer includes editing this
 Configuration, the panel offers no Retry and the warning asks an Installation administrator to
-grant the access. If the API refuses a save for a channel setting, the panel
+grant or confirm the access. If the API refuses a save for a channel setting, the panel
 shows the API's message, which names the setting. Fix that setting in the Configuration JSON on the
 Configuration tab. If the message asks for a Secret binding of another name, bind that name through
 the Configuration API.
