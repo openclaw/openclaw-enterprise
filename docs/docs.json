@@ -15,10 +15,23 @@
         "language": "en",
         "tabs": [
           {
-            "tab": "Getting Started (Local)",
+            "tab": "Getting Started",
             "groups": [
               {
-                "group": "Local k3d",
+                "group": "Getting Started",
+                "pages": [
+                  {
+                    "page": "README",
+                    "label": "Overview"
+                  },
+                  {
+                    "page": "guides/concepts",
+                    "label": "Concepts"
+                  }
+                ]
+              },
+              {
+                "group": "Quickstart (Local)",
                 "pages": [
                   {
                     "page": "guides/deploy/local-openshell-setup",
@@ -31,29 +44,33 @@
                   {
                     "page": "guides/integrations/codex-plugins",
                     "label": "Add Codex Plugins"
+                  },
+                  {
+                    "page": "guides/quickstart",
+                    "label": "Local Setup Without OpenShell"
                   }
                 ]
               },
               {
-                "group": "Learn More",
+                "group": "Quickstart (K8)",
                 "pages": [
-                  { "page": "README", "label": "Overview" },
-                  { "page": "guides/concepts", "label": "Concepts" },
-                  { "page": "guides/quickstart", "label": "Local Setup Without OpenShell" },
-                  { "page": "guides/first-agent", "label": "Deploy Your First Agent" }
+                  {
+                    "page": "guides/kubernetes-setup",
+                    "label": "Setup OCE"
+                  }
+                ]
+              },
+              {
+                "group": "Deploy",
+                "pages": [
+                  {
+                    "page": "guides/first-agent",
+                    "label": "Deploy Your First Agent"
+                  }
                 ]
               }
             ],
             "hidden": ["guides/README"]
-          },
-          {
-            "tab": "Getting Started (K8)",
-            "groups": [
-              {
-                "group": "Kubernetes",
-                "pages": [{ "page": "guides/kubernetes-setup", "label": "Setup OCE" }]
-              }
-            ]
           },
           {
             "tab": "Topics",

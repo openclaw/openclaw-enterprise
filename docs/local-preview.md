@@ -51,7 +51,7 @@ contract with `node scripts/generate-occ-api-reference.mjs --check`.
 ## Edit the source
 
 Keep Markdown links relative so pages remain readable on GitHub. The
-[documentation map](README.md) links the seven menu sections; [`docs/docs.json`](docs.json)
+[documentation map](README.md) links the six menu sections; [`docs/docs.json`](docs.json)
 defines each sidebar. Register each published page once, and link it from its
 owning overview. Groups may nest. A page entry can set a short sidebar label using
 `{"page": "guides/quickstart", "label": "Local Setup"}`; the article and browser
