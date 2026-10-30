@@ -206,11 +206,9 @@ Path relocation preserves opaque `OCE_CODEX_CHATGPT_ACCOUNT` JSON.
 Landlock is required. Unsupported enums, inherited keys, `passthrough` TLS,
 missing executable paths and invalid readiness `timeoutMs` prevent Kubernetes
 calls; the timeout must be a positive safe integer. Duplicate names and
-`workspace-node-enrollment` prevent construction. The template includes the Harness Pod labels;
-the Gateway rejects any absent from `allowed_pod_labels`, and
-`openshell-gateway-client.ts` turns that `INVALID_ARGUMENT` into
-`SandboxRevisionUnsupportedError` (`SANDBOX_POD_LABELS_NOT_PERMITTED`), so the
-worker fails the deployment at once.
+`workspace-node-enrollment` prevent construction. The Gateway rejects template
+Pod labels absent from `allowed_pod_labels`; that refusal
+(`SANDBOX_POD_LABELS_NOT_PERMITTED`) fails the deployment at once.
 
 `provisionHarness` creates or adopts the provider. Renewal checks its version
 and updates only `node_setup_json` through `UpdateProvider`. Codex route exposure
@@ -421,9 +419,5 @@ model execution.
 - 2026-10-20 21:45: Pin OpenShell v0.1.5 and admit Harness template labels at the Gateway. (authoring-run/016ma8eD5SYoBTV5kswEV3Dn - bca5b199b)
 
 - 2026-10-19 09:48: Preserve main and policy traces; condense prose. (authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13 - bc3ba215dd9927692bc2882ffaf06a35c27fed4a)
-
-- 2026-10-16 22:08: Keep the OpenShell OAuth, protected startup and repository-session boundaries explicit. (authoring-run/9fd90bae-7158-4df5-8f2e-62b0bd548272 - 4f98051f14)
-
-- 2026-10-16 01:36: Integrate credential-independent Codex permissions while preserving external OAuth and private relay delivery. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.
