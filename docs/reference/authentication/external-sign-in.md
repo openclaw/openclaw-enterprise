@@ -25,7 +25,9 @@ Native IAM's policy read remains separate from State's actor guard. Loopback
 development does not qualify deployed HTTPS.
 [Google sign-in](../../guides/deploy/google-sign-in.md) and
 [OIDC sign-in](../../guides/deploy/oidc-sign-in.md) use this profile and its
-controls.
+controls. As an experimental exception, an OIDC provider configured with a
+[trust claim](../../guides/deploy/oidc-sign-in.md#trust-claim-enrolment-experimental)
+authenticates otherwise unknown identities and enrolls them just-in-time with no grants.
 
 HTTPS sessions use `__Host-openclaw_occ.session_token`, `Secure`, `HttpOnly`,
 `Path=/`, and no `Domain`, preventing sibling hosts from planting that cookie.
