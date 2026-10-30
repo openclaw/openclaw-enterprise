@@ -200,7 +200,7 @@ selects a named provider and HTTPS Responses transport.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
-Only dedicated Codex or OpenClaw versions pinned to this Driver qualify.
+This Driver requires pinned, dedicated Codex or OpenClaw versions.
 Kubernetes, filesystem, process and binary-scoped network policy use `v0.1.6`.
 Path relocation preserves opaque `OCE_CODEX_CHATGPT_ACCOUNT` JSON.
 Landlock is required. Unsupported enums, inherited keys, `passthrough` TLS,
@@ -391,7 +391,7 @@ model execution.
 
 ## Changelog
 
-- 2026-10-30 10:12: Select patched OpenShell 0.1.6 for Sandbox provisioning. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
+- 2026-10-30 10:12: Adopt 0.1.6. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
 
 - 2026-10-29 04:23: Route OpenShell workspace nodes through Envoy for worker HTTP transfers and client attribution. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - 15440bacfc5a6553190c9580eb0eccf6f301f0ed)
 
