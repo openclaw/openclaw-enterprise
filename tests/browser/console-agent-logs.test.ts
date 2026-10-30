@@ -70,6 +70,7 @@ type LogTestDriver = ReturnType<typeof createRuntimeLogComputeDriver> & {
     harnessPod: { ready: boolean; stale?: boolean } | { created: false } | undefined;
     events: AgentRuntimeEvent[];
     extraPods: { name: string; uid: string }[];
+    gatewayPod: boolean;
     restartCount: number;
     observedAt?: string;
     readPodUid?: string;
