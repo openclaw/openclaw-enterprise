@@ -1,3 +1,4 @@
+import { sameBinding } from "./grant-identity.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { AuthorityIdentity, Clock, SessionRef } from "./backend-contracts.ts";
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
@@ -115,17 +116,6 @@ export function snapshotSessionInput(value: unknown): SessionInput {
     deadlineWallMs: input.deadlineWallMs,
     ...(input.preparedOnly === true ? { preparedOnly: true as const } : {}),
   });
-}
-
-export function sameBinding(
-  left: RepositoryCredentialGrantIdentity,
-  right: RepositoryCredentialGrantIdentity,
-): boolean {
-  return (
-    left.providerInstanceId === right.providerInstanceId &&
-    left.repositoryId === right.repositoryId &&
-    left.grantId === right.grantId
-  );
 }
 
 export function sameSessionInput(left: SessionInput, right: SessionInput): boolean {

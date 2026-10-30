@@ -534,18 +534,8 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "CREATE",
-          false
-        ],
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "USAGE",
-          false
-        ]
+        ["occ_migrator", "occ_migrator", "CREATE", false],
+        ["occ_migrator", "occ_migrator", "USAGE", false]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -553,9 +543,20 @@
     }
   },
   "logicalRestoreCatalogs": {
-    "ead0bf1743197edac2cd369f4822fec0d9686d4c215b8f6dcc16745c9addf155": "e6cbf3438426666a75867241828db127a2d84717daec49ef2d9af48caf6fdfed",
-    "15676f224ccd3cbd54e1d541db393b12297e3b2aa8e8eb70b192b5350c4c3c59": "133a7bdb5d29ffee331293add98f24e8ccef44eba230202aeb37c824d073d3b9",
-    "4d102ec8439d039d8a0cdae400d8cd6990509a4787416471bb48a38e2c526b7a": "81c13a7acd9939a09c9e0aa91da6494cf3d33c532e5ce3240a7fae1f6ce546b0"
+    "eb024f6c9697e8796d9633de0400495f41a2ad2378a2d8d6512feb7b99db9e73": [
+      "890302ea4befd5ca8a1aa9d49e1c2b5ae124379cacb4fa74a377e6da210d2428"
+    ],
+    "ead0bf1743197edac2cd369f4822fec0d9686d4c215b8f6dcc16745c9addf155": [
+      "e6cbf3438426666a75867241828db127a2d84717daec49ef2d9af48caf6fdfed"
+    ],
+    "15676f224ccd3cbd54e1d541db393b12297e3b2aa8e8eb70b192b5350c4c3c59": [
+      "133a7bdb5d29ffee331293add98f24e8ccef44eba230202aeb37c824d073d3b9",
+      "c486dd5d3f9577fbedb1e3795f5dc70915584b16caefe0ade80ce3785ff8ffda"
+    ],
+    "4d102ec8439d039d8a0cdae400d8cd6990509a4787416471bb48a38e2c526b7a": [
+      "81c13a7acd9939a09c9e0aa91da6494cf3d33c532e5ce3240a7fae1f6ce546b0",
+      "46381596aed1129e57f9b1d29fa1cf8baf75e6969e580c503ba6509845a6309b"
+    ]
   },
   "catalogs": {
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",

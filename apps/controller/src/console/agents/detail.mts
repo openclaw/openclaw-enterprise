@@ -13,7 +13,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
-import type { ConsolePageContext } from "../page-context.mjs";
+import type { AgentRecheck, ConsolePageContext } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import { retiredOpenClawSettingMessage } from "../retired-openclaw-settings.mjs";
 import {
@@ -54,6 +54,7 @@ import {
   DEPLOY_SANDBOX_POLICY_READ_DENIED,
   deployAcceptedVersionUnreadable,
   deployUnreadableSecretsReason,
+  FORMER_CURRENT_VERSION_UNREADABLE,
   MODEL_CREDENTIAL_REJECTED_REPLACED,
   modelCredentialRejectedReadOnly,
   NEW_VERSIONS_READ,
@@ -771,6 +772,8 @@ export async function renderAgentDetail(
   // Counts the Agent states applied to the page, so a reread can tell whether a newer one
   // landed while it was in flight (finding 2998).
   let agentUpdates = 0;
+  // When the last Agent state was applied, on the document's performance clock.
+  let agentUpdatedAt = Number.NEGATIVE_INFINITY;
   let visibleRevisions: Revision[] = [];
   // True once the readable version list loaded; until then nothing counts as hidden.
   let visibleRevisionsLoaded = false;
@@ -1165,6 +1168,9 @@ export async function renderAgentDetail(
   }
   const deployedHere = (revisionId: string) =>
     deployedVersions.has(failedVersionKey(path, revisionId));
+  // Versions this page showed as selected for service. Each exists, so a viewed one the reader
+  // cannot read is named in words once a stop or another version takes its place (finding 3000).
+  const formerCurrent = new Set<string>();
   // The newest version this tab deployed for this Agent that the caller cannot read and that is
   // newer than every version listed, whichever entry is viewed: the draft too (finding D751).
   // Being newer than the first page, it cannot sit on an older one, so the list need not be
@@ -2230,7 +2236,11 @@ export async function renderAgentDetail(
       return;
     }
     agentUpdates += 1;
+    agentUpdatedAt = performance.now();
     agentRereadFailed = false;
+    if (currentRevisionId) {
+      formerCurrent.add(currentRevisionId);
+    }
     const revisionChanged = freshAgent.activeRevisionId !== currentRevisionId;
     const workspaceAvailabilityChanged =
       Boolean(freshAgent.activeRevisionId) !== Boolean(currentRevisionId);
@@ -2275,13 +2285,19 @@ export async function renderAgentDetail(
   let servingReread: Promise<void> | null = null;
   // When this reread last listed the versions to look for a newer one.
   let newerVersionListedAt = Number.NEGATIVE_INFINITY;
-  async function rereadServing() {
+  // A refocus recheck passes the Agent it read and when that read started (finding 3000).
+  async function rereadServing(recheck?: AgentRecheck) {
     // A Stop accepted on this page, or a finished deployment's reread, can land while this read
     // is in flight. Its answer is then older than the page: applying it showed "Stop Agent" and
     // "Not running" again over "Stop requested" until the next poll (finding 2998).
     const updates = agentUpdates;
-    const superseded = () => !context.isCurrent() || deleting || agentUpdates !== updates;
-    const fresh = await readAgent();
+    // A recheck's read started before this call: a state applied since it started is newer.
+    const superseded = () =>
+      !context.isCurrent() ||
+      deleting ||
+      agentUpdates !== updates ||
+      (recheck !== undefined && agentUpdatedAt > recheck.readStartedAt);
+    const fresh = recheck ? agentForPage(recheck.agent) : await readAgent();
     if (superseded()) {
       return;
     }
@@ -2338,6 +2354,16 @@ export async function renderAgentDetail(
       viewedSnapshot,
     );
   }
+  // A refocus recheck read the Agent to check that the page is still readable, and the page
+  // applied nothing it read. Where no Logs poll rereads the Agent, as on a current version the
+  // reader cannot read, a stop and redeploy made elsewhere showed only after a reload (finding
+  // 3000). The recheck's answer now updates the page as a poll's does, under the same guards,
+  // without a second read.
+  context.onRechecked?.((recheck) => {
+    if (context.isCurrent() && !deleting) {
+      void rereadServing(recheck).catch(() => {});
+    }
+  });
   async function runningVersion() {
     servingReread ??= rereadServing()
       .catch(() => {})
@@ -2445,7 +2471,9 @@ export async function renderAgentDetail(
             ? deployAcceptedVersionUnreadable(shortId(hidden))
             : hidden === currentRevisionId
               ? `You cannot read the current version, so its progress and outcome are not shown here. ${readAccessHint}`
-              : requestedVersionUnavailable(shortId(hidden)),
+              : formerCurrent.has(hidden)
+                ? FORMER_CURRENT_VERSION_UNREADABLE
+                : requestedVersionUnavailable(shortId(hidden)),
       );
       setLiveServing(false);
       // This viewer reads no deployment, so Stop keeps its row and says it may cancel one or
@@ -2550,7 +2578,9 @@ export async function renderAgentDetail(
           requestedHidden && selected !== acceptedId
             ? deployedHere(selected)
               ? deployAcceptedVersionUnreadable(shortId(selected))
-              : requestedVersionUnavailable(shortId(selected))
+              : formerCurrent.has(selected)
+                ? FORMER_CURRENT_VERSION_UNREADABLE
+                : requestedVersionUnavailable(shortId(selected))
             : null,
           newerHidden && !currentIsAccepted
             ? `The current version is one you cannot read; v${latest.revision} is an older version.`
@@ -4182,9 +4212,14 @@ export async function renderAgentDetail(
       },
       {
         version: selected !== "draft",
-        // The current version, every listed one and one this tab deployed are known to exist.
+        // The current version, every listed one, one this tab deployed and one this page showed
+        // as selected for service are known to exist. A tab built after a stop or redeploy made
+        // elsewhere called a former current version one that may not exist (finding 3004).
         exists:
-          selected === currentRevisionId || listedRevisions.has(selected) || deployedHere(selected),
+          selected === currentRevisionId ||
+          listedRevisions.has(selected) ||
+          deployedHere(selected) ||
+          formerCurrent.has(selected),
       },
     );
   }

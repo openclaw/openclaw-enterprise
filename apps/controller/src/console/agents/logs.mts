@@ -735,6 +735,23 @@ export function renderAgentLogs(
     return runtimeStatusDenied({ operate, versionRead: await versionRead });
   }
 
+  // A remembered status denial is never asked again on a timer: each ask is an audited denial.
+  // Its view still rereads the Agent, which needs neither operate nor a version read: with no
+  // poll, a stop or redeploy made elsewhere showed only after a refocus (finding 3005). Two loads
+  // that both took the denial schedule one poll.
+  function pollAgent() {
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => {
+      if (!current()) {
+        return;
+      }
+      if (!document.hidden) {
+        void showRunningVersion(true);
+      }
+      pollAgent();
+    }, STATUS_POLL_MS);
+  }
+
   async function loadStatus() {
     clearTimeout(statusTimer);
     if (!current()) {
@@ -778,18 +795,28 @@ export function renderAgentLogs(
         deniedStatusViews.set(statusKey, operate);
         showStripStatus(revokedStatusViews.has(statusKey) ? STATUS_ACCESS_CHANGED : denial);
         offerLogsWithoutStatus();
+        pollAgent();
         return;
       }
     }
     // Runtime status also checks AgentRevision read on the version, so a version the page could
     // not read would only be refused: an audited denial on each Logs visit, shown with a Request
-    // ID. The strip says why in words, sends nothing and polls nothing; log text, which needs no
+    // ID. The strip says why in words and sends no status read; log text, which needs no
     // version read, still shows (finding D794).
     if ((await versionRead) === false) {
-      if (current() && !superseded()) {
+      if (!current() || superseded()) {
+        return;
+      }
+      if (!statusDenied) {
         showStripStatus(RUNTIME_STATUS_VERSION_UNREADABLE);
         offerLogsWithoutStatus();
+      } else if (!document.hidden) {
+        // The poll still rereads the Agent, which needs no version read: with no poll, a stop
+        // and redeploy made elsewhere left this version named as selected for service until a
+        // reload (finding 3000).
+        void showRunningVersion(true);
       }
+      statusTimer = setTimeout(() => void loadStatus(), STATUS_POLL_MS);
       return;
     }
     if (!document.hidden) {
@@ -879,6 +906,9 @@ export function renderAgentLogs(
                   deniedStatusViews.set(statusKey, answer?.operate === true);
                 }
               });
+            // A fresh refusal is remembered like one taken from the answer: the view rereads
+            // the Agent alone and never asks for status on a timer (finding 3010).
+            pollAgent();
           }
           return;
         }
