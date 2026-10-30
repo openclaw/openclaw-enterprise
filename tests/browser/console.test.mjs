@@ -2848,6 +2848,22 @@ test("a first visit to a deep link asks to sign in; a tab whose session expired 
   await page.getByLabel("Email", { exact: true }).waitFor();
 });
 
+// A page address with a trailing slash names the same page, through sign-in and when
+// signed in, and the address bar shows it without the slash (finding 1906).
+test("a page address with a trailing slash opens that page", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Trailing slash", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await loginThroughForm(page, fixture, "/console/namespaces/");
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/namespaces");
+  await page.goto(`${fixture.origin}/console/agents/new/?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  const url = new URL(page.url());
+  assert.equal(url.pathname + url.search, `/console/agents/new?namespace=${namespace.id}`);
+});
+
 test("login ignores untrusted returns and resolves an opaque Agent key only after authentication", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
