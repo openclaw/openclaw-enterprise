@@ -1,3 +1,6 @@
+import { Type } from "typebox";
+import { Check } from "typebox/value";
+
 /** Where a connected credential may be sent; the Credential Gateway releases it nowhere else. */
 export interface ConnectionEndpoint {
   readonly host: string;
@@ -91,6 +94,21 @@ function sameParameters(
   );
 }
 
+export const AgentConnectionProfileSchema = Type.Object(
+  {
+    externalUserId: Type.Optional(Type.String()),
+    email: Type.Optional(Type.String()),
+    name: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+export type AgentConnectionProfile = Readonly<Type.Static<typeof AgentConnectionProfileSchema>>;
+
+export function isAgentConnectionProfile(value: unknown): value is AgentConnectionProfile {
+  return Check(AgentConnectionProfileSchema, value);
+}
+
 /** One connected credential source: who consented, for which Agent, and what they approved. */
 export interface AgentConnection {
   readonly namespaceId: string;
@@ -99,6 +117,8 @@ export interface AgentConnection {
   readonly ownerPrincipalId: string;
   readonly connectionTemplateId: string;
   readonly connectionTemplateVersion: number;
+  /** Describes the external account associated with this connection. */
+  readonly profile?: AgentConnectionProfile;
   readonly createdAt: string;
 }
 

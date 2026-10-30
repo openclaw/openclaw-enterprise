@@ -18862,7 +18862,16 @@
                             "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
-                          "ownerPrincipalId": { "type": "string" }
+                          "ownerPrincipalId": { "type": "string" },
+                          "profile": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "email": { "type": "string" },
+                              "externalUserId": { "type": "string" },
+                              "name": { "type": "string" }
+                            },
+                            "type": "object"
+                          }
                         },
                         "required": [
                           "namespaceId",

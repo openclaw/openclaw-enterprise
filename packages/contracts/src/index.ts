@@ -26,6 +26,7 @@ import type { WorkspaceSetup } from "./workspace-setup.ts";
 
 export type {
   AgentConnection,
+  AgentConnectionProfile,
   ConnectionSession,
   ConnectionClientRegistration,
   ConnectionEndpoint,
@@ -34,7 +35,7 @@ export type {
   ConnectionTemplateVersion,
   McpAuthorizationMetadata,
 } from "./connection-templates.ts";
-export { connectionValuesChanged } from "./connection-templates.ts";
+export { connectionValuesChanged, isAgentConnectionProfile } from "./connection-templates.ts";
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
 export { isComputePreparationFailureEvidence } from "./compute-preparation.ts";
 import type {

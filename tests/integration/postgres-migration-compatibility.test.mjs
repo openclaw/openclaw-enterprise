@@ -1591,6 +1591,24 @@ async function canonicalData(db) {
 }
 
 test(
+  "Agent connection profile migration upgrades the previous connection schema",
+  requiresHistoryPostgres,
+  async (t) => {
+    const db = await historyDatabase(t, await migrationHistoryFixture(), "connection_profile", {
+      prefix: 63,
+    });
+    assert.deepEqual(await runHistoryMigration(db), {
+      ok: true,
+      history: "preAgentConnectionProfiles",
+    });
+    assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
+      ok: true,
+      history: "completed",
+    });
+  },
+);
+
+test(
   "MCP template migration preserves existing consent and versions the approved resource",
   requiresHistoryPostgres,
   async (t) => {

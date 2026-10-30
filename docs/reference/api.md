@@ -1766,6 +1766,10 @@ List an Agent's connected accounts
 | `data[].credentialSourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].ownerPrincipalId` | `string` | Yes | — |
+| `data[].profile` | `object` | No | — |
+| `data[].profile.email` | `string` | No | — |
+| `data[].profile.externalUserId` | `string` | No | — |
+| `data[].profile.name` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 

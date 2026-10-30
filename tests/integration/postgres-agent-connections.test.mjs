@@ -234,6 +234,69 @@ function selectConnectionDrivers(fixture) {
   return openShell;
 }
 
+test("the connections API returns each account's optional profile", requiresPostgres, async (t) => {
+  const fixture = await createPostgresAgentApp(t, {
+    label: "connection-profiles",
+    authSecret: "openclaw-connection-profiles-test-auth-secret",
+    appOptions: { publicOrigin },
+  });
+  const { namespace, agent } = await fixture.deployAgent("Connection profiles");
+  selectConnectionDrivers(fixture);
+  const created = await fixture.inject("POST", "/connection-templates", {
+    displayName: `Profile test ${randomUUID()}`,
+    issuer: "https://issuer.example.test",
+    authorizationUrl: "https://issuer.example.test/authorize",
+    tokenUrl: "https://issuer.example.test/token",
+    clientId: randomUUID(),
+    clientSecret: "test-client-secret",
+    scopes: ["read"],
+    endpoint: { host: "api.example.test", port: 443, path: "/**" },
+    envVar: "PROFILE_TOKEN",
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  const template = created.json().data;
+
+  // Profile population is deferred, so seed account metadata through the connection repository.
+  const connections = [
+    {},
+    { profile: {} },
+    { profile: { name: "Work" } },
+    { profile: { externalUserId: "user-2", email: "personal@example.test", name: "Personal" } },
+  ].map((fields) => ({
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    credentialSourceId: `cs_${randomUUID()}`,
+    ownerPrincipalId: fixture.principal.id,
+    connectionTemplateId: template.id,
+    connectionTemplateVersion: template.current.version,
+    createdAt: new Date().toISOString(),
+    ...fields,
+  }));
+  await fixture.state.transact(async (unit) => {
+    for (const connection of connections) {
+      await unit.credentialSources.createCredentialSource({
+        id: connection.credentialSourceId,
+        namespaceId: namespace.id,
+        name: connection.credentialSourceId,
+        type: "oauth2-refresh-token",
+        config: {},
+        secrets: {},
+        driverId: "openshell-credentials",
+        state: "ready",
+        createdAt: connection.createdAt,
+      });
+      await unit.agentConnections.createAgentConnection(connection);
+    }
+  });
+
+  const listed = await fixture.inject(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/connections`,
+  );
+  assert.equal(listed.statusCode, 200, listed.body);
+  assert.deepEqual(new Set(listed.json().data), new Set(connections));
+});
+
 test(
   "a person connects their Keycloak account to their personal Agent and nobody else can use it",
   requiresKeycloak,

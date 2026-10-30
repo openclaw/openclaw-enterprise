@@ -1,4 +1,5 @@
 import type {
+  AgentConnectionProfile,
   InitialWorkspaceFiles,
   AgentDesiredRuntimeState,
   AgentStatus,
@@ -1707,10 +1708,19 @@ export const agentConnections = occSchema.table(
       .references(() => iamIdentities.id, { onDelete: "restrict", onUpdate: "restrict" }),
     connectionTemplateId: text("connection_template_id").notNull(),
     connectionTemplateVersion: integer("connection_template_version").notNull(),
+    profile: jsonb("profile").$type<AgentConnectionProfile>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [
     primaryKey({ columns: [table.namespaceId, table.credentialSourceId] }),
+    check(
+      "agent_connections_profile_valid",
+      sql`${table.profile} IS NULL OR (
+        jsonb_typeof(${table.profile}) = 'object'
+        AND (${table.profile} - ARRAY['externalUserId', 'email', 'name']) = '{}'::jsonb
+        AND NOT jsonb_path_exists(${table.profile}, 'strict $.* ? (@.type() != "string")')
+      )`,
+    ),
     foreignKey({
       name: "agent_connections_agent_owner",
       columns: [table.namespaceId, table.agentId],

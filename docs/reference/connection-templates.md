@@ -162,8 +162,10 @@ completed connection on the Agent, and a refused or failed callback with its
 reason code and the person who sent it.
 
 [List connections](api.md#get-namespacesnamespaceidagentsagentidconnections)
-returns each source, its owner, and the approved template version. Deploy the
-Agent to use the connection.
+returns each source, its owner, and the approved template version. A connection
+can also carry a `profile` with any subset of `externalUserId`, `email`, and
+`name` describing the external account. Connections created through the current
+OAuth flow omit `profile`. Deploy the Agent to use the connection.
 
 ### Disconnect
 

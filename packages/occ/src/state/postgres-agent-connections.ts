@@ -1,5 +1,6 @@
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import type { AgentConnection, ConnectionSession } from "@openclaw-enterprise/contracts";
+import { isAgentConnectionProfile } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "../errors.ts";
 import type { AgentConnectionRepository } from "./platform-state.ts";
 import type { PostgresQueryClient } from "./postgres-work-queue.ts";
@@ -26,6 +27,10 @@ function integer(row: Row, key: string): number {
 }
 
 function connectionFromRow(row: Row): Readonly<AgentConnection> {
+  const profile = row.profile;
+  if (profile !== null && !isAgentConnectionProfile(profile)) {
+    return invalid();
+  }
   return immutableCopy({
     namespaceId: text(row, "namespace_id"),
     credentialSourceId: text(row, "credential_source_id"),
@@ -33,6 +38,7 @@ function connectionFromRow(row: Row): Readonly<AgentConnection> {
     ownerPrincipalId: text(row, "owner_principal_id"),
     connectionTemplateId: text(row, "connection_template_id"),
     connectionTemplateVersion: integer(row, "connection_template_version"),
+    ...(profile === null ? {} : { profile }),
     createdAt: timestamp(row, "created_at"),
   });
 }
@@ -94,8 +100,8 @@ export function postgresAgentConnections(
       await client.query(
         `INSERT INTO occ.agent_connections
          (namespace_id, credential_source_id, agent_id, owner_principal_id,
-          connection_template_id, connection_template_version, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          connection_template_id, connection_template_version, created_at, profile)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
         [
           connection.namespaceId,
           connection.credentialSourceId,
@@ -104,6 +110,7 @@ export function postgresAgentConnections(
           connection.connectionTemplateId,
           connection.connectionTemplateVersion,
           connection.createdAt,
+          connection.profile === undefined ? null : JSON.stringify(connection.profile),
         ],
       );
       return immutableCopy(connection);

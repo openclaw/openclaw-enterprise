@@ -8,6 +8,7 @@
       "path": "tests/integration/postgres-migration-compatibility.test.mjs",
       "expectedTests": [
         "First installation requires empty migration history under the migration lock",
+        "Agent connection profile migration upgrades the previous connection schema",
         "MCP template migration preserves existing consent and versions the approved resource",
         "Canonical repository-prefix upgrade retains exact attempt cleanup context",
         "Drizzle generates repository schema migrations without redundant regeneration",
