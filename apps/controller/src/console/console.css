@@ -2135,6 +2135,7 @@ label:has(> input[type="checkbox"].control-unavailable:focus-visible) {
 /* An unavailable select or text field fades its text, not the field, so its focus ring keeps full
    contrast (finding 2899). */
 select.control-unavailable,
+textarea.control-unavailable,
 input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   cursor: not-allowed;
   color: color-mix(in srgb, var(--text) 60%, var(--color-surface));
