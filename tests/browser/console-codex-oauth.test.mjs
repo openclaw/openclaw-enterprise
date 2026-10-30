@@ -638,6 +638,63 @@ for (const refused of [false, true]) {
   });
 }
 
+// A refused start shown in the tab permits a retry, and that retry is kept like a first start: the
+// refusal must not stop the tab from being parked while the retry is pending (finding 2980).
+test("a retried OAuth start answered while another Agent tab shows lands in Credentials", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth retry tab switch");
+  const { gateway, refresh } = createDeviceCredentialDrivers({ approve: async () => false });
+  for (const driver of [gateway, refresh]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "OAuth retry tab switch",
+    nativeValues("oauth-retry-tab-switch", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  await page.getByLabel("Authentication source").selectOption("credential_source");
+  const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
+  // The real Native IAM Driver refuses the first start without Secret create.
+  const restoreCreate = revokeAdministratorGrant(fixture, ["create", "secret"]);
+  await start.click();
+  await page.getByText(AGENT_DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
+  restoreCreate();
+  await waitForEnabled(start);
+  const answered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  const beginPath = `/namespaces/${namespace.id}/agents/${agent.id}/device-authorizations`;
+  await page.route(`**${beginPath}`, async (route) => {
+    const response = await route.fetch();
+    answered.resolve(await response.json());
+    await release.promise;
+    await route.fulfill({ response }).catch(() => {});
+  });
+  await waitForIdleFetches(page);
+  await start.click();
+  const body = await answered.promise;
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true, selected: true }).waitFor();
+  release.resolve();
+  await waitForSettledFetches(page, beginPath, 2);
+
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  await page
+    .getByText("Waiting for you to complete sign-in in the other tab…", { exact: true })
+    .waitFor();
+  assert.equal(await page.locator(".device-login-code").textContent(), body.data.userCode);
+  await expectNoText(page, /may have started/i);
+  assert.equal(gateway.sources.size, 1);
+});
+
 // A refused device login names what the API checked for that request (finding 2577). Create
 // Agent's start checks Agent create, Secret create and credential source create in the Namespace,
 // which only an Installation administrator holds. The real Native IAM Driver refuses each request

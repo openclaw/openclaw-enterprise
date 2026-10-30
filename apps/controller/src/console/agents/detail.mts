@@ -4250,7 +4250,11 @@ export async function renderAgentDetail(
           }
           return result;
         } catch (error) {
-          state.reusable = false;
+          // A kept write shows its own outcome, as a refused OAuth start does: the tab stays
+          // reusable, so a retry can still be kept (finding 2980).
+          if (!keeps) {
+            state.reusable = false;
+          }
           // Any tab's refusal of a read the page had the grant for, not only Logs', makes the next
           // tab change read the page again instead of reusing tabs read before (finding 2568).
           if (read && requestFailure(error).status === 403 && readHadGrant(readPath)) {
