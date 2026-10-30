@@ -38,6 +38,33 @@ This deletes the owned cluster and its database. It does not delete unrelated
 clusters. For the Compose control-plane variant, set
 `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup.
 
+## Check Namespace cleanup without a model turn
+
+Build `bin/occ` from this checkout, then select the owned development-profile
+cases directly. They create private kubeconfigs and clusters and remove only
+their own resources. Select the available engine explicitly:
+
+```sh
+OCC_TEST_DEV_UP_OPENSHELL_REAL=1 OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman \
+  node --test --test-concurrency=1 \
+  --test-name-pattern='dev-up installs the pinned OpenShell profile in its owned k3d cluster' \
+  tests/integration/dev-up-openshell-k3d-real.test.mjs
+OCC_TEST_DEV_UP_OPENSHELL_LOCAL_ENDPOINT_REAL=1 OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman \
+  node --test tests/integration/dev-up-openshell-local-endpoint-cleanup-real.test.ts
+```
+
+Leave controller and runtime image overrides unset to build this source. Explicit
+overrides must be immutable paired references whose revision labels match the
+tested checkout. A new CLI against an older controller image does not prove the
+changed worker or Drivers.
+
+The central-gateway cases check real worker/provider cleanup after placement loss,
+external claim release, and refusal of reassigned resources across retry. The
+separate bare-service case removes its tenant-local alias only after provider
+confirmation, then checks retry without that endpoint. These development-profile
+cases require no model credential and do not qualify production TLS or model
+execution. A selected case fails when its prerequisites are unavailable.
+
 ## Codex plugin installation
 
 The `plugin-install` QA scenario deploys a dedicated Codex Agent with the selected

@@ -3087,3 +3087,76 @@ test("installed workload clients select the enrolled Sandbox at authenticated Ex
   await assert.rejects(curl(), /supplier Sandbox replaced/);
   assert.equal(launches.length, 3, "an old enrolled recipient never silently switches Sandbox");
 });
+
+test("OpenShell Workspace wire preserves durable request IDs and exact deletion outcomes", async (t) => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const calls = [];
+  let outcome = 1;
+  let missing = false;
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    CreateWorkspace(call, callback) {
+      calls.push(call.request);
+      callback(null, {
+        workspace: {
+          metadata: {
+            name: call.request.name,
+            id: "workspace-original",
+            labels: call.request.labels,
+          },
+          status: { phase: 1 },
+        },
+      });
+    },
+    DeleteWorkspace(call, callback) {
+      calls.push(call.request);
+      if (missing) {
+        callback({ code: grpc.status.NOT_FOUND, details: "workspace unavailable" });
+      } else {
+        callback(null, { outcome });
+      }
+    },
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
+  t.after(async () => {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  });
+  const createId = "00000000-0000-4000-8000-000000000011";
+  const deleteId = "00000000-0000-4000-8000-000000000012";
+  const signal = AbortSignal.timeout(5000);
+  const created = await client.createWorkspace(
+    "owned-workspace",
+    { "openclaw.dev/namespace-id": "ns-owned" },
+    signal,
+    createId,
+  );
+  assert.equal(created.id, "workspace-original");
+  assert.deepEqual(calls[0], {
+    name: "owned-workspace",
+    labels: { "openclaw.dev/namespace-id": "ns-owned" },
+    request_id: createId,
+  });
+  // The supplier distinguishes acceptance, completion and absence. The Driver must
+  // receive those outcomes unchanged instead of treating every successful RPC as removal.
+  for (const [wire, expected] of [
+    [1, "completed"],
+    [2, "pending"],
+    [3, "alreadyAbsent"],
+  ]) {
+    outcome = wire;
+    assert.equal(await client.deleteWorkspace("owned-workspace", signal, deleteId), expected);
+    assert.deepEqual(calls.at(-1), {
+      name: "owned-workspace",
+      allow_missing: true,
+      request_id: deleteId,
+    });
+  }
+  missing = true;
+  assert.equal(await client.deleteWorkspace("owned-workspace", signal, deleteId), "alreadyAbsent");
+});

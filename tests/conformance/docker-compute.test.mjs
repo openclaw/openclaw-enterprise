@@ -242,51 +242,192 @@ try {
   );
 });
 
-test("Docker namespace delete treats a network that vanished before DELETE as removed", async () => {
-  // A fake engine behind the real Driver and Node HTTP client: the network inspect
-  // finds an owned network, then the network DELETE answers with each status below.
+test("Docker Namespace lifecycle binds immutable IDs across restart and uncertain outcomes", async () => {
+  // Only the socket address changes. The real Driver and HTTP client exercise
+  // Engine protocol behavior; production State owns the durable checkpoint CAS.
   const source = String.raw`
 import assert from "node:assert/strict";
 import http from "node:http";
 import { syncBuiltinESMExports } from "node:module";
-const labels = {
-  "org.openclaw.enterprise.managed": "true",
-  "org.openclaw.enterprise.compute-driver": "docker",
-  "org.openclaw.enterprise.namespace-id": "ns_vanish",
-};
+const { InMemoryPlatformState } = await import(process.argv[2]);
+let mode;
+let network;
+let posts;
+let deletes;
+let effects;
+let engineId;
 let deleteStatus;
-const requests = [];
-const server = http.createServer((request, response) => {
-  const path = request.url.split("?")[0];
-  requests.push(request.method + " " + path);
+const originalId = "a".repeat(64);
+const replacementId = "b".repeat(64);
+const server = http.createServer(async (request, response) => {
+  const path = decodeURIComponent(request.url.split("?")[0]);
   const send = (status, body) => {
     response.writeHead(status, { "content-type": "application/json" });
     response.end(body === undefined ? "" : JSON.stringify(body));
   };
-  if (request.method === "GET" && path.startsWith("/networks/")) return send(200, { Labels: labels });
+  if (request.method !== "GET") effects.push(request.method + " " + path);
+  if (path === "/info") return send(200, { ID: engineId });
+  if (request.method === "POST" && path === "/networks/create") {
+    posts += 1;
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const input = JSON.parse(body);
+    network = { Id: originalId, Name: input.Name, Labels: input.Labels };
+    if (mode === "lost-create") return response.destroy();
+    return send(201, { Id: originalId, Warning: "" });
+  }
+  if (request.method === "GET" && path.startsWith("/networks/")) {
+    const selector = path.slice("/networks/".length);
+    const observed = network && (network.Id === selector || network.Name === selector) ? structuredClone(network) : undefined;
+    if (mode === "replacement-before-delete" && selector === originalId && observed) {
+      network.Id = replacementId;
+      mode = "normal";
+    }
+    return observed ? send(200, observed) : send(404, { message: "not found" });
+  }
   if (request.method === "DELETE" && path.startsWith("/networks/")) {
-    return deleteStatus === 204 ? send(204) : send(deleteStatus, { message: "network " + deleteStatus });
+    const selector = path.slice("/networks/".length);
+    deletes.push(selector);
+    if (deleteStatus === 409 || deleteStatus === 500) return send(deleteStatus, { message: "refused" });
+    if (network && (network.Id === selector || network.Name === selector)) {
+      network = undefined;
+      return send(deleteStatus);
+    }
+    return send(404, { message: "not found" });
   }
   if (request.method === "GET" && path === "/containers/json") return send(200, []);
   if (request.method === "GET" && path === "/volumes") return send(200, { Volumes: [] });
-  send(500, { message: "unexpected " + request.method + " " + path });
+  send(500, { message: "unexpected request" });
 });
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const nativeRequest = http.request;
-http.request = (options, callback) =>
-  nativeRequest({ ...options, socketPath: undefined, host: "127.0.0.1", port: server.address().port }, callback);
+http.request = (options, callback) => nativeRequest({ ...options, socketPath: undefined, host: "127.0.0.1", port: server.address().port }, callback);
 syncBuiltinESMExports();
 try {
   const { DockerComputeDriver } = await import(process.argv[1]);
-  const driver = new DockerComputeDriver({ images: { gateway: "gateway:local", agent: "agent:local" } });
-  const outcomes = {};
+  const driver = () => new DockerComputeDriver({ images: { gateway: "gateway:local", agent: "agent:local" } });
+  const fixture = async () => {
+    mode = "normal"; network = undefined; posts = 0; deletes = []; effects = []; engineId = "engine-original"; deleteStatus = 204;
+    const state = new InMemoryPlatformState();
+    const namespace = { id: "ns_lifecycle", name: "Lifecycle", status: "provisioning", createdAt: new Date().toISOString() };
+    const record = await state.transact(async (unit) => {
+      await unit.installations.createInstallation({ id: "ins_fixture", name: "Fixture", createdAt: namespace.createdAt });
+      await unit.namespaces.createNamespace(namespace);
+      const initial = await unit.namespaces.findLifecycle(namespace.id);
+      return unit.namespaces.bindLifecycle(namespace.id, initial.lifecycleId, driver());
+    });
+    let loseCheckpoint;
+    let failCheckpoint;
+    const context = (target) => ({
+      lifecycleId: record.lifecycleId, target, signal: new AbortController().signal,
+      read: () => state.transact(async (unit) => {
+        const current = await unit.namespaces.findLifecycle(namespace.id);
+        return { revision: current.revision, data: current.data };
+      }),
+      checkpoint: async (expected, data) => {
+        if (failCheckpoint?.(data)) { failCheckpoint = undefined; throw new Error("checkpoint outcome unknown before commit"); }
+        const current = await state.transact((unit) => unit.namespaces.checkpointLifecycle(namespace.id, record.lifecycleId, expected, data));
+        assert.ok(current, "production State CAS must accept the current revision");
+        if (loseCheckpoint?.(data)) { loseCheckpoint = undefined; throw new Error("checkpoint acknowledgment lost"); }
+        return { revision: current.revision, data: current.data };
+      },
+    });
+    return {
+      namespace, context,
+      loseCheckpointWhen: (predicate) => { loseCheckpoint = predicate; },
+      failCheckpointWhen: (predicate) => { failCheckpoint = predicate; },
+    };
+  };
   for (const status of [204, 404, 409, 500]) {
+    const f = await fixture();
+    assert.equal((await driver().ensureNamespace(f.namespace, f.context("ready"))).namespaceReady, true);
     deleteStatus = status;
-    requests.length = 0;
-    outcomes[status] = await driver.deleteNamespace({ id: "ns_vanish" });
-    assert.equal(requests.at(-1), "DELETE /networks/" + driver.networkName("ns_vanish"), String(status));
+    const result = await driver().deleteNamespace(f.namespace, f.context("deleted"));
+    assert.deepEqual(deletes, [originalId], "restart cleanup must address the saved full network ID");
+    assert.equal(result.namespaceDeleted, status === 204 || status === 404);
+    if (status === 409 || status === 500) assert.equal(result.failure, status === 409 ? "permanent" : "retryable");
   }
-  process.stdout.write(JSON.stringify(outcomes));
+  {
+    const f = await fixture();
+    assert.equal((await driver().ensureNamespace(f.namespace, f.context("ready"))).namespaceReady, true);
+    network.Id = replacementId;
+    effects.length = 0;
+    assert.equal((await driver().deleteNamespace(f.namespace, f.context("deleted"))).namespaceDeleted, false);
+    assert.deepEqual(effects, [], "same-name and same-label replacement must survive all cleanup");
+  }
+  {
+    const f = await fixture();
+    assert.equal((await driver().ensureNamespace(f.namespace, f.context("ready"))).namespaceReady, true);
+    mode = "replacement-before-delete";
+    const result = await driver().deleteNamespace(f.namespace, f.context("deleted"));
+    assert.deepEqual(deletes, [originalId], "a replacement after inspect must never become the DELETE selector");
+    assert.equal(network.Id, replacementId);
+    assert.equal(result.namespaceDeleted, false, "an observed replacement must prevent completion");
+  }
+  {
+    const f = await fixture();
+    mode = "lost-create";
+    assert.equal((await driver().ensureNamespace(f.namespace, f.context("ready"))).namespaceReady, false);
+    network = undefined; // No supported read can settle whether the lost create took effect.
+    mode = "normal";
+    assert.equal((await driver().ensureNamespace(f.namespace, f.context("ready"))).namespaceReady, false);
+    assert.equal((await driver().deleteNamespace(f.namespace, f.context("deleted"))).namespaceDeleted, false);
+    assert.equal(posts, 1, "unknown create must never trigger another POST");
+    assert.deepEqual(deletes, [], "unknown create must retain resources for authorized recovery");
+  }
+  {
+    const f = await fixture();
+    f.loseCheckpointWhen((data) => JSON.stringify(data).includes(originalId));
+    assert.equal((await driver().ensureNamespace(f.namespace, f.context("ready"))).namespaceReady, false);
+    assert.ok(network, "lost binding acknowledgment must not trigger name-based compensation");
+    assert.equal((await driver().ensureNamespace(f.namespace, f.context("ready"))).namespaceReady, true);
+    assert.equal(posts, 1);
+    assert.equal((await driver().deleteNamespace(f.namespace, f.context("deleted"))).namespaceDeleted, true);
+  }
+  {
+    const f = await fixture();
+    f.failCheckpointWhen((data) => JSON.stringify(data).includes(originalId));
+    assert.equal((await driver().ensureNamespace(f.namespace, f.context("ready"))).namespaceReady, false);
+    assert.ok(network, "an uncommitted ID checkpoint must retain the original network");
+    assert.equal((await driver().ensureNamespace(f.namespace, f.context("ready"))).namespaceReady, false);
+    assert.equal((await driver().deleteNamespace(f.namespace, f.context("deleted"))).namespaceDeleted, false);
+    assert.equal(posts, 1, "an unknown ID checkpoint must not cause duplicate creation");
+    assert.deepEqual(deletes, []);
+  }
+  {
+    const f = await fixture();
+    await f.context("ready").checkpoint(0, {});
+    assert.equal((await driver().ensureNamespace(f.namespace, f.context("ready"))).namespaceReady, false);
+    assert.equal((await driver().deleteNamespace(f.namespace, f.context("deleted"))).namespaceDeleted, false);
+    assert.deepEqual(effects, [], "a nonzero empty checkpoint is unsupported, not a new intent");
+  }
+  {
+    const f = await fixture();
+    network = { Id: replacementId, Name: driver().networkName(f.namespace.id), Labels: {
+      "org.openclaw.enterprise.managed": "true",
+      "org.openclaw.enterprise.compute-driver": "docker",
+      "org.openclaw.enterprise.namespace-id": f.namespace.id,
+    } };
+    assert.equal((await driver().ensureNamespace(f.namespace, f.context("ready"))).namespaceReady, false);
+    assert.equal((await driver().deleteNamespace(f.namespace, f.context("deleted"))).namespaceDeleted, false);
+    assert.deepEqual(effects, [], "an existing labeled resource must never be adopted without original binding");
+  }
+  {
+    const f = await fixture();
+    assert.equal((await driver().deleteNamespace(f.namespace, f.context("deleted"))).namespaceDeleted, true);
+    assert.deepEqual(effects, [], "cancellation before ensure must invent no provider effects");
+    const signal = AbortSignal.abort();
+    assert.equal((await driver().ensureNamespace(f.namespace, { ...f.context("ready"), signal })).namespaceReady, false);
+    assert.deepEqual(effects, []);
+  }
+  {
+    const f = await fixture();
+    assert.equal((await driver().ensureNamespace(f.namespace, f.context("ready"))).namespaceReady, true);
+    engineId = "engine-replacement";
+    effects.length = 0;
+    assert.equal((await driver().deleteNamespace(f.namespace, f.context("deleted"))).namespaceDeleted, false);
+    assert.deepEqual(effects, [], "an Engine change must preserve every resource");
+  }
 } finally {
   http.request = nativeRequest;
   syncBuiltinESMExports();
@@ -294,25 +435,17 @@ try {
   await new Promise((resolve) => server.close(resolve));
 }
 `;
-  const driver = new URL(
-    "../../apps/controller/src/drivers/compute/docker/index.ts",
-    import.meta.url,
-  );
-  const { stdout } = await promisify(execFile)(
+  await promisify(execFile)(
     process.execPath,
-    ["--input-type=module", "-e", source, driver.href],
-    { timeout: 10_000 },
+    [
+      "--input-type=module",
+      "-e",
+      source,
+      new URL("../../apps/controller/src/drivers/compute/docker/index.ts", import.meta.url).href,
+      new URL("../../packages/occ/src/state/platform-state.ts", import.meta.url).href,
+    ],
+    { timeout: 20_000 },
   );
-  const deleted = { namespaceId: "ns_vanish", namespaceDeleted: true };
-  const kept = { namespaceId: "ns_vanish", namespaceDeleted: false };
-  assert.deepEqual(JSON.parse(stdout), {
-    204: deleted,
-    // Removed between the inspect and the DELETE: the namespace is gone, not failed.
-    404: deleted,
-    // Still in use, or the engine failed: keep refusing.
-    409: { ...kept, failure: "permanent" },
-    500: { ...kept, failure: "retryable" },
-  });
 });
 
 test("Docker Compute logging forwarding configuration accepts only loopback addresses", () => {

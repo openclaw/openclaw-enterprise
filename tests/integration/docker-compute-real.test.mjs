@@ -1,3 +1,4 @@
+import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
@@ -1187,8 +1188,42 @@ for (const setupMode of executionModes) {
         },
       };
       const binding = { namespace, agent: { id: agentId, namespaceId: namespace.id } };
+      // This direct Driver proof uses the production in-memory State journal.
+      // It does not prove worker claims or PostgreSQL durability.
+      const lifecycleState = new InMemoryPlatformState();
+      const namespaceLifecycle = await lifecycleState.transact(async (unit) => {
+        await unit.installations.createInstallation({
+          id: `ins_${randomUUID()}`,
+          name: "Workspace setup Driver proof",
+          createdAt: namespace.createdAt,
+        });
+        await unit.namespaces.createNamespace(namespace);
+        const initial = await unit.namespaces.findLifecycle(namespace.id);
+        return unit.namespaces.bindLifecycle(namespace.id, initial.lifecycleId, driver);
+      });
+      const lifecycleContext = (target) => ({
+        lifecycleId: namespaceLifecycle.lifecycleId,
+        target,
+        signal: new AbortController().signal,
+        read: () =>
+          lifecycleState.transact(async (unit) => {
+            const current = await unit.namespaces.findLifecycle(namespace.id);
+            return { revision: current.revision, data: current.data };
+          }),
+        checkpoint: (revision, data) =>
+          lifecycleState.transact(async (unit) => {
+            const saved = await unit.namespaces.checkpointLifecycle(
+              namespace.id,
+              namespaceLifecycle.lifecycleId,
+              revision,
+              data,
+            );
+            assert.ok(saved, "Namespace journal checkpoint must retain its current authority");
+            return { revision: saved.revision, data: saved.data };
+          }),
+      });
       context.after(async () => {
-        const result = await driver.deleteNamespace(namespace);
+        const result = await driver.deleteNamespace(namespace, lifecycleContext("deleted"));
         assert.equal(
           result.namespaceDeleted,
           true,
@@ -1196,7 +1231,10 @@ for (const setupMode of executionModes) {
         );
       });
       await driver.preflight();
-      assert.equal((await driver.ensureNamespace(namespace)).namespaceReady, true);
+      assert.equal(
+        (await driver.ensureNamespace(namespace, lifecycleContext("ready"))).namespaceReady,
+        true,
+      );
       assert.equal((await driver.prepareRevision(revision, { workspaceSetup: setup })).ready, true);
       const filters = [
         [LABEL_NAMESPACE, namespace.id],

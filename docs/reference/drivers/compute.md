@@ -88,6 +88,9 @@ uses a 10-second timeout and accepts up to 4 MiB per response, ten pages, and
 
 ### Namespace and gateway results
 
+Namespace operations require the [durable lifecycle context](compute-namespace-lifecycle.md).
+Commit cleanup confirmation before removing retry access.
+
 Each Namespace result must carry the requested `namespaceId`. It can report a
 `retryable` or `permanent` failure. A true ready
 or deleted flag succeeds only without a failure. A failure reason for the worker

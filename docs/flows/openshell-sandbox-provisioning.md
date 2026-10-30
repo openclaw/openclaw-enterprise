@@ -1,20 +1,20 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-29
-last_updated_session: authoring-run/fb8f8f69-4a79-4657-90a7-fb1ec9f646c3
+updated: 2026-10-30
+last_updated_session: authoring-run/8312c018-795a-4cde-84b8-8fd87003134c
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-Kubernetes Compute provisions dedicated Codex and OpenClaw Harnesses through
-OpenShell. [Credential sources](credential-source-lifecycle.md) supply model access.
+Kubernetes Compute provisions dedicated Codex/OpenClaw Harnesses through OpenShell.
+[Credential sources](credential-source-lifecycle.md) supply model access.
 
 ## Entry Points
 
-- Trigger: worker reconciliation of an Agent revision selecting OpenShell Sandbox
-  and Kubernetes Compute.
+- Trigger: worker Namespace preparation/deletion or Agent revision reconciliation
+  with OpenShell Sandbox and Kubernetes Compute.
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:ensureNamespace`
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 - Source: `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
@@ -29,8 +29,8 @@ graph TD
   A["<b>Reconcile Agent revision</b><br/>Worker selects Drivers"] --> B["<b>Prepare Namespace</b><br/>Kubernetes isolation"]
   B --> C{"<b>Workspace mode</b><br/>Installation setting"}
   C -- "managed" --> X["<b>Reject configuration</b><br/>Before mutation"]
-  C -- "operator" --> D["<b>Reconcile resources</b><br/>Labels and workspace chart"]
-  D --> E["<b>Own Workspace</b><br/>Create or adopt"]
+  C -- "operator" --> D["<b>Reconcile resources</b><br/>Creation nonce and UID"]
+  D --> E["<b>Bind Workspace</b><br/>Save immutable ID"]
   E --> F["<b>Derive Harness</b><br/>Compute requirements"]
   F --> K0["<b>Start Agent Gateway</b><br/>Fail-closed transport"]
   K0 --> Y0{"<b>Node setup</b><br/>Material exists?"}
@@ -66,17 +66,21 @@ graph TD
   D2 -- "cannot prove" --> D3["<b>Request retirement</b><br/>Caller decides"]
   L --> N["<b>Delete Sandbox</b><br/>Version cleanup"]
   U --> N
-  N --> O["<b>Delete Workspace</b><br/>Namespace cleanup"]
-  O --> P["<b>Delete Namespace</b><br/>Compute cleanup"]
+  N --> O["<b>Confirm Workspace removal</b><br/>Namespace cleanup"]
+  O -- "completed" --> P0["<b>Commit cleanup receipt</b><br/>Worker claim and audit"]
+  O -- "unknown" --> O1["<b>Keep cleanup incomplete</b><br/>Retain provider access"]
+  P0 --> P1["<b>Delete owned resources</b><br/>UID and resourceVersion"]
+  P1 --> P2["<b>Save cleanup result</b><br/>Compute fences sweep"]
+  P2 --> P["<b>Retain or delete Namespace</b><br/>Compute lifecycle"]
 
   classDef state fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
   classDef gate fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   classDef blocked fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-width:1px
-  class A,B,F,D1 state
-  class D,E,I,Q,W,W1,W2,H,J,K,L,M,N,O,P,R1,T,U operation
+  class A,B,F,D1,P0,P2 state
+  class D,E,I,Q,W,W1,W2,H,J,K,L,M,N,O,P,P1,R1,T,U operation
   class C,G,S,V,Y,Y0,Z,W0,D2 gate
-  class X,R,R0,D3 blocked
+  class X,R,R0,D3,O1 blocked
   linkStyle default stroke:#8B949E,stroke-width:1px
 ```
 
@@ -142,20 +146,22 @@ the result in the Agent revision. Provisioning status reads return stored work.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:ensureNamespace`
 
-Compute establishes quota, limits and baseline NetworkPolicies before
-`SandboxDriver.ensureNamespace`. Managed mode rejects before Kubernetes/Gateway
-use. Operator mode checks optional local readiness, applies namespace labels,
-workspace resources and provider NetworkPolicies, then checks health.
-Development uses the central Gateway.
+Compute delegates Namespace journal data and the original Namespace UID.
+OpenShell verifies placement, saves creation intents/nonces, creates resources,
+and saves UIDs.
+Preinstalled operator-owned resources require full configuration checks and are
+retained. Readiness and health precede Workspace creation.
 
-`apps/controller/src/backends/openshell.ts:clientForNamespace` passes raw
-endpoints, including bracketed IPv6, unchanged to the gRPC client. HTTP
-origins keep port 80 explicit; HTTPS and nondefault ports retain their behavior.
+`apps/controller/src/backends/openshell.ts:lifecycleTarget` binds the effective
+endpoint and public server trust. A bare Service resolves in the tenant Namespace;
+the development profile uses a central Gateway.
 
-The Workspace uses Compute's physical namespace name: `oce-` plus a 15-character
-digest fits OpenShell's 19-character limit. The Driver creates it if absent and
-rereads after `ALREADY_EXISTS`. Adoption requires exact name, OCC Namespace ID and
-managed-by labels, and active phase; conflicts fail preparation.
+The Workspace name is Compute's physical namespace: `oce-` plus a 15-character
+digest fits OpenShell's 19-character limit. The Driver saves an attempt before
+`CreateWorkspace`, then saves the returned immutable ID before ready. Retries
+require that ID and ownership metadata. Unbound existing Workspaces and unknown
+creation responses cannot be adopted by name. Journal callbacks commit through
+the worker's live claim and audit transaction; the Driver stores no credentials.
 
 ### 2. Derive the provider-owned Harness request
 
@@ -335,10 +341,20 @@ Namespace, Agent, and revision annotations before `DeleteSandbox`. Absence needs
 providers and profiles. `cleanupNativeWorkspace` retires interrupted preparers,
 refusing foreign or replaced resources.
 
-Namespace `cleanup` verifies Workspace ownership, removes owned runtime/Git
-providers and profiles, sends idempotent `DeleteWorkspace`, then removes chart
-resources/NetworkPolicies in reverse order. Lost responses retry terminating
-Workspaces. Compute deletes the Kubernetes namespace only after cleanup succeeds.
+`apps/controller/src/drivers/sandbox/openshell.ts:cleanupNamespace` checks saved
+Namespace/resource UIDs and ownership before provider mutations. It removes owned
+runtime/Git providers and profiles only from the original Workspace ID. A fresh
+`DeleteWorkspace` completion plus removal readback precedes the awaited cleanup
+checkpoint. `ACCEPTED`, `ALREADY_ABSENT`, unknown responses and bare absence do not
+supply that receipt. No provider RPC is needed after no attempt or confirmed creation refusal.
+
+After the receipt commits, reverse-order resource cleanup uses saved UIDs/current
+`resourceVersion` and confirms removal. Finalizers defer completion. Cleanup returns
+all configured references as absent or retained with original UID; Compute persists
+this result before sweeping other objects. Absence refuses reappearance; retention
+refuses replacement UIDs. Retries skip provider RPCs despite gateway/Namespace loss.
+Compute handles managed Namespace removal or external claim release;
+see [Namespace placement](kubernetes-existing-namespace-placement.md).
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:cleanupRevisionSandbox`
 runs after Namespace loss: stop removes serving paths first; retirement cleans
@@ -380,8 +396,10 @@ initialized files are insufficient.
 setup, retry and restart under setgid parents. It does not prove Kubernetes or
 model execution.
 
-`tests/conformance/kubernetes-compute.test.mjs` checks cleanup with controlled
-fixtures; live provider removal remains unverified.
+`tests/integration/sandbox-driver-startup.test.mjs` checks journal order, unknown
+responses and replacement refusal with controlled transports. The independent
+Workspace wire test checks request IDs and deletion outcomes. These do not prove
+live provider removal or Kubernetes concurrency; that combined proof remains unrun.
 
 ## Related docs
 
@@ -399,32 +417,6 @@ fixtures; live provider removal remains unverified.
 
 ## Changelog
 
-- 2026-10-29 21:18: Merge preparation updates with cleanup ownership checks. (authoring-run/fb8f8f69-4a79-4657-90a7-fb1ec9f646c3 - b0178eed8d6722c133fd8f3f3cb0b0e090653642)
-
-- 2026-10-29 17:09: Preserve mode support and cleanup during merge. (authoring-run/8c9c6805-6fea-483a-9626-bce15cd10ab0 - 62cae82f7227a5a2ac0b3a8000e5e96326438b69)
-
-- 2026-10-29 16:13: Reject reassigned Sandboxes. (authoring-run/652cb088-e8de-4ee4-9970-513a3502d08d - 5ad9e16de6a249b096d851afe422a00e90eb3473)
-
-- 2026-10-29 15:03: Require provider cleanup after Namespace loss. (authoring-run/d72e8e1c-56b3-4bba-b7b2-83d6212f5e58 - 72dfce5bfdbde5a79f714dc62777425c26619581)
-
-- 2026-10-29 04:23: Route OpenShell workspace nodes through Envoy for worker HTTP transfers and client attribution. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - 15440bacfc5a6553190c9580eb0eccf6f301f0ed)
-
-- 2026-10-28 21:24: Unify preparation cleanup. (01a184cd-7ec2-7fa2-8547-9629c51ad0ba - 208172f773)
-
-- 2026-10-28 16:50: Trace stdio plugin installation before verifier-only native startup. (01a184cd-7ec2-7fa2-8547-9629c51ad0ba - 000e1381e7)
-
-- 2026-10-28 15:09: Clarify mode support and Configuration transformation wording. (01a183dc-eb11-7f33-9992-dec02cd989e3 - a06c28fe0e)
-
-- 2026-10-28 12:05: Separate static Harness mode reporting from real Configuration transformation. (01a183dc-eb11-7f33-9992-dec02cd989e3 - 07418d1980)
-
-- 2026-10-28 01:58: Restrict released-preview readiness to HTTP 400/404 in the accompanying Driver change. (authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88 - 19ecdca36)
-
-- 2026-10-27 10:15: Prepare private node state before startup in the accompanying setgid fix. (authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2 - ed6a5e31e7912eb9e79fd039735b81d6f0bd1b2e)
-
-- 2026-10-24 20:50: Refuse dedicated OpenClaw with several operator-mode ServiceAccounts at admission, and offer only admitted OpenClaw modes. (finding 2346)
-
-- 2026-10-23 14:21: Confirm released preview readiness with the acknowledged release and authenticated WebSocket in the accompanying Driver change. (authoring-run/5f5f89f5-e1c7-4af8-9b15-abd7a29db02e - 725e2371e5984fbe72d679e0fb7a55833225d70d)
-
-- 2026-10-21 23:23: Record per-source retirement refusal in the accompanying worker change. (authoring-run/67a0706e-56ab-4514-adca-35cf217b0c3b - 7e5773662f34dc38be8138757ee47fd246bc3f9e)
+- 2026-10-30 10:00: Trace cleanup results before parent sweeping in the accompanying Driver change. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - ef2cf007043819118c83fd8339496a92bcab9fb3)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

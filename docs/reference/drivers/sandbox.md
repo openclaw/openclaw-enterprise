@@ -273,6 +273,8 @@ sequenceDiagram
 The revision stores the selected `sandboxDriverId`. Before routing traffic,
 Compute checks that the workload's revision ID matches the requested revision.
 Namespace setup, provisioning, and cleanup must be safe to repeat.
+Namespace-only setup and cleanup receive the [durable child context](compute-namespace-lifecycle.md)
+and original `kubernetesNamespaceUid`; revision cleanup retains its revision context.
 Run revision cleanup even when the Pod or Kubernetes Namespace is already absent.
 The selected Sandbox Driver must confirm removal of its provider resources.
 Namespace cleanup follows revision cleanup and must also run when the Kubernetes

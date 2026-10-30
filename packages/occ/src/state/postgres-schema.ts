@@ -116,6 +116,43 @@ export const namespaces = occSchema.table(
   ],
 );
 
+export const namespaceLifecycle = occSchema.table(
+  "namespace_lifecycle",
+  {
+    namespaceId: text("namespace_id")
+      .primaryKey()
+      .references(() => namespaces.id, { onDelete: "restrict", onUpdate: "restrict" }),
+    lifecycleId: uuid("lifecycle_id").notNull().defaultRandom().unique(),
+    computeDriverId: text("compute_driver_id"),
+    computeImplementation: text("compute_implementation"),
+    revision: integer("revision").notNull().default(0),
+    data: jsonb("data").$type<Readonly<Record<string, unknown>>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+  },
+  (table) => [
+    check("namespace_lifecycle_revision_valid", sql`${table.revision} >= 0`),
+    check("namespace_lifecycle_data_object", sql`jsonb_typeof(${table.data}) = 'object'`),
+    check("namespace_lifecycle_data_limit", sql`octet_length(${table.data}::text) <= 65536`),
+    check(
+      "namespace_lifecycle_driver_complete",
+      sql`(${table.computeDriverId} IS NULL AND ${table.computeImplementation} IS NULL)
+        OR (${table.computeDriverId} IS NOT NULL AND ${table.computeImplementation} IS NOT NULL
+          AND char_length(btrim(${table.computeDriverId})) BETWEEN 1 AND 200
+          AND char_length(btrim(${table.computeImplementation})) BETWEEN 1 AND 200)`,
+    ),
+    check(
+      "namespace_lifecycle_initial_state",
+      sql`(${table.revision} = 0 AND ${table.data} = '{}'::jsonb)
+        OR (${table.revision} > 0 AND ${table.computeDriverId} IS NOT NULL)`,
+    ),
+  ],
+);
+
 export const presets = occSchema.table(
   "presets",
   {

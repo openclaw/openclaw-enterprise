@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { access, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -14,6 +14,7 @@ import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redactio
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { availablePort } from "../helpers/available-port.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
@@ -100,6 +101,18 @@ async function waitForNamespaceReady(environment, apiPort, stateDirectory, names
     await delay(500);
   }
   throw new Error(`OCC Namespace ${namespaceId} did not become ready.`);
+}
+
+async function waitForObservation(description, observe) {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const result = await observe();
+    if (result) {
+      return result;
+    }
+    await delay(500);
+  }
+  throw new Error(`Timed out waiting for ${description}.`);
 }
 
 async function runGatewayProbe({
@@ -202,7 +215,7 @@ test(
     skip: selected
       ? false
       : "Set OCC_TEST_DEV_UP_OPENSHELL_REAL=1 to run the real development profile.",
-    timeout: 1_200_000,
+    timeout: 2_400_000,
   },
   async (t) => {
     await access(occ);
@@ -633,6 +646,887 @@ test(
       undefined,
     );
     await cli("secret", "delete", secret.id);
+
+    const namespaceCli = async (...args) =>
+      JSON.parse(
+        (
+          await execute(occ, ["namespace", ...args, "--output", "json"], {
+            cwd: repository,
+            env: occEnvironment,
+            maxBuffer: 4 * 1024 * 1024,
+          })
+        ).stdout,
+      );
+    const clusterCommand = async (...args) =>
+      execute("kubectl", [...kubectl, ...args], {
+        cwd: repository,
+        env: environment,
+        maxBuffer: 4 * 1024 * 1024,
+        timeout: 150_000,
+      });
+    const clusterJson = async (...args) =>
+      JSON.parse((await clusterCommand(...args, "--output", "json")).stdout);
+    const liveNamespace = async (id) => (await namespaceCli("list")).find((item) => item.id === id);
+    const waitForLogicalDeletion = async (id) => {
+      await waitForObservation(
+        `OCC Namespace ${id} deletion`,
+        async () => (await liveNamespace(id)) === undefined,
+      );
+      await assert.rejects(namespaceCli("get", id), /404|NOT_FOUND/);
+    };
+    const setWorkerReplicas = async (replicas) => {
+      await clusterCommand(
+        "scale",
+        "deployment/openclaw-enterprise-worker",
+        "--namespace",
+        state.platformNamespace,
+        `--replicas=${replicas}`,
+      );
+      if (replicas === 0) {
+        await waitForObservation("owned worker Pod termination", async () => {
+          const pods = await clusterJson(
+            "get",
+            "pods",
+            "--namespace",
+            state.platformNamespace,
+            "--selector",
+            "app.kubernetes.io/component=worker",
+          );
+          return pods.items.length === 0;
+        });
+      } else {
+        await clusterCommand(
+          "rollout",
+          "status",
+          "deployment/openclaw-enterprise-worker",
+          "--namespace",
+          state.platformNamespace,
+          "--timeout=120s",
+        );
+      }
+    };
+    const restartWorker = async () => {
+      await setWorkerReplicas(0);
+      await setWorkerReplicas(1);
+    };
+    const waitForDeletionDispatch = async (namespaceId) =>
+      waitForObservation("worker Namespace deletion dispatch", async () => {
+        const { stdout } = await clusterCommand(
+          "logs",
+          "deployment/openclaw-enterprise-worker",
+          "--namespace",
+          state.platformNamespace,
+        );
+        // Read only structured lifecycle evidence; never print raw worker logs.
+        return stdout
+          .split("\n")
+          .flatMap((line) => {
+            try {
+              const event = JSON.parse(line);
+              return event.event === "worker.completed" &&
+                event.operation === "namespace.delete" &&
+                event.namespaceId === namespaceId
+                ? [{ result: event.result, code: event.code }]
+                : [];
+            } catch {
+              return [];
+            }
+          })
+          .at(-1);
+      });
+    const readyNamespace = async (name, ...options) => {
+      const logical = await namespaceCli("create", name, ...options);
+      await waitForNamespaceReady(environment, apiPort, stateDirectory, logical.id);
+      const physical = await clusterJson(
+        "get",
+        "namespaces",
+        "--selector",
+        `openclaw.dev/namespace=${logical.id}`,
+      );
+      assert.equal(physical.items.length, 1);
+      const backing = physical.items[0];
+      const boundWorkspace = await gateway.getWorkspace(
+        backing.metadata.name,
+        AbortSignal.timeout(10_000),
+      );
+      assert.ok(boundWorkspace?.id, "the real provider must return its immutable Workspace ID");
+      assert.equal(boundWorkspace.labels["openclaw.dev/namespace-id"], logical.id);
+      return { logical, backing, boundWorkspace };
+    };
+    const createExternalNamespace = async (name) => {
+      await clusterCommand("create", "namespace", name);
+      await clusterCommand(
+        "label",
+        "namespace",
+        name,
+        "app.kubernetes.io/managed-by=Helm",
+        "pod-security.kubernetes.io/enforce=restricted",
+        "pod-security.kubernetes.io/audit=restricted",
+        "pod-security.kubernetes.io/warn=restricted",
+      );
+      await clusterCommand(
+        "annotate",
+        "namespace",
+        name,
+        "openclaw.dev/namespace-lifecycle=external",
+      );
+      return clusterJson("get", "namespace", name);
+    };
+
+    await t.test(
+      "Namespace loss does not discard the original Workspace cleanup binding",
+      async () => {
+        assert.ok(createdWorkspace.id);
+        await setWorkerReplicas(0);
+        try {
+          // Only the tenant placement is lost. The independently stored Workspace must
+          // remain reachable and owned until the ordinary deletion worker removes it.
+          await clusterCommand(
+            "delete",
+            "namespace",
+            createdPhysicalNamespace,
+            "--wait=true",
+            "--timeout=120s",
+          );
+          assert.equal(
+            (await gateway.getWorkspace(createdPhysicalNamespace, AbortSignal.timeout(10_000)))?.id,
+            createdWorkspace.id,
+          );
+          assert.equal((await namespaceCli("delete", created.id)).status, "deleting");
+        } finally {
+          await setWorkerReplicas(1);
+        }
+        await waitForLogicalDeletion(created.id);
+        assert.equal(
+          await gateway.getWorkspace(createdPhysicalNamespace, AbortSignal.timeout(10_000)),
+          undefined,
+          "logical deletion must include removal of the original real Workspace after placement loss",
+        );
+      },
+    );
+
+    await t.test(
+      "confirmed Workspace cleanup survives worker restart while deletion is held",
+      async () => {
+        const { logical, backing } = await readyNamespace(`checkpoint-${suffix}`);
+        const name = backing.metadata.name;
+        const finalizer = `cleanup-test.openclaw.dev/hold-${suffix}`;
+        await clusterCommand(
+          "patch",
+          "namespace",
+          name,
+          "--type=merge",
+          "--patch",
+          JSON.stringify({
+            metadata: { finalizers: [...(backing.metadata.finalizers ?? []), finalizer] },
+          }),
+        );
+        await namespaceCli("delete", logical.id);
+        // Holding the Kubernetes tail creates a real retry after provider confirmation.
+        // The provider receipt must survive the process that first observed deletion.
+        await waitForObservation(
+          "Workspace removal before physical Namespace removal",
+          async () => {
+            const current = await clusterJson("get", "namespace", name);
+            return (
+              current.metadata.deletionTimestamp !== undefined &&
+              (await gateway.getWorkspace(name, AbortSignal.timeout(10_000))) === undefined
+            );
+          },
+        );
+        assert.equal((await namespaceCli("get", logical.id)).status, "deleting");
+        await restartWorker();
+        assert.equal((await waitForDeletionDispatch(logical.id)).result, "pending");
+        const retained = await clusterJson("get", "namespace", name);
+        assert.equal(retained.metadata.uid, backing.metadata.uid);
+        assert.ok(retained.metadata.finalizers.includes(finalizer));
+        await clusterCommand(
+          "patch",
+          "namespace",
+          name,
+          "--type=json",
+          "--patch",
+          JSON.stringify([
+            { op: "test", path: "/metadata/uid", value: backing.metadata.uid },
+            { op: "test", path: "/metadata/finalizers", value: retained.metadata.finalizers },
+            {
+              op: "replace",
+              path: "/metadata/finalizers",
+              value: retained.metadata.finalizers.filter((value) => value !== finalizer),
+            },
+          ]),
+        );
+        await waitForLogicalDeletion(logical.id);
+        assert.equal(
+          (
+            await clusterCommand("get", "namespace", name, "--ignore-not-found", "--output=name")
+          ).stdout.trim(),
+          "",
+        );
+        assert.equal(await gateway.getWorkspace(name, AbortSignal.timeout(10_000)), undefined);
+      },
+    );
+
+    await t.test(
+      "same-name Workspace replacement is refused on deletion and explicit retry",
+      async () => {
+        const { logical, backing, boundWorkspace } = await readyNamespace(`replacement-${suffix}`);
+        const name = backing.metadata.name;
+        // Reproduce provider state loss with the real protocol. Matching ownership
+        // labels do not make a newly created Workspace the saved incarnation.
+        await gateway.deleteWorkspace(name, AbortSignal.timeout(10_000));
+        assert.equal(await gateway.getWorkspace(name, AbortSignal.timeout(10_000)), undefined);
+        const replacement = await gateway.createWorkspace(
+          name,
+          boundWorkspace.labels,
+          AbortSignal.timeout(10_000),
+        );
+        assert.ok(replacement.id);
+        assert.notEqual(replacement.id, boundWorkspace.id);
+        const assertRefusedDeletion = async () => {
+          assert.equal((await namespaceCli("delete", logical.id)).status, "deleting");
+          const dispatch = await waitForDeletionDispatch(logical.id);
+          assert.equal(dispatch.result, "permanent");
+          assert.equal((await namespaceCli("get", logical.id)).status, "deleting");
+          assert.equal(
+            (await gateway.getWorkspace(name, AbortSignal.timeout(10_000)))?.id,
+            replacement.id,
+            "a replacement Workspace must survive the attempted deletion",
+          );
+          const physical = await clusterJson("get", "namespace", name);
+          assert.equal(physical.metadata.uid, backing.metadata.uid);
+          assert.equal(physical.metadata.deletionTimestamp, undefined);
+        };
+        await assertRefusedDeletion();
+        await restartWorker();
+        await assertRefusedDeletion();
+      },
+    );
+
+    await t.test(
+      "saved provider cleanup does not authorize a replacement configured ServiceAccount",
+      async () => {
+        const name = `resource-replacement-${suffix}`;
+        const external = await createExternalNamespace(name);
+        const { logical, backing, boundWorkspace } = await readyNamespace(
+          `resource-replacement-${suffix}`,
+          "--existing-namespace",
+          name,
+        );
+        assert.equal(backing.metadata.uid, external.metadata.uid);
+        assert.ok(boundWorkspace.id);
+        const original = await clusterJson(
+          "get",
+          "serviceaccount",
+          "openshell-sandbox",
+          "--namespace",
+          name,
+        );
+        assert.ok(original.metadata.uid);
+        const finalizer = `cleanup-test.openclaw.dev/hold-resource-${suffix}`;
+        await clusterCommand(
+          "patch",
+          "serviceaccount",
+          original.metadata.name,
+          "--namespace",
+          name,
+          "--type=json",
+          "--patch",
+          JSON.stringify([
+            { op: "test", path: "/metadata/uid", value: original.metadata.uid },
+            {
+              op: "add",
+              path: "/metadata/finalizers",
+              value: [...(original.metadata.finalizers ?? []), finalizer],
+            },
+          ]),
+        );
+        await namespaceCli("delete", logical.id);
+        // The external Namespace stays active while the configured-resource tail
+        // waits for this finalizer after real provider deletion and its checkpoint.
+        await waitForObservation(
+          "Workspace removal and configured ServiceAccount deletion",
+          async () => {
+            const held = await clusterJson(
+              "get",
+              "serviceaccount",
+              original.metadata.name,
+              "--namespace",
+              name,
+            );
+            assert.equal(held.metadata.uid, original.metadata.uid);
+            return (
+              held.metadata.deletionTimestamp !== undefined &&
+              (await gateway.getWorkspace(name, AbortSignal.timeout(10_000))) === undefined
+            );
+          },
+        );
+        assert.equal((await namespaceCli("get", logical.id)).status, "deleting");
+        assert.equal((await clusterJson("get", "namespace", name)).status.phase, "Active");
+        await setWorkerReplicas(0);
+        let replacement;
+        try {
+          const held = await clusterJson(
+            "get",
+            "serviceaccount",
+            original.metadata.name,
+            "--namespace",
+            name,
+          );
+          assert.equal(held.metadata.uid, original.metadata.uid);
+          assert.ok(held.metadata.finalizers.includes(finalizer));
+          // Release only this test's hold. Kubernetes must remove the original
+          // incarnation before the test creates a same-name replacement.
+          await clusterCommand(
+            "patch",
+            "serviceaccount",
+            original.metadata.name,
+            "--namespace",
+            name,
+            "--type=json",
+            "--patch",
+            JSON.stringify([
+              { op: "test", path: "/metadata/uid", value: original.metadata.uid },
+              { op: "test", path: "/metadata/finalizers", value: held.metadata.finalizers },
+              {
+                op: "replace",
+                path: "/metadata/finalizers",
+                value: held.metadata.finalizers.filter((value) => value !== finalizer),
+              },
+            ]),
+          );
+          await waitForObservation("original configured ServiceAccount removal", async () => {
+            const absent = await clusterCommand(
+              "get",
+              "serviceaccount",
+              original.metadata.name,
+              "--namespace",
+              name,
+              "--ignore-not-found",
+              "--output=name",
+            );
+            return absent.stdout.trim() === "";
+          });
+          const manifest = join(root, "replacement-serviceaccount.json");
+          await writeFile(
+            manifest,
+            JSON.stringify({
+              apiVersion: "v1",
+              kind: "ServiceAccount",
+              metadata: {
+                name: original.metadata.name,
+                namespace: name,
+                labels: original.metadata.labels,
+                annotations: original.metadata.annotations,
+              },
+              automountServiceAccountToken: original.automountServiceAccountToken,
+              imagePullSecrets: original.imagePullSecrets,
+            }),
+            { mode: 0o600 },
+          );
+          await clusterCommand("create", "--filename", manifest);
+          replacement = await clusterJson(
+            "get",
+            "serviceaccount",
+            original.metadata.name,
+            "--namespace",
+            name,
+          );
+          assert.ok(replacement.metadata.uid);
+          assert.notEqual(replacement.metadata.uid, original.metadata.uid);
+          assert.deepEqual(replacement.metadata.labels, original.metadata.labels);
+          assert.deepEqual(replacement.metadata.annotations, original.metadata.annotations);
+        } finally {
+          await setWorkerReplicas(1);
+        }
+
+        const assertReplacementSurvives = async () => {
+          assert.equal((await waitForDeletionDispatch(logical.id)).result, "permanent");
+          assert.equal((await namespaceCli("get", logical.id)).status, "deleting");
+          const retained = await clusterJson(
+            "get",
+            "serviceaccount",
+            original.metadata.name,
+            "--namespace",
+            name,
+          );
+          assert.equal(retained.metadata.uid, replacement.metadata.uid);
+          assert.equal(retained.metadata.deletionTimestamp, undefined);
+          assert.deepEqual(retained.metadata.labels, replacement.metadata.labels);
+          assert.deepEqual(retained.metadata.annotations, replacement.metadata.annotations);
+          const physical = await clusterJson("get", "namespace", name);
+          assert.equal(physical.metadata.uid, external.metadata.uid);
+          assert.equal(physical.metadata.deletionTimestamp, undefined);
+          assert.equal(physical.status.phase, "Active");
+          assert.equal(physical.metadata.labels["openclaw.dev/namespace"], logical.id);
+          // A saved provider receipt cannot authorize deleting a new Kubernetes
+          // incarnation, nor permit logical completion while that refusal remains.
+          assert.equal(await gateway.getWorkspace(name, AbortSignal.timeout(10_000)), undefined);
+        };
+        await assertReplacementSurvives();
+        await restartWorker();
+        assert.equal((await namespaceCli("delete", logical.id)).status, "deleting");
+        await assertReplacementSurvives();
+      },
+    );
+
+    await t.test(
+      "external Namespace cleanup retains its physical incarnation and releases its claim",
+      async () => {
+        const name = `external-${suffix}`;
+        const original = await createExternalNamespace(name);
+        const { logical, backing } = await readyNamespace(
+          `retained-${suffix}`,
+          "--existing-namespace",
+          name,
+        );
+        assert.equal(backing.metadata.uid, original.metadata.uid);
+        await namespaceCli("delete", logical.id);
+        await waitForLogicalDeletion(logical.id);
+        // Logical 404 must follow real provider removal and claim release, while
+        // preserving the operator's physical Namespace and non-OCC ownership.
+        assert.equal(await gateway.getWorkspace(name, AbortSignal.timeout(10_000)), undefined);
+        const retained = await clusterJson("get", "namespace", name);
+        assert.equal(retained.metadata.uid, original.metadata.uid);
+        assert.equal(retained.metadata.deletionTimestamp, undefined);
+        assert.equal(retained.metadata.labels["app.kubernetes.io/managed-by"], "Helm");
+        assert.equal(retained.metadata.labels["openclaw.dev/namespace"], undefined);
+        assert.equal(retained.metadata.labels["openclaw.dev/gateway-namespace"], undefined);
+        assert.equal(retained.metadata.annotations["openclaw.dev/namespace-id"], undefined);
+        assert.equal(retained.metadata.annotations["openclaw.dev/namespace-lifecycle"], "external");
+        assert.equal(
+          (
+            await clusterCommand(
+              "get",
+              "serviceaccount",
+              "openshell-sandbox",
+              "--namespace",
+              name,
+              "--ignore-not-found",
+              "--output=name",
+            )
+          ).stdout.trim(),
+          "",
+          "the configured OpenShell ServiceAccount must be removed from the retained Namespace",
+        );
+      },
+    );
+
+    await t.test("deletion before first ensure needs no invented provider binding", async () => {
+      const name = `cancelled-${suffix}`;
+      const original = await createExternalNamespace(name);
+      await setWorkerReplicas(0);
+      let logical;
+      try {
+        // With no worker Pod, create and delete are committed through the real
+        // API before any Driver preparation effect can start.
+        logical = await namespaceCli("create", `cancelled-${suffix}`, "--existing-namespace", name);
+        assert.equal(logical.status, "provisioning");
+        assert.equal((await namespaceCli("delete", logical.id)).status, "deleting");
+        assert.equal(await gateway.getWorkspace(name, AbortSignal.timeout(10_000)), undefined);
+      } finally {
+        await setWorkerReplicas(1);
+      }
+      await waitForLogicalDeletion(logical.id);
+      assert.equal(await gateway.getWorkspace(name, AbortSignal.timeout(10_000)), undefined);
+      const retained = await clusterJson("get", "namespace", name);
+      assert.equal(retained.metadata.uid, original.metadata.uid);
+      assert.deepEqual(retained.metadata.labels, original.metadata.labels);
+      assert.deepEqual(retained.metadata.annotations, original.metadata.annotations);
+    });
+
+    await t.test(
+      "ordinary Agent stop and deletion remove real revision providers after Namespace loss without inference",
+      { timeout: 600_000 },
+      async (agentTest) => {
+        const { logical, backing, boundWorkspace } = await readyNamespace(
+          `agent-cleanup-${suffix}`,
+        );
+        const name = backing.metadata.name;
+        const installation = loadYaml(
+          await readFile(join(stateDirectory, "installation.yaml"), "utf8"),
+        );
+        assert.equal(
+          installation.drivers.compute.configuration.servicePrincipalCredentials.mode,
+          "disabled",
+        );
+        const resources =
+          installation.drivers.sandbox.configuration.gateway.operatorWorkspaceResources;
+        const gatewayPods = await clusterJson(
+          "get",
+          "pods",
+          "--namespace",
+          state.platformNamespace,
+          "--selector",
+          Object.entries(service.spec.selector)
+            .map(([key, value]) => `${key}=${value}`)
+            .join(","),
+        );
+        const accounts = [...new Set(gatewayPods.items.map((pod) => pod.spec.serviceAccountName))];
+        assert.equal(accounts.length, 1);
+        assert.ok(accounts[0]);
+        const gatewayAccount = {
+          kind: "ServiceAccount",
+          name: accounts[0],
+          namespace: state.platformNamespace,
+        };
+        const sandboxRoles = resources.filter(
+          (resource) =>
+            resource.kind === "Role" &&
+            resource.rules.some(
+              (rule) =>
+                rule.apiGroups.includes("agents.x-k8s.io") &&
+                rule.resources.includes("sandboxes") &&
+                rule.verbs.includes("create"),
+            ),
+        );
+        const bindings = resources.filter(
+          (resource) =>
+            resource.kind === "RoleBinding" &&
+            resource.roleRef.kind === "Role" &&
+            sandboxRoles.some((role) => role.metadata.name === resource.roleRef.name) &&
+            resource.subjects.some(
+              (subject) =>
+                subject.kind === gatewayAccount.kind &&
+                subject.name === gatewayAccount.name &&
+                subject.namespace === gatewayAccount.namespace,
+            ),
+        );
+        assert.equal(
+          bindings.length,
+          1,
+          "the rendered chart must identify one gateway Sandbox-create binding",
+        );
+        assert.equal(
+          bindings[0].subjects.length,
+          1,
+          "the selected binding must grant only the gateway",
+        );
+        const binding = await clusterJson(
+          "get",
+          "rolebinding",
+          bindings[0].metadata.name,
+          "--namespace",
+          name,
+        );
+        assert.equal(binding.metadata.labels["openclaw.dev/namespace"], logical.id);
+        assert.deepEqual(binding.roleRef, bindings[0].roleRef);
+        assert.deepEqual(binding.subjects, bindings[0].subjects);
+        const originalBindings = await clusterJson("get", "rolebindings", "--namespace", name);
+        const canCreateSandbox = async () => {
+          agentTest.signal.throwIfAborted();
+          try {
+            return (
+              await clusterCommand(
+                "auth",
+                "can-i",
+                "create",
+                "sandboxes.agents.x-k8s.io",
+                "--namespace",
+                name,
+                "--as",
+                `system:serviceaccount:${gatewayAccount.namespace}:${gatewayAccount.name}`,
+              )
+            ).stdout.trim();
+          } catch (error) {
+            if (error.code === 1 && error.stdout?.trim() === "no") {
+              return "no";
+            }
+            throw error;
+          }
+        };
+        assert.equal(await canCreateSandbox(), "yes");
+        // Remove only the chart's gateway grant. OCC API/worker grants remain,
+        // while Kubernetes must refuse Sandbox creation before any Harness Pod.
+        await clusterCommand("delete", "rolebinding", binding.metadata.name, "--namespace", name);
+        assert.equal(await canCreateSandbox(), "no");
+        const remainingBindings = await clusterJson("get", "rolebindings", "--namespace", name);
+        assert.deepEqual(
+          remainingBindings.items.map((item) => item.metadata.uid).sort(),
+          originalBindings.items
+            .filter((item) => item.metadata.uid !== binding.metadata.uid)
+            .map((item) => item.metadata.uid)
+            .sort(),
+        );
+
+        const serviceKey = JSON.parse(
+          await readFile(join(stateDirectory, "initial-admin-service-key.json"), "utf8"),
+        ).data.key;
+        const base = `/namespaces/${logical.id}`;
+        const api = async (method, path, body, expectedStatus = 200) => {
+          const response = await fetch(`http://127.0.0.1:${apiPort}${path}`, {
+            method,
+            headers: { "x-api-key": serviceKey, "content-type": "application/json" },
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+            signal: AbortSignal.any([agentTest.signal, AbortSignal.timeout(30_000)]),
+            redirect: "error",
+          });
+          const envelope = await response.json();
+          assert.equal(
+            response.status,
+            expectedStatus,
+            `${method} ${path} returned ${response.status} (${envelope.error?.code ?? "no error code"})`,
+          );
+          return expectedStatus === 404 ? envelope.error : envelope.data;
+        };
+        const modelSecret = await api(
+          "POST",
+          `${base}/secrets`,
+          {
+            name: `cleanup-model-${suffix}`,
+            value: `synthetic-codex-${randomUUID()}`,
+          },
+          201,
+        );
+        const modelSource = await api(
+          "POST",
+          `${base}/credential-sources`,
+          {
+            name: `cleanup-model-${suffix}`,
+            type: "codex-pat",
+            config: {},
+            secrets: { access_token: modelSecret.ref },
+          },
+          201,
+        );
+        assert.equal(modelSource.state, "ready");
+        const workerEvents = async () => {
+          agentTest.signal.throwIfAborted();
+          const { stdout } = await clusterCommand(
+            "logs",
+            "deployment/openclaw-enterprise-worker",
+            "--namespace",
+            state.platformNamespace,
+          );
+          return stdout.split("\n").flatMap((line) => {
+            try {
+              const event = JSON.parse(line);
+              return event.event === "worker.completed" && event.namespaceId === logical.id
+                ? [event]
+                : [];
+            } catch {
+              return [];
+            }
+          });
+        };
+        const assertNoHarness = async () => {
+          assert.equal(
+            (await clusterJson("get", "sandboxes.agents.x-k8s.io", "--namespace", name)).items
+              .length,
+            0,
+          );
+          const pods = await clusterJson(
+            "get",
+            "pods",
+            "--namespace",
+            name,
+            "--selector",
+            "openclaw.dev/workload-role=agent",
+          );
+          assert.equal(
+            pods.items.length,
+            0,
+            "the denied create must not start a Harness or model process",
+          );
+        };
+        const prepareCandidate = async (label) => {
+          const configuration = createHarnessConfiguration("codex", "gpt-5.4");
+          configuration.agents.defaults.skipBootstrap = true;
+          const admitted = await api(
+            "POST",
+            `${base}/agents/provision`,
+            {
+              requestId: `req_${randomUUID()}`,
+              name: `cleanup-${label}-${suffix}`,
+              executionMode: "dedicated",
+              harnessAuth: { method: "credential_source", sourceId: modelSource.id },
+              configuration: { kind: "agent", values: configuration },
+            },
+            202,
+          );
+          const work = admitted.provisioning;
+          assert.equal(work.url, `${base}/agents/provision/${encodeURIComponent(work.workId)}`);
+          const progress = await waitForObservation("API-admitted Agent revision", async () => {
+            const current = await api("GET", work.url);
+            if (current.revisionId !== undefined) {
+              return current;
+            }
+            assert.notEqual(
+              current.status,
+              "failed",
+              `provisioning failed before revision admission (${current.error?.code ?? "unknown"})`,
+            );
+            return undefined;
+          });
+          const agentPath = `${base}/agents/${progress.agentId}`;
+          const revision = await api("GET", `${agentPath}/revisions/${progress.revisionId}`);
+          assert.equal(revision.id, progress.revisionId);
+          assert.equal(revision.namespaceId, logical.id);
+          assert.equal(revision.agentId, progress.agentId);
+          assert.equal(revision.harness.id, "codex");
+          assert.equal(revision.harness.mode, "dedicated");
+          assert.ok(revision.harness.version);
+          // The real worker must reach CreateSandbox while Kubernetes access is
+          // denied. A failure before that RPC does not exercise this cleanup path.
+          const refusal = await waitForObservation(
+            "CreateSandbox failure while Kubernetes access is denied",
+            async () =>
+              (await workerEvents()).find(
+                (event) =>
+                  event.revisionId === revision.id &&
+                  event.operation === "agent_revision.reconcile" &&
+                  event.method === "CreateSandbox",
+              ),
+          );
+          assert.notEqual(refusal.result, "success");
+          assert.equal(
+            refusal.grpcStatus,
+            13,
+            "the pinned server maps Kubernetes driver create refusal to INTERNAL, not request validation",
+          );
+          const providers = await gateway.listProviders(name, AbortSignal.timeout(10_000));
+          const matching = providers.filter(
+            (provider) =>
+              provider.type === "oce-codex-runtime" &&
+              provider.labels["openclaw.dev/namespace-id"] === logical.id &&
+              provider.labels["openclaw.dev/agent-id"] === progress.agentId &&
+              provider.labels["openclaw.dev/revision-id"] === revision.id,
+          );
+          assert.equal(
+            matching.length,
+            1,
+            "the failed real preparation must retain its exact runtime Provider",
+          );
+          assert.equal(matching[0].labels["app.kubernetes.io/managed-by"], "openclaw-enterprise");
+          await assertNoHarness();
+          // Read the selected prefix rather than the Driver's default: the
+          // development profile uses a different prefix for its 19-byte names.
+          const prefix = installation.drivers.sandbox.configuration.sandboxNamePrefix;
+          assert.equal(typeof prefix, "string");
+          const hash = createHash("sha256").update(revision.id).digest("hex");
+          const sandbox = `${prefix}-${hash.slice(0, 19 - prefix.length - 1)}`;
+          const retainedSandbox = await gateway.getSandbox(
+            { workspace: name, name: sandbox },
+            AbortSignal.timeout(10_000),
+          );
+          if (retainedSandbox !== undefined) {
+            // Official failed-create compensation can retain its Deleting record
+            // when denied Kubernetes cleanup cannot settle. It must stay exact-owned.
+            assert.ok(retainedSandbox.id);
+            assert.equal(retainedSandbox.name, sandbox);
+            assert.equal(retainedSandbox.workspace, name);
+            assert.equal(retainedSandbox.labels["openclaw.dev/namespace"], logical.id);
+            assert.equal(retainedSandbox.labels["openclaw.dev/agent"], progress.agentId);
+            assert.equal(retainedSandbox.labels["openclaw.dev/revision"], revision.id);
+            assert.equal(retainedSandbox.annotations["openclaw.dev/namespace-id"], logical.id);
+            assert.equal(retainedSandbox.annotations["openclaw.dev/agent-id"], progress.agentId);
+            assert.equal(retainedSandbox.annotations["openclaw.dev/revision-id"], revision.id);
+          }
+          return {
+            agentPath,
+            agentId: progress.agentId,
+            revision,
+            provider: matching[0],
+            sandbox,
+            sandboxId: retainedSandbox?.id,
+          };
+        };
+        const stopped = await prepareCandidate("stop");
+        const retired = await prepareCandidate("retire");
+        await setWorkerReplicas(0);
+        try {
+          assert.equal(await canCreateSandbox(), "no");
+          await assertNoHarness();
+          for (const candidate of [stopped, retired]) {
+            assert.equal(
+              (
+                await gateway.getProvider(
+                  name,
+                  candidate.provider.name,
+                  AbortSignal.timeout(10_000),
+                )
+              )?.labels["openclaw.dev/revision-id"],
+              candidate.revision.id,
+            );
+          }
+          await clusterCommand("delete", "namespace", name, "--wait=true", "--timeout=120s");
+          assert.equal(
+            (await gateway.getWorkspace(name, AbortSignal.timeout(10_000)))?.id,
+            boundWorkspace.id,
+          );
+          assert.equal(
+            (await api("POST", `${stopped.agentPath}/stop`, undefined, 202)).desiredRuntimeState,
+            "stopped",
+          );
+        } finally {
+          await setWorkerReplicas(1);
+        }
+        await waitForObservation("ordinary Agent stop after placement loss", async () =>
+          (await workerEvents()).some(
+            (event) =>
+              event.agentId === stopped.agentId &&
+              event.operation === "agent.stop" &&
+              event.result === "success",
+          ),
+        );
+        assert.equal(
+          await gateway.getProvider(name, stopped.provider.name, AbortSignal.timeout(10_000)),
+          undefined,
+        );
+        assert.equal(
+          (await api("GET", `${stopped.agentPath}/revisions/${stopped.revision.id}`)).id,
+          stopped.revision.id,
+        );
+        assert.equal(
+          (await gateway.getProvider(name, retired.provider.name, AbortSignal.timeout(10_000)))
+            ?.labels["openclaw.dev/revision-id"],
+          retired.revision.id,
+          "stopping one Agent must preserve another candidate's real Provider",
+        );
+
+        assert.equal((await api("DELETE", retired.agentPath, undefined, 202)).status, "deleting");
+        await waitForObservation(
+          "ordinary Agent deletion retirement after placement loss",
+          async () =>
+            (await workerEvents()).some(
+              (event) =>
+                event.agentId === retired.agentId &&
+                event.operation === "agent.delete" &&
+                event.result === "success",
+            ),
+        );
+        assert.equal((await api("GET", retired.agentPath, undefined, 404)).code, "NOT_FOUND");
+        assert.equal(
+          await gateway.getProvider(name, retired.provider.name, AbortSignal.timeout(10_000)),
+          undefined,
+        );
+        for (const candidate of [stopped, retired]) {
+          assert.equal(
+            await gateway.getSandbox(
+              { workspace: name, name: candidate.sandbox },
+              AbortSignal.timeout(10_000),
+            ),
+            undefined,
+          );
+        }
+        assert.equal(
+          (await gateway.getWorkspace(name, AbortSignal.timeout(10_000)))?.id,
+          boundWorkspace.id,
+        );
+        assert.equal((await namespaceCli("get", logical.id)).status, "ready");
+        assert.equal(
+          (
+            await gateway.getProvider(
+              name,
+              openShellProviderName(modelSource.id),
+              AbortSignal.timeout(10_000),
+            )
+          )?.name,
+          openShellProviderName(modelSource.id),
+          "revision cleanup must preserve the canonical shared source Provider",
+        );
+      },
+    );
   },
 );
 

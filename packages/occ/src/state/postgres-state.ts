@@ -90,6 +90,7 @@ import type {
   InstallationRepository,
   IAMPolicyRepository,
   NamespaceRepository,
+  NamespaceLifecycleRecord,
   PersistedNamespace,
   PresetRepository,
   PlatformAuditSink,
@@ -2021,7 +2022,64 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
     };
 
+    const lifecycleFromRow = (row: PostgresRow): Readonly<NamespaceLifecycleRecord> =>
+      immutableCopy({
+        namespaceId: text(row, "namespace_id"),
+        lifecycleId: text(row, "lifecycle_id"),
+        ...(row.compute_driver_id === null
+          ? {}
+          : {
+              computeDriverId: text(row, "compute_driver_id"),
+              computeImplementation: text(row, "compute_implementation"),
+            }),
+        revision: Number(row.revision),
+        data: jsonObject(row.data),
+      });
     const namespaces: NamespaceRepository = {
+      findLifecycle: async (namespaceId) => {
+        const found = rows(
+          (
+            await client.query("SELECT * FROM occ.namespace_lifecycle WHERE namespace_id = $1", [
+              namespaceId,
+            ])
+          ).rows,
+        )[0];
+        return found === undefined ? undefined : lifecycleFromRow(found);
+      },
+      bindLifecycle: async (namespaceId, lifecycleId, compute) => {
+        const found = rows(
+          (
+            await client.query(
+              `UPDATE occ.namespace_lifecycle SET compute_driver_id = $3, compute_implementation = $4
+           WHERE namespace_id = $1 AND lifecycle_id = $2::uuid AND compute_driver_id IS NULL
+           RETURNING *`,
+              [namespaceId, lifecycleId, compute.id, compute.implementation],
+            )
+          ).rows,
+        )[0];
+        if (found !== undefined) {
+          return lifecycleFromRow(found);
+        }
+        const current = await namespaces.findLifecycle(namespaceId);
+        return current?.lifecycleId === lifecycleId &&
+          current.computeDriverId === compute.id &&
+          current.computeImplementation === compute.implementation
+          ? current
+          : undefined;
+      },
+      checkpointLifecycle: async (namespaceId, lifecycleId, expectedRevision, data) => {
+        const found = rows(
+          (
+            await client.query(
+              `UPDATE occ.namespace_lifecycle SET revision = revision + 1, data = $4::jsonb
+           WHERE namespace_id = $1 AND lifecycle_id = $2::uuid AND revision = $3
+             AND compute_driver_id IS NOT NULL RETURNING *`,
+              [namespaceId, lifecycleId, expectedRevision, JSON.stringify(data)],
+            )
+          ).rows,
+        )[0];
+        return found === undefined ? undefined : lifecycleFromRow(found);
+      },
       findNamespace: async (namespaceId) => {
         const found = rows(
           (

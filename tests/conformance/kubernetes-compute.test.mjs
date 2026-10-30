@@ -1,3 +1,8 @@
+import {
+  namespaceLifecycleFixture,
+  namespaceLifecycleClients,
+  preparedKubernetesNamespaceLifecycle,
+} from "../helpers/namespace-lifecycle.mjs";
 import { checkComputeCredentialCatalog } from "../helpers/compute-credential-catalog.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
@@ -4509,7 +4514,7 @@ test("an adopted split-layout storage namespace resolves as both tenant and stor
   );
 });
 
-test("an adopted split-layout storage namespace passes preflight and is deleted with its Namespace", async () => {
+test("an adopted split-layout storage namespace passes preflight but cleanup refuses a missing lifecycle binding", async () => {
   const { adopted, relabelled } = adoptedSplitLayoutNamespaces();
   let present = true;
   const deleted = [];
@@ -4542,17 +4547,22 @@ test("an adopted split-layout storage namespace passes preflight and is deleted 
     },
     objects: {},
   });
+  driver.apiClients = driver.apiClients.then((clients) => namespaceLifecycleClients(clients));
   // The startup preflight refuses only storage namespaces without the tenant label.
   assert.deepEqual(await driver.preflight(), { warnings: [] });
-  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }), {
-    namespaceId: tenant.id,
-    namespaceDeleted: true,
-  });
-  // Deleting the adopted namespace removes the Gateway state and Secrets it holds; the old
-  // Harness namespace no longer belongs to the tenant and is left to the adopt finalize step.
-  assert.deepEqual(deleted, [
-    { name: adopted.metadata.name, body: { preconditions: { uid: adopted.metadata.uid } } },
-  ]);
+  assert.deepEqual(
+    await driver.deleteNamespace(
+      { ...tenant, status: "deleting" },
+      await namespaceLifecycleFixture(driver, tenant, "deleted"),
+    ),
+    {
+      namespaceId: tenant.id,
+      namespaceDeleted: false,
+      failure: "permanent",
+    },
+  );
+  // Legacy ownership markers do not establish the original immutable lifecycle binding.
+  assert.deepEqual(deleted, []);
 });
 
 test("the two-cluster profile still refuses a tenant-labelled control namespace", async () => {
@@ -4575,9 +4585,17 @@ test("the two-cluster profile still refuses a tenant-labelled control namespace"
     },
   });
   driver.executionApiClients = driver.apiClients;
+  const priorNamespace = {
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: { name: kubernetesNamespaceName(tenant.id), uid: "original-execution-namespace-uid" },
+  };
+  const lifecycle = await preparedKubernetesNamespaceLifecycle(driver, tenant, priorNamespace, {
+    gateway: adopted,
+  });
   // Adoption applies to single-cluster tenants only; the separate control target keeps its
   // storage-only labels, so a tenant label there is foreign ownership.
-  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }), {
+  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }, lifecycle), {
     namespaceId: tenant.id,
     namespaceDeleted: false,
     failure: "permanent",
@@ -4618,6 +4636,7 @@ test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async 
       if (cleanupAttempts === 1) {
         throw new Error("workspace remains nonempty");
       }
+      return { kubernetesResources: [] };
     },
   };
   const driver = new KubernetesComputeDriver(options(), { sandboxDriver });
@@ -4638,7 +4657,12 @@ test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async 
         assert.equal(cleanupAttempts, 2);
         assert.deepEqual(request, {
           name: namespaceName,
-          body: { preconditions: { uid: namespaceResource.metadata.uid } },
+          body: {
+            preconditions: {
+              uid: namespaceResource.metadata.uid,
+              resourceVersion: namespaceResource.metadata.resourceVersion,
+            },
+          },
         });
         present = false;
       },
@@ -4646,8 +4670,10 @@ test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async 
     objects: {},
   });
 
+  const lifecycle = await preparedKubernetesNamespaceLifecycle(driver, tenant, namespaceResource);
+
   // A provider cleanup failure must leave the Kubernetes Namespace intact for a safe retry.
-  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }), {
+  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }, lifecycle), {
     namespaceId: tenant.id,
     namespaceDeleted: false,
     failure: "retryable",
@@ -4655,7 +4681,7 @@ test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async 
   assert.equal(present, true);
   assert.deepEqual(calls, ["sandbox-cleanup"]);
 
-  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }), {
+  assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }, lifecycle), {
     namespaceId: tenant.id,
     namespaceDeleted: true,
   });
@@ -4669,6 +4695,7 @@ test("explicit existing namespace adoption claims tenant identity only after sec
     kind: "Namespace",
     metadata: {
       name: selection.existingNamespace,
+      uid: "external-namespace-uid",
       resourceVersion: "7",
       labels: {
         "app.kubernetes.io/managed-by": "helm",
@@ -4717,7 +4744,7 @@ test("explicit existing namespace adoption claims tenant identity only after sec
         async patchNamespace(request) {
           patches.push(structuredClone(request));
           if (conflict !== undefined) {
-            conflict(observed);
+            conflict(observed, (await namespaceLifecycleFixture(driver, selection)).lifecycleId);
             throw httpError(409);
           }
           const metadata = request.body.metadata;
@@ -4742,16 +4769,23 @@ test("explicit existing namespace adoption claims tenant identity only after sec
         },
       },
     });
+    driver.apiClients = driver.apiClients.then((clients) => namespaceLifecycleClients(clients));
     driver.executionApiClients = driver.apiClients;
     if (mutate === null) {
       observed = undefined;
     }
+    const lifecycle = await namespaceLifecycleFixture(
+      driver,
+      selection,
+      deleting ? "deleted" : "ready",
+    );
     const result = deleting
-      ? await driver.deleteNamespace({ ...selection, status: "deleting" })
+      ? await driver.deleteNamespace({ ...selection, status: "deleting" }, lifecycle)
       : await driver.ensureNamespace(
           unselected ? { ...tenant, status: "provisioning" } : selection,
+          lifecycle,
         );
-    return { result, observed, patches };
+    return { result, observed, patches, lifecycle };
   };
 
   const dual = await run({
@@ -4787,12 +4821,16 @@ test("explicit existing namespace adoption claims tenant identity only after sec
         kind: "Namespace",
         metadata: {
           name: selection.existingNamespace,
+          uid: "external-namespace-uid",
           resourceVersion: "7",
           labels: {
             "openclaw.dev/namespace": tenant.id,
             "openclaw.dev/gateway-namespace": tenant.id,
           },
-          annotations: { "openclaw.dev/namespace-id": tenant.id },
+          annotations: {
+            "openclaw.dev/namespace-id": tenant.id,
+            "openclaw.dev/lifecycle-id": adopted.lifecycle.lifecycleId,
+          },
         },
       },
       fieldManager: "openclaw-enterprise-compute",
@@ -4927,7 +4965,8 @@ test("explicit existing namespace adoption claims tenant identity only after sec
   assert.equal(competingTenant.patches.length, 1);
 
   const sameTenant = await run({
-    conflict(namespace) {
+    conflict(namespace, lifecycleId) {
+      namespace.metadata.annotations["openclaw.dev/lifecycle-id"] = lifecycleId;
       namespace.metadata.labels["openclaw.dev/namespace"] = tenant.id;
       namespace.metadata.labels["openclaw.dev/gateway-namespace"] = tenant.id;
       namespace.metadata.annotations["openclaw.dev/namespace-id"] = tenant.id;
@@ -4970,7 +5009,11 @@ function adoptedNamespaceTeardownFixture(computeOptions = options()) {
   const save = (object) =>
     objects.set(`${object.kind}:${object.metadata.name}`, {
       ...structuredClone(object),
-      metadata: { uid: `${object.metadata.name}-uid`, ...structuredClone(object.metadata) },
+      metadata: {
+        uid: `${object.metadata.name}-uid`,
+        resourceVersion: "1",
+        ...structuredClone(object.metadata),
+      },
     });
   const owned = (kind, objectName, owner = ownership) =>
     save(driver.manifest("v1", kind, objectName, owner, target));
@@ -5056,6 +5099,7 @@ function adoptedNamespaceTeardownFixture(computeOptions = options()) {
         throw notFound();
       }
       assert.equal(body.preconditions.uid, object.metadata.uid);
+      assert.equal(body.preconditions.resourceVersion, object.metadata.resourceVersion);
       if (state.vanished === `${kind}:${objectName}`) {
         objects.delete(`${kind}:${objectName}`);
         throw notFound();
@@ -5073,6 +5117,20 @@ function adoptedNamespaceTeardownFixture(computeOptions = options()) {
       async readNamespace({ name: requested }) {
         if (requested !== name) {
           throw notFound();
+        }
+        return structuredClone(namespace);
+      },
+      async patchNamespace({ body }) {
+        assert.equal(body.metadata.uid, namespace.metadata.uid);
+        assert.equal(body.metadata.resourceVersion, namespace.metadata.resourceVersion);
+        for (const field of ["labels", "annotations"]) {
+          for (const [key, value] of Object.entries(body.metadata[field] ?? {})) {
+            if (value === null) {
+              delete namespace.metadata[field][key];
+            } else {
+              namespace.metadata[field][key] = value;
+            }
+          }
         }
         return structuredClone(namespace);
       },
@@ -5098,8 +5156,13 @@ function adoptedNamespaceTeardownFixture(computeOptions = options()) {
     objects: {},
   });
   driver.executionApiClients = driver.apiClients;
-  const teardown = () =>
-    driver.deleteNamespace({ ...tenant, status: "deleting", existingNamespace: name });
+  const deleting = { ...tenant, status: "deleting", existingNamespace: name };
+  const prepared = preparedKubernetesNamespaceLifecycle(driver, deleting, namespace, {
+    infrastructure: [...objects.values()].filter((resource) =>
+      ["ResourceQuota", "LimitRange", "NetworkPolicy"].includes(resource.kind),
+    ),
+  });
+  const teardown = async () => driver.deleteNamespace(deleting, await prepared);
   const remaining = () => [...objects.keys()].sort();
   return { objects, state, kept, teardown, remaining };
 }
@@ -5190,16 +5253,16 @@ test("existing namespace teardown deletes OCE-owned orphans and keeps everything
 
 // The worker logs a failed ensure's reason, so the reason never carries response text and stays
 // loggable: other failures map to fixed texts, and the Driver's own refusals are cleaned and cut.
-test("a failed Namespace ensure reports a fixed or cleaned, bounded reason", async (t) => {
+test("a failed Namespace ensure reports fixed reasons without provider response text", async (t) => {
   const { KubernetesApiUnavailableError } =
     await import("../../apps/controller/src/drivers/kubernetes/client.ts");
   const selection = { ...tenant, status: "provisioning", existingNamespace: "customer-support" };
-  const ensure = (readNamespace, namespace = selection) => {
+  const ensure = async (readNamespace, namespace = selection) => {
     const driver = createKubernetesComputeDriver(options());
     driver.waitBeforeRetry = async () => {};
-    driver.apiClients = Promise.resolve({ core: { readNamespace } });
+    driver.apiClients = Promise.resolve(namespaceLifecycleClients({ core: { readNamespace } }));
     driver.executionApiClients = driver.apiClients;
-    return driver.ensureNamespace(namespace);
+    return driver.ensureNamespace(namespace, await namespaceLifecycleFixture(driver, namespace));
   };
   const failed = (failure, reason) => ({
     namespaceId: tenant.id,
@@ -5251,16 +5314,6 @@ test("a failed Namespace ensure reports a fixed or cleaned, bounded reason", asy
   });
   timeout.mock.restore();
   assert.deepEqual(timedOut, failed("retryable", "Kubernetes API request timed out."));
-  // A refusal's characters the worker log refuses become "_", and a long one is cut to 256.
-  const missing = await ensure(
-    async () => {
-      throw Object.assign(new Error("not found"), { statusCode: 404 });
-    },
-    { ...selection, existingNamespace: `customer-support,${"x".repeat(260)}` },
-  );
-  const shown = `Existing Kubernetes namespace customer-support_${"x".repeat(206)}...`;
-  assert.equal(shown.length, 256);
-  assert.deepEqual(missing, failed("permanent", shown));
 });
 
 test("dedicated Agent shared claims retain ownership inside an existing tenant namespace", () => {
@@ -5289,6 +5342,9 @@ test("Namespace deletion removes only its owned Gateway target after data-plane 
         sandboxDriver: {
           id: "sandbox-namespace-loss",
           implementation: "test/provider-owned",
+          capability: "sandbox",
+          supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+          facets: [],
           async cleanup(context) {
             assert.equal(context.namespace.id, tenant.id);
             assert.equal(
@@ -5300,6 +5356,7 @@ test("Namespace deletion removes only its owned Gateway target after data-plane 
             if (cleanupFailure !== undefined) {
               throw cleanupFailure;
             }
+            return { kubernetesResources: [] };
           },
         },
         lifecycleDrivers: [
@@ -5333,7 +5390,16 @@ test("Namespace deletion removes only its owned Gateway target after data-plane 
               return structuredClone(gateway);
             }
             if (external && name === "customer-support") {
-              return { apiVersion: "v1", kind: "Namespace", metadata: { name } };
+              return {
+                apiVersion: "v1",
+                kind: "Namespace",
+                metadata: {
+                  name,
+                  uid: "original-namespace-uid",
+                  resourceVersion: "1",
+                  annotations: { "openclaw.dev/namespace-lifecycle": "external" },
+                },
+              };
             }
             throw Object.assign(new Error("Not found"), { statusCode: 404 });
           },
@@ -5351,9 +5417,34 @@ test("Namespace deletion removes only its owned Gateway target after data-plane 
         status: "deleting",
         ...(external ? { existingNamespace: "customer-support" } : {}),
       };
+      const originalNamespace = {
+        apiVersion: "v1",
+        kind: "Namespace",
+        metadata: {
+          name: external ? "customer-support" : kubernetesNamespaceName(tenant.id),
+          uid: "original-namespace-uid",
+        },
+      };
+      const lifecycle = await preparedKubernetesNamespaceLifecycle(
+        driver,
+        deleting,
+        originalNamespace,
+        { gateway },
+      );
+      if (external) {
+        // A released-looking claim without this lifecycle's durable release intent
+        // and witness is not completion authority, even with an original UID.
+        assert.deepEqual(await driver.deleteNamespace(deleting, lifecycle), {
+          namespaceId: tenant.id,
+          namespaceDeleted: false,
+          failure: "permanent",
+        });
+        assert.deepEqual(calls, []);
+        continue;
+      }
       // Provider resources can survive data-plane loss. Do not delete their Gateway or
       // report the Namespace removed while the provider cannot confirm cleanup.
-      assert.deepEqual(await driver.deleteNamespace(deleting), {
+      assert.deepEqual(await driver.deleteNamespace(deleting, lifecycle), {
         namespaceId: tenant.id,
         namespaceDeleted: false,
         failure: foreign ? "permanent" : "retryable",
@@ -5361,14 +5452,14 @@ test("Namespace deletion removes only its owned Gateway target after data-plane 
       assert.deepEqual(calls, foreign ? [] : ["revoke", "sandbox-cleanup"]);
       // A refused provider identity is permanent and also retains the Gateway.
       cleanupFailure = new SandboxNamespaceRefusedError("SANDBOX_GATEWAY_UNAUTHORIZED");
-      assert.deepEqual(await driver.deleteNamespace(deleting), {
+      assert.deepEqual(await driver.deleteNamespace(deleting, lifecycle), {
         namespaceId: tenant.id,
         namespaceDeleted: false,
         failure: "permanent",
       });
       cleanupFailure = undefined;
       calls.length = 0;
-      const result = await driver.deleteNamespace(deleting);
+      const result = await driver.deleteNamespace(deleting, lifecycle);
       assert.deepEqual(result, {
         namespaceId: tenant.id,
         namespaceDeleted: !foreign,
@@ -7087,6 +7178,7 @@ test("gateway routing startup validation and namespace membership fail closed", 
     kind: "Namespace",
     metadata: {
       name: "customer-support",
+      uid: "gateway-membership-namespace-uid",
       resourceVersion: "7",
       labels: {
         "pod-security.kubernetes.io/enforce": "restricted",
@@ -7119,6 +7211,7 @@ test("gateway routing startup validation and namespace membership fail closed", 
 
   await driver.claimExistingNamespace(namespace, { namespaceId: tenant.id });
   assert.equal(patches.length, 1);
+  assert.equal(patches[0].body.metadata.uid, namespace.metadata.uid);
   assert.equal(patches[0].fieldManager, "openclaw-enterprise-compute");
   assert.deepEqual(patches[0].body.metadata.labels, {
     "openclaw.dev/namespace": tenant.id,
@@ -13252,12 +13345,15 @@ test("production drivers reject injected clients and fail closed without their k
     }),
   );
 
-  assert.deepEqual(await driver.ensureNamespace(tenant), {
-    namespaceId: tenant.id,
-    namespaceReady: false,
-    failure: "retryable",
-    reason: "Namespace preparation failed.",
-  });
+  assert.deepEqual(
+    await driver.ensureNamespace(tenant, await namespaceLifecycleFixture(driver, tenant)),
+    {
+      namespaceId: tenant.id,
+      namespaceReady: false,
+      failure: "retryable",
+      reason: "Namespace preparation failed.",
+    },
+  );
 });
 
 test("Kubernetes lifecycle owners cannot be replaced after their first operation begins", async () => {
@@ -13272,7 +13368,7 @@ test("Kubernetes lifecycle owners cannot be replaced after their first operation
   // Startup composition may configure trusted owners before any tenant resource is touched.
   assert.doesNotThrow(() => driver.setLifecycleDrivers([selected]));
 
-  const operation = driver.ensureNamespace(tenant);
+  const operation = driver.ensureNamespace(tenant, await namespaceLifecycleFixture(driver, tenant));
 
   // Freeze ownership synchronously so an in-flight reconciliation cannot lose its revocation owner.
   assert.throws(() => driver.setLifecycleDrivers([]), /owners cannot change.*operations begin/i);
@@ -13349,7 +13445,10 @@ test("Kubernetes lifecycle hooks never run before cluster ownership and workload
   };
 
   // Hooks cannot prepare or revoke tenant infrastructure until its cluster ownership is verified.
-  const namespacePreparation = await driver.ensureNamespace(tenant);
+  const namespacePreparation = await driver.ensureNamespace(
+    tenant,
+    await namespaceLifecycleFixture(driver, tenant),
+  );
   assert.deepEqual(
     { ...namespacePreparation, failure: undefined, reason: undefined },
     {
@@ -13360,7 +13459,10 @@ test("Kubernetes lifecycle hooks never run before cluster ownership and workload
     },
   );
   assert.match(namespacePreparation.failure, /^(?:permanent|retryable)$/);
-  const namespaceDeletion = await driver.deleteNamespace({ ...tenant, status: "deleting" });
+  const namespaceDeletion = await driver.deleteNamespace(
+    { ...tenant, status: "deleting" },
+    await namespaceLifecycleFixture(driver, tenant, "deleted"),
+  );
   assert.deepEqual(
     { ...namespaceDeletion, failure: undefined },
     {
@@ -13546,7 +13648,10 @@ test("the official Kubernetes client rejects ambiguous identity and insecure API
     // Unsafe cluster configuration is permanently rejected before contacting its API server.
     // An unrefused fixture fails later at the unreachable port, which is retryable, so
     // `permanent` is what proves the validator refused it.
-    const refused = await driver.ensureNamespace(tenant);
+    const refused = await driver.ensureNamespace(
+      tenant,
+      await namespaceLifecycleFixture(driver, tenant),
+    );
     assert.deepEqual(
       { ...refused, reason: undefined },
       {
@@ -13573,12 +13678,15 @@ test("the official Kubernetes client rejects ambiguous identity and insecure API
       },
     }),
   );
-  assert.deepEqual(await driver.ensureNamespace(tenant), {
-    namespaceId: tenant.id,
-    namespaceReady: false,
-    failure: "retryable",
-    reason: "Namespace preparation failed.",
-  });
+  assert.deepEqual(
+    await driver.ensureNamespace(tenant, await namespaceLifecycleFixture(driver, tenant)),
+    {
+      namespaceId: tenant.id,
+      namespaceReady: false,
+      failure: "retryable",
+      reason: "Namespace preparation failed.",
+    },
+  );
 });
 
 test("immutable image policy accepts digests and rejects mutable tags", () => {

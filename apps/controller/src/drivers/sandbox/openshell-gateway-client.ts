@@ -426,8 +426,13 @@ export interface OpenShellGatewayClient
     name: string,
     labels: Readonly<Record<string, string>>,
     signal: AbortSignal,
+    requestId?: string,
   ): Promise<OpenShellWorkspaceResponse>;
-  deleteWorkspace(name: string, signal: AbortSignal): Promise<void>;
+  deleteWorkspace(
+    name: string,
+    signal: AbortSignal,
+    requestId?: string,
+  ): Promise<"completed" | "alreadyAbsent" | "pending">;
   createSandbox(
     request: OpenShellSandboxCreateRequest,
     signal: AbortSignal,
@@ -1648,13 +1653,14 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     name: string,
     labels: Readonly<Record<string, string>>,
     signal: AbortSignal,
+    requestId?: string,
   ): Promise<OpenShellWorkspaceResponse> {
     const workspaceName = nonempty(name, "OpenShell Workspace name");
     try {
       return workspaceResponse(
         await this.unary(
           "CreateWorkspace",
-          { name: workspaceName, labels: { ...labels }, request_id: randomUUID() },
+          { name: workspaceName, labels: { ...labels }, request_id: requestId ?? randomUUID() },
           signal,
         ),
         "CreateWorkspace",
@@ -1668,7 +1674,11 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     }
   }
 
-  async deleteWorkspace(name: string, signal: AbortSignal): Promise<void> {
+  async deleteWorkspace(
+    name: string,
+    signal: AbortSignal,
+    requestId?: string,
+  ): Promise<"completed" | "alreadyAbsent" | "pending"> {
     let response: RecordValue;
     try {
       response = await this.unary(
@@ -1676,26 +1686,29 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         {
           name: nonempty(name, "OpenShell Workspace name"),
           allow_missing: true,
-          request_id: randomUUID(),
+          request_id: requestId ?? randomUUID(),
         },
         signal,
       );
     } catch (error) {
       const { grpc } = await this.ensureClient();
       if (statusCode(error) === grpc.status.NOT_FOUND) {
-        return;
+        return "alreadyAbsent";
       }
       throw error;
     }
-    if (
-      !["DELETION_OUTCOME_COMPLETED", "DELETION_OUTCOME_ALREADY_ABSENT", 1, 3].includes(
-        response.outcome as string | number,
-      )
-    ) {
-      throw new OpenShellGatewayFailure(
-        "OpenShell DeleteWorkspace did not confirm Workspace deletion.",
-      );
+    if (["DELETION_OUTCOME_COMPLETED", 1].includes(response.outcome as string | number)) {
+      return "completed";
     }
+    if (["DELETION_OUTCOME_ALREADY_ABSENT", 3].includes(response.outcome as string | number)) {
+      return "alreadyAbsent";
+    }
+    if (["DELETION_OUTCOME_ACCEPTED", 2].includes(response.outcome as string | number)) {
+      return "pending";
+    }
+    throw new OpenShellGatewayFailure(
+      "OpenShell DeleteWorkspace did not confirm Workspace deletion.",
+    );
   }
 
   async createSandbox(

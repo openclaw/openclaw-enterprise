@@ -181,7 +181,12 @@ function workspaceGatewayClient(seed = [], events = []) {
     async createWorkspace(name, labels) {
       calls.push(["createWorkspace", name, structuredClone(labels)]);
       events.push(["gateway", "createWorkspace", name]);
-      const workspace = { name, labels: structuredClone(labels), phase: "WORKSPACE_PHASE_ACTIVE" };
+      const workspace = {
+        name,
+        id: `workspace-${randomUUID()}`,
+        labels: structuredClone(labels),
+        phase: "WORKSPACE_PHASE_ACTIVE",
+      };
       workspaces.set(name, workspace);
       return workspace;
     },
@@ -201,7 +206,8 @@ function workspaceGatewayClient(seed = [], events = []) {
           `workspace '${name}' still contains resources: ${blocking.join(", ")}`,
         );
       }
-      workspaces.delete(name);
+      const removed = workspaces.delete(name);
+      return removed ? "completed" : "alreadyAbsent";
     },
     async createSandbox() {
       throw new Error("Sandbox creation is outside this Namespace lifecycle scenario.");
@@ -287,8 +293,54 @@ function workspaceGatewayClient(seed = [], events = []) {
   };
 }
 
+// Controlled transport only: Driver inventories and effect preconditions are real;
+// finalizer/UID race behavior still requires the separate live Kubernetes case.
 function kubernetesObjectClient(events) {
   const client = Object.create(KubernetesObjectApi.prototype);
+  const resources = new Map();
+  const key = (resource) =>
+    `${resource.kind}/${resource.metadata.namespace}/${resource.metadata.name}`;
+  client.resources = resources;
+  client.read = async (resource) => {
+    if (resource.kind === "Namespace") {
+      return {
+        ...structuredClone(resource),
+        metadata: {
+          ...resource.metadata,
+          uid: "namespace-uid",
+          resourceVersion: "1",
+          labels: {
+            "app.kubernetes.io/managed-by": "openclaw-enterprise",
+            "openclaw.dev/namespace": "ns_00000000-0000-4000-8000-000000000001",
+          },
+          annotations: { "openclaw.dev/namespace-id": "ns_00000000-0000-4000-8000-000000000001" },
+        },
+      };
+    }
+    const actual = resources.get(key(resource));
+    if (actual === undefined) {
+      throw { statusCode: 404 };
+    }
+    return structuredClone(actual);
+  };
+  client.create = async (resource) => {
+    if (resources.has(key(resource))) {
+      throw { statusCode: 409 };
+    }
+    events.push([
+      "kubernetes",
+      "create",
+      resource.kind,
+      resource.metadata.name,
+      resource.metadata.namespace,
+    ]);
+    const actual = {
+      ...structuredClone(resource),
+      metadata: { ...resource.metadata, uid: randomUUID(), resourceVersion: "1" },
+    };
+    resources.set(key(resource), actual);
+    return structuredClone(actual);
+  };
   client.patch = async (resource) => {
     events.push([
       "kubernetes",
@@ -297,9 +349,28 @@ function kubernetesObjectClient(events) {
       resource.metadata.name,
       resource.metadata.namespace,
     ]);
-    return resource;
+    const previous = resources.get(key(resource));
+    const actual = {
+      ...structuredClone(resource),
+      metadata: {
+        ...previous?.metadata,
+        ...resource.metadata,
+        uid: previous?.metadata.uid ?? randomUUID(),
+        resourceVersion: String(Number(previous?.metadata.resourceVersion ?? 0) + 1),
+      },
+    };
+    resources.set(key(resource), actual);
+    return structuredClone(actual);
   };
-  client.delete = async (resource) => {
+  client.delete = async (resource, _pretty, _dryRun, _grace, _orphan, _propagation, body) => {
+    const actual = resources.get(key(resource));
+    if (actual === undefined) {
+      throw { statusCode: 404 };
+    }
+    assert.deepEqual(body.preconditions, {
+      uid: actual.metadata.uid,
+      resourceVersion: actual.metadata.resourceVersion,
+    });
     events.push([
       "kubernetes",
       "delete",
@@ -307,6 +378,11 @@ function kubernetesObjectClient(events) {
       resource.metadata.name,
       resource.metadata.namespace,
     ]);
+    if (actual.metadata.finalizers?.length) {
+      actual.metadata.deletionTimestamp = new Date().toISOString();
+    } else {
+      resources.delete(key(resource));
+    }
   };
   return client;
 }
@@ -335,7 +411,7 @@ function ownedWorkspace(name, namespaceId) {
     "app.kubernetes.io/managed-by": "openclaw-enterprise",
     "openclaw.dev/namespace-id": namespaceId,
   };
-  return { name, labels, phase: "WORKSPACE_PHASE_ACTIVE" };
+  return { name, id: `workspace-${name}`, labels, phase: "WORKSPACE_PHASE_ACTIVE" };
 }
 
 /** The gateway's record of a created Sandbox, serving its Harness at a per-Sandbox URL. */
@@ -416,14 +492,30 @@ function endpointInstallation(endpoint) {
 }
 
 function namespaceContext(name = "oce-123456789012345") {
+  let checkpoint = { revision: 0, data: {} };
+  const lifecycle = {
+    lifecycleId: randomUUID(),
+    target: "ready",
+    signal: new AbortController().signal,
+    async read() {
+      return structuredClone(checkpoint);
+    },
+    async checkpoint(expectedRevision, data) {
+      assert.equal(expectedRevision, checkpoint.revision);
+      checkpoint = { revision: expectedRevision + 1, data: structuredClone(data) };
+      return structuredClone(checkpoint);
+    },
+  };
   return {
+    lifecycle,
+    kubernetesNamespaceUid: "namespace-uid",
     namespace: {
       id: "ns_00000000-0000-4000-8000-000000000001",
       name,
       status: "ready",
       createdAt: "2026-09-23T00:00:00.000Z",
     },
-    kubernetes: {},
+    kubernetes: kubernetesObjectClient([]),
     signal: new AbortController().signal,
   };
 }
@@ -437,7 +529,19 @@ function nativePreparationClient(context) {
   const read = context.kubernetes.read?.bind(context.kubernetes);
   client.read = async (resource) => {
     if (resource.kind === "Namespace") {
-      return { ...resource };
+      return {
+        ...resource,
+        metadata: {
+          ...resource.metadata,
+          uid: context.kubernetesNamespaceUid,
+          resourceVersion: "1",
+          labels: {
+            "app.kubernetes.io/managed-by": "openclaw-enterprise",
+            "openclaw.dev/namespace": context.namespace.id,
+          },
+          annotations: { "openclaw.dev/namespace-id": context.namespace.id },
+        },
+      };
     }
     if (resource.kind === "Deployment") {
       if (deployment === undefined) {
@@ -537,18 +641,22 @@ function runtimeSandboxFixture(
   };
   const setupCode = Buffer.from(JSON.stringify(nodeSetup)).toString("base64url");
   const kubernetes = Object.create(KubernetesObjectApi.prototype);
-  kubernetes.read = async ({ metadata }) => ({
-    apiVersion: "v1",
-    kind: "Secret",
-    metadata: {
-      ...metadata,
-      labels: {
-        "openclaw.dev/namespace": context.namespace.id,
-        "openclaw.dev/agent": revision.agentId,
-      },
-    },
-    data: { setupCode: Buffer.from(setupCode).toString("base64") },
-  });
+  const readNamespace = context.kubernetes.read.bind(context.kubernetes);
+  kubernetes.read = async (request) =>
+    request.kind === "Namespace"
+      ? readNamespace(request)
+      : {
+          apiVersion: "v1",
+          kind: "Secret",
+          metadata: {
+            ...request.metadata,
+            labels: {
+              "openclaw.dev/namespace": context.namespace.id,
+              "openclaw.dev/agent": revision.agentId,
+            },
+          },
+          data: { setupCode: Buffer.from(setupCode).toString("base64") },
+        };
   context.kubernetes = kubernetes;
   const requirements = {
     loginMode: "api_key",
@@ -1416,7 +1524,7 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
   await driver.cleanup({ ...context, revision });
   assert.equal(gatewayClient.providers.has(runtimeProvider), false);
   assert.equal(gatewayClient.profiles.has("oce-openclaw-runtime"), true);
-  await driver.cleanup(context);
+  await driver.cleanup({ ...context, lifecycle: { ...context.lifecycle, target: "deleted" } });
   assert.equal(gatewayClient.profiles.has("oce-openclaw-runtime"), false);
 });
 
@@ -1489,7 +1597,7 @@ test("OpenShell revision cleanup records a Sandbox removed only once OpenShell c
     });
 
   // A present Sandbox is deleted by its revision-derived name; no Workspace read is needed.
-  await cleanup();
+  assert.equal(await cleanup(), undefined, "revision cleanup keeps its void contract");
   assert.equal(reads.length, 1);
   assert.match(reads[0], /^sb-[a-f0-9]{16}$/u);
   assert.deepEqual(deletions, reads);
@@ -2994,7 +3102,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   assert.equal(gatewayClient.providers.has(runtimeProvider), false);
   assert.equal(gatewayClient.profiles.has("oce-codex-runtime"), true);
 
-  await driver.cleanup(context);
+  await driver.cleanup({ ...context, lifecycle: { ...context.lifecycle, target: "deleted" } });
   assert.equal(gatewayClient.profiles.has("oce-codex-runtime"), false);
 });
 
@@ -3726,16 +3834,16 @@ test("OpenShell Namespace lifecycle creates, adopts, and deletes its exact opera
   await driver.ensureNamespace(context);
   await driver.ensureNamespace(context);
   assert.deepEqual(
-    gatewayClient.workspaces.get(context.namespace.name),
-    ownedWorkspace(context.namespace.name, context.namespace.id),
+    gatewayClient.workspaces.get(context.namespace.name)?.labels,
+    ownedWorkspace(context.namespace.name, context.namespace.id).labels,
   );
   assert.equal(callCount(gatewayClient, "createWorkspace"), 1);
 
   // A lost delete response can leave an owned Workspace terminating; retry must converge.
   gatewayClient.workspaces.get(context.namespace.name).phase = "WORKSPACE_PHASE_TERMINATING";
-  await driver.cleanup(context);
+  await driver.cleanup({ ...context, lifecycle: { ...context.lifecycle, target: "deleted" } });
   assert.equal(gatewayClient.workspaces.has(context.namespace.name), false);
-  assert.deepEqual(gatewayClient.calls.at(-1), ["deleteWorkspace", context.namespace.name]);
+  assert.equal(callCount(gatewayClient, "deleteWorkspace"), 1);
 });
 
 test("OpenShell operator mode owns workspace chart resources around the Workspace lifecycle", async () => {
@@ -3753,19 +3861,145 @@ test("OpenShell operator mode owns workspace chart resources around the Workspac
   // ServiceAccount resources have converged in the Compute-owned namespace.
   await driver.ensureNamespace(context);
   assert.deepEqual(events, [
-    ["kubernetes", "patch", "ServiceAccount", "openshell-sandbox", context.namespace.name],
+    ["kubernetes", "create", "ServiceAccount", "openshell-sandbox", context.namespace.name],
     ["gateway", "health"],
     ["gateway", "getWorkspace", context.namespace.name],
     ["gateway", "createWorkspace", context.namespace.name],
   ]);
 
   events.length = 0;
-  await driver.cleanup(context);
+  assert.deepEqual(
+    await driver.cleanup({ ...context, lifecycle: { ...context.lifecycle, target: "deleted" } }),
+    {
+      kubernetesResources: [
+        {
+          apiVersion: "v1",
+          kind: "ServiceAccount",
+          namespace: context.namespace.name,
+          name: "openshell-sandbox",
+          state: "absent",
+        },
+      ],
+    },
+  );
   assert.deepEqual(events, [
     ["gateway", "getWorkspace", context.namespace.name],
     ["gateway", "deleteWorkspace", context.namespace.name],
+    ["gateway", "getWorkspace", context.namespace.name],
     ["kubernetes", "delete", "ServiceAccount", "openshell-sandbox", context.namespace.name],
   ]);
+});
+
+test("OpenShell Namespace cleanup reports every never-attempted configured reference as absent", async () => {
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway.operatorWorkspaceResources = [
+    { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "openshell-sandbox" } },
+  ];
+  const gateway = workspaceGatewayClient();
+  const driver = openShellDriver(gateway, configuration);
+  const context = namespaceContext();
+  const deleting = { ...context, lifecycle: { ...context.lifecycle, target: "deleted" } };
+  const reference = {
+    apiVersion: "v1",
+    kind: "ServiceAccount",
+    namespace: context.namespace.name,
+    name: "openshell-sandbox",
+  };
+  assert.deepEqual(await driver.cleanup(deleting), {
+    kubernetesResources: [{ ...reference, state: "absent" }],
+  });
+  assert.equal(gateway.calls.length, 0, "never-attempted Workspace cleanup needs no gateway call");
+  // The original lifecycle has no creation authority for an object that later
+  // occupies this configured name, even if that object copies OCC labels.
+  context.kubernetes.resources.set(`ServiceAccount/${context.namespace.name}/openshell-sandbox`, {
+    apiVersion: "v1",
+    kind: "ServiceAccount",
+    metadata: {
+      name: reference.name,
+      namespace: reference.namespace,
+      uid: randomUUID(),
+      resourceVersion: "1",
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/namespace": context.namespace.id,
+      },
+      annotations: { "openclaw.dev/namespace-id": context.namespace.id },
+    },
+  });
+  await assert.rejects(driver.cleanup(deleting), /confirmed absent.*reappeared/);
+  assert.equal(context.kubernetes.resources.size, 1);
+});
+
+test("OpenShell returns original operator-owned UIDs without deleting retained resources", async () => {
+  for (const prepare of [true, false]) {
+    const events = [];
+    const configuration = sandboxInstallation().drivers.sandbox.configuration;
+    const configured = {
+      apiVersion: "v1",
+      kind: "ServiceAccount",
+      metadata: { name: "openshell-sandbox" },
+    };
+    configuration.gateway.operatorWorkspaceResources = [configured];
+    const gateway = workspaceGatewayClient();
+    const driver = new OpenShellSandboxDriver(configuration, {
+      id: "openshell-sandbox",
+      implementation: "openshell",
+      backend: backendFor(gateway),
+      operatorOwnedKubernetesResources: true,
+    });
+    const context = namespaceContext();
+    context.kubernetes = kubernetesObjectClient(events);
+    const original = {
+      ...structuredClone(configured),
+      metadata: {
+        ...configured.metadata,
+        namespace: context.namespace.name,
+        uid: randomUUID(),
+        resourceVersion: "1",
+        labels: {
+          "app.kubernetes.io/managed-by": "openclaw-enterprise",
+          "openclaw.dev/namespace": context.namespace.id,
+        },
+        annotations: { "openclaw.dev/namespace-id": context.namespace.id },
+      },
+    };
+    const key = `ServiceAccount/${context.namespace.name}/openshell-sandbox`;
+    // Operator bootstrap precedes the Driver. First cleanup can validate this
+    // never-attempted operator stage; an unknown stage cannot adopt by name.
+    context.kubernetes.resources.set(key, structuredClone(original));
+    if (prepare) {
+      await driver.ensureNamespace(context);
+    }
+    const deleting = { ...context, lifecycle: { ...context.lifecycle, target: "deleted" } };
+    const expected = {
+      kubernetesResources: [
+        {
+          apiVersion: "v1",
+          kind: "ServiceAccount",
+          namespace: context.namespace.name,
+          name: "openshell-sandbox",
+          state: "retained",
+          uid: original.metadata.uid,
+        },
+      ],
+    };
+    assert.deepEqual(await driver.cleanup(deleting), expected);
+    assert.equal(context.kubernetes.resources.get(key).metadata.uid, original.metadata.uid);
+    assert.equal(
+      events.filter(([owner, operation]) => owner === "kubernetes" && operation === "delete")
+        .length,
+      0,
+    );
+    // Authorized absence does not invent a delete or erase the saved original UID.
+    context.kubernetes.resources.delete(key);
+    assert.deepEqual(await driver.cleanup(deleting), expected);
+    context.kubernetes.resources.set(key, {
+      ...structuredClone(original),
+      metadata: { ...original.metadata, uid: randomUUID() },
+    });
+    await assert.rejects(driver.cleanup(deleting), /foreign or replaced Namespace resource/);
+    assert.notEqual(context.kubernetes.resources.get(key).metadata.uid, original.metadata.uid);
+  }
 });
 
 test("OpenShell managed mode fails before mutating Kubernetes or the Gateway", async () => {
@@ -3804,7 +4038,9 @@ test("OpenShell gateway readiness checks once more at its deadline, not a poll i
   const driver = openShellDriver(gatewayClient, configuration);
   const context = namespaceContext();
   const kubernetes = kubernetesObjectClient([]);
-  kubernetes.read = async (resource) => resource;
+  const originalRead = kubernetes.read;
+  kubernetes.read = async (resource) =>
+    resource.kind === "Namespace" ? originalRead(resource) : resource;
   let podLists = 0;
   kubernetes.list = async () => {
     podLists += 1;
@@ -3822,16 +4058,336 @@ test("OpenShell gateway readiness checks once more at its deadline, not a poll i
 
 test("OpenShell Namespace cleanup refuses a same-name foreign Workspace", async () => {
   const context = namespaceContext();
-  const gatewayClient = workspaceGatewayClient([
+  const gatewayClient = workspaceGatewayClient();
+  const driver = openShellDriver(gatewayClient);
+  await driver.ensureNamespace(context);
+  gatewayClient.workspaces.set(
+    context.namespace.name,
     ownedWorkspace(context.namespace.name, "ns_foreign"),
-  ]);
-
+  );
   await assert.rejects(
-    openShellDriver(gatewayClient).cleanup(context),
-    /without exact OCC Namespace ownership/,
+    driver.cleanup({ ...context, lifecycle: { ...context.lifecycle, target: "deleted" } }),
+    /missing or replaced/,
   );
   assert.equal(gatewayClient.workspaces.has(context.namespace.name), true);
   assert.equal(callCount(gatewayClient, "deleteWorkspace"), 0);
+});
+
+// These cases exercise the real selected Driver against controlled transports and
+// committed callback state. They do not establish provider or live-cluster proof.
+test("OpenShell supports an explicitly selected Helm-managed Namespace and preserves ownership fences", async () => {
+  const events = [];
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway.operatorWorkspaceResources = [
+    { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "openshell-sandbox" } },
+  ];
+  const gateway = workspaceGatewayClient();
+  const driver = openShellDriver(gateway, configuration);
+  const context = namespaceContext();
+  context.namespace.existingNamespace = context.namespace.name;
+  context.kubernetes = kubernetesObjectClient(events);
+  const read = context.kubernetes.read;
+  const physical = await read({
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: { name: context.namespace.name },
+  });
+  physical.metadata.labels["app.kubernetes.io/managed-by"] = "Helm";
+  physical.metadata.annotations["openclaw.dev/namespace-lifecycle"] = "external";
+  context.kubernetes.read = async (resource) =>
+    resource.kind === "Namespace" ? structuredClone(physical) : read(resource);
+  // Compute's supported external claim keeps the operator's managed-by label.
+  // This proves the Sandbox boundary, not real Helm or worker claim release.
+  await driver.ensureNamespace(context);
+  const workspace = gateway.workspaces.get(context.namespace.name);
+  const deleting = { ...context, lifecycle: { ...context.lifecycle, target: "deleted" } };
+  await assert.rejects(
+    driver.cleanup({
+      ...deleting,
+      namespace: { ...context.namespace, existingNamespace: "another-placement" },
+    }),
+    /binding is unsupported or its target changed/,
+  );
+  physical.metadata.labels["openclaw.dev/namespace"] = "ns_foreign";
+  await assert.rejects(driver.cleanup(deleting), /current OCC ownership/);
+  physical.metadata.labels["openclaw.dev/namespace"] = context.namespace.id;
+  physical.metadata.uid = randomUUID();
+  await assert.rejects(driver.cleanup(deleting), /replaced Kubernetes Namespace/);
+  physical.metadata.uid = context.kubernetesNamespaceUid;
+  assert.equal(callCount(gateway, "deleteWorkspace"), 0);
+  assert.equal(gateway.workspaces.get(workspace.name).id, workspace.id);
+  await driver.cleanup(deleting);
+  assert.equal(gateway.workspaces.size, 0);
+  assert.equal(context.kubernetes.resources.size, 0);
+  assert.equal(physical.metadata.labels["app.kubernetes.io/managed-by"], "Helm");
+  assert.equal(physical.metadata.annotations["openclaw.dev/namespace-lifecycle"], "external");
+  assert.equal(
+    events.filter(
+      ([owner, operation, kind]) =>
+        owner === "kubernetes" && operation === "delete" && kind === "Namespace",
+    ).length,
+    0,
+  );
+});
+
+test("OpenShell does not infer external placement from a Namespace annotation", async () => {
+  const context = namespaceContext();
+  const read = context.kubernetes.read;
+  context.kubernetes.read = async (resource) => {
+    const actual = await read(resource);
+    if (resource.kind === "Namespace") {
+      actual.metadata.annotations["openclaw.dev/namespace-lifecycle"] = "external";
+    }
+    return actual;
+  };
+  const gateway = workspaceGatewayClient();
+  await assert.rejects(openShellDriver(gateway).ensureNamespace(context), /current OCC ownership/);
+  assert.equal(callCount(gateway, "createWorkspace"), 0);
+});
+
+test("OpenShell Namespace cleanup refuses changed Workspace identity even with copied ownership labels", async () => {
+  const context = namespaceContext();
+  const gatewayClient = workspaceGatewayClient();
+  const driver = openShellDriver(gatewayClient);
+  await driver.ensureNamespace(context);
+  const original = gatewayClient.workspaces.get(context.namespace.name);
+  gatewayClient.workspaces.set(original.name, { ...original, id: randomUUID() });
+  await assert.rejects(
+    driver.cleanup({ ...context, lifecycle: { ...context.lifecycle, target: "deleted" } }),
+    /missing or replaced/,
+  );
+  assert.equal(callCount(gatewayClient, "deleteWorkspace"), 0);
+  assert.notEqual(gatewayClient.workspaces.get(original.name).id, original.id);
+});
+
+test("OpenShell records provider completion before a finalizer wait and refuses a replacement on retry", async () => {
+  const events = [];
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway.operatorWorkspaceResources = [
+    { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "openshell-sandbox" } },
+  ];
+  const gatewayClient = workspaceGatewayClient([], events);
+  const driver = openShellDriver(gatewayClient, configuration);
+  const context = namespaceContext();
+  context.kubernetes = kubernetesObjectClient(events);
+  await driver.ensureNamespace(context);
+  const key = `ServiceAccount/${context.namespace.name}/openshell-sandbox`;
+  const original = context.kubernetes.resources.get(key);
+  original.metadata.finalizers = ["example.test/hold-cleanup"];
+  const deleting = { ...context, lifecycle: { ...context.lifecycle, target: "deleted" } };
+  await assert.rejects(driver.cleanup(deleting), /resources are still terminating/);
+  assert.equal(gatewayClient.workspaces.size, 0);
+  const receipt = await context.lifecycle.read();
+  assert.equal(receipt.data.workspace.state, "complete");
+  assert.equal(receipt.data.workspace.confirmation, "providerCompleted");
+  assert.ok(original.metadata.deletionTimestamp);
+  const beforeCalls = gatewayClient.calls.length;
+  const replacement = {
+    ...structuredClone(original),
+    metadata: { ...original.metadata, uid: randomUUID(), resourceVersion: "1", finalizers: [] },
+  };
+  delete replacement.metadata.deletionTimestamp;
+  context.kubernetes.resources.set(key, replacement);
+  const restarted = openShellDriver(gatewayClient, configuration);
+  await assert.rejects(restarted.cleanup(deleting), /foreign or replaced Namespace resource/);
+  assert.equal(
+    gatewayClient.calls.length,
+    beforeCalls,
+    "saved provider receipt avoids gateway RPCs on retry",
+  );
+  assert.equal(context.kubernetes.resources.get(key).metadata.uid, replacement.metadata.uid);
+  assert.equal(
+    events.filter(([owner, operation]) => owner === "kubernetes" && operation === "delete").length,
+    1,
+  );
+});
+
+test("OpenShell resumes committed provider cleanup after its gateway and configured resources disappear", async () => {
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway.operatorWorkspaceResources = [
+    { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "openshell-sandbox" } },
+  ];
+  const gatewayClient = workspaceGatewayClient();
+  const driver = openShellDriver(gatewayClient, configuration);
+  const context = namespaceContext();
+  context.kubernetes = kubernetesObjectClient([]);
+  await driver.ensureNamespace(context);
+  const deleting = { ...context, lifecycle: { ...context.lifecycle, target: "deleted" } };
+  await driver.cleanup(deleting);
+  const before = gatewayClient.calls.length;
+  gatewayClient.getWorkspace = async () =>
+    assert.fail("a committed provider receipt must survive loss of gateway access");
+  const read = context.kubernetes.read;
+  context.kubernetes.read = async (resource) => {
+    if (resource.kind === "Namespace") {
+      throw { statusCode: 404 };
+    }
+    return read(resource);
+  };
+  await openShellDriver(gatewayClient, configuration).cleanup(deleting);
+  assert.equal(gatewayClient.calls.length, before);
+});
+
+test("OpenShell does not destroy gateway access after an unknown provider delete response", async () => {
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway.operatorWorkspaceResources = [
+    { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "openshell-sandbox" } },
+  ];
+  const gatewayClient = workspaceGatewayClient();
+  const driver = openShellDriver(gatewayClient, configuration);
+  const context = namespaceContext();
+  context.kubernetes = kubernetesObjectClient([]);
+  await driver.ensureNamespace(context);
+  const remove = gatewayClient.deleteWorkspace;
+  gatewayClient.deleteWorkspace = async (...args) => {
+    await remove(...args);
+    throw new Error("provider response lost");
+  };
+  const deleting = { ...context, lifecycle: { ...context.lifecycle, target: "deleted" } };
+  await assert.rejects(driver.cleanup(deleting), /provider response lost/);
+  assert.equal(context.kubernetes.resources.size, 1);
+  assert.equal((await context.lifecycle.read()).data.workspace.state, "deleteAttempted");
+  let laterRefusals = 0;
+  gatewayClient.deleteWorkspace = async () => {
+    laterRefusals += 1;
+    throw Object.assign(new Error("later denied"), { code: 7, details: "later denied" });
+  };
+  await assert.rejects(
+    openShellDriver(gatewayClient, configuration).cleanup(deleting),
+    /mutation remains unconfirmed/,
+  );
+  assert.equal(callCount(gatewayClient, "deleteWorkspace"), 1);
+  assert.equal(laterRefusals, 0);
+  assert.equal((await context.lifecycle.read()).data.workspace.state, "deleteAttempted");
+  assert.equal(context.kubernetes.resources.size, 1);
+});
+
+test("OpenShell retains an attempted Workspace creation without adopting same-name provider state", async () => {
+  const gatewayClient = workspaceGatewayClient();
+  const create = gatewayClient.createWorkspace;
+  gatewayClient.createWorkspace = async (...args) => {
+    await create(...args);
+    throw new Error("creation response lost");
+  };
+  const driver = openShellDriver(gatewayClient);
+  const context = namespaceContext();
+  await assert.rejects(driver.ensureNamespace(context), /creation response lost/);
+  assert.equal((await context.lifecycle.read()).data.workspace.state, "attempted");
+  const existing = gatewayClient.workspaces.get(context.namespace.name);
+  gatewayClient.workspaces.set(existing.name, { ...existing, id: randomUUID() });
+  let laterRefusals = 0;
+  gatewayClient.createWorkspace = async () => {
+    laterRefusals += 1;
+    throw Object.assign(new Error("later denied"), { code: 7, details: "later denied" });
+  };
+  await assert.rejects(
+    openShellDriver(gatewayClient).ensureNamespace(context),
+    /creation remains unconfirmed/,
+  );
+  await assert.rejects(
+    driver.cleanup({ ...context, lifecycle: { ...context.lifecycle, target: "deleted" } }),
+    /mutation remains unconfirmed/,
+  );
+  assert.equal(callCount(gatewayClient, "createWorkspace"), 1);
+  assert.equal(callCount(gatewayClient, "deleteWorkspace"), 0);
+  assert.equal(laterRefusals, 0);
+  assert.equal((await context.lifecycle.read()).data.workspace.state, "attempted");
+});
+
+test("OpenShell retries a confirmed Workspace creation refusal after access is restored", async () => {
+  const gatewayClient = workspaceGatewayClient();
+  const create = gatewayClient.createWorkspace;
+  gatewayClient.createWorkspace = async () => {
+    throw Object.assign(new Error("creation denied"), { code: 7, details: "creation denied" });
+  };
+  const driver = openShellDriver(gatewayClient);
+  const context = namespaceContext();
+  await assert.rejects(driver.ensureNamespace(context), { name: "SandboxNamespaceRefusedError" });
+  assert.equal((await context.lifecycle.read()).data.workspace.state, "createRefused");
+  gatewayClient.createWorkspace = create;
+  await driver.ensureNamespace(context);
+  assert.equal((await context.lifecycle.read()).data.workspace.state, "bound");
+  await driver.cleanup({ ...context, lifecycle: { ...context.lifecycle, target: "deleted" } });
+  assert.equal(gatewayClient.workspaces.size, 0);
+});
+
+test("OpenShell preflights Namespace and configured-resource identities before provider deletion", async () => {
+  for (const target of ["Namespace", "ServiceAccount"]) {
+    const events = [];
+    const configuration = sandboxInstallation().drivers.sandbox.configuration;
+    configuration.gateway.operatorWorkspaceResources = [
+      { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "openshell-sandbox" } },
+    ];
+    const gateway = workspaceGatewayClient();
+    const driver = openShellDriver(gateway, configuration);
+    const context = namespaceContext();
+    context.kubernetes = kubernetesObjectClient(events);
+    await driver.ensureNamespace(context);
+    const workspace = gateway.workspaces.get(context.namespace.name);
+    if (target === "Namespace") {
+      const read = context.kubernetes.read;
+      context.kubernetes.read = async (resource) => {
+        const actual = await read(resource);
+        return resource.kind === "Namespace"
+          ? { ...actual, metadata: { ...actual.metadata, uid: randomUUID() } }
+          : actual;
+      };
+    } else {
+      context.kubernetes.resources.get(
+        `ServiceAccount/${context.namespace.name}/openshell-sandbox`,
+      ).metadata.uid = randomUUID();
+    }
+    await assert.rejects(
+      driver.cleanup({ ...context, lifecycle: { ...context.lifecycle, target: "deleted" } }),
+      /replaced/,
+    );
+    assert.equal(gateway.workspaces.get(workspace.name).id, workspace.id);
+    assert.equal(callCount(gateway, "deleteWorkspace"), 0);
+    assert.equal(
+      events.filter(([owner, operation]) => owner === "kubernetes" && operation === "delete")
+        .length,
+      0,
+    );
+  }
+});
+
+test("OpenShell retains configured access when its provider-complete checkpoint is refused", async () => {
+  const events = [];
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway.operatorWorkspaceResources = [
+    { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "openshell-sandbox" } },
+  ];
+  const gateway = workspaceGatewayClient();
+  const driver = openShellDriver(gateway, configuration);
+  const context = namespaceContext();
+  context.kubernetes = kubernetesObjectClient(events);
+  await driver.ensureNamespace(context);
+  const checkpoint = context.lifecycle.checkpoint;
+  const failure = new Error("checkpoint commit refused");
+  const deleting = {
+    ...context,
+    lifecycle: {
+      ...context.lifecycle,
+      target: "deleted",
+      async checkpoint(revision, data) {
+        if (
+          data.workspace.state === "complete" &&
+          data.workspace.confirmation === "providerCompleted"
+        ) {
+          throw failure;
+        }
+        return checkpoint(revision, data);
+      },
+    },
+  };
+  await assert.rejects(driver.cleanup(deleting), (error) => error === failure);
+  assert.equal(gateway.workspaces.size, 0);
+  assert.equal((await context.lifecycle.read()).data.workspace.state, "deleteAttempted");
+  assert.equal(context.kubernetes.resources.size, 1);
+  assert.equal(
+    events.filter(([owner, operation]) => owner === "kubernetes" && operation === "delete").length,
+    0,
+  );
 });
 
 // OpenShell answers a controller identity it cannot authenticate (UNAUTHENTICATED) or that lacks
@@ -3877,8 +4433,17 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
   {
     const context = namespaceContext();
     const denied = grpcError("PERMISSION_DENIED", "workspace:delete");
+    const gatewayClient = workspaceGatewayClient();
+    const driver = openShellDriver(gatewayClient);
+    await driver.ensureNamespace(context);
+    gatewayClient.deleteWorkspace = async () => {
+      throw denied;
+    };
     await assert.rejects(
-      openShellDriver(failing("deleteWorkspace", denied, context.namespace)).cleanup(context),
+      driver.cleanup({
+        ...context,
+        lifecycle: { ...context.lifecycle, target: "deleted" },
+      }),
       { name: "SandboxNamespaceRefusedError", message: refusal("PERMISSION_DENIED") },
     );
   }
@@ -3917,8 +4482,19 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
   {
     const context = namespaceContext();
     const missing = grpcError("NOT_FOUND", "workspace not found");
-    const gatewayClient = failing("listProviders", missing, context.namespace);
-    await assert.rejects(openShellDriver(gatewayClient).cleanup(context), keeps(missing));
+    const gatewayClient = workspaceGatewayClient();
+    const driver = openShellDriver(gatewayClient);
+    await driver.ensureNamespace(context);
+    gatewayClient.listProviders = async () => {
+      throw missing;
+    };
+    await assert.rejects(
+      driver.cleanup({
+        ...context,
+        lifecycle: { ...context.lifecycle, target: "deleted" },
+      }),
+      keeps(missing),
+    );
   }
 
   // Through Compute: the Kubernetes steps before the Sandbox Driver are stubbed, so the
@@ -3930,12 +4506,22 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
       conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["10.42.0.0/16"] }),
       { sandboxDriver: openShellDriver(gatewayClient) },
     );
-    const observed = {
-      metadata: { name: tenant.name, uid: "namespace-uid", labels: {}, annotations: {} },
-      status: { phase: "Active" },
-    };
+    let observed;
     Object.assign(driver, {
-      apiClients: Promise.resolve({ objects: kubernetesObjectClient([]) }),
+      apiClients: Promise.resolve({
+        lifecycleTarget: { server: "https://cluster.example.test", trust: "fixture" },
+        objects: kubernetesObjectClient([]),
+        core: {
+          async createNamespace({ body }) {
+            observed = {
+              ...structuredClone(body),
+              metadata: { ...body.metadata, uid: "namespace-uid", resourceVersion: "1" },
+              status: { phase: "Active" },
+            };
+            return structuredClone(observed);
+          },
+        },
+      }),
       resolveNamespace: async () => ({ name: placement, external: false }),
       reconcile: async () => {},
       getNamespace: async () => structuredClone(observed),
@@ -3954,22 +4540,37 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
     ["RESOURCE_EXHAUSTED", "retryable", "Namespace preparation failed."],
   ]) {
     const gatewayClient = failing("createWorkspace", grpcError(name, "workspace:create"));
-    assert.deepEqual(await compute(gatewayClient).ensureNamespace(tenant), {
-      namespaceId: tenant.id,
-      namespaceReady: false,
-      failure,
-      reason,
-    });
+    assert.deepEqual(
+      await compute(gatewayClient).ensureNamespace(tenant, namespaceContext().lifecycle),
+      {
+        namespaceId: tenant.id,
+        namespaceReady: false,
+        failure,
+        reason,
+      },
+    );
   }
   // Namespace deletion fails at once too, and keeps the Kubernetes namespace.
   const expired = grpcError("UNAUTHENTICATED", "token expired");
-  const deleting = compute(failing("deleteWorkspace", expired, tenant));
+  const gatewayClient = workspaceGatewayClient();
+  const deleting = compute(gatewayClient);
+  const lifecycle = namespaceContext().lifecycle;
+  assert.equal((await deleting.ensureNamespace(tenant, lifecycle)).namespaceReady, true);
+  gatewayClient.deleteWorkspace = async () => {
+    throw expired;
+  };
   deleting.deleteGatewayNamespace = async () => assert.fail("cleanup must fail first");
-  assert.deepEqual(await deleting.deleteNamespace({ ...tenant, status: "deleting" }), {
-    namespaceId: tenant.id,
-    namespaceDeleted: false,
-    failure: "permanent",
-  });
+  assert.deepEqual(
+    await deleting.deleteNamespace(
+      { ...tenant, status: "deleting" },
+      { ...lifecycle, target: "deleted" },
+    ),
+    {
+      namespaceId: tenant.id,
+      namespaceDeleted: false,
+      failure: "permanent",
+    },
+  );
 });
 
 test("startup rejects invalid bundled OpenShell configuration before invoking an injected factory", async (t) => {
@@ -6387,6 +6988,8 @@ test("OpenShell verifies operator NetworkPolicy from actual KubernetesObjectApi 
   const api = new KubernetesObjectApi();
   const metadata = {
     ...policy.metadata,
+    uid: randomUUID(),
+    resourceVersion: "1",
     namespace: context.namespace.name,
     labels: {
       "app.kubernetes.io/managed-by": "openclaw-enterprise",
@@ -6409,7 +7012,15 @@ test("OpenShell verifies operator NetworkPolicy from actual KubernetesObjectApi 
   api.requestPromise = async (request) => {
     const value = request.getUrl().includes("/networkpolicies/")
       ? wire
-      : { apiVersion: "v1", kind: "Namespace", metadata: { name: context.namespace.name } };
+      : {
+          apiVersion: "v1",
+          kind: "Namespace",
+          metadata: {
+            name: context.namespace.name,
+            uid: context.kubernetesNamespaceUid,
+            resourceVersion: "1",
+          },
+        };
     return api.processResponse({
       httpStatusCode: 200,
       headers: { "content-type": "application/json" },
@@ -6486,6 +7097,8 @@ for (const kind of ["Role", "RoleBinding"]) {
     });
     const metadata = {
       ...resource.metadata,
+      uid: randomUUID(),
+      resourceVersion: "1",
       namespace: context.namespace.name,
       labels: {
         "app.kubernetes.io/managed-by": "openclaw-enterprise",
@@ -6525,7 +7138,11 @@ for (const kind of ["Role", "RoleBinding"]) {
                 : {
                     apiVersion: "v1",
                     kind: "Namespace",
-                    metadata: { name: context.namespace.name },
+                    metadata: {
+                      name: context.namespace.name,
+                      uid: context.kubernetesNamespaceUid,
+                      resourceVersion: "1",
+                    },
                   },
             ),
         },
@@ -6761,12 +7378,12 @@ test(
     gateway.getGatewayInfo = async () => ({
       extensions: [{ configured_name: "oce-prepared-git", kind: 4, protocol_major: 1 }],
     });
-    const originalGetWorkspace = gateway.getWorkspace;
-    gateway.getWorkspace = async (name) => ({
-      ...(await originalGetWorkspace(name)),
-      name,
-      id: "workspace-id",
-    });
+    const originalCreateWorkspace = gateway.createWorkspace;
+    gateway.createWorkspace = async (...args) => {
+      const workspace = await originalCreateWorkspace(...args);
+      workspace.id = "workspace-id";
+      return workspace;
+    };
     const originalImportProfile = gateway.importProviderProfile;
     gateway.importProviderProfile = async (workspace, profile) => {
       await originalImportProfile(workspace, profile);
@@ -6953,6 +7570,7 @@ test(
       { message: /[Rr]epository credentials require/ },
     );
     const { context, revision, requirements } = runtimeSandboxFixture(protectedGit.sandboxDriver);
+    await protectedGit.sandboxDriver.ensureNamespace(context);
     const auth = {
       method: "credential_source",
       sourceId: "cs_test",
@@ -7491,8 +8109,11 @@ test(
           gateway.providers.delete(inferenceProvider);
           gateway.profiles.delete("inference-profile");
           const workspace = openShellWorkspaceName(ctx.namespace);
-          gateway.workspaces.set(workspace, ownedWorkspace(workspace, ctx.namespace.id));
-          const namespaceCleanup = { ...ctx, revision: undefined };
+          const namespaceCleanup = {
+            ...ctx,
+            revision: undefined,
+            lifecycle: { ...ctx.lifecycle, target: "deleted" },
+          };
           await assert.rejects(sandbox.cleanup(namespaceCleanup), {
             code: 9,
             details: `workspace '${workspace}' still contains resources: provider, provider profile`,

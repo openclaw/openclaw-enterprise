@@ -12,6 +12,7 @@ import {
   access,
   appendFile,
   chmod,
+  cp,
   mkdir,
   mkdtemp,
   open,
@@ -22,6 +23,7 @@ import {
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
@@ -272,6 +274,15 @@ async function fixture(t, selection = {}) {
   const children = [];
   const calls = [];
   const executor = {
+    async resolveNamespaceTarget(command) {
+      return {
+        hostname: command.address,
+        port: String(command.port),
+        user: command.user,
+        hostKeyAlias: command.address,
+        publicTrust: [digest("fixture public host key")],
+      };
+    },
     execute(command) {
       calls.push(command);
       return new Promise((resolve, reject) => {
@@ -313,6 +324,27 @@ async function fixture(t, selection = {}) {
     },
   };
   const driver = createSshComputeDriver(configured, { executor, ...selection });
+  const journals = new Map();
+  const lifecycle = (namespace = tenant, target = "ready") => {
+    if (!journals.has(namespace.id)) {
+      journals.set(namespace.id, { revision: 0, data: {} });
+    }
+    return {
+      lifecycleId: `lifecycle-${namespace.id}`,
+      target,
+      signal: new AbortController().signal,
+      async read() {
+        return structuredClone(journals.get(namespace.id));
+      },
+      async checkpoint(expectedRevision, data) {
+        const current = journals.get(namespace.id);
+        assert.equal(expectedRevision, current.revision);
+        const next = { revision: current.revision + 1, data: structuredClone(data) };
+        journals.set(namespace.id, next);
+        return structuredClone(next);
+      },
+    };
+  };
   t.after(async () => {
     await stopFixtureUnits(state);
     for (const child of children) {
@@ -337,6 +369,8 @@ async function fixture(t, selection = {}) {
     children,
     calls,
     nsDir,
+    executor,
+    lifecycle,
     agentDir: (rev) => join(nsDir, "agents", digest(rev.agentId).slice(0, 12)),
     revisionDir: (rev) =>
       join(
@@ -398,7 +432,7 @@ async function holdLock(f) {
 }
 
 async function stage(f, rev = revision(f.driver)) {
-  assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+  assert.equal((await f.driver.ensureNamespace(tenant, f.lifecycle())).namespaceReady, true);
   bind(f.driver, rev);
   assert.equal((await f.driver.prepareRevision(rev, { secretEnvironment: [] })).ready, true);
   return rev;
@@ -648,18 +682,21 @@ test("SSH Namespace preparation creates exact ownership, rejects adoption, and c
       },
     ],
   });
-  assert.deepEqual(await f.driver.ensureNamespace({ ...tenant, name: "unmapped" }), {
+  assert.deepEqual(await f.driver.ensureNamespace({ ...tenant, name: "unmapped" }, f.lifecycle()), {
     namespaceId: tenant.id,
     namespaceReady: false,
     failure: "permanent",
   });
-  assert.deepEqual(await f.driver.ensureNamespace({ ...tenant, existingNamespace: "adopt" }), {
-    namespaceId: tenant.id,
-    namespaceReady: false,
-    failure: "permanent",
-  });
+  assert.deepEqual(
+    await f.driver.ensureNamespace({ ...tenant, existingNamespace: "adopt" }, f.lifecycle()),
+    {
+      namespaceId: tenant.id,
+      namespaceReady: false,
+      failure: "permanent",
+    },
+  );
   assert.equal(f.calls.length, 0);
-  assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+  assert.equal((await f.driver.ensureNamespace(tenant, f.lifecycle())).namespaceReady, true);
   const marker = join(f.nsDir, "namespace.json");
   const original = await json(marker);
   assert.deepEqual(original, {
@@ -667,6 +704,8 @@ test("SSH Namespace preparation creates exact ownership, rejects adoption, and c
     implementation: "occ/ssh",
     namespaceId: tenant.id,
     namespaceName: tenant.name,
+    namespaceLifecycleId: f.lifecycle().lifecycleId,
+    namespaceNonce: (await f.lifecycle().read()).data.nonce,
   });
   assert.equal((await stat(marker)).mode & 0o777, 0o600);
   assert.deepEqual(hooks, [tenant.id]);
@@ -679,13 +718,16 @@ test("SSH Namespace preparation creates exact ownership, rejects adoption, and c
   };
   for (const key of Object.keys(original)) {
     await replaceMarker({ ...original, [key]: "foreign" });
-    assert.equal((await f.driver.ensureNamespace(tenant)).failure, "permanent");
-    assert.equal((await f.driver.deleteNamespace(tenant)).failure, "permanent");
+    assert.equal((await f.driver.ensureNamespace(tenant, f.lifecycle())).failure, "permanent");
+    assert.equal(
+      (await f.driver.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).failure,
+      "permanent",
+    );
     assert.equal((await json(marker))[key], "foreign");
     await replaceMarker(original);
   }
   await rm(marker);
-  assert.equal((await f.driver.ensureNamespace(tenant)).failure, "permanent");
+  assert.equal((await f.driver.ensureNamespace(tenant, f.lifecycle())).failure, "permanent");
   await assert.rejects(access(marker), { code: "ENOENT" });
   await replaceMarker(original);
   const unowned = revision(f.driver, 1, "agent-ssh-unowned");
@@ -710,7 +752,7 @@ test("SSH Namespace preparation creates exact ownership, rejects adoption, and c
       },
     },
   });
-  assert.equal((await transport.ensureNamespace(tenant)).failure, "retryable");
+  assert.equal((await transport.ensureNamespace(tenant, f.lifecycle())).failure, "retryable");
 });
 
 test("SSH embedded revisions stop without deleting snapshots or persistent Agent state", async (t) => {
@@ -847,7 +889,7 @@ test("SSH can verify, stop and retire a previously admitted native TLS snapshot"
   const rev = revision(f.driver, 1, "agent-ssh-old-tls", {
     gateway: { tls: { enabled: true } },
   });
-  await f.driver.ensureNamespace(tenant);
+  await f.driver.ensureNamespace(tenant, f.lifecycle());
   bind(f.driver, rev);
   await assert.rejects(f.driver.prepareRevision(rev), /gateway\.tls\.enabled/);
   // Seed the exact configuration/hash the old producer admitted through the
@@ -910,7 +952,7 @@ test("SSH trusted-proxy omits gateway.env, and allocation spans Agents and Names
   // A second Namespace shares the physical root and must share its port allocation.
   const other = { ...tenant, id: "ns-ssh-other" };
   const third = { ...revision(f.driver, 1, "agent-ssh-3"), namespaceId: other.id };
-  assert.equal((await f.driver.ensureNamespace(other)).namespaceReady, true);
+  assert.equal((await f.driver.ensureNamespace(other, f.lifecycle(other))).namespaceReady, true);
   bind(f.driver, third, other);
   assert.equal((await f.driver.prepareRevision(third)).ready, true);
   const otherDir = join(f.root, "namespaces", digest(other.id).slice(0, 12));
@@ -926,10 +968,16 @@ test("SSH trusted-proxy omits gateway.env, and allocation spans Agents and Names
   const exhausted = revision(f.driver, 1, "agent-ssh-4");
   bind(f.driver, exhausted);
   await assert.rejects(f.driver.prepareRevision(exhausted), /configuration/);
-  assert.equal((await f.driver.deleteNamespace(tenant)).namespaceDeleted, true);
+  assert.equal(
+    (await f.driver.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).namespaceDeleted,
+    true,
+  );
   assert.equal((await stat(otherDir)).isDirectory(), true);
   await f.driver.activateRevision(third);
-  assert.equal((await f.driver.deleteNamespace(other)).namespaceDeleted, true);
+  assert.equal(
+    (await f.driver.deleteNamespace(other, f.lifecycle(other, "deleted"))).namespaceDeleted,
+    true,
+  );
 });
 
 test("SSH Agent deletion frees the Agent's host port, unit, account, and state", async (t) => {
@@ -978,7 +1026,10 @@ test("SSH Agent deletion frees the Agent's host port, unit, account, and state",
   // The full range is reusable: a new Agent receives the freed port.
   const replacement = await prepare(f, revision(f.driver, 1, "agent-ssh-4"));
   assert.equal((await json(join(f.agentDir(replacement), "agent.json"))).port, start + 1);
-  assert.equal((await f.driver.deleteNamespace(tenant)).namespaceDeleted, true);
+  assert.equal(
+    (await f.driver.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).namespaceDeleted,
+    true,
+  );
 });
 
 test("SSH trusted-proxy can opt into direct loopback password authentication", async (t) => {
@@ -1105,7 +1156,7 @@ test("SSH revisions fail closed on invalid identities and unsupported workload f
   const f = await fixture(t);
   const rev = revision(f.driver);
   await assert.rejects(f.driver.prepareRevision(rev), /bound Namespace and Agent/);
-  await f.driver.ensureNamespace(tenant);
+  await f.driver.ensureNamespace(tenant, f.lifecycle());
   bind(f.driver, rev);
   const managed = { ...rev, gatewayManagedMode: true };
   const unsupportedManaged = {
@@ -1232,7 +1283,10 @@ test("SSH rejects foreign Agent, revision and unit ownership without mutating th
     await assert.rejects(f.driver.prepareRevision(rev), /ownership|snapshot/);
     await assert.rejects(f.driver.retireRevision(rev), /ownership|snapshot/);
     await assert.rejects(f.driver.stopRevision(rev), /ownership|snapshot/);
-    assert.equal((await f.driver.deleteNamespace(tenant)).failure, "permanent");
+    assert.equal(
+      (await f.driver.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).failure,
+      "permanent",
+    );
     assert.equal(await readFile(path, "utf8"), foreign);
     await writeFile(path, original);
   }
@@ -1241,7 +1295,10 @@ test("SSH rejects foreign Agent, revision and unit ownership without mutating th
   await writeFile(unit, "[Unit]\nDescription=foreign\n");
   const log = await readFile(join(f.state, "systemctl.log"), "utf8");
   await assert.rejects(f.driver.prepareRevision(rev), /ownership/);
-  assert.equal((await f.driver.deleteNamespace(tenant)).failure, "permanent");
+  assert.equal(
+    (await f.driver.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).failure,
+    "permanent",
+  );
   assert.equal(await readFile(unit, "utf8"), "[Unit]\nDescription=foreign\n");
   assert.equal(await readFile(join(f.state, "systemctl.log"), "utf8"), log);
   await writeFile(unit, originalUnit);
@@ -1250,7 +1307,10 @@ test("SSH rejects foreign Agent, revision and unit ownership without mutating th
   const originalAccount = await json(account);
   await writeFile(account, JSON.stringify({ ...originalAccount, uid: originalAccount.uid + 1 }));
   await assert.rejects(f.driver.activateRevision(rev), /foreign ownership|snapshot/);
-  assert.equal((await f.driver.deleteNamespace(tenant)).failure, "permanent");
+  assert.equal(
+    (await f.driver.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).failure,
+    "permanent",
+  );
   assert.equal(await readFile(join(f.state, "systemctl.log"), "utf8"), log);
 });
 
@@ -1308,15 +1368,21 @@ test("SSH immutable snapshots, supersession, cutover, retirement and deletion pr
   await missing(f.revisionDir(second));
   assert.equal(await readFile(join(dir, "state", "persisted"), "utf8"), "state survives");
   await writeFile(join(f.state, "groupdel.fail"), "once");
-  assert.deepEqual(await f.driver.deleteNamespace(tenant), {
+  assert.deepEqual(await f.driver.deleteNamespace(tenant, f.lifecycle(tenant, "deleted")), {
     namespaceId: tenant.id,
     namespaceDeleted: false,
     failure: "retryable",
   });
   await missing(f.nsDir);
-  assert.equal((await f.driver.deleteNamespace(tenant)).namespaceDeleted, true);
+  assert.equal(
+    (await f.driver.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).namespaceDeleted,
+    true,
+  );
   assert.deepEqual(await readdir(join(f.root, "accounts")), []);
-  assert.equal((await f.driver.deleteNamespace(tenant)).namespaceDeleted, true);
+  assert.equal(
+    (await f.driver.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).namespaceDeleted,
+    true,
+  );
   await missing(f.nsDir);
   await missing(join(f.units, f.unit(first)));
   await missing(join(f.state, `${f.unit(first)}.enabled`));
@@ -1334,7 +1400,9 @@ test("SSH local executor cancellation terminates the real helper waiting for the
   const held = await holdLock(f);
   t.after(() => held.kill());
   const controller = new AbortController();
-  const pending = withComputeAbortSignal(controller.signal, () => f.driver.ensureNamespace(tenant));
+  const pending = withComputeAbortSignal(controller.signal, () =>
+    f.driver.ensureNamespace(tenant, f.lifecycle()),
+  );
   await waitForLockWait(f);
   controller.abort();
   assert.equal((await pending).failure, "retryable");
@@ -1370,7 +1438,7 @@ test("SSH helper stops mutating when its session pipe closes, without any signal
   // The real transport cannot signal the remote helper; sshd only closes its pipes.
   const held = await holdLock(f);
   t.after(() => held.kill());
-  const pending = f.driver.ensureNamespace(tenant);
+  const pending = f.driver.ensureNamespace(tenant, f.lifecycle());
   await waitForLockWait(f);
   const child = f.children[0];
   child.stdout.destroy();
@@ -1381,14 +1449,15 @@ test("SSH helper stops mutating when its session pipe closes, without any signal
   await missing(f.nsDir);
   held.release();
   await held.exited;
-  assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+  assert.equal((await f.driver.ensureNamespace(tenant, f.lifecycle())).failure, "permanent");
+  await missing(f.nsDir);
 });
 
 test("SSH host lock excludes concurrent helpers and is released by the kernel when a holder dies", async (t) => {
   const f = await fixture(t);
   const held = await holdLock(f);
   t.after(() => held.kill());
-  const pending = f.driver.ensureNamespace(tenant);
+  const pending = f.driver.ensureNamespace(tenant, f.lifecycle());
   // While another helper holds the lock, this one must keep waiting without mutating
   // the host: thirty held attempts span about the 1.5 s this test used to sleep.
   await waitForLockWait(f, 30);
@@ -1413,7 +1482,7 @@ test("SSH setup failures withhold activation, preserve private input, and reject
   ]) {
     await t.test(scenario, async (t) => {
       const f = await fixture(t);
-      assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+      assert.equal((await f.driver.ensureNamespace(tenant, f.lifecycle())).namespaceReady, true);
       const configuration =
         scenario === "foreign workspace"
           ? { agents: { defaults: { workspace: "/tmp/foreign-workspace" } } }
@@ -1468,7 +1537,7 @@ test("SSH setup reads the main roster entry under any letter case, like Kubernet
   for (const key of ["Main", " MAIN "]) {
     await t.test(JSON.stringify(key), async (t) => {
       const f = await fixture(t);
-      assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+      assert.equal((await f.driver.ensureNamespace(tenant, f.lifecycle())).namespaceReady, true);
       const agentId = "agent-ssh-roster";
       const workspace = join(f.agentDir({ agentId }), "state", "roster");
       // The entry's workspace wins over the defaults, as for the literal main key.
@@ -1501,7 +1570,7 @@ test("SSH setup reads the main roster entry under any letter case, like Kubernet
   for (const entries of [{ main: {}, Main: {} }, {}, { Main: null }]) {
     await t.test(`refuses ${JSON.stringify(entries)}`, async (t) => {
       const f = await fixture(t);
-      assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+      assert.equal((await f.driver.ensureNamespace(tenant, f.lifecycle())).namespaceReady, true);
       const refused = revision(f.driver, 1, "agent-ssh-refused", { agents: { entries } });
       bind(f.driver, refused);
       await assert.rejects(
@@ -1761,4 +1830,379 @@ test("SSH fixture requires a discoverable file to enable a disabled running unit
   assert.equal(ctl("stop", unit), 5);
   assert.equal(ctl("enable", path), 0);
   assert.equal(ctl("is-enabled", unit), 0);
+});
+
+test("SSH durable Namespace binding refuses a copied replacement after driver restart", async (t) => {
+  const f = await fixture(t);
+  assert.equal((await f.driver.ensureNamespace(tenant, f.lifecycle())).namespaceReady, true);
+  // A replacement can copy every marker. The original directory identity must still fence it.
+  const old = f.nsDir + ".original";
+  await rename(f.nsDir, old);
+  await cp(old, f.nsDir, { recursive: true });
+  const replacementIdentity = await stat(f.nsDir, { bigint: true });
+  const restarted = createSshComputeDriver(f.configured, { executor: f.executor });
+  assert.equal(
+    (await restarted.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).failure,
+    "permanent",
+  );
+  assert.equal((await stat(f.nsDir)).isDirectory(), true);
+  assert.equal((await stat(f.nsDir, { bigint: true })).ctimeNs, replacementIdentity.ctimeNs);
+  assert.equal((await stat(old)).isDirectory(), true);
+});
+
+test("SSH lost create reply binds only the original host receipt on restart", async (t) => {
+  const f = await fixture(t);
+  let loseReply = true;
+  const uncertain = createSshComputeDriver(f.configured, {
+    executor: {
+      resolveNamespaceTarget: f.executor.resolveNamespaceTarget,
+      async execute(command) {
+        const result = await f.executor.execute(command);
+        if (loseReply) {
+          loseReply = false;
+          throw new Error("Transport closed after host completion");
+        }
+        return result;
+      },
+    },
+  });
+  assert.equal((await uncertain.ensureNamespace(tenant, f.lifecycle())).failure, "retryable");
+  assert.equal((await f.lifecycle().read()).data.directoryIdentity, undefined);
+  const original = await stat(f.nsDir, { bigint: true });
+  const restarted = createSshComputeDriver(f.configured, { executor: f.executor });
+  assert.equal((await restarted.ensureNamespace(tenant, f.lifecycle())).namespaceReady, true);
+  assert.equal((await f.lifecycle().read()).data.directoryIdentity.inode, String(original.ino));
+  assert.equal((await stat(f.nsDir, { bigint: true })).ino, original.ino);
+  assert.equal(
+    (await readdir(f.root)).some((name) => name.startsWith(".birthtime-probe")),
+    false,
+  );
+});
+
+test("SSH attempted creation without a host receipt cannot recreate or confirm absence", async (t) => {
+  const f = await fixture(t);
+  const uncertain = createSshComputeDriver(f.configured, {
+    executor: {
+      resolveNamespaceTarget: f.executor.resolveNamespaceTarget,
+      async execute() {
+        throw new Error("Transport failed before a reply");
+      },
+    },
+  });
+  assert.equal((await uncertain.ensureNamespace(tenant, f.lifecycle())).failure, "retryable");
+  await missing(f.nsDir);
+  const restarted = createSshComputeDriver(f.configured, { executor: f.executor });
+  assert.equal((await restarted.ensureNamespace(tenant, f.lifecycle())).failure, "permanent");
+  assert.equal(
+    (await restarted.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).failure,
+    "permanent",
+  );
+  await missing(f.nsDir);
+});
+
+test("SSH unknown binding commit withholds hooks until an authorized journal read", async (t) => {
+  const hooks = [];
+  const f = await fixture(t, {
+    lifecycleDrivers: [
+      {
+        id: "hooks",
+        implementation: "test",
+        capability: "configuration",
+        computeLifecycleHooks: {
+          async afterNamespacePrepared() {
+            hooks.push("prepared");
+          },
+        },
+      },
+    ],
+  });
+  const authority = f.lifecycle();
+  let loseCommitReply = true;
+  const unknownCommit = {
+    ...authority,
+    async checkpoint(revision, data) {
+      const result = await authority.checkpoint(revision, data);
+      if (data.directoryIdentity !== undefined && loseCommitReply) {
+        loseCommitReply = false;
+        throw new Error("COMMIT acknowledgment lost");
+      }
+      return result;
+    },
+  };
+  assert.equal((await f.driver.ensureNamespace(tenant, unknownCommit)).failure, "retryable");
+  assert.deepEqual(hooks, []);
+  const original = await stat(f.nsDir, { bigint: true });
+  const denied = {
+    ...authority,
+    async read() {
+      throw new Error("Claim expired");
+    },
+  };
+  const callsBefore = f.calls.length;
+  assert.equal((await f.driver.ensureNamespace(tenant, denied)).failure, "retryable");
+  assert.equal(f.calls.length, callsBefore);
+  assert.deepEqual(hooks, []);
+  assert.equal((await f.driver.ensureNamespace(tenant, authority)).namespaceReady, true);
+  assert.deepEqual(hooks, ["prepared"]);
+  assert.equal((await stat(f.nsDir, { bigint: true })).ino, original.ino);
+});
+
+test("SSH cancellation before first dispatch deletes without host or lifecycle hook effects", async (t) => {
+  const hooks = [];
+  const f = await fixture(t, {
+    lifecycleDrivers: [
+      {
+        id: "hooks",
+        implementation: "test",
+        capability: "configuration",
+        computeLifecycleHooks: {
+          async beforeNamespaceDelete() {
+            hooks.push("delete");
+          },
+        },
+      },
+    ],
+  });
+  const abort = new AbortController();
+  abort.abort();
+  assert.equal(
+    (await f.driver.ensureNamespace(tenant, { ...f.lifecycle(), signal: abort.signal })).failure,
+    "retryable",
+  );
+  assert.deepEqual(await f.lifecycle().read(), { revision: 0, data: {} });
+  assert.equal(
+    (await f.driver.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).namespaceDeleted,
+    true,
+  );
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(hooks, []);
+  await missing(f.nsDir);
+});
+
+test("SSH account cleanup resumes after tree removal and driver restart", async (t) => {
+  const f = await fixture(t);
+  const rev = await stage(f);
+  const account = runtimeAccountName(tenant, rev.agentId, f.configured.runtime.user);
+  await writeFile(join(f.state, "groupdel.fail"), "once");
+  assert.equal(
+    (await f.driver.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).failure,
+    "retryable",
+  );
+  await missing(f.nsDir);
+  assert.equal((await stat(join(f.root, "accounts", `${account}.json`))).isFile(), true);
+  const restarted = createSshComputeDriver(f.configured, { executor: f.executor });
+  assert.equal(
+    (await restarted.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).namespaceDeleted,
+    true,
+  );
+  assert.deepEqual(await readdir(join(f.root, "accounts")), []);
+  await missing(join(f.state, "accounts", "groups", account));
+});
+
+test("SSH selected public trust normalizes aliases, global keys, comments and hashed host salts", async (t) => {
+  const f = await fixture(t);
+  const bin = join(f.base, "bin");
+  await mkdir(bin);
+  const globalFile = join(f.base, "global_known_hosts");
+  const alias = "[selected.example]:2222";
+  const key = (byte) =>
+    Buffer.concat([
+      Buffer.from("0000000b7373682d6564323535313900000020", "hex"),
+      Buffer.alloc(32, byte),
+    ]).toString("base64");
+  const selectedKey = key(17);
+  const globalKey = key(18);
+  await writeFile(
+    f.configured.ssh.knownHostsFile,
+    `${alias} ssh-ed25519 ${selectedKey} first comment\n`,
+  );
+  await writeFile(globalFile, `${alias} ssh-ed25519 ${globalKey} global comment\n`);
+  // Only this fixture executable evaluates configuration; no personal SSH profile is read.
+  const resolved = `hostname fixture.example\nport 2222\nuser root\nhostkeyalias selected.example\nuserknownhostsfile ${f.configured.ssh.knownHostsFile}\nglobalknownhostsfile ${globalFile} ${join(f.base, "missing-default-global-file")}\n`;
+  await writeFile(
+    join(bin, "ssh"),
+    `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(resolved)});\n`,
+    { mode: 0o755 },
+  );
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}:${previousPath}`;
+  t.after(() => {
+    process.env.PATH = previousPath;
+  });
+  const executor = new SystemSshCommandExecutor();
+  const command = {
+    ...f.configured.ssh,
+    address: "configured.example",
+    port: 2222,
+    user: "root",
+    nodePath: process.execPath,
+    connectTimeoutSeconds: 10,
+    helper: "",
+    operation: "",
+    timeoutMs: 5000,
+  };
+  const original = await executor.resolveNamespaceTarget(command);
+  assert.equal(original.hostKeyAlias, "selected.example");
+  assert.equal(original.publicTrust.length, 2);
+  // The selected key bytes remain identical through comments, unrelated hosts and -H salts.
+  await writeFile(
+    f.configured.ssh.knownHostsFile,
+    `unrelated.example ssh-ed25519 ${key(19)} unrelated\n${alias} ssh-ed25519 ${selectedKey} changed comment\n`,
+  );
+  const hashed = spawnSync("ssh-keygen", ["-H", "-f", f.configured.ssh.knownHostsFile], {
+    encoding: "utf8",
+  });
+  assert.equal(hashed.status, 0);
+  await writeFile(f.configured.ssh.identityFile, "rotated authentication credential");
+  assert.deepEqual(await executor.resolveNamespaceTarget(command), original);
+  await writeFile(globalFile, `${alias} ssh-ed25519 ${key(20)} replacement\n`);
+  assert.notDeepEqual(
+    (await executor.resolveNamespaceTarget(command)).publicTrust,
+    original.publicTrust,
+  );
+  for (const setting of ["knownhostscommand /operator/dynamic-trust", "verifyhostkeydns true"]) {
+    // The fixture records any attempted remote operation; configuration evaluation alone
+    // must refuse dynamic trust before a Namespace intent or remote helper is dispatched.
+    const effect = join(f.base, "unexpected-remote-effect");
+    await writeFile(
+      join(bin, "ssh"),
+      `#!${process.execPath}\nconst fs = process.getBuiltinModule("node:fs");\nif (process.argv.includes("-G")) { process.stdout.write(${JSON.stringify(resolved)} + ${JSON.stringify(setting + "\n")}); } else { fs.writeFileSync(${JSON.stringify(effect)}, "dispatched"); process.exitCode = 1; }\n`,
+      { mode: 0o755 },
+    );
+    const driver = createSshComputeDriver(f.configured, { executor });
+    const refused = await driver.ensureNamespace(tenant, f.lifecycle());
+    await missing(effect);
+    assert.equal(refused.failure, "permanent");
+    assert.deepEqual(await f.lifecycle().read(), { revision: 0, data: {} });
+    await missing(f.nsDir);
+  }
+});
+
+test("SSH selector drift refuses cleanup while unrelated limits and credential paths can rotate", async (t) => {
+  const f = await fixture(t);
+  assert.equal((await f.driver.ensureNamespace(tenant, f.lifecycle())).namespaceReady, true);
+  const before = f.calls.length;
+  const moved = structuredClone(f.configured);
+  moved.runtime.root += "-replacement";
+  const relocated = createSshComputeDriver(moved, { executor: f.executor });
+  assert.equal(
+    (await relocated.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).failure,
+    "permanent",
+  );
+  const changedTrust = createSshComputeDriver(f.configured, {
+    executor: {
+      ...f.executor,
+      async resolveNamespaceTarget(command) {
+        return {
+          ...(await f.executor.resolveNamespaceTarget(command)),
+          publicTrust: [digest("replacement public key")],
+        };
+      },
+    },
+  });
+  assert.equal(
+    (await changedTrust.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).failure,
+    "permanent",
+  );
+  assert.equal(f.calls.length, before);
+  assert.equal((await stat(f.nsDir)).isDirectory(), true);
+  const rotated = structuredClone(f.configured);
+  rotated.ssh.identityFile += "-rotated";
+  rotated.ssh.connectTimeoutSeconds = 20;
+  rotated.network.gatewayPortRange = { start: 18900, end: 18999 };
+  const restarted = createSshComputeDriver(rotated, { executor: f.executor });
+  assert.equal(
+    (await restarted.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).namespaceDeleted,
+    true,
+  );
+  await missing(f.nsDir);
+});
+
+test("SSH unknown attempt COMMIT dispatches nothing and requires authorized readback", async (t) => {
+  const f = await fixture(t);
+  const authority = f.lifecycle();
+  const unknownCommit = {
+    ...authority,
+    async checkpoint(revision, data) {
+      await authority.checkpoint(revision, data);
+      throw new Error("Attempt COMMIT acknowledgment lost");
+    },
+  };
+  assert.equal((await f.driver.ensureNamespace(tenant, unknownCommit)).failure, "retryable");
+  assert.deepEqual(f.calls, []);
+  await missing(f.nsDir);
+  assert.equal((await authority.read()).data.creation, "attempted");
+  const denied = {
+    ...f.lifecycle(tenant, "deleted"),
+    async read() {
+      throw new Error("Claim expired");
+    },
+  };
+  assert.equal((await f.driver.deleteNamespace(tenant, denied)).failure, "retryable");
+  assert.deepEqual(f.calls, []);
+  // A fresh authorized read finds the attempted stage, never the revision-zero proof.
+  assert.equal(
+    (await f.driver.deleteNamespace(tenant, f.lifecycle(tenant, "deleted"))).failure,
+    "permanent",
+  );
+  await missing(f.nsDir);
+});
+
+test("SSH Agent operations refuse a copied Namespace tree before host effects", async (t) => {
+  for (const operation of ["prepare", "activate", "stop", "retire", "delete-agent"]) {
+    await t.test(operation, async (t) => {
+      const f = await fixture(t);
+      const first = await stage(f);
+      const replacement = revision(f.driver, 2);
+      // Copy all ownership and lifecycle markers onto a new directory inode. Agent
+      // callers must use the same original-directory fence as Namespace cleanup.
+      const original = f.nsDir + ".original";
+      await rename(f.nsDir, original);
+      await cp(original, f.nsDir, { recursive: true, verbatimSymlinks: true });
+      const replacementIdentity = await stat(f.nsDir, { bigint: true });
+      const account = runtimeAccountName(tenant, first.agentId, f.configured.runtime.user);
+      const binding = {
+        namespace: tenant,
+        agent: {
+          id: first.agentId,
+          namespaceId: tenant.id,
+          servicePrincipalId: first.servicePrincipalId,
+        },
+      };
+      const run = () => {
+        if (operation === "prepare") {
+          return f.driver.prepareRevision(replacement);
+        }
+        if (operation === "activate") {
+          return f.driver.activateRevision(first);
+        }
+        if (operation === "stop") {
+          return f.driver.stopRevision(first);
+        }
+        if (operation === "retire") {
+          return f.driver.retireRevision(first);
+        }
+        return f.driver.deleteAgentRuntimeCredentials(binding);
+      };
+      await assert.rejects(run(), /foreign ownership|immutable snapshot/);
+      assert.equal((await stat(f.nsDir, { bigint: true })).ctimeNs, replacementIdentity.ctimeNs);
+      assert.equal((await stat(f.revisionDir(first))).isDirectory(), true);
+      await missing(f.revisionDir(replacement));
+      assert.equal((await stat(join(f.root, "accounts", `${account}.json`))).isFile(), true);
+      await missing(join(f.units, f.unit(first)));
+    });
+  }
+});
+
+test("SSH refuses an actual filesystem identity with epoch birth time", async (t) => {
+  const f = await fixture(t);
+  // Darwin exposes a genuine zero-birthtime directory through utimes. Other hosts
+  // can run the supported-filesystem path, but cannot claim this refusal proof.
+  await utimes(f.root, 0, 0);
+  if ((await stat(f.root, { bigint: true })).birthtimeNs !== 0n) {
+    t.skip("This filesystem does not permit constructing an epoch-birthtime directory.");
+    return;
+  }
+  assert.equal((await f.driver.ensureNamespace(tenant, f.lifecycle())).failure, "permanent");
+  await missing(f.nsDir);
 });

@@ -1,3 +1,4 @@
+import type { NamespaceLifecycleContext } from "../compute/index.ts";
 import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
 import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
 import type { Driver } from "../index.ts";
@@ -107,6 +108,28 @@ export interface SandboxNamespaceContext {
   readonly namespace: Readonly<Namespace>;
   readonly kubernetes: unknown;
   readonly signal: AbortSignal;
+}
+
+/** Compute delegates only this Sandbox Driver's opaque child checkpoint. */
+export interface SandboxNamespaceLifecycleContext extends SandboxNamespaceContext {
+  /** The original physical Namespace UID saved by Compute, including after placement loss. */
+  readonly kubernetesNamespaceUid: string;
+  readonly lifecycle: NamespaceLifecycleContext;
+}
+
+export interface SandboxNamespaceKubernetesReference {
+  readonly apiVersion: string;
+  readonly kind: string;
+  readonly namespace: string;
+  readonly name: string;
+}
+
+export type SandboxNamespaceCleanupResource = SandboxNamespaceKubernetesReference &
+  ({ readonly state: "absent" } | { readonly state: "retained"; readonly uid: string });
+
+/** Namespace-only cleanup must return this result; revision cleanup returns void. */
+export interface SandboxNamespaceCleanupResult {
+  readonly kubernetesResources: readonly SandboxNamespaceCleanupResource[];
 }
 
 export interface SandboxHarnessContext extends SandboxNamespaceContext {
@@ -253,7 +276,7 @@ export interface SandboxDriver extends Driver {
     configuration: Readonly<OpenClawConfigurationDocument>,
     harness: Readonly<RevisionHarnessDescriptor>,
   ): OpenClawConfigurationDocument;
-  ensureNamespace?(context: SandboxNamespaceContext): Promise<void>;
+  ensureNamespace?(context: SandboxNamespaceLifecycleContext): Promise<void>;
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
   /** The v6 launcher stays held. A denial observed here can select material, never release work. */
   observeHeldRepositoryGitPreview?(
@@ -311,10 +334,16 @@ export interface SandboxDriver extends Driver {
   workspaceNodePeerLabels?(
     context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
   ): Promise<Readonly<Record<string, string>> | undefined>;
-  /** Required for revision stop, retirement, and Namespace cleanup, independent of Harness ownership. */
+  /**
+   * Required independently of Harness ownership. Namespace-only cleanup must return
+   * validated absence/retention references; Compute persists them before parent cleanup.
+   * Revision cleanup returns void and keeps its revision-scoped completion contract.
+   */
   cleanup(
-    context: SandboxNamespaceContext & { readonly revision?: Readonly<AgentRevision> },
-  ): Promise<void>;
+    context:
+      | (SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> })
+      | (SandboxNamespaceLifecycleContext & { readonly revision?: undefined }),
+  ): Promise<void | SandboxNamespaceCleanupResult>;
   /**
    * Bounded raw log lines of the revision's Sandbox. Read-only: an implementation must
    * reach its runtime through a read-only interface. The Sandbox name is the Driver's own

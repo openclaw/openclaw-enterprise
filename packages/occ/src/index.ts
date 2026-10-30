@@ -176,6 +176,7 @@ import type {
   Namespace,
   NamespaceDeleteResult,
   NamespaceEnsureResult,
+  NamespaceLifecycleContext,
   LoggingLevel,
   OpenClawConfigurationDocument,
   ManagedIAMResourceKind,
@@ -573,6 +574,7 @@ export {
   type InstallationRepository,
   type NamespaceReadRepository,
   type NamespaceRepository,
+  type NamespaceLifecycleRecord,
   type PlatformAuditRepository,
   type PlatformAuditSink,
   type PlatformOperation,
@@ -11274,6 +11276,97 @@ export class OpenClawController {
     });
   }
 
+  /** State-backed context for the deterministic harness; the production worker owns queue claims. */
+  private async namespaceLifecycle(
+    actorId: string,
+    namespace: Readonly<Namespace>,
+    target: "ready" | "deleted",
+    compute: ComputeDriver,
+  ): Promise<NamespaceLifecycleContext> {
+    const access = async (
+      lifecycleId?: string,
+      change?: {
+        readonly revision: number;
+        readonly data: Readonly<Record<string, unknown>>;
+      },
+    ) =>
+      this.mutate(async (unit) => {
+        const current = await unit.namespaces.lockNamespace(namespace.id);
+        if (
+          current === undefined ||
+          current.status !== (target === "ready" ? "provisioning" : "deleting")
+        ) {
+          throw new ResourceStateConflictError("The Namespace lifecycle target changed.");
+        }
+        const record = await unit.namespaces.findLifecycle(namespace.id);
+        if (
+          record === undefined ||
+          (lifecycleId !== undefined && record.lifecycleId !== lifecycleId)
+        ) {
+          throw new ResourceStateConflictError("The Namespace has no supported lifecycle binding.");
+        }
+        const bound = await unit.namespaces.bindLifecycle(
+          namespace.id,
+          record.lifecycleId,
+          compute,
+        );
+        if (bound === undefined) {
+          throw new ResourceStateConflictError(
+            "The selected Compute Driver differs from the Namespace lifecycle binding.",
+          );
+        }
+        const appendCheckpoint = (revision: number, operation: "bind" | "checkpoint") =>
+          this.appendLifecycleAudit(
+            unit,
+            actorId,
+            current,
+            compute,
+            "success",
+            {
+              lifecycleId: record.lifecycleId,
+              revision,
+              operation,
+              target,
+              computeImplementation: compute.implementation,
+            },
+            "openclaw.namespaces.lifecycle.checkpoint",
+          );
+        if (change === undefined) {
+          if (record.computeDriverId === undefined) {
+            await appendCheckpoint(bound.revision, "bind");
+          }
+          return bound;
+        }
+        const saved = await unit.namespaces.checkpointLifecycle(
+          namespace.id,
+          record.lifecycleId,
+          change.revision,
+          change.data,
+        );
+        if (saved === undefined) {
+          throw new ResourceStateConflictError(
+            "The Namespace lifecycle checkpoint revision changed.",
+          );
+        }
+        await appendCheckpoint(saved.revision, "checkpoint");
+        return saved;
+      });
+    const initial = await access();
+    return Object.freeze({
+      lifecycleId: initial.lifecycleId,
+      target,
+      signal: new AbortController().signal,
+      read: async () => {
+        const saved = await access(initial.lifecycleId);
+        return { revision: saved.revision, data: saved.data };
+      },
+      checkpoint: async (revision: number, data: Readonly<Record<string, unknown>>) => {
+        const saved = await access(initial.lifecycleId, { revision, data });
+        return { revision: saved.revision, data: saved.data };
+      },
+    });
+  }
+
   /**
    * Execute one deterministic Namespace lifecycle attempt for a claimed work item.
    * This is a reusable conformance harness, not a polling production worker.
@@ -11315,10 +11408,11 @@ export class OpenClawController {
       throw new DependencyUnavailableError("The selected compute Driver is unavailable.");
     }
 
+    const lifecycle = await this.namespaceLifecycle(actorId, namespace, target, compute);
     if (target === "deleted") {
       let result;
       try {
-        result = await compute.deleteNamespace(namespace);
+        result = await compute.deleteNamespace(namespace, lifecycle);
       } catch {
         await this.recordLifecycleResult(actorId, namespace, compute, "failure", {
           failure: "unavailable",
@@ -11366,7 +11460,7 @@ export class OpenClawController {
 
     let result;
     try {
-      result = await compute.ensureNamespace(namespace);
+      result = await compute.ensureNamespace(namespace, lifecycle);
     } catch {
       await this.recordLifecycleResult(actorId, namespace, compute, "failure", {
         failure: "unavailable",
@@ -15201,6 +15295,7 @@ export class OpenClawController {
     compute: ComputeDriver | undefined,
     outcome: "success" | "failure",
     details: Readonly<Record<string, unknown>>,
+    action?: string,
   ): Promise<void> {
     let iamDriverId: string | undefined;
     try {
@@ -15217,9 +15312,10 @@ export class OpenClawController {
       actorId,
       source: "occ",
       action:
-        namespace.status === "deleting"
+        action ??
+        (namespace.status === "deleting"
           ? "openclaw.namespaces.lifecycle.delete"
-          : "openclaw.namespaces.lifecycle.ensure",
+          : "openclaw.namespaces.lifecycle.ensure"),
       resource: {
         kind: "namespace",
         id: namespace.id,

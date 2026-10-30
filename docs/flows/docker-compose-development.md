@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-15
-last_updated_session: authoring-run/92de1204-326a-4c11-a868-5b3f1b9de0c1
+updated: 2026-10-30 10:09
+last_updated_session: authoring-run/80ea08bc-5b26-4327-bd7b-128cc7aaf0fd
 ---
 
 # Compose development flow
@@ -300,6 +300,8 @@ distinguishes local proof from pending connected runtime qualification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 10:09: Update the linked execution trace for the accompanying durable Engine/network identity journal and conservative unknown-create refusal. (authoring-run/80ea08bc-5b26-4327-bd7b-128cc7aaf0fd - ef2cf007043819118c83fd8339496a92bcab9fb3)
 
 - 2026-10-15 23:41: Isolate development-wrapper path resolution from CDPATH while preserving the CLI environment. (authoring-run/92de1204-326a-4c11-a868-5b3f1b9de0c1 - 04514330688378316bd0641b8d5560da56aeff85)
 

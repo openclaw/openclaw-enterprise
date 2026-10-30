@@ -20,6 +20,7 @@
     "tests/docs/docs-site.test.mjs",
     "tests/integration/github-login-transport.test.mjs",
     "tests/conformance/kubernetes-compute.test.mjs",
+    "tests/conformance/kubernetes-namespace-lifecycle.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.mjs",
@@ -634,6 +635,31 @@
     },
     {
       "path": "tests/integration/namespace-deletion-console-api.test.ts"
+    },
+    {
+      "path": "tests/conformance/kubernetes-namespace-lifecycle.test.ts",
+      "expectedTests": [
+        "Kubernetes cancellation before first ensure does not dispatch provider cleanup",
+        "Kubernetes Namespace cleanup refuses a same-name replacement before deleting it",
+        "Kubernetes external claim release survives a lost reply and refuses a later foreign claim",
+        "Kubernetes cleanup after an authoritative preparation refusal needs no nonexistent resource UID",
+        "Kubernetes Namespace cleanup refuses reassigned preparation resources before deletion",
+        "Kubernetes later creation refusal cannot clear an earlier unknown resource attempt",
+        "Kubernetes cleanup rechecks the saved resource UID in its deletion snapshot",
+        "Kubernetes cancellation after a definitive Namespace create refusal does not require an absent UID",
+        "Kubernetes later Namespace create refusal cannot settle an unknown original create",
+        "Kubernetes parent sweep refuses a resource that reappears after Sandbox cleanup",
+        "Kubernetes parent sweep keeps only the intentionally retained original Sandbox resource",
+        "Kubernetes parent sweep refuses replacement of a retained Sandbox resource",
+        "Kubernetes refuses missing Sandbox cleanup ownership before parent teardown",
+        "Kubernetes refuses foreign Namespace Sandbox cleanup ownership before parent teardown",
+        "Kubernetes refuses duplicate Sandbox cleanup ownership before parent teardown",
+        "Kubernetes refuses missing retained UID Sandbox cleanup ownership before parent teardown",
+        "Kubernetes parent teardown waits for the cleanup result checkpoint acknowledgment",
+        "Kubernetes orphan sweep refuses a Namespace replaced during enumeration",
+        "Kubernetes retained Sandbox identity permits authorized absence without inventing deletion",
+        "Kubernetes refuses managed Namespace cascade deletion of a retained Sandbox resource"
+      ]
     }
   ]
 }

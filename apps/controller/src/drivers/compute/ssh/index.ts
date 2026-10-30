@@ -1,7 +1,9 @@
 import { assertExecutionReleaseAllowed } from "@openclaw-enterprise/contracts";
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { stat } from "node:fs/promises";
 import { posix } from "node:path";
 import type {
@@ -20,6 +22,8 @@ import type {
   Namespace,
   NamespaceDeleteResult,
   NamespaceEnsureResult,
+  NamespaceLifecycleContext,
+  NamespaceLifecycleCheckpoint,
   WorkloadLaunchContext,
 } from "@openclaw-enterprise/contracts";
 import { admittedLoggingLevel } from "@openclaw-enterprise/contracts";
@@ -39,7 +43,7 @@ import {
 import { requireHarnessAuthMethod, type HarnessAuthMethodRule } from "../harness-auth-method.ts";
 import { failureAfterCleanup } from "../cleanup-failure.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
-import { currentComputeAbortSignal } from "../operation-context.ts";
+import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-context.ts";
 import {
   requireWorkspaceSetupMainEntry,
   WORKSPACE_SETUP_RUNTIME,
@@ -48,7 +52,11 @@ import { validatePlaintextNativeGateway } from "../native-gateway-transport.ts";
 import { validateGatewayToolPolicy } from "../gateway-tool-policy.ts";
 import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-approval-policy.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
-import { SystemSshCommandExecutor, type SshCommandExecutor } from "./executor.ts";
+import {
+  SshNamespaceTargetRefused,
+  SystemSshCommandExecutor,
+  type SshCommandExecutor,
+} from "./executor.ts";
 
 export interface SshComputeHost {
   readonly address: string;
@@ -84,6 +92,52 @@ interface SshComputeSelection {
 
 class OwnershipFailure extends Error {}
 class ConfigurationFailure extends Error {}
+
+interface SshNamespaceData extends Record<string, unknown> {
+  readonly version: 1;
+  readonly lifecycleId: string;
+  readonly binding: Readonly<Record<string, unknown>>;
+  readonly nonce: string;
+  readonly creation: "attempted" | "bound";
+  readonly directoryIdentity?: Readonly<Record<string, string>>;
+}
+
+function emptyNamespaceLifecycle(current: NamespaceLifecycleCheckpoint): boolean {
+  if (Object.keys(current.data).length !== 0) {
+    return false;
+  }
+  if (current.revision !== 0) {
+    throw new OwnershipFailure("SSH Namespace lifecycle intent is missing.");
+  }
+  return true;
+}
+
+function directoryIdentity(value: unknown): value is Readonly<Record<string, string>> {
+  const record = asRecord(value);
+  return (
+    record !== undefined &&
+    ["device", "inode", "birthtime"].every(
+      (key) => typeof record[key] === "string" && /^\d+$/u.test(record[key] as string),
+    )
+  );
+}
+
+function requireNamespaceLifecycle(
+  lifecycle: NamespaceLifecycleContext,
+  target: "ready" | "deleted",
+): void {
+  if (
+    lifecycle === undefined ||
+    lifecycle.target !== target ||
+    typeof lifecycle.lifecycleId !== "string" ||
+    lifecycle.lifecycleId.length === 0 ||
+    typeof lifecycle.read !== "function" ||
+    typeof lifecycle.checkpoint !== "function"
+  ) {
+    throw new OwnershipFailure("SSH Namespace lifecycle authority is required.");
+  }
+  lifecycle.signal.throwIfAborted();
+}
 
 // SSH Compute runs only embedded OpenClaw, with the operator-managed runtime credentials.
 const SSH_HARNESS_AUTH_METHODS: HarnessAuthMethodRule = {
@@ -191,7 +245,9 @@ function helperResult(stdout: string): Record<string, unknown> | undefined {
 }
 
 function failure(error: unknown): "permanent" | "retryable" {
-  return error instanceof OwnershipFailure || error instanceof ConfigurationFailure
+  return error instanceof OwnershipFailure ||
+    error instanceof ConfigurationFailure ||
+    error instanceof SshNamespaceTargetRefused
     ? "permanent"
     : "retryable";
 }
@@ -511,29 +567,117 @@ export class SshComputeDriver implements ComputeDriver {
     this.agents.set(agent.id, immutableCopy(binding));
   }
 
-  async ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult> {
+  async ensureNamespace(
+    namespace: Namespace,
+    lifecycle: NamespaceLifecycleContext,
+  ): Promise<NamespaceEnsureResult> {
     this.lifecycleStarted = true;
     const result = { namespaceId: namespace.id, namespaceReady: false };
     try {
-      await this.execute(this.host(namespace), { operation: "ensure-namespace", namespace });
+      requireNamespaceLifecycle(lifecycle, "ready");
+      const host = this.host(namespace);
+      const initial = await lifecycle.read();
+      const binding = await this.namespaceTarget(host, lifecycle.signal);
+      let allowCreate = false;
+      if (emptyNamespaceLifecycle(initial)) {
+        await lifecycle.checkpoint(initial.revision, {
+          version: 1,
+          lifecycleId: lifecycle.lifecycleId,
+          binding,
+          nonce: randomBytes(16).toString("hex"),
+          creation: "attempted",
+        });
+        allowCreate = true;
+      }
+      let current = await this.readNamespaceLifecycle(lifecycle, binding);
+      const observed = await this.execute(
+        host,
+        {
+          operation: "ensure-namespace",
+          namespace,
+          namespaceLifecycle: current.data,
+          allowCreate,
+        },
+        lifecycle.signal,
+      );
+      if (!directoryIdentity(observed.directoryIdentity)) {
+        throw new OwnershipFailure("SSH Namespace identity is unavailable.");
+      }
+      if (current.data.directoryIdentity === undefined) {
+        await lifecycle.checkpoint(current.revision, {
+          ...current.data,
+          directoryIdentity: observed.directoryIdentity,
+          creation: "bound",
+        });
+      }
+      current = await this.readNamespaceLifecycle(lifecycle, binding);
+      if (!isDeepStrictEqual(current.data.directoryIdentity, observed.directoryIdentity)) {
+        throw new OwnershipFailure("SSH Namespace directory identity differs.");
+      }
       this.bindNamespace(namespace);
-      await this.lifecycle.afterNamespacePrepared(namespace);
+      await withComputeAbortSignal(lifecycle.signal, () =>
+        this.lifecycle.afterNamespacePrepared(namespace),
+      );
+      await this.readNamespaceLifecycle(lifecycle, binding);
       return { ...result, namespaceReady: true };
     } catch (error) {
       return { ...result, failure: failure(error) };
     }
   }
 
-  async deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult> {
+  async deleteNamespace(
+    namespace: Namespace,
+    lifecycle: NamespaceLifecycleContext,
+  ): Promise<NamespaceDeleteResult> {
     this.lifecycleStarted = true;
     const result = { namespaceId: namespace.id, namespaceDeleted: false };
     try {
+      requireNamespaceLifecycle(lifecycle, "deleted");
+      // Revision zero proves no Driver operation was dispatched, including host hooks.
+      if (emptyNamespaceLifecycle(await lifecycle.read())) {
+        return { ...result, namespaceDeleted: true };
+      }
       const host = this.host(namespace);
-      await this.lifecycle.beforeNamespaceDelete(namespace);
-      await this.execute(host, { operation: "delete-namespace", namespace });
+      const binding = await this.namespaceTarget(host, lifecycle.signal);
+      let current = await this.readNamespaceLifecycle(lifecycle, binding);
+      // Resolve an uncertain creation from the host receipt before any cleanup effects.
+      const observed = await this.execute(
+        host,
+        {
+          operation: "observe-namespace",
+          namespace,
+          namespaceLifecycle: current.data,
+        },
+        lifecycle.signal,
+      );
+      if (!directoryIdentity(observed.directoryIdentity)) {
+        throw new OwnershipFailure("SSH Namespace creation remains unconfirmed.");
+      }
+      if (current.data.directoryIdentity === undefined) {
+        await lifecycle.checkpoint(current.revision, {
+          ...current.data,
+          directoryIdentity: observed.directoryIdentity,
+          creation: "bound",
+        });
+      }
+      await this.readNamespaceLifecycle(lifecycle, binding);
+      await withComputeAbortSignal(lifecycle.signal, () =>
+        this.lifecycle.beforeNamespaceDelete(namespace),
+      );
+      current = await this.readNamespaceLifecycle(lifecycle, binding);
+      await this.execute(
+        host,
+        {
+          operation: "delete-namespace",
+          namespace,
+          namespaceLifecycle: current.data,
+        },
+        lifecycle.signal,
+      );
+      await this.readNamespaceLifecycle(lifecycle, binding);
       this.namespaces.delete(namespace.id);
-      for (const [id, binding] of this.agents) {
-        if (binding.namespace.id === namespace.id) {
+      for (const [id, agentBinding] of this.agents) {
+        if (agentBinding.namespace.id === namespace.id) {
           this.agents.delete(id);
         }
       }
@@ -541,6 +685,61 @@ export class SshComputeDriver implements ComputeDriver {
     } catch (error) {
       return { ...result, failure: failure(error) };
     }
+  }
+
+  private async namespaceTarget(
+    host: SshComputeHost,
+    signal: AbortSignal,
+  ): Promise<Readonly<Record<string, unknown>>> {
+    if (this.executor.resolveNamespaceTarget === undefined) {
+      throw new Error("SSH target public trust resolution is unavailable.");
+    }
+    const target = await this.executor.resolveNamespaceTarget({
+      ...this.options.ssh,
+      connectTimeoutSeconds: this.options.ssh.connectTimeoutSeconds ?? 10,
+      address: host.address,
+      port: host.port ?? 22,
+      user: host.user,
+      nodePath: host.nodePath ?? this.options.runtime.nodePath,
+      helper: "",
+      operation: "",
+      timeoutMs: OPERATION_TIMEOUT_MS,
+      signal,
+    });
+    return {
+      address: host.address,
+      port: host.port ?? 22,
+      user: host.user,
+      root: posix.normalize(this.options.runtime.root),
+      systemdUnitDirectory: posix.normalize(
+        this.options.runtime.systemdUnitDirectory ?? "/etc/systemd/system",
+      ),
+      runtimeUser: this.options.runtime.user,
+      target,
+    };
+  }
+
+  private async readNamespaceLifecycle(
+    lifecycle: NamespaceLifecycleContext,
+    binding: Readonly<Record<string, unknown>>,
+  ): Promise<{ revision: number; data: SshNamespaceData }> {
+    lifecycle.signal.throwIfAborted();
+    const current = await lifecycle.read();
+    const data = current.data;
+    if (
+      data.version !== 1 ||
+      data.lifecycleId !== lifecycle.lifecycleId ||
+      !isDeepStrictEqual(data.binding, binding) ||
+      typeof data.nonce !== "string" ||
+      !/^[a-f0-9]{32}$/u.test(data.nonce) ||
+      (data.creation !== "attempted" && data.creation !== "bound") ||
+      (data.creation === "attempted" && data.directoryIdentity !== undefined) ||
+      (data.creation === "bound" && !directoryIdentity(data.directoryIdentity))
+    ) {
+      throw new OwnershipFailure("SSH Namespace lifecycle binding is unsupported or changed.");
+    }
+    lifecycle.signal.throwIfAborted();
+    return { revision: current.revision, data: data as SshNamespaceData };
   }
 
   validateGatewaySettings(configuration: Readonly<OpenClawConfigurationDocument>): void {
@@ -820,6 +1019,7 @@ export class SshComputeDriver implements ComputeDriver {
   private async execute(
     host: SshComputeHost,
     operation: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
     const runtime = {
       ...this.options.runtime,
@@ -827,7 +1027,12 @@ export class SshComputeDriver implements ComputeDriver {
       nodePath: host.nodePath ?? this.options.runtime.nodePath,
       openclawPath: host.openclawPath ?? this.options.runtime.openclawPath,
     };
-    const owner = currentComputeAbortSignal();
+    const ambient = currentComputeAbortSignal();
+    let owner = ambient;
+    if (signal !== undefined) {
+      owner = ambient === undefined ? signal : AbortSignal.any([signal, ambient]);
+    }
+    owner?.throwIfAborted();
     const result = await this.executor.execute({
       ...this.options.ssh,
       connectTimeoutSeconds: this.options.ssh.connectTimeoutSeconds ?? 10,

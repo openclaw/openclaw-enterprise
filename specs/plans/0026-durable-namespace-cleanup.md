@@ -40,10 +40,13 @@ is included.
 
 ## Ordered implementation
 
-The initial submission remains recorded below. Submit the generic cleanup-result
-amendment for human review in a documentation-only commit before implementing its
-contract. Record its SHA and review comment after publication; keep the PR draft
-and all security/runtime holds until the amended behavior is proved.
+The cleanup-result amendment was submitted in documentation-only commit
+`ef2cf007043819118c83fd8339496a92bcab9fb3` with an
+[explicit human-review request](https://github.com/openclaw/openclaw-enterprise/pull/4088#issuecomment-6524582605).
+RFC status remains Proposed; implementation and review proceed in parallel.
+
+Both contract submissions precede implementation. Keep the PR draft and its
+security/runtime holds until the amended behavior is proved.
 
 1. Submit RFC-0026 and this plan in an initial documentation-only commit on
    PR #4088. Record submission SHA and explicit human-review comment URL below.
@@ -96,18 +99,29 @@ and all security/runtime holds until the amended behavior is proved.
 
 ## Verification
 
-| Required outcome                                                      | Check and prerequisites                                                                                                    | Result  |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------- |
-| Cancel before first ensure and during partial/failed preparation      | Namespace creation with atomic initial journal; actual worker cancellation before dispatch and after an attempted creation | Not run |
-| Original bindings survive uncertain create and commit                 | PostgreSQL plus real Driver boundary with distinct replacement IDs and a saved intent                                      | Not run |
-| Live claim alone writes/consumes journal                              | Real PostgreSQL queue claims, expired/lost lease, takeover and clock-skew cases                                            | Not run |
-| Confirmed cleanup survives lost acknowledgment/restart                | Worker with PostgreSQL; interrupt after commit before teardown, then restart                                               | Not run |
-| Tenant-local gateway disappears only after durable receipt            | Disposable Kubernetes/provider case with actual tenant-local service routing                                               | Not run |
-| Foreign/reassigned resources survive                                  | Real Workspace identity and Kubernetes UID/resourceVersion refusal, including retry                                        | Not run |
-| External Namespace remains after successful cleanup and release retry | Real retained external Namespace, conditional claim-release witness, lost reply and worker restart                         | Not run |
-| Missing placement still removes owned provider resources              | Real API/worker/OpenShell development installation, with generated private kubeconfig                                      | Not run |
-| Revision stop/retirement uses real caller and provider                | Supported Agent preparation failure with observed provider inventory and no Harness execution                              | Not run |
-| Unsupported or permanently lost provider evidence fails closed        | Provider response/operation-replay boundary; do not accept bare absence                                                    | Not run |
+| Required outcome                                                      | Check and prerequisites                                                                                                    | Result                         |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| Cancel before first ensure and during partial/failed preparation      | Namespace creation with atomic initial journal; actual worker cancellation before dispatch and after an attempted creation | Not run                        |
+| Original bindings survive uncertain create and commit                 | PostgreSQL plus real Driver boundary with distinct replacement IDs and a saved intent                                      | Not run                        |
+| Live claim alone writes/consumes journal                              | Real PostgreSQL queue claims, expired/lost lease, takeover, concurrent finalization; database-clock checks                 | Passed against PostgreSQL 18.6 |
+| Confirmed cleanup survives lost acknowledgment/restart                | Worker with PostgreSQL; interrupt after commit before teardown, then restart                                               | Not run                        |
+| Tenant-local gateway disappears only after durable receipt            | Disposable Kubernetes/provider case with actual tenant-local service routing                                               | Not run                        |
+| Foreign/reassigned resources survive                                  | Real Workspace identity and Kubernetes UID/resourceVersion refusal, including retry                                        | Not run                        |
+| External Namespace remains after successful cleanup and release retry | Real retained external Namespace, conditional claim-release witness, lost reply and worker restart                         | Not run                        |
+| Missing placement still removes owned provider resources              | Real API/worker/OpenShell development installation, with generated private kubeconfig                                      | Not run                        |
+| Revision stop/retirement uses real caller and provider                | Supported Agent preparation failure with observed provider inventory and no Harness execution                              | Not run                        |
+| Unsupported or permanently lost provider evidence fails closed        | Provider response/operation-replay boundary; do not accept bare absence                                                    | Not run                        |
+
+Component qualification passes: six real PostgreSQL/worker journal cases cover
+atomic reservation, CAS/restart, actual lease takeover, lock order, audit rollback,
+and a lost real COMMIT reply. The canonical migration/native-catalog and logical
+restore qualification passes 41 cases. Kubernetes controlled-SDK cases cover
+partial preparation, unknown creates, original UIDs, external release reply loss,
+parent handoff, and post-list replacement; they are not live cluster proof.
+OpenShell controlled-provider and pinned wire cases, Docker conformance, and SSH
+actual local-helper fixtures exercise their respective ownership boundaries.
+Targeted guard-removal mutants fail the corresponding ownership/lease assertions.
+The genuine Kubernetes/provider rows above remain unrun.
 
 Current tools include a Podman-backed engine, k3d, kubectl, Helm, PostgreSQL
 client, OpenSSL, Go, Node, and pnpm. Existing shared contexts and containers are
@@ -117,7 +131,7 @@ created, and no live result is claimed.
 
 ## Delivery record
 
-- RFC submitted for review before new Driver-contract code; implementation is starting.
+- Both RFC submissions precede contract code. Implementation and component qualification are in progress; genuine provider proof and independent review remain pending.
 - RFC submission: documentation-only commit `536e71d95bf39797f2b60048cb3677e879ed046b`; [explicit human-review request](https://github.com/openclaw/openclaw-enterprise/pull/4088#issuecomment-6523250103). Decision status remains Proposed.
 - Implementation PR: [#4088](https://github.com/openclaw/openclaw-enterprise/pull/4088), draft with existing proof/security holds.
 
