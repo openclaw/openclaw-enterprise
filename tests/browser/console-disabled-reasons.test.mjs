@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -23,6 +22,7 @@ import {
   login,
   nativeValues,
   newPage,
+  shippedPreset,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.mjs";
@@ -30,9 +30,7 @@ import { enterManualModel } from "./console-agents-test-support.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 
 // The shipped default Preset, so Create Agent offers "Start with default Preset".
-const DEFAULT_CODEX_PRESET = JSON.parse(
-  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
-);
+const DEFAULT_CODEX_PRESET = await shippedPreset("default-codex");
 
 // A disabled control whose reason sits nearby but is not linked to it leaves a screen reader
 // user with a dead control and no why (finding D749). Each disabled control below is described

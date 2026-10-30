@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
@@ -168,22 +168,30 @@ export function persistedDeploymentError(code, data) {
 // that read the answer before a revocation would, so the Configuration editor opens and what a
 // test sees is the API's refusal (finding 2421).
 export async function grantStaleConfigurationUpdate(page) {
-  await page.route(/\/agents\/[^/]+\/permissions$/, async (route) => {
-    const response = await route.fetch();
-    const body = await response.json();
-    await route.fulfill({
-      response,
-      json: {
-        ...body,
-        data: {
-          ...body.data,
-          configurationUpdate: true,
-          configurationSecretsOperate: true,
-          configurationSecretsOperateDeniedBindings: [],
-        },
+  await page.route(/\/agents\/[^/]+\/permissions$/, (route) =>
+    fulfillPatchedJson(route, (body) => ({
+      ...body,
+      data: {
+        ...body.data,
+        configurationUpdate: true,
+        configurationSecretsOperate: true,
+        configurationSecretsOperateDeniedBindings: [],
       },
-    });
-  });
+    })),
+  );
+}
+
+// Answers a routed request with the real API's answer, its JSON body replaced by what `patch`
+// returns for it (`patch` may change the body it is given and return it). Status and headers
+// stay the server's.
+/**
+ * @param {import("playwright").Route} route
+ * @param {(body: any) => unknown} patch
+ */
+export async function fulfillPatchedJson(route, patch) {
+  const response = await route.fetch();
+  const body = await response.json();
+  await route.fulfill({ response, json: patch(body) });
 }
 
 export function apiRequests(page, origin) {
@@ -710,6 +718,15 @@ export async function waitForCondition(predicate, message, timeoutMs = 5_000) {
   }
 }
 
+// A Preset the product ships in deploy/presets, by file name without ".json" ("default-codex",
+// "standard-codex"): for createConsoleAppFixture's defaultPresets or a Preset create. Each call
+// reads the file again, so callers never share one object.
+export async function shippedPreset(name) {
+  return JSON.parse(
+    await readFile(new URL(`../../deploy/presets/${name}.json`, import.meta.url), "utf8"),
+  );
+}
+
 export function nativeValues(marker, options = {}) {
   const harnessId = options.harnessId ?? "openclaw";
   const providerModel = options.providerModel ?? (harnessId === "codex" ? "gpt-5.1" : "gpt-4.1");
@@ -1226,6 +1243,12 @@ export async function expectWriteAsksBeforeUnload(t, page, url, { method, start,
 // Whether the locator's element holds focus.
 export function hasFocus(locator) {
   return locator.evaluate((node) => node === globalThis.document.activeElement);
+}
+
+// The ID of the element that holds focus in the page: "" for one without an ID, null when nothing
+// does.
+export function focusedId(page) {
+  return page.evaluate(() => globalThis.document.activeElement?.id ?? null);
 }
 
 // A natively disabled control is out of the Tab order, so a keyboard reader never reaches it or

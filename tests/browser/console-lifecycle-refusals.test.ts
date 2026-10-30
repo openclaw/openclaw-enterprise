@@ -10,6 +10,7 @@ import {
   detailUrl,
   expectReachableReason,
   fileBrowser,
+  fulfillPatchedJson,
   grantMember,
   hasFocus,
   holdRequests,
@@ -926,14 +927,12 @@ test("a refused Create Secret explains Show value and the page's Create Secret",
   ]);
   const { page } = await newPage(t, fixture, { browser });
   // A permission answer that predates a revocation still offers creation; the API refuses it.
-  await page.route(`**/namespaces/${namespace.id}/permissions`, async (route) => {
-    const response = await route.fetch();
-    const body = await response.json();
-    await route.fulfill({
-      response,
-      json: { ...body, data: { ...body.data, secrets: { create: true } } },
-    });
-  });
+  await page.route(`**/namespaces/${namespace.id}/permissions`, (route) =>
+    fulfillPatchedJson(route, (body) => ({
+      ...body,
+      data: { ...body.data, secrets: { create: true } },
+    })),
+  );
   await login(page, fixture, `/console/secrets?namespace=${namespace.id}`, member.credentials);
   const create = page.getByRole("button", { name: "Create Secret", exact: true });
   await waitForEnabled(create);
