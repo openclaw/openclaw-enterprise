@@ -10,11 +10,7 @@ import { startGitSmartHttpFixture } from "./git.mjs";
 import { createResourceScope } from "./resources.mjs";
 import { socketDirectory } from "../../helpers/socket-directory.mjs";
 import { serviceConfigurationData } from "./builders.mjs";
-import {
-  createGitHubTokenServiceFactory,
-  startServiceListeners,
-  writeSessionClientConfiguration,
-} from "./service-resources.mjs";
+import { startStaticTokenService, writeSessionClientConfiguration } from "./service-resources.mjs";
 
 export {
   appModule,
@@ -69,21 +65,14 @@ export async function startCredentialServiceFixture(t, options = {}) {
         : { ...configured, gateway: { ...configured.gateway, ...options.gateway } };
     const github = await startGitHubFixture(resources, { clock, tls });
     const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
-    const token = `github_pat_${"t".repeat(36)}`;
-    github.acceptStatic(token);
-    const factory = await createGitHubTokenServiceFactory(resources, {
+    const { factory, service, listeners } = await startStaticTokenService(resources, {
       config,
-      clock,
-      token,
-      configuration: { pushRefAllowlist: ["refs/heads/agent-feature"], ...options.configuration },
-      trustedEndpoints: { apiOrigin: github.origin, gitOrigin: git.origin, ca: tls.ca },
-    });
-    const { service, listeners } = await startServiceListeners(resources, {
-      config,
-      factory,
       clock,
       tls,
-      upstreamOrigins: [github.origin, git.origin],
+      github,
+      gitOrigin: git.origin,
+      token: `github_pat_${"t".repeat(36)}`,
+      configuration: { pushRefAllowlist: ["refs/heads/agent-feature"], ...options.configuration },
     });
     const opened = service.open({ durationSeconds: 3600, profile: options.profile ?? "git-full" });
     const clientDirectory = await writeSessionClientConfiguration(resources, {

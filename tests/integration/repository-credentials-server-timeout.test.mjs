@@ -13,7 +13,7 @@ import {
   fixtureRepository,
 } from "../fixtures/repository-credentials/github.mjs";
 import {
-  createGitHubTokenServiceFactory,
+  createStaticTokenServiceFactory,
   startServiceListeners,
 } from "../fixtures/repository-credentials/service-resources.mjs";
 
@@ -39,13 +39,12 @@ async function fixture(t) {
     response.end("0000");
   });
   const upstreamOrigin = await listen(resources, upstream);
-  const token = `gho_${"t".repeat(36)}`;
-  github.acceptStatic(token);
-  const actualFactory = await createGitHubTokenServiceFactory(resources, {
+  const { factory: actualFactory } = await createStaticTokenServiceFactory(resources, {
     config,
     clock,
-    token,
-    trustedEndpoints: { apiOrigin: github.origin, gitOrigin: upstreamOrigin, ca: tls.ca },
+    tls,
+    github,
+    gitOrigin: upstreamOrigin,
   });
   let acquisitionStarted = false;
   let acquisitionFinished = Promise.resolve();

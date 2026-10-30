@@ -22,10 +22,7 @@ import {
   gatewayRequest,
   createLoopbackServiceConfiguration,
 } from "../fixtures/repository-credentials/service.mjs";
-import {
-  createGitHubTokenServiceFactory,
-  startServiceListeners,
-} from "../fixtures/repository-credentials/service-resources.mjs";
+import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { listen } from "../helpers/listen.mjs";
 
@@ -73,21 +70,13 @@ async function startTokenService(t, limits = {}, configuration = {}) {
   const github = await startGitHubFixture(resources, { clock, tls });
   const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
   // Synthetic host token: the fake GitHub accepts it on git and REST without issuing it.
-  const token = `gho_${"t".repeat(36)}`;
-  const tokenIndex = github.acceptStatic(token);
-  const factory = await createGitHubTokenServiceFactory(resources, {
+  const { token, tokenIndex, service, listeners } = await startStaticTokenService(resources, {
     config,
-    clock,
-    token,
-    configuration,
-    trustedEndpoints: { apiOrigin: github.origin, gitOrigin: git.origin, ca: tls.ca },
-  });
-  const { service, listeners } = await startServiceListeners(resources, {
-    config,
-    factory,
     clock,
     tls,
-    upstreamOrigins: [github.origin, git.origin],
+    github,
+    gitOrigin: git.origin,
+    configuration,
   });
   const proxy = await startGatewayProxy(
     resources,

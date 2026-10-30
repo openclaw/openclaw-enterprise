@@ -14,6 +14,7 @@ import {
   expectProviderUnavailable,
   loginOrigin as origin,
   loginSecret as secret,
+  providerInstanceId,
   redirectProviderFetch,
   startProviderServer,
   testOversizedProviderBodies,
@@ -32,7 +33,7 @@ const googleURLs = new Set([
 function digest(value) {
   return createHash("sha256").update(value).digest("hex");
 }
-const providerId = `google:${digest(clientId)}`;
+const providerId = providerInstanceId("google", { clientId });
 
 const signer = createIdTokenSigner();
 const minted = [];
@@ -214,7 +215,10 @@ test(
         {},
         { github: { clientId: "github-client", clientSecret: "github-secret" } },
       );
-      assert.equal(both.login.githubProviderId, `github:${digest("github-client")}`);
+      assert.equal(
+        both.login.githubProviderId,
+        providerInstanceId("github", { clientId: "github-client" }),
+      );
       const github = new URL((await (await both.start("10.0.0.1", "github")).json()).url);
       assert.equal(github.origin, "https://github.com");
       assert.equal(github.searchParams.has("nonce"), false);

@@ -17,10 +17,7 @@ import {
   createLoopbackServiceConfiguration,
 } from "../fixtures/repository-credentials/service.mjs";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
-import {
-  createGitHubTokenServiceFactory,
-  startServiceListeners,
-} from "../fixtures/repository-credentials/service-resources.mjs";
+import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.mjs";
 
 const discovery = `/${fixtureRepository}.git/info/refs?service=git-upload-pack`;
 const upload = `/${fixtureRepository}.git/git-upload-pack`;
@@ -62,20 +59,13 @@ async function startTransport(t, onRequest, limits = {}, { log } = {}) {
   });
   const origin = await listen(resources, upstream);
   const trustedOrigins = new Set([origin]);
-  const token = `gho_${"t".repeat(36)}`;
-  github.acceptStatic(token);
-  const factory = await createGitHubTokenServiceFactory(resources, {
-    config,
-    clock,
-    token,
-    trustedEndpoints: { apiOrigin: github.origin, gitOrigin: origin, ca: tls.ca },
-  });
   const logs = [];
-  const { service, listeners } = await startServiceListeners(resources, {
+  const { service, listeners } = await startStaticTokenService(resources, {
     config,
-    factory,
     clock,
     tls,
+    github,
+    gitOrigin: origin,
     // Pass the caller's original set so production owns the security-relevant copy.
     trustedUpstreamOrigins: trustedOrigins,
     log: log ?? ((record) => logs.push(record)),
