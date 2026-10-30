@@ -438,17 +438,17 @@ test("an unbound source update keeps its admitted provider when same-type provid
   assert.equal(created.status, 201);
   const { id } = created.data;
   const update = () => f.request("PATCH", `${f.path}/${id}`, { body: { secrets: body.secrets } });
-  const savedAdmission = () =>
-    f.controller.transact(
-      async (unit: PlatformUnitOfWork) =>
-        (await unit.credentialSources.findCredentialSource(f.namespace.id, id))?.egress?.key,
+  const savedSource = () =>
+    f.controller.transact((unit: PlatformUnitOfWork) =>
+      unit.credentialSources.findCredentialSource(f.namespace.id, id),
     );
-  assert.deepEqual((await savedAdmission())?.provider, a.ref);
+  assert.deepEqual((await savedSource())?.egress?.key.provider, a.ref);
   providers.reverse();
   const reads = f.secretReads;
   const updated = await update();
   assert.equal(updated.status, 200);
-  const key = await savedAdmission();
+  const source = await savedSource();
+  const key = source?.egress?.key;
   assert.deepEqual(
     { validations, provider: key?.provider.id, generation: key?.source.generation },
     { validations: [a.ref.id, a.ref.id], provider: a.ref.id, generation: 2 },
@@ -467,9 +467,26 @@ test("an unbound source update keeps its admitted provider when same-type provid
       });
     }
     assert.equal(f.secretReads, reads + 1);
-    assert.deepEqual(await savedAdmission(), key);
+    assert.deepEqual(await savedSource(), source);
     assert.deepEqual(validations, [a.ref.id, a.ref.id]);
   }
+  // With its admitted provider available, a historical Gateway-owned live source
+  // still needs its original owner's catalog. No material may be read during an outage.
+  const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
+  assert.ok(source);
+  assert.equal(source.driverId, gateway.id);
+  assert.equal(source.ownerCapability, "credential_gateway");
+  assert.equal(source.egress?.adoption, "live");
+  providers.splice(0, providers.length, a);
+  t.mock.method(gateway, "listSourceTypes", async () => {
+    throw new Error("synthetic catalog outage");
+  });
+  const unavailable = await update();
+  assert.equal(unavailable.status, 503);
+  assert.equal(unavailable.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.deepEqual(await savedSource(), source);
+  assert.equal(f.secretReads, reads + 1);
+  assert.deepEqual(validations, [a.ref.id, a.ref.id]);
   assert.equal(f.providerRequests.length, 0);
 });
 
