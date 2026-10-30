@@ -331,16 +331,23 @@ const GRANT_WARNINGS: Record<SecretGrantProblem, (subject: GrantWarningSubject) 
 };
 
 // A reader this page offers no Retry, such as an administrator whose access ended after the policy
-// read, is told who grants a missing grant instead of a step they cannot take.
+// read or after a grant request failed, is told who grants a missing or unconfirmed grant instead
+// of a step they cannot take (finding 2949). Refused and unverified grants already name them.
+const NO_RETRY_GRANT_WARNINGS: Partial<
+  Record<SecretGrantProblem, (subject: GrantWarningSubject) => string>
+> = {
+  unconfirmed: ({ saved, access, administratorStep }) =>
+    `${saved} saved, but ${access} could not be confirmed. Confirming access ${ADMINISTRATOR_STEP(administratorStep)}`,
+  missing: ({ bound, administratorStep }) =>
+    `This Agent has no access to ${bound}, so deploying it would be refused. Granting it ${ADMINISTRATOR_STEP(administratorStep)}`,
+};
+
 export function grantWarning(
   problem: SecretGrantProblem,
   subject: GrantWarningSubject,
   canRetry = true,
 ) {
-  if (problem === "missing" && !canRetry) {
-    return `This Agent has no access to ${subject.bound}, so deploying it would be refused. Granting it ${ADMINISTRATOR_STEP(subject.administratorStep)}`;
-  }
-  return GRANT_WARNINGS[problem](subject);
+  return ((!canRetry && NO_RETRY_GRANT_WARNINGS[problem]) || GRANT_WARNINGS[problem])(subject);
 }
 
 // The harness authentication source's grant. A refusal reports the refused request, not the
@@ -1481,7 +1488,8 @@ export function createChannelSecretsPanel({
     checkingGrants: () => state.checkingGrants,
     // The permission answer changed what this caller may edit: update the form in place.
     applyAccess() {
-      // The answer can take Retry away: a missing grant's warning then names who grants it.
+      // The answer can take Retry away: a missing or unconfirmed grant's warning then names who
+      // grants it.
       // Only the words change: the outstanding grants stay as they are.
       if (state.saveGrantWarning) {
         state.saveGrantWarning = slackGrantWarning();
