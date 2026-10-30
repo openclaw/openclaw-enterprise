@@ -348,7 +348,10 @@ export interface PresetRepository extends PresetReadRepository {
 export interface ConnectionTemplateReadRepository {
   findConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
   /** Without a filter, list templates in all scopes. */
-  listConnectionTemplates(namespaceId?: string): Promise<readonly Readonly<ConnectionTemplate>[]>;
+  listConnectionTemplates(filter?: {
+    namespaceId: string;
+    includeInstallationWide: boolean;
+  }): Promise<readonly Readonly<ConnectionTemplate>[]>;
   findConnectionTemplateVersion(
     templateId: string,
     version: number,
@@ -1579,10 +1582,15 @@ function repositories(
   };
   const connectionTemplates: ConnectionTemplateRepository = {
     findConnectionTemplate,
-    listConnectionTemplates: async (namespaceId) =>
+    listConnectionTemplates: async (filter) =>
       Object.freeze(
         Array.from(snapshot.connectionTemplates.values())
-          .filter((template) => namespaceId === undefined || template.namespaceId === namespaceId)
+          .filter(
+            (template) =>
+              filter === undefined ||
+              template.namespaceId === filter.namespaceId ||
+              (filter.includeInstallationWide && template.namespaceId === undefined),
+          )
           .sort((a, b) => a.id.localeCompare(b.id))
           .map((template) => immutableCopy(template)),
       ),

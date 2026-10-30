@@ -1746,7 +1746,6 @@ test(
       });
       await db.app.query("COMMIT");
       templates.push(template);
-      assert.deepEqual(await store.listConnectionTemplates(owner), [template]);
       assert.deepEqual(await store.findClientRegistration(issuer, clientId, owner), registration);
       await assert.rejects(
         store.createClientRegistration({ ...registration, id: `ccr_${randomUUID()}` }),
@@ -1757,6 +1756,18 @@ test(
     assert.deepEqual(await store.findClientRegistration(issuer, clientId), shared);
 
     const [mine, other] = templates;
+    assert.deepEqual(
+      await store.listConnectionTemplates({ namespaceId, includeInstallationWide: false }),
+      [mine],
+    );
+    const candidates = await store.listConnectionTemplates({
+      namespaceId,
+      includeInstallationWide: true,
+    });
+    assert.deepEqual(
+      candidates.map(({ id }) => id),
+      [legacy.id, mine.id].sort(),
+    );
     await assert.rejects(
       db.migrator.query("UPDATE occ.connection_templates SET namespace_id=NULL WHERE id=$1", [
         mine.id,

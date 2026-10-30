@@ -6055,13 +6055,13 @@ export class OpenClawController {
   ): Promise<readonly Readonly<ConnectionTemplate>[]> {
     await this.authorize(principalId, "read", { kind: "namespace", id: namespaceId, namespaceId });
     const templates = await this.read((state) =>
-      state.connectionTemplates.listConnectionTemplates(),
+      state.connectionTemplates.listConnectionTemplates({
+        namespaceId,
+        includeInstallationWide: true,
+      }),
     );
     const usable: Readonly<ConnectionTemplate>[] = [];
     for (const template of templates) {
-      if (template.namespaceId !== undefined && template.namespaceId !== namespaceId) {
-        continue;
-      }
       const decision = await this.authorizationDecision(
         principalId,
         "use",
@@ -9522,7 +9522,10 @@ export class OpenClawController {
           await state.credentialSources.listCredentialSources(namespace.id),
         );
       }
-      const templates = await state.connectionTemplates.listConnectionTemplates(namespace.id);
+      const templates = await state.connectionTemplates.listConnectionTemplates({
+        namespaceId: namespace.id,
+        includeInstallationWide: false,
+      });
       if (templates.length > 0) {
         remaining("connection templates", templates);
       }

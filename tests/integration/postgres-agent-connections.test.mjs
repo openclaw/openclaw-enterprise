@@ -340,7 +340,9 @@ test(
 
     const blockedDeletion = await inject("DELETE", `/namespaces/${owner.id}`);
     assert.equal(blockedDeletion.statusCode, 409, blockedDeletion.body);
-    assert.match(blockedDeletion.json().error.message, /template/i);
+    assert.ok(
+      blockedDeletion.json().error.message.includes(`connection templates (${ownerTemplate.id})`),
+    );
   },
 );
 

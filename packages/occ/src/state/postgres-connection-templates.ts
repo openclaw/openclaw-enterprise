@@ -144,11 +144,14 @@ export function postgresConnectionTemplates(
   return {
     findConnectionTemplate: async (templateId) =>
       (await selectTemplates("WHERE t.id = $1", [templateId]))[0],
-    listConnectionTemplates: async (namespaceId) =>
+    listConnectionTemplates: async (filter) =>
       Object.freeze(
-        namespaceId === undefined
+        filter === undefined
           ? await selectTemplates("", [])
-          : await selectTemplates("WHERE t.namespace_id = $1", [namespaceId]),
+          : await selectTemplates("WHERE t.namespace_id = $1 OR ($2 AND t.namespace_id IS NULL)", [
+              filter.namespaceId,
+              filter.includeInstallationWide,
+            ]),
       ),
     findConnectionTemplateVersion: async (templateId, version) => {
       const [row] = (
