@@ -3503,6 +3503,15 @@ test("a Pod that comes back drops the no-Pod reason", async (t) => {
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
   const reason = "This version has no running Pod for this source.";
   await page.getByRole("status").filter({ hasText: reason }).waitFor();
+  // With no Pod, its restarts are unknown: only the no-Pod reason shows, not the restart note.
+  assert.equal(
+    await page
+      .getByText("This container has not restarted, so there is no previous instance.", {
+        exact: true,
+      })
+      .count(),
+    0,
+  );
   computeDriver.state.gatewayPod = true;
   await page.clock.runFor(10_000);
   await page.getByText("the Pod is back").waitFor();
