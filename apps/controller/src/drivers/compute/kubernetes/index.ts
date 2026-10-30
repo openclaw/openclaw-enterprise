@@ -1484,6 +1484,7 @@ const POD_LABEL_VALUE_PATTERN = "^(?:[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)
 const POD_LABEL_VALUE = new RegExp(POD_LABEL_VALUE_PATTERN);
 const POD_LABELS_SCHEMA = {
   type: "object",
+  writeOnly: true,
   minProperties: 1,
   additionalProperties: { type: "string", maxLength: 63, pattern: POD_LABEL_VALUE_PATTERN },
 };
@@ -3432,7 +3433,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               envoyHttpsTargetPort: { type: "integer", minimum: 1, maximum: 65535 },
             },
           },
-          caBundle: { type: "string", minLength: 1, maxLength: 65536 },
+          caBundle: { type: "string", minLength: 1, maxLength: 65536, writeOnly: true },
           network: {
             type: "object",
             additionalProperties: false,
@@ -3541,8 +3542,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
           transportSecretPrefix: { type: "string" },
           gatewayStorageClassName: { type: "string", minLength: 1 },
           nativeOpenClawSessionCapacity: { type: "integer", minimum: 1, maximum: 1024 },
-          nodeSelector: { type: "object", additionalProperties: { type: "string" } },
-          gatewayNodeSelector: { type: "object", additionalProperties: { type: "string" } },
+          nodeSelector: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            writeOnly: true,
+          },
+          gatewayNodeSelector: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            writeOnly: true,
+          },
           codexSeccompProfile: { type: "string", minLength: 1 },
           codexModelBaseUrl: { type: "string", minLength: 1 },
           channels: {
@@ -11238,8 +11247,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (revision.harnessAuth.method !== "credential_source") {
       return undefined;
     }
+    const gateway = this.requireCredentialGateway();
+    if (gateway.id !== revision.harnessAuth.credentialGatewayId) {
+      return undefined;
+    }
     const sourceType = revision.harnessAuth.sourceType;
-    const catalog = await this.requireCredentialGateway().listSourceTypes({
+    const catalog = await gateway.listSourceTypes({
       signal: this.operationSignal(),
     });
     return catalog.find((entry) => entry.type === sourceType);

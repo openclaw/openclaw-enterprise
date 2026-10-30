@@ -6,6 +6,7 @@ import type { BrowserContextOptions, Locator, Page } from "playwright";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { RESOURCE_CONFLICT } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import {
   apiRequests,
   consoleViewports,
@@ -86,9 +87,7 @@ async function openPluginJson(page: Page) {
 }
 
 test("the authentication source form shows a missing Secret under its field", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Auth fields", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Auth fields");
   const agent = await fixture.createAgent(namespace.id, "Auth Fields", nativeValues("af"), {
     harnessAuth: null,
   });
@@ -114,9 +113,7 @@ test("the authentication source form shows a missing Secret under its field", as
 // The renamed field's required error names the label the page shows (finding 1987), and the
 // console's check leaves its list closed, so the error stays in sight (finding 1988).
 test("the authentication source form names the Service account token Secret it requires", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Auth labels", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Auth labels");
   const agent = await fixture.createAgent(
     namespace.id,
     "Auth Labels",
@@ -147,9 +144,7 @@ test("the authentication source form names the Service account token Secret it r
 });
 
 test("the workspace file editor shows an oversized file's error under the file", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Workspace fields", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Workspace fields");
   const agent = await fixture.createAgent(namespace.id, "Workspace Fields", nativeValues("wf"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture, { browser });
@@ -243,9 +238,7 @@ test("the workspace file editor shows an oversized file's error under the file",
 // A Reload that finds the file gone empties the editor for a new file: the refused text's error
 // goes with it, as it does on a Reload that reads the file (finding 1996).
 test("the workspace file editor drops an oversized file's error when Reload finds no file", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Workspace missing", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Workspace missing");
   const agent = await fixture.createAgent(namespace.id, "Workspace Missing", nativeValues("wm"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture, { browser });
@@ -291,9 +284,7 @@ test("the workspace file editor drops an oversized file's error when Reload find
 // Choosing an issued ChatGPT service account without picking one is the console's check too: the
 // error under the account list, which takes focus, not only the grey status line (finding 1997).
 test("the authentication source form shows a missing service account under its field", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Account fields", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Account fields");
   const agent = await fixture.createAgent(
     namespace.id,
     "Account Fields",
@@ -320,9 +311,7 @@ test("the authentication source form shows a missing service account under its f
 
 // Plugin selections on a draft Agent's Plugins tab: one console, an Agent for each case.
 test("Plugin selections JSON", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Plugin fields", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Plugin fields");
   let agents = 0;
   const pluginsTab = async (t: TestContext, context?: BrowserContextOptions) => {
     agents += 1;

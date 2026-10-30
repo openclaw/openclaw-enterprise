@@ -44,6 +44,7 @@ const CONSOLE_ASSETS = new Map([
       "configuration-fields.mts",
       "driver-configurations.mts",
       "view-lifetime.mts",
+      "request-turns.mts",
       "navigation.mts",
       "shell.mts",
       "namespaces.mts",
@@ -252,12 +253,23 @@ export async function readConsoleAsset(
         ? shell
         : Buffer.from(renderConsoleThemeShell(shell.toString("utf8"), theme)),
     contentType: "text/html; charset=utf-8",
-    statusCode:
-      CONSOLE_SHELL_ROUTES.has(pathname) ||
-      /^\/console\/agents\/(new|agt_[a-f0-9-]+)$/.test(pathname)
-        ? 200
-        : 404,
+    statusCode: isConsolePage(canonicalConsolePath(pathname)) ? 200 : 404,
   };
+}
+
+// A page path with trailing slashes names the same page, so it gets the same status; the
+// console then shows the address without them (navigation.mts). `/console/` itself stays.
+// Assets never match: an asset path with a slash is not an asset (finding 1906).
+function canonicalConsolePath(pathname: string) {
+  return pathname.startsWith("/console/")
+    ? `/console/${pathname.slice("/console/".length).replace(/\/+$/, "")}`
+    : pathname;
+}
+
+function isConsolePage(pathname: string) {
+  return (
+    CONSOLE_SHELL_ROUTES.has(pathname) || /^\/console\/agents\/(new|agt_[a-f0-9-]+)$/.test(pathname)
+  );
 }
 
 async function encodedAsset(

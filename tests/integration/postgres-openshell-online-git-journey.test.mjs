@@ -95,14 +95,6 @@ test(
       );
       assert.deepEqual(result, operation ? { decision: 1 } : { decision: 2, reason_code: reason });
       const after = await receipts();
-      if (operation === "create-draft-pull") {
-        const { rows } = await f.pool.query(
-          "SELECT outcome FROM occ.prepared_repository_draft_pulls WHERE grant_id=$1",
-          [mapping.grantId],
-        );
-        assert.deepEqual(rows, [{ outcome: "outcome_unknown" }]);
-        return;
-      }
       if (!operation) {
         assert.deepEqual(after, before, "denial must not add a durable possible-use receipt");
         return;
@@ -121,6 +113,7 @@ test(
         material_version: installed.materialVersion,
         operation,
       });
+      return added[0];
     };
     // Targets are inspected protocol data only. There is no downstream dispatcher;
     // an ALLOW and its receipt prove possible use, never successful sending.
@@ -180,9 +173,29 @@ test(
         }),
       ),
     };
-    await evaluate(draft, "create-draft-pull");
+    const draftUse = await evaluate(draft, "create-draft-pull");
+    const draftClaims = async () =>
+      (
+        await f.pool.query(
+          `SELECT receipt_id, request_digest_sha256, admission_id, attempt_id,
+                  material_version, outcome
+           FROM occ.prepared_repository_draft_pulls WHERE grant_id=$1`,
+          [f.binding.grant.grantId],
+        )
+      ).rows;
+    const claims = await draftClaims();
+    assert.equal(claims.length, 1);
+    const claim = claims[0];
+    // The spent allowance must belong to this exact authorized use.
+    assert.equal(claim.receipt_id, draftUse.exchange_id);
+    assert.equal(claim.request_digest_sha256, draftUse.request_digest_sha256);
+    assert.equal(claim.admission_id, draftUse.admission_id);
+    assert.equal(claim.attempt_id, draftUse.attempt_id);
+    assert.equal(claim.material_version, draftUse.material_version);
+    assert.equal(claim.outcome, "outcome_unknown");
     // The refusal names the spent draft (finding 2147).
     await evaluate(draft, undefined, sandboxId, "draft_already_opened");
+    assert.deepEqual(await draftClaims(), claims, "denial must preserve the original draft claim");
 
     // Withdraw the real admission without running retirement. The real TLS App
     // fixture still accepts its issued token before AND after a fresh request with signed identity.

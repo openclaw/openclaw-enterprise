@@ -1,3 +1,4 @@
+import { checkComputeCredentialCatalog } from "../helpers/compute-credential-catalog.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
@@ -18543,6 +18544,24 @@ test("external ChatGPT source preparation delivers the exact placeholder and acc
       (entry) => entry.kind === "Secret" && entry.metadata.name.startsWith("harness-secrets-"),
     ),
     false,
+  );
+
+  await checkComputeCredentialCatalog(
+    t,
+    driver,
+    revision,
+    context,
+    credentialGatewayDriver,
+    objects,
+    driver.manifest(
+      "v1",
+      "Secret",
+      driver.workspaceNodeName(revision),
+      driver.workspaceNodeOwnership(revision),
+      { name: namespace, plane: "execution" },
+    ),
+    (await driver.apiClients).core,
+    requirements.labels,
   );
 
   await t.test("selects Harness authentication by source ID among multiple attachments", () => {

@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import {
   AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
@@ -17,10 +18,14 @@ import {
   accessibleDescription,
   detailUrl,
   expectReachableReason,
+  grantInstallationAdministration,
+  holdRequests,
   login,
   nativeValues,
   newPage,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
+import { enterManualModel } from "./console-agents-test-support.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 
 // The shipped default Preset, so Create Agent offers "Start with default Preset".
@@ -45,9 +50,7 @@ const SLACK_CHANNEL = {
 // by the sentence a sighted reader sees beside it.
 
 test("a reader's disabled Deploy, diagnostics and authentication controls name their reasons", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Described reader", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Described reader");
   const agent = await fixture.createAgent(namespace.id, "Described Agent", nativeValues("why"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   // An Agent bound to an issued service account. Issuance is outside the console: seed its stored
@@ -140,9 +143,7 @@ test("a reader's disabled Deploy, diagnostics and authentication controls name t
 // Finding 2899: the Agents list, Secrets and Slack token controls a reader cannot use were
 // natively disabled, so Tab skipped them and their reasons.
 test("a reader reaches the list, Secret and Slack token controls they cannot use, and why", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Reachable reader", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Reachable reader");
   const tokens = [
     await fixture.createSecret(namespace.id, "Reachable Slack app token", "xapp-reachable"),
     await fixture.createSecret(namespace.id, "Reachable Slack bot token", "xoxb-reachable"),
@@ -203,9 +204,7 @@ test("a reader reaches the list, Secret and Slack token controls they cannot use
 
 // Configure Slack stays in the Tab order while that reason shows (class of finding 2899).
 test("Configure Slack on an embedded Agent is described by the execution mode", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Described channels", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Described channels");
   const agent = await fixture.createAgent(namespace.id, "Embedded Agent", nativeValues("embed"));
   const { page } = await newPage(t, fixture);
 
@@ -244,12 +243,67 @@ test("the Namespace selector names no missing reason on a page without the no-Na
   );
 });
 
+// Finding 2936: with no readable Namespace, the header's selector was natively disabled, so Tab
+// skipped it and the no-Namespace panel that says why. It stays in the Tab order, described by
+// that panel, and changes nothing.
+test("the Namespace selector with no readable Namespace is reachable and names the panel", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  await fixture.createNamespace("Hidden from the reader", { ready: true });
+  restrict(fixture.policy, "read", "namespace");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, "/console/agents");
+  const reason = page.locator("#namespace-access-reason");
+  await reason.waitFor();
+  const selector = page.getByLabel("Namespace", { exact: true });
+  assert.equal(await selector.isDisabled(), true);
+  await expectReachableReason(page, selector, (await reason.textContent())?.trim());
+  assert.equal(new URL(page.url()).pathname, "/console/agents");
+});
+
+// Finding 2937: with no default Preset, Start with default Preset was natively disabled with no
+// reason. The hint beside it says why, describes it, and stays when another Preset is chosen
+// (the chooser's status line changes then).
+test("Start with default Preset names the missing default as its reason", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "No default Preset", {
+    defaultPresets: [],
+    filesystemConfiguration: true,
+  });
+  const other = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: { name: "Team Preset", template: { agent: { name: "Team Agent" } } },
+  });
+  assert.equal(other.status, 201, JSON.stringify(other.body));
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  const reason = "default-codex is not available to you in this Namespace.";
+  await page.getByText(reason, { exact: true }).waitFor();
+  const shortcut = page.getByRole("button", { name: "Start with default Preset", exact: true });
+  assert.equal(await shortcut.isDisabled(), true);
+  await expectReachableReason(page, shortcut, reason);
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+  // The chooser's status line does not repeat the hint (finding 2946), and it still describes
+  // the unavailable Use Preset.
+  const choose = "Choose a Preset.";
+  await page
+    .getByRole("status")
+    .filter({ hasText: /^Choose a Preset\.$/ })
+    .waitFor();
+  assert.equal(await page.getByText(reason, { exact: false }).count(), 1);
+  await expectReachableReason(page, page.getByRole("button", { name: "Use Preset" }), choose);
+
+  await page.getByLabel("Preset template").selectOption(other.data.id);
+  await page
+    .getByText("Fill in the variables, then use this Preset to create an editable draft.", {
+      exact: true,
+    })
+    .waitFor();
+  await expectReachableReason(page, shortcut, reason);
+});
+
 // Finding D793. Save plugin selections, Discard changes, Save channel Secrets and Use Preset were
 // disabled with a sentence beside them that no control named. Each is described by it now.
 test("a draft's disabled Save and Discard name their reasons", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Described draft", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Described draft");
   const tokens = [
     await fixture.createSecret(namespace.id, "Described Slack app token", "xapp-described"),
     await fixture.createSecret(namespace.id, "Described Slack bot token", "xoxb-described"),
@@ -287,9 +341,9 @@ test("a draft's disabled Save and Discard name their reasons", async (t) => {
 
 // Use Preset waits for a Preset; the status line under the chooser says so.
 test("Use Preset names the Preset still to choose as its reason", async (t) => {
-  const fixture = await createConsoleAppFixture(t, { defaultPresets: [DEFAULT_CODEX_PRESET] });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Described Preset", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Described Preset", {
+    defaultPresets: [DEFAULT_CODEX_PRESET],
+  });
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
@@ -302,9 +356,7 @@ test("Use Preset names the Preset still to choose as its reason", async (t) => {
 
 // A Slack token without a Secret is the reason too.
 test("Save channel Secrets names an unbound Slack token as its reason", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Unbound Slack", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Unbound Slack");
   const agent = await fixture.createAgent(
     namespace.id,
     "Unbound Slack Agent",
@@ -319,4 +371,84 @@ test("Save channel Secrets names an unbound Slack token as its reason", async (t
   const reason = "Choose a Secret for each Slack token to save.";
   assert.equal(await page.getByText(reason, { exact: true }).isVisible(), true);
   await expectReachableReason(page, save, reason);
+});
+
+// An Installation administrator's Credentials tab read the IAM policy and found no grant of the
+// saved authentication Secret to the Agent (finding 2260).
+const HARNESS_GRANT_MISSING =
+  "This Agent has no access to its authentication Secret, so deploying it would be refused. Select Save authentication source to grant it.";
+// The same missing grant, read by a session whose Save authentication source is unavailable.
+const HARNESS_GRANT_MISSING_ASK =
+  "This Agent has no access to its authentication Secret, so deploying it would be refused. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source.";
+
+// Finding 2949. While she administers the Installation, the warning names the Save that grants
+// the Agent its Secret. Her administration then ends: the newer permission answer refuses her
+// Agent update, so Save is unavailable, and the shown warning is reworded in place to name who
+// grants it instead of a Save she cannot use.
+test("a missing harness grant names the administrator once a revoke makes Save unavailable", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Revoked harness grant");
+  const secret = await fixture.createSecret(namespace.id, "Revoked harness Secret", "hidden");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Revoked Grant Agent",
+    nativeValues("revoked-grant"),
+  );
+  // The Agent's binding moves to a Secret it holds no grant for.
+  await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    harnessAuth: { method: "api_key", source: secret.ref },
+  });
+  const account = await fixture.createNamespaceMember("revoked-harness", namespace.id, AGENT_READ);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
+    account.credentials,
+  );
+  await page.getByRole("heading", { name: "Revoked Grant Agent" }).waitFor();
+  const save = page.getByRole("button", { name: "Save authentication source" });
+  await page.getByText(HARNESS_GRANT_MISSING, { exact: true }).waitFor();
+  await waitForEnabled(save);
+
+  revoke();
+  // The Access tab's policy read is refused, which settles that she no longer administers the
+  // Installation; the page reads its permission answer again and leaves for Configuration.
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  await page.getByText(HARNESS_GRANT_MISSING_ASK, { exact: true }).waitFor();
+  assert.equal(await page.getByText(HARNESS_GRANT_MISSING, { exact: true }).count(), 0);
+  assert.equal(await save.isDisabled(), true);
+});
+
+// Finding 2950. The Codex lock keeps Execution mode in the Tab order with its hint (finding
+// 2945). A pending Create disables every field natively, this select too: it must not be turned
+// into the reachable Codex lock, which a keyboard could still open while the request runs.
+test("a pending Codex Create keeps Execution mode natively disabled", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Pending Codex mode");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
+  await page.getByLabel("Agent name").fill("Pending Codex Agent");
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  await enterManualModel(page, "pending-codex-key", "gpt-5.1");
+  await page.locator(".launch-runtime > summary").click();
+  const mode = page.getByLabel("Execution mode");
+  assert.equal(await mode.getAttribute("aria-disabled"), "true");
+  // The first write Create sends after the model Secret is held, so the form stays pending.
+  const write = await holdRequests(
+    t,
+    page,
+    (url) =>
+      url.pathname.startsWith(`/namespaces/${namespace.id}/`) && !url.pathname.includes("/secrets"),
+    { method: "POST", once: true },
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await write.requested;
+  await page.waitForFunction((node) => node.disabled, await mode.elementHandle());
+  assert.equal(await mode.getAttribute("aria-disabled"), null);
+  write.release();
 });

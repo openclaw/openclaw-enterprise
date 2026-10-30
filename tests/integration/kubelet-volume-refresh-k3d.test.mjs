@@ -9,6 +9,7 @@ import {
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 // Premise test for delivering late workload inputs through optional volumes.
 // A Pod starts before its optional Secret or ConfigMap exists; the object is created
@@ -130,26 +131,22 @@ const podSelector = "openclaw.dev/test=volume-refresh";
 const pollIntervalMs = 2_000;
 
 async function waitForRecords(readLogs, cases, field, description, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const records = podLogRecords(await readLogs());
-    for (const entry of cases) {
-      const record = records.get(entry.name)?.find((item) => item[field] !== undefined);
-      if (entry[field] === undefined && record !== undefined) {
-        entry[field] = record[field];
+  const pending = () =>
+    cases.filter((entry) => entry[field] === undefined).map((entry) => entry.name);
+  await waitUntil(
+    () => `${pending().join(", ")} to report ${description}`,
+    async () => {
+      const records = podLogRecords(await readLogs());
+      for (const entry of cases) {
+        const record = records.get(entry.name)?.find((item) => item[field] !== undefined);
+        if (entry[field] === undefined && record !== undefined) {
+          entry[field] = record[field];
+        }
       }
-    }
-    const pending = cases.filter((entry) => entry[field] === undefined);
-    if (pending.length === 0) {
-      return;
-    }
-    if (Date.now() >= deadline) {
-      assert.fail(
-        `Timed out waiting for ${pending.map((entry) => entry.name).join(", ")} to report ${description}.`,
-      );
-    }
-    await delay(pollIntervalMs);
-  }
+      return pending().length === 0;
+    },
+    { timeoutMs, intervalMs: pollIntervalMs },
+  );
 }
 
 // `kubectl logs --prefix` lines read "[pod/<name>/<container>] <line>".

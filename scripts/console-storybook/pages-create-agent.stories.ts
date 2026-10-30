@@ -218,6 +218,10 @@ export const CreateCapabilitiesError = {
   name: "Capability check failure",
 };
 export const CreateNoPresets = { ...story("createNoPresets"), name: "No Presets" };
+export const CreateNoDefaultPreset = {
+  ...story("createNoDefaultPreset"),
+  name: "Other Presets, no default",
+};
 export const CreateWithoutPreset = {
   ...story("createWithoutPreset"),
   name: "Start without Preset",
@@ -356,3 +360,5 @@ export const PasswordSecretConflict = story("createPasswordSecretConflict");
 export const PasswordSecretConflictPat = story("createPasswordSecretConflictPat");
 
 export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOAuth");
+
+export const CreateOAuthStartNavigation = story("createOAuthStartNavigation");

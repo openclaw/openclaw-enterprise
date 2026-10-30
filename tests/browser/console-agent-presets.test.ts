@@ -42,6 +42,7 @@ import {
   apiRequests,
   consoleViewports,
   detailUrl,
+  expectReachableReason,
   focusKeptOverClose,
   holdRequests,
   inViewport,
@@ -3571,6 +3572,12 @@ test("Preset list and Preset Secret field name the Namespace read a Restriction 
   await page
     .getByText(`Presets unavailable. ${namespaceListDenied("Presets")}`, { exact: true })
     .waitFor();
+  // The shortcut stays in the Tab order, described by the chooser's status (finding 2937).
+  await expectReachableReason(
+    page,
+    page.getByRole("button", { name: "Start with default Preset", exact: true }),
+    `Presets unavailable. ${namespaceListDenied("Presets")}`,
+  );
 
   // With the list readable again, the chosen Preset's Secret field lists the Namespace's Secrets.
   await page.reload();
@@ -4245,9 +4252,11 @@ test("The console requires a readable installed default for quick-start and stil
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page
-    .getByText("Choose a Preset. default-codex is not available to you in this Namespace.", {
-      exact: true,
-    })
+    .getByRole("status")
+    .filter({ hasText: /^Choose a Preset\.$/ })
+    .waitFor();
+  await page
+    .getByText("default-codex is not available to you in this Namespace.", { exact: true })
     .waitFor();
   assert.equal(
     await page.getByRole("button", { name: "Start with default Preset" }).isDisabled(),

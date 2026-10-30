@@ -540,6 +540,10 @@ export const scenarios = {
     ],
     description:
       "The permission answer allowed creation, but the API refuses it (for example, a grant removed after the page loaded). The form clears the value, disables editing, and focuses Close.",
+    steps: [
+      "Tab to Secret name, Show value, Value and Create Secret. Each takes focus and looks unavailable, described by the refusal; typing, Enter, Space or a click sends nothing and the value stays masked (finding 2935).",
+      "Close the dialog. The page's Create Secret looks unavailable, described by the note under the toolbar that asks to select Refresh after access changes.",
+    ],
   },
   secretsUnknownSave: {
     group: "Pages/Secrets",
@@ -652,6 +656,9 @@ export const scenarios = {
     ],
     description:
       "A newly added reference can refuse deletion after the detail read. Reopen the detail to inspect current consumers.",
+    steps: [
+      "Tab to Permanently delete Secret. It takes focus and looks unavailable, described by the refusal; Enter, Space or a click sends nothing (finding 2935).",
+    ],
   },
   secretsDeletionUnconfirmed: {
     group: "Pages/Secrets",
@@ -1238,7 +1245,7 @@ export const scenarios = {
       { selector: ".agent-stop-dialog button.danger", click: true },
     ],
     description:
-      "Permission advice allowed Stop, but the controller refuses the confirmed write, as after a removed grant. The alert names the missing Agent operate access; the row stays running.",
+      "Permission advice allowed Stop, but the controller refuses the confirmed write, as after a removed grant. The alert names the missing Agent operate access; the row stays running. Its Stop icon takes focus back and looks unavailable, described by the alert, and the row's note under the icons says Needs Agent operate.",
   },
   agentsRowDeleteDenied: {
     group: "Pages/Agents",
@@ -1256,7 +1263,64 @@ export const scenarios = {
       { selector: ".agent-delete-dialog button.danger", click: true },
     ],
     description:
-      "Permission advice allowed Delete, but the controller refuses the confirmed write. The alert names the missing Agent delete access; the Agent stays in the list.",
+      "Permission advice allowed Delete, but the controller refuses the confirmed write. The alert names the missing Agent delete access; the Agent stays in the list. Its Delete icon takes focus back and looks unavailable, described by the alert, and the row's note under the icons says Needs Agent delete.",
+  },
+  agentsRowDeleteRefusedOther: {
+    group: "Pages/Agents",
+    name: "Delete from the list refused for another reason",
+    deployed: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "DELETE",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Only the actor that started this deletion can retry it while that actor still holds delete. Retry as that actor, or remove its delete permission first.",
+      },
+    ],
+    actions: [
+      { selector: '[aria-label="Delete Research assistant"]', click: true },
+      { selector: ".agent-delete-dialog button.danger", click: true },
+    ],
+    description:
+      "The row is stale: another person's deletion of this Agent failed after the list loaded, and the controller refuses this caller's Delete for that reason, not for a missing grant. The alert shows the API's text with the Agent's name. The row's note names no grant; it reads Not deleted: see above, so a narrow screen that scrolled the alert away still says why. Both icons stay in the Tab order, unavailable and described by the refusal, until Refresh; focus stays on Delete.",
+  },
+  agentsRowRefocusDeleting: {
+    group: "Pages/Agents",
+    name: "Refocus after another person's deletion, with a kept refusal",
+    deployed: true,
+    deletingOnListReread: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "DELETE",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Only the actor that started this deletion can retry it while that actor still holds delete. Retry as that actor, or remove its delete permission first.",
+      },
+    ],
+    actions: [
+      { selector: '[aria-label="Delete Research assistant"]', click: true },
+      { selector: ".agent-delete-dialog button.danger", click: true },
+    ],
+    description:
+      "This caller's Delete was refused for a reason that is not a grant, and another person's deletion of the Agent started after the list loaded. A window refocus rebuilds the list: the row gains its Deleting badge, keeps the refusal and its note, and focus returns to Delete. The page scrolls only as far as needed to keep the icon and its note in view (finding 2976). Simulated API; no backend proof.",
+    steps: [
+      "At 390 px, scroll until the note Not deleted: see above sits at the bottom of the window, with Delete Research assistant focused. Switch to another window, then return. The row reads Deleting, and Delete and its note are both in view.",
+    ],
+  },
+  agentsRowRefocusStopped: {
+    group: "Pages/Agents",
+    name: "Refocus after another person's stop",
+    deployed: true,
+    stoppedOnListReread: true,
+    description:
+      "Another person's stop completes after the list loads, so the Agent has no selected version. A window refocus rechecks the list and rebuilds it; the row has no Stop icon now, so focus on it moves to the same row's name, not to the page (finding 2967). Simulated API; no backend proof.",
+    steps: [
+      "Press Tab until Stop Research assistant has focus. Switch to another window, then return. The row has no Stop icon, and focus is on the Research assistant link.",
+    ],
   },
   agentsRowRestricted: {
     group: "Pages/Agents",
@@ -1266,11 +1330,27 @@ export const scenarios = {
     description:
       "The permission summary says this caller can neither stop nor delete these Agents. Each row disables its icons and says why before any confirmation.",
     steps: [
-      "Tab to a row's Stop and Delete icons. Each takes focus and looks unavailable, its description is the row's note, and Enter, Space or a click opens no confirmation.",
+      "Tab to a row's Stop and Delete icons. Each takes focus and looks unavailable, its description is the row's whole reason without the short grant line, and Enter, Space or a click opens no confirmation.",
       "Find Needs operate and delete under each row's icons. Hover it for the whole reason, which names an Installation administrator as who grants them. The icons do not open a confirmation.",
       "Open an Agent: its detail page explains the same restrictions.",
     ],
     gap: "The summary is advisory. The controller still authorizes each write.",
+  },
+  agentsRowStopPermissionDuringConfirmation: {
+    group: "Pages/Agents",
+    name: "Stop from the list, permission arrives while confirmation is open",
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    rules: [
+      { suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions", delayMs: 3500 },
+    ],
+    actions: [{ selector: '[aria-label="Stop Research assistant"]', click: true }],
+    description:
+      "The story opens Stop from the list before the delayed permission answer says no. The confirmation explains the restriction and focuses Cancel.",
+    steps: [
+      "Tab to Stop Agent. It takes focus and looks unavailable, described by the restriction; Enter, Space or a click sends nothing (finding 2935).",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes every request.",
   },
   agentsRowStopUnknown: {
     group: "Pages/Agents",
@@ -1295,6 +1375,9 @@ export const scenarios = {
     name: "No readable Namespaces",
     emptyNamespaces: true,
     description: "Agent pages need an accessible Namespace.",
+    steps: [
+      "Tab to the Namespace selector. It takes focus and looks unavailable, described by the panel's sentence; arrow keys and a click change nothing (finding 2936).",
+    ],
     gap: "Create a Namespace from Namespaces; granting access still requires an administrator.",
   },
   namespaceMissing: {
@@ -1615,7 +1698,8 @@ export const scenarios = {
     group: "Pages/Namespaces",
     name: "Unavailable selection",
     path: "/console/namespaces?namespace=ns_00000000-0000-4000-8000-000000000099",
-    description: "Recover from a stale Namespace URL using the selector inside the message.",
+    description:
+      "Recover from a stale Namespace URL using the selector inside the message, which says the Namespace is missing or not readable.",
     steps: [
       "Choose Engineering under Choose a valid Namespace; the URL changes and the warning disappears without leaving Namespaces.",
       "Use browser Back to return to the unavailable selection and recover again.",
@@ -1739,6 +1823,9 @@ export const scenarios = {
     ],
     description:
       "A creation denial explains the missing Installation permission and disables resubmission. Cancel returns to the empty list.",
+    steps: [
+      "Tab to Namespace name and Create Namespace. Each takes focus and looks unavailable, described by the refusal; typing, Enter, Space or a click sends nothing (finding 2935).",
+    ],
   },
   namespaceCreatePending: {
     group: "Pages/Namespaces",
@@ -1765,6 +1852,9 @@ export const scenarios = {
     ],
     description:
       "An unconfirmed write blocks resubmission. Check Namespaces rereads the list before a deliberate new attempt; this fixture does not establish whether the write committed.",
+    steps: [
+      "Tab to Namespace name and Create Namespace. Each takes focus and looks unavailable, described by the Outcome unknown warning; Enter, Space or a click sends nothing (finding 2935).",
+    ],
   },
   namespaceCreateSuccess: {
     group: "Pages/Namespaces",
@@ -1807,13 +1897,68 @@ export const scenarios = {
     name: "Account",
     path: "/console/settings",
     description:
-      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect read-only Installation Driver schemas. There are no editable settings in this release.",
+      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect accepted startup fields or the same values as JSON, including redacted sections and an empty object. There are no editable settings in this release.",
     steps: [
       "Check that the page has no Namespace selector and that the account card shows initials, name and email.",
-      "Inspect Installation Driver schemas below the cards; no startup values or mutation controls are shown.",
+      "Expand each Installation Driver below the cards. Read the human labels and raw keys; Credential Gateway shows binary paths, Sandbox shows nested fields and hidden resources, and IAM has no visible fields. Switch Fields / JSON and confirm the expanded groups stay open.",
       "Choose Sign out in the Session card: “Signing out…” appears, then the sign-in page.",
-      "At a phone width, Sign out spans the Session card.",
+      "On a long page, scroll to the bottom and check that the sidebar background and operator profile reach it. At phone width, values fit and the existing navigation drawer still opens.",
     ],
+  },
+  settingsDriverNestedValues: {
+    group: "Pages/Settings",
+    name: "Nested Driver values",
+    path: "/console/settings",
+    installationNestedValues: true,
+    description:
+      "A simulated package Driver has nested records, arrays, empty values and a writeOnly field. The API fixture returns its redaction marker, and the production renderer handles the safe JSON without a bundled schema-specific form. The expanded page exercises the shared sidebar beyond one viewport.",
+    steps: [
+      "Expand Configuration. Inspect groups, nested records, false, zero, null, empty arrays and objects, literal markup text, and the hidden value.",
+      "Switch to JSON and back to Fields. The values and expanded state remain unchanged.",
+      "Scroll to the bottom: the navigation background and profile reach the page bottom. At phone width, open and close the navigation drawer and check that fields fit the viewport.",
+    ],
+  },
+  settingsDriverValuesUnavailable: {
+    group: "Pages/Settings",
+    name: "Driver values unavailable",
+    path: "/console/settings",
+    installationValuesUnavailable: true,
+    description:
+      "These simulated Driver schemas mark the whole startup object writeOnly, so the API omits its values. Each expanded group explains that values are unavailable; schemas are not substituted.",
+    steps: ["Expand a Driver and check the unavailable message. No JSON Schema is shown."],
+  },
+  settingsDriverConfigurationsEmpty: {
+    group: "Pages/Settings",
+    name: "No Driver configurations",
+    path: "/console/settings",
+    rules: [{ path: "/installation/driver-configurations", data: { configurations: [] } }],
+    description: "Installation discovery succeeds without any selected Driver configurations.",
+    steps: ["Check the empty message beneath the Installation Driver configuration heading."],
+  },
+  settingsDriverConfigurationsLoading: {
+    group: "Pages/Settings",
+    name: "Driver configuration loading",
+    path: "/console/settings",
+    rules: [{ path: "/installation/driver-configurations", hold: true }],
+    description:
+      "Installation discovery is pending. The section shows a loading message until the normal client timeout reports the failed read.",
+  },
+  settingsDriverConfigurationsFailure: {
+    group: "Pages/Settings",
+    name: "Driver configuration unavailable",
+    path: "/console/settings",
+    rules: [{ path: "/installation/driver-configurations", status: 503 }],
+    description:
+      "Installation discovery fails. The section reports the read failure without exposing values or showing a schema fallback.",
+  },
+  settingsDriverConfigurationsDenied: {
+    group: "Pages/Settings",
+    name: "Driver configuration denied",
+    path: "/console/settings",
+    readOnlyPermissionSummary: true,
+    rules: [{ path: "/installation/driver-configurations", status: 403, code: "FORBIDDEN" }],
+    description:
+      "An account without Installation administration can still use Settings. The protected Driver section is absent after the refusal.",
   },
   settingsNameIsEmail: {
     group: "Pages/Settings",
@@ -1938,6 +2083,7 @@ export const scenarios = {
       'In Configuration JSON, edit plugins.entries.codex.config.appServer: set sandbox to "workspace-write", approvalPolicy to "never", and remoteWorkspaceRoot to "/workspace/custom".',
       "Change the model, then replace the dummy credential. Confirm the selected model remains. Confirm all three edited appServer settings remain in Configuration JSON.",
       "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
+      "Open Runtime details and Tab to Execution mode. With Codex it takes focus and looks unavailable, described by its hint; keys and clicks do not change it. OpenClaw makes it selectable (finding 2945).",
     ],
   },
   createSecretCreateNotPermitted: {
@@ -3857,6 +4003,9 @@ export const scenarios = {
     rules: [{ path: presetSecretsPath.replace(/secrets$/, "presets"), status: 403 }],
     description:
       "Denied Preset access leaves quick-start disabled and reports the error. Start without Preset remains available as a separate action.",
+    steps: [
+      "Tab to Start with default Preset. It takes focus and looks unavailable, described by the Presets unavailable status; Enter, Space or a click does nothing.",
+    ],
   },
   createPresetInvalidField: {
     group: "Pages/Create Agent",
@@ -3967,6 +4116,20 @@ export const scenarios = {
     emptyPresets: true,
     description:
       "The default starter is unavailable until an administrator installs a readable Preset. Start without Preset opens an independent form.",
+    steps: [
+      "Tab to Start with default Preset. It takes focus and looks unavailable, described by the hint under it, “default-codex is not available to you in this Namespace.” Enter, Space or a click does nothing (finding 2937).",
+    ],
+  },
+  createNoDefaultPreset: {
+    group: "Pages/Create Agent",
+    name: "Other Presets, no default",
+    path: create,
+    noDefaultPreset: true,
+    description:
+      "Another Preset is readable, but default-codex is not. The chooser's status says “Choose a Preset.” and the hint under Start with default Preset says why the shortcut is unavailable, once (finding 2946).",
+    steps: [
+      "Tab to Use Preset. It is described by “Choose a Preset.” Then Tab to Start with default Preset. It is described by the hint, “default-codex is not available to you in this Namespace.”",
+    ],
   },
   createWithoutPreset: {
     group: "Pages/Create Agent",
@@ -4037,6 +4200,15 @@ export const scenarios = {
     actions: startOAuthLogin,
     description:
       "The user code and provider link are visible while authorization is pending. Cancel login removes this staged login locally.",
+  },
+  createOAuthStartNavigation: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT sign-in interrupted by navigation (Experimental)",
+    path: create,
+    rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
+    actions: oauthForm,
+    description:
+      "Start sign-in, navigate to Secrets, and return with Back. The retained attempt blocks a second start and asks an administrator to investigate. The fixture holds the response; it does not prove provider persistence.",
   },
   createOAuthReady: {
     group: "Pages/Create Agent",
@@ -4111,6 +4283,39 @@ export const scenarios = {
     steps: [
       "Tab to Save plugin selections and Discard changes. Each takes focus, looks unavailable and is described by No plugin changes to save.; Enter or Space does nothing. Edit the JSON: both become live.",
     ],
+  },
+  authOAuthStartNavigation: {
+    group: "Components/Credentials",
+    name: "ChatGPT replacement interrupted by navigation (Experimental)",
+    path: `${draft}&tab=credentials`,
+    deployed: true,
+    auth: "oauth",
+    rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
+    description:
+      "Start a replacement sign-in, navigate to Secrets, and return with Back. The saved authentication remains; the unconfirmed replacement cannot start twice.",
+  },
+  authOAuthStartTabSwitch: {
+    group: "Components/Credentials",
+    name: "ChatGPT sign-in answered on another tab (Experimental)",
+    path: `${draft}&tab=credentials`,
+    deployed: true,
+    auth: "oauth",
+    oauthPending: true,
+    rules: [{ suffix: "/device-authorizations", method: "POST", delayMs: 3000, once: true }],
+    description:
+      "Start a replacement sign-in and open Configuration within 3 s. The reply arrives while Configuration shows; Credentials keeps it, so returning shows the code and Cancel login. The fixture delays the reply; it does not prove provider persistence.",
+  },
+  authOAuthStartTabSwitchRefused: {
+    group: "Components/Credentials",
+    name: "ChatGPT sign-in refused on another tab (Experimental)",
+    path: `${draft}&tab=credentials`,
+    deployed: true,
+    auth: "oauth",
+    rules: [
+      { suffix: "/device-authorizations", method: "POST", delayMs: 3000, status: 403, once: true },
+    ],
+    description:
+      "Start a replacement sign-in and open Configuration within 3 s. The simulated refusal arrives while Configuration shows; returning to Credentials names the missing grants and offers Sign in with OAuth again.",
   },
   authOAuthReconnect: {
     group: "Components/Credentials",
@@ -4664,6 +4869,41 @@ export const scenarios = {
     ],
     gap: "Simulated UI proof: the refused reread stands in for administration revoked while the page is open.",
   },
+  agentSharingRegranted: {
+    group: "Pages/Agent detail",
+    name: "Refresh sharing after administration is granted again",
+    path: `${draft}&tab=access`,
+    rules: [
+      // The page load reads the policy; the share's reread is refused, as after a revoke.
+      { suffix: "/iam/roles", status: 403, skip: 1, once: true },
+      // The permission answer that settles the refusal says "not an administrator"; the one
+      // Refresh sharing asks reports administration granted again.
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/permissions",
+        skip: 1,
+        once: true,
+        data: {
+          delete: true,
+          agents: { create: true },
+          secrets: { create: true },
+          installation: { administer: false },
+        },
+      },
+    ],
+    actions: [
+      { text: "Current policy loaded." },
+      ...shareExistingPerson,
+      { text: "Sharing policy requires Installation administration." },
+      click("Refresh sharing"),
+    ],
+    description:
+      "A share is refused after a revoke, and administration is granted again. Refresh sharing rereads the Agent's and the Namespace's permission answers, then the policy, one list at a time: the Access tab stays and shows the current policy without a page reload (finding 2943).",
+    steps: [
+      "The panel shows “Current policy loaded.” and the Share form is usable again; the Access tab is still selected.",
+      "The request log shows the Agent and Namespace /permissions reads after Refresh sharing, then one /iam/roles and one /iam/access-bindings read.",
+    ],
+    gap: "Simulated UI proof: the refused reread and the permission answers stand in for administration revoked and granted again while the page is open.",
+  },
   agentSharingUnknown: {
     group: "Pages/Agent detail",
     name: "Sharing outcome uncertain",
@@ -4905,6 +5145,8 @@ export const scenarios = {
     name: "Version draft, editor cannot operate a bound Secret",
     path: `${draft}&tab=configuration`,
     deployed: true,
+    slack: true,
+    secretOperateDenied: ["sec_demo_slack_app_token", "sec_demo_slack_bot_token"],
     agentPermissionSummary: {
       update: true,
       deploy: false,
@@ -4922,6 +5164,8 @@ export const scenarios = {
       "The permission answer allows Agent and Configuration update but not operate on a Secret the Configuration binds, which every save checks. Each editor is disabled, so the draft reads as read-only with this access, as for a viewer.",
     steps: [
       "Read the notice: Version draft · read-only with your access.",
+      "In Configuration, read that saving needs Secret operate on Slack app token (simulated) and Slack bot token (simulated). No Edit Configuration button is offered. View native Configuration still opens the saved JSON.",
+      "In Plugins and Credentials, read the same missing Secret names after the general source-grant explanation. Plugin selections remain a saved summary; authentication controls remain unavailable. Switching tabs retains their state.",
       "The Versions entry reads Version draft with Read-only Configuration, and the draft card has no Prepare this version steps.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every save.",
@@ -6530,7 +6774,10 @@ export const scenarios = {
     candidateDeploymentStatus: "succeeded",
     runtimePod: "startupWarnings",
     description:
-      "The Gateway Pod is Ready with no restarts; its startup readiness-probe Event is listed in muted text as an earlier warning instead of in the warning color.",
+      "The Gateway Pod is Ready with no restarts; its startup readiness-probe Event is listed in muted text as an earlier warning instead of in the warning color. With no restart there is no previous instance, and a note under the log toolbar says so.",
+    steps: [
+      "Tab through the log controls. Previous instance takes focus and looks unavailable, described by “This container has not restarted, so there is no previous instance.” Space or a click does not check it (finding 2944).",
+    ],
   },
   runtimeLogsDedicatedPods: {
     ...runtimeLogsPage,
@@ -6565,6 +6812,35 @@ export const scenarios = {
       "Tab through the log controls. Previous instance, Follow, Refresh logs and Download each take focus and look unavailable, described by “This version has no running Pod for this source.” Enter, Space or a click does nothing (finding 2929).",
     ],
     gap: "Simulated UI state only; this preview does not prove a live Pod transition.",
+  },
+  runtimeLogsReplacedVersion: {
+    ...runtimeLogsPage,
+    name: "Logs of a version stopped and replaced since",
+    path: `${currentVersion}&tab=logs`,
+    runtimePod: "replaced",
+    description:
+      "v6 has no running Pod: it was stopped and v7 is now selected for service. The Logs view keeps v6, says it has no running Pod, and names v7 with a link to its Logs.",
+    steps: [
+      "Check the notice under the runtime status: “v7 is selected for service.” with Open v7 Logs. The version picker still shows v6, and its log controls stay unavailable, described by “This version has no running Pod for this source.” (finding 2975).",
+      "Select Open v7 Logs. The page opens v7's Logs with its running Gateway Pod and no notice.",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live stop and redeploy.",
+  },
+  runtimeLogsFailedRedeploy: {
+    ...runtimeLogsPage,
+    name: "Logs of a stopped version after a failed redeploy elsewhere",
+    stopped: true,
+    stopNoSelection: true,
+    runtimePod: "none",
+    failedRedeployOnReread: true,
+    description:
+      "v7 was stopped, so no version is selected and its Pods are gone. While its Logs are open, another person deploys v8, and v8's startup model check times out: the Agent runs again with no version selected. The Logs status poll rereads the Agent and, finding it running with no version selected, lists the versions again: the page shows v8's failed deployment (finding 2978).",
+    steps: [
+      "Wait for the Logs view to say “This version has no running Pod for this source.” The summary reads Latest visible deployment v7 · Completed and Selected for service None.",
+      "Wait for the next status poll (10 seconds). The summary then reads Latest visible deployment v8 · Failed, and Deployment needs attention leads with v8's timed-out model check.",
+      "Open the version picker: v8 is listed above v7.",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live stop, redeploy or deployment failure.",
   },
   runtimeLogsFilteredDownload: {
     group: "Pages/Agent detail",
@@ -9081,8 +9357,8 @@ export const scenarios = {
     actions: [click("Delete Agent")],
     description: "The story opens Delete before the delayed permission summary answers no.",
     steps: [
-      "Watch the open confirmation explain the restriction, disable Delete, and move focus to Cancel.",
-      "Cancel or press Escape. The page should explain why Delete is unavailable, without sending a delete request.",
+      "Watch the open confirmation explain the restriction, make Permanently delete Agent unavailable, and move focus to Cancel. Tab to it: it takes focus, described by the restriction, and Enter, Space or a click sends nothing (finding 2935).",
+      "Cancel or press Escape. The page explains why Delete is unavailable, without sending a delete request; Delete Agent stays in the Tab order, described by that note.",
     ],
   },
   deletionConfirm: {
@@ -9167,7 +9443,7 @@ export const scenarios = {
     ],
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     description:
-      "Permission advice is unavailable. The attempted deletion is denied; the Console shows the API's sentence naming the missing grant and who grants it.",
+      "Permission advice is unavailable. The attempted deletion is denied; the Console names the Agent, the missing grant and who grants it, keeps the Request ID, and leaves Delete Agent unavailable, described by the refusal.",
   },
   deletionConflict: {
     group: "Components/Deletion",
@@ -9200,6 +9476,9 @@ export const scenarios = {
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     description:
       "Deletion may have started. Refresh deletion status checks this Agent without sending another deletion request.",
+    steps: [
+      "Tab to Delete Agent. It takes focus and looks unavailable, described by the Outcome unknown alert; Enter, Space or a click sends nothing (finding 2935).",
+    ],
   },
   createFlow: {
     group: "Flows",
@@ -9495,8 +9774,8 @@ export const scenarios = {
     actions: [click("Stop Agent")],
     description: "The story opens Stop before the delayed permission summary answers no.",
     steps: [
-      "Watch the open confirmation explain the restriction, disable Stop, and move focus to Cancel.",
-      "Cancel or press Escape. The page should explain why Stop is unavailable, without sending a stop request.",
+      "Watch the open confirmation explain the restriction, make Stop Agent unavailable, and move focus to Cancel. Tab to it: it takes focus, described by the restriction, and Enter, Space or a click sends nothing (finding 2935).",
+      "Cancel or press Escape. The page explains why Stop is unavailable, without sending a stop request; Stop Agent stays in the Tab order, described by that note.",
     ],
   },
   dangerZoneReader: {
@@ -9567,7 +9846,7 @@ export const scenarios = {
     stopped: true,
     actions: [click("Request Stop again")],
     description:
-      "An explicit repeated Stop uses the same confirmation and preserves the selected version. Cancel or Escape returns keyboard focus to Request Stop again.",
+      "An explicit repeated Stop preserves the selected version. Its confirmation says the Agent is already requested to stop and that this sends the request again, not that it interrupts a running gateway (finding D815). Cancel or Escape returns keyboard focus to Request Stop again.",
   },
   stopNoSelection: {
     group: "Components/Stop Agent",
@@ -9628,11 +9907,18 @@ export const scenarios = {
     deployed: true,
     rules: [
       { suffix: "/permissions", status: 503 },
-      { suffix: "/stop", method: "POST", status: 403 },
+      {
+        suffix: "/stop",
+        method: "POST",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Not authorized: this needs Agent operate on Agent agt_00000000-0000-4000-8000-000000000001. Ask an Installation administrator to grant it.",
+      },
     ],
     actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
     description:
-      "Permission advice is unavailable. The attempted stop is denied and the Console explains the required access.",
+      "Permission advice is unavailable. The attempted stop is denied; the Console names the Agent, the missing grant and who grants it, keeps the Request ID, and leaves Stop Agent unavailable, described by the refusal.",
   },
   stopUnknown: {
     group: "Components/Stop Agent",

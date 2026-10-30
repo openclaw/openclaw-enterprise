@@ -2661,10 +2661,10 @@ function renderAgentForm(
     }
     oauthLogin.setActive(usesOAuth && !binding);
     oauthLogin.setDisabled(planLocked || saved);
-    mode.disabled ||=
-      harness.value === "codex" ||
-      nativeProvider.value === "anthropic" ||
-      binding?.method === "runtime";
+    // Anthropic and a runtime binding fix the mode too; with a pending or saved form they keep it
+    // natively disabled. The Codex harness lock is applied below, once its hint is set.
+    const modeNativelyDisabled =
+      mode.disabled || nativeProvider.value === "anthropic" || binding?.method === "runtime";
     // Why the harness choice is locked, without the request in flight: the hint must not change
     // while Create is pending, or it shifts the refusal the form just scrolled into view.
     const harnessChoiceLocked =
@@ -2736,7 +2736,7 @@ function renderAgentForm(
     runtimeModeSummary.textContent = modeUnavailable
       ? " · Execution mode unavailable"
       : ` · ${mode.value === "dedicated" ? "Dedicated" : "Embedded"}`;
-    const modeHint = form.querySelector("#execution-mode-hint");
+    const modeHint = form.querySelector<HTMLElement>("#execution-mode-hint");
     if (modeHint) {
       modeHint.textContent = sandboxDriverOutage
         ? "Codex and OpenClaw are unavailable while this installation's Sandbox Driver is unavailable."
@@ -2749,6 +2749,12 @@ function renderAgentForm(
               : embeddedRefused
                 ? "Codex uses Dedicated execution. This installation selects a Sandbox Driver, so OpenClaw uses Dedicated execution too. Slack requires Dedicated execution."
                 : "Codex uses Dedicated execution. OpenClaw uses Dedicated execution with a Sandbox Driver that provisions it, and Embedded execution without a Sandbox Driver. Slack requires Dedicated execution.";
+    }
+    // Codex fixes Dedicated execution, and the hint says so: the select stays in the Tab order,
+    // described by it, so a keyboard reader reaches why (finding 2945).
+    setUnavailable(mode, !modeNativelyDisabled && harness.value === "codex", modeHint);
+    if (modeNativelyDisabled) {
+      mode.disabled = true;
     }
     if (capabilitiesSettled()) {
       let nextStatus = "";

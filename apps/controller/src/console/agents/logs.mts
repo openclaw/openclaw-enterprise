@@ -53,6 +53,9 @@ interface AgentLogsOptions {
   onLogsDenied?(): void;
   // A read was refused after the same read succeeded: the caller's access changed.
   onAccessChanged?(): void;
+  // Rereads the Agent while this version has no running Pod. Answers another version selected
+  // for service while the Agent runs, with a link to its Logs, or null.
+  runningVersion?(): Promise<{ label: string; link: HTMLElement } | null>;
 }
 
 // A reader without operate can read logs without observing a Pod or status timestamp.
@@ -67,6 +70,8 @@ const TAIL_LINES = 200;
 // The output status for a selection with no running Pod. It is also why the log controls that
 // read output are unavailable then (finding 2929).
 const NO_POD_STATUS = "This version has no running Pod for this source.";
+// Why Previous instance is unavailable for a container that has never restarted (finding 2944).
+const NO_PREVIOUS_INSTANCE = "This container has not restarted, so there is no previous instance.";
 // The longest the Logs view keeps its strip and output back for their first reads.
 const FIRST_VIEW_WAIT_MS = 2_000;
 // A 403 is audited; remember it for this sign-in instead of re-asking every poll or every
@@ -210,6 +215,7 @@ export function renderAgentLogs(
     versionRead = Promise.resolve(undefined),
     onLogsDenied = () => {},
     onAccessChanged = () => {},
+    runningVersion = () => Promise.resolve(null),
   }: AgentLogsOptions,
 ) {
   const base = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(agent.id)}/deployments/${encodeURIComponent(revisionId)}/runtime`;
@@ -256,6 +262,36 @@ export function renderAgentLogs(
   const stripStatus = element("span", { role: "status" }, "Loading runtime status…");
   const stripObserved = element("span", { "aria-live": "off" });
   const stripLine = element("p", { className: "muted" }, stripStatus, stripObserved);
+  // Names the version selected for service when this one has no running Pod: after a stop and
+  // redeploy the view stayed on the stopped version with no hint (finding 2975). A version
+  // picked on purpose stays selected; the notice only links to the other version's Logs.
+  const runningVersionNotice = element("div", {
+    className: "log-running-version",
+    role: "status",
+  });
+  let runningVersionShown: string | null = null;
+  let runningVersionReads = 0;
+  async function showRunningVersion(noPod: boolean) {
+    const ticket = ++runningVersionReads;
+    const answer = noPod ? await runningVersion().catch(() => null) : null;
+    if (!current() || ticket !== runningVersionReads) {
+      return;
+    }
+    const label = answer?.label ?? null;
+    if (label === runningVersionShown) {
+      return;
+    }
+    runningVersionShown = label;
+    runningVersionNotice.replaceChildren(
+      ...(answer
+        ? [
+            statusBlock("info", null, `${answer.label} is selected for service.`, [answer.link], {
+              role: null,
+            }),
+          ]
+        : []),
+    );
+  }
   function showStripStatus(text: string) {
     setText(stripObserved, "");
     stripStatus.textContent = text;
@@ -274,6 +310,8 @@ export function renderAgentLogs(
     id: "runtime-log-previous",
     disabled: true,
   });
+  // Says why Previous instance is unavailable while the selected container has not restarted.
+  const previousHint = element("p", { className: "hint", hidden: true });
   // Off by default: the server returns info and above (and lines of unknown level),
   // so debug span records do not crowd a page out.
   const includeDebug = element("input", {
@@ -480,7 +518,17 @@ export function renderAgentLogs(
   function describeDeniedControls() {
     const noPod = !logsDenied && logStatus.textContent === NO_POD_STATUS;
     for (const [control, off] of unavailable) {
-      setUnavailable(control, off, logsDenied ? logError : noPod ? logStatus : null);
+      setUnavailable(
+        control,
+        off,
+        logsDenied
+          ? logError
+          : noPod
+            ? logStatus
+            : control === previous && !previousHint.hidden
+              ? previousHint
+              : null,
+      );
     }
   }
 
@@ -619,12 +667,18 @@ export function renderAgentLogs(
           : "The Agent (Harness) Pod is not ready. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: read the Agent (Harness) source for the cause.",
     );
     const pod = selectedPod();
-    const restarts = pod
-      ? pod.restartCount
-      : statusDenied && lastStream !== null && lastStream.source === source?.id
+    const streamRestarts =
+      statusDenied && lastStream !== null && lastStream.source === source?.id
         ? lastStream.restartCount
-        : 0;
+        : undefined;
+    const restarts = pod ? pod.restartCount : (streamRestarts ?? 0);
     unavailable.set(previous, logsDenied || restarts === 0);
+    // A container known not to have restarted has no previous instance: the hint says so, and
+    // Previous instance stays in the Tab order, described by it (finding 2944). A restart
+    // enables it and hides the hint.
+    const knownRestarts = pod !== undefined || streamRestarts !== undefined;
+    previousHint.hidden = logsDenied || !knownRestarts || restarts > 0;
+    setText(previousHint, previousHint.hidden ? "" : NO_PREVIOUS_INSTANCE);
     if (unavailable.get(previous)) {
       previous.checked = false;
     }
@@ -646,6 +700,7 @@ export function renderAgentLogs(
     statusDenied = true;
     description = unobservedDescription();
     strip.replaceChildren();
+    void showRunningVersion(false);
     renderPickers();
     if (first && !logsDenied) {
       firstLogRead = readLogs({ restart: true });
@@ -727,6 +782,7 @@ export function renderAgentLogs(
         statusDenied = false;
         renderStrip();
         renderPickers();
+        void showRunningVersion(answer.pods.length === 0);
         if (first && !logsDenied) {
           firstLogRead = readLogs({ restart: true });
         } else if (!logsDenied && selection !== effectiveSelection()) {
@@ -1132,6 +1188,7 @@ export function renderAgentLogs(
     element("h3", {}, "Runtime"),
     stripLine,
     strip,
+    runningVersionNotice,
     element(
       "div",
       { className: "log-viewer" },
@@ -1166,6 +1223,7 @@ export function renderAgentLogs(
           ),
           element("div", { className: "log-actions" }, followButton, refreshButton, downloadButton),
         ),
+        previousHint,
         element(
           "div",
           { className: "log-filters", role: "group", "aria-label": "Log filters" },

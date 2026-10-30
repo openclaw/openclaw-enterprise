@@ -473,53 +473,61 @@ including its [model-response check](production-agents.md#verify-production-work
 
 ## Enable GitHub browser sign-in
 
-Use a controller image that includes GitHub sign-in: a [published image](#use-published-images)
-from a commit that includes it, or [your own build](#build-and-publish-production-images).
-Follow the [single-controller profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
-during stopped maintenance, after first installing without GitHub as above.
+Install the [single-controller profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
+with GitHub off and a compatible [published](#use-published-images) or [self-built](#build-and-publish-production-images) image.
+Keep `auth.github` configured. Never [roll back](production-upgrade-recovery.md#roll-back-across-human-sign-in) past activation.
+[Deactivate during stopped maintenance](auth-maintenance.md#deactivate-external-sign-in).
 
-Activation is one-way: the database refuses older images' sessions and
-`auth.github` must stay set. Never `helm rollback` past activation
-([rollback](production-upgrade-recovery.md#roll-back-across-human-sign-in));
-[stopped maintenance](auth-maintenance.md) deactivates it.
-
-1. Verify password recovery ([replaceable](../../reference/authentication/external-sign-in.md#session-and-recovery-controls)
-   later). Register
-   the GitHub App callback and protect its **client ID** (not App ID) and secret
-   as the [reference](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts) describes.
-   As the recovery administrator, read `data.user.id` from
+1. Verify password sign-in as recovery administrator. Read `data.user.id` from
    `GET /api/auth/session`.
-2. Create the Secret, then set `auth.github.enabled: true`, that ID as
-   `auth.recoveryUserId`, and `agentNativeAdmin.enabled: false` in protected
-   values, keeping workspace routing. Optionally narrow `auth.github.egressCidrs`, set `api.trustedProxy`
-   ([settings](../../reference/settings/production.md#github-sign-in-and-trusted-proxies)), or limit
-   sign-in to members with `auth.github.allowedOrgs` and `allowedTeams`, after granting the App
-   Members: read ([allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist)).
-   Profile installs set [these inputs](installation-profiles.md#external-sign-in-and-trusted-proxies)
-   and keep them in every rerender; rerender.
+2. Reuse the release Namespace’s dedicated sign-in Secret without reading values.
+   If absent, use protected files:
 
    ```bash
-   kubectl -n openclaw-system create secret generic occ-github-login \
+   kubectl --kubeconfig "${KUBECONFIG_FILE:?}" --context "${CONTEXT:?}" \
+     -n openclaw-system create secret generic occ-github-login \
      --from-file=client-id=/secure/occ/github-client-id \
      --from-file=client-secret=/secure/occ/github-client-secret
    ```
 
-3. Close ingress. Disable automatic restarts and policy/provisioning writers;
-   drain admitted requests.
-4. Run `helm upgrade` with the compatible image. The api Deployment uses
-   `Recreate`, so the old Pod stops first; startup enrolls qualifying accounts, logs any it skips,
-   and invalidates unbound sessions before serving. After a failure, keep ingress closed.
-5. Through [restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access),
-   verify password recovery, new session admission,
-   the expected Namespaces and existing Agent detail, and rejected stale sessions.
-   Reopen ingress only after these checks, retaining one serving controller.
+   Protected values:
 
-For enrollment, obtain the numeric subject with `gh api user --jq .id` as the
-intended GitHub user; verify ownership through your identity process, not
-email or usernames. Follow the reference's attachment and unknown-outcome handling.
-Once every ordinary account has an identity, set `auth.passwordSignIn: recovery-only`
-([recovery-only sign-in](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in)).
-Loopback tests do not qualify production stop/drain, cookies, logging, or GitHub registration.
+   ```yaml
+   auth:
+     recoveryUserId: "<recovery administrator user ID>"
+     github:
+       enabled: true
+       secretName: occ-github-login
+       clientIdKey: client-id
+       clientSecretKey: client-secret
+   agentNativeAdmin:
+     enabled: false
+   ```
+
+   Match its name and distinct keys (client ID, not App ID).
+   Rerender with workspace routing and [profile inputs](installation-profiles.md#external-sign-in-and-trusted-proxies). Register the [callback](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
+   See [allowlists, egress and proxies](../../reference/settings/production.md#github-sign-in-and-trusted-proxies).
+
+3. Close ingress. Disable auto-restarts and policy/provisioning writers. Drain requests.
+   [Stop API, worker and other database clients](auth-maintenance.md#stop-every-writer).
+   At first activation, [run `activate --recovery-user <recoveryUserId> --writers-stopped`](auth-maintenance.md#run-the-command).
+   This enrolls qualifying accounts, reports skips, and ends unbound sessions. After `status`, return here with ingress closed and old API/worker replicas at zero.
+4. On success, one normal `helm upgrade` restores configured replicas. Keep initialization hooks enabled.
+   The Job checks the Installation, migrates, then bootstraps without reissuing verified Installations’ credentials.
+5. Confirm rollout completion, no old API Pods, and one serving controller.
+   Through [restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access), verify password recovery, new sessions,
+   expected Namespaces and Agent detail, and stale-session rejection before reopening ingress.
+
+Restart the API after secret rotation. Keeping the client ID preserves attachments. Changing it ends old-instance sessions:
+reattach under the new ID before detaching old methods.
+
+[Enroll skipped accounts](../../reference/authentication/external-sign-in.md#session-and-recovery-controls) first.
+Through the site’s identity process, an Installation administrator verifies the intended GitHub user owns the enrolled local OCE account.
+Never match by email or username. That user runs `gh api user --jq .id` as themselves. [Attach their numeric ID to that account](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
+Resolve failed or uncertain writes before retrying. Attach identities to all ordinary accounts. Each user must sign in once with theirs before
+[`auth.passwordSignIn: recovery-only`](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in).
+
+Loopback cannot qualify production stop/drain, cookies, logging, and GitHub registration.
 
 ## Related
 

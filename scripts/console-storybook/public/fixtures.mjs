@@ -9,6 +9,8 @@ const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const currentRevisionId = "rev_00000000-0000-4000-8000-000000000006";
 const candidateRevisionId = "rev_00000000-0000-4000-8000-000000000007";
 const hiddenRevisionId = "rev_00000000-0000-4000-8000-000000000008";
+// v8, deployed from elsewhere after the page loaded (failedRedeployOnReread).
+const redeployRevisionId = "rev_00000000-0000-4000-8000-000000000018";
 const secretRef = (id) => ({ kind: "secret", namespaceId, id });
 const auth = { method: "api_key", source: secretRef("sec_demo_model") };
 
@@ -406,6 +408,8 @@ export function installFixture(scenario, evidence) {
     selectedRevisionId = "rev_00000000-0000-4000-8000-000000000001";
   }
   let agentReadCount = 0;
+  let agentListReadCount = 0;
+  let runtimeStatusReads = 0;
   const agent = {
     id: scenario.agentId ?? "agt_00000000-0000-4000-8000-000000000001",
     namespaceId,
@@ -721,11 +725,15 @@ export function installFixture(scenario, evidence) {
   }
   const presets = [
     preset,
-    {
-      ...structuredClone(defaultCodexPreset),
-      id: "pre_default_codex",
-      namespaceId,
-    },
+    ...(scenario.noDefaultPreset
+      ? []
+      : [
+          {
+            ...structuredClone(defaultCodexPreset),
+            id: "pre_default_codex",
+            namespaceId,
+          },
+        ]),
   ];
   if (scenario.swePreset) {
     for (const [name, definition] of [
@@ -956,20 +964,122 @@ export function installFixture(scenario, evidence) {
     if (path === "/installation/driver-configurations" && method === "GET") {
       return response({
         configurations: [
+          ...(scenario.installationNestedValues
+            ? [
+                {
+                  capability: "configuration",
+                  driverId: "config-example-package",
+                  implementation: "example-configuration-driver",
+                  scope: "installation",
+                  key: "startup",
+                  binding: "installation-startup",
+                  configurationSchema: {
+                    type: "object",
+                    properties: { operatorResources: { writeOnly: true } },
+                  },
+                  startupConfiguration: {
+                    endpoint: "/configuration/read",
+                    optionalValues: {
+                      enabled: false,
+                      capacity: 0,
+                      fallback: null,
+                      emptyText: "",
+                      list: [],
+                      record: {},
+                      ["customfield".repeat(8)]: "configurationvalue".repeat(20),
+                      nested: Array.from({ length: 12 }).reduce(
+                        (value, _, index) => ({ [`level${index + 1}`]: [value] }),
+                        "Nested leaf",
+                      ),
+                    },
+                    operatorResources: "[redacted]",
+                    workerGroups: Array.from({ length: 8 }, (_, index) => ({
+                      name: `Group ${index + 1}`,
+                      routes: ["/workspace/read", "/workspace/write"],
+                      description:
+                        index === 0
+                          ? "<b>Literal configuration text</b>"
+                          : "Configured worker group",
+                    })),
+                  },
+                  actions: {},
+                },
+              ]
+            : []),
           {
-            capability: "sandbox",
-            driverId: "sandbox-story",
-            implementation: "storybook-driver",
+            capability: "credential_gateway",
+            driverId: "credential-gateway-openshell",
+            implementation: "openshell",
             scope: "installation",
             key: "startup",
             binding: "installation-startup",
             configurationSchema: {
               type: "object",
+              ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
+              required: ["binaries"],
               additionalProperties: false,
               properties: {
-                endpoint: { type: "string", description: "Operator-managed endpoint." },
+                binaries: { type: "array", items: { type: "string" }, minItems: 1 },
+                toolBinaries: { type: "array", items: { type: "string" }, minItems: 1 },
               },
             },
+            ...(scenario.installationValuesUnavailable
+              ? {}
+              : {
+                  startupConfiguration: {
+                    binaries: ["/usr/bin/git", "/usr/bin/curl"],
+                    toolBinaries: ["/usr/bin/python3"],
+                  },
+                }),
+            actions: {},
+          },
+          {
+            capability: "sandbox",
+            driverId: "sandbox-openshell",
+            implementation: "openshell",
+            scope: "installation",
+            key: "startup",
+            binding: "installation-startup",
+            configurationSchema: {
+              type: "object",
+              ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
+              additionalProperties: false,
+              properties: {
+                gateway: {
+                  type: "object",
+                  properties: {
+                    workspaceMode: { type: "string" },
+                    operatorWorkspaceResources: { type: "array", writeOnly: true },
+                  },
+                },
+              },
+            },
+            ...(scenario.installationValuesUnavailable
+              ? {}
+              : {
+                  startupConfiguration: {
+                    gateway: {
+                      workspaceMode: "operator",
+                      operatorWorkspaceResources: "[redacted]",
+                    },
+                  },
+                }),
+            actions: {},
+          },
+          {
+            capability: "iam",
+            driverId: "native-iam",
+            implementation: "native",
+            scope: "installation",
+            key: "startup",
+            binding: "installation-startup",
+            configurationSchema: {
+              type: "object",
+              ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
+              additionalProperties: false,
+              properties: {},
+            },
+            ...(scenario.installationValuesUnavailable ? {} : { startupConfiguration: {} }),
             actions: {},
           },
         ],
@@ -1400,6 +1510,18 @@ export function installFixture(scenario, evidence) {
       }
       if (resource === "agents") {
         if (method === "GET") {
+          const reread = ++agentListReadCount > 1;
+          // Another person's stop completes after the list's first read: no version is selected.
+          if (scenario.stoppedOnListReread && reread) {
+            for (const listed of agents.values()) {
+              listed.desiredRuntimeState = "stopped";
+              listed.activeRevisionId = null;
+            }
+          }
+          // Another person's deletion of the first Agent started after the list's first read.
+          if (scenario.deletingOnListReread && reread) {
+            agent.status = "deleting";
+          }
           return response([...agents.values()]);
         }
         if (method === "POST") {
@@ -1953,6 +2075,34 @@ export function installFixture(scenario, evidence) {
             if (scenario.deletingOnRefresh && ++agentReadCount > 1) {
               saved.status = "deleting";
             }
+            // By the open Logs view's second runtime status poll, another person has deployed v8,
+            // whose startup model check timed out: the Agent runs again with no version selected.
+            if (
+              scenario.failedRedeployOnReread &&
+              runtimeStatusReads > 1 &&
+              !revisions.has(redeployRevisionId)
+            ) {
+              const redeploy = snapshot(saved, redeployRevisionId, 8);
+              redeploy.createdAt = "2026-09-26T23:10:00.000Z";
+              revisions.set(redeploy.id, redeploy);
+              deployments.set(redeploy.id, {
+                deploymentId: redeploy.id,
+                namespaceId,
+                agentId: saved.id,
+                status: "failed",
+                cleanup: null,
+                progress: null,
+                error: {
+                  code: "RUNTIME_MODEL_PROBE_TIMEOUT",
+                  message:
+                    "The startup model check got no reply from the provider in time. With OpenClaw this includes an unreachable provider (refused connection or unknown host). Check egress, proxy or a custom baseUrl and that the provider responds, then deploy a new version.",
+                },
+                warnings: [],
+              });
+              saved.desiredRuntimeState = "running";
+              // The API omits the field when no version is selected.
+              delete saved.activeRevisionId;
+            }
             if (deleted.has(id)) {
               agents.delete(id);
               return error(404);
@@ -2101,6 +2251,7 @@ export function installFixture(scenario, evidence) {
             : error(404);
         }
         if (suffix.startsWith("/deployments/") && suffix.endsWith("/runtime") && method === "GET") {
+          runtimeStatusReads += 1;
           const revisionId = suffix.split("/")[2];
           if (!revisions.has(revisionId)) {
             return error(404);
@@ -2247,8 +2398,12 @@ export function installFixture(scenario, evidence) {
               },
             );
           }
-          if (scenario.runtimePod === "none") {
-            // A version whose Pods are gone, such as an older one: nothing runs to read.
+          if (
+            scenario.runtimePod === "none" ||
+            (scenario.runtimePod === "replaced" && revisionId !== saved.activeRevisionId)
+          ) {
+            // A version whose Pods are gone, such as an older one: nothing runs to read. Under
+            // "replaced" only the version selected for service still runs.
             pods.length = 0;
           }
           if (scenario.runtimePod === "rollover") {
@@ -2269,11 +2424,14 @@ export function installFixture(scenario, evidence) {
                 kind: "container",
                 pods: pods
                   .filter(({ role }) => role === "gateway")
-                  .map(({ name, uid }) => ({
+                  .map(({ name, uid, containers }) => ({
                     name,
                     uid,
                     container: "gateway",
-                    restartCount: 1,
+                    // The Gateway container's own count: a Pod that never restarted has no
+                    // previous instance to read (finding 2944).
+                    restartCount:
+                      containers?.find((item) => item.name === "gateway")?.restartCount ?? 1,
                   })),
                 available: pods.length > 0,
                 ...(pods.length > 0 ? {} : { unavailableCode: "NO_POD" }),

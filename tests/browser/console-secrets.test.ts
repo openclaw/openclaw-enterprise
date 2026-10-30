@@ -34,6 +34,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { consoleStorage } from "../helpers/console-storage.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  accessibleDescription,
   apiRequests,
   expectReachableReason,
   expectWriteAsksBeforeUnload,
@@ -555,6 +556,20 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
       }
       assert.equal(await hasFocus(close), true, "Close is the next available action");
     }
+    // The refused submit and fields stay in the Tab order, described by the refusal after their
+    // own help, and send nothing (finding 2935).
+    const refusal = (await form.getByRole("alert").textContent())?.trim() ?? "";
+    await expectReachableReason(page, submit, refusal);
+    const fields: (typeof value)[] = method === "DELETE" ? [] : [value];
+    if (creating) {
+      fields.push(form.getByLabel("Secret name"));
+    }
+    for (const field of fields) {
+      const description = await accessibleDescription(field);
+      assert.ok(description.endsWith(refusal), description);
+      await expectReachableReason(page, field, description);
+    }
+    assert.equal(storage.calls.length, callCount);
     await close.click();
   }
   // A page that read the permission answer before a revocation still offers creation, as the
@@ -591,9 +606,12 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
       json: { ...body, data: { ...body.data, callerPermissions: { update: true, delete: true } } },
     });
   });
+  // A fresh page: a refused replace concerns only this Secret, so Create Secret stays available.
+  await page.reload();
   await openAction("Replace value");
   await value.fill("synthetic-denied-replacement");
   await expectDenied("Replace value", "PATCH", "update");
+  assert.equal(await createSecret.getAttribute("aria-disabled"), null);
   await openAction("Delete Secret");
   await expectDenied("Permanently delete Secret", "DELETE", "delete");
   await page.unroute(secretUrl);

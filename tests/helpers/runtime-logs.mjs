@@ -55,6 +55,8 @@ export function createRuntimeLogComputeDriver(options = {}) {
     extraPods: [],
     /** `false` reports no Gateway Pod, as for a version whose Pods are gone. */
     gatewayPod: true,
+    /** Revisions that report no Gateway Pod, as a version stopped and replaced since. */
+    podlessRevisions: [],
     /**
      * `{ ready }` adds a dedicated Harness Pod and the Agent (Harness) source;
      * `{ created: false }` lists the source with no Pod; `{ ready, stale: true }`
@@ -93,7 +95,9 @@ export function createRuntimeLogComputeDriver(options = {}) {
             }
             const name = podName(binding.revision);
             const pods = [
-              ...(state.gatewayPod === false ? [] : [{ name, uid: state.podUid }]),
+              ...(state.gatewayPod === false || state.podlessRevisions.includes(binding.revision.id)
+                ? []
+                : [{ name, uid: state.podUid }]),
               ...state.extraPods.map((pod) => ({ name: pod.name, uid: pod.uid })),
             ];
             const harnessPods =

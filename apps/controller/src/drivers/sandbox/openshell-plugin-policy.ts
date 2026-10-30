@@ -12,7 +12,7 @@ import {
   googleDiscoveryRequests,
   googleScopeFromString,
   type GoogleRequestScope,
-} from "../plugin/google-operations.ts";
+} from "../plugin/google-workspace/operations.ts";
 import { managedPluginGuardVersion } from "../plugin/managed-request-policies.ts";
 import { wirePolicy } from "../egress-proxy/openshell-wire-policy.ts";
 import {
