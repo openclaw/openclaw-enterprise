@@ -266,13 +266,15 @@ without asking again, and **Retry** forgets the path and rereads. Logout clears 
 strip without moving page focus or vertical scroll. A strip ResizeObserver repeats
 this on viewport changes, disconnects for inactive or detached views, and re-arms
 through the retained view's resume hook.
-Completed tabs retain DOM and drafts. Pending reads, failed reads, passwords,
-and mutations prevent reuse. Tabs ignore responses after unmount.
+Tabs retain DOM and drafts, but pending/failed reads, passwords, and mutations
+prevent reuse. Tabs ignore responses after unmount.
 [Draft captures](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
-exclude passwords. Channel Secret saves update the snapshot shared by tabs and
-Deploy. `agents/detail.mts:boundSecretsDenied` supplies the Configuration hint
+exclude passwords. Secret saves update the shared snapshot.
+`agents/detail.mts:boundSecretsDenied` supplies the Configuration hint
 with Deploy's authorized names, deduplicated by ID and excluding Harness-only
-Secrets. No extra reads occur; unavailable names keep the general explanation.
+Secrets. Reads publish only for the current details generation. Late names update
+the hint without replacing an open native disclosure. Failed metadata reads keep
+authorized IDs; an empty authorized list keeps the general explanation.
 
 [Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
 owns receipts and draft retirement.

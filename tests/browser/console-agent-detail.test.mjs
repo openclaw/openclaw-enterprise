@@ -5046,6 +5046,104 @@ async function replaceSecretFixture(t, label, { agentUpdate = false } = {}) {
   };
 }
 
+test("late Configuration Secret names preserve an open focused native disclosure", async (t) => {
+  const { fixture, namespace, agent, member } = await replaceSecretFixture(t, "Disclosure names");
+  const { page } = await newPage(t, fixture);
+  const configuration = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+  );
+  const botId = configuration.data.secretBindings.SLACK_BOT_TOKEN.source.id;
+  const held = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/secrets/${botId}`,
+    {
+      method: "GET",
+      once: true,
+      afterServer: true,
+    },
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    member.credentials,
+  );
+  await held.requested;
+  const summary = page.getByText("View native Configuration", { exact: true });
+  await summary.click();
+  await summary.focus();
+  held.release();
+  await page
+    .getByText(
+      "Saving this Configuration needs Secret operate on Admin bot token, which your access does not include. Ask an Installation administrator to grant it.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await summary.evaluate((node) => node.parentElement.open), true);
+  assert.equal(await summary.evaluate((node) => document.activeElement === node), true);
+});
+
+test("a superseded draft Secret metadata read cannot replace the current Configuration hint", async (t) => {
+  const { fixture, namespace, agent, member, configurationPath } = await replaceSecretFixture(
+    t,
+    "Superseded names",
+  );
+  const replacement = await fixture.createSecret(
+    namespace.id,
+    "Current bot token",
+    "xoxb-current-value",
+  );
+  const configuration = await fixture.request("GET", configurationPath);
+  const botId = configuration.data.secretBindings.SLACK_BOT_TOKEN.source.id;
+  const { page } = await newPage(t, fixture);
+  const held = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/secrets/${botId}`,
+    {
+      method: "GET",
+      once: true,
+      afterServer: true,
+    },
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
+    member.credentials,
+  );
+  await held.requested;
+  // Another authorized editor changes the binding while the old draft's metadata read waits.
+  const changed = await fixture.request("PATCH", configurationPath, {
+    body: {
+      values: configuration.data.values,
+      expectedGeneration: configuration.data.generation,
+      secretBindings: {
+        ...configuration.data.secretBindings,
+        SLACK_BOT_TOKEN: { source: replacement.ref, delivery: { type: "env" } },
+      },
+    },
+  });
+  assert.equal(changed.status, 200, JSON.stringify(changed.body));
+  await page.getByRole("button", { name: "Reload authentication source", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  const reason =
+    "Saving this Configuration needs Secret operate on Current bot token, which your access does not include. Ask an Installation administrator to grant it.";
+  await page.getByText(reason, { exact: true }).waitFor();
+  const oldResponse = page.waitForResponse((response) =>
+    response.url().endsWith(`/secrets/${botId}`),
+  );
+  held.release();
+  await oldResponse;
+  // Let the completed metadata read publish and the browser paint before inspecting the hint.
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+  assert.equal(await page.getByText(reason, { exact: true }).count(), 1);
+});
+
 // A save is checked on the Secrets it submits, not on the ones it replaces. A member who may not
 // operate the administrator's bot token Secret, but may operate the app token Secret and their
 // own, can bind their own Secret for the bot token. A save that keeps the administrator's Secret

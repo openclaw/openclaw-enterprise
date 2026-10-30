@@ -2843,7 +2843,9 @@ export async function renderAgentDetail(
     }
   }
 
+  let detailsGeneration = 0;
   async function loadDetails(): Promise<DetailsResult> {
+    const generation = ++detailsGeneration;
     const results = await Promise.allSettled([
       revisionsPromise,
       selected === "draft" && agent.configurationReadError ? Promise.resolve(null) : readSnapshot(),
@@ -3148,7 +3150,11 @@ export async function renderAgentDetail(
       const read = ++deploySecretsRead;
       return boundSecretsDenied(options).then(
         (denied) => {
-          if (read === deploySecretsRead && context.isCurrent()) {
+          if (
+            generation === detailsGeneration &&
+            read === deploySecretsRead &&
+            context.isCurrent()
+          ) {
             deploySecretsDenied = denied;
             configurationDeniedSecretNames = denied.configurationNames;
             redrawConfigurationAccessViews();
@@ -5904,15 +5910,15 @@ export async function renderAgentDetail(
     }
 
     let shownReadOnly = false;
-    let shownReadOnlyReason = "";
+    const readOnlyHint = element("p", { className: "hint" });
     function render() {
       shownReadOnly = !editing && configurationReadOnly();
-      shownReadOnlyReason = configurationReadOnlyReason();
+      readOnlyHint.textContent = configurationReadOnlyReason();
       syncSafety();
       if (shownReadOnly) {
         // A reader views the saved JSON; no editor whose Save would answer 403 (finding 2421).
         body.replaceChildren(
-          element("p", { className: "hint" }, shownReadOnlyReason),
+          readOnlyHint,
           nativeDocument(values, "View native Configuration"),
           ...(feedback.textContent ? [feedback] : []),
         );
@@ -5968,13 +5974,12 @@ export async function renderAgentDetail(
     render();
     // An answer that lands after this view changes whether it is read-only (finding 2421).
     followConfigurationAccess(() => {
-      if (
-        context.isCurrent() &&
-        !editing &&
-        (configurationReadOnly() !== shownReadOnly ||
-          (shownReadOnly && configurationReadOnlyReason() !== shownReadOnlyReason))
-      ) {
-        render();
+      if (context.isCurrent() && !editing) {
+        if (configurationReadOnly() !== shownReadOnly) {
+          render();
+        } else if (shownReadOnly) {
+          readOnlyHint.textContent = configurationReadOnlyReason();
+        }
       }
     });
     return container;
