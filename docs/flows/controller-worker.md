@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-30
-last_updated_session: authoring-run/b8400fae-dc1a-49fd-be49-5d07e9dbb899
+updated: 2026-10-29
+last_updated_session: authoring-run/85796888-a7be-4de9-bdcb-ca8f7ef74264
 ---
 
 # Controller Worker Flow
@@ -363,13 +363,8 @@ A Namespace pass that observes the same pending state this worker last audited,
 such as a terminating namespace, writes no new lifecycle audit or `reconcile` row;
 a changed pending state or the terminal pass does.
 Lease loss reports `worker.error` `CLAIM_LOST` instead of stale lifecycle state.
-On `SIGTERM` or `SIGINT`, `worker.mjs` removes readiness, then closes the
-repository Git sender binding, prepared Git owner, receipt listener, metrics,
-and prepared GitHub owner in that order
-(`apps/controller/src/worker/shutdown.ts:closeWorkerComposition`). The worker
-then aborts in-flight work, waits for the loop, closes PostgreSQL, and emits
-`worker.stopped`. A failed close does not skip later steps, so no listener keeps
-the process alive; any failure logs `SHUTDOWN_FAILED` and sets exit code 1.
+On `SIGTERM` or `SIGINT`, shutdown removes readiness, aborts in-flight work,
+waits for the loop, closes PostgreSQL, and emits `worker.stopped`.
 
 Each `PostgresWorkQueue.recoverStale()` statement atomically publishes exhausted
 work, failure of a still-provisioning Namespace targeted for `ready`, and audit
@@ -428,7 +423,6 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
-- 2026-10-30 14:34: Worker shutdown closes every step after a close failure (finding 2989). (authoring-run/b8400fae-dc1a-49fd-be49-5d07e9dbb899 - 2b3b206b63525e31a6170e239991394b7909fc15)
 - 2026-10-29 20:37: Document the tenant access log hint. (authoring-run/85796888-a7be-4de9-bdcb-ca8f7ef74264 - 03372ea89128)
 - 2026-10-11 11:30: Predecessor stops yield their Gateway drain. (fix-1090)
 
