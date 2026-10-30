@@ -19,10 +19,14 @@ import {
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import {
+  managedGoogleInstall,
+  managedSlackInstall,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
   commandOutput,
+  gatewayStateVolume,
   image,
   imageTestOptions,
   openClawGatewaySpawnedRequest,
@@ -50,6 +54,58 @@ async function startGoogleGateway(t, enabled, workspaceNodeId) {
   });
 }
 
+// Run the production worker bootstrap with its packaged files and child environment. The child
+// inspects the installed plugin in place of enrolling; the model probe uses a fixture.
+function runManagedWorker(plugin, childArgs, digest, mounts = [], environment = []) {
+  const launch = `
+const cp = require("node:child_process"), realSpawn = cp.spawn;
+cp.spawnSync = () => ({status:0,stdout:JSON.stringify({auth:{probes:{results:[{provider:"openai",model:"openai/test",source:"env",status:"ok"}]}}})});
+cp.spawn = (command, args, options) => {
+  require("node:assert/strict").deepEqual(args.slice(0, 2), ["/app/openclaw.mjs", "connect"]);
+  return realSpawn(command, ${JSON.stringify(childArgs)}, options);
+};
+Object.assign(process.env, {
+  HOME:"/tmp/home", TMPDIR:"/tmp/worker-tmp", OPENCLAW_WORKSPACE_DIR:"/tmp/workspace", OPENCLAW_NODE_STATE_DIR:"/tmp/node",
+  OPENCLAW_NODE_SETUP_CODE:"fixture", OPENCLAW_NATIVE_WORKER_CAPACITY:"1", OPENCLAW_NATIVE_INFERENCE_CONFIG:"{}",
+  OPENCLAW_HARNESS_MODEL:"openai/test", OPENCLAW_HARNESS_PROVIDER:"openai", OPENCLAW_HARNESS_CREDENTIAL_ENV:"TEST_MODEL_KEY",
+  TEST_MODEL_KEY:"fixture", OPENCLAW_HARNESS_PROBE_CONFIG:'{"agents":{"defaults":{"model":"openai/test"}}}'
+});
+${NATIVE_WORKER_ENTRYPOINT}`;
+  return runDocker(
+    [
+      "run",
+      "--rm",
+      "-i",
+      "--network",
+      "none",
+      "--read-only",
+      "--cap-drop",
+      "ALL",
+      "--tmpfs",
+      "/tmp:mode=1777",
+      ...(digest === undefined
+        ? []
+        : ["-e", `OPENCLAW_MANAGED_${plugin}_RELEASE_SHA256=${digest}`]),
+      ...mounts,
+      ...environment.flatMap((entry) => ["--env", entry]),
+      "--entrypoint",
+      "node",
+      image,
+      // The default OpenShell policy permits image reads under /usr and /app. Exercise
+      // the bootstrap with those roots plus its writable fixture home under /tmp.
+      "--permission",
+      "--allow-fs-read=/usr",
+      "--allow-fs-read=/app",
+      "--allow-fs-read=/tmp",
+      "--allow-fs-write=/tmp",
+      "--allow-child-process",
+      "-",
+    ],
+    {},
+    launch,
+  );
+}
+
 // Each case uses a private container and run-owned fixtures. Two run at a time.
 describe("runtime image native worker", { concurrency: 2 }, () => {
   test(
@@ -67,54 +123,8 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
       const probe = `const r = require("node:child_process").spawnSync("gog", ["--version"], {encoding:"utf8"});
 console.log(JSON.stringify({...(r.error ? {code:r.error.code} : {version:r.stdout.trim().split(" ")[0]}), markerVisible:process.env.GOG_ACCESS_TOKEN===undefined?undefined:"present"}));
 process.exit(r.error ? 0 : r.status);`;
-      const launch = `
-const cp = require("node:child_process"), realSpawn = cp.spawn;
-cp.spawnSync = () => ({status:0,stdout:JSON.stringify({auth:{probes:{results:[{provider:"openai",model:"openai/test",source:"env",status:"ok"}]}}})});
-cp.spawn = (command, args, options) => {
-  require("node:assert/strict").deepEqual(args.slice(0, 2), ["/app/openclaw.mjs", "connect"]);
-  return realSpawn(command, ["-e", ${JSON.stringify(probe)}], options);
-};
-Object.assign(process.env, {
-  HOME:"/tmp/home", TMPDIR:"/tmp/worker-tmp", OPENCLAW_WORKSPACE_DIR:"/tmp/workspace", OPENCLAW_NODE_STATE_DIR:"/tmp/node",
-  OPENCLAW_NODE_SETUP_CODE:"fixture", OPENCLAW_NATIVE_WORKER_CAPACITY:"1", OPENCLAW_NATIVE_INFERENCE_CONFIG:"{}",
-  OPENCLAW_HARNESS_MODEL:"openai/test", OPENCLAW_HARNESS_PROVIDER:"openai", OPENCLAW_HARNESS_CREDENTIAL_ENV:"TEST_MODEL_KEY",
-  TEST_MODEL_KEY:"fixture", OPENCLAW_HARNESS_PROBE_CONFIG:'{"agents":{"defaults":{"model":"openai/test"}}}'
-});
-${NATIVE_WORKER_ENTRYPOINT}`;
-      const worker = (digest, mounts = [], environment = []) =>
-        runDocker(
-          [
-            "run",
-            "--rm",
-            "-i",
-            "--network",
-            "none",
-            "--read-only",
-            "--cap-drop",
-            "ALL",
-            "--tmpfs",
-            "/tmp:mode=1777",
-            ...(digest === undefined
-              ? []
-              : ["-e", "OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256=" + digest]),
-            ...mounts,
-            ...environment.flatMap((entry) => ["--env", entry]),
-            "--entrypoint",
-            "node",
-            image,
-            // The default OpenShell policy permits image reads under /usr and /app. Exercise
-            // the bootstrap with those roots plus its writable fixture home under /tmp.
-            "--permission",
-            "--allow-fs-read=/usr",
-            "--allow-fs-read=/app",
-            "--allow-fs-read=/tmp",
-            "--allow-fs-write=/tmp",
-            "--allow-child-process",
-            "-",
-          ],
-          {},
-          launch,
-        );
+      const worker = (digest, mounts, environment) =>
+        runManagedWorker("GOOGLE", ["-e", probe], digest, mounts, environment);
       const marker =
         "GOG_ACCESS_TOKEN=openshell:resolve:env:s" + "a".repeat(64) + "_GOG_ACCESS_TOKEN";
       assert.deepEqual(JSON.parse((await worker(undefined, [], [marker])).stdout.trim()), {
@@ -157,6 +167,57 @@ ${NATIVE_WORKER_ENTRYPOINT}`;
           /image integrity check: \/usr\/local\/lib\/oce\/plugins\/google\/bin\/gog/.test(
             error.stderr,
           ),
+      );
+    },
+  );
+
+  test(
+    "the dedicated worker configures Slack's hosted MCP server only for the selected release",
+    imageTestOptions,
+    async (t) => {
+      // Keep the node state across both revisions and mark it so a wholesale reset cannot
+      // masquerade as a successful removal. Inspect the generated config with the native CLI.
+      const volume = await gatewayStateVolume(t, "/tmp/node", {
+        seed: "echo retained > /tmp/node/enrollment-sentinel",
+      });
+      const inspect = async (digest, mounts = []) => {
+        const result = await runManagedWorker(
+          "SLACK",
+          ["/app/openclaw.mjs", "config", "get", "nodeHost", "--json"],
+          digest,
+          ["-v", volume + ":/tmp/node", ...mounts],
+        );
+        return JSON.parse(result.stdout);
+      };
+      const { releaseSha256 } = managedSlackInstall;
+      const selected = await inspect(releaseSha256);
+      assert.deepEqual(selected.mcp.servers.slack, {
+        enabled: false,
+        transport: "streamable-http",
+        url: "https://mcp.slack.com/mcp",
+      });
+      const deselected = await inspect(undefined);
+      assert.equal(deselected.mcp?.servers?.slack, undefined);
+      const sentinel = await runDocker([
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "-v",
+        volume + ":/tmp/node:ro",
+        "--entrypoint",
+        "cat",
+        image,
+        "/tmp/node/enrollment-sentinel",
+      ]);
+      assert.equal(sentinel.stdout.trim(), "retained");
+      const mcpPath = "/usr/local/lib/oce/plugins/slack/mcp.json";
+      const replacement = fileURLToPath(
+        new URL("../../apps/controller/plugins/oce-slack/plugin.json", import.meta.url),
+      );
+      await assert.rejects(
+        inspect(releaseSha256, ["-v", replacement + ":" + mcpPath + ":ro"]),
+        (error) => error.stderr.includes("image integrity check: " + mcpPath),
       );
     },
   );

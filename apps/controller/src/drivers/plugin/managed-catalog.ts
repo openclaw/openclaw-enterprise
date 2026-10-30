@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type {
   CredentialSource,
@@ -10,8 +11,7 @@ import {
   eligibleGoogleOperations,
   googleDiscoveryRequests,
   googleRequestScope,
-  googleRelease as release,
-  googleReleaseSha256,
+  googleRelease,
 } from "./google-operations.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
@@ -38,29 +38,54 @@ export const managedPluginMiddleware = "oce-plugin-requests";
 export const managedPluginMiddlewareImplementation = "oce/managed-plugin-requests";
 export const managedPluginMiddlewareAudience = `urn:openshell:extension:middleware:${managedPluginMiddleware}`;
 
-// Only this package bundled in the controller participates in managed deployment.
-const directory = new URL("../../../plugins/oce-google-workspace/", import.meta.url);
-const pkg = asRecord(JSON.parse(readFileSync(new URL("plugin.json", directory), "utf8")));
-const extension = asRecord(asRecord(pkg?.extensions)?.["ai.openclaw.oce"]);
-const policyScope = extension?.policyScope;
-if (
-  policyScope !== "enablement_only" ||
-  extension?.release !== "./ai.openclaw.oce/release.json" ||
-  !isNonEmptyString(extension.id) ||
-  !isNonEmptyString(extension.displayName) ||
-  !isNonEmptyString(pkg?.version) ||
-  !isNonEmptyString(pkg?.description)
-) {
-  throw new Error("Invalid bundled Google Workspace package.");
+// Only released packages bundled into both images participate in managed deployment.
+function loadManagedInstall(packageName: string, runtimeName: string) {
+  const directory = new URL(`../../../plugins/${packageName}/`, import.meta.url);
+  const pkg = asRecord(JSON.parse(readFileSync(new URL("plugin.json", directory), "utf8")));
+  const extension = asRecord(asRecord(pkg?.extensions)?.["ai.openclaw.oce"]);
+  const policyScope = extension?.policyScope;
+  if (
+    policyScope !== "enablement_only" ||
+    extension?.release !== "./ai.openclaw.oce/release.json" ||
+    !isNonEmptyString(extension.id) ||
+    !isNonEmptyString(extension.displayName) ||
+    !isNonEmptyString(pkg?.version) ||
+    !isNonEmptyString(pkg?.description)
+  ) {
+    throw new Error(`Invalid bundled package: ${packageName}.`);
+  }
+  const bytes = readFileSync(new URL(extension.release, directory));
+  const placement = asRecord(asRecord(JSON.parse(bytes.toString("utf8")))?.placement);
+  const computeImplementations = placement?.computeImplementations;
+  if (
+    !isNonEmptyString(placement?.harnessId) ||
+    !isNonEmptyString(placement?.mode) ||
+    !Array.isArray(computeImplementations) ||
+    !computeImplementations.every(isNonEmptyString)
+  ) {
+    throw new Error(`Invalid placement in bundled package: ${packageName}.`);
+  }
+
+  const id = `${extension.id}@${pkg.version}`;
+  return {
+    id,
+    runtimeName,
+    policyScope,
+    placement: { harnessId: placement.harnessId, mode: placement.mode, computeImplementations },
+    releaseSha256: createHash("sha256").update(bytes).digest("hex"),
+    entry: {
+      id,
+      name: extension.displayName,
+      description: pkg.description,
+      selectableWithoutTools: true,
+      tools: [],
+    } satisfies PluginCatalogEntry,
+  } as const;
 }
-const placement = asRecord(release?.placement);
-const credentials = release?.credentials;
-const computeImplementations = placement?.computeImplementations;
+
+const googleInstall = loadManagedInstall("oce-google-workspace", "google");
+const credentials = googleRelease?.credentials;
 if (
-  !isNonEmptyString(placement?.harnessId) ||
-  !isNonEmptyString(placement?.mode) ||
-  !Array.isArray(computeImplementations) ||
-  !computeImplementations.every(isNonEmptyString) ||
   !Check(
     Type.Record(Type.String({ pattern: "^[a-z][a-z0-9-]*$" }), credentialSlot, {
       minProperties: 1,
@@ -69,20 +94,19 @@ if (
     }),
     credentials,
   ) ||
-  !isNonEmptyString(release?.executable) ||
-  !/^[a-z][a-z0-9-]*$/.test(release.executable)
+  !isNonEmptyString(googleRelease?.executable) ||
+  !/^[a-z][a-z0-9-]*$/.test(googleRelease.executable)
 ) {
   throw new Error("Invalid bundled Google Workspace release.");
 }
 
 export const managedGoogleInstall = {
-  id: `${extension.id}@${pkg.version}`,
-  policyScope,
-  placement: { harnessId: placement.harnessId, mode: placement.mode, computeImplementations },
+  ...googleInstall,
   credentials,
-  binaryPath: `/usr/local/lib/oce/plugins/google/bin/${release.executable}`,
-  releaseSha256: googleReleaseSha256,
+  binaryPath: `/usr/local/lib/oce/plugins/google/bin/${googleRelease.executable}`,
 } as const;
+export const managedSlackInstall = loadManagedInstall("oce-slack", "slack");
+export const managedInstalls = [managedGoogleInstall, managedSlackInstall] as const;
 
 /** A selection holds references only. Installation without an account remains valid. */
 export function managedCredentialBinding(selections: PluginDesiredState | undefined) {
@@ -216,11 +240,3 @@ export const managedPluginCredentials = {
     }
   },
 };
-
-export const googlePackage = {
-  id: managedGoogleInstall.id,
-  name: extension.displayName,
-  description: pkg.description,
-  selectableWithoutTools: true,
-  tools: [],
-} satisfies PluginCatalogEntry;

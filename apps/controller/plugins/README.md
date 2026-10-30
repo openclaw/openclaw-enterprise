@@ -4,24 +4,16 @@ The [OCE marketplace index](./marketplace.json) lists packages by name and relat
 Each package has a [plugin.json](./oce-google-workspace/plugin.json) at its root. The
 `ai.openclaw.oce` extension points to the release that OCE deploys.
 
-```text
-plugins/
-├── marketplace.json
-└── oce-google-workspace/
-    ├── plugin.json
-    ├── skills/oce-google/SKILL.md
-    └── ai.openclaw.oce/release.json
-```
+- [Google Workspace](./oce-google-workspace/ai.openclaw.oce/release.json) pins the ClawHub skill and Linux `gog` binaries.
+- [Slack](./oce-slack/mcp.json) declares Slack’s hosted MCP server. The [release](./oce-slack/ai.openclaw.oce/release.json) pins the descriptor. Once connected, OpenClaw discovers the tools Slack publishes through MCP `tools/list`. The worker stages the server with `enabled: false` until OCE supports binding a Slack user connection. See [Slack MCP](https://docs.slack.dev/ai/slack-mcp-server/).
 
-The [release](./oce-google-workspace/ai.openclaw.oce/release.json) declares a Gateway
-skill and a dedicated OpenClaw worker CLI. It pins the ClawHub skill and the Linux
-CLI artifacts independently. The bundled Plugin Driver registers this version as
-`occ-plugin:google@1.0.0`. Publish changed release bytes under a new package version
-so existing Agent selections continue to identify the reviewed release.
+Slack’s release reserves an `account` slot for a future worker binding. Installing the package does not attach a credential or enable the MCP server.
 
-The package’s OCE extension declares `policyScope: "enablement_only"`. The Plugin Driver advertises this scope for the versioned plugin ID so the Console can render the same enable switch as a Codex plugin before catalog discovery completes. OCC refuses tool approvals, reviewers, and per-tool overrides for the CLI.
+The Plugin Driver registers each package by version. Publish changed release bytes under a new version so existing Agent selections continue to identify the reviewed release.
 
-The optional `account` slot refers to a credential attached to the Agent.
+The package’s OCE extension declares `policyScope: "enablement_only"`. The Plugin Driver advertises this scope for the versioned plugin ID so the Console can render the same enable switch as a Codex plugin before catalog discovery completes. OCC refuses tool approvals, reviewers, and per-tool overrides for these packages.
+
+Google Workspace’s optional `account` slot refers to a credential attached to the Agent.
 OpenShell supplies the worker with a placeholder. The request guard checks the
 [pinned operation map](./oce-google-workspace/ai.openclaw.oce/operations.json) and the source’s host, path and scope limits before
 OpenShell substitutes the bearer. The Agent can also attach credentials for use

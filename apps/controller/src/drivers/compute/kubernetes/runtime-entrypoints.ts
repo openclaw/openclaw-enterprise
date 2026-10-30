@@ -260,19 +260,35 @@ const googleAccountEnv: string = JSON.parse(
   ),
 ).credentials.account.delivery.env;
 
-const GOOGLE_INSTALL_HELPERS = String.raw`
-function verifiedGoogleFile(path, expected) {
+const MANAGED_INSTALL_HELPERS = String.raw`
+function verifiedPluginFile(path, expected) {
   const bytes = require("node:fs").readFileSync(path);
   if (require("node:crypto").createHash("sha256").update(bytes).digest("hex") !== expected) {
-    throw new Error("The managed Google plugin failed its image integrity check: " + path);
+    throw new Error("The managed plugin failed its image integrity check: " + path);
   }
   return bytes;
 }
 
-function installedGoogleRelease() {
-  const digest = process.env.OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256;
-  if (!digest) return undefined;
-  return JSON.parse(verifiedGoogleFile("/usr/local/lib/oce/plugins/google/release.json", digest));
+function managedPluginInstallation() {
+  let install;
+  for (const name of ["google", "slack"]) {
+    const prefix = "OPENCLAW_MANAGED_" + name.toUpperCase();
+    const id = process.env[prefix + "_PLUGIN_ID"];
+    const digest = process.env[prefix + "_RELEASE_SHA256"];
+    if (id === undefined && digest === undefined) continue;
+    if (install) throw new Error("Only one managed plugin can be selected.");
+    const root = "/usr/local/lib/oce/plugins/" + name;
+    const release = digest === undefined ? undefined : JSON.parse(verifiedPluginFile(root + "/release.json", digest));
+    const skills = root + "/skills";
+    let skill;
+    if (release?.capabilities.gateway.includes("skill")) {
+      const directory = skills + "/" + release.skill;
+      const instructions = directory + "/SKILL.md";
+      skill = { directory, instructions };
+    }
+    install = { name, id, root, release, skills, skill };
+  }
+  return install;
 }
 `;
 
@@ -2446,7 +2462,7 @@ const { spawn } = require("node:child_process");
 process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
 
 ${PLUGIN_RUNTIME_HELPERS}
-${GOOGLE_INSTALL_HELPERS}
+${MANAGED_INSTALL_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
 ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
@@ -2599,32 +2615,25 @@ function requireWorkspaceNodePlugins(config) {
   }
 }
 
-const googleSkillsDirectory = "/usr/local/lib/oce/plugins/google/skills";
-function googleInstallSkill(release) {
-  if (!release?.capabilities.gateway.includes("skill")) return undefined;
-  const directory = googleSkillsDirectory + "/" + release.skill;
-  return { directory, instructions: directory + "/SKILL.md" };
-}
-
 function installGatewayPlugins(runtime, failures) {
-  const id = process.env.OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID;
-  if (!id || runtime.manifest.kind !== "openclaw") return installOpenClawPlugins(runtime, failures);
+  if (runtime.manifest.kind !== "openclaw") return installOpenClawPlugins(runtime, failures);
+  const install = managedPluginInstallation();
+  if (!install) return installOpenClawPlugins(runtime, failures);
 
-  // Google supplies a skill from the image. Only native packages go through OpenClaw's installer.
-  const { [id]: google, ...selections } = runtime.manifest.selections ?? {};
-  const release = installedGoogleRelease();
-  if (Boolean(google?.enabled) !== Boolean(release)) throw new Error("The managed Google plugin selection differs from the runtime release.");
+  // The image supplies the managed skill. Only native packages go through OpenClaw's installer.
+  const { id, release, skills: skillsDirectory, skill } = install;
+  if (skill) verifiedPluginFile(skill.instructions, release.skillSha256);
+  const { [id]: selection, ...selections } = runtime.manifest.selections ?? {};
+  if (!selection || Boolean(selection.enabled) !== Boolean(release)) throw new Error("The managed plugin selection differs from the runtime release.");
   const native = { ...runtime, manifest: { ...runtime.manifest, selections } };
   const result = installOpenClawPlugins(native, failures);
 
-  const skill = googleInstallSkill(release);
-  if (skill) verifiedGoogleFile(skill.instructions, release.skillSha256);
   const config = readOpenClawConfig();
-  if (skill || config.skills?.load?.extraDirs?.includes(googleSkillsDirectory)) {
+  if (skill || config.skills?.load?.extraDirs?.includes(skillsDirectory)) {
     const skills = config.skills ??= {};
     const load = skills.load ??= {};
-    const directories = (load.extraDirs ?? []).filter((path) => path !== googleSkillsDirectory);
-    load.extraDirs = skill ? [...directories, googleSkillsDirectory] : directories;
+    const directories = (load.extraDirs ?? []).filter((path) => path !== skillsDirectory);
+    load.extraDirs = skill ? [...directories, skillsDirectory] : directories;
     writeOpenClawConfig(config);
   }
   if (release) result.successfulPluginIds.push(id);
@@ -2672,7 +2681,7 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
   if (nodes[workspaceNodeId] === undefined && nodes["*"] === undefined) {
     // Native workspace.skills checks the source root for discovery, the skill directory for
     // resources and the instruction file for reads. This release needs exactly those paths.
-    const googleSkill = googleInstallSkill(installedGoogleRelease());
+    const install = managedPluginInstallation();
     nodes[workspaceNodeId] = {
       ask: "off",
       allowReadPaths: [
@@ -2680,7 +2689,7 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
         remoteRoot + "/**",
         "/home/node/.openclaw",
         ...skillRoots.flatMap((root) => [root, root + "/**"]),
-        ...(googleSkill ? [googleSkillsDirectory, googleSkill.directory, googleSkill.instructions] : []),
+        ...(install?.skill ? [install.skills, install.skill.directory, install.skill.instructions] : []),
       ],
       allowWritePaths: [
         ...editable.map((name) => remoteRoot + "/" + name),
@@ -4764,7 +4773,7 @@ const { join } = require("node:path");
 const { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
-${GOOGLE_INSTALL_HELPERS}
+${MANAGED_INSTALL_HELPERS}
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
 ${openClawStateMigrationHelper("Native worker", "deploy the Agent again")}
@@ -4801,24 +4810,46 @@ if (
 const outdatedNodeDatabases = outdatedOpenClawDatabases(state);
 let nodeStateCurrent = outdatedNodeDatabases.length === 0;
 
-const googleRelease = installedGoogleRelease();
+const install = managedPluginInstallation();
+const release = install?.release;
 const googleAlias = ${JSON.stringify(googleAccountEnv)};
 const googleCredentialEnv = process.env.OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV;
 const googleMarker = process.env[googleAlias];
 const scopedGoogleMarker = /^openshell:resolve:env:s[0-9a-f]{64}_([A-Z][A-Z0-9_]*)$/.exec(googleMarker ?? "")?.[1] === googleAlias;
 if (googleCredentialEnv !== undefined && (
   googleCredentialEnv !== googleAlias ||
-  googleRelease?.credentials?.account?.delivery?.env !== googleCredentialEnv ||
+  install?.name !== "google" || release?.credentials?.account?.delivery?.env !== googleCredentialEnv ||
   (googleMarker !== undefined && !scopedGoogleMarker)
 )) throw new Error("The selected Google account requires its scoped OpenShell credential placeholder.");
 // OpenShell supplies a scoped marker for an attached provider, including an independent
 // Agent credential. A withdrawn provider stops supplying it when this container restarts.
 if (!scopedGoogleMarker) delete process.env[googleAlias];
-const googleBin = "/usr/local/lib/oce/plugins/google/bin";
-const enableGoogleCli = googleRelease?.capabilities.harness.includes("cli");
-if (enableGoogleCli) {
+const pluginBin = release?.capabilities.harness.includes("cli") ? join(install.root, "bin") : undefined;
+if (pluginBin) {
   const architecture = { x64: "linux-amd64", arm64: "linux-arm64" }[process.arch];
-  verifiedGoogleFile(join(googleBin, googleRelease.executable), googleRelease.artifacts[architecture]?.binarySha256);
+  verifiedPluginFile(join(pluginBin, release.executable), release.artifacts[architecture]?.binarySha256);
+}
+
+// Node-host MCP eagerly discovers tools on startup. Stage the reviewed server until a user
+// connection can supply its scoped bearer through the worker's egress proxy.
+let nodeMcp;
+if (release?.capabilities.harness.includes("mcp")) {
+  const bytes = verifiedPluginFile(join(install.root, "mcp.json"), release.mcpServersSha256);
+  const manifest = JSON.parse(bytes);
+  const { server } = release.credentials.account.mcp;
+  const endpoint = manifest.mcpServers[server];
+  if (endpoint?.type !== "streamable-http" || new URL(endpoint.url).protocol !== "https:") {
+    throw new Error("The managed MCP server declaration is invalid.");
+  }
+  nodeMcp = {
+    servers: {
+      [server]: {
+        enabled: false,
+        transport: endpoint.type,
+        url: endpoint.url,
+      },
+    },
+  };
 }
 
 function nativeWorkerReady() {
@@ -4882,6 +4913,7 @@ writeFileSync(workerConfigPath, JSON.stringify({
     entries: { "file-transfer": { enabled: true } },
   },
   nodeHost: {
+    ...(nodeMcp && { mcp: nodeMcp }),
     workerRuns: {
       enabled: true,
       capacity: workerCapacity,
@@ -4894,7 +4926,7 @@ delete process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 delete process.env.OPENCLAW_HARNESS_PROBE_CONFIG;
 const nodeEnv = {
   ...process.env,
-  ...(enableGoogleCli && { PATH: [googleBin, process.env.PATH].filter(Boolean).join(require("node:path").delimiter) }),
+  ...(pluginBin && { PATH: [pluginBin, process.env.PATH].filter(Boolean).join(require("node:path").delimiter) }),
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: workerConfigPath,
 };
