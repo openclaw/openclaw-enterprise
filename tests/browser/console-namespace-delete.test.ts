@@ -22,6 +22,7 @@ import {
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { focusedLabel, waitForFocusedLabel } from "./console-refocus-helpers.mjs";
 
 const browser = fileBrowser();
 
@@ -294,14 +295,10 @@ test("a background Namespace deletion poll keeps keyboard focus and the shown st
   await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`);
   const path = `/namespaces/${namespace.id}`;
   const refreshLabel = "Refresh Polled cleanup deletion status";
-  const focused = () => page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
   await page.getByRole("button", { name: "Delete Polled cleanup", exact: true }).click();
   await page.getByRole("button", { name: "Delete Namespace", exact: true }).click();
   // Acceptance moves focus to Refresh status while cleanup runs.
-  await page.waitForFunction(
-    (label) => document.activeElement?.getAttribute("aria-label") === label,
-    refreshLabel,
-  );
+  await waitForFocusedLabel(page, refreshLabel);
   const statusSelector = `#namespace-delete-feedback-${namespace.id} [role="status"]`;
   // Keep a reference to the shown status node; an attribute marker would itself change the HTML.
   const shownStatus = await page.locator(statusSelector).elementHandle();
@@ -309,7 +306,7 @@ test("a background Namespace deletion poll keeps keyboard focus and the shown st
   await waitForSettledFetches(page, path, (await settledFetches(page, path)) + 1);
   // A keyboard user who just confirmed stays on Refresh status, and a screen reader is not told
   // the same status again: the background poll changed nothing on screen.
-  assert.equal(await focused(), refreshLabel);
+  assert.equal(await focusedLabel(page), refreshLabel);
   assert.equal(
     await page.evaluate(([selector, shown]) => document.querySelector(selector) === shown, [
       statusSelector,
@@ -323,7 +320,7 @@ test("a background Namespace deletion poll keeps keyboard focus and the shown st
   const answered = (await settledFetches(page, permissions)) + 1;
   await page.keyboard.press("Enter");
   await waitForSettledFetches(page, permissions, answered);
-  assert.equal(await focused(), refreshLabel);
+  assert.equal(await focusedLabel(page), refreshLabel);
 });
 
 test("a Namespace deletion confirmation opened during a background poll closes when that poll finds the Namespace removed", async (t) => {
