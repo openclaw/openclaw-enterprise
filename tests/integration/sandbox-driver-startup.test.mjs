@@ -815,6 +815,87 @@ test("startup requires protected OpenShell transport or an explicit NetworkPolic
   await assert.rejects(load(slow), /requestTimeoutMs must be between 1000 and 30000 ms/);
 });
 
+test("startup admits the OpenShell OIDC client-credentials mode with a fenced token endpoint", async (t) => {
+  const load = (configuration) => loadInstallationFile(t, configuration);
+  // A TLS gateway connection with OIDC authentication is protected transport, so the
+  // NetworkPolicy declaration is neither required nor allowed.
+  const oidc = sandboxInstallation();
+  oidc.backend[0].configuration = {
+    endpoint: "https://openshell-gateway.example.com:8080",
+    auth: {
+      mode: "oidcClientCredentials",
+      tokenUrl: "https://idp.example.com/realms/openshell/protocol/openid-connect/token",
+      clientId: "occ-openshell",
+      clientSecretPath: "/etc/openclaw/openshell/client-secret",
+    },
+  };
+  await load(oidc);
+  oidc.backend[0].configuration.insecureTransport = "network-policy";
+  await assert.rejects(load(oidc), /insecureTransport is only for unprotected/);
+
+  // Cleartext token endpoints are development-only and restricted to numeric loopback
+  // addresses, matching the OpenShell gateway chart's own allowance; hostnames never pass.
+  const loopback = sandboxInstallation();
+  loopback.backend[0].configuration.auth = {
+    mode: "oidcClientCredentials",
+    tokenUrl: "http://127.0.0.1:8081/token",
+    clientId: "occ-openshell",
+    clientSecretPath: "/etc/openclaw/openshell/client-secret",
+  };
+  await load(loopback);
+  const hostname = sandboxInstallation();
+  hostname.backend[0].configuration.auth = {
+    mode: "oidcClientCredentials",
+    tokenUrl: "http://localhost:8081/token",
+    clientId: "occ-openshell",
+    clientSecretPath: "/etc/openclaw/openshell/client-secret",
+  };
+  await assert.rejects(
+    load(hostname),
+    /tokenUrl must be an absolute https URL without credentials, query, or fragment/,
+  );
+  const query = sandboxInstallation();
+  query.backend[0].configuration.auth = {
+    mode: "oidcClientCredentials",
+    tokenUrl: "https://idp.example.com/token?client_id=occ",
+    clientId: "occ-openshell",
+    clientSecretPath: "/etc/openclaw/openshell/client-secret",
+  };
+  await assert.rejects(
+    load(query),
+    /tokenUrl must be an absolute https URL without credentials, query, or fragment/,
+  );
+
+  // The secret stays file-based like bearerTokenFile, and the client-authentication
+  // style and optional parameters are closed sets.
+  const relative = sandboxInstallation();
+  relative.backend[0].configuration.auth = {
+    mode: "oidcClientCredentials",
+    tokenUrl: "https://idp.example.com/token",
+    clientId: "occ-openshell",
+    clientSecretPath: "etc/openclaw/openshell/client-secret",
+  };
+  await assert.rejects(load(relative), /clientSecretPath must be an absolute file path/);
+  const style = sandboxInstallation();
+  style.backend[0].configuration.auth = {
+    mode: "oidcClientCredentials",
+    tokenUrl: "https://idp.example.com/token",
+    clientId: "occ-openshell",
+    clientSecretPath: "/etc/openclaw/openshell/client-secret",
+    tokenAuth: "client_secret_jwt",
+  };
+  await assert.rejects(load(style), /tokenAuth must be client_secret_post or client_secret_basic/);
+  const unknown = sandboxInstallation();
+  unknown.backend[0].configuration.auth = {
+    mode: "oidcClientCredentials",
+    tokenUrl: "https://idp.example.com/token",
+    clientId: "occ-openshell",
+    clientSecretPath: "/etc/openclaw/openshell/client-secret",
+    issuer: "https://idp.example.com",
+  };
+  await assert.rejects(load(unknown), /configuration.auth.issuer is unsupported/);
+});
+
 test("OpenShell configures only the selected dedicated Harness runtime", () => {
   const driver = openShellDriver(workspaceGatewayClient());
   const configuration = { agents: { defaults: { model: "openai/gpt-5" } } };

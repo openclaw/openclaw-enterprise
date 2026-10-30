@@ -606,6 +606,10 @@
                     "label": "Codex Sandbox"
                   },
                   {
+                    "page": "guides/deploy/external-openshell-gateway",
+                    "label": "External OpenShell Gateway"
+                  },
+                  {
                     "group": "Settings",
                     "pages": [
                       {

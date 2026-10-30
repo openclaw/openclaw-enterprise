@@ -322,7 +322,7 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
   profile, update, detach and recheck RPCs against the `v0.1.5` fixture.
 - [Worker integration](../../tests/integration/postgres-worker-agent-revision.test.mjs)
   exercises withdrawals, retries, replays and late creates with PostgreSQL and a Compute double.
-- [Real OpenShell cases](../testing/openshell.md#openshell-sandbox) register, inspect, update
+- [Real OpenShell cases](../testing/openshell.md#openshell) register, inspect, update
   and withdraw PAT or API-key sources; the tool token disappears and the next model turn fails.
 - A source stuck in `deleting` returns `503` on delete until the gateway is
   reachable; `GET` shows its live `status`.

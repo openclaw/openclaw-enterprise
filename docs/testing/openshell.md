@@ -115,7 +115,14 @@ Workspace reconciliation, and cleanup. They use a synthetic credential and
 do not create an Agent or make a model call. They default to Docker; set
 `OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman` to use Podman.
 
-## OpenShell Sandbox
+## OpenShell
+
+To point the profile at a gateway you already operate with OIDC
+client-credentials authentication instead of installing the pinned in-cluster
+gateway, see
+[Use an external OpenShell gateway](../guides/deploy/external-openshell-gateway.md).
+That selection skips the in-cluster gateway and its images; the OpenShell
+proofs below run against the profile's own gateway.
 
 The real Sandbox suite tests a dedicated Codex Agent, including authenticated
 Gateway access, real model and tool turns, credential delivery, restricted

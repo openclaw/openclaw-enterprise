@@ -58,6 +58,94 @@ function backendId(value: unknown, label = "Backend ID"): string {
   return value;
 }
 
+const OIDC_AUTH_KEYS = [
+  "mode",
+  "tokenUrl",
+  "clientId",
+  "clientSecretPath",
+  "tokenAuth",
+  "audience",
+  "scope",
+] as const;
+
+// The token endpoint receives the client secret on every refresh. Require https, with
+// cleartext permitted only to a numeric loopback address — the same development allowance
+// the OpenShell gateway chart itself makes for its OIDC validation. Hostnames never resolve
+// to loopback here by definition, so a DNS-rebind style http endpoint cannot pass.
+function isOpenShellOidcTokenUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
+    return false;
+  }
+  if (url.protocol === "https:") {
+    return true;
+  }
+  return url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "[::1]");
+}
+
+function openShellOidcClientCredentialsAuth(
+  id: string,
+  authRecord: Record<string, unknown>,
+): NonNullable<OpenShellBackendDefinition["configuration"]["auth"]> {
+  for (const key of Object.keys(authRecord)) {
+    if (!(OIDC_AUTH_KEYS as readonly string[]).includes(key)) {
+      throw new ScopeViolationError(path(id, `configuration.auth.${key}`) + " is unsupported.");
+    }
+  }
+  if (
+    !isNonEmptyString(authRecord.tokenUrl) ||
+    !isOpenShellOidcTokenUrl(authRecord.tokenUrl as string)
+  ) {
+    throw new ScopeViolationError(
+      path(id, "configuration.auth.tokenUrl") +
+        " must be an absolute https URL without credentials, query, or fragment; http is allowed only to a numeric loopback address.",
+    );
+  }
+  if (!isNonEmptyString(authRecord.clientId)) {
+    throw new ScopeViolationError(path(id, "configuration.auth.clientId") + " is invalid.");
+  }
+  if (
+    !isNonEmptyString(authRecord.clientSecretPath) ||
+    !isAbsolute(authRecord.clientSecretPath as string)
+  ) {
+    throw new ScopeViolationError(
+      path(id, "configuration.auth.clientSecretPath") + " must be an absolute file path.",
+    );
+  }
+  if (
+    authRecord.tokenAuth !== undefined &&
+    authRecord.tokenAuth !== "client_secret_post" &&
+    authRecord.tokenAuth !== "client_secret_basic"
+  ) {
+    throw new ScopeViolationError(
+      path(id, "configuration.auth.tokenAuth") +
+        " must be client_secret_post or client_secret_basic.",
+    );
+  }
+  if (authRecord.audience !== undefined && !isNonEmptyString(authRecord.audience)) {
+    throw new ScopeViolationError(path(id, "configuration.auth.audience") + " is invalid.");
+  }
+  if (authRecord.scope !== undefined && !isNonEmptyString(authRecord.scope)) {
+    throw new ScopeViolationError(path(id, "configuration.auth.scope") + " is invalid.");
+  }
+  return {
+    mode: "oidcClientCredentials",
+    tokenUrl: authRecord.tokenUrl as string,
+    clientId: authRecord.clientId as string,
+    clientSecretPath: authRecord.clientSecretPath as string,
+    ...(authRecord.tokenAuth === undefined
+      ? {}
+      : { tokenAuth: authRecord.tokenAuth as "client_secret_post" | "client_secret_basic" }),
+    ...(authRecord.audience === undefined ? {} : { audience: authRecord.audience as string }),
+    ...(authRecord.scope === undefined ? {} : { scope: authRecord.scope as string }),
+  };
+}
+
 function validateBackendDefinition(value: unknown, index: number): BackendDefinition {
   const candidate = asRecord(value);
   if (candidate === undefined) {
@@ -337,10 +425,12 @@ function validateOpenShellBackend(
         certificatePath: authRecord.certificatePath,
         privateKeyPath: authRecord.privateKeyPath,
       };
+    } else if (authRecord.mode === "oidcClientCredentials") {
+      auth = openShellOidcClientCredentialsAuth(id, authRecord);
     } else {
       throw new ScopeViolationError(
         path(id, "configuration.auth") +
-          " must be unauthenticated, bearerTokenFile with an absolute path, or mtls with absolute certificatePath and privateKeyPath.",
+          " must be unauthenticated, bearerTokenFile with an absolute path, mtls with absolute certificatePath and privateKeyPath, or oidcClientCredentials.",
       );
     }
   }
@@ -385,7 +475,11 @@ function validateOpenShellBackend(
   if (auth?.mode === "mtls" && !tls) {
     throw new ScopeViolationError(path(id, "configuration.auth") + " mtls requires HTTPS.");
   }
-  const protectedTransport = tls && (auth?.mode === "bearerTokenFile" || auth?.mode === "mtls");
+  const protectedTransport =
+    tls &&
+    (auth?.mode === "bearerTokenFile" ||
+      auth?.mode === "mtls" ||
+      auth?.mode === "oidcClientCredentials");
   if (!protectedTransport && insecureTransport === undefined) {
     throw new ScopeViolationError(
       path(id, "configuration") +

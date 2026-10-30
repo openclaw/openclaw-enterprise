@@ -257,6 +257,18 @@ export interface OpenShellBackendConfiguration {
         readonly mode: "mtls";
         readonly certificatePath: string;
         readonly privateKeyPath: string;
+      }
+    | {
+        readonly mode: "oidcClientCredentials";
+        /** Absolute https token URL; http only to a numeric loopback address. */
+        readonly tokenUrl: string;
+        readonly clientId: string;
+        /** Absolute path to the client secret, mirroring bearerTokenFile. */
+        readonly clientSecretPath: string;
+        readonly tokenAuth?: "client_secret_post" | "client_secret_basic";
+        /** The gateway's expected audience, not the client ID. */
+        readonly audience?: string;
+        readonly scope?: string;
       };
   /** Direct operator mTLS for credential retrieval only; ordinary RPCs keep auth above. */
   readonly operatorTls?: {

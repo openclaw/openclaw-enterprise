@@ -1,7 +1,7 @@
 # What the OpenShell Sandbox suite proves
 
 These are the checks in `tests/integration/sandbox-driver-openshell-k3d-real.test.mjs`.
-Prepare and run the suite as described in [OpenShell tests](openshell.md#openshell-sandbox).
+Prepare and run the suite as described in [OpenShell tests](openshell.md#openshell).
 Unless a section says otherwise, the checks run in the default Codex scenario.
 
 ## Gateway tool policy

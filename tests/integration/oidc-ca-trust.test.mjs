@@ -233,6 +233,52 @@ test("OIDC CA may share a public trust bundle Secret with the Gateway CA", tooli
   );
 });
 
+test("an external OpenShell gateway CA mounts into the API and worker trust", tooling, async () => {
+  // The OIDC client-credentials connection trusts the mounted bundle for both the
+  // gateway's gRPC TLS (rootCertificatePath) and the issuer's token endpoint.
+  const values = {
+    "backend.openshell.oidcSecretName": "occ-openshell-oidc",
+    "backend.openshell.caSecretName": "occ-openshell-ca",
+  };
+  for (const component of ["api", "worker"]) {
+    const spec = pod(await render(values), component);
+    assert.deepEqual(
+      spec.volumes
+        .filter(({ name }) => name === "openshell-external-ca")
+        .map(({ secret }) => secret),
+      [
+        {
+          secretName: "occ-openshell-ca",
+          defaultMode: 288,
+          items: [{ key: "ca.crt", path: "ca.crt" }],
+        },
+      ],
+    );
+    const container = spec.containers[0];
+    assert.deepEqual(
+      container.volumeMounts.filter(({ name }) => name === "openshell-external-ca"),
+      [{ name: "openshell-external-ca", mountPath: "/etc/openclaw/openshell", readOnly: true }],
+    );
+    assert.deepEqual(
+      container.env.filter(({ name }) => name === "NODE_EXTRA_CA_CERTS"),
+      [{ name: "NODE_EXTRA_CA_CERTS", value: "/etc/openclaw/openshell/ca.crt" }],
+    );
+  }
+  // The external CA's directory is reserved, so the database CA cannot take it.
+  await assert.rejects(
+    renderProductionChart({
+      ...values,
+      ...databaseCaValues,
+      "database.caMountPath": "/etc/openclaw/openshell",
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /must be distinct from other active mounts/);
+      return true;
+    },
+  );
+});
+
 async function certificates(directory, name, hostname) {
   const pki = join(directory, `${name}-pki`);
   await mkdir(pki);

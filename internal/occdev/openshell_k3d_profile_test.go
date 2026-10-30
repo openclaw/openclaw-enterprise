@@ -250,7 +250,7 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 }
 
 func TestKubernetesOnlyOpenShellGatewayAdmitsOnlyItsClients(t *testing.T) {
-	policies := developmentOpenShellNetworkPolicies("oce-system", map[string]string{"app.kubernetes.io/managed-by": "openclaw-development"})
+	policies := developmentOpenShellNetworkPolicies(&developmentState{}, "oce-system", map[string]string{"app.kubernetes.io/managed-by": "openclaw-development"})
 	items := jsonValue(t, policies).(map[string]any)["items"].([]any)
 	var ingress map[string]any
 	for _, item := range items {
