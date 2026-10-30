@@ -1,20 +1,25 @@
 # Enroll repositories for OpenShell Agents
 
-For fresh repository-enabled installations, use the production Installation and
-Helm procedure below with matching OpenShell **0.1.6** components. Packaging pins
-this release; runtime admission checks the required facilities and policy proof,
-not the release label. The
-[local setup guide](../deploy/local-openshell-images.md) also lists component versions. Select Kubernetes
+This Helm walkthrough covers repository access with matching OpenShell **0.1.6**
+components. Check the [OpenShell qualification contract](../../reference/drivers/openshell-sandbox.md#qualification-contract)
+before planning a production rollout. Runtime admission checks the required facilities and policy proof.
+The [local setup guide](../deploy/local-openshell-images.md) lists component versions. Select Kubernetes
 Compute, dedicated Codex, and the same OpenShell Driver for Sandbox and
 Credential Proxy. Repository access requires its own explicit Namespace policy;
 installing OpenShell does not grant it.
 
-Choose model authentication first. Use a ready Gateway Harness source without
-`egress`, named by `harnessAuth.method: credential_source`. Provision that source
-through the supported Gateway-only configuration before selecting the repository
-Credential Proxy if necessary. Keep the Gateway selected after enabling the Proxy.
-A fresh Proxy-owned static model source cannot replace this Harness source.
-See [model source setup](../deploy/openshell-credential-sources.md).
+### Register the Harness model source first
+
+A fresh installation needs a ready, Gateway-owned model source before enabling
+the repository Credential Proxy. If that source already exists, start at step 2.
+
+1. Select the OpenShell Gateway and Sandbox. Leave `drivers.credential_proxy`
+   and the Backend’s `drivers.credential_proxy` unset. [Register the model source](../deploy/openshell-credential-sources.md)
+   and verify that its state and Gateway status are ready and that it has no `egress`.
+2. Keep the Gateway selected and use that same source with
+   `harnessAuth.method: credential_source`. Enable the repository Credential Proxy
+   as described below. This procedure is for a fresh installation; changing an
+   existing installation can affect running Agents.
 
 ### Configure authorized repositories
 
@@ -90,7 +95,7 @@ must share the registry's App and installation and the same approved permissions
 The worker prepares a token restricted to exactly the selected numeric IDs.
 Repository availability in the registry alone does not authorize an Agent.
 
-Save, provision runtime credentials and deploy using the normal Agent [Agent workflow](../credential-proxy.md#register-authorize-and-deploy-an-openai-static-inference-source). Wait for the selected revision to become ready. Clone and push the selected
+Save the Agent with the selected repositories and the Gateway model source, provision its runtime credentials, and deploy. Wait for the selected revision to become ready. Clone and push the selected
 repositories over HTTPS, for example `https://github.com/example/project.git`.
 GitHub App permissions and normal GitHub branch rules still apply. OCE adds no
 branch list for `github-repository`; it does not promise every administrative
