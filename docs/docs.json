@@ -44,10 +44,6 @@
                   {
                     "page": "guides/integrations/codex-plugins",
                     "label": "Add Codex Plugins"
-                  },
-                  {
-                    "page": "guides/quickstart",
-                    "label": "Local Setup Without OpenShell"
                   }
                 ]
               },
@@ -526,6 +522,10 @@
                   {
                     "page": "guides/deploy",
                     "label": "Overview"
+                  },
+                  {
+                    "page": "guides/quickstart",
+                    "label": "Local Setup Without OpenShell"
                   },
                   {
                     "page": "guides/deploy/production-installation",

@@ -51,7 +51,8 @@ Each navigation tab declares `groups`. A group has a `group` name and `pages`;
 its entries can be Markdown slugs, `{ "page": "slug", "label": "Short label" }`,
 or nested `{ "group": "Name", "pages": [...] }` groups. A short label changes
 the sidebar and breadcrumb without changing the article or its search title.
-The first visible page is the tab landing page; give it an overview when the tab
+If a top-level group's landing page has a `Next steps` heading, the sidebar links
+to that section below the group's page list. The first visible page is the tab landing page; give it an overview when the tab
 covers multiple subjects. A tab can also declare `hidden`, an array of slugs or
 labeled pages. These pages keep their URLs and appear in search, but not in the
 sidebar. To keep a page at its URL but omit it from site search, set

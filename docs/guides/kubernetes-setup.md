@@ -74,3 +74,9 @@ A ready control plane and a passing
 do not prove that an Agent can answer a model request.
 
 Keep the same shell and temporary key copy to [prepare Namespaces and deploy Agents](deploy/production-agents.md), then [verify workspace access](deploy/production-agents.md#verify-workspace-access) and [a real model response from that Agent](deploy/production-agents.md#verify-production-workloads). These are separate completion checks; a successful deployment does not establish either one. At the end, [remove only the temporary credential copies](deploy/production-agents.md#end-the-operator-session). The [local first-Agent walkthrough](first-agent.md) uses a different installation and should not be run against this one.
+
+## Next steps
+
+- [Attach the OpenClaw TUI](deploy/production-agents.md#attach-with-the-openclaw-tui) to a deployed Agent through its private Gateway.
+- [Complete the production handoff](deploy/production-handoff.md) to assign operating ownership and prepare for recovery.
+- Browse the [product guides](README.md) for the CLI, Agent management and observability.

@@ -265,3 +265,9 @@ Continue in this shell or, in a new Bash shell with the local tools on `PATH`, s
 
 - [Add Git support](../repository-credentials/openshell-git-push.md) to push a new branch with a repository-scoped credential.
 - [Add Codex plugins](../integrations/codex-plugins.md) to select Linear and verify a read through OpenClaw.
+
+## Next steps
+
+- [Install locally without OpenShell](../quickstart.md) for a separate k3d installation using Kubernetes Compute alone.
+- [Verify local network isolation](local-kubernetes-development.md#verify-the-local-boundary) or [stop the disposable cluster](local-kubernetes-development.md#stop-and-clean-up) when you finish.
+- Browse the [product guides](../README.md) for the CLI, Agent management and observability.

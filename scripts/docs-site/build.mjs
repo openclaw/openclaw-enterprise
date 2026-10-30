@@ -441,6 +441,9 @@ for (const page of pages.values()) {
         escape(group.group) +
         "</h2>" +
         renderSidebarPages(group.pages, page) +
+        (group.landing.ids.has("next-steps")
+          ? '<a href="' + escape(group.landing.route) + '#next-steps">Next Steps</a>'
+          : "") +
         "</section>",
     )
     .join("");
