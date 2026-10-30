@@ -25,8 +25,10 @@ import { promisify } from "node:util";
 import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
 
 const execute = promisify(execFile);
+const readyCapability = { status: 200, body: '{"durableAdmissionVersion":1}' };
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const sourceRevision = (
   await execute("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
@@ -877,7 +879,16 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       if (args.includes("worker") && state.simulatePair && take("fail-capability")) {
         return fail(9);
       }
-      out(args.includes("worker") && state.simulatePair ? "repository-admission-ready\n" : "{}");
+      if (state.simulatePair) {
+        const reply = state.capabilityReplies.shift() ?? readyCapability;
+        const result = await runDeployedCapability(args, cwd, reply);
+        state.capabilityProbes.push({ dispatches: state.dispatches, requests: result.requests });
+        save();
+        out(result.stdout);
+        io.stderr(result.stderr);
+        return io.exit(result.status);
+      }
+      out("{}");
     }
   } else if (tool === "occ") {
     if (args.includes("deployment-inventory")) {
@@ -1136,6 +1147,7 @@ async function fixture(
     controllerOnly = false,
     repositoryCredentials = false,
     simulatePair = false,
+    capabilityReplies = [],
     workerPlacement = "container",
     collector = null,
     chart = null,
@@ -1339,6 +1351,8 @@ async function fixture(
     agent,
     workerPlacement,
     simulatePair,
+    capabilityReplies,
+    capabilityProbes: [],
     dispatches: 0,
     initActive: false,
     collectorSecretName,
@@ -2715,6 +2729,11 @@ test("a changed eligible node stops the upgrade before mutation", async (t) => {
   assert.deepEqual(await f.events(), []);
 });
 
+const capabilityProbe = (dispatches) => ({
+  dispatches,
+  requests: [{ method: "GET", path: "/v1/capabilities", body: "" }],
+});
+
 test(
   "deployed pair verification stops before Agent dispatch on failure",
   { concurrency: true },
@@ -2775,10 +2794,65 @@ test(
           );
           assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
           assert.equal((await f.state()).controller, newController);
+          assert.deepEqual(
+            (await f.state()).capabilityProbes,
+            scenario.repositoryCredentials ? [capabilityProbe(0), capabilityProbe(0)] : [],
+          );
         }),
       );
     }
     await Promise.all(cases);
+  },
+);
+
+test(
+  "deployed capability gates Agent dispatch and completion",
+  { concurrency: true },
+  async (t) => {
+    await Promise.all(
+      [
+        {
+          name: "old before dispatch",
+          replies: [{ status: 200, body: '{"durableAdmissionVersion":0}' }],
+          dispatches: 0,
+          failure: /deployed controller cannot verify repository admission capability\./,
+        },
+        {
+          name: "denied at completion",
+          replies: [readyCapability, { status: 403, body: "{}" }],
+          dispatches: 1,
+          failure:
+            /deployed controller cannot verify repository admission capability at completion/,
+        },
+      ].map((scenario) =>
+        t.test(scenario.name, async (subtest) => {
+          const f = await fixture(subtest, {
+            agent: true,
+            repositoryCredentials: true,
+            simulatePair: true,
+            capabilityReplies: scenario.replies,
+          });
+          await assert.rejects(f.run(), (error) => {
+            // The sender translates the Unix client's refusal; a direct-client bypass does not.
+            assert.match(
+              error.stderr,
+              /DependencyUnavailableError: Repository credential control is unavailable\./,
+            );
+            assert.match(error.stderr, scenario.failure);
+            return true;
+          });
+          const state = await f.state();
+          assert.equal(state.dispatches, scenario.dispatches);
+          // The second read follows the sole dispatch; a refusal cannot report completion.
+          assert.deepEqual(
+            state.capabilityProbes,
+            scenario.dispatches === 0
+              ? [capabilityProbe(0)]
+              : [capabilityProbe(0), capabilityProbe(1)],
+          );
+        }),
+      ),
+    );
   },
 );
 
