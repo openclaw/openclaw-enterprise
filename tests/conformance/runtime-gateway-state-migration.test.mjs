@@ -1055,6 +1055,48 @@ test("Native worker readiness shares one running identity check among concurrent
   assert.deepEqual(outcome.identities, ["identity", "identity"]);
 });
 
+// A check that throws or fails frees the slot as a success does, so a worker that recovers
+// reports ready on the next probe instead of keeping the failure. A caller that disconnects
+// while it waits gets no answer and does not stop or restart the check the others share.
+test("Native worker readiness checks again after a failed check and ignores a disconnected caller", async (t) => {
+  const callbacks = [];
+  let throwNext = true;
+  const outcome = await runNativeWorker(await harnessDirectory(t, STATE_CURRENT), undefined, {
+    identity: (callback) => {
+      if (throwNext) {
+        throwNext = false;
+        throw new Error("spawn failed");
+      }
+      callbacks.push(callback);
+    },
+  });
+  assert.deepEqual(await Promise.all([outcome.ready(), outcome.ready()]), [503, 503]);
+  const failed = outcome.ready();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 1);
+  callbacks[0](new Error("node identity failed"));
+  assert.equal(await failed, 503);
+
+  const handler = outcome.servers.find(
+    ({ port }) => port === Number(COMPUTE_STATUS_ENV.OPENCLAW_RUNTIME_STATUS_PORT),
+  ).handler;
+  const first = outcome.ready();
+  // node:http marks a response destroyed and emits "close" when its client disconnects.
+  const dropped = Object.assign(new EventEmitter(), { destroyed: false, writes: [] });
+  dropped.writeHead = (code) => dropped.writes.push(code);
+  dropped.end = () => dropped.writes.push("end");
+  handler({ method: "GET", url: "/readyz", headers: {} }, dropped);
+  dropped.destroyed = true;
+  dropped.emit("close");
+  const last = outcome.ready();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 2);
+  callbacks[1](null, JSON.stringify({ deviceId: "a".repeat(64) }));
+  assert.deepEqual(await Promise.all([first, last]), [200, 200]);
+  assert.deepEqual(dropped.writes, []);
+  assert.deepEqual(outcome.identities, ["identity", "identity", "identity"]);
+});
+
 test("Native worker migrates older node state without the model credential before it connects", async (t) => {
   const directory = await harnessDirectory(t, STATE_CURRENT - 1);
   const nodeState = join(directory, "node-state");
