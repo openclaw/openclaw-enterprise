@@ -6,9 +6,7 @@ import test from "node:test";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   AGENT_CREATE_DENIED,
-  AGENT_DELETE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
-  AGENT_STOP_DENIED,
   CHANNELS_NEED_DEDICATED,
   DIAGNOSTICS_DENIED,
   SECRET_CREATE_DENIED,
@@ -19,7 +17,6 @@ import {
   accessibleDescription,
   detailUrl,
   expectReachableReason,
-  holdRequests,
   login,
   nativeValues,
   newPage,
@@ -296,70 +293,6 @@ test("Start with default Preset names the missing default as its reason", async 
     .waitFor();
   await expectReachableReason(page, shortcut, reason);
 });
-
-// Finding 2935: a permission answer that denies Stop or Delete while its confirmation is open
-// disabled the confirmation natively, with the refusal unlinked. It stays in the Tab order,
-// described by the refusal, and sends nothing; after Cancel the row's control does the same.
-for (const { row, title, confirmName, reason } of [
-  {
-    row: "Stop Agent",
-    title: "Stop this Agent?",
-    confirmName: "Stop Agent",
-    reason: AGENT_STOP_DENIED,
-  },
-  {
-    row: "Delete Agent",
-    title: "Delete Late refusal Agent?",
-    confirmName: "Permanently delete Agent",
-    reason: AGENT_DELETE_DENIED,
-  },
-]) {
-  test(`a late refusal keeps ${row}'s confirmation and row control reachable, with why`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Late refusal", { ready: true });
-    const agent = await fixture.createAgent(
-      namespace.id,
-      "Late refusal Agent",
-      nativeValues("late"),
-    );
-    const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-    const reader = await fixture.createNamespaceMember(
-      "late-refusal-reader",
-      namespace.id,
-      AGENT_READ,
-    );
-    const { page } = await newPage(t, fixture);
-    const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
-    // Hold the permission answer so the reader opens the confirmation before it arrives.
-    const answer = await holdRequests(t, page, `${fixture.origin}${agentPath}/permissions`, {
-      once: true,
-    });
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
-      reader.credentials,
-    );
-    const zone = page.getByRole("region", { name: row, exact: true });
-    await zone.getByRole("button", { name: row, exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: title, exact: true });
-    await dialog.waitFor();
-    answer.release();
-    await dialog.getByText(reason, { exact: true }).waitFor();
-    const confirm = dialog.getByRole("button", { name: confirmName, exact: true });
-    assert.equal(await confirm.isDisabled(), true);
-    await expectReachableReason(page, confirm, reason);
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-    // The close event, which removes the dialog, comes a task after it closes.
-    await zone.locator("dialog").waitFor({ state: "detached" });
-    // The row stays for this viewer, who used it, and its control says why too.
-    await zone.getByText(reason, { exact: true }).waitFor();
-    await expectReachableReason(page, zone.getByRole("button", { name: row, exact: true }), reason);
-    assert.equal(await page.getByRole("dialog").count(), 0);
-    assert.equal((await fixture.request("GET", agentPath)).data.desiredRuntimeState, "running");
-  });
-}
 
 // Finding D793. Save plugin selections, Discard changes, Save channel Secrets and Use Preset were
 // disabled with a sentence beside them that no control named. Each is described by it now.

@@ -247,8 +247,8 @@ a.overview-primary:hover {
   color: var(--color-danger);
   border-color: var(--color-danger);
 }
-button.button--danger:not(:disabled):hover,
-button.danger:not(:disabled):hover {
+button.button--danger:not(:disabled, [aria-disabled="true"]):hover,
+button.danger:not(:disabled, [aria-disabled="true"]):hover {
   color: var(--color-danger);
   background: var(--color-danger-subtle);
 }
@@ -3116,10 +3116,18 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   border-color: var(--color-danger);
   color: var(--color-on-accent);
 }
-.dialog.agent-stop-dialog button.danger:not(:disabled):hover,
-.dialog.agent-delete-dialog button.danger:not(:disabled):hover {
+.dialog.agent-stop-dialog button.danger:not(:disabled, [aria-disabled="true"]):hover,
+.dialog.agent-delete-dialog button.danger:not(:disabled, [aria-disabled="true"]):hover {
   background: var(--color-danger);
   color: var(--color-on-accent);
+}
+/* A refused confirmation stays in the Tab order (finding 2935): its fill and edge fade, as an
+   unavailable primary button's do, so its focus ring keeps full contrast. */
+.dialog.agent-stop-dialog button.danger.control-unavailable,
+.dialog.agent-delete-dialog button.danger.control-unavailable {
+  cursor: not-allowed;
+  background: color-mix(in srgb, var(--color-danger) 60%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-danger) 60%, var(--color-surface));
 }
 .agent-kept-resources {
   margin-top: var(--space-3);

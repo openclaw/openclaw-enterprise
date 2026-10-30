@@ -5528,12 +5528,17 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
     });
     await confirm.focus();
     permissions.release();
-    await dialog.getByText(/Your access does not include/).waitFor();
+    const refusal = dialog.getByText(/Your access does not include/);
+    await refusal.waitFor();
+    const reason = (await refusal.textContent()).trim();
     assert.equal(await confirm.isDisabled(), true);
     assert.equal(
       await page.evaluate(() => globalThis.document.activeElement.textContent),
       "Cancel",
     );
+    // The confirmation stays in the Tab order, described by the refusal, and sends nothing
+    // (finding 2935).
+    await expectReachableReason(page, confirm, reason);
     // Exercise the submit guard separately from the button's disabled behavior.
     await confirm.dispatchEvent("click");
     await settlePageRequests(page);
@@ -5546,20 +5551,27 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
       .getByRole("status")
       .getByText(/Your access does not include/)
       .waitFor();
-    assert.equal(
-      await row.getByRole("button", { name: action + " Agent", exact: true }).isDisabled(),
-      true,
-    );
-    // Focus lands on the row's heading, which the visible row can take.
-    const heading = action === "Stop" ? "agent-stop-title" : "agent-deletion-title";
+    const control = row.getByRole("button", { name: action + " Agent", exact: true });
+    assert.equal(await control.isDisabled(), true);
+    // Focus returns to the row's control, which stays focusable and says why, as on the Agents
+    // list (findings 2926, 2935).
     await page
-      .waitForFunction((id) => globalThis.document.activeElement?.id === id, heading, {
-        timeout: 3000,
-      })
+      .waitForFunction(
+        (name) => {
+          const active = globalThis.document.activeElement;
+          return (
+            active?.closest("section")?.querySelector("h3")?.textContent === name &&
+            active.getAttribute("aria-disabled") === "true"
+          );
+        },
+        action + " Agent",
+        { timeout: 3000 },
+      )
       .catch(async (error) => {
         const active = await page.evaluate(() => globalThis.document.activeElement?.outerHTML);
         throw new Error(`focus is on ${active?.slice(0, 200)}`, { cause: error });
       });
+    await expectReachableReason(page, control, reason);
     await page.unroute(permissionPath);
   }
 });
