@@ -462,6 +462,24 @@ test("compute renders plugin-free Codex revisions with native default-deny plugi
   assert.match(data[PLUGIN_RUNTIME_CODEX_CONFIG], /^\[plugins\._default\]\nenabled = false/m);
 });
 
+test("standalone search declarations cannot enable protected provider tools", () => {
+  const runtime = {
+    kind: "codex",
+    selections: {},
+    providerTools: "none",
+    modelEndpoint: {
+      baseUrl: "https://models.example.test/v1",
+      modelProvider: "openai-compatible",
+      supportsStandaloneWebSearch: true,
+    },
+  };
+  const config = pluginRuntimeConfigMapData(runtime)[PLUGIN_RUNTIME_CODEX_CONFIG];
+  assert.match(config, /^web_search = "disabled"$/m);
+  assert.equal(config.includes("supports_standalone_web_search"), false);
+  assert.match(config, /^request_max_retries = 0$/m);
+  assert.match(config, /^stream_max_retries = 0$/m);
+});
+
 test("compute pins the credential source endpoint in dedicated Codex configuration", () => {
   const baseUrl = "https://models.example.test/api/v1";
   const runtime = pluginRuntimeSpecForRevision(revision(), undefined, baseUrl);

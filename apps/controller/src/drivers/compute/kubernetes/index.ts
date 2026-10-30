@@ -525,6 +525,8 @@ export interface KubernetesComputeDriverOptions {
     readonly codexSeccompProfile?: string;
     /** HTTPS OpenAI-compatible Responses endpoint for dedicated Codex API-key auth. */
     readonly codexModelBaseUrl?: string;
+    /** Declare standalone web search support for the explicit Codex model endpoint. */
+    readonly codexModelSupportsStandaloneWebSearch?: boolean;
     readonly channels?: {
       readonly proxyUrl: string;
       readonly managedProxy?: KubernetesWorkloadPeer & {
@@ -3589,6 +3591,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           },
           codexSeccompProfile: { type: "string", minLength: 1 },
           codexModelBaseUrl: { type: "string", minLength: 1 },
+          codexModelSupportsStandaloneWebSearch: { type: "boolean" },
           channels: {
             type: "object",
             required: ["proxyUrl"],
@@ -3986,6 +3989,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 ? "Codex model endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address."
                 : "Codex model endpoint requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment."),
             "/runtime/codexModelBaseUrl",
+          );
+        }
+        if (
+          options.runtime.codexModelSupportsStandaloneWebSearch === true &&
+          options.runtime.codexModelBaseUrl === undefined
+        ) {
+          throw configurationConstraintFailure(
+            "Standalone web search requires an explicit Codex model endpoint.",
+            "/runtime/codexModelSupportsStandaloneWebSearch",
           );
         }
         if (options.runtime.codexSeccompProfile !== undefined) {
@@ -14274,6 +14286,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
     openaiBaseUrl?: string,
   ): PluginRuntimeSnapshot | undefined {
+    const standaloneWebSearch =
+      openaiBaseUrl === undefined &&
+      revision.harness.id === "codex" &&
+      revision.harness.mode === "dedicated" &&
+      revision.harnessAuth?.method === "api_key" &&
+      this.options.runtime?.codexModelSupportsStandaloneWebSearch === true;
     if (
       openaiBaseUrl === undefined &&
       revision.harness.id === "codex" &&
@@ -14302,6 +14320,17 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         openaiBaseUrl,
         this.publicGithubReadForRevision(revision),
       );
+      if (
+        standaloneWebSearch &&
+        runtime?.kind === "codex" &&
+        runtime.modelEndpoint !== undefined &&
+        runtime.providerTools !== "none"
+      ) {
+        runtime = {
+          ...runtime,
+          modelEndpoint: { ...runtime.modelEndpoint, supportsStandaloneWebSearch: true },
+        };
+      }
     } catch (error) {
       throw new ConfigurationFailure(
         error instanceof Error
