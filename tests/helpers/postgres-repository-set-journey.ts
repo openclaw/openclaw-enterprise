@@ -368,11 +368,27 @@ export async function repositorySetJourney(t: TestContext) {
         stage = "recipient-observation";
         await reconcile();
         stage = "held-hook-probe";
-        const held = await runtime.observeHeldPreview(r.id, startupId, t.signal, async (path) => ({
-          startupId,
-          probePath: path,
-          reasonCode: (await evaluate({ ...probe, target: { ...probe.target, path } })).reason_code,
-        }));
+        // One reconciliation pass can leave the route "unverified". The held probe then answers
+        // "not yet" without arming its challenge, and production enrollment retries on the
+        // worker's next pass. Do the same: run one more pass before each later read. The last
+        // read happens at the deadline; a blocked route still fails at once inside reconcile().
+        let retry = false;
+        const held = await waitFor(
+          "the held mandatory hook probe",
+          async () => {
+            if (retry) {
+              await reconcile();
+            }
+            retry = true;
+            return runtime.observeHeldPreview(r.id, startupId, t.signal, async (path) => ({
+              startupId,
+              probePath: path,
+              reasonCode: (await evaluate({ ...probe, target: { ...probe.target, path } }))
+                .reason_code,
+            }));
+          },
+          { timeoutMs: 20_000 },
+        );
         assert.equal(
           held,
           "held",
