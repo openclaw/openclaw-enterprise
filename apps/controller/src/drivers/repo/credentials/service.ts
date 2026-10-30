@@ -8,12 +8,13 @@ import type {
   RequestHead,
   RequestPlan,
 } from "./backend-contracts.ts";
-import type {
-  RepositoryCredentialSessionInput,
-  RepositoryCredentialBoundSessionInput,
-  ServiceConfig,
-  ShutdownSummary,
-  SessionStatus,
+import {
+  sameBinding,
+  type RepositoryCredentialSessionInput,
+  type RepositoryCredentialBoundSessionInput,
+  type ServiceConfig,
+  type ShutdownSummary,
+  type SessionStatus,
 } from "./service-contracts.ts";
 import type {
   CredentialServiceOwner,
@@ -35,7 +36,6 @@ import {
   snapshotBinding,
   snapshotSessionInput,
   isBoundInput,
-  sameBinding,
 } from "./sessions.ts";
 import type { SessionAdmission } from "./sessions.ts";
 

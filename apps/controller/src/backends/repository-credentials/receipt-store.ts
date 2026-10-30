@@ -3,11 +3,11 @@ import type {
   RepositorySessionAttempt,
   PlatformStateStore,
 } from "@openclaw-enterprise/occ";
-import type {
-  RepositoryCredentialBoundSessionInput,
-  SessionStatus,
+import {
+  sameBinding,
+  type RepositoryCredentialBoundSessionInput,
+  type SessionStatus,
 } from "../../drivers/repo/credentials/service-contracts.ts";
-import { sameBinding } from "../../drivers/repo/credentials/sessions.ts";
 
 /** Only the worker owns State; the detached broker receives this narrow journal. */
 export class RepositoryReceiptStore {

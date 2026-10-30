@@ -27,6 +27,7 @@ import {
   type RepositorySessionAttempt,
   type RepositorySessionPhase,
 } from "@openclaw-enterprise/occ";
+import { sameBinding } from "../drivers/repo/credentials/service-contracts.ts";
 
 type Queue = Pick<PostgresWorkQueue, keyof PostgresWorkQueue>;
 type Attempt = Readonly<RepositorySessionAttempt>;
@@ -69,17 +70,6 @@ function owner(revision: RevisionIdentity) {
     agentId: revision.agentId,
     revisionId: revision.id,
   };
-}
-
-function sameGrant(
-  left: AdmittedRepositoryBinding["grant"],
-  right: AdmittedRepositoryBinding["grant"],
-): boolean {
-  return (
-    left.providerInstanceId === right.providerInstanceId &&
-    left.repositoryId === right.repositoryId &&
-    left.grantId === right.grantId
-  );
 }
 
 function assertRepositorySessionCanOpen(attempts: readonly Attempt[], repositoryRef: string): void {
@@ -211,7 +201,7 @@ export class RepositoryCredentialLifecycle {
           selected === undefined ||
           selected.profile !== binding.profile ||
           selected.backendId !== binding.backendId ||
-          !sameGrant(selected.grant, binding.grant)
+          !sameBinding(selected.grant, binding.grant)
         );
       })
     ) {
@@ -793,7 +783,7 @@ export class RepositoryCredentialLifecycle {
       !Number.isSafeInteger(status.deadlineWallMs) ||
       status.deadlineWallMs <= 0 ||
       status.deadlineWallMs > attempt.deadlineWallMs ||
-      !sameGrant(status.binding, binding.grant)
+      !sameBinding(status.binding, binding.grant)
     ) {
       throw new RepositoryCredentialAuthorityError("INVALID_REPOSITORY_DRIVER_OBSERVATION");
     }

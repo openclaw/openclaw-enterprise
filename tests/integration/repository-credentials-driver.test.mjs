@@ -339,8 +339,10 @@ test("Unix control rejects malformed status and preserves authoritative absence 
     },
   };
   let reply = { status: 200, body: valid };
+  let requests = 0;
   // This independent wire peer supplies invalid protocol packets; it implements no session policy.
   const server = createServer((incoming, response) => {
+    requests += 1;
     incoming.resume();
     response.writeHead(reply.status, { "content-type": "application/json" });
     response.end(JSON.stringify(reply.body));
@@ -380,6 +382,24 @@ test("Unix control rejects malformed status and preserves authoritative absence 
     apiHost: "credentials.example.test",
     repository: "example/project",
   };
+
+  await t.test("installation access is rejected before opening the broker", async () => {
+    const before = requests;
+    for (const recoverOnly of [false, true]) {
+      await assert.rejects(
+        driver.sender.open(
+          {
+            ...openInput,
+            binding: { ...admitted, profile: "github-installation" },
+            ...(recoverOnly ? { recoverOnly: true } : {}),
+          },
+          signal,
+        ),
+        ScopeViolationError,
+      );
+    }
+    assert.equal(requests, before);
+  });
 
   await t.test(
     "every public exit validates the complete private observation before projection",
@@ -523,6 +543,12 @@ test("Unix control rejects malformed status and preserves authoritative absence 
       await assert.rejects(
         driver.sender.open({ ...openInput, recoverOnly: true }, signal),
         DependencyUnavailableError,
+      );
+      assertPublicStatus((await driver.sender.open(openInput, signal)).session, admitted.grant);
+      reply = { status: 200, body: open };
+      assertPublicStatus(
+        (await driver.sender.open({ ...openInput, recoverOnly: true }, signal)).status,
+        admitted.grant,
       );
     },
   );

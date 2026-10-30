@@ -1,11 +1,12 @@
-import type { ErrorDetail } from "@openclaw-enterprise/contracts";
-import type {
-  JSONSchema,
-  OpenRepositorySessionInput,
-  OpenRepositorySessionResult,
-  Backend,
-  NativeRepositorySender,
-  RepositoryCredentialSessionStatus,
+import {
+  isInstallationRepositoryProfile,
+  type ErrorDetail,
+  type JSONSchema,
+  type OpenRepositorySessionInput,
+  type OpenRepositorySessionResult,
+  type Backend,
+  type NativeRepositorySender,
+  type RepositoryCredentialSessionStatus,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ScopeViolationError } from "@openclaw-enterprise/occ";
 import { isAbsolute, resolve } from "node:path";
@@ -13,10 +14,8 @@ import {
   RepositoryCredentialControlError,
   type RepositoryCredentialControlClient,
 } from "../../../backends/repository-credentials/control-client.ts";
-import { githubInstallationProfile } from "./credentials/registry.ts";
 import { encodeRepositoryCredentialSessionFiles } from "./credentials/client/config.ts";
-import type { SessionStatus } from "../credentials/service-contracts.ts";
-import { sameBinding } from "../credentials/sessions.ts";
+import { sameBinding, type SessionStatus } from "../credentials/service-contracts.ts";
 import { hasControlCharacter } from "../credentials/client-contracts.ts";
 
 function publicStatus(status: SessionStatus): RepositoryCredentialSessionStatus {
@@ -110,7 +109,7 @@ export class GitHubNativeRepositorySender implements NativeRepositorySender {
     input: OpenRepositorySessionInput,
     signal: AbortSignal,
   ): Promise<OpenRepositorySessionResult> {
-    if (input.binding.profile === githubInstallationProfile) {
+    if (isInstallationRepositoryProfile(input.binding.profile)) {
       throw new ScopeViolationError(
         "GitHub installation access requires the protected Credential Proxy.",
       );
