@@ -1923,15 +1923,12 @@ test("Logs show a second redeploy from elsewhere after a failed one, then its ow
   for (let index = 0; index < 3; index += 1) {
     assert.equal(await poll(), listed, `poll ${index + 1} lists the versions`);
   }
-  for (
-    let index = 0;
-    index < 4 && (await settledFetches(page, `${agentPath}/revisions`)) === listed;
-    index += 1
-  ) {
+  for (let index = 0; index < 4; index += 1) {
     await poll();
   }
-  assert.equal(await settledFetches(page, `${agentPath}/revisions`), listed + 1);
   await shows(/Latest visible deployment\s+v3\s+·\s+Queued/);
+  // Once v3 is listed, its queued deployment stops the list reads.
+  assert.equal(await settledFetches(page, `${agentPath}/revisions`), listed + 1);
 
   // v3 fails: the page leads with v3's failure, not v2's.
   await routeFailedDeployment(page, fixture, {
