@@ -4170,6 +4170,15 @@ export async function renderAgentDetail(
           control.hidden = true;
           leaveDeniedAccess({ refocus: focused });
         },
+        // Refresh sharing rereads the Agent's permission answer, so the page's controls follow
+        // a grant or revoke since it loaded, and asks again whether a caller this tab settled as
+        // no administrator administers the Installation (finding 2943). Neither read is audited.
+        rereadAccess: () => {
+          agentSaveDenied = rereadPermissions().then((permissions) =>
+            agentSaveDenial(permissions, agent),
+          );
+          return Promise.all([agentSaveDenied, context.recheckAdministration?.()]);
+        },
       });
       if (tabControls.get("access")?.hidden) {
         // Back to a tab whose policy read was refused.

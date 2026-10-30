@@ -67,6 +67,8 @@ const TAIL_LINES = 200;
 // The output status for a selection with no running Pod. It is also why the log controls that
 // read output are unavailable then (finding 2929).
 const NO_POD_STATUS = "This version has no running Pod for this source.";
+// Why Previous instance is unavailable for a container that has never restarted (finding 2944).
+const NO_PREVIOUS_INSTANCE = "This container has not restarted, so there is no previous instance.";
 // The longest the Logs view keeps its strip and output back for their first reads.
 const FIRST_VIEW_WAIT_MS = 2_000;
 // A 403 is audited; remember it for this sign-in instead of re-asking every poll or every
@@ -274,6 +276,8 @@ export function renderAgentLogs(
     id: "runtime-log-previous",
     disabled: true,
   });
+  // Says why Previous instance is unavailable while the selected container has not restarted.
+  const previousHint = element("p", { className: "hint", hidden: true });
   // Off by default: the server returns info and above (and lines of unknown level),
   // so debug span records do not crowd a page out.
   const includeDebug = element("input", {
@@ -480,7 +484,17 @@ export function renderAgentLogs(
   function describeDeniedControls() {
     const noPod = !logsDenied && logStatus.textContent === NO_POD_STATUS;
     for (const [control, off] of unavailable) {
-      setUnavailable(control, off, logsDenied ? logError : noPod ? logStatus : null);
+      setUnavailable(
+        control,
+        off,
+        logsDenied
+          ? logError
+          : noPod
+            ? logStatus
+            : control === previous && !previousHint.hidden
+              ? previousHint
+              : null,
+      );
     }
   }
 
@@ -619,12 +633,18 @@ export function renderAgentLogs(
           : "The Agent (Harness) Pod is not ready. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: read the Agent (Harness) source for the cause.",
     );
     const pod = selectedPod();
-    const restarts = pod
-      ? pod.restartCount
-      : statusDenied && lastStream !== null && lastStream.source === source?.id
+    const streamRestarts =
+      statusDenied && lastStream !== null && lastStream.source === source?.id
         ? lastStream.restartCount
-        : 0;
+        : undefined;
+    const restarts = pod ? pod.restartCount : (streamRestarts ?? 0);
     unavailable.set(previous, logsDenied || restarts === 0);
+    // A container known not to have restarted has no previous instance: the hint says so, and
+    // Previous instance stays in the Tab order, described by it (finding 2944). A restart
+    // enables it and hides the hint.
+    const knownRestarts = pod !== undefined || streamRestarts !== undefined;
+    previousHint.hidden = logsDenied || !knownRestarts || restarts > 0;
+    setText(previousHint, previousHint.hidden ? "" : NO_PREVIOUS_INSTANCE);
     if (unavailable.get(previous)) {
       previous.checked = false;
     }
@@ -1166,6 +1186,7 @@ export function renderAgentLogs(
           ),
           element("div", { className: "log-actions" }, followButton, refreshButton, downloadButton),
         ),
+        previousHint,
         element(
           "div",
           { className: "log-filters", role: "group", "aria-label": "Log filters" },

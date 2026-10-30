@@ -1568,6 +1568,40 @@ test("log controls a version with no running Pod leaves unavailable name that re
   assert.equal(computeDriver.calls.filter(({ operation }) => operation === "read").length, 0);
 });
 
+// Finding 2944. A running container that has never restarted has no previous instance, so
+// Previous instance is unavailable. It was natively disabled with no reason: Tab skipped it and
+// nothing said why. A hint says so now, and the checkbox stays in the Tab order, described by
+// it. After a restart the hint goes and the checkbox reads the previous instance.
+test("Previous instance names why it is unavailable until the container restarts", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "first instance output")];
+  computeDriver.state.previousLines = [line(0, "output before the restart")];
+  const { page } = await newPage(t, fixture);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("first instance output").waitFor();
+  const previous = page.getByLabel("Previous instance");
+  const reason = "This container has not restarted, so there is no previous instance.";
+  const hint = page.getByText(reason, { exact: true });
+  await hint.waitFor();
+  assert.equal(await previous.isDisabled(), true);
+  await expectReachableReason(page, previous, reason);
+  // The other log controls stay usable.
+  await waitForEnabled(page.getByRole("button", { name: "Follow" }));
+  await waitForEnabled(page.getByRole("button", { name: "Refresh logs" }));
+
+  // The next status poll reports a restart: the reason goes and the previous instance reads.
+  computeDriver.state.restartCount = 1;
+  await page.clock.runFor(10_000);
+  await hint.waitFor({ state: "hidden" });
+  await waitForEnabled(previous);
+  assert.equal(await previous.getAttribute("aria-disabled"), null);
+  assert.equal(await previous.getAttribute("aria-describedby"), null);
+  await previous.check();
+  await pane.getByText("output before the restart").waitFor();
+});
+
 const rateLimitRequestId = "req_12345678-1234-1234-1234-123456789abc";
 
 function rateLimitedResponse(retryAfter?: number) {

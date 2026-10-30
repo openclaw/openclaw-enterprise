@@ -39,6 +39,8 @@ export interface ConsolePageContext extends Pick<Navigation, "navigate" | "pageU
   onRevalidate(check: () => Promise<unknown>): () => void;
   /** Run when Installation administration settles as ended while this page is mounted. */
   onAdministrationEnded?(handler: () => void): void;
+  /** Asks again, without an audited read, whether a caller settled as no administrator is one. */
+  recheckAdministration?(): Promise<void>;
   onExpired(): void;
   setTitle(title: string): void;
   setTabNavigation(handler: TabNavigation): void;

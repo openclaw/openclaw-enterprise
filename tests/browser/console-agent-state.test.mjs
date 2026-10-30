@@ -2011,6 +2011,108 @@ test("A share after a revoke rereads the policy one list at a time, audited once
   assert.deepEqual(iamReads(requests.slice(sent)), ["GET /iam/roles"]);
 });
 
+// Finding 2943. A share after a revoke is refused once, settles "not an administrator" and the
+// page follows the member's answer (D795). Administration granted again, Refresh sharing sent
+// nothing: the tab knew she was no administrator, so it hid the Access tab and the page stayed
+// read-only until the page's Refresh. Refresh sharing now rereads the Agent's permission answer
+// and the Namespace's, neither audited, and then the policy, one list at a time. Still revoked,
+// it sends no policy read and adds no audited refusal.
+async function shareRefusedAfterRevoke(t, name) {
+  const opened = await openAsRevocableAdministrator(t, name, "draft");
+  const { fixture, page, revoke, stop, remove } = opened;
+  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  await waitForEnabled(panel.getByRole("button", { name: "Share Agent", exact: true }));
+  revoke();
+  const audited = authorizationDenials(fixture.auditSink).length;
+  await panel.getByLabel("Existing person’s Principal ID").fill("prn_regrant-share-target");
+  await panel.getByRole("checkbox").check();
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await panel
+    .getByText("Sharing policy requires Installation administration.", { exact: false })
+    .waitFor();
+  // The page takes the member's answer: no Stop or Delete.
+  await stop.waitFor({ state: "hidden" });
+  await remove.waitFor({ state: "hidden" });
+  await waitForIdleFetches(page);
+  return { ...opened, panel, audited };
+}
+
+function permissionReads(requests, namespaceId, permissionsPath) {
+  return requests
+    .map(({ path }) => path)
+    .filter((path) => [permissionsPath, `/namespaces/${namespaceId}/permissions`].includes(path))
+    .sort();
+}
+
+test("Refresh sharing after administration is granted again rereads access, then the policy", async (t) => {
+  const { fixture, page, requests, regrant, stop, remove, panel, audited, ...opened } =
+    await shareRefusedAfterRevoke(t, "Regranted share");
+  const accessTab = page.getByRole("tab", { name: "Access", exact: true });
+
+  regrant();
+  const sent = requests.length;
+  await panel.getByRole("button", { name: "Refresh sharing", exact: true }).click();
+  await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
+  // The page follows the administrator's answer again, without the page's Refresh.
+  await waitForEnabled(stop);
+  await waitForEnabled(remove);
+  await waitForIdleFetches(page);
+  assert.equal(await accessTab.getAttribute("aria-selected"), "true");
+  for (const control of [
+    panel.getByLabel("Existing person’s Principal ID"),
+    panel.getByRole("checkbox"),
+    panel.getByRole("button", { name: "Share Agent", exact: true }),
+  ]) {
+    await waitForEnabled(control);
+    assert.equal(await control.getAttribute("aria-disabled"), null);
+  }
+  const after = requests.slice(sent);
+  assert.deepEqual(
+    permissionReads(after, opened.namespaceId, opened.permissionsPath),
+    [opened.permissionsPath, `/namespaces/${opened.namespaceId}/permissions`].sort(),
+  );
+  // Both permission answers come before the policy, which is read one list at a time.
+  const firstPolicyRead = after.findIndex(({ path }) => path.includes("/iam/"));
+  assert.equal(
+    after.slice(0, firstPolicyRead).filter(({ path }) => path.endsWith("/permissions")).length,
+    2,
+  );
+  assert.deepEqual(iamReads(after), ["GET /iam/roles", "GET /iam/access-bindings"]);
+  // The share's refusal is the only audited one.
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.iam.roles.list"],
+  );
+});
+
+test("Refresh sharing while still revoked sends no policy read and adds no audited refusal", async (t) => {
+  const { fixture, page, requests, panel, audited, ...opened } = await shareRefusedAfterRevoke(
+    t,
+    "Still revoked share",
+  );
+  const accessTab = page.getByRole("tab", { name: "Access", exact: true });
+  const sent = requests.length;
+  await panel.getByRole("button", { name: "Refresh sharing", exact: true }).click();
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await accessTab.count(), 0);
+  const after = requests.slice(sent);
+  assert.deepEqual(
+    permissionReads(after, opened.namespaceId, opened.permissionsPath),
+    [opened.permissionsPath, `/namespaces/${opened.namespaceId}/permissions`].sort(),
+  );
+  assert.deepEqual(iamReads(after), []);
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.iam.roles.list"],
+  );
+});
+
 // Finding D795. Once the Access tab's recheck settled that a revoked administrator no longer
 // administers the Installation, her open page kept the administrator's controls until Refresh:
 // Deploy new version, Stop and Delete stayed enabled, and Plugins sent a capabilities read the
@@ -2380,6 +2482,8 @@ async function openAsRevocableAdministrator(t, name, version = "active") {
     revision,
     // The draft's entry in the version chooser follows the permission summary (finding 2421).
     draftEntry: page.locator('#revision-selector option[value="draft"]'),
+    namespaceId: namespace.id,
+    regrant: () => grantInstallationAdministration(fixture, account.principal),
   };
 }
 

@@ -476,6 +476,37 @@ function settleNotAdministrator() {
   }
 }
 
+// Refresh sharing asks again whether a caller this tab settled as no administrator administers
+// the Installation. Administration granted again with the Agent page open left Refresh sharing
+// refused unsent, the Access tab hidden and the page read-only until Refresh (finding 2943). The
+// Namespace permission answer audits nothing; when it confirms administration, the settled answer
+// is dropped, as Refresh drops it, and the policy reads are sent again. Any other answer, or none,
+// keeps it. Gating only: the API still authorizes every read.
+async function recheckAdministration() {
+  if (installationAdmin !== false) {
+    return;
+  }
+  const owner = sessionOwnerKey(session);
+  let answer;
+  try {
+    answer = await namespacePermissionsRead();
+  } catch {
+    return;
+  }
+  if (
+    owner === null ||
+    owner !== sessionOwnerKey(session) ||
+    installationAdmin !== false ||
+    answer?.installation?.administer !== true
+  ) {
+    return;
+  }
+  forgetInstallationAccess();
+  observabilityOwner = null;
+  installationAdmin = null;
+  administrationConfirmed = true;
+}
+
 // An administrator reads every Namespace, so the selector of a page loaded under administration
 // kept the Namespaces only administration could read until Refresh (finding 2917). Administration
 // ending reads the list once more: a member may list Namespaces, so the read audits nothing. The
@@ -2311,6 +2342,7 @@ async function loadPage({
         return () => viewState.revalidators.delete(check);
       },
       onAdministrationEnded: (handler) => viewState.administrationEnded.add(handler),
+      recheckAdministration,
       onExpired: () => {
         if (lifetime.isCurrent(viewState.active)) {
           showExpiredLogin();
