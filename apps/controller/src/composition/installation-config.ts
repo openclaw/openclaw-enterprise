@@ -24,7 +24,10 @@ import {
   type InstallationFieldDetail,
   requireChartListener,
 } from "./installation-fields.ts";
-import { requireConfiguration } from "@openclaw-enterprise/contracts";
+import {
+  requireConfiguration,
+  serializeStartupConfiguration,
+} from "@openclaw-enterprise/contracts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import type { SandboxNetworkGrant } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
@@ -129,6 +132,7 @@ export interface SelectedDriverConfiguration<T = ConfigurationRecord> {
   readonly package?: string;
   readonly configuration: T;
   readonly definition: DriverImplementation;
+  readonly startupConfiguration?: Readonly<Record<string, unknown>>;
 }
 
 export interface InstallationStartupConfiguration {
@@ -157,7 +161,7 @@ export interface InstallationStartupConfiguration {
   };
 }
 
-/** Definitions stay with their selected identities across API and worker composition. */
+/** Definitions and safe startup projections stay with their selected process identities. */
 export function installationDriverConfigurations(
   installation: InstallationStartupConfiguration | undefined,
 ): readonly import("@openclaw-enterprise/occ").DriverConfigurationRegistration[] {
@@ -165,18 +169,21 @@ export function installationDriverConfigurations(
     ...installation?.drivers,
     ...(installation?.repository === undefined ? {} : { repo: installation.repository }),
   };
-  return Object.entries(selections).flatMap(([capability, selection]) =>
-    "definition" in selection
-      ? [
-          {
-            capability: capability as import("@openclaw-enterprise/contracts").DriverCapability,
-            driverId: selection.id,
-            implementation: selection.implementation,
-            definition: selection.definition,
-          },
-        ]
-      : [],
-  );
+  return Object.entries(selections).flatMap(([capability, selection]) => {
+    if (!("definition" in selection)) {
+      return [];
+    }
+    const { startupConfiguration } = selection;
+    return [
+      {
+        capability: capability as import("@openclaw-enterprise/contracts").DriverCapability,
+        driverId: selection.id,
+        implementation: selection.implementation,
+        definition: selection.definition,
+        ...(startupConfiguration === undefined ? {} : { startupConfiguration }),
+      },
+    ];
+  });
 }
 
 /**
@@ -543,6 +550,13 @@ function selected(
     definition: driver,
   });
   const validated = object(requireConfiguration(driver, configuration), `${path}.configuration`);
+  let startupConfiguration: Readonly<Record<string, unknown>> | undefined;
+  try {
+    // Capture accepted values before a factory can mutate its own configuration input.
+    startupConfiguration = serializeStartupConfiguration(schema, validated);
+  } catch {
+    // Unsupported inspection remains unavailable; never fall back to raw values or exception text.
+  }
   return Object.freeze({
     id,
     implementation,
@@ -551,6 +565,7 @@ function selected(
       : {}),
     configuration: validated,
     definition: driver,
+    ...(startupConfiguration === undefined ? {} : { startupConfiguration }),
   });
 }
 

@@ -956,20 +956,122 @@ export function installFixture(scenario, evidence) {
     if (path === "/installation/driver-configurations" && method === "GET") {
       return response({
         configurations: [
+          ...(scenario.installationNestedValues
+            ? [
+                {
+                  capability: "configuration",
+                  driverId: "config-example-package",
+                  implementation: "example-configuration-driver",
+                  scope: "installation",
+                  key: "startup",
+                  binding: "installation-startup",
+                  configurationSchema: {
+                    type: "object",
+                    properties: { operatorResources: { writeOnly: true } },
+                  },
+                  startupConfiguration: {
+                    endpoint: "/configuration/read",
+                    optionalValues: {
+                      enabled: false,
+                      capacity: 0,
+                      fallback: null,
+                      emptyText: "",
+                      list: [],
+                      record: {},
+                      ["customfield".repeat(8)]: "configurationvalue".repeat(20),
+                      nested: Array.from({ length: 12 }).reduce(
+                        (value, _, index) => ({ [`level${index + 1}`]: [value] }),
+                        "Nested leaf",
+                      ),
+                    },
+                    operatorResources: "[redacted]",
+                    workerGroups: Array.from({ length: 8 }, (_, index) => ({
+                      name: `Group ${index + 1}`,
+                      routes: ["/workspace/read", "/workspace/write"],
+                      description:
+                        index === 0
+                          ? "<b>Literal configuration text</b>"
+                          : "Configured worker group",
+                    })),
+                  },
+                  actions: {},
+                },
+              ]
+            : []),
           {
-            capability: "sandbox",
-            driverId: "sandbox-story",
-            implementation: "storybook-driver",
+            capability: "credential_gateway",
+            driverId: "credential-gateway-openshell",
+            implementation: "openshell",
             scope: "installation",
             key: "startup",
             binding: "installation-startup",
             configurationSchema: {
               type: "object",
+              ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
+              required: ["binaries"],
               additionalProperties: false,
               properties: {
-                endpoint: { type: "string", description: "Operator-managed endpoint." },
+                binaries: { type: "array", items: { type: "string" }, minItems: 1 },
+                toolBinaries: { type: "array", items: { type: "string" }, minItems: 1 },
               },
             },
+            ...(scenario.installationValuesUnavailable
+              ? {}
+              : {
+                  startupConfiguration: {
+                    binaries: ["/usr/bin/git", "/usr/bin/curl"],
+                    toolBinaries: ["/usr/bin/python3"],
+                  },
+                }),
+            actions: {},
+          },
+          {
+            capability: "sandbox",
+            driverId: "sandbox-openshell",
+            implementation: "openshell",
+            scope: "installation",
+            key: "startup",
+            binding: "installation-startup",
+            configurationSchema: {
+              type: "object",
+              ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
+              additionalProperties: false,
+              properties: {
+                gateway: {
+                  type: "object",
+                  properties: {
+                    workspaceMode: { type: "string" },
+                    operatorWorkspaceResources: { type: "array", writeOnly: true },
+                  },
+                },
+              },
+            },
+            ...(scenario.installationValuesUnavailable
+              ? {}
+              : {
+                  startupConfiguration: {
+                    gateway: {
+                      workspaceMode: "operator",
+                      operatorWorkspaceResources: "[redacted]",
+                    },
+                  },
+                }),
+            actions: {},
+          },
+          {
+            capability: "iam",
+            driverId: "native-iam",
+            implementation: "native",
+            scope: "installation",
+            key: "startup",
+            binding: "installation-startup",
+            configurationSchema: {
+              type: "object",
+              ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
+              additionalProperties: false,
+              properties: {},
+            },
+            ...(scenario.installationValuesUnavailable ? {} : { startupConfiguration: {} }),
             actions: {},
           },
         ],

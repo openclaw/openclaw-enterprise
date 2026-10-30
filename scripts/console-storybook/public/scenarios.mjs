@@ -1807,13 +1807,68 @@ export const scenarios = {
     name: "Account",
     path: "/console/settings",
     description:
-      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect read-only Installation Driver schemas. There are no editable settings in this release.",
+      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect accepted startup fields or the same values as JSON, including redacted sections and an empty object. There are no editable settings in this release.",
     steps: [
       "Check that the page has no Namespace selector and that the account card shows initials, name and email.",
-      "Inspect Installation Driver schemas below the cards; no startup values or mutation controls are shown.",
+      "Expand each Installation Driver below the cards. Read the human labels and raw keys; Credential Gateway shows binary paths, Sandbox shows nested fields and hidden resources, and IAM has no visible fields. Switch Fields / JSON and confirm the expanded groups stay open.",
       "Choose Sign out in the Session card: “Signing out…” appears, then the sign-in page.",
-      "At a phone width, Sign out spans the Session card.",
+      "On a long page, scroll to the bottom and check that the sidebar background and operator profile reach it. At phone width, values fit and the existing navigation drawer still opens.",
     ],
+  },
+  settingsDriverNestedValues: {
+    group: "Pages/Settings",
+    name: "Nested Driver values",
+    path: "/console/settings",
+    installationNestedValues: true,
+    description:
+      "A simulated package Driver has nested records, arrays, empty values and a writeOnly field. The API fixture returns its redaction marker, and the production renderer handles the safe JSON without a bundled schema-specific form. The expanded page exercises the shared sidebar beyond one viewport.",
+    steps: [
+      "Expand Configuration. Inspect groups, nested records, false, zero, null, empty arrays and objects, literal markup text, and the hidden value.",
+      "Switch to JSON and back to Fields. The values and expanded state remain unchanged.",
+      "Scroll to the bottom: the navigation background and profile reach the page bottom. At phone width, open and close the navigation drawer and check that fields fit the viewport.",
+    ],
+  },
+  settingsDriverValuesUnavailable: {
+    group: "Pages/Settings",
+    name: "Driver values unavailable",
+    path: "/console/settings",
+    installationValuesUnavailable: true,
+    description:
+      "These simulated Driver schemas mark the whole startup object writeOnly, so the API omits its values. Each expanded group explains that values are unavailable; schemas are not substituted.",
+    steps: ["Expand a Driver and check the unavailable message. No JSON Schema is shown."],
+  },
+  settingsDriverConfigurationsEmpty: {
+    group: "Pages/Settings",
+    name: "No Driver configurations",
+    path: "/console/settings",
+    rules: [{ path: "/installation/driver-configurations", data: { configurations: [] } }],
+    description: "Installation discovery succeeds without any selected Driver configurations.",
+    steps: ["Check the empty message beneath the Installation Driver configuration heading."],
+  },
+  settingsDriverConfigurationsLoading: {
+    group: "Pages/Settings",
+    name: "Driver configuration loading",
+    path: "/console/settings",
+    rules: [{ path: "/installation/driver-configurations", hold: true }],
+    description:
+      "Installation discovery is pending. The section shows a loading message until the normal client timeout reports the failed read.",
+  },
+  settingsDriverConfigurationsFailure: {
+    group: "Pages/Settings",
+    name: "Driver configuration unavailable",
+    path: "/console/settings",
+    rules: [{ path: "/installation/driver-configurations", status: 503 }],
+    description:
+      "Installation discovery fails. The section reports the read failure without exposing values or showing a schema fallback.",
+  },
+  settingsDriverConfigurationsDenied: {
+    group: "Pages/Settings",
+    name: "Driver configuration denied",
+    path: "/console/settings",
+    readOnlyPermissionSummary: true,
+    rules: [{ path: "/installation/driver-configurations", status: 403, code: "FORBIDDEN" }],
+    description:
+      "An account without Installation administration can still use Settings. The protected Driver section is absent after the refusal.",
   },
   settingsNameIsEmail: {
     group: "Pages/Settings",

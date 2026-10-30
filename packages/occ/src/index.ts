@@ -8751,6 +8751,9 @@ export class OpenClawController {
           scope: entry.contribution.scope,
           key: entry.contribution.key,
           configurationSchema: entry.contribution.configurationSchema,
+          ...(entry.startupConfiguration === undefined
+            ? {}
+            : { startupConfiguration: entry.startupConfiguration }),
           binding: entry.binding,
           actions: {},
         }));

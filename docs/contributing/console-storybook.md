@@ -178,6 +178,12 @@ Moved to [Agent workflows](console-storybook-agent-workflows.md#delete).
 
 ## Maintain coverage
 
+In **Pages/Settings → Nested Driver values**, expand a Driver and switch between
+**Fields** and **JSON**. Confirm that nesting, arrays, empty values, and redaction
+stay intact and the open groups remain open. Scroll the long page to verify that
+the sidebar and account control reach the bottom. Repeat on a phone and open the
+navigation drawer; the page must not scroll horizontally.
+
 `scripts/console-storybook/` installs from its own manifest and lockfile under the
 seven-day release-age policy, independently of root dependencies.
 

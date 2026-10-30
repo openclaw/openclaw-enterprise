@@ -6,7 +6,7 @@ author: Patrick-Erichsen
 
 # Proposal: Declare standalone web search for a custom Codex endpoint
 
-- **ID:** RFC-0025
+- **ID:** RFC-0026
 - **Created:** 2026-10-29
 - **Last updated:** 2026-10-29
 
