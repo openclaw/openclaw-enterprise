@@ -5093,6 +5093,64 @@ test("Agent save hints name a denied Harness Secret without making Configuration
   assert.equal(await page.getByText(reason, { exact: true }).count(), 0);
 });
 
+for (const heldMetadata of [false, true]) {
+  test(`permission refocus replaces denied Secret names${heldMetadata ? " after obsolete metadata completes" : ""}`, async (t) => {
+    const { fixture, namespace, agent, member, app, path, configurationPath } =
+      await replaceSecretFixture(t, `Rechecked names ${heldMetadata}`, { agentUpdate: true });
+    const configuration = await fixture.request("GET", configurationPath);
+    const botId = configuration.data.secretBindings.SLACK_BOT_TOKEN.source.id;
+    const { page } = await newPage(t, fixture);
+    const held = heldMetadata
+      ? await holdRequests(
+          t,
+          page,
+          `${fixture.origin}/namespaces/${namespace.id}/secrets/${botId}`,
+          { method: "GET", once: true, afterServer: true },
+        )
+      : null;
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"),
+      member.credentials,
+    );
+    if (held) {
+      await held.requested;
+    } else {
+      await page
+        .getByText(`${AGENT_SOURCES_DENIED} Missing Secret operate on Admin bot token.`, {
+          exact: true,
+        })
+        .waitFor();
+    }
+    // An administrator swaps exact-resource grants while the member's page stays mounted.
+    grantSecretOperate(fixture, namespace.id, member.principal, [botId]);
+    const index = fixture.policy.bindings.findIndex(
+      (binding) => binding.resourceId === app.id && binding.subjectId === member.principal.id,
+    );
+    assert.notEqual(index, -1);
+    fixture.policy.bindings.splice(index, 1);
+    const permission = page.waitForResponse((response) =>
+      response.url().endsWith(`${path}/permissions`),
+    );
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    assert.equal((await (await permission).json()).data.agentSourcesOperate, false);
+    const reason = `${AGENT_SOURCES_DENIED} Missing Secret operate on Admin app token.`;
+    await page.getByText(reason, { exact: true }).waitFor();
+    if (held) {
+      const oldResponse = page.waitForResponse((response) =>
+        response.url().endsWith(`/secrets/${botId}`),
+      );
+      held.release();
+      await oldResponse;
+      await nextFrames(page);
+      assert.equal(await page.getByText(reason, { exact: true }).count(), 1);
+    }
+    await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+    await page.getByText(reason, { exact: true }).waitFor();
+  });
+}
+
 for (const tab of ["plugins", "credentials"]) {
   test(`late ${tab} Secret names preserve the focused saved view`, async (t) => {
     const { fixture, namespace, agent, member, own, configurationPath } =

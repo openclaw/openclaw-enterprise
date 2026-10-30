@@ -674,6 +674,8 @@ export async function renderAgentDetail(
     callerPermissions?.configurationSecretsOperate === false;
   let configurationDeniedSecretNames: readonly string[] = [];
   let agentDeniedSecretNames: readonly string[] = [];
+  let agentNamesGeneration = 0;
+  let refreshDeniedSecretNames: (() => void) | undefined;
   const agentSaveReason = (permissions = callerPermissions) => {
     if (agentSaveGap(permissions, agent) !== "sources" || agentDeniedSecretNames.length === 0) {
       return agentSaveDenial(permissions, agent);
@@ -3210,10 +3212,12 @@ export async function renderAgentDetail(
     }
     function readDeploySecretsDenied(options?: { fresh?: boolean }) {
       const read = ++deploySecretsRead;
+      const namesGeneration = agentNamesGeneration;
       return boundSecretsDenied(options).then(
         (denied) => {
           if (
             generation === detailsGeneration &&
+            namesGeneration === agentNamesGeneration &&
             read === deploySecretsRead &&
             context.isCurrent()
           ) {
@@ -3227,6 +3231,15 @@ export async function renderAgentDetail(
         },
         () => deploySecretsDenied,
       );
+    }
+    if (generation === detailsGeneration) {
+      refreshDeniedSecretNames = () => {
+        if (generation === detailsGeneration && context.isCurrent()) {
+          deploySecretsDenied = { names: [], unreadable: 0 };
+          updateDeployControls();
+          void readDeploySecretsDenied();
+        }
+      };
     }
     function editedSubject() {
       if (selectedTab === "repositories") {
@@ -3961,6 +3974,12 @@ export async function renderAgentDetail(
 
   // Reads the caller's permission answer again; a failed read keeps the last answer.
   function rereadPermissions() {
+    // Rechecking grants invalidates names immediately. The admitted answer refreshes the
+    // existing authorized Secret reads; an older metadata completion cannot restore them.
+    ++agentNamesGeneration;
+    agentDeniedSecretNames = [];
+    configurationDeniedSecretNames = [];
+    redrawConfigurationAccessViews();
     secretsOperateAnswer.reset();
     const previous = latestPermissionsRead;
     const reread = ++permissionsRereads;
@@ -3973,6 +3992,9 @@ export async function renderAgentDetail(
         if (context.isCurrent() && reread > appliedReread) {
           appliedReread = reread;
           callerPermissions = permissions;
+          if (permissions && reread === permissionsRereads) {
+            refreshDeniedSecretNames?.();
+          }
           // Views built from now on take this answer; shown ones follow it below (finding 2470).
           // While a newer reread is in flight, views built meanwhile wait for it instead, so
           // Plugins sends no read it denies (findings D795, 2902). A newer reread that fails
