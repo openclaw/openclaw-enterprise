@@ -44,6 +44,20 @@ export function githubTokenConfigurationData(overrides = {}) {
   };
 }
 
+// A session's client settings (client.json) for `repository` behind the fixture gateway
+// origin. `overrides` adds or replaces settings, such as pushRefAllowlist.
+export function repositoryClientData({ repository = "example/project", ...overrides } = {}) {
+  return {
+    gatewayOrigin: "https://credentials.example.test",
+    gitRemote: `https://credentials.example.test/${repository}.git`,
+    gitUsername: "gateway-session",
+    canonicalApiHost: "github.com",
+    apiHost: "credentials.example.test",
+    repository,
+    ...overrides,
+  };
+}
+
 // Keep raw targets byte-for-byte, including deliberately invalid protocol inputs.
 export function requestHead(
   method,

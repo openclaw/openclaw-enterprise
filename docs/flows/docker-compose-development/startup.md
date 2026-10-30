@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-28
-last_updated_session: authoring-run/fc103f5f-f130-4239-a879-78ed1d7e6602
+updated: 2026-10-29
+last_updated_session: authoring-run/88c984db-3b18-420c-acfc-7e329a46af89
 ---
 
 # Compose development startup
@@ -288,7 +288,14 @@ without the engine socket.
 
 `internal/occdev/kubernetes.go:engineImageReference` resolves engine-recorded names,
 including Podman `localhost/` and Docker Hub, defaults omitted tags to `:latest`,
-and rejects missing or ambiguous matches. `importDevelopmentImage` resolves
+and rejects missing or ambiguous matches. Digest-pinned sources are usually
+multi-arch lists that Docker's containerd image store (Docker 29) can neither
+save with `--platform` nor export completely, so
+`internal/occdev/k3d_import.go:resolveDevelopmentImageSource` re-points the
+staging tag at the registry's platform child and saves a complete
+single-platform archive; unlisted sources, and a child pull that fails, keep
+the pinned reference and filter.
+`importDevelopmentImage` resolves
 cluster digests. Both startup paths call
 `internal/occdev/status_proxy_k3d.go:developmentStatusProxySource` before
 `writeInstallation`; node inventory retains caller context outside polling.
@@ -396,6 +403,8 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 18:57: Resolved the manifest-list platform child before saving images. (authoring-run/88c984db-3b18-420c-acfc-7e329a46af89 - 5a61a08eec78fbae99e21b858af5c8dd5911ba03)
 
 - 2026-10-28 09:41: Normalize attached Podman file options for startup and cleanup, retaining file validation. (authoring-run/fc103f5f-f130-4239-a879-78ed1d7e6602 - 8eea685f0303ad004e222fc4399a019a9486dcb3)
 

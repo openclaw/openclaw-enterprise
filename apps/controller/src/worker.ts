@@ -6,6 +6,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
+import { closeResources } from "./composition/close-resources.ts";
 import { installationDriverConfigurations } from "./composition/installation-config.ts";
 import {
   DriverConfigurationRegistry,
@@ -1471,8 +1472,8 @@ export class ControllerWorker {
     this.stopping = true;
     this.abort.abort();
     await this.loop;
-    await this.protectedDriver?.close();
-    await this.state.close();
+    // A failed protected Driver close must not leave the database pool open.
+    await closeResources(this.protectedDriver, this.state);
     this.emit({ event: "worker.stopped" });
   }
 

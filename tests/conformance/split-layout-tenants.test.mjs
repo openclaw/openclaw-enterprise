@@ -764,3 +764,89 @@ test("remap replaces exact IDs only, and the retired ChatGPT method becomes a se
   const runtime = { method: "runtime" };
   assert.equal(currentHarnessAuth(runtime, "ns_old"), runtime);
 });
+
+test("import refuses non-array destination inventories before adopting a populated Namespace", async () => {
+  const fixture = await createFixture();
+  const seeded = await seedTenant(fixture);
+  const exported = await exportTenants(fixture.api);
+  const bundle = {
+    ...exported,
+    namespaces: exported.namespaces.filter(({ id }) => id === seeded.namespace.id),
+  };
+  const destination = await created(fixture, "/namespaces", { name: "existing-destination" });
+  await markReady(fixture, destination.id);
+  const base = `/namespaces/${destination.id}`;
+  const configuration = await created(fixture, `${base}/configurations`, {
+    kind: "agent",
+    values: { model: "destination-model" },
+  });
+  const existingAgent = await created(fixture, `${base}/agents`, {
+    name: "existing-agent",
+    configurationId: configuration.id,
+  });
+  assert.deepEqual((await fixture.api.expect("GET", `${base}/secrets`)).data, []);
+  const before = (await fixture.api.expect("GET", `${base}/agents`)).data;
+
+  for (const data of [null, "", "not-an-array", {}, 0, false]) {
+    const state = { ids: {}, deployed: [] };
+    let saves = 0;
+    let writes = 0;
+    const api = createOccApi({
+      baseUrl: "http://127.0.0.1",
+      async fetchImpl(url, init) {
+        if (init.method !== "GET") {
+          writes += 1;
+        }
+        const response = await asAdministrator(fixture)(url, init);
+        if (init.method !== "GET" || new URL(url).pathname !== `${base}/agents`) {
+          return response;
+        }
+        assert.equal(response.status, 200);
+        const payload = await response.json();
+        assert.ok(payload.data.some(({ id }) => id === existingAgent.id));
+        return Response.json({ ...payload, data }, { status: 200 });
+      },
+    });
+    await assert.rejects(
+      importTenants(
+        api,
+        bundle,
+        { "team-a": { "model-key": "synthetic-value" } },
+        {
+          state,
+          save: () => {
+            saves += 1;
+          },
+          deploy: false,
+          names: { "team-a": destination.name },
+        },
+      ),
+      {
+        message: `GET ${base}/agents: invalid OCC collection response; expected an array in data. Keep the original bundle and map, if present. Correct the OCC endpoint and reconcile any earlier writes before resuming the original operation.`,
+      },
+    );
+    assert.equal(saves, 0);
+    assert.equal(writes, 0);
+    assert.deepEqual(state, { ids: {}, deployed: [] });
+    assert.deepEqual((await fixture.api.expect("GET", `${base}/agents`)).data, before);
+  }
+
+  // A genuinely empty, ready destination still follows the normal import path.
+  const empty = await created(fixture, "/namespaces", { name: "empty-destination" });
+  await markReady(fixture, empty.id);
+  const state = { ids: {}, deployed: [] };
+  const result = await importTenants(
+    fixture.api,
+    bundle,
+    { "team-a": { "model-key": "synthetic-value" } },
+    {
+      state,
+      deploy: false,
+      names: { "team-a": empty.name },
+    },
+  );
+  assert.equal(result.complete, true);
+  assert.equal(state.ids[seeded.namespace.id], empty.id);
+  assert.notEqual(state.ids[seeded.agent.id], existingAgent.id);
+  assert.deepEqual((await fixture.api.expect("GET", `${base}/agents`)).data, before);
+});

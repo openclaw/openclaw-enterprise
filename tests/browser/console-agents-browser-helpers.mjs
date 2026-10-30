@@ -1228,6 +1228,69 @@ export function hasFocus(locator) {
   return locator.evaluate((node) => node === globalThis.document.activeElement);
 }
 
+// A natively disabled control is out of the Tab order, so a keyboard reader never reaches it or
+// its reason (findings 2878, 2899). An unavailable control with a reason is aria-disabled
+// instead: Tab reaches it, it is described by the reason, and Enter, Space, a click or (in a
+// select or text field) an arrow key or typing does nothing. Nothing runs: no handler changes its
+// reason or moves focus, no form submits, no checkbox flips, no select or field changes its value,
+// and nothing is written.
+export async function expectReachableReason(page, control, reason) {
+  await control.waitFor();
+  await page.evaluate(() => {
+    globalThis.document.activeElement?.blur();
+    globalThis.unavailableActivations = [];
+    for (const type of ["submit", "change", "input"]) {
+      globalThis.document.addEventListener(
+        type,
+        () => globalThis.unavailableActivations.push(type),
+        { capture: true },
+      );
+    }
+  });
+  let presses = 0;
+  while (!(await hasFocus(control))) {
+    assert.ok(++presses <= 200, `Tab reaches ${reason}`);
+    await page.keyboard.press("Tab");
+  }
+  const state = () =>
+    control.evaluate((node) => ({
+      focused: node === globalThis.document.activeElement,
+      disabled: node.disabled,
+      ariaDisabled: node.getAttribute("aria-disabled"),
+      checked: node.type === "checkbox" ? node.checked : null,
+      value: node.value,
+    }));
+  const before = await state();
+  assert.deepEqual(before, { ...before, focused: true, disabled: false, ariaDisabled: "true" });
+  assert.equal(await accessibleDescription(control), reason);
+  const editable = await control.evaluate(
+    (node) => node.localName === "select" || (node.localName === "input" && node.type === "text"),
+  );
+  const writes = [];
+  const onRequest = (request) => {
+    if (!["GET", "HEAD"].includes(request.method())) {
+      writes.push(`${request.method()} ${request.url()}`);
+    }
+  };
+  page.on("request", onRequest);
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Space");
+  if (editable) {
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.type("x");
+    // Deleting is an edit too, and typing does not cover it.
+    await page.keyboard.press("Backspace");
+    await page.keyboard.press("Delete");
+  }
+  // A mouse press too: force skips Playwright's own wait for an enabled control.
+  await control.click({ force: true });
+  page.off("request", onRequest);
+  assert.deepEqual(await state(), before);
+  assert.equal(await accessibleDescription(control), reason);
+  assert.deepEqual(await page.evaluate(() => globalThis.unavailableActivations), []);
+  assert.deepEqual(writes, []);
+}
+
 // Clicks `close`, a control that closes its dialog, and focuses `elsewhere` in the same task. The
 // dialog's close event fires a task later, so this is the reader who has already moved on, for
 // example to a field they type in (finding 2862). Resolves after the dialog's own close handlers

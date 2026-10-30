@@ -8,8 +8,8 @@ you are changing.
 ## 1. Choose the contract
 
 The shared TypeScript contracts define the methods and data each Driver exchanges
-with OCC. The [base Driver types](../../packages/contracts/src/driver.ts) are
-separate from each capability's interface file. Each reference links its
+with OCC. The [base Driver types](../../packages/contracts/src/drivers/index.ts) are
+separate from each capability's `drivers/<capability>/index.ts`. Each reference links its
 interface file, explains who calls those methods, what each implementation must
 enforce, and which failures must stop the operation:
 

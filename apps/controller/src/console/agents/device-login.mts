@@ -96,12 +96,15 @@ export function createDeviceLogin({
   agentId,
   initial,
   onChange,
+  onStartSettled,
   hint,
 }: {
   context: AgentAccessContext;
   agentId?: string | undefined;
   initial?: DeviceLogin | null | undefined;
   onChange?(source: CredentialSourceReference | null): void;
+  // Called once a start's outcome is settled, so a form no longer shown can record it.
+  onStartSettled?(): void;
   hint: string;
 }) {
   const base = `${namespacePath(context.namespaceId)}/agents${agentId ? `/${encodeURIComponent(agentId)}` : ""}/device-authorizations`;
@@ -206,29 +209,42 @@ export function createDeviceLogin({
     if (busy || disabled || login || !active) {
       return;
     }
+    // Navigation captures the draft before aborting the view's requests. Retain the
+    // attempt now, because a committed start may lose its response when the view leaves.
+    login = { status: "start_unconfirmed" };
     busy = true;
     error = "";
     update();
+    // A reply that lands after the reader left this Agent tab still settles the start: a kept
+    // tab shows it on return (finding 2980), and the draft records it for a rebuilt tab (finding
+    // 2981). Leaving the page drops the reply.
+    const settles = () => context.isPageCurrent?.() ?? context.isCurrent();
     try {
-      const result = await context.request(base, { method: "POST", body: { harnessId: "codex" } });
-      if (context.isCurrent()) {
+      const result = await context.request(base, {
+        method: "POST",
+        body: { harnessId: "codex" },
+        keepsTab: true,
+      });
+      if (settles()) {
         accept(result);
       }
     } catch (failure) {
-      if (context.isCurrent()) {
+      if (settles()) {
         const { status } = requestFailure(failure);
         if (status === undefined || (status >= 200 && status < 300)) {
           // A lost or unusable successful reply can follow a committed start. Never repeat it.
           login = { status: "start_unconfirmed" };
           onChange?.(null);
         } else {
+          login = null;
           fail(failure, "start");
         }
       }
     } finally {
       busy = false;
-      if (context.isCurrent()) {
+      if (settles()) {
         update();
+        onStartSettled?.();
       }
     }
   }
@@ -255,6 +271,7 @@ export function createDeviceLogin({
       const result = await context.request(`${base}/${encodeURIComponent(login.session.id)}/poll`, {
         method: "POST",
         body: {},
+        showsOutcome: true,
       });
       if (context.isCurrent()) {
         accept(result);
@@ -284,6 +301,7 @@ export function createDeviceLogin({
       await context.request(`${base}/${encodeURIComponent(discarded.session.id)}`, {
         method: "DELETE",
         expectedStatus: 204,
+        showsOutcome: true,
       });
     } catch (failure) {
       login = discarded;

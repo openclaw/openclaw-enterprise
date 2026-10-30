@@ -1,5 +1,5 @@
-import type { Driver } from "./driver.ts";
-import type { ServiceAccount, ServiceAccountCredential } from "./index.ts";
+import type { Driver } from "../index.ts";
+import type { ServiceAccount, ServiceAccountCredential } from "../../index.ts";
 
 export interface ServiceAccountDriver extends Driver {
   readonly capability: "service_account";

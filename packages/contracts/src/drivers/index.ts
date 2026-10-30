@@ -1,19 +1,19 @@
-import type { ChannelDriver } from "./channel.ts";
-import type { ComputeDriver, ComputeLifecycleHooks } from "./compute.ts";
+import type { ChannelDriver } from "./channel/index.ts";
+import type { ComputeDriver, ComputeLifecycleHooks } from "./compute/index.ts";
 import type {
   ConfigurationContribution,
   ConfigurationDefinition,
-} from "./configuration-definition.ts";
-import type { ConfigurationDriver } from "./configuration.ts";
-import type { CredentialGatewayDriver } from "./credential-gateway.ts";
-import type { CredentialProxyDriver } from "./credential-proxy.ts";
-import type { CredentialRefreshDriver } from "./credential-refresh.ts";
-import type { IAMDriver } from "./iam.ts";
-import type { PluginDriver } from "./plugin.ts";
-import type { RepositoryPolicyDriver } from "./repo.ts";
-import type { SandboxDriver } from "./sandbox.ts";
-import type { SecretDriver } from "./secret.ts";
-import type { ServiceAccountDriver } from "./service-account.ts";
+} from "../configuration-definition.ts";
+import type { ConfigurationDriver } from "./configuration/index.ts";
+import type { CredentialGatewayDriver } from "./credential-gateway/index.ts";
+import type { CredentialProxyDriver } from "./credential-proxy/index.ts";
+import type { CredentialRefreshDriver } from "./credential-refresh/index.ts";
+import type { IAMDriver } from "./iam/index.ts";
+import type { PluginDriver } from "./plugin/index.ts";
+import type { RepositoryPolicyDriver } from "./repo/index.ts";
+import type { SandboxDriver } from "./sandbox/index.ts";
+import type { SecretDriver } from "./secret/index.ts";
+import type { ServiceAccountDriver } from "./service-account/index.ts";
 
 export const DRIVER_CAPABILITIES = Object.freeze([
   "iam",

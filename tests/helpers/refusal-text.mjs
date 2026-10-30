@@ -143,9 +143,6 @@ export const AGENT_CREATE_RESTRICTED =
 // Secrets and Namespaces follow the same rule: Namespace Roles cannot grant people create.
 export const SECRET_CREATE_DENIED =
   "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.";
-// Create Agent for a member whose Installation read and Agent create are both refused (create.mts).
-export const AGENT_CREATE_INSTALLATION_DENIED =
-  "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent.";
 // The same refused Installation read when the Namespace permission read failed (finding 2110).
 export const AGENT_CREATE_PERMISSIONS_UNREAD =
   "Your permissions in this Namespace could not be checked, and Installation-wide capabilities are not readable with your access. Retry the permission check before creating an Agent.";
@@ -191,6 +188,8 @@ export const STOP_CONFIRMATION = `This interrupts the current runtime gateway an
 export const STOP_FIRST_DEPLOYMENT_CONFIRMATION = `No version is serving yet, so this cancels the deployment in progress. ${STOP_KEEPS}`;
 // No version is selected and the page could not read the latest deployment's outcome.
 export const STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION = `This cancels a deployment in progress or, if a version already started, interrupts its runtime gateway and ends any reply in progress. ${STOP_KEEPS}`;
+// The Agent is already requested to stop: Request Stop again only repeats the request (D815).
+export const STOP_REPEAT_CONFIRMATION = `This Agent is already requested to stop. This sends the stop request again; use it if an earlier stop did not finish. ${STOP_KEEPS}`;
 // The Agent page's Stop row, by whether Stop would cancel a first deployment in progress.
 export const STOP_CANCELS_FIRST_DEPLOYMENT =
   "Cancels the deployment in progress. The Agent stays and can be deployed again.";

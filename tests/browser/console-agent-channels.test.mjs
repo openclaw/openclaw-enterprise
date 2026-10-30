@@ -6,10 +6,12 @@ import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   accessBindingPostRequests,
+  AGENT_READ,
   apiRequests,
   detailUrl,
   expectNoText,
   fileBrowser,
+  grantInstallationAdministration,
   holdRequests,
   login,
   MEMBER_WRITE,
@@ -24,7 +26,9 @@ import {
   setSlackSelection,
   slackSelectionValue,
   statusTone,
+  trackSettledFetches,
   waitForEnabled,
+  waitForIdleFetches,
   waitForInputValue,
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
@@ -41,6 +45,16 @@ const GRANT_REFUSED =
   "Configuration saved, but this Agent cannot use the saved Slack Secret until it is granted access. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Retry Secret access.";
 const GRANT_MISSING =
   "This Agent has no access to a bound Slack Secret, so deploying it would be refused. Select Retry Secret access to grant it.";
+// The same missing grant, read by a session that is offered no Retry.
+const GRANT_MISSING_ASK =
+  "This Agent has no access to a bound Slack Secret, so deploying it would be refused. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Retry Secret access.";
+// A grant request answered 400/404/409/429 left the grant unconfirmed; Retry Secret access sends it
+// again.
+const GRANT_UNCONFIRMED =
+  "Configuration saved, but Secret access grants could not be confirmed. Select Retry Secret access; if it is refused, ask an Installation administrator.";
+// The same unconfirmed grant, read by a session that is offered no Retry (finding 2949).
+const GRANT_UNCONFIRMED_ASK =
+  "Configuration saved, but Secret access grants could not be confirmed. Confirming access needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Retry Secret access.";
 // A session known not to administer the Installation sent no grant (finding 2263).
 const GRANT_UNVERIFIED =
   "Configuration saved, but this session did not verify that this Agent can use the saved Slack Secret. Granting access needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Retry Secret access.";
@@ -1198,6 +1212,114 @@ describe("Agent channels", { concurrency: 3 }, () => {
     });
   }
 
+  // An Installation administrator's page reads the IAM policy when it loads and finds a bound Slack
+  // Secret the Agent has no grant for. Her administration ends before she opens Channels: the
+  // permission answer now refuses her Configuration update, so neither tab offers Retry Secret
+  // access, and the warning names who grants it instead of the Retry she no longer has.
+  test("A missing Slack Secret grant names the administrator once a revoke removes Retry", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "Revoked Slack grant");
+    const { agent } = await createSlackAgent(fixture, namespace, {
+      name: "Revoked Slack Grant Agent",
+      slug: "revoked-slack-grant",
+      secretBindings: await slackTokenBindings(fixture, namespace, "Revoked grant"),
+    });
+    // The Namespace's IAM policy lists no grant of the bound Slack Secrets to the Agent.
+    for (const { id } of await fixture.addedAccessBindings(namespace.id)) {
+      const removed = await fixture.request(
+        "DELETE",
+        `/namespaces/${namespace.id}/iam/access-bindings/${id}`,
+      );
+      assert.equal(removed.status, 204);
+    }
+    const account = await fixture.createNamespaceMember("revoked-grant", namespace.id, AGENT_READ);
+    const revoke = grantInstallationAdministration(fixture, account.principal);
+    const { page } = await newPage(t, fixture, { browser });
+    await trackSettledFetches(page);
+    const requests = apiRequests(page, fixture.origin);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      account.credentials,
+    );
+    await page.getByRole("heading", { name: "Revoked Slack Grant Agent" }).waitFor();
+    await waitForIdleFetches(page);
+    // The page load read the policy as an administrator.
+    assert.ok(requests.some(({ path }) => path.endsWith("/iam/access-bindings")));
+
+    revoke();
+    await page.getByRole("tab", { name: "Channels", exact: true }).click();
+    await page.getByText(GRANT_MISSING_ASK, { exact: true }).waitFor();
+    await expectNoText(page, GRANT_MISSING);
+    await page.getByRole("link", { name: "Open Credentials" }).click();
+    await page.locator(".channel-secrets").getByText(GRANT_MISSING_ASK, { exact: true }).waitFor();
+    await expectNoText(page, GRANT_MISSING);
+    assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).count(), 0);
+  });
+
+  // Finding 2949. An Installation administrator saves a Slack Secret whose grant request is rate
+  // limited, so the grant stays unconfirmed and she is offered Retry Secret access. Her
+  // administration then ends: the newer permission answer refuses her Configuration update, so
+  // neither tab offers Retry, and the shown warning is reworded in place to name who confirms it.
+  test("An unconfirmed Slack Secret grant names the administrator once a revoke removes Retry", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "Revoked unconfirmed grant");
+    const botSecret = await fixture.createSecret(
+      namespace.id,
+      "Unconfirmed grant bot token",
+      "hidden-unconfirmed-grant-bot",
+    );
+    const appSecret = await fixture.createSecret(
+      namespace.id,
+      "Unconfirmed grant app token",
+      "hidden-unconfirmed-grant-app",
+    );
+    const { agent } = await createSlackAgent(fixture, namespace, {
+      name: "Unconfirmed Grant Agent",
+      slug: "unconfirmed-grant",
+      secretBindings: {
+        SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
+      },
+    });
+    const account = await fixture.createNamespaceMember(
+      "unconfirmed-grant",
+      namespace.id,
+      AGENT_READ,
+    );
+    const revoke = grantInstallationAdministration(fixture, account.principal);
+    const { page } = await newPage(t, fixture, { browser });
+    await trackSettledFetches(page);
+    // A rate limit in front of the IAM API leaves the grant's outcome unconfirmed.
+    await failMethod(
+      page,
+      `**/namespaces/${namespace.id}/iam/access-bindings`,
+      "POST",
+      proxyErrorResponse(429),
+    );
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
+      account.credentials,
+    );
+    await page.getByRole("heading", { name: "Unconfirmed Grant Agent" }).waitFor();
+    await selectSecret(page, "Slack app token", appSecret);
+    await page.getByRole("button", { name: "Save channel Secrets" }).click();
+    // While she administers the Installation, the warning keeps offering the Retry she has.
+    const panel = page.locator(".channel-secrets");
+    await panel.getByText(GRANT_UNCONFIRMED, { exact: true }).waitFor();
+    await waitForEnabled(page.getByRole("button", { name: "Retry Secret access" }));
+    await waitForIdleFetches(page);
+
+    revoke();
+    await page.getByRole("tab", { name: "Channels", exact: true }).click();
+    await page.getByText(GRANT_UNCONFIRMED_ASK, { exact: true }).waitFor();
+    await expectNoText(page, GRANT_UNCONFIRMED);
+    await page.getByRole("link", { name: "Open Credentials" }).click();
+    await panel.getByText(GRANT_UNCONFIRMED_ASK, { exact: true }).waitFor();
+    await expectNoText(page, GRANT_UNCONFIRMED);
+    assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).count(), 0);
+  });
+
   // Finding 2623. A member's channel card names bound Secrets from the view's readable Secret
   // list, read once per view (finding 2619): a Secret the list leaves out shows as unlisted. A
   // Secret she creates inline is not in that list either, so binding it drops the list and the
@@ -1507,11 +1629,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
       requests.length = 0;
       await selectSecret(page, "Slack app token", replacementAppSecret);
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
-      const grantWarning = page.getByText(
-        grantStatus === 403
-          ? GRANT_REFUSED
-          : "Configuration saved, but Secret access grants could not be confirmed. Select Retry Secret access; if it is refused, ask an Installation administrator.",
-      );
+      const grantWarning = page.getByText(grantStatus === 403 ? GRANT_REFUSED : GRANT_UNCONFIRMED);
       await grantWarning.waitFor();
       // The Configuration saved, so the unconfirmed grant is a warning from the start, not a
       // refusal that turns into one when another Secret is picked (finding 2003).

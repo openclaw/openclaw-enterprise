@@ -155,6 +155,26 @@ export async function expectCreateAccess(page, { tone, body, retry = false }) {
   return access;
 }
 
+// Create Agent with a permission answer that refuses Agent create: the refusal takes the form's
+// place, with no start choices and no access block, whether the page loaded with that answer or a
+// permission retry brought it (findings 1521, 2908). Returns the refusal.
+export async function expectCreateRefused(page, body) {
+  const refusal = page.locator(".state-panel").filter({
+    has: page.getByRole("heading", { name: "Creating Agents is not available", exact: true }),
+  });
+  await refusal.waitFor();
+  assert.deepEqual(
+    await refusal.evaluate((node) => ({
+      status: [...node.querySelectorAll('[role="status"]')].map((line) => line.textContent),
+      form: node.ownerDocument.querySelectorAll("#create-agent-form").length,
+      access: node.ownerDocument.querySelectorAll("#create-agent-access").length,
+    })),
+    { status: [body], form: 0, access: 0 },
+  );
+  assert.equal(await page.getByRole("button", { name: /^Start (with|without) / }).count(), 0);
+  return refusal;
+}
+
 // Create Agent stays disabled while the form reads Installation capabilities and repository
 // choices. Waits until the live form has both; a retained preview of an earlier form is inert
 // and shows that form's settled reads. A capability retry keeps the failure text until it ends.
