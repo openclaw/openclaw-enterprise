@@ -86,7 +86,7 @@ With bundled Kubernetes Compute, select the trusted package under
 `drivers.sandbox.package`, then set `drivers.credential_proxy.id` to the
 same Driver ID and its `configuration` to `{}`. Configure the package once,
 under `drivers.sandbox.configuration`. The API and worker each load one
-registration and compare its identity with the admitted revision.
+registration and check its identity against the Agent revision.
 
 For protected repository Git, set `repository.id`,
 `repository.configuration.sessionDurationSeconds`, and `repository.preparedGitHub`.
@@ -157,20 +157,18 @@ them is deferred.
 
 ## Configuration definitions and discovery
 
-Each selected implementation supplies `ConfigurationDefinition<T>`: a serializable
-`configurationSchema` and synchronous `validateConfiguration(input)` semantic checks.
-The platform checks plain JSON input against the schema once per admission call,
-then passes an isolated, frozen copy typed as `Readonly<T>` to the Driver. The
-callback returns `readonly ErrorDetail[]`; an empty list means success. It cannot
-return replacement configuration. The platform returns the original input to the
-caller and retains the typed `ConfigurationResult<T>` for preview responses.
-Returning `undefined`, a data envelope, malformed field errors, or throwing fails
-closed. Independent constructor entry points still perform their own admission.
+Each selected implementation supplies a serializable `configurationSchema` and
+synchronous `validateConfiguration(input)` semantic checks. The platform checks
+plain JSON against the schema, then passes an isolated frozen copy to the Driver.
+The callback returns `readonly ErrorDetail[]`: empty means success; malformed
+results or throws fail closed. It cannot replace configuration. Admission returns
+the original input; previews use `ConfigurationResult<T>`.
+Independent constructors perform their own admission.
 
 Use JSON Schema 2020-12, or omit `$schema`. The installed TypeBox evaluator and its
 meta-schema check registration; unknown formats and unresolved references are
 refused. Validation does not coerce, insert defaults, strip fields, perform I/O,
-or transform submitted values. Diagnostics have bounded JSON Pointer paths,
+or transform submitted values. Diagnostics use JSON Pointer paths,
 uppercase codes, and safe messages. The platform returns at most 32 errors;
 submitted secrets and sensitive dynamic keys never belong in diagnostics.
 
@@ -183,9 +181,16 @@ fail registration. The current runtime binding is Sandbox
 [SandboxPolicy](../sandbox-policies.md). The Configuration Driver still owns
 native configuration rendering. The registry introduces no persistence layer.
 
-Installation administrators can inspect schemas in **Settings**, or call
-`GET /installation/driver-configurations`. This returns contextual descriptors
-without startup values, validators, or mutation actions. Agent discovery uses
+Administrators inspect values in **Settings → Installation
+Driver configuration** or `GET /installation/driver-configurations`.
+`startupConfiguration` serializes accepted input with `configurationSchema`
+before construction. Unmarked values remain visible.
+Drivers mark confidential fields and blocks `writeOnly: true`; serialization
+replaces each marked subtree with `[redacted]`, including its keys. Across
+references and branches, any true annotation wins, including ambiguous alternatives. Schema-valued `unevaluatedProperties`, `unevaluatedItems`, `contentSchema`, a write-only root, or inspection errors leave values unavailable,
+without raw fallback. `{}` means an empty object. No defaults or credential contents are added. Changes require startup configuration
+and restart. Descriptors retain schemas, without validators or mutation actions.
+Agent discovery uses
 `GET /namespaces/{namespaceId}/agents/{agentId}/driver-configurations`; the exact
 Agent and contribution owner's read permissions determine the returned sections.
 Owner bindings supply same-origin actions and availability. Actions always

@@ -29,6 +29,7 @@ import {
   setFieldError,
   setStatusTone,
   setText,
+  setUnavailable,
   statusBlock,
   validateFields,
   requestIdText,
@@ -2928,7 +2929,7 @@ function renderAgentForm(
     reloadRepositories.disabled = pending || outcomeUnknown;
     startNewDraft.disabled = pending || outcomeUnknown;
     repositories.setDisabled(planLocked || repositoryRetryLocked());
-    submit.disabled =
+    const submitUnavailable =
       (!savedAgent &&
         (repositoryRetryLocked() ||
           (requiresRepositories() && !repositories.hasValidSelection()) ||
@@ -2944,17 +2945,27 @@ function renderAgentForm(
       (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
       Boolean(provisioningAttempt);
     // Create Agent names why it waits: the status line above says so (finding 2007).
+    let submitReason: HTMLElement | null = null;
     if (
       !savedAgent &&
       capabilitiesSettled() &&
       (namespaceRefusesAgents() || (!selectedModeUnavailable() && provisioningWaitsForNamespace()))
     ) {
+      submitReason = capabilityStatus;
       submit.setAttribute("aria-describedby", capabilityStatus.id);
     } else if (capabilityDiscoveryDenied && !capabilitiesUnreadable && !accessStatus.hidden) {
       // The refused Installation read's block above the form says why Create waits (finding 2092).
+      submitReason = accessStatus;
       submit.setAttribute("aria-describedby", accessStatus.id);
     } else {
       submit.removeAttribute("aria-describedby");
+    }
+    // While that reason shows, an unavailable Create Agent stays in the Tab order (class of
+    // finding 2899). Without one (a pending create, say) it stays natively disabled, even with
+    // focus, as before.
+    setUnavailable(submit, submitUnavailable && submitReason !== null, submitReason);
+    if (submitUnavailable && submitReason === null) {
+      submit.disabled = true;
     }
     checkCredentialRegistration.hidden = !credentialRegistration;
     checkCredentialRegistration.disabled = pending;

@@ -426,9 +426,13 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     namespaces.status = null;
     release();
     await waitForSettledFetches(page, "/namespaces", answered + 1);
-    assert.deepEqual(await replaced.evaluate((node) => [node.isConnected, node.disabled]), [
-      false,
-      true,
-    ]);
+    // Still unavailable: natively, or aria-disabled while its wait shows (class of finding 2899).
+    assert.deepEqual(
+      await replaced.evaluate((node) => [
+        node.isConnected,
+        node.disabled || node.getAttribute("aria-disabled") === "true",
+      ]),
+      [false, true],
+    );
   });
 });

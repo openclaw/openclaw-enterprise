@@ -13,6 +13,7 @@ import {
   revokeAdministratorGrant,
   revokeMemberGrant,
   apiRequests,
+  expectReachableReason,
   fileBrowser,
   login,
   nativeValues,
@@ -139,6 +140,13 @@ test("Create Agent names a provisioning Namespace's status before any start", as
   const create = view.getByRole("button", { name: "Create Agent", exact: true });
   assert.equal(await create.isDisabled(), true);
   assert.equal(await create.getAttribute("aria-describedby"), "create-agent-capability-status");
+  // It stays in the Tab order, described by that reason, and submits nothing (class of finding
+  // 2899).
+  await expectReachableReason(
+    page,
+    create,
+    (await page.locator("#create-agent-capability-status").textContent())?.trim(),
+  );
   // An Embedded OpenClaw draft still saves (#2867).
   await view.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   await view

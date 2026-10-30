@@ -5,6 +5,7 @@ import {
   dismissOnBackdrop,
   element,
   field,
+  setUnavailable,
   statusBlock,
   validateFields,
   requestIdLine,
@@ -101,12 +102,12 @@ export function renderNamespaces(
   );
   const emptyText = element("p");
   // The API refused this person's creation: the control says so instead of offering another
-  // attempt that it would refuse again.
+  // attempt that it would refuse again. It stays in the Tab order, described by the refusal (class
+  // of finding 2899).
   function showRefused() {
     create.classList.remove("button", "button--primary");
-    create.disabled = true;
-    create.setAttribute("aria-describedby", refusal.id);
     collection.before(refusal);
+    setUnavailable(create, true, refusal);
     emptyText.textContent = askAdministratorTo(
       "create a Namespace or to give you access to an existing one",
     );
@@ -302,7 +303,7 @@ export function renderNamespaces(
         // Announced once, as the answer to this attempt; a later render shows it as page text.
         refusal.setAttribute("role", "status");
         showRefused();
-        // The opener the dialog returned focus to is disabled now; focus the reason instead.
+        // The opener the dialog returned focus to is unavailable now; focus the reason instead.
         refusal.tabIndex = -1;
         refusal.focus();
         return;

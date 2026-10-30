@@ -70,6 +70,7 @@ type LogTestDriver = ReturnType<typeof createRuntimeLogComputeDriver> & {
     harnessPod: { ready: boolean; stale?: boolean } | { created: false } | undefined;
     events: AgentRuntimeEvent[];
     extraPods: { name: string; uid: string }[];
+    gatewayPod: boolean;
     restartCount: number;
     observedAt?: string;
     readPodUid?: string;
@@ -1542,6 +1543,29 @@ test("the Logs tab explains cluster RBAC, unsupported Drivers and unavailable re
     .getByText(/This Compute Driver does not expose runtime status or logs/)
     .first()
     .waitFor();
+});
+
+// Finding 2929. A version with no running Pod leaves Previous instance, Follow, Refresh logs and
+// Download unavailable, and the output status says why. They were natively disabled, so Tab
+// skipped them and that reason; each stays in the Tab order now, described by it.
+test("log controls a version with no running Pod leaves unavailable name that reason", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.gatewayPod = false;
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  const reason = "This version has no running Pod for this source.";
+  await page.getByRole("status").filter({ hasText: reason }).waitFor();
+  for (const control of [
+    page.getByLabel("Previous instance"),
+    page.getByRole("button", { name: "Follow" }),
+    page.getByRole("button", { name: "Refresh logs" }),
+    page.getByRole("button", { name: "Download" }),
+  ]) {
+    assert.equal(await control.isDisabled(), true);
+    await expectReachableReason(page, control, reason);
+  }
+  // No read was sent for a selection with no Pod.
+  assert.equal(computeDriver.calls.filter(({ operation }) => operation === "read").length, 0);
 });
 
 const rateLimitRequestId = "req_12345678-1234-1234-1234-123456789abc";
