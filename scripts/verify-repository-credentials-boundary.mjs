@@ -193,6 +193,8 @@ const reviewedImports = {
   },
   // Standalone grants hash only nonsecret configuration/profile policy, never key material.
   "drivers/repo/github/credentials/grants.ts": { "node:crypto": ["createHash"] },
+  // Hash the canonical public CA bundle for issuer trust identity.
+  "drivers/repo/github/credentials/origin.ts": { "node:crypto": ["createHash"] },
   "drivers/repo/github/policy.ts": {
     "@openclaw-enterprise/occ": ["ScopeViolationError"],
   },
