@@ -38,7 +38,7 @@ Prepare:
 - the OCC CLI from the same release, installed at the path you pass as `--occ`
   (`/secure/occ/bin/occ` below): its
   [release binary](../cli.md#connect-to-your-installation), or `bin/occ` from
-  `pnpm cli:build` in that checkout. The helper reads the deployment inventory
+  `go build -trimpath -o bin/occ ./cmd/occ` in that checkout. The helper reads the deployment inventory
   and deploys Agents through it, and an older CLI can lack those commands;
 - a [pre-upgrade baseline](upgrade-baseline.md) of Helm, Kubernetes, OCC and
   database state;
@@ -70,22 +70,21 @@ The local preflight checks protocol compatibility, not Kubernetes image
 availability or admission, image trust, database durability, or session disposal.
 
 The OCC identity needs Installation `read`. A runtime upgrade additionally needs
-Installation `administer`, exact `read` access to every Namespace, Agent, and
-selected Agent revision, plus exact `deploy` access to every running Agent.
+Installation `administer`, exact `read` access to every Namespace, Agent, Agent
+Configuration, and selected Agent revision, plus exact `deploy` access to every
+running Agent.
 Agent revision read access must also cover the replacement versions.
 
 Review saved Agent and Configuration drafts before a runtime upgrade. Each
 deployment snapshots the current draft, not the previous selected version.
 
-A controller-only release does not deploy Agents, but the new worker can
-restart their Pods once
-([details](breaking-changes-before-2026-10-11.md#2026-10-10-controller-only-releases-can-restart-agent-pods-once)).
-Restarting the repository
-broker loses delivered sessions. Before a release,
-plan interruption and authorized replacement versions for affected Agents;
-review their drafts and deploy grants. Stop if recovery cannot be performed
-safely. A lost delivered session fails its version and queues retirement;
-inspect its retained cleanup. Follow the
+A controller-only release does not deploy Agents, but when it changes the Pod
+specs the controller renders, the new worker restarts the affected Agent Pods
+once on the same image. Restarting the repository
+broker recreates dedicated Codex Pods and can leave a session that the worker
+cannot replace. Before a release, plan the interruption and authorized
+replacement versions for affected Agents; review their drafts and deploy grants.
+Stop if recovery cannot be performed safely. Follow the
 [broker recovery procedure](../repository-credentials/installation.md#install-and-verify).
 
 During the maintenance window, stop other Helm changes until the command
@@ -93,8 +92,7 @@ completes. Disable autoscalers and other automation that can restart or scale
 the OCC Deployments. Stop any other process that writes to the OCC database,
 including independent API, worker, or maintenance processes. Confirm nodes are reachable and do not force-delete OCC
 Pods: a missing Pod alone cannot prove a partitioned process stopped. The helper
-stops the selected Helm release's API and worker and waits for their Pods to
-terminate; it cannot stop or detect other database writers. For a runtime upgrade,
+stops only the selected Helm release's API and worker. For a runtime upgrade,
 also stop Agent deployments and draft edits, and resolve queued or running Agent
 deployments first. Keep these restrictions in place through recovery.
 
@@ -191,22 +189,18 @@ bootstrap record disagree.
 ## Rehearse before the maintenance window
 
 Run the intended upgrade command below with `--preflight-only` and a new
-private evidence directory. Use the reviewed image digests, source checkout,
-baseline files, and candidate files you intend to deploy. The helper checks the
+private evidence directory. Use the exact inputs you intend to deploy. The helper checks the
 baseline, renders the chart, runs a Helm server dry run, and runs one-shot API
 and worker startup checks. Repository-enabled releases also check the image pair.
 
-The helper creates temporary Pods, a Secret, and a NetworkPolicy in the release
-namespace. The serving OCC writers keep running. Cleanup is best effort; inspect
-the evidence and remove any leftovers using the command below. Keep the evidence
-private because it contains configuration and diagnostics.
+The serving OCC writers keep running. Keep the evidence private because
+it contains configuration and diagnostics.
 
 A successful preflight does not prove deployment readiness or grant approval.
 It does not create a prepared deployment, and its evidence cannot be resumed.
 `--preflight-only` and `--resume` cannot be combined. At release, use the same
 reviewed inputs, omit `--preflight-only`, and set `UPGRADE_EVIDENCE` to a new
-path. The helper repeats the checks because live state may have changed. Allow
-time for those checks and the remaining upgrade and recovery work. Apply the
+path. The helper repeats the checks because live state may have changed. Apply the
 writer and draft freezes above during deployment and through recovery.
 
 ## Upgrade the control plane
@@ -243,8 +237,10 @@ before cluster mutation and verifies the deployed pair and broker capability.
 Before it stops anything, the command runs a startup preflight: one-shot API and
 worker Pods on the selected controller image, built from the rendered chart (same
 environment, mounts and service account), with the candidate Installation in a
-temporary Secret and the chart's API and worker dependency egress in a temporary
-NetworkPolicy. Each loads the Installation, Drivers and `presets.files`, then
+temporary Secret and, when the rendered chart includes its dependency-egress
+policy, the chart's API and worker dependency egress in a temporary NetworkPolicy.
+The API Pod also checks its configured Console theme, including referenced images.
+Each loads the Installation, Drivers and `presets.files`, then
 runs the bundled Kubernetes Compute Driver's preflight as startup does, without
 opening the database. Each then checks the stored Installation name, which the
 command reads through OCC, against the image's Name rule. If either fails, as
@@ -254,9 +250,17 @@ or the name
 the command prints each failure, attempts to delete these resources, and stops;
 the old release keeps serving. Logs and status are saved as
 `preflight-<api|worker>.log` and `-status.json`, taking up to about 90 seconds
-past `--timeout-seconds`. Runtime upgrades use the current
-controller image. If the helper is killed, delete its leftovers with
+past `--timeout-seconds`. When a create or cleanup fails, kubectl's error is saved
+as `preflight-<resource>-create.err` or `preflight-cleanup.err`. Runtime upgrades use the current
+controller image. If cleanup fails or the helper is killed, delete its leftovers with
 `kubectl delete pod,secret,networkpolicy.networking.k8s.io -n <namespace> -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=upgrade-preflight`.
+
+A runtime upgrade also sends each running Agent's saved Configuration to the API
+Pod, which applies the image's deploy rules that read only those values. A refused
+draft, such as one with a setting the new OpenClaw runtime retired or an unusable
+model provider URL, stops the command with each Agent and OCC's deploy message;
+Driver, credential, plugin and repository checks run only at deploy. Correct the draft or stop the Agent, then
+start again with a new evidence directory.
 
 The command then applies reviewed settings, scales the API and worker to zero, and
 waits for their Pods to terminate. Helm restores the candidate Deployments after
@@ -267,10 +271,6 @@ migration role, then runs bootstrap. The API and worker do not roll out unless
 both hooks succeed. The command does not request fleet inventory or Agent
 deployment authority. A later replacement version does not settle old cleanup
 or replay repository operations.
-
-For the first release that introduces `occ installation deployment-inventory`,
-verify that operation after the controller upgrade before attempting a runtime
-upgrade.
 
 Success looks like:
 
@@ -316,16 +316,24 @@ configuration; their software version does not change.
 
 After OCC recovers, the command deploys every recorded running Agent, waits for
 durable success, confirms each new selected version, and requires its Pods to be
-`Running` and `Ready` on the requested runtime digest. Stopped and deleting
-Agents remain untouched. An empty fleet updates the saved runtime selection but
-does not prove that the image starts.
+`Running` and `Ready` on the requested runtime digest. If OCC refuses an
+Agent's deployment, such as for a saved setting the new release refuses, the
+command names the Agent and the refusal; correct it and
+[resume](production-upgrade-recovery.md#correct-a-refused-agent-deployment).
+Stopped and deleting Agents remain untouched. An empty fleet updates the saved
+runtime selection but does not prove that the image starts.
 
 OpenClaw runs startup-safe migrations and plugin convergence before each gateway
 becomes ready. This workflow replaces immutable images instead of running
 `openclaw update`, so the command then runs
 `openclaw doctor --lint --json --severity-min error` inside every replacement
-gateway. Doctor is read-only here; a reported error fails the upgrade and is
-saved under `status/*.doctor.*`. Gateways run `doctor --fix` themselves only
+gateway, one at a time, each within `--timeout-seconds`. Doctor shares the
+gateway's memory limit, so it first waits for free gateway memory; this cannot
+reserve memory or guarantee no OOM kill. Doctor is read-only here; a reported
+error, or a gateway evicted, replaced, restarted, or not `Ready` after the last
+Doctor, fails the upgrade. Doctor output is saved under `status/*.doctor.*`; see
+[Doctor recovery](production-upgrade-recovery.md#correct-a-doctor-failure).
+Gateways run `doctor --fix` themselves only
 for [older state](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
 
 Success looks like:

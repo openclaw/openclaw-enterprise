@@ -1,4 +1,8 @@
-import { submitChatTurnWithAssistantProof, waitForStockUi } from "../helpers/native-ui-chat.mjs";
+import {
+  submitChatTurnWithAssistantProof,
+  textFromFrame,
+  waitForStockUi,
+} from "../helpers/native-ui-chat.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID, X509Certificate } from "node:crypto";
@@ -202,8 +206,7 @@ async function launchBrowser(context, ingress) {
   return browser;
 }
 
-async function login(page, origin, credentials, path) {
-  await page.goto(new URL(path, origin).href);
+async function login(page, credentials) {
   await page.getByLabel("Email", { exact: true }).fill(credentials.email);
   await page.getByLabel("Password").fill(credentials.password);
   await page.getByRole("button", { name: "Sign in" }).click();
@@ -359,7 +362,7 @@ async function assertServiceWorkerRegistrationBlockedByCsp(page) {
 }
 
 async function openNativeAdminConsole(page, nativeOrigin) {
-  const link = page.getByRole("link", { name: "Open admin console", exact: true });
+  const link = page.getByRole("link", { name: "Open Agent UI", exact: true });
   const root = new URL("/", nativeOrigin).href;
   assert.equal(await link.getAttribute("href"), root);
   const [nativePage] = await Promise.all([page.waitForEvent("popup"), link.click()]);
@@ -368,7 +371,7 @@ async function openNativeAdminConsole(page, nativeOrigin) {
   const documentUrl = await nativePage.evaluate(
     () => performance.getEntriesByType("navigation")[0]?.name,
   );
-  assert.equal(documentUrl, root, "Open admin console must load the native root document");
+  assert.equal(documentUrl, root, "Open Agent UI must load the native root document");
   assert.equal(new URL(nativePage.url()).origin, nativeOrigin);
   assert.equal(await nativePage.evaluate(() => globalThis.window.opener === null), true);
   return nativePage;
@@ -460,6 +463,29 @@ async function leaveNativeAccentDrift(page, nativeOrigin) {
   return driftAccent;
 }
 
+async function assertManagedNativeConfigWriteRejected(page, nativeOrigin, topology) {
+  const { editor, parsed } = await readRawConfig(page, nativeOrigin);
+  const originalAccent = configAccent(parsed);
+  parsed.ui = {
+    ...(parsed.ui ?? {}),
+    prefs: {
+      ...(parsed.ui?.prefs ?? {}),
+      accent: `#${randomUUID().replaceAll("-", "").slice(0, 6)}`,
+    },
+  };
+  await editor.fill(serializeConfig(parsed));
+  // The pinned Gateway includes the policy identifier in the save status's accessible name.
+  const retryReadOnlySave = page
+    .locator("openclaw-settings-save-indicator")
+    .getByRole("status", { name: /\bOPENCLAW_CONFIG_READONLY\b/ })
+    .getByRole("button", { name: "Retry", exact: true })
+    .first();
+  await retryReadOnlySave.waitFor({ state: "hidden" });
+  await page.locator(".config-raw-actions button.primary").first().click();
+  await retryReadOnlySave.waitFor();
+  assert.equal(await readRuntimeAccent(topology), originalAccent);
+}
+
 async function readRuntimeAccent(topology) {
   const raw = await kubectl(
     "exec",
@@ -476,6 +502,17 @@ async function readRuntimeAccent(topology) {
 
 function agentPath(topology, suffix = "") {
   return `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}${suffix}`;
+}
+
+async function saveGatewayManagedMode(topology, gatewayManagedMode) {
+  const updated = await topology.adminRequest("PATCH", agentPath(topology), {
+    configurationId: topology.agent.configurationId,
+    gatewayManagedMode,
+  });
+  assert.equal(updated.status, 200, JSON.stringify(updated.error));
+  assert.equal(updated.data.gatewayManagedMode, gatewayManagedMode);
+  assert.equal(updated.data.activeRevisionId, topology.revision.id);
+  topology.agent = { ...topology.agent, ...updated.data };
 }
 
 function workspaceFilePath(topology, name) {
@@ -499,6 +536,7 @@ async function assertStopRedeployPreservesWorkspaceFile(
   const beforeStop = await topology.workspaceRequest("GET", workspacePath);
   assert.equal(beforeStop.status, 200, JSON.stringify(beforeStop.error));
   assert.deepEqual(beforeStop.data, { name: filename, content });
+  await saveGatewayManagedMode(topology, true);
 
   const stopEventStart = topology.events.length;
   const stopped = await topology.request("POST", agentPath(topology, "/stop"));
@@ -531,6 +569,7 @@ async function assertStopRedeployPreservesWorkspaceFile(
   const deployEventStart = topology.events.length;
   const redeployed = await topology.request("POST", agentPath(topology, "/deploy"));
   assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
+  assert.equal(redeployed.data.gatewayManagedMode, true);
   assert.notEqual(
     redeployed.data.id,
     previousRevisionId,
@@ -680,12 +719,15 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     personContext.on("page", (observedPage) =>
       observedPage.on("websocket", (socket) => {
         if (new URL(socket.url()).origin === status.origin.replace(/^http/, "ws")) {
-          socket.on("framereceived", (frame) => frames.push({ ...frame, socket }));
+          socket.on("framereceived", (frame) =>
+            frames.push({ ...frame, socket, page: observedPage }),
+          );
         }
       }),
     );
     const page = await personContext.newPage();
-    await login(page, ingress.origin, credentials, agentDetailPath(topology));
+    await page.goto(new URL(agentDetailPath(topology), ingress.origin).href);
+    await login(page, credentials);
     // Login keeps the Console URL while its cookie request is pending. Observe
     // the authenticated Agent render before sending requests as this person.
     await page.getByRole("heading", { name: topology.agent.name, exact: true }).waitFor();
@@ -726,6 +768,8 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
       frames,
       socket,
       agentBinding,
+      credentials,
+      userId: account.data.id,
       principalId: account.data.principalId,
     });
   }
@@ -779,7 +823,7 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     200,
   );
   assert.equal((await withdrawn.request(namespacePath)).status, 200, "discovery grant remains");
-  await submitChatTurnWithAssistantProof(
+  const lastReply = await submitChatTurnWithAssistantProof(
     unaffected.nativePage,
     `sharing-after-withdrawal-${randomUUID()}`,
     unaffected.frames,
@@ -787,6 +831,60 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
   );
   context.diagnostic(
     `Selective sharing withdrawal closed the confirmed native stream in ${Math.ceil(elapsedMs)} ms; the other recipient completed a subsequent real model turn.`,
+  );
+
+  // Expire only this new user's single session. The scalar subquery rejects an
+  // ambiguous fixture. Leave the native tab, its cookies, and all grants alone.
+  const { nativePage, userId } = unaffected;
+  assert.equal(lastReply.page, nativePage);
+  assert.equal(lastReply.socket.isClosed(), false);
+  const [, health] = await Promise.all([
+    lastReply.socket.waitForEvent("close", { timeout: 45_000 }),
+    nativePage.waitForResponse(status.origin + "/healthz", { timeout: 45_000 }),
+    topology.observerPool
+      .query(
+        `UPDATE occ.session SET expires_at = clock_timestamp() - interval '1 second'
+         WHERE id = (SELECT id FROM occ.session WHERE user_id = $1)`,
+        [userId],
+      )
+      .then(({ rowCount }) => assert.equal(rowCount, 1, "expired this recipient's session")),
+  ]);
+  assert.equal(health.status(), 403, "the open native tab observed the session refusal");
+
+  const reconnect = nativePage.getByRole("link", {
+    name: "Reconnect in browser",
+    exact: true,
+  });
+  const [root] = await Promise.all([
+    nativePage.waitForResponse(
+      (response) => response.url() === status.url && response.request().isNavigationRequest(),
+    ),
+    reconnect.click({ timeout: 15_000 }),
+  ]);
+  assert.equal(root.status(), 302);
+  const agentKey = status.host.split(".")[0].slice("agent-".length);
+  // Console removes the fragment before showing sign-in. Check the redirect itself.
+  assert.equal(
+    await root.headerValue("location"),
+    ingress.origin + "/console/#native-agent=" + agentKey,
+  );
+  const [resolved] = await Promise.all([
+    nativePage.waitForResponse(ingress.origin + "/native-admin/return/" + agentKey),
+    login(nativePage, unaffected.credentials),
+  ]);
+  assert.equal(resolved.status(), 200);
+  const { agentId, namespaceId } = (await resolved.json()).data;
+  assert.equal(agentId, topology.agent.id);
+  assert.equal(namespaceId, topology.agent.namespaceId);
+
+  const reopened = await openNativeAdminConsole(nativePage, status.origin);
+  await waitFor("a live Gateway hello on the page opened after signing back in", () =>
+    unaffected.frames.find(
+      (frame) =>
+        frame.page === reopened &&
+        !frame.socket.isClosed() &&
+        JSON.parse(textFromFrame(frame)).payload?.type === "hello-ok",
+    ),
   );
 }
 
@@ -810,6 +908,7 @@ test(
       workspaceGateway: true,
     });
     ingress.setUpstream(topology.controllerUrl);
+    assert.equal(topology.revision.gatewayManagedMode, true);
     await assertActualModelTurn(topology);
 
     const unadmittedTarget = expectedNativeAdminTarget(topology, ingress.origin, nativeDomain);
@@ -821,11 +920,13 @@ test(
       "native admin must fail closed before the active runtime admits the exact browser origin and device approval policy",
     );
 
+    await saveGatewayManagedMode(topology, false);
     const expectedTarget = await redeployWithNativeAdminAccess(
       topology,
       ingress.origin,
       nativeDomain,
     );
+    assert.equal(topology.revision.gatewayManagedMode, false);
     const status = await nativeAdminStatus(topology);
     assert.equal(status.status, "available");
     assert.equal(status.host, expectedTarget.host, "Agent native host must be deterministic");
@@ -882,12 +983,11 @@ test(
     );
 
     const page = await browserContext.newPage();
-    await login(page, ingress.origin, topology.credentials, agentDetailPath(topology));
+    await page.goto(new URL(agentDetailPath(topology), ingress.origin).href);
+    await login(page, topology.credentials);
     await page.getByRole("heading", { name: topology.agent.name }).waitFor();
     await page
-      .getByText(
-        "Manage configuration in OCE. Changes in the admin console aren’t saved to Agent versions",
-      )
+      .getByText("Gateway managed mode restricts administrative changes by default.")
       .waitFor();
     const nativePage = await openNativeAdminConsole(page, status.origin);
 
@@ -895,6 +995,14 @@ test(
     const deepLinkResponse = await nativePage.goto(deepLink.href);
     assert.ok(deepLinkResponse?.status() < 400, "stock UI deep link must be served");
     await waitForStockUi(nativePage);
+    // The Gateway embeds the stock UI's bootstrap configuration in the document it serves,
+    // and the UI boots from it. The OCC Agent name must replace the stock "Assistant"; the
+    // Gateway cuts a display name to 50 characters.
+    const bootstrap = await nativePage.evaluate(() =>
+      globalThis.document.documentElement.getAttribute("data-openclaw-bootstrap-config"),
+    );
+    assert.ok(bootstrap, "the Gateway must serve the stock UI's bootstrap configuration");
+    assert.equal(JSON.parse(bootstrap).assistantName, topology.agent.name.slice(0, 50));
     await nativePage.locator(".page-title").getByText("Advanced", { exact: true }).waitFor();
     await nativePage.getByRole("button", { name: "Raw", exact: true }).waitFor();
     await nativePage.screenshot({
@@ -993,9 +1101,22 @@ test(
       "the shared native admin session must reconnect to the current redeployed revision",
     );
     await waitForStockUi(currentSessionPage);
+    const banner = currentSessionPage.getByRole("paragraph").filter({
+      hasText: "edit and save the Agent’s draft Configuration, then select Deploy new version",
+    });
+    await banner.waitFor();
+    assert.equal(
+      await banner.getByRole("link", { name: "Learn more", exact: true }).getAttribute("href"),
+      "https://docs-enterprise.openclaw.org/reference/agents/gateway-managed-mode/",
+    );
+    await assertManagedNativeConfigWriteRejected(
+      currentSessionPage,
+      currentStatus.origin,
+      topology,
+    );
     await currentSessionPage.close();
     context.diagnostic(
-      "Native admin browser proof loaded stock assets, opened a deep link, established a WebSocket, sent a real chat turn, made/reverted a native config edit, proved OCE redeploy restores managed config after native drift, denied a sibling host, preserved a workspace file across OCE stop/redeploy, wrote human connect/close audit evidence, reconnected to the current redeployed revision, and reloaded after gateway Pod replacement.",
+      "Native admin browser proof loaded stock assets, opened a deep link, established a WebSocket, sent a real chat turn, made/reverted a native config edit with managed mode off, restored OCE config and rejected a native config write after managed mode was re-enabled, denied a sibling host, preserved a workspace file across OCE stop/redeploy, wrote human connect/close audit evidence, reconnected to the current redeployed revision, and reloaded after gateway Pod replacement.",
     );
   },
 );

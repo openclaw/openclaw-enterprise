@@ -41,8 +41,9 @@ import {
   createLoopbackServiceConfiguration,
 } from "../fixtures/repository-credentials/service.mjs";
 import {
-  createGitHubTokenServiceFactory,
+  createStaticTokenServiceFactory,
   startServiceListeners,
+  startStaticTokenService,
 } from "../fixtures/repository-credentials/service-resources.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
@@ -308,21 +309,7 @@ test(
     const tls = await createTlsMaterial(resources);
     const config = await createLoopbackServiceConfiguration(resources);
     const github = await startGitHubFixture(resources, { clock, tls });
-    const token = `gho_${"t".repeat(36)}`;
-    github.acceptStatic(token);
-    const factory = await createGitHubTokenServiceFactory(resources, {
-      config,
-      clock,
-      token,
-      trustedEndpoints: { apiOrigin: github.origin, gitOrigin: github.origin, ca: tls.ca },
-    });
-    const { listeners } = await startServiceListeners(resources, {
-      config,
-      tls,
-      factory,
-      clock,
-      upstreamOrigins: [github.origin],
-    });
+    const { listeners } = await startStaticTokenService(resources, { config, clock, tls, github });
     assert.equal((await lstat(config.gateway.controlSocket)).mode & 0o777, 0o600);
     // Standalone services do not implement registry-backed durable admission.
     assert.equal(
@@ -624,13 +611,12 @@ test(
       }
     });
     const origin = await listen(resources, upstream);
-    const token = `gho_${"t".repeat(36)}`;
-    github.acceptStatic(token);
-    const factory = await createGitHubTokenServiceFactory(resources, {
+    const { factory } = await createStaticTokenServiceFactory(resources, {
       config,
       clock,
-      token,
-      trustedEndpoints: { apiOrigin: github.origin, gitOrigin: origin, ca: tls.ca },
+      tls,
+      github,
+      gitOrigin: origin,
     });
     const actual = createCredentialService({ config, factory, clock });
     const outcomes = [];
@@ -1005,8 +991,7 @@ test(
       return id;
     };
     const [first, retried, recovered] = ["repo-a", "repo-b", "repo-c"].map(inputFor);
-    // Without a worker attempt the journal refuses after the session opens; that
-    // session is closed and its only slot is free for the next admission.
+    // Without a worker attempt the journal refuses before constructing a session.
     assert.deepEqual(await send(first, freshId()), {
       status: 503,
       body: { error: "unavailable" },
@@ -1031,8 +1016,7 @@ test(
     await eventually(
       () => fixture.service.status(opened.body.session.sessionId).state === "DISPOSED",
     );
-    // The fence stands. This plain retry opens a session, the journal answers
-    // missing, and that session is closed rather than handed out.
+    // The fence stands: the journal answers missing before session construction.
     assert.deepEqual(await send(recovered, recoveredId), {
       status: 404,
       body: { error: "admission-missing" },
@@ -1044,7 +1028,7 @@ test(
 );
 
 test(
-  "a session disposed and evicted while its admission awaits the journal still settles the receipt",
+  "a session disposed and evicted while its binding awaits the journal still settles the receipt",
   { timeout: 15000 },
   async (t) => {
     const fixture = await boundControlFixture(t, { sessions: 2 }, defaultRegistryRepositories);
@@ -1052,9 +1036,13 @@ test(
     const input = { ...inputFor("repo-a"), durationSeconds: 1 };
     const id = freshId();
     await receipts.prepare(id, input.repositoryRef, input.durationSeconds);
-    // Hold the journal's reservation until the opened session is disposed and evicted.
+    const replacement = inputFor("repo-b");
+    const replacementId = freshId();
+    await receipts.prepare(replacementId, replacement.repositoryRef, replacement.durationSeconds);
+    // Reservation must finish before construction. Hold the subsequent bind until
+    // the session expires and another accepted admission evicts it.
     const transact = receipts.state.transact;
-    let held = false;
+    let transactions = 0;
     let entered;
     let release;
     const reached = new Promise((resolve) => {
@@ -1064,8 +1052,7 @@ test(
       release = resolve;
     });
     receipts.state.transact = async function (work) {
-      if (!held) {
-        held = true;
+      if (transactions++ === 1) {
         entered();
         await gate;
       }
@@ -1082,12 +1069,7 @@ test(
     await clock.advance(1000);
     await eventually(() => disposed.length === 1);
     const { sessionId } = disposed[0];
-    // Another admission's open evicts the disposed session from the service. No
-    // worker attempt was prepared for it, so the journal then refuses that admission.
-    assert.deepEqual(await send(inputFor("repo-b")), {
-      status: 503,
-      body: { error: "unavailable" },
-    });
+    assert.equal((await send(replacement, replacementId)).status, 201);
     assert.equal(fixture.service.status(sessionId), undefined);
     release();
     const answered = await pending;

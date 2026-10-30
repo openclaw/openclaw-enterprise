@@ -1,17 +1,18 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpsServer } from "node:https";
 import { promisify } from "node:util";
 import { inflateRawSync } from "node:zlib";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { waitFor } from "../helpers/qa-utils.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { openAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
@@ -25,7 +26,10 @@ import {
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import {
+  nodeProgramArguments,
+  withoutLineComments,
+} from "../../apps/controller/src/drivers/compute/node-program.ts";
 import test from "node:test";
 import {
   admitLoggingConfiguration,
@@ -44,6 +48,7 @@ import {
   digest,
   selectorMatches,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const providerUrl = "ws://tenant--sandbox.openshell.localhost:8080/";
 const providerWorkspaceRoot = "/sandbox/enterprise";
@@ -80,7 +85,14 @@ async function preparedEndpoint(fixture = providerEndpointFixture(), context) {
 }
 
 test("provider Harness endpoint bootstraps Gateway before provisioning and requests node setup", async () => {
-  const fixture = providerEndpointFixture();
+  const fixture = providerEndpointFixture({
+    revisionOverrides: {
+      plugins: {
+        driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+        plugins: { "codex-plugin:linear@openai-curated-remote": { enabled: true } },
+      },
+    },
+  });
   const {
     driver,
     revision,
@@ -103,6 +115,17 @@ test("provider Harness endpoint bootstraps Gateway before provisioning and reque
   assert.equal(endpoints.length, 0);
   const bootstrapGateway = read("Deployment", gatewayName, gatewayNamespace);
   assert.ok(bootstrapGateway);
+  // This Gateway must issue the setup needed to create the Harness. Waiting for
+  // the Harness's ordinary peer status here would deadlock first deployment.
+  const gatewayEnvironment = bootstrapGateway.spec.template.spec.containers[0].env;
+  assert.equal(
+    gatewayEnvironment.find(({ name }) => name === "OPENCLAW_CODEX_PLUGINS_PREPARED")?.value,
+    "true",
+  );
+  assert.equal(
+    gatewayEnvironment.some(({ name }) => name === "OPENCLAW_PLUGIN_STATUS_PORT"),
+    false,
+  );
   assert.notEqual(
     bootstrapGateway.spec.template.spec.containers[0].env.find(
       ({ name }) => name === "APP_SERVER_URL",
@@ -121,11 +144,18 @@ test("provider Harness endpoint bootstraps Gateway before provisioning and reque
   assert.deepEqual(setupRequests, [
     {
       url: driver.getGatewayEndpoint(revision),
-      nodeUrl: `ws://${gatewayName}.${gatewayNamespace}.svc.cluster.local:8080/node`,
+      // The node needs the scoped TLS route for HTTP transfers and proxy attribution.
+      nodeUrl: `wss://agents.example.internal/namespaces/${revision.namespaceId}/agents/${revision.agentId}/node`,
     },
   ]);
   assert.equal(provisions.length, 1);
   assert.equal(endpoints.length, 1);
+  assert.equal(
+    provisions[0].requirements.environment.some(
+      ({ name }) => name === "OPENCLAW_PLUGIN_STATUS_PORT",
+    ),
+    false,
+  );
 });
 
 test("provider Harness endpoint preparation re-observes the same revision across Pod transitions", async (t) => {
@@ -553,6 +583,40 @@ for (const scenario of [
   });
 }
 
+test("provider Harness reads a supervisor's held failure while its workspace node is pending", async () => {
+  // The Codex Harness supervisor holds a failed state migration or workspace setup before
+  // Codex and the workspace node start, so the node never connects. Compute reads the hold
+  // through the provider and fails the revision with it instead of waiting for the
+  // deadline as WORKSPACE_NODE_PENDING (finding 2686).
+  const fixture = await endpointWithGateway();
+  fixture.observePods([fixture.pod("ready")]);
+  fixture.driver.nodeEnrollment.isConnected = async () => false;
+  const observations = [];
+  let answer = { state: "serving" };
+  fixture.sandbox.harnessStatus = async (context) => {
+    observations.push(context);
+    return answer;
+  };
+  // A Codex that serves while its node pairs keeps the named wait.
+  assert.deepEqual(await fixture.prepare(), {
+    ...expectedRevision(fixture),
+    ready: false,
+    pendingReason: "WORKSPACE_NODE_PENDING",
+  });
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].transportToken, "test-transport");
+  for (const check of ["state-migration", "workspace-baseline"]) {
+    const runtimeFailure = { ...withoutCause, check, code: "UNAVAILABLE" };
+    answer = { state: "failed", runtimeFailure };
+    assert.deepEqual(await fixture.prepare(), {
+      ...expectedRevision(fixture),
+      ready: false,
+      runtimeFailure,
+    });
+  }
+  assert.equal(observations.length, 3);
+});
+
 test("provider Harness unready Pod prevents transport status observation", async () => {
   const fixture = await endpointWithGateway();
   let observations = 0;
@@ -695,15 +759,14 @@ test("provider Harness verified endpoint trust is projected before rollout and i
       client.terminate();
     }
     sockets.close();
-    return new Promise((resolve) => server.close(resolve));
   });
   sockets.on("connection", (socket, request) => {
     assert.equal(request.headers.authorization, "Bearer test-transport");
     socket.send("trust-ok");
   });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const providerPort = server.address().port;
+  // listen() registers the server close after the WebSocket teardown above, so the
+  // clients and the WebSocket server still close first.
+  const providerPort = await listen(t, server);
   let providerCaBundle = tls.caBundle;
 
   const providerUrl = `wss://localhost:${providerPort}/`;
@@ -869,6 +932,7 @@ test("provider Harness protected execution is released only on current signed in
   const sandbox = {
     ...fixture.sandbox,
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     cleanup: assert.fail,
     enrollHarness: assert.fail,
@@ -1253,8 +1317,7 @@ test("provider Harness protected execution is released only on current signed in
         driver.prepareRevision(zero, zeroContext),
         (error) => error === released,
       );
-      const directory = await mkdtemp(join(tmpdir(), "oce-compute-deny-all-"));
-      t.after(() => rm(directory, { recursive: true, force: true }));
+      const directory = await temporaryDirectory(t, "oce-compute-deny-all-");
       const calls = join(directory, "codex-calls");
       await writeFile(calls, "");
       // Stub only the CLI. Use the owning prepareRevision's actual files and environment.
@@ -1462,7 +1525,9 @@ test("provider Harness protected execution is released only on current signed in
             const codex = node ? program(JSON.parse(child[1]).slice(1)) : outer;
             assert.equal(
               codex,
-              disabled ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
+              withoutLineComments(
+                disabled ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
+              ),
             );
             // Only the two model-calling invocations: the authentication probe and app-server.
             assert.equal(
@@ -1472,7 +1537,7 @@ test("provider Harness protected execution is released only on current signed in
             if (disabled) {
               assert.match(
                 codex,
-                /spawnSync\("codex", \[\s+"--disable", "unbounded_connection_retries",\s+\.\.\.disabled/,
+                /spawnSync\(codexExecutable\(\), \[\s+"--disable", "unbounded_connection_retries",\s+\.\.\.disabled/,
               );
               assert.match(codex, /"--disable", "unbounded_connection_retries",\s+"app-server",/);
             }

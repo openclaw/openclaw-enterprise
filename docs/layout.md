@@ -18,6 +18,11 @@ The configuration excludes `legacy/`; do not import archived implementations.
 The Go CLI uses the root [Go module](../go.mod). The documentation renderer in
 `scripts/docs-site/` has its own package manifest, pnpm workspace, and lockfile;
 keep its dependency installation separate from the root workspace.
+API example metadata and export enrichment live in `scripts/api-examples.mjs`
+and `scripts/document-api-examples.mjs`; `scripts/docs-site/` owns the explorer
+and OpenAPI lint configuration. The controller route schemas remain the source
+of truth for HTTP behavior.
+
 The console Storybook in `scripts/console-storybook/` is also an isolated tool
 with its own manifest and lockfile. See [Console Storybook](contributing/console-storybook.md).
 
@@ -36,6 +41,7 @@ owns their deployment, workspace resource rendering, and image import.
 
 | Path                                                      | Responsibility                                                                                               |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `apps/controller/plugins/`                                | Checked-in managed plugin marketplace, portable packages, skills and OCE deployment rules.                   |
 | `apps/controller/src/`                                    | HTTP API, console serving, and API/worker entrypoints. `server.mjs` and `worker.mjs` start the processes.    |
 | `apps/controller/src/admission/`                          | Request admission and resource validation at the API boundary.                                               |
 | `apps/controller/src/http/`                               | Resource HTTP handlers and response projection, grouped by platform primitive.                               |
@@ -48,7 +54,7 @@ owns their deployment, workspace resource rendering, and image import.
 | `apps/controller/src/drivers/repo/credentials/`           | Private repository credential contracts, sessions, custody, lifecycle, listeners, and transport.             |
 | `apps/controller/src/drivers/repo/github/credentials/`    | GitHub credential backend, grant policy, authentication, provider transport, and Git/gh clients.             |
 | `apps/controller/src/composition/repository-credentials/` | Protected file loading, key/TLS assembly, configuration checking, and separate service startup.              |
-| `packages/contracts/src/`                                 | Shared resource models, Driver interfaces, and API schemas under `api/`.                                     |
+| `packages/contracts/src/`                                 | Shared resource models, Driver contracts under `drivers/`, and API schemas under `api/`.                     |
 | `packages/occ/src/`                                       | Platform lifecycle and resource ownership, persistence ports and state implementations, and controller work. |
 | `packages/iam/src/`                                       | Native identity lookup and authorization.                                                                    |
 | `packages/audit/src/`                                     | Audit event construction and sensitive-value sanitization.                                                   |
@@ -65,7 +71,11 @@ owning Driver or Backend and wire it through composition. See
 status, and remaining design requirements.
 
 Within `packages/contracts/src/`, `runtime-logs.ts` owns runtime inspection and
-container/Sandbox log types. `index.ts` remains their public export entrypoint.
+container/Sandbox log types. `drivers/index.ts` owns the shared base `Driver` and
+registry types. Each Driver capability has its own directory with an `index.ts`,
+such as `drivers/compute/index.ts` or `drivers/iam/index.ts`, containing that
+Driver's interface, request, context, and result types. The root `index.ts` retains
+shared resource definitions and the public package exports.
 
 Within controller composition, `installation-presets.ts` owns Preset file loading
 and bundled-version assembly; `installation-config.ts` owns Driver composition.
@@ -76,8 +86,9 @@ owns platform-error mapping, response formatting, and removal of request values
 from verbose validation errors after their details are built.
 
 The [repository capability](reference/repository-credentials.md#repo-driver-contract)
-uses `RepoDriver` in `packages/contracts/src/repo.ts` and the bundled
-`drivers/repo/github/driver.ts` adapter. Under `apps/controller/src/`, its owners are:
+uses `RepositoryPolicyDriver` and `NativeRepositorySender` in
+`packages/contracts/src/drivers/repo/index.ts`, implemented by `drivers/repo/github/policy.ts`
+and `drivers/repo/github/driver.ts`, respectively. Under `apps/controller/src/`, its owners are:
 
 - `drivers/repo/credentials/`: private common sessions, custody, lifecycle,
   transport and contracts, including the private client-configuration type.
@@ -90,7 +101,7 @@ uses `RepoDriver` in `packages/contracts/src/repo.ts` and the bundled
 
 OCC owns immutable Agent bindings and safe session State; worker helpers connect
 those records to Compute delivery. Public status omits private cleanup diagnostics.
-The common engine's `RepositoryBackend` protocol is separate from `RepoDriver`.
+The common engine's `RepositoryBackend` protocol is separate from these interfaces.
 The worker Token Service owns GitHub App signing and provider-token custody.
 The native sender consumes prepared material without an App key.
 See the [Agent repository flow](flows/agent-repository-credentials.md).
@@ -101,6 +112,7 @@ See the [Agent repository flow](flows/agent-repository-credentials.md).
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `deploy/helm/openclaw-enterprise/`                       | Helm chart for Kubernetes installation.                                                          |
 | `deploy/helm/openclaw-execution/`                        | Execution-cluster access roles and authenticated Harness routing infrastructure.                 |
+| `deploy/helm/openclaw-plugin-request-guard/`             | Shared OpenShell request middleware for managed plugins in an execution cluster.                 |
 | `deploy/runtime/`, `deploy/logging/`, `deploy/examples/` | Runtime packaging, logging configuration, and deployment examples.                               |
 | `deploy/presets/`                                        | Installable Agent Preset requests; see [standard Codex](guides/topics/standard-codex-preset.md). |
 | `Dockerfile`, `compose*.yaml`                            | Controller image and local stack definitions or overlays.                                        |
@@ -122,6 +134,8 @@ selected emitted modules and minimal manifests in
 the standalone service/client images do not include the controller dependency
 graph. The full `deploy/runtime/Dockerfile` uses the repository root as its build
 context to include the emitted client router in the Agent image.
+`deploy/runtime/openclaw-source.json` owns the OpenClaw source commit, archive
+checksum, and fixed build timestamp used by that runtime recipe and its callers.
 
 Chart-owned startup scripts live under `deploy/helm/openclaw-enterprise/files/`
 and are embedded in rendered container commands; they ship with the chart.
@@ -129,7 +143,6 @@ and are embedded in rendered container commands; they ship with the chart.
 Select checks using the [testing guide](testing/README.md). Follow AGENTS.md's
 integration requirements for runtime changes. For documentation-only changes,
 use formatting, builds, and link checks; do not add or run tests solely for prose.
-Do not install dependencies as a verification side effect.
 
 ## Code conventions
 
@@ -185,8 +198,7 @@ architecture pages for every feature.
 Put contributor workflows for documentation in `docs/contributing/`, starting
 with the [writing guide](contributing/documentation.md). Existing site-tooling
 guides and inventories may remain directly under `docs/`; `docs/testing/` owns
-code verification and test setup. Reusable writing templates belong to the local
-technical-writing skill.
+code verification and test setup. The [documentation taxonomy](taxonomy.md) maps page kinds to their templates.
 
 The [documentation map](README.md) has six menus. **Getting Started**, **Topics**,
 **Integrations**, **Operate**, and **Reference** serve product users and operators;

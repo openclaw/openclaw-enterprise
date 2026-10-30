@@ -150,8 +150,8 @@ chart's tenant-worker RoleBinding in each tenant namespace as described in the
 With the feature enabled, that role includes the material Secret operations
 needed by Compute. The Agent never mounts the control socket or App key.
 
-Build the service with `pnpm credentials:build` and `pnpm credentials:image`,
-then publish and select its immutable image reference. Also build the full
+From the repository root, run `pnpm install --frozen-lockfile`. Then build the
+service with `pnpm credentials:build` and `pnpm credentials:image`, then publish and select its immutable image reference. Also build the full
 Agent runtime using the [repository-root Docker context](../repository-credentials.md#prepare-the-platform-installation).
 Add the following to your existing Helm values, replacing image and network
 placeholders before rendering:
@@ -280,9 +280,21 @@ those mounts from the rendered manifests before deploying an Agent.
 A ready sidecar confirms protected startup and the control listener. Continue
 with [Agent creation, deployment and a repository task](../repository-credentials.md#create-and-deploy-an-agent)
 to verify the actual consumer. Registry or certificate mismatch fails closed;
-check IDs, exact paths, DNS SAN and public trust first. A service restart loses
-in-memory sessions. A lost session already delivered to an Agent fails its
-version and queues runtime retirement; worker maintenance does not recreate it.
+check IDs, exact paths, DNS SAN and public trust first.
+
+A worker Pod restart, such as a rollout, upgrade or node drain, stops the
+credential service and its in-memory sessions. On a normal shutdown the service
+records that each session is disposed. At its next maintenance pass, within
+about 30 seconds, the worker opens a new session for each running version and
+delivers new session files. This recreates each dedicated Codex Pod; Git works
+again without a new deployment, and the deployment status does not change. The
+Agent's workspace volume keeps `/home/node/workspace`, generated images and
+Codex thread history. Other Pod-local state is lost: files elsewhere in the home
+directory or in `/tmp`, and running processes. Plan restarts for times when
+Agents are idle.
+
+If the service stops without recording disposal, for example when its container
+is killed, the worker cannot prove the old session ended and does not replace it.
 Inspect retained cleanup obligations before explicitly deploying a new authorized
 version. That deployment does not settle old cleanup or replay repository
 operations. See [restart and cleanup limits](../../reference/repository-credentials.md#repo-driver-contract).

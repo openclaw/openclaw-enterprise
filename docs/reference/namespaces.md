@@ -82,11 +82,19 @@ Configuration in an explicitly selected external Namespace returns
 OCC Namespace leaves its tenant markers on the Kubernetes namespace, so
 selecting that namespace again ends `failed` until an operator clears them; see
 [Namespace admission](security.md#namespace-admission-and-resource-isolation).
-A `failed` Namespace does not say why in the API. The worker's
-`worker.completed` line for `namespace.ensure` carries the Kubernetes Compute
-Driver's `reason`, such as `Existing Kubernetes namespace customer-support
-belongs to another tenant: its openclaw.dev/namespace label names a different
-Namespace.` It names the blocking marker's key, never another tenant's value.
+
+The API reports `failed` without a cause. Check the worker's `worker.completed`
+line for `namespace.ensure`. It includes a `reason` when the Kubernetes Compute
+Driver supplies one. For example, `Existing Kubernetes namespace customer-support belongs to another tenant: its openclaw.dev/namespace label names a different Namespace.`
+The message identifies the blocking marker's key and keeps the other tenant's value private.
+
+A provisioning timeout alone does not identify the cause. See
+[Kubernetes troubleshooting](drivers/kubernetes-compute.md#failure-conditions).
+If the worker service account lacks its tenant runtime RoleBinding, restore it in
+the backing Kubernetes namespace while the Namespace is still `provisioning`.
+A later pass can then check readiness. Once the Namespace reaches `failed`,
+there is no supported way to retry provisioning for that Namespace. Rechecking
+in the Console reads its current status.
 
 ## Lifecycle
 
@@ -124,6 +132,9 @@ exact dedicated existing namespace selected by `existingNamespace`; see the
 
 `DELETE /namespaces/:namespaceId` starts deletion of an empty Namespace.
 
+The Console exposes this operation through each Namespace row's trash icon.
+See [Delete a Namespace in the console](../guides/console/delete-namespace.md).
+
 A successful request returns `202` and the Namespace with `status: "deleting"`.
 Repeating the request while teardown is in progress changes nothing.
 After teardown completes, the controller retains a durable internal tombstone;
@@ -141,8 +152,12 @@ A Namespace containing any Agent, Configuration, Preset, service account, Secret
 or [credential source](credential-sources.md) cannot be deleted and returns
 `409 NAMESPACE_NOT_EMPTY`. The error message lists the kinds that remain and
 the IDs of their resources, as far as the 256-character message
-allows; a kind with more says how many are left. Configurations have no list
-route, so this message is where their IDs appear. Delete
+allows; a kind with more says how many are left. The error also includes
+`remainingResources`: up to seven entries with `kind`, `count`, and up to 20
+`ids` each. Pending Agent provisioning has no resource IDs. Configurations have
+no list route, so the deletion conflict provides their IDs. Namespace `delete`
+does not grant reads: of the first 20 resources of each kind, the conflict
+names only those that you can read, and it counts the others without IDs. Delete
 unreferenced Agents, Configurations, [Presets](presets.md), service accounts,
 Secrets, and credential sources before deleting their Namespace. A credential
 source in `deleting` still counts; retry its deletion until it disappears.
@@ -181,8 +196,8 @@ workload is ready.
   operation.
 - `404`: The Namespace does not exist, belongs outside the requested scope, or
   has already been tombstoned.
-- `409 NAMESPACE_NOT_EMPTY`: The message names what remains, with resource
-  IDs. Delete the named resources and retry to see any others. Remove the
+- `409 NAMESPACE_NOT_EMPTY`: The message names what remains, with the IDs
+  that you can read. Delete the named resources and retry to see any others. Remove the
   Namespace's unreferenced Agents, Configurations, edited or custom Presets,
   service accounts, Secrets, and credential sources before deletion. An Agent
   whose teardown is still in progress, or a credential source in `deleting`,

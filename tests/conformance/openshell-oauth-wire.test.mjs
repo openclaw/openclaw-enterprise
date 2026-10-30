@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,6 +10,8 @@ import {
   createOpenShellBackend,
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
+import { certificateAuthority, signedLeaf } from "../helpers/certificates.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const grpc = require("@grpc/grpc-js");
@@ -20,90 +20,37 @@ const loader = require("@grpc/proto-loader");
 // Real TLS proves client identity and header separation; the RPC bodies below are
 // controlled protocol fixtures, not proof of OpenShell's refresh implementation.
 async function wireCertificates(t) {
-  const directory = await mkdtemp(join(tmpdir(), "openshell-oauth-wire-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const path = (name) => join(directory, name);
-  const openssl = (...args) => execFileSync("openssl", args, { stdio: "ignore" });
-  openssl(
-    "req",
-    "-x509",
-    "-newkey",
-    "ec",
-    "-pkeyopt",
-    "ec_paramgen_curve:prime256v1",
-    "-nodes",
-    "-days",
-    "1",
-    "-subj",
-    "/CN=OpenShell wire test CA",
-    "-addext",
-    "basicConstraints=critical,CA:TRUE",
-    "-addext",
-    "keyUsage=critical,keyCertSign",
-    "-keyout",
-    path("ca.key"),
-    "-out",
-    path("ca.crt"),
-  );
-  for (const [name, subject, extensions] of [
-    [
-      "server",
-      "/CN=localhost",
-      "extendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1",
-    ],
-    ["operator", "/CN=wire-client/OU=operator", "extendedKeyUsage=clientAuth"],
-  ]) {
-    openssl(
-      "req",
-      "-new",
-      "-newkey",
-      "ec",
-      "-pkeyopt",
-      "ec_paramgen_curve:prime256v1",
-      "-nodes",
-      "-subj",
-      subject,
-      "-keyout",
-      path(`${name}.key`),
-      "-out",
-      path(`${name}.csr`),
-    );
-    await writeFile(path(`${name}.ext`), `basicConstraints=critical,CA:FALSE\n${extensions}\n`);
-    openssl(
-      "x509",
-      "-req",
-      "-in",
-      path(`${name}.csr`),
-      "-CA",
-      path("ca.crt"),
-      "-CAkey",
-      path("ca.key"),
-      "-CAcreateserial",
-      "-days",
-      "1",
-      "-extfile",
-      path(`${name}.ext`),
-      "-out",
-      path(`${name}.crt`),
-    );
-  }
+  const directory = await temporaryDirectory(t, "openshell-oauth-wire-");
+  const ca = await certificateAuthority(directory, { caName: "OpenShell wire test CA", days: 1 });
+  const server = await signedLeaf(directory, ca, {
+    name: "server",
+    commonName: "localhost",
+    subjectAltName: "DNS:localhost,IP:127.0.0.1",
+    days: 1,
+  });
+  const operator = await signedLeaf(directory, ca, {
+    name: "operator",
+    subject: "/CN=wire-client/OU=operator",
+    usage: "clientAuth",
+    days: 1,
+  });
   // The gateway accepts ordinary bearer clients as well as authenticated operator
   // certificates on one endpoint; require a certificate only on the export RPC.
   const provider = new grpc.experimental.FileWatcherCertificateProvider({
-    caCertificateFile: path("ca.crt"),
-    certificateFile: path("server.crt"),
-    privateKeyFile: path("server.key"),
+    caCertificateFile: ca.caPath,
+    certificateFile: server.certPath,
+    privateKeyFile: server.keyPath,
     refreshIntervalMs: 60_000,
   });
   return {
-    rootCertificatePath: path("ca.crt"),
-    operatorTls: { certificatePath: path("operator.crt"), privateKeyPath: path("operator.key") },
+    rootCertificatePath: ca.caPath,
+    operatorTls: { certificatePath: operator.certPath, privateKeyPath: operator.keyPath },
     serverCredentials: grpc.experimental.createCertificateProviderServerCredentials(
       provider,
       provider,
       false,
     ),
-    bearerPath: path("bearer"),
+    bearerPath: join(directory, "bearer"),
   };
 }
 

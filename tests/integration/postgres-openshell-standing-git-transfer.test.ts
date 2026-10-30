@@ -4,7 +4,6 @@ import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { Pool } from "pg";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AgentRevision, ComputeRevisionContext } from "../../packages/contracts/src/index.ts";
 import { exerciseInstallationRequests } from "../helpers/openshell-installation-github-requests.ts";
@@ -23,9 +22,9 @@ import {
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
 import { invoke, token } from "../helpers/openshell-online-wire.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
-import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
+import { clockBehind, preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
 import {
   expireStoppedClaims,
   waitForRevisionPass,
@@ -64,8 +63,7 @@ test(
   { ...requiresPostgres, timeout: 385_000 },
   async (t) => {
     let peer!: Awaited<ReturnType<typeof preparedStandingGitPeer>>;
-    const issuanceReader = new Pool({ connectionString: databaseUrl, max: 1 });
-    t.after(() => issuanceReader.end());
+    const issuanceReader = testPool(t, { connectionString: databaseUrl, max: 1 });
     const activeAtIssuance: (string | null)[] = [];
     // Observe each token POST at the supplier boundary, including the interval between
     // Compute returning ready and activation committing. Never use the worker's transaction.
@@ -119,6 +117,13 @@ test(
             beforeIssue,
             driver: protectedGit.owner.ref,
             installationAccess: true,
+            // GitHub issues 80 s tokens by the system clock. The owner's wall clock reads 50 s
+            // behind, inside the 60 s skew allowance, so it still finds its unchanged 60 s minimum
+            // validity after the skew (80 + 50 - 60 = 70 s). PostgreSQL and every Date.now()
+            // check keep real time: each token is usable for 20 s (expiry minus the skew), and the
+            // expired token's retirement below still waits for its real expiry plus the skew.
+            tokenLifetimeMs: 80_000,
+            ownerClock: clockBehind(50_000),
           })),
           requestedBinding: {
             repositoryRef: "team-installation",
@@ -607,7 +612,7 @@ test(
       // This provider would refuse DELETE for an expired credential. No such request is
       // needed after the authenticated expiry plus the owner's full clock-skew allowance.
       gh.setRevokeStatus(401);
-      await delay(Math.max(0, Math.max(issue1.expires + 60_100, deadline) - Date.now()));
+      await delay(Math.max(0, Math.max(issue1.expires, deadline) + 100 - Date.now()));
       assert.ok(Date.now() > Math.max(issue1.expires, deadline, world.gitExpiresAt));
       const signal = AbortSignal.timeout(15_000);
       const id = { bindingId, sandboxId, workspace, requestId: "expired" };
@@ -634,6 +639,20 @@ test(
         "cold observation does not claim a new fence",
       );
       assert.equal(await runtime.lookup(id, signal), undefined);
+      const custody = () =>
+        f.observerPool
+          .query(
+            "SELECT state,custody,sealed IS NULL AS erased FROM occ.prepared_github_attempts ORDER BY provider_expires_at",
+          )
+          .then((x) => x.rows);
+      // The admission has ended and GitHub's expiry has passed, but a GitHub clock behind
+      // PostgreSQL's could still accept the token. Inside the skew allowance, retirement neither
+      // sends a DELETE nor erases the sealed token; it waits.
+      await prepared.maintain();
+      assert.ok(Date.now() < issue1.expires + 60_000, "observed inside the skew allowance");
+      assert.deepEqual(await custody(), [{ state: "committed", custody: "retire", erased: false }]);
+      assert.equal(gh.trace.filter((x) => x.method === "DELETE").length, 0);
+      await delay(Math.max(0, issue1.expires + 60_100 - Date.now()));
       await start();
       await waitForRevisionPass(
         "same execution with a newly installed bounded successor",
@@ -665,12 +684,6 @@ test(
       assert.equal(gh.issuesOfTokens.length, 2);
       assert.deepEqual(activeAtIssuance, [revision.id, revision.id]);
       assert.ok(later > Math.max(deadline, issue1.expires + 60_000));
-      const custody = () =>
-        f.observerPool
-          .query(
-            "SELECT state,custody,sealed IS NULL AS erased FROM occ.prepared_github_attempts ORDER BY provider_expires_at",
-          )
-          .then((x) => x.rows);
       const expired = { state: "committed", custody: "expired", erased: true };
       assert.deepEqual(await custody(), [
         expired,

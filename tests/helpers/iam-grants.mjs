@@ -48,6 +48,34 @@ export function grantRole(
 }
 
 /**
+ * Adds a deny Restriction on `action` over `resourceKind` to a mutable Native IAM policy and returns
+ * it. Without `namespaceId` it applies Installation-wide; `resourceId` narrows it to one resource.
+ * The id defaults to one derived from the scope. Fixtures that read the policy on each request
+ * apply it from the next request on.
+ */
+export function restrict(policy, action, resourceKind, { id, namespaceId, resourceId } = {}) {
+  const restriction = {
+    id: id ?? ["deny", action, resourceKind, resourceId ?? namespaceId ?? "installation"].join("-"),
+    ...(namespaceId === undefined ? {} : { namespaceId }),
+    resourceKind,
+    ...(resourceId === undefined ? {} : { resourceId }),
+    action,
+    effect: "deny",
+  };
+  policy.restrictions.push(restriction);
+  return restriction;
+}
+
+/** Removes `restriction` from the policy; it must still be there. */
+export function liftRestriction(policy, restriction) {
+  const index = policy.restrictions.indexOf(restriction);
+  if (index === -1) {
+    throw new Error(`Restriction ${restriction.id} is not in the policy`);
+  }
+  policy.restrictions.splice(index, 1);
+}
+
+/**
  * An empty, mutable Native IAM state holding one `principal` identity per id (its subject is the
  * id), for fixtures that hand `{ loadNativeIAMState: async () => state }` to a NativeIAMDriver.
  */

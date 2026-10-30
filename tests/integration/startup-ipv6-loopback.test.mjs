@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
+import { jsonEvent } from "../helpers/json-lines.mjs";
 
 const startupEnvironment = {
   ...compileCacheEnvironment,
@@ -20,14 +21,7 @@ const startupCases = [
 
 function diagnostic(result, path) {
   const event = path.endsWith("server.mjs") ? "startup-error" : "installation.bootstrap-failed";
-  const line = result.stderr
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((entry) => JSON.parse(entry))
-    .find((entry) => entry.event === event);
-  assert.ok(line, result.stderr);
-  return line;
+  return jsonEvent(result.stderr, event, { strict: true });
 }
 
 function run(path, env) {

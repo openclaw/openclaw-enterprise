@@ -20,7 +20,7 @@
       "path": "tests/integration/docker-compute-real.test.mjs",
       "expectedTests": [
         "Docker Compose cleanup preserves the selected engine and removes volumes only when requested",
-        "Docker Compose development drives Docker Compute networks, containers, auth, cleanup, and real model turns",
+        "Docker Compose development drives Docker Compute networks, auth, cleanup, and Harness authentication refusal",
         "Docker embedded workspace setup guards first runtime and preserves files across container replacement",
         "Docker dedicated workspace setup guards first runtime and preserves files across container replacement"
       ]

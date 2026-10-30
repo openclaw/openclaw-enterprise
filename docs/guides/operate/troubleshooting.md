@@ -300,13 +300,14 @@ not prove an Agent has deployed or can run a model.
 
 `KUBERNETES_SECRET_WRITE_FORBIDDEN` means Kubernetes answered `403` to one of
 the version's private Secret writes or readbacks, so the worker failed the
-deployment without retrying. The worker log's `worker.compute-prepare-failed`
-line names the `step`. Check that the worker's
+deployment without retrying. A preparation failure's
+`worker.compute-prepare-failed` log line names the `step`. Check that the worker's
 [tenant RoleBindings](../deploy/production-agents.md#grant-tenant-rolebindings)
 grant `get`, `create` and `update` on `secrets` in the Agent's Kubernetes
 namespaces (with an execution cluster, also the control cluster's Gateway
 namespace), and that no admission policy or ResourceQuota refuses Secrets
-there. Then deploy again.
+there. Then deploy again. A running version's maintenance does not fail: it
+retries and recovers by itself once the grant is fixed.
 
 ## An Agent's Gateway or Harness Pod stays unready
 

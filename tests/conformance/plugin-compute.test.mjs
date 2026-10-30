@@ -19,6 +19,7 @@ import {
   AGENT_RUNTIME_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
   PLUGIN_RUNTIME_HELPERS,
+  gatewayRuntimeEntrypoint,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { startupPhaseHelper } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 import {
@@ -36,10 +37,14 @@ import {
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
+import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { listen as listenServer } from "../helpers/listen.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { waitForResult } from "../helpers/wait-for.mjs";
 
 const CODEX_LINEAR_NATIVE_ID = "linear@openai-curated-remote";
 const CODEX_LINEAR_REMOTE_ID = "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c";
@@ -50,6 +55,10 @@ const CODEX_ASANA_REMOTE_ID = "plugin_asdk_app_asana";
 const CODEX_ASANA_APP_ID = "asdk_app_asana";
 const PLUGIN_APP_SERVER_TOKEN_DOMAIN = "openclaw-plugin-runtime/app-server-token/v1";
 const nodeRequire = createRequire(import.meta.url);
+const gatewayRuntimeProvenance = JSON.stringify({
+  source: "https://github.com/openclaw/openclaw",
+  commit: (await readOpenclawSource()).commit,
+});
 
 function plain(value) {
   return JSON.parse(JSON.stringify(value));
@@ -73,16 +82,8 @@ function pluginAppServerToken(baseToken, revisionId, startupId) {
     .digest("hex");
 }
 
-async function waitForCondition(description, condition, timeoutMs = 1_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const result = await condition();
-    if (result !== undefined && result !== false) {
-      return result;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.fail(`Timed out waiting for ${description}.`);
+function waitForCondition(description, condition, timeoutMs = 1_000) {
+  return waitForResult(description, condition, { timeoutMs, intervalMs: 10 });
 }
 
 async function readStatusFromHandlerAsync(handler, path) {
@@ -152,6 +153,7 @@ function revision(overrides = {}) {
     configurationId: agent.configurationId,
     configurationKind: "agent",
     configurationGeneration: 1,
+    gatewayManagedMode: true,
     configuration: admitLoggingConfiguration(native, "info"),
     harnessAuth: {
       method: "api_key",
@@ -240,7 +242,7 @@ function kubernetesOptions(overrides = {}) {
   };
 }
 
-function codexListResponse(options = {}) {
+function codexSearchResponse(options = {}) {
   const plugins = options.plugins ?? [
     {
       id: options.nativeId ?? CODEX_LINEAR_NATIVE_ID,
@@ -257,16 +259,8 @@ function codexListResponse(options = {}) {
     },
   ];
   return {
-    marketplaces: [
-      {
-        name: "openai-curated-remote",
-        path: null,
-        interface: null,
-        plugins,
-      },
-    ],
-    marketplaceLoadErrors: [],
-    featuredPluginIds: [],
+    data: plugins.map((plugin) => ({ marketplaceName: "openai-curated-remote", plugin })),
+    nextCursor: null,
   };
 }
 
@@ -432,7 +426,8 @@ async function runCodexRuntimeHelper(runtime, handler, options = {}) {
       `${PLUGIN_RUNTIME_HELPERS}
 installCodexPlugins(
   ${JSON.stringify(runtime)},
-  ${JSON.stringify(options.failures ?? [])}
+  ${JSON.stringify(options.failures ?? [])},
+  codexAppServerRequest
 ).then(result.resolve, result.reject);`,
       sandbox,
     );
@@ -790,9 +785,9 @@ test("Codex runtime helper installs a plugin with skills and applies write actio
     if (method === "initialize") {
       return { serverInfo: { name: "codex", version: "0.149.0" } };
     }
-    if (method === "plugin/list") {
-      assert.deepEqual(params, {});
-      return codexListResponse();
+    if (method === "plugin/search") {
+      assert.deepEqual(params, { searchTerm: "linear", scope: "global", limit: 100 });
+      return codexSearchResponse();
     }
     if (method === "plugin/read") {
       assert.deepEqual(params, {
@@ -887,7 +882,7 @@ test("Codex runtime helper installs a plugin with skills and applies write actio
     requests.map((request) => request.method),
     [
       "initialize",
-      "plugin/list",
+      "plugin/search",
       "initialize",
       "plugin/read",
       "initialize",
@@ -924,8 +919,8 @@ test("Codex startup explicitly denies inherited apps and replaces inherited appr
     if (method === "initialize") {
       return { serverInfo: { name: "codex", version: "0.158.0" } };
     }
-    if (method === "plugin/list") {
-      return codexListResponse();
+    if (method === "plugin/search") {
+      return codexSearchResponse();
     }
     if (method === "plugin/read") {
       return codexReadResponse();
@@ -1070,8 +1065,8 @@ test("Codex runtime helper verifies explicit reviewers before readiness without 
           if (method === "initialize") {
             return { serverInfo: { name: "codex", version: "0.156.0" } };
           }
-          if (method === "plugin/list") {
-            return codexListResponse();
+          if (method === "plugin/search") {
+            return codexSearchResponse();
           }
           if (method === "plugin/read") {
             return codexReadResponse();
@@ -1130,8 +1125,8 @@ test("Codex runtime helper discovers tool policy after installation and before r
     if (method === "initialize") {
       return { serverInfo: { name: "codex", version: "0.156.0" } };
     }
-    if (method === "plugin/list") {
-      return codexListResponse();
+    if (method === "plugin/search") {
+      return codexSearchResponse();
     }
     if (method === "plugin/read") {
       return codexReadResponse({
@@ -1253,8 +1248,8 @@ test("Codex runtime helper rejects incomplete or unbounded tool discovery before
           if (method === "initialize") {
             return { serverInfo: { name: "codex", version: "0.156.0" } };
           }
-          if (method === "plugin/list") {
-            return codexListResponse();
+          if (method === "plugin/search") {
+            return codexSearchResponse();
           }
           if (method === "plugin/read") {
             return codexReadResponse();
@@ -1298,8 +1293,8 @@ test("Codex runtime helper reports plugin install warnings without retrying", as
       if (method === "initialize") {
         return { serverInfo: { name: "codex", version: "0.149.0" } };
       }
-      if (method === "plugin/list") {
-        return codexListResponse();
+      if (method === "plugin/search") {
+        return codexSearchResponse();
       }
       if (method === "plugin/read") {
         readCount += 1;
@@ -1377,8 +1372,8 @@ test("Codex runtime helper reports connector-auth warnings with the admitted key
       if (method === "initialize") {
         return { serverInfo: { name: "codex", version: "0.149.0" } };
       }
-      if (method === "plugin/list") {
-        return codexListResponse();
+      if (method === "plugin/search") {
+        return codexSearchResponse();
       }
       if (method === "plugin/read") {
         return codexReadResponse();
@@ -1599,8 +1594,8 @@ test("Codex runtime helper keeps malformed matching install responses generic", 
           if (method === "initialize") {
             return { serverInfo: { name: "codex", version: "0.149.0" } };
           }
-          if (method === "plugin/list") {
-            return codexListResponse();
+          if (method === "plugin/search") {
+            return codexSearchResponse();
           }
           if (method === "plugin/read") {
             return codexReadResponse();
@@ -1629,6 +1624,34 @@ test("Codex runtime helper keeps malformed matching install responses generic", 
   }
 });
 
+// Number() read "12abc" as NaN, "" as 0 and 3e9 as a request timeout that fires after 1 ms
+// (finding 2312). The install deadline shares the bound.
+test("Codex runtime refuses request timeouts and install deadlines outside 1 to 2147483647 ms", () => {
+  const timers = (env) =>
+    JSON.parse(
+      vm.runInNewContext(
+        `${PLUGIN_RUNTIME_HELPERS}
+JSON.stringify([CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS, CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS]);`,
+        { Buffer, process: { env }, require: nodeRequire },
+      ),
+    );
+  assert.deepEqual(timers({}), [10_000, 60_000]);
+  for (const name of [
+    "OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS",
+    "OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS",
+  ]) {
+    const accepted = timers({ [name]: String(MAX_TIMER_DELAY_MS) });
+    assert.ok(accepted.includes(MAX_TIMER_DELAY_MS), name);
+    for (const value of ["12abc", "", "0", "-5", "1.5", "3e9", String(MAX_TIMER_DELAY_MS + 1)]) {
+      assert.throws(
+        () => timers({ [name]: value }),
+        { message: `${name} must be 1 to 2147483647 ms.` },
+        `${name}=${JSON.stringify(value)}`,
+      );
+    }
+  }
+});
+
 test("Codex runtime cannot report installation success when its deadline expires before the first attempt", async () => {
   let now = 0;
   class FixtureDate extends Date {
@@ -1650,6 +1673,36 @@ test("Codex runtime cannot report installation success when its deadline expires
   assert.deepEqual(result.requests, []);
 });
 
+test("Codex selected-plugin search stops paging when the installation budget expires", async () => {
+  let now = 0;
+  class FixtureDate extends Date {
+    static now() {
+      return now;
+    }
+  }
+  let pages = 0;
+  const result = await runCodexRuntimeHelper(
+    { manifest: pluginRuntimeSpecForRevision(revision({ plugins: codexLinearPluginState() })) },
+    (method) => {
+      if (method === "initialize") {
+        return {};
+      }
+      assert.equal(method, "plugin/search", "expired search must not reach installation or writes");
+      assert.equal(++pages, 1, "the client must not fetch a continuation after expiry");
+      now = 25;
+      // A fuzzy result can omit the selected ID while offering another page.
+      return {
+        ...codexSearchResponse({ nativeId: "other@openai-curated-remote", name: "other" }),
+        nextCursor: "continuation",
+      };
+    },
+    { captureError: true, Date: FixtureDate },
+  );
+  assert.match(result.error?.message ?? "", /search deadline expired/);
+  assert.equal(result.value, undefined);
+  assert.equal(pages, 1);
+});
+
 test("Codex runtime helper keeps pre-install native uncertainty generic", async () => {
   const state = codexLinearPluginState();
   const runtime = {
@@ -1661,8 +1714,8 @@ test("Codex runtime helper keeps pre-install native uncertainty generic", async 
       if (method === "initialize") {
         return { serverInfo: { name: "codex", version: "0.149.0" } };
       }
-      if (method === "plugin/list") {
-        return codexListResponse();
+      if (method === "plugin/search") {
+        return codexSearchResponse();
       }
       if (method === "plugin/read") {
         throw new Error("catalog read unavailable");
@@ -1694,8 +1747,8 @@ test("Codex runtime keeps disabled selected plugins default-denied while preserv
       if (method === "initialize") {
         return { serverInfo: { name: "codex", version: "0.149.0" } };
       }
-      if (method === "plugin/list") {
-        return codexListResponse();
+      if (method === "plugin/search") {
+        return codexSearchResponse();
       }
       if (method === "plugin/read") {
         readCount += 1;
@@ -1794,8 +1847,8 @@ test("Codex runtime installs and reports only enabled selections in mixed plugin
     if (method === "initialize") {
       return { serverInfo: { name: "codex", version: "0.149.0" } };
     }
-    if (method === "plugin/list") {
-      return codexListResponse({
+    if (method === "plugin/search") {
+      return codexSearchResponse({
         plugins: [
           {
             id: CODEX_LINEAR_NATIVE_ID,
@@ -1943,8 +1996,8 @@ test("Codex runtime helper fails before readiness when catalog identity is absen
         if (method === "initialize") {
           return { serverInfo: { name: "codex", version: "0.149.0" } };
         }
-        if (method === "plugin/list") {
-          return codexListResponse({
+        if (method === "plugin/search") {
+          return codexSearchResponse({
             nativeId: "asana@openai-curated-remote",
             remotePluginId: "plugin_asdk_app_asana",
             name: "asana",
@@ -1988,8 +2041,8 @@ test("Codex runtime helper rejects catalog drift before app grants and readiness
             if (method === "initialize") {
               return { serverInfo: { name: "codex", version: "0.149.0" } };
             }
-            if (method === "plugin/list") {
-              return codexListResponse();
+            if (method === "plugin/search") {
+              return codexSearchResponse();
             }
             if (method === "plugin/read") {
               // A post-install catalog read must still match the admitted capabilities.
@@ -2038,8 +2091,8 @@ test("Codex runtime helper verifies defaults and rejects inherited unselected ap
           if (method === "initialize") {
             return { serverInfo: { name: "codex", version: "0.156.0" } };
           }
-          if (method === "plugin/list") {
-            return codexListResponse();
+          if (method === "plugin/search") {
+            return codexSearchResponse();
           }
           if (method === "plugin/read") {
             return codexReadResponse();
@@ -2213,8 +2266,8 @@ test("Codex runtime helper checks effective app, tool, and account policy before
           if (method === "initialize") {
             return { serverInfo: { name: "codex", version: "0.156.0" } };
           }
-          if (method === "plugin/list") {
-            return codexListResponse();
+          if (method === "plugin/search") {
+            return codexSearchResponse();
           }
           if (method === "plugin/read") {
             return codexReadResponse();
@@ -2272,8 +2325,8 @@ test("Codex runtime helper fails before readiness when selected plugin lacks app
         if (method === "initialize") {
           return { serverInfo: { name: "codex", version: "0.149.0" } };
         }
-        if (method === "plugin/list") {
-          return codexListResponse();
+        if (method === "plugin/search") {
+          return codexSearchResponse();
         }
         if (method === "plugin/read") {
           return codexReadResponse({ apps: [] });
@@ -3389,6 +3442,7 @@ test("Codex gateway supervisor waits for its Harness plugin status without a dea
     }),
   );
   const files = new Map([
+    ["/opt/oce/runtime/provenance.json", gatewayRuntimeProvenance],
     [
       "/etc/openclaw/openclaw.json",
       JSON.stringify({
@@ -3431,6 +3485,7 @@ test("Codex gateway supervisor waits for its Harness plugin status without a dea
   const sandbox = {
     AbortSignal,
     Buffer,
+    structuredClone,
     JSON,
     URL,
     Date: FixtureDate,
@@ -3506,8 +3561,12 @@ test("Codex gateway supervisor waits for its Harness plugin status without a dea
             child = { kill() {}, on() {} };
             return child;
           },
-          spawnSync() {
-            throw new Error("gateway bridge must not run native plugin installers for Codex peers");
+          spawnSync(command, args, options) {
+            // Native image tests separately exercise the real config validator.
+            assert.equal(command, "node");
+            assert.deepEqual(plain(args), ["/app/openclaw.mjs", "config", "validate", "--json"]);
+            assert.equal(options.env.OPENCLAW_CONFIG_READONLY, "1");
+            return { status: 0, stdout: JSON.stringify({ valid: true }) };
           },
         };
       }
@@ -3559,6 +3618,7 @@ async function startCodexGatewaySupervisor(
   {
     bindingDeviceId,
     writableConfig = false,
+    managedMode = false,
     savedFiles,
     initialPeerStatus,
     runtimeStatus = false,
@@ -3597,6 +3657,7 @@ async function startCodexGatewaySupervisor(
     signalHandlers: {},
     statusHandler: undefined,
     files: new Map([
+      ["/opt/oce/runtime/provenance.json", gatewayRuntimeProvenance],
       [
         configurationPath,
         JSON.stringify({
@@ -3622,12 +3683,7 @@ async function startCodexGatewaySupervisor(
       JSON.stringify({ revisionId, deviceId: bindingDeviceId }),
     );
   }
-  const listen = async (handler) => {
-    const server = peerHttp.createServer(handler);
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    t.after(() => new Promise((resolve) => server.close(resolve)));
-    return server.address().port;
-  };
+  const listen = (handler) => listenServer(t, peerHttp.createServer(handler));
   const peerPort = await listen(async (request, response) => {
     assert.equal(request.url, "/openclaw/plugin-runtime/status");
     fixture.peerRequests++;
@@ -3654,6 +3710,7 @@ async function startCodexGatewaySupervisor(
   const sandbox = {
     AbortSignal,
     Buffer,
+    structuredClone,
     JSON,
     URL,
     console: {
@@ -3701,8 +3758,8 @@ async function startCodexGatewaySupervisor(
         fixture.exits.push(code);
       },
     },
-    setInterval(callback) {
-      fixture.intervals.push(callback);
+    setInterval(callback, delay) {
+      fixture.intervals.push({ callback, delay });
       return { unref() {} };
     },
     clearInterval() {},
@@ -3756,7 +3813,7 @@ async function startCodexGatewaySupervisor(
       }
       if (specifier === "node:child_process") {
         return {
-          spawn(command, args) {
+          spawn(command, args, options) {
             assert.equal(command, "node");
             assert.deepEqual(plain(args), [
               "/app/openclaw.mjs",
@@ -3766,6 +3823,7 @@ async function startCodexGatewaySupervisor(
             ]);
             const child = {
               token: sandbox.process.env.APP_SERVER_TOKEN,
+              env: { ...options.env },
               config: JSON.parse(fixture.files.get("/home/node/.openclaw/openclaw.json")),
               killed: [],
               exited: undefined,
@@ -3788,8 +3846,12 @@ async function startCodexGatewaySupervisor(
             fixture.children.push(child);
             return child;
           },
-          spawnSync() {
-            throw new Error("gateway bridge must not run native plugin installers for Codex peers");
+          spawnSync(command, args, options) {
+            // Native image tests separately exercise the real config validator.
+            assert.equal(command, "node");
+            assert.deepEqual(plain(args), ["/app/openclaw.mjs", "config", "validate", "--json"]);
+            assert.equal(options.env.OPENCLAW_CONFIG_READONLY, "1");
+            return { status: 0, stdout: JSON.stringify({ valid: true }) };
           },
         };
       }
@@ -3802,8 +3864,9 @@ async function startCodexGatewaySupervisor(
   fixture.token = (startupId) =>
     pluginAppServerToken("base-app-server-token", revisionId, startupId);
   // The peer poll is the last interval the wrapper registers.
-  fixture.pollPeer = () => fixture.intervals.at(-1)();
-  vm.runInNewContext(GATEWAY_RUNTIME_ENTRYPOINT, sandbox);
+  // The peer status poll runs every two seconds; a Gateway stop adds its own recheck.
+  fixture.pollPeer = () => fixture.intervals.findLast(({ delay }) => delay === 2_000).callback();
+  vm.runInNewContext(gatewayRuntimeEntrypoint(managedMode), sandbox);
   if (expectStart) {
     await waitForCondition("gateway supervisor start", () => fixture.children.length === 1);
   }
@@ -4223,8 +4286,8 @@ test("Codex gateway supervisor retains refusal of a native-edited managed bridge
   assert.notEqual(bridges[0].plugins.linear.name, "Native edit");
 });
 
-test("Codex gateway supervisor respawns OpenClaw in place for a changed Harness peer", async (t) => {
-  const gateway = await startCodexGatewaySupervisor(t);
+test("Codex gateway supervisor keeps managed-mode restrictions when respawning for a changed Harness peer", async (t) => {
+  const gateway = await startCodexGatewaySupervisor(t, { managedMode: true, writableConfig: true });
   const [first] = gateway.children;
   assert.equal(first.token, gateway.token("agent-startup-1"));
   assert.equal(
@@ -4254,6 +4317,15 @@ test("Codex gateway supervisor respawns OpenClaw in place for a changed Harness 
   first.exit(null, "SIGTERM");
   await waitForCondition("the respawned Gateway", () => gateway.children.length === 2);
   const second = gateway.children[1];
+  for (const child of [first, second]) {
+    assert.equal(child.env.OPENCLAW_CONFIG_READONLY, "1");
+    assert.equal(child.env.OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS, "1");
+    assert.equal(child.env.OPENCLAW_DISABLE_CRON_HOST_EXECUTION, "1");
+    assert.deepEqual(child.config.tools.gatewayPolicy.automations, {
+      scope: "caller",
+      allowCommandJobs: false,
+    });
+  }
   assert.equal(second.token, gateway.token("agent-startup-2"));
   assert.equal(
     second.config.plugins.entries.codex.config.codexPlugins.plugins.linear.enabled,
@@ -4556,6 +4628,7 @@ for (const [dedicated, withBroker, proxyEnabled] of [
         : undefined,
     );
     const files = new Map([
+      ["/opt/oce/runtime/provenance.json", gatewayRuntimeProvenance],
       [
         "/etc/openclaw/openclaw.json",
         JSON.stringify({
@@ -4580,6 +4653,7 @@ for (const [dedicated, withBroker, proxyEnabled] of [
     const sandbox = {
       AbortSignal,
       Buffer,
+      structuredClone,
       JSON,
       URL,
       console: { error() {} },
@@ -4642,8 +4716,12 @@ for (const [dedicated, withBroker, proxyEnabled] of [
               child = { kill() {}, on() {} };
               return child;
             },
-            spawnSync() {
-              throw new Error("plugin-free bridge must not run native plugin installers");
+            spawnSync(command, args, options) {
+              assert.equal(dedicated, true);
+              assert.equal(command, "node");
+              assert.deepEqual(plain(args), ["/app/openclaw.mjs", "config", "validate", "--json"]);
+              assert.equal(options.env.OPENCLAW_CONFIG_READONLY, "1");
+              return { status: 0, stdout: JSON.stringify({ valid: true }) };
             },
           };
         }

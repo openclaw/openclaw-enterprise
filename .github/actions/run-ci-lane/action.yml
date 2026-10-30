@@ -4,6 +4,10 @@ inputs:
   lane:
     description: Lane name passed to the CI runner.
     required: true
+  test-file:
+    description: Exact manifest file for focused proof. Empty runs the complete lane.
+    required: false
+    default: ""
   profile:
     description: Tool setup profile passed to scripts/ci/setup-tools.sh.
     required: true
@@ -46,6 +50,13 @@ runs:
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
       with:
         node-version: ${{ inputs.node-version }}
+    - name: Validate focused test selection
+      if: inputs.test-file != ''
+      shell: bash
+      env:
+        CI_SELECTED_LANE: ${{ inputs.lane }}
+        CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
+      run: node scripts/ci/run-tests.mjs check-selection "$CI_SELECTED_LANE" --file "$CI_SELECTED_TEST_FILE"
     - id: pnpm-store
       uses: ./.github/actions/setup-pnpm-store-cache
       with:
@@ -118,7 +129,7 @@ runs:
     - name: Run docs check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
-      run: pnpm docs:install && pnpm docs:check && pnpm docs:build
+      run: pnpm docs:install && pnpm openapi:lint && pnpm docs:check && pnpm docs:build
     - name: Install documentation browser dependencies
       # Only browser part 1 runs docs-compute-matrix. Baseline part 1's docs-site
       # test needs Pagefind; the docs check above installs it otherwise.
@@ -128,7 +139,7 @@ runs:
     - name: Check Go CLI
       if: inputs.lane == 'checks-baseline-1'
       shell: bash
-      run: pnpm cli:check && pnpm cli:test
+      run: pnpm cli:check && node scripts/ci/go-test.mjs
     - name: Typecheck and build workspace output
       # This one compiler run builds the workspace (some part 2 tests read
       # apps/controller/dist) and checks TypeScript tests without emitting them.
@@ -156,7 +167,7 @@ runs:
       run: node scripts/ci/repository-platform-headroom.mjs
     - name: Expose image cache credentials
       id: image-cache
-      if: inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'
+      if: inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         script: |
@@ -173,7 +184,7 @@ runs:
       env:
         # Image builds keep a few minutes of it for the lane's tests (prepare.mjs).
         CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
-        OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
+        OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
         ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
       run: node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV"
@@ -199,15 +210,25 @@ runs:
         # atomically, so concurrent files share it. No test forwards it into a
         # container.
         NODE_COMPILE_CACHE: ${{ runner.temp }}/node-compile-cache
+        CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
       run: |
+        launch=()
+        selection=()
+        if [[ -n "$CI_SELECTED_TEST_FILE" ]]; then
+          selection=(--file "$CI_SELECTED_TEST_FILE")
+        fi
         if [[ "${{ inputs.lane }}" == k3d-fixture-configuration ]]; then
           # Hosted runners have been lost mid-lane (suspected memory pressure); a
           # lost runner skips every later step, so the sampler also logs live.
           bash scripts/ci/memory-sampler.sh "$RUNNER_TEMP/memory/${{ inputs.lane }}.log" &
           sampler=$!
           trap 'kill "$sampler" 2>/dev/null || true' EXIT
+        elif [[ "${{ inputs.lane }}" == checks-browser || "${{ inputs.lane }}" == checks-browser-2 ]]; then
+          # Actions sends cancellation to the step's entry process. Let the browser
+          # runner receive it directly so it can stop its detached test processes.
+          launch=(exec)
         fi
-        node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
+        "${launch[@]}" node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json" "${selection[@]}"
     - name: Show last memory samples
       if: (failure() || cancelled()) && inputs.lane == 'k3d-fixture-configuration'
       continue-on-error: true

@@ -22,10 +22,9 @@ import {
   gatewayRequest,
   createLoopbackServiceConfiguration,
 } from "../fixtures/repository-credentials/service.mjs";
-import {
-  createGitHubTokenServiceFactory,
-  startServiceListeners,
-} from "../fixtures/repository-credentials/service-resources.mjs";
+import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.mjs";
+import { fileCompileCache } from "../helpers/compile-cache.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 // Each case starts its own service, Git and GitHub fixtures and spends most of
 // its time waiting on stock Git children. The cases register here and run two at
@@ -39,7 +38,6 @@ const missingRef = { message: "command failed (exit 128)" };
 // Stock Git must reach the gateway under its public HTTPS name. A CONNECT proxy
 // forwards only that name to the listener; TLS still terminates at the gateway.
 async function startGatewayProxy(resources, gatewayHost, gatewayPort) {
-  const sockets = new Set();
   const server = createServer((_, response) => response.writeHead(405).end());
   server.on("connect", (request, socket, head) => {
     if (request.url !== `${gatewayHost}:443`) {
@@ -57,22 +55,11 @@ async function startGatewayProxy(resources, gatewayHost, gatewayPort) {
       [socket, upstream],
       [upstream, socket],
     ]) {
-      sockets.add(one);
-      one.once("close", () => {
-        sockets.delete(one);
-        other.destroy();
-      });
+      one.once("close", () => other.destroy());
       one.on("error", () => other.destroy());
     }
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  resources.after(async () => {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    await new Promise((resolve) => server.close(resolve));
-  });
-  return `http://127.0.0.1:${server.address().port}`;
+  return `http://127.0.0.1:${await listen(resources, server)}`;
 }
 
 async function startTokenService(t, limits = {}, configuration = {}) {
@@ -83,21 +70,13 @@ async function startTokenService(t, limits = {}, configuration = {}) {
   const github = await startGitHubFixture(resources, { clock, tls });
   const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
   // Synthetic host token: the fake GitHub accepts it on git and REST without issuing it.
-  const token = `gho_${"t".repeat(36)}`;
-  const tokenIndex = github.acceptStatic(token);
-  const factory = await createGitHubTokenServiceFactory(resources, {
+  const { token, tokenIndex, service, listeners } = await startStaticTokenService(resources, {
     config,
-    clock,
-    token,
-    configuration,
-    trustedEndpoints: { apiOrigin: github.origin, gitOrigin: git.origin, ca: tls.ca },
-  });
-  const { service, listeners } = await startServiceListeners(resources, {
-    config,
-    factory,
     clock,
     tls,
-    upstreamOrigins: [github.origin, git.origin],
+    github,
+    gitOrigin: git.origin,
+    configuration,
   });
   const proxy = await startGatewayProxy(
     resources,
@@ -107,12 +86,18 @@ async function startTokenService(t, limits = {}, configuration = {}) {
   return { clock, tls, config, github, git, service, listeners, token, tokenIndex, proxy };
 }
 
+// Git starts the credential helper and the hook dispatcher (for every hook, three times
+// per ref update) as Node children of an allowlisted environment, so the compile cache
+// is passed explicitly.
+const compileCache = await fileCompileCache("repository-credentials-github-token");
+
 async function stockGit(t, fixture, opened) {
   const material = await createNativeClientMaterial(t, [{ opened, repositoryRef: "fixture" }], {
     ca: fixture.tls.ca,
   });
   const home = await temporaryDirectory(t, "repository-token-home-");
   const env = cleanEnvironment({
+    NODE_COMPILE_CACHE: compileCache,
     HOME: home,
     GIT_CONFIG_SYSTEM: join(material.root, "gitconfig"),
     HTTPS_PROXY: fixture.proxy,

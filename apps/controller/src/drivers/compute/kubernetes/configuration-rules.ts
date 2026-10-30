@@ -3,6 +3,7 @@ import type {
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import {
+  enabledChannelEntries,
   invalidHeaderNameRequirement,
   isAdmittedHeaderName,
   isCredentialHeaderName,
@@ -102,29 +103,23 @@ export function requireChannelTopology(
   }
 }
 
-const IGNORED_CHANNEL_KEYS: readonly string[] = ["defaults", "modelByChannel"];
-
 /**
- * The enabled `channels.<provider>` entries, in Configuration order. Every provider must be
- * one Kubernetes Compute runs (`supported`); a disabled entry is ignored.
+ * The enabled `channels.<provider>` entries, in Configuration order (enabledChannelEntries).
+ * Every provider must be one Kubernetes Compute runs (`supported`).
  */
 export function enabledChannelProviders(
   configuration: Readonly<OpenClawConfigurationDocument>,
   supported: readonly string[],
   createError: SettingError,
 ): string[] {
-  const enabled: string[] = [];
-  for (const [provider, channel] of Object.entries(asRecord(configuration.channels) ?? {})) {
-    if (IGNORED_CHANNEL_KEYS.includes(provider) || asRecord(channel)?.enabled === false) {
-      continue;
-    }
+  const enabled = enabledChannelEntries(configuration);
+  for (const provider of enabled) {
     if (!supported.includes(provider)) {
       throw createError(
         keyedSettingPath("channels", provider),
         `is not a supported channel: use ${supported.join(" or ")}, or set its enabled to false`,
       );
     }
-    enabled.push(provider);
   }
   return enabled;
 }
@@ -134,7 +129,7 @@ const HARNESS_BINDING = "model credentials come from the Agent's Harness authent
 const PROVIDER_ENVIRONMENT =
   "the Agent's Harness authentication binding owns model provider environment";
 const MODEL_CREDENTIAL_ENVIRONMENT =
-  /^(?:OPENAI_|ANTHROPIC_|CODEX_(?:ACCESS_TOKEN|CHATGPT_WORKSPACE_ID|LOGIN_MODE)$)/i;
+  /^(?:OPENAI_|ANTHROPIC_|OCE_MODEL_API_KEY$|CODEX_(?:ACCESS_TOKEN|CHATGPT_WORKSPACE_ID|LOGIN_MODE)$)/i;
 // The refusal names the header, so it explains itself whatever word the rule matched; never its
 // value. A header name is not a secret. A long one is cut so the message fits its cap.
 const credentialHeaderRequirement = (name: string): string =>
@@ -180,8 +175,6 @@ const AGENT_MODEL_SETTINGS: readonly (readonly string[])[] = [
   ["subagents", "model"],
   ["heartbeat", "model"],
   ["compaction", "model"],
-  ["compaction", "memoryFlush", "model"],
-  ["embeddedAgent", "cyberFailover", "model"],
   ["tools", "exec", "reviewer", "model"],
   ["tts", "summaryModel"],
 ];

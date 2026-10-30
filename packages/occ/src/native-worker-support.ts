@@ -1,7 +1,7 @@
 import type { SandboxDriver, SandboxFacet } from "@openclaw-enterprise/contracts";
 
 /**
- * Whether the OpenClaw commit pinned in deploy/runtime/Dockerfile is qualified for
+ * Whether the OpenClaw commit pinned in deploy/runtime/openclaw-source.json is qualified for
  * the complete dedicated native OpenClaw flow: required worker placement
  * (`cloudWorkers.requiredProfile`), node enrollment, workspace access, and native
  * model execution from canonical `models.providers` configuration. No test derives

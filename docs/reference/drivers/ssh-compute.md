@@ -72,14 +72,14 @@ PluginDriver proof paths.
 | Setting                                  | Contract                                                                                                                                               |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ssh.identityFile`, `ssh.knownHostsFile` | Required absolute worker-local file paths.                                                                                                             |
-| `ssh.connectTimeoutSeconds`              | Positive safe integer, default `10`.                                                                                                                   |
+| `ssh.connectTimeoutSeconds`              | Positive integer up to `2147483647` (the OpenSSH limit), default `10`.                                                                                 |
 | `hosts`                                  | Nonempty map keyed by exact platform Namespace **name**, not resource ID.                                                                              |
 | `hosts.<name>.address`, `.user`          | Required hostname/IP and SSH user `root`.                                                                                                              |
 | `hosts.<name>.port`                      | Integer `1`–`65535`, default `22`.                                                                                                                     |
-| `hosts.<name>.nodePath`, `.openclawPath` | Optional absolute host-specific overrides.                                                                                                             |
-| `runtime.nodePath`, `.openclawPath`      | Required absolute shared host executable/entrypoint paths.                                                                                             |
+| `hosts.<name>.nodePath`, `.openclawPath` | Optional absolute host-specific overrides, outside `/tmp` and `/var/tmp`.                                                                              |
+| `runtime.nodePath`, `.openclawPath`      | Required absolute shared host executable/entrypoint paths, outside `/tmp` and `/var/tmp`.                                                              |
 | `runtime.user`                           | Required non-root account-name prefix for Driver-managed per-Agent users and private groups.                                                           |
-| `runtime.root`                           | Required absolute state root; `/var/lib/openclaw-enterprise` is recommended. Never under `/tmp` or `/var/tmp`: `PrivateTmp` hides those from the unit. |
+| `runtime.root`                           | Required absolute state root, such as `/var/lib/openclaw-enterprise`. Startup refuses `/`, `.` or `..` segments, `/tmp` and `/var/tmp` (`PrivateTmp`). |
 | `runtime.systemdUnitDirectory`           | Absolute path, default `/etc/systemd/system`.                                                                                                          |
 | `network.gatewayPortRange`               | Inclusive integers `1024 <= start <= end <= 65535`.                                                                                                    |
 
@@ -182,8 +182,9 @@ five seconds. Hooks must observe that signal. Only successful readiness writes
 Activation restarts the gateway and interrupts Agent service.
 
 The unit runs `<nodePath> <openclawPath> gateway --port <port>` as the Agent's private Unix account,
-with `HOME`, `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, and
-`OPENCLAW_GATEWAY_PORT`. It uses `Restart=always`, `RestartSec=2`, `SIGTERM`,
+with `HOME`, `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`,
+`OPENCLAW_GATEWAY_PORT`, and `OPENCLAW_NO_AUTO_UPDATE=1`, so OpenClaw does not
+check for or install its own updates. It uses `Restart=always`, `RestartSec=2`, `SIGTERM`,
 `TimeoutStopSec=30`, `NoNewPrivileges=true`, and `PrivateTmp=true`. The saved
 document owns logging; the Driver sets no `OPENCLAW_LOG_LEVEL`. Logs go to journald.
 
@@ -191,7 +192,7 @@ document owns logging; the Driver sets no `OPENCLAW_LOG_LEVEL`. Logs go to journ
 ownership and returns; the worker only needs deactivation for the dedicated
 topology, which SSH preparation rejects. `stopRevision` invokes selected
 `beforeWorkloadStop` hooks, stops and disables the unit, and removes `current`
-and `served.json` while retaining the immutable Agent revision snapshot, home, state,
+and `served.json` while retaining the saved Agent revision, home, state,
 and operator credentials. A later deployment can activate its newly saved
 snapshot. `retireRevision` invokes selected
 `beforeWorkloadStop` hooks and removes only that snapshot. If it is still
@@ -220,10 +221,11 @@ verified teardown.
 When native Configuration omits `gateway.auth.mode`, the Driver renders
 `password` mode with a managed environment SecretRef using
 `OPENCLAW_GATEWAY_PASSWORD`. Explicit `password` and `trusted-proxy` modes are
-supported. An explicit password must use that variable's default-provider
-environment SecretRef; trusted proxy can opt into the same loopback password.
-The Driver admits only supported authentication fields and modes before host
-changes.
+supported. An explicit password must be `${OPENCLAW_GATEWAY_PASSWORD}` or that
+variable's default-provider environment SecretRef; trusted proxy can opt into the
+same loopback password. Deployment refuses any other mode, an unsupported
+authentication field, another password reference, or a `gateway` or `gateway.auth`
+that is not an object, with `409` naming the setting, before admitting a revision.
 
 The helper creates a private per-Agent `gateway-password.env` when the managed
 password is needed. Later versions reuse that file; the Driver does not rotate
@@ -249,7 +251,8 @@ load changed environment values. Agent and Namespace deletion remove this file.
 
 Enabled Slack requires [Secret-backed credential validation](slack-channel.md#credential-validation).
 The host environment file cannot satisfy that requirement, and SSH does not
-deliver OCC Secrets. Use [Kubernetes Compute](kubernetes-compute.md) for that path.
+deliver OCC Secrets: deployment and provisioning refuse non-empty Configuration
+`secretBindings` with `400`. Use [Kubernetes Compute](kubernetes-compute.md) for that path.
 
 Other native channels require both OCC admission and support in the host's
 OpenClaw build. Separate Unix users and private groups protect sibling state and native

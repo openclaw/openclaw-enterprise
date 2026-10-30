@@ -127,7 +127,9 @@ The worker emits fixed operational event classes through the same logger:
   or for a transient dependency its closed failure code, with `dependency` naming
   the dependency. An HTTP failure adds `status`, and the Kubernetes Status `reason`
   when its cause keeps one, such as `403` and `Forbidden` for a refused Secret
-  write. A version pass that loses the race for the Agent's selected version logs
+  write. When a bundled Compute Driver's cleanup after the failed preparation or
+  activation failed too, the pass adds `cleanupCause`, the first cleanup failure's
+  class. A version pass that loses the race for the Agent's selected version logs
   outcome `retry` with code `ACTIVE_REVISION_CHANGED`; the work fails once its
   attempts are exhausted.
   A pass that could not stop a refused candidate stays pending with code
@@ -240,6 +242,9 @@ A prepared repository App key that cannot sign stops the worker with
   spaces (a trailing newline counts). Native admin without the path reports
   this code too. Helm mounts the file from `gatewayRouting.apiKeySecretName`;
   see [gateway routing](gateway-routing.md#service-key-and-native-identity).
+- **`WORKER_READINESS_PATH_INVALID` or `WORKER_LIVENESS_PATH_INVALID` at startup:**
+  The worker refuses an `OCC_WORKER_READINESS_PATH` or `OCC_WORKER_LIVENESS_PATH`
+  that is relative, names a directory, or cannot be written.
 - **`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED` at startup:** GitHub, Google
   and OIDC sign-in support host-only cookies only, so the API refuses any of
   them with native admin enabled, before it connects to the database. Turn off

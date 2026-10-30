@@ -20,6 +20,24 @@ type FieldErrors = Readonly<ConsoleApiError["details"]>;
 
 const pointer = (key: string) => key.replaceAll("~", "~0").replaceAll("/", "~1");
 
+// The dotted setting path for a JSON pointer, as the API's own refusals name a setting
+// ("Configuration setting network.allow[0].host"), so no copy shows a pointer (finding 2538).
+function settingPath(path: string) {
+  return path
+    .split("/")
+    .slice(1)
+    .map((key) => key.replaceAll("~1", "/").replaceAll("~0", "~"))
+    .reduce(
+      (dotted, key) =>
+        /^\d+$/.test(key) ? `${dotted}[${key}]` : dotted ? `${dotted}.${key}` : key,
+      "",
+    );
+}
+
+// A field error's text: the API's sentence, or one that names no internal code when it sent none.
+const detailText = (detail: FieldErrors[number]) =>
+  detail.message ?? "This value does not match the setting's schema.";
+
 function initialValue(schema: FieldSchema | boolean): unknown {
   if (typeof schema === "boolean") {
     return "";
@@ -212,11 +230,11 @@ export function configurationFields(
               ? () => (control.value === "" ? null : Number(control.value))
               : () => control.value;
         }
+        // JSON Schema counts code points; native input lengths count UTF-16 units.
+        // Leave string length validation to the resource owner to avoid truncating input.
         for (const [source, target] of [
           ["minimum", "min"],
           ["maximum", "max"],
-          ["minLength", "minlength"],
-          ["maxLength", "maxlength"],
           ["pattern", "pattern"],
         ] as const) {
           if (definition[source] !== undefined) {
@@ -264,9 +282,7 @@ export function configurationFields(
       );
     }
     for (const detail of details.filter((item) => item.path === path)) {
-      box.append(
-        element("p", { role: "alert", className: "error" }, detail.message ?? detail.code),
-      );
+      box.append(element("p", { role: "alert", className: "error" }, detailText(detail)));
     }
     return box;
   }
@@ -292,7 +308,13 @@ export function configurationErrors(details: FieldErrors) {
     "ul",
     { role: "alert", className: "error" },
     ...details.map((detail) =>
-      element("li", {}, `${detail.path || "Configuration"}: ${detail.message ?? detail.code}`),
+      element(
+        "li",
+        {},
+        detail.path
+          ? `Configuration setting ${settingPath(detail.path)}: ${detailText(detail)}`
+          : detailText(detail),
+      ),
     ),
   );
 }

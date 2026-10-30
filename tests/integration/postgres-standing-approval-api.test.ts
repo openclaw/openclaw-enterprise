@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import pg from "pg";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import type {
   ComputeDriver,
   ConfigurationDriver,
@@ -21,7 +19,7 @@ import {
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -30,6 +28,13 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { cookieHeaderFromSetCookie, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { injectJson } from "../helpers/inject-json.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import {
+  STANDING_APPROVAL_BINDING_LOCKED,
+  STANDING_APPROVAL_NOT_PERMITTED,
+  STANDING_APPROVAL_ONE_BINDING,
+  STANDING_APPROVAL_POLICY_CHANGED,
+  STANDING_APPROVAL_SCOPE_CHANGED,
+} from "../helpers/refusal-text.mjs";
 
 const authSecret = "standing-approval-source-test-auth-secret-32";
 // Proves registered HTTP/IAM/State behavior. No Compute operation or provider call is executed.
@@ -38,8 +43,7 @@ test(
   requiresPostgres,
   async (t) => {
     await ensurePostgresAgentBootstrap(t, { label: "standing-approval", authSecret });
-    const pool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
-    t.after(() => pool.end());
+    const pool = testPool(t, { connectionString: databaseUrl, max: 6 });
     const state = new PostgresPlatformState(pool);
     const installation = await state.loadInstallation();
     assert.ok(installation);
@@ -92,7 +96,10 @@ test(
     });
     let app!: ReturnType<typeof createFastifyApp>;
     let controllerTime: number | undefined;
-    async function selectRepo(input: unknown) {
+    async function selectRepo(
+      input: unknown,
+      eligibility: boolean | "absent" | "registry" = "registry",
+    ) {
       if (app) {
         await app.close();
       }
@@ -112,13 +119,16 @@ test(
         {
           id: backendId,
           drivers: { repo: "standing-repo-driver" },
-          client: new UnixRepositoryCredentialControlClient({
-            controlSocket: "/unused/standing/control.sock",
-          }),
         },
         validateGitHubRepositoryRegistry(input),
         { sessionDurationSeconds: 3600 },
       );
+      // Keep scope resolution unchanged while varying the independent policy permission.
+      if (eligibility !== "registry") {
+        Object.defineProperty(driver, "allowsStandingApproval", {
+          value: eligibility === "absent" ? undefined : () => eligibility,
+        });
+      }
       const computeDriver = {
         ...compute,
         capability: "compute" as const,
@@ -260,11 +270,29 @@ test(
       400,
       "scope review is required",
     );
+    for (const eligibility of [false, "absent"] as const) {
+      await selectRepo(registry, eligibility);
+      const preview = await request("GET", path + "/repository-approval-scopes");
+      assert.equal(preview.statusCode, 200, preview.body);
+      assert.deepEqual(preview.json().data, [], "a scope alone cannot offer standing approval");
+      const denied = await request("PATCH", path, grant);
+      assert.equal(denied.statusCode, 409, denied.body);
+      assert.equal(denied.json().error.message, STANDING_APPROVAL_NOT_PERMITTED);
+      assert.deepEqual(await read(), [], "ineligible save cannot persist approval");
+    }
+    await selectRepo(registry, true);
+    assert.deepEqual(
+      (await request("GET", path + "/repository-approval-scopes")).json().data,
+      [reviewed],
+      "explicit permission restores the identical review scope",
+    );
     const widenedBeforeApproval = structuredClone(registry);
     widenedBeforeApproval.repositories[0]!.namespaces[0]!.pushRefAllowlist = ["refs/heads/*"];
     await selectRepo(widenedBeforeApproval);
     const staleReview = await request("PATCH", path, grant);
     assert.equal(staleReview.statusCode, 409, staleReview.body);
+    // Each standing approval refusal names its fix instead of "already exists" (finding 2536).
+    assert.equal(staleReview.json().error.message, STANDING_APPROVAL_SCOPE_CHANGED);
     assert.deepEqual(
       await read(),
       [],
@@ -304,9 +332,11 @@ test(
       },
     ]) {
       await selectRepo(JSON.parse(JSON.stringify(changed)));
+      // The caller administers the Agent, so policy is a named conflict, not a 404.
       const denied = await request("PATCH", path, grant);
-      assert.equal(denied.statusCode, 404, denied.body);
-      assert.equal(denied.json().error.code, "NOT_FOUND");
+      assert.equal(denied.statusCode, 409, denied.body);
+      assert.equal(denied.json().error.code, "RESOURCE_CONFLICT");
+      assert.equal(denied.json().error.message, STANDING_APPROVAL_NOT_PERMITTED);
       assert.deepEqual(await read(), []);
     }
     await selectRepo(registry);
@@ -401,6 +431,7 @@ test(
       repositoryBindings: [...agent.repositoryBindings, secondBinding],
     });
     assert.equal(addBinding.statusCode, 409, addBinding.body);
+    assert.equal(addBinding.json().error.message, STANDING_APPROVAL_BINDING_LOCKED);
     assert.deepEqual(
       (await request("GET", path)).json().data.repositoryBindings,
       agent.repositoryBindings,
@@ -419,11 +450,25 @@ test(
     );
     const multiGrant = await request("PATCH", multiPath, grant);
     assert.equal(multiGrant.statusCode, 409, multiGrant.body);
+    assert.equal(multiGrant.json().error.message, STANDING_APPROVAL_ONE_BINDING);
     assert.deepEqual(
       (await request("GET", multiPath + "/repository-approvals")).json().data,
       [],
       "unsupported multibinding cannot acquire active standing approval",
     );
+    for (const eligibility of [false, "absent"] as const) {
+      await selectRepo(registry, eligibility);
+      const denied = await request("POST", path + "/deploy");
+      assert.equal(denied.statusCode, 409, denied.body);
+      assert.equal(denied.json().error.message, STANDING_APPROVAL_POLICY_CHANGED);
+      assert.deepEqual(await read(), [first], "deploy refusal does not rewrite approval");
+      assert.deepEqual(
+        await state.read((v) => v.revisions.listRevisions(namespaceId, agent.id)),
+        [],
+        "ineligible deploy cannot admit a revision",
+      );
+    }
+    await selectRepo(registry, true);
     const deployment = await request("POST", path + "/deploy");
     assert.equal(deployment.statusCode, 202, deployment.body);
     const revision = await state.read((v) =>
@@ -462,7 +507,13 @@ test(
     await selectRepo(widened);
     const broaden = await request("PATCH", path, grant);
     assert.equal(broaden.statusCode, 409, broaden.body);
+    assert.equal(broaden.json().error.message, STANDING_APPROVAL_SCOPE_CHANGED);
     assert.deepEqual(await read(), [first]);
+    // Deploy refuses the approval that no longer matches policy and says how to recover.
+    const staleDeploy = await request("POST", path + "/deploy");
+    assert.equal(staleDeploy.statusCode, 409, staleDeploy.body);
+    assert.equal(staleDeploy.json().error.message, STANDING_APPROVAL_POLICY_CHANGED);
+    assert.doesNotMatch(staleDeploy.body, new RegExp(approvalId));
     await selectRepo(registry);
     const savedConfig = configuration.stored({ namespaceId, id: configurationId });
     await configuration.delete({ namespaceId, id: configurationId });

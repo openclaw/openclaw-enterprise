@@ -11,6 +11,7 @@ import {
   expectProviderUnavailable,
   loginOrigin as origin,
   loginSecret as secret,
+  providerInstanceId,
   redirectProviderFetch,
   startProviderServer,
   testOversizedProviderBodies,
@@ -32,7 +33,7 @@ const pinned = new Set([oidc.tokenUrl, oidc.jwksUrl]);
 function digest(value) {
   return createHash("sha256").update(value).digest("hex");
 }
-const providerId = `oidc:${digest(`${oidc.issuer}\0${oidc.clientId}`)}`;
+const providerId = providerInstanceId("oidc", { issuer: oidc.issuer, clientId: oidc.clientId });
 
 const signer = createIdTokenSigner();
 function idToken(state = callbackState, overrides = {}) {

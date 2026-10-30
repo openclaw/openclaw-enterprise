@@ -17,7 +17,7 @@ Run the commands below from the repository root on Linux or macOS. You need:
 
 - Docker Engine, k3d, kubectl, and Helm. Podman users should first
   check the [local Kubernetes requirements](deploy/local-kubernetes-development.md#start-the-profile).
-- The Go version in `go.mod`, Node.js 24 or later, and the pnpm version pinned
+- The Go version in `go.mod`, Node.js 24.22.1 or later, and the pnpm version pinned
   in `package.json`.
 - About 20 GB of free container-engine storage for the first build. On macOS
   that space is inside the Podman or Docker virtual machine rather than on your
@@ -38,7 +38,7 @@ By default, startup builds this checkout. To use published images, first
 [select the `latest` pair](#optional-use-matching-published-images).
 
 ```bash
-pnpm cli:build
+go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=none

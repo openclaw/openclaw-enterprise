@@ -36,6 +36,7 @@ import {
 import { createBackendController } from "../helpers/postgres-backend-state.mjs";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
@@ -73,6 +74,11 @@ if (conversationRequired) {
   assert.ok(codex, "external conversation qualification requires the shipped Codex executable");
   await access(codex, constants.X_OK);
 }
+
+// The worker reconciles a protected Git Driver every second. Cases here count reconcile passes
+// and wait for passes to settle deliveries, so every binding in this file uses the same loop with
+// a shorter wait between passes.
+const transportOptions = { reconcileIntervalMs: 100 };
 
 // Production package selection, OCC deployment, worker and custody. The external package,
 // its workload, Kubernetes placement, GitHub and the private Git origin are controlled locally.
@@ -117,6 +123,10 @@ function repositoryConfiguration(input: {
   apiOrigin: string;
 }) {
   const base = createInstallationDriverConfiguration();
+  // Dedicated Agents need gateway routing with runtime storage (finding 2349); routing derives
+  // the Gateway client peer.
+  const compute = base.drivers.compute.configuration;
+  const { gatewayClients: _gatewayClients, ...network } = compute.network;
   return {
     ...base,
     presets: { includeDefaults: false },
@@ -140,6 +150,19 @@ function repositoryConfiguration(input: {
     },
     drivers: {
       ...base.drivers,
+      compute: {
+        ...base.drivers.compute,
+        configuration: {
+          ...compute,
+          network,
+          gatewayRouting: {
+            hostname: "agents.example.test",
+            gatewayName: "gateways",
+            gatewayNamespace: "occ-system",
+            envoyNamespace: "envoy",
+          },
+        },
+      },
       sandbox: { id: input.id, package: input.id, configuration: input.sandbox },
       credential_proxy: { id: input.id, configuration: {} },
     },
@@ -569,6 +592,8 @@ function externalGitJourney(
             implementation: apiDrivers.computeDriver.implementation,
             protectedDriver: apiOwner,
             credentialGatewayDriver: modelGateway,
+            // As production composition selects it; this test never enrolls a node.
+            nodeEnrollment: createGatewayNodeEnrollment(async () => "unused"),
           },
         )
       : (apiDrivers.computeDriver as KubernetesComputeDriver);
@@ -588,7 +613,13 @@ function externalGitJourney(
         report: (code) => emit({ event: "worker.repository-owner", code }),
       });
     prepared = await startOwner();
-    transport = await bindRepositoryGitTransport(drivers, prepared, f.observerPool, emit);
+    transport = await bindRepositoryGitTransport(
+      drivers,
+      prepared.protectedGit,
+      f.observerPool,
+      emit,
+      transportOptions,
+    );
     assert.ok(transport);
     const { peer } = cedar;
     deliveryDiagnostic = () => ({
@@ -1538,7 +1569,13 @@ function externalGitJourney(
           await transport!.close();
           await prepared.close();
           prepared = await startOwner();
-          transport = await bindRepositoryGitTransport(drivers, prepared, pool, emit);
+          transport = await bindRepositoryGitTransport(
+            drivers,
+            prepared.protectedGit,
+            pool,
+            emit,
+            transportOptions,
+          );
           await expireStoppedClaims(f, revision);
           await f.start(compute, {
             emit,
@@ -1831,7 +1868,13 @@ function externalGitJourney(
         await transport!.close();
         await prepared.close();
         prepared = await startOwner();
-        transport = await bindRepositoryGitTransport(drivers, prepared, pool, emit);
+        transport = await bindRepositoryGitTransport(
+          drivers,
+          prepared.protectedGit,
+          pool,
+          emit,
+          transportOptions,
+        );
         await expireStoppedClaims(f, revision);
         await f.start(compute, {
           emit,

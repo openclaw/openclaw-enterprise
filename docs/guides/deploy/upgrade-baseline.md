@@ -32,26 +32,35 @@ occ_json=(/secure/occ/bin/occ --output json)
 
 ## Record the release and its configuration
 
-The helper refuses to run when the protected values or Installation differ from
-the live release, so compare them now. Each check prints a message only when the
-files differ; resolve any difference before the upgrade.
+From the repository root, use Bash, yq v4, and jq to capture the live release
+and compare its configuration with the protected files. Set the inputs above
+first and keep shell tracing disabled. The subshell stops if a read or comparison
+fails; read failures exit 2 without printing configuration.
 
 ```bash
-helm history oce "${helm_args[@]}" >"$BASELINE/helm-history.txt"
-helm get values oce "${helm_args[@]}" --output yaml >"$BASELINE/live-values.yaml"
-diff <(yq -o=json . /secure/occ/values.yaml | jq -S .) \
-  <(yq -o=json . "$BASELINE/live-values.yaml" | jq -S .) ||
-  echo 'The protected values differ from the live release.' >&2
-OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' "$BASELINE/live-values.yaml")"
-OCC_INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' "$BASELINE/live-values.yaml")"
-"${kube[@]}" -n openclaw-system get secret "$OCC_INSTALLATION_SECRET" -o json |
-  jq '{installationId: .metadata.annotations["openclaw.dev/installation-id"]}' >"$BASELINE/installation-secret.json"
-"${kube[@]}" -n openclaw-system get secret "$OCC_INSTALLATION_SECRET" -o json |
-  jq -j --arg key "$OCC_INSTALLATION_KEY" '.data[$key] | @base64d' >"$BASELINE/live-installation.yaml"
-diff <(yq -o=json . /secure/occ/installation.yaml | jq -S .) \
-  <(yq -o=json . "$BASELINE/live-installation.yaml" | jq -S .) ||
-  echo 'The protected Installation differs from the live Secret.' >&2
+(
+  set -euo pipefail
+  trap 'echo "Baseline read failed: check access, tools, and inputs before retrying." >&2; exit 2' ERR
+  helm history oce "${helm_args[@]}" 2>/dev/null >"$BASELINE/helm-history.txt"
+  helm get values oce "${helm_args[@]}" --output yaml 2>/dev/null >"$BASELINE/live-values.yaml"
+  scripts/compare-upgrade-baseline /secure/occ/values.yaml "$BASELINE/live-values.yaml" || exit "$?"
+  OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' "$BASELINE/live-values.yaml" 2>/dev/null)"
+  OCC_INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' "$BASELINE/live-values.yaml" 2>/dev/null)"
+  "${kube[@]}" -n openclaw-system get secret "$OCC_INSTALLATION_SECRET" -o json 2>/dev/null |
+    jq '{installationId: .metadata.annotations["openclaw.dev/installation-id"]}' 2>/dev/null >"$BASELINE/installation-secret.json"
+  "${kube[@]}" -n openclaw-system get secret "$OCC_INSTALLATION_SECRET" -o json 2>/dev/null |
+    jq -ej --arg key "$OCC_INSTALLATION_KEY" '.data[$key] | strings | @base64d' 2>/dev/null >"$BASELINE/live-installation.yaml"
+  scripts/compare-upgrade-baseline /secure/occ/installation.yaml "$BASELINE/live-installation.yaml" || exit "$?"
+)
 ```
+
+The comparison prints `Configurations match.` and exits 0 for equal mappings,
+including `{}`. It ignores field order and formatting; scalar types and array
+order must match. Each file must contain exactly one YAML mapping. Exit 1 means
+configuration drift: reconcile the files before maintenance. Exit 2 means a
+missing, unreadable, empty, invalid, nonmapping, or multiple-document input, or a
+parser failure. Correct the input or tool setup and retry. The comparison does
+not print paths or configuration or write parsed data to disk.
 
 `installation-secret.json` records the `openclaw.dev/installation-id`
 annotation. When it is missing, [bind the Installation once](production-upgrade.md#bind-the-installation-once)
@@ -86,22 +95,46 @@ after the upgrade: a new UID means the volume and its Agent data were replaced.
 
 ## Record the OCC inventory
 
+On controllers that support it, record the installation-wide deployment inventory:
+
 ```bash
-"${occ_json[@]}" installation get >"$BASELINE/installation.json"
 "${occ_json[@]}" installation deployment-inventory >"$BASELINE/deployment-inventory.json"
-"${occ_json[@]}" namespace list >"$BASELINE/occ-namespaces.json"
-jq -r '.[].id' "$BASELINE/occ-namespaces.json" | while read -r ns; do
-  "${occ_json[@]}" --namespace "$ns" agent list >"$BASELINE/occ-$ns-agents.json"
-  "${occ_json[@]}" --namespace "$ns" secret list >"$BASELINE/occ-$ns-secrets.json"
-  "${occ_json[@]}" --namespace "$ns" iam role list >"$BASELINE/occ-$ns-roles.json"
-  "${occ_json[@]}" --namespace "$ns" iam access-binding list >"$BASELINE/occ-$ns-access-bindings.json"
-done
 ```
 
-The deployment inventory lists every Namespace, Agent, desired state and selected
-version. A controller that predates `deployment-inventory` cannot answer it;
-the per-Namespace `agent list` records the same Agents. `secret list` returns
-metadata only.
+Require this read to succeed. It requires Installation `administer` and read
+access to each Namespace and Agent. For a running Agent with a selected revision
+and no deployment in progress, it also checks Agent `deploy` and revision read
+access. An authorization or connection failure does not mean the endpoint is
+unavailable on that release.
+
+If the controller predates this endpoint, obtain the expected Namespace and Agent
+IDs, desired states and selected revisions from an independent inventory held by
+the resource or database owner. Include stopped Agents. Compare those records
+with the lists below before changing production. If an ID or state is missing
+or the expected inventory is unknown, stop. This fallback does not replace the
+deployment inventory required by the image helper for a runtime upgrade.
+
+For either release, collect the remaining records in Bash:
+
+```bash
+(
+  set -euo pipefail
+  "${occ_json[@]}" installation get >"$BASELINE/installation.json"
+  "${occ_json[@]}" namespace list >"$BASELINE/occ-namespaces.json"
+  jq -r '.[].id' "$BASELINE/occ-namespaces.json" | while read -r ns; do
+    "${occ_json[@]}" --namespace "$ns" agent list >"$BASELINE/occ-$ns-agents.json"
+    jq -e 'all(.[]; .configurationReadError == null)' "$BASELINE/occ-$ns-agents.json" >/dev/null
+    "${occ_json[@]}" --namespace "$ns" secret list >"$BASELINE/occ-$ns-secrets.json"
+    "${occ_json[@]}" --namespace "$ns" iam role list >"$BASELINE/occ-$ns-roles.json"
+    "${occ_json[@]}" --namespace "$ns" iam access-binding list >"$BASELINE/occ-$ns-access-bindings.json"
+  done
+)
+```
+
+Treat a failed command or unreadable saved configuration as an incomplete
+baseline. Even on success, ordinary Namespace and Agent lists omit resources
+the caller cannot read. Reconcile IDs and states with the expected inventory;
+matching counts alone do not establish coverage. `secret list` returns metadata only.
 
 ## Record the database
 
@@ -126,9 +159,11 @@ pg_restore --exit-on-error --single-transaction --dbname "$RESTORE_DATABASE_URL"
 
 Keep normal ownership and ACL restoration; do not use `--no-owner` or
 `--no-acl`. Set `RESTORED_MIGRATION_DATABASE_URL` privately to the dedicated
-migrator login for that same restored database. From the matching release, run:
+migrator login for that same restored database. From the root of a checkout of
+the matching release, install its dependencies and run:
 
 ```bash
+pnpm install --frozen-lockfile
 OCC_MIGRATION_DATABASE_URL="$RESTORED_MIGRATION_DATABASE_URL" pnpm db:migrate:production --check
 ```
 

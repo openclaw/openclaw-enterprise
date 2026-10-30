@@ -5,7 +5,7 @@ Kubernetes-only profile runs PostgreSQL, the OpenClaw Control Plane (OCC), and A
 
 ## Start the profile
 
-Install Node.js 24+, repository-pinned pnpm, the Go version from `go.mod`, k3d,
+Install Node.js 24.22.1+, repository-pinned pnpm, the Go version from `go.mod`, k3d,
 kubectl, Helm, and Docker or Podman. Kubernetes-only mode uses the engine for
 k3d and images, not OCE services.
 
@@ -48,7 +48,7 @@ machine-backed installation that path exists only inside the virtual machine.
 Build the CLI and start the Kubernetes profile:
 
 ```bash
-pnpm cli:build
+go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
@@ -124,7 +124,7 @@ If the K3s channel lookup fails or times out, follow
 For OpenShell, use the owned launcher:
 
 ```bash
-pnpm cli:build
+go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
@@ -183,8 +183,8 @@ to other host users. The helper preserves the default kubeconfig and context.
 For separate stacks, select distinct state directories, cluster names, bridge
 subnets and published ports. Compose also needs a distinct `OCC_POSTGRES_PORT`;
 changing the API port alone leaves PostgreSQL on port 55432. Each Agent Gateway
-requests 1792 MiB with a 3 GiB limit, and each dedicated Codex Harness requests
-768 MiB with a 6 GiB limit, so a dedicated Codex Agent reserves 2.5 GiB; size
+requests 2560 MiB with a 4 GiB limit, and each dedicated Codex Harness requests
+768 MiB with a 6 GiB limit, so a dedicated Codex Agent reserves 3.25 GiB; size
 the local engine VM for OCC plus the Agents you run
 ([measurements](installation-profiles.md)). Keep each stack's resources under the helper's lifecycle until cleanup.
 
@@ -300,6 +300,9 @@ must authenticate through a [credential source](../../reference/credential-sourc
 to register a key and bind it to an Agent, follow
 [Use a credential source on the local OpenShell profile](openshell-credential-sources.md).
 
+The profile also selects the curated Codex Plugin Driver for managed Codex
+plugin selections. See [Agent plugins](../../reference/agent-plugins.md).
+
 The OpenShell Gateway permits unauthenticated users, a development setting safe
 only inside this disposable, loopback-owned cluster. Tenant egress selects only
 OpenShell supervisor Pods for Gateway callbacks. Do not use this profile, or
@@ -314,9 +317,11 @@ To verify a fresh Kubernetes-only installation without OpenShell, use the
 [real local installation test](../../testing/kubernetes.md#local-kubernetes-installation).
 
 To prove OpenShell setup and cleanup in a separate fresh cluster, stop the
-reusable environment and run:
+reusable environment, install the test dependencies from the trusted repository
+root, and run:
 
 ```bash
+pnpm install --frozen-lockfile
 OCC_TEST_DEV_UP_OPENSHELL_REAL=1 \
   node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
 ```
@@ -341,8 +346,7 @@ kubectl --kubeconfig '<profile-kubeconfig>' --context '<profile-context>' \
 ```
 
 Expect a `Bound` RWO claim, then a running Harness Pod. With
-`WaitForFirstConsumer`, claims remain pending until Pod creation. Legacy RWX claims are unsupported; before upgrading an older
-installation, follow the [storage transition prerequisite](upgrade-checklist.md#remove-legacy-rwx-workspaces).
+`WaitForFirstConsumer`, claims remain pending until Pod creation. RWX claims are unsupported.
 Do not change a PVC's access mode in place.
 
 ### Preserve storage across restarts
@@ -389,24 +393,24 @@ reachable from the node network for a fresh startup:
 OCC_DEVELOPMENT_K3D_DNS_RESOLVER='<reachable-dns-ip>' ./scripts/dev-up
 ```
 
-The host resolver is unchanged. The
+The host resolver is unchanged; the
 [setting reference](../../reference/settings/development.md#required-development-controller-environment)
-describes its node effect and the `k3d` value.
+covers its node effect and the `k3d` value.
 
 ## Stop and clean up
 
 If repository access was enabled, first follow the
-[credential cleanup guidance](local-repository-credentials.md). The launcher
-does not verify repository credential disposal before removing the cluster.
+[credential cleanup guidance](local-repository-credentials.md); the launcher
+does not verify credential disposal before removing the cluster.
 Then remove only the cluster and private state the launcher recorded:
 
 ```bash
 ./scripts/dev-down
 ```
 
-Cleanup reads the recorded engine endpoint and cluster name. If cluster deletion
-fails, it preserves the state directory so the same command can retry without
-discovering or deleting an unrelated cluster.
+Cleanup uses the recorded engine endpoint and cluster name. If deletion fails, it
+keeps the state directory so a retry never discovers or deletes an unrelated
+cluster.
 
 ## Limits
 
@@ -424,9 +428,8 @@ credentialed real-cluster checks.
 ## Gateway placement boundary
 
 Dedicated Gateways and Harnesses share one tenant namespace but retain separate
-Pods, ServiceAccounts, credentials and storage. The local development profile
-selects its single k3d server for Gateway scheduling; this does not prove
-production node isolation. Production must configure
+Pods, ServiceAccounts, credentials and storage. The local profile schedules
+Gateways on its single k3d server, which does not prove production node isolation. Production must configure
 `runtime.gatewayNodeSelector` and `runtime.nodeSelector` for disjoint trusted and
 data-plane pools. See [production Namespace preparation](production-agents.md#prepare-each-namespace)
 for the scoped RoleBindings.

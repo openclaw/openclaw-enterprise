@@ -3,23 +3,20 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import {
-  composeProductionSignIn,
   consoleOrigin as origin,
   createAccount,
   currentSession,
   defaultInstallSettings,
   githubUpgradeSettings,
   memoryLogger,
-  onboardPasswordAccounts,
   passwordSignIn,
-  postgresSignInState,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "activation-admin@example.test";
 const password = "activation-member-password";
 const authSecret = "activation-default-auth-test-secret-at-least-32-bytes";
 const secrets = {
@@ -36,28 +33,19 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
+    const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app],
+      { email: "activation-admin@example.test", password, secrets, github: false },
+    );
     // Phase 0: the default install, no GitHub configuration.
     const {
       admin,
       roles: { reader: readerRole },
       accounts: { member },
-    } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
-      accounts: { member: { email: "activation-provisioned@example.test" } },
-    });
+    } = await onboard({ accounts: { member: { email: "activation-provisioned@example.test" } } });
     const installation = await state.loadInstallation();
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: defaultInstallSettings,
-      secrets,
-    });
+    app = await composeApp(defaultInstallSettings);
     let adminHeaders = await signedInHeaders(app, origin, admin);
     // Accounts an older controller wrote: one with its Principal, one without.
     const olderController = await createPostgresControllerAuth({
@@ -91,12 +79,7 @@ test(
 
     // Phase 1: helm upgrade with auth.github and the recovery user from GET /api/auth/session.
     const log = memoryLogger();
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: githubUpgradeSettings(admin.id),
-      secrets,
-      logger: log.logger,
-    });
+    app = await composeApp(githubUpgradeSettings(admin.id), { logger: log.logger });
     assert.deepEqual((await app.inject({ url: "/api/auth/providers" })).json().data, {
       github: true,
       google: false,

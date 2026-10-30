@@ -14,7 +14,7 @@ starts a private k3d cluster, PostgreSQL, the OCE control plane, and the
 OpenShell Gateway. It does not create an Agent or require a model credential.
 
 ```sh
-pnpm cli:build
+go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_STATE_DIRECTORY="$(mktemp -d)/state"
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
@@ -37,6 +37,61 @@ To stop the environment, including after a partial startup, run:
 This deletes the owned cluster and its database. It does not delete unrelated
 clusters. For the Compose control-plane variant, set
 `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup.
+
+## Codex plugin installation
+
+The `plugin-install` QA scenario deploys a dedicated Codex Agent with the selected
+curated plugin, reads installed state from its final WebSocket process, restarts
+that native process, and removes the selection through the Agent API. It uses the
+same real OpenShell and Credential Proxy fixture as the Sandbox suite. The
+selected account must have plugin access and the required app connection.
+`OCC_TEST_CODEX_INSTALL_PLUGIN_ID` defaults to
+`codex-plugin:linear@openai-curated-remote`; GitHub plugin login is not required.
+
+Prepare the OpenShell lane, then prepare
+`tests/integration/openshell-plugin-install-real.test.ts` with the same state file.
+Run that file through the lane runner, or select `OCC_TEST_QA_SCENARIOS=plugin-install`
+with `OCC_TEST_QA_SANDBOX_ENV` and `OCC_TEST_QA_CODEX_TOKEN_FILE` as described in
+[QA setup](openshell-coverage.md#qa-matrix-selector). The OpenShell advisory lane
+registers this case separately from model-tool qualification.
+
+This scenario uses ordinary Sandbox policy configuration to admit six observed
+regional package hosts on port 443, with TLS inspection, read-only REST access,
+and the pinned native Codex binary paths. The test reads the emitted policy and
+checks that artifact hosts are absent from the PAT profile. The explicit list
+is in the scenario's Installation configuration; it is not an exhaustive CDN
+inventory. New destinations remain denied until reviewed. These defaults do not
+extend a protected egress plan.
+
+`codex-plugin-stdio-real.test.ts` also runs the production stdio helper against
+the pinned native image with networking disabled. It checks local installation,
+process replacement, and cleanup after an actual install error. That narrower
+proof does not establish remote account access or OpenShell enforcement.
+
+## Linear tool-use qualification
+
+The opt-in `openshell-linear-read` QA scenario boots the shipped Kubernetes and
+OpenShell stack. It creates the credential source and provisions a dedicated
+Agent with Linear through the OCE APIs. A normal Agent turn must produce a native
+Linear tool call and a successful result matching known Linear data. It submits
+the shipped Codex configuration through the provisioning API and sends the turn
+through the configured OCE Gateway route. Kubernetes access runs that API client
+in the existing controller and reads evidence; the test does not replace Drivers,
+read Gateway passwords from Kubernetes Secrets, or patch running workloads.
+
+Provide an existing connected account through `OCC_TEST_QA_CODEX_TOKEN_FILE`, an
+authorized model ID through `OCC_TEST_QA_CODEX_MODEL`, and the harmless read fixture:
+`OCC_TEST_CODEX_LINEAR_PROMPT`, `OCC_TEST_CODEX_LINEAR_TOOL_NAME`, and
+`OCC_TEST_CODEX_LINEAR_RESULT_EXPECT`. The account must already have its Linear
+connection authorized; the test does not automate an OAuth consent decision.
+
+Select `OCC_TEST_QA_SCENARIOS=openshell-linear-read` in the QA matrix, or set
+`OCC_TEST_OPENSHELL_LINEAR_REAL=1` and run
+`tests/integration/openshell-linear-read-real.test.ts`. The default matrix `all`
+selection excludes this dedicated OpenShell scenario. The standalone file belongs
+to the manual `openshell-linear` lane, which selects it explicitly. Selected cases fail when
+inputs are missing. Installation-only evidence
+does not establish a successful Linear tool call.
 
 ## Test setup and cleanup
 
@@ -150,6 +205,23 @@ the native test and builds the sibling `../openclaw` checkout. Set
 ./scripts/k3d demo --harness openclaw
 ```
 
+For a custom OpenAI-compatible Responses endpoint, bind the model catalog and
+CredentialSource to the same URL:
+
+```sh
+OCC_K3D_CONTAINER_ENGINE=podman ./scripts/k3d test --harness openclaw \
+  --base-url https://models.example.com/v1 --model-id vendor/model
+```
+
+Set `OPENAI_API_KEY` privately to the endpoint's authorized key. The URL must
+use HTTPS port 443 and end in `/v1`. Use the provider's exact model ID, including
+its namespace. Both `test` and `demo` accept these flags. Without flags,
+`OCC_TEST_OPENSHELL_MODEL_BASE_URL` and `OCC_TEST_OPENAI_MODEL` select the endpoint
+and model. Explicit flags override inherited and prepared settings. Native helper
+bootstrap and its selected native test use `OPENAI_API_KEY`, not `CODEX_ACCESS_TOKEN`.
+Full OpenShell lane preparation and the first-Agent workflows still require their
+Codex token.
+
 Both commands use the test-only bridge. `test` requires an authorized
 `OPENAI_API_KEY`; `demo` prompts for one if it is not set. `demo` leaves the
 proven environment running and opens the Control UI and OCE console on loopback.
@@ -181,6 +253,16 @@ and Kubernetes-only first-Agent stacks. It first proves Codex with a `codex-pat`
 source, then creates a separate `openai` source from `OPENAI_API_KEY` for guided
 native OpenClaw provisioning. The native case uses the pinned runtime and
 production Drivers without the k3d helper's compatibility bridge.
+
+To exercise an OpenAI-compatible service, set
+`OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE` to a private JSON file containing
+`baseUrl`, `api` (`openai-responses` or `openai-completions`), and a `models` array
+with explicit native model metadata. The first model ID selects the native Agent's
+model; it can differ from the Codex starter model. Supply that service's key as
+`OPENAI_API_KEY`, while retaining the separate `CODEX_ACCESS_TOKEN` for Codex.
+The native source is bound to the catalog's base URL. The same provisioning,
+model-and-exec, and retained-session redeployment assertions run with this input;
+changing only the embedded QA preset does not exercise this path.
 
 The case edits `USER.md` through the workspace API and verifies its marker through
 real model execution and `exec`. That turn writes a unique file in its session

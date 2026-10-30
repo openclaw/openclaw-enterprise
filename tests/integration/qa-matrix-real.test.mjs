@@ -47,7 +47,9 @@ test(
       executionFilters,
       concurrency,
       exclusions: [
-        "Linear READ: explicitly excluded; provider currently broken",
+        ...(selection.linearRead
+          ? []
+          : ["OpenShell Linear READ requires the explicit openshell-linear-read scenario"]),
         "Embedded OpenClaw Slack: unsupported",
         "OpenClaw Codex-native approvals: not applicable",
       ],
@@ -61,6 +63,25 @@ test(
         "kubernetes/Codex/OpenShell",
         "shared Driver configuration and real network enforcement",
         () => verifyQaSandboxPolicy(artifacts),
+      );
+    }
+    if (selection.pluginInstall) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "selected native plugin installation",
+        () => verifyQaSandboxPolicy(artifacts, "plugin-install"),
+      );
+    }
+    if (selection.linearRead) {
+      const { verifyOpenShellLinearRead } = await import("../helpers/openshell-linear-read.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "installed Linear plugin executes a real read",
+        () => verifyOpenShellLinearRead(context, artifacts),
+        "openshell-linear-read",
       );
     }
     for (const installation of selection.installations.filter((value) =>
@@ -162,10 +183,11 @@ test(
                     "console-secrets",
                     async (agent, step) => {
                       await step(
-                        "console Secret lifecycle and Agent Configuration references",
+                        "console Secret lifecycle, Agent references and Namespace deletion blockers",
                         async () => {
                           assert.ok(browser, "blocked by browser setup failure");
                           await browser.verifySecrets(agent);
+                          await browser.verifyNamespaceDeletionBlockers(agent);
                         },
                       );
                     },
@@ -198,6 +220,7 @@ test(
                               (await f.pod(agent, "gateway")).metadata.uid,
                               gateway.pod.metadata.uid,
                             );
+                            assert.equal(agent.revision.gatewayManagedMode, true);
                             assert.equal(
                               (
                                 await f.api(
@@ -212,6 +235,7 @@ test(
                             await f.record(`${preset}-model`, {
                               agentId: agent.id,
                               revisionId: agent.revision.id,
+                              gatewayManagedMode: agent.revision.gatewayManagedMode,
                               podUid: gateway.pod.metadata.uid,
                               nativePodUid: nativePod.metadata.uid,
                               images: gateway.pod.status.containerStatuses.map(
@@ -228,6 +252,64 @@ test(
                           }
                         },
                       );
+                      if (preset === "OpenClaw") {
+                        await step(
+                          "embedded configured-provider Secret and real model turn",
+                          async () => {
+                            // Keep the admitted model and Secret, changing only the logical provider.
+                            const values = structuredClone(agent.configuration.values);
+                            const selected = values.agents.defaults.model;
+                            const primary =
+                              typeof selected === "string" ? selected : selected.primary;
+                            const id = primary.slice(primary.indexOf("/") + 1);
+                            const custom = `configured/${id}`;
+                            values.models.providers = {
+                              configured: {
+                                ...values.models.providers.openai,
+                                apiKey: {
+                                  source: "env",
+                                  provider: "default",
+                                  id: "OCE_MODEL_API_KEY",
+                                },
+                              },
+                            };
+                            values.agents.defaults.model = custom;
+                            values.agents.defaults.models = {
+                              [custom]: {
+                                ...values.agents.defaults.models[primary],
+                                agentRuntime: { id: "openclaw" },
+                              },
+                            };
+                            await f.api(
+                              "PATCH",
+                              `/namespaces/${agent.namespaceId}/configurations/${agent.configuration.id}`,
+                              { values },
+                            );
+                            await f.deployAndWait(agent);
+                            const gateway = await f.gatewayUrl(agent);
+                            try {
+                              await assertGatewayModelTurn({
+                                gatewayUrl: gateway.url,
+                                gatewayPassword: gateway.gatewayPassword,
+                                nonce: `QA_CUSTOM_${randomUUID()}`,
+                                secrets: [
+                                  await protectedText(
+                                    process.env.OCC_TEST_QA_OPENAI_KEY_FILE,
+                                    "model credential",
+                                  ),
+                                ],
+                              });
+                            } finally {
+                              await gateway.close();
+                            }
+                            await f.record("embedded-configured-provider", {
+                              agentId: agent.id,
+                              revisionId: agent.revision.id,
+                              model: custom,
+                            });
+                          },
+                        );
+                      }
                       await step(
                         "trusted native UI and live WebSocket model response",
                         async () => {
@@ -310,7 +392,7 @@ test(
                   });
                 } else if (preset === "OpenClaw") {
                   cellContext.diagnostic(
-                    "Slack and Codex-native approval policy: not applicable to Standard OpenClaw. Linear READ excluded throughout.",
+                    "Slack and Codex-native approval policy: not applicable to Standard OpenClaw. Linear READ uses its separate OpenShell scenario.",
                   );
                 }
               },

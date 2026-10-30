@@ -9,23 +9,29 @@ import type {
   Configuration,
   HarnessAuthBinding,
   OpenClawConfigurationDocument,
+  SecretMetadata,
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
-import { requestFailure, responseFields } from "../api-client.mjs";
+import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
 import type { ConsolePageContext } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
+import { retiredOpenClawSettingMessage } from "../retired-openclaw-settings.mjs";
 import {
   button,
   element,
   fieldError,
   focusSaveOutcome,
+  isUnavailable,
   jsonObjectProblem,
   revealStatus,
   setHidden,
   setStatusTone,
   setText,
+  setUnavailable,
   statusBlock,
   validateFields,
+  requestIdLine,
+  requestIdText,
 } from "../dom.mjs";
 import {
   configuredHarnessId,
@@ -37,6 +43,25 @@ import { renderAgentAccess } from "./access.mjs";
 import { renderNativeAdminAccess } from "./native-admin.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
+import { gatewaySafetyControls } from "./gateway-safety.mjs";
+import {
+  AGENT_DEPLOY_DENIED,
+  ASK_INSTALLATION_ADMINISTRATOR,
+  askAdministratorTo,
+  askForGrant,
+  CONFIGURATION_UPDATE_DENIED,
+  credentialCheckedAtDeploy,
+  DEPLOY_SANDBOX_POLICY_READ_DENIED,
+  deployAcceptedVersionUnreadable,
+  deployUnreadableSecretsReason,
+  MODEL_CREDENTIAL_REJECTED_REPLACED,
+  modelCredentialRejectedReadOnly,
+  NEW_VERSIONS_READ,
+  requestedVersionUnavailable,
+  unreadableCurrentVersion,
+  VERSION_READ_DENIED,
+  VERSION_UNAVAILABLE,
+} from "./access-reasons.mjs";
 import { renderAgentPlugins } from "./plugins.mjs";
 import { repositoryProfile, repositoryWriteAccessHelp } from "./repository-profiles.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
@@ -49,7 +74,11 @@ import {
   shortId,
   namespacePath,
   refusedSave,
-  AGENT_UPDATE_DENIED,
+  secretOperateRefusal,
+  CHANNEL_BINDING_PLACES,
+  channelBindingRefusal,
+  agentSaveDenial,
+  describeFailure,
   message,
   rejectionMessage,
   assertReadableConfiguration,
@@ -59,8 +88,11 @@ import {
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY_MESSAGE,
   NEUTRAL_DEPLOYMENT_NOTES,
+  deploymentOutcome,
+  neutralDeploymentOutcome,
   outcomeLabel,
   preAdmissionRefusal,
+  type AccessNeed,
 } from "./list.mjs";
 import {
   type CarriedChannelSecrets,
@@ -70,13 +102,20 @@ import {
   grantWarning,
   harnessGrantSubject,
   createChannelSecretsPanel,
+  CHANNEL_SECRETS_CONFIGURATION_READ_ONLY,
+  CHECKING_CREDENTIAL_ACCESS,
+  channelBindingsToReplace,
+  channelReplaceHint,
+  channelReplaceRefusal,
+  channelDisableRefusal,
+  channelSecretsOperateReadOnly,
   hasRequiredChannelCredentials,
   channelCredentialBlockReason,
 } from "./credentials.mjs";
 import {
-  askInstallationAdministrator,
   credentialOperateGrants,
   ensureCredentialOperateBinding,
+  secretOperateAnswer,
 } from "./credential-access.mjs";
 import {
   createDeploymentStatusPanel,
@@ -84,9 +123,22 @@ import {
   deploymentPending,
   readRevisionPage,
 } from "./deployment-evidence.mjs";
-import { createDeploymentRecovery } from "./deployment-recovery.mjs";
+import {
+  createDeploymentRecovery,
+  credentialFixAccess,
+  credentialRejectedAsk,
+} from "./deployment-recovery.mjs";
+import {
+  sameNamespaceSecretHref,
+  secretMetadata,
+  secretSourceForBinding,
+} from "./secret-picker.mjs";
 
-type DetailContext = ConsolePageContext & { namespaceId: string; agentId: string };
+type DetailContext = ConsolePageContext & {
+  namespaceId: string;
+  agentId: string;
+  onProtectedReadDenied(error: unknown, receipt: HTMLElement): void;
+};
 type Permissions = Static<typeof AgentCallerPermissionsResponse>["data"];
 type RevisionPage = Awaited<ReturnType<typeof readRevisionPage>>;
 type Revision = RevisionPage["revisions"][number];
@@ -135,6 +187,7 @@ interface DraftDetails {
   executionMode: Agent["executionMode"];
   credentials: Credentials | null;
   channelSecretsNote: string;
+  managedMode: { value: Text; action: HTMLButtonElement | null; control: HTMLElement | null };
   setAuthenticationPending(pending: boolean): void;
   setAuthenticationUnsaved(unsaved: boolean): void;
   setDraftEditorState(state: Partial<EditorState>): void;
@@ -167,6 +220,7 @@ interface MountedTab {
   resumeDrafts?(): void;
   showBlock?(): void;
   refresh?(): void;
+  applyOperate?(allowed: boolean | undefined): void;
   nodes?: ChildNode[];
 }
 
@@ -215,10 +269,14 @@ function deployRefusedBeforeAdmission(error: unknown) {
   );
 }
 
+// The start of the API's named denial of a deploy without SandboxPolicy read on the Agent's
+// network policy (finding 2151); the policy's ID follows.
+const DEPLOY_SANDBOX_POLICY_READ_NEED = "Not authorized: this needs SandboxPolicy read on ";
+
 function deployFailureText(cause: unknown, submitted: boolean) {
   const error = requestFailure(cause);
   if (error.code === "RUNTIME_CREDENTIALS_CLUSTER_RBAC") {
-    return "Deployment refused: the cluster denied OCC access to this Agent's connection credentials. Ask a platform operator to grant the documented tenant RoleBindings, then deploy again.";
+    return "Deployment refused: the cluster denied the control plane access to this Agent's connection credentials. Ask an operator to grant the control plane the Kubernetes RoleBindings this Namespace needs, then deploy again.";
   }
   const refusal = submitted ? preAdmissionRefusal(error) : undefined;
   if (refusal !== undefined) {
@@ -230,10 +288,15 @@ function deployFailureText(cause: unknown, submitted: boolean) {
   if (error.status !== 403 && error.status !== 409) {
     return rejectionMessage(cause, submitted);
   }
+  // The page names the Agent's network policy in words, not by the ID the API gives (D801).
+  if (namedDenial(cause)?.startsWith(DEPLOY_SANDBOX_POLICY_READ_NEED)) {
+    return DEPLOY_SANDBOX_POLICY_READ_DENIED;
+  }
   // A typed refusal is written for the caller: a 409 names the setting or state to fix, and a
-  // 403 other than the caller's own denial names the Agent's service principal and a resource
-  // the caller was already authorized to operate. Showing it reveals nothing the API did not
-  // already tell this caller (D94).
+  // 403 names the grant the caller's own request lacks (finding 2534) or the Agent's service
+  // principal and a resource the caller was already authorized to operate. Showing it reveals
+  // nothing the API did not already tell this caller (D94). Only an older API's generic denial
+  // gets the console's guidance below.
   if (
     error.serverMessage !== undefined &&
     error.serverMessage !== GENERIC_DENIAL &&
@@ -242,8 +305,29 @@ function deployFailureText(cause: unknown, submitted: boolean) {
     return error.serverMessage;
   }
   return error.status === 403
-    ? `Deployment denied. Check Agent deploy permission and access to selected Secrets. First deployment also needs Agent read and operate permissions to create connection credentials. Granting them ${askInstallationAdministrator("check these grants")}`
+    ? `Deployment denied. Check Agent deploy permission and access to selected Secrets. First deployment also needs Agent read and operate permissions to create connection credentials. ${askAdministratorTo("check these grants")}`
     : "Deployment conflicts with the saved Agent state. Refresh this Agent to check for changed Configuration or missing connection credentials. If credentials are missing after an earlier version, ask an operator to restore them.";
+}
+
+// The bound Secrets a deployment would be refused on: readable ones by name, and how many the
+// caller may neither read nor operate, which are never named.
+interface DeploySecretsDenied {
+  names: readonly string[];
+  unreadable: number;
+}
+// Deployment authorizes Secret operate on every Secret the draft binds (finding 2546), including
+// one the caller may not read (finding D756). Empty when nothing is known to be refused.
+function deploySecretsOperateReason({ names, unreadable }: DeploySecretsDenied) {
+  const listed =
+    names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+  return [
+    names.length
+      ? `Deploying needs Secret operate on ${listed}, which your access does not include. ${askAdministratorTo("grant it")}`
+      : "",
+    unreadable ? deployUnreadableSecretsReason(unreadable) : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 // The credential an Agent's harness authentication grant covers: its credential source or its
@@ -256,49 +340,54 @@ function harnessCredential(binding: HarnessAuthBinding | null | undefined, names
       : null;
 }
 
+// The draft is the Agent's Configuration: an Agent reader without Configuration read is refused it.
+const DRAFT_CONFIGURATION_NEED: AccessNeed = {
+  task: "reading this Agent's draft Configuration",
+  grant: "Configuration read",
+};
+
 function errorPanel(
   cause: unknown,
   context: DetailContext,
   retry: () => void,
-  { version = false } = {},
+  { version = false, exists = false } = {},
 ) {
   const error = requestFailure(cause);
   if (error.status === 401) {
     context.onExpired();
     return element("div");
   }
-  // Revision read is granted per version; Agent access alone does not cover new versions.
-  const versionDenied = version && error.status === 403;
+  // Revision read is granted per version; Agent access alone does not cover new versions. A
+  // version not known to exist, such as one from an edited link, is answered as one the caller
+  // may not read (403) or as missing (404), so the text says either may be true (finding D750).
+  let heading = "Configuration unavailable";
+  let reason = message(cause, false, DRAFT_CONFIGURATION_NEED);
+  // A refused or missing version is settled, not retryable: the panel names the grant and offers
+  // no Retry or request ID, and the page Refresh checks access again (finding D753).
+  const settled = version && (error.status === 403 || error.status === 404);
+  if (error.code === "SAVED_CONFIGURATION_UNREADABLE") {
+    heading = "Saved configuration unreadable";
+  } else if (version && exists && error.status === 403) {
+    heading = "You cannot read this version";
+    reason = VERSION_READ_DENIED;
+  } else if (version && !exists && (error.status === 403 || error.status === 404)) {
+    heading = "Version not found or not shared";
+    reason = VERSION_UNAVAILABLE;
+  }
   return element(
     "section",
     { className: "state-panel", role: "alert" },
-    element(
-      "h2",
-      {},
-      error.code === "SAVED_CONFIGURATION_UNREADABLE"
-        ? "Saved configuration unreadable"
-        : versionDenied
-          ? "You cannot read this version"
-          : "Configuration unavailable",
-    ),
-    element(
-      "p",
-      {},
-      versionDenied
-        ? "Your access to this Agent does not include this version, so its configuration and deployment outcome are hidden. Ask an Agent administrator for read access to it."
-        : message(cause),
-    ),
-    responseFields(cause).remembered === true
+    element("h2", {}, heading),
+    element("p", {}, reason),
+    !settled && responseFields(cause).remembered === true
       ? element(
           "p",
           { className: "hint" },
           "This tab remembers the earlier denial. Retry checks your access again.",
         )
       : null,
-    error.requestId
-      ? element("p", { className: "request-id" }, `Request ID: ${error.requestId}`)
-      : null,
-    button("Retry", retry),
+    !settled && error.requestId ? requestIdLine(error.requestId) : null,
+    settled ? null : button("Retry", retry),
   );
 }
 
@@ -327,9 +416,32 @@ function nativeDocument(values: OpenClawConfigurationDocument, label: string) {
   );
 }
 
+// Managed mode also keeps the Gateway tool allowlist as deployed; with it off, Gateway
+// administrators can widen it until the next managed deployment (finding 2690).
+const GATEWAY_MANAGED_MODE_HINT =
+  "Managed mode keeps the Gateway configuration, including its tool allowlist, as OCE deployed it, and blocks Gateway-local terminals and Gateway-hosted command jobs. With it off, Gateway administrators can change the configuration and widen the tool allowlist until a deployment with managed mode on restores it. Deploy a new version to apply a change.";
+// Shown instead of the control to a caller who cannot change the setting (finding 2690).
+const GATEWAY_MANAGED_MODE_ADMINISTRATOR_ONLY =
+  "Only an Installation administrator can change Gateway managed mode.";
+// The summary card's note, first deployment or redeploy alike, for a version this tab deployed
+// that the caller cannot read (finding D755).
+const DEPLOYED_VERSION_UNREADABLE = "You cannot read the version you deployed.";
+// Sharing policy reads need Installation administration (spec 3.8).
+const ACCESS_TAB_NEEDS_ADMINISTRATION =
+  "The Access tab needs Installation administration, which your access does not include.";
+// A draft the caller can read but neither change nor save (finding 2421).
+const READ_ONLY_DRAFT_NOTICE =
+  "Version draft · read-only with your access. The next deployment uses it as saved.";
+const CHECKING_CREDENTIAL_ACCESS_STEP = "Checking credential access…";
+const CONFIGURATION_READ_ONLY = CONFIGURATION_UPDATE_DENIED;
+// Saving a Configuration also needs Secret operate on every Secret it binds (finding 2437).
+const CONFIGURATION_SECRETS_READ_ONLY = `Saving this Configuration needs Secret operate on each Secret it binds, which your access does not include. ${askForGrant("Secret operate on each of them")}`;
 // A save's reread or its PATCH found a newer Configuration generation than the page's.
 const CONFIGURATION_CHANGED =
   "The saved Configuration changed while you were editing. Reload this draft before saving.";
+// The Configuration JSON saves no Secret bindings; a channel refusal that asks for one gets where
+// the console binds Slack's standard names (finding 2494). The API keeps its secretBindings text.
+const CHANNEL_BINDING_CONSOLE_REMEDY = `This editor does not save Secret bindings: ${CHANNEL_BINDING_PLACES}`;
 
 // Longest wait for Deployment activity's first read before the sections below it show. On a
 // slow link that read lands over a second after the page, and a failed version's banner then
@@ -343,6 +455,20 @@ const DEPLOYMENT_OUTCOME_TONES: Partial<Record<DeploymentOutcome, string>> = {
   succeeded: "success",
   failed: "danger",
 };
+
+// Versions whose deployment this tab has read as failed, keyed by Agent path and version ID. The
+// Versions list reads only the latest version's record, so an earlier failed version lost its
+// mark once a newer version was deployed (finding 2383). A failed record is final, so the mark
+// stays for as long as the console is open. Each listed version's outcome comes with the list,
+// so a new page load marks earlier failed versions too (finding 2422); a version's own record
+// panel and the latest version's record add marks as they are read (finding 2407).
+const failedVersions = new Set<string>();
+const failedVersionKey = (agentPath: string, revisionId: string) =>
+  JSON.stringify([agentPath, revisionId]);
+// Versions this tab's own Deploy created, keyed like failedVersions, with their version numbers.
+// The API accepted each, so a deployer who cannot read one is told it exists and was accepted,
+// not that a link may name a version that does not exist (finding D751).
+const deployedVersions = new Map<string, number>();
 
 // A recovery link opens a version tab far below the banner it sits in. Only the URL changed and
 // the page stayed at the top, so the link looked dead (finding 1586). The page the link opens,
@@ -372,55 +498,6 @@ function takeLinkedVersionView(key: string) {
     linkedVersionView = null;
   }
   return linked;
-}
-
-// One Tab stop for a list of version buttons, as in the tab strip (UX plan C7): it sits on the
-// viewed version (else the newest), Up/Down (and Home/End) move focus between versions, and
-// Enter or Space opens one. A rail of 51 versions was 51 Tab stops (finding 2101).
-// It returns a function that moves the Tab stop to an item and focuses it.
-function rovingVersions(list: HTMLElement, items: HTMLButtonElement[]) {
-  const home = items.find((item) => item.getAttribute("aria-current") === "page") ?? items[0];
-  const reset = () => {
-    for (const item of items) {
-      item.tabIndex = item === home ? 0 : -1;
-    }
-  };
-  const focusItem = (target: HTMLButtonElement) => {
-    for (const item of items) {
-      item.tabIndex = item === target ? 0 : -1;
-    }
-    target.focus({ preventScroll: true });
-  };
-  reset();
-  list.addEventListener("keydown", (event) => {
-    const enabled = items.filter((item) => !item.disabled);
-    const at = enabled.findIndex((control) => control === document.activeElement);
-    const next = {
-      ArrowUp: at - 1,
-      ArrowDown: at + 1,
-      Home: 0,
-      End: enabled.length - 1,
-    }[event.key];
-    if (at === -1 || next === undefined || event.altKey || event.ctrlKey || event.metaKey) {
-      return;
-    }
-    event.preventDefault();
-    const target = enabled[(next + enabled.length) % enabled.length];
-    if (!target) {
-      return;
-    }
-    focusItem(target);
-    target.scrollIntoView({ block: "nearest" });
-  });
-  // Tabbing back in lands on the viewed version, wherever the arrows left focus.
-  list.addEventListener("focusout", () => {
-    queueMicrotask(() => {
-      if (!list.contains(document.activeElement)) {
-        reset();
-      }
-    });
-  });
-  return focusItem;
 }
 
 export async function renderAgentDetail(
@@ -519,12 +596,31 @@ export async function renderAgentDetail(
         "The version history did not identify this Agent. Refresh to check it again.",
       );
     }
+    for (const item of page.revisions) {
+      // A version that a newer one or a Stop ended is listed as failed too, with the code that
+      // says so; it is not marked (finding 2422).
+      if (
+        item.deploymentStatus === "failed" &&
+        !neutralDeploymentOutcome({
+          status: item.deploymentStatus,
+          error: item.deploymentErrorCode === null ? null : { code: item.deploymentErrorCode },
+        })
+      ) {
+        failedVersions.add(failedVersionKey(path, item.id));
+      }
+    }
     return page;
   }
 
   function readPermissions(): Promise<Permissions> {
     return request(`${path}/permissions`) as Promise<Permissions>;
   }
+  // The readable Secrets this caller may not operate: each Secret field lists them disabled and
+  // never stages one, since the save would answer 403 (finding 2453). Read when a field first
+  // needs it, and again after a permission reread or an inline Secret create. A failed read keeps
+  // the last answer; before any answer it marks none.
+  const secretsOperateAnswer = secretOperateAnswer(() => request(`${path}/permissions/secrets`));
+  const secretsOperateDenied = secretsOperateAnswer.read;
   context.setTitle(agent.name);
   // A missing summary leaves each control on its usual path, except failed-version
   // recovery, which waits for a positive answer before offering a draft link.
@@ -539,18 +635,107 @@ export async function renderAgentDetail(
       callerPermissionsSettled = true;
     });
   // Agent-side saves (plugins, authentication source, repository access) are Agent updates;
-  // Configuration saves have no bit in this answer and stay enabled (finding 1530). A draft
+  // Configuration saves need Configuration update, its own bit (findings 1530, 2421). A draft
   // refresh reads the answer again, so a grant applies without a page Refresh (finding 1538).
-  let agentUpdateAllowed = callerPermissionsRead.then((permissions) => permissions?.update);
-  // Only the latest reread's answer replaces the summary.
+  // The note names a Harness authentication ServiceAccount's read when the Agent uses one.
+  let agentSaveDenied = callerPermissionsRead.then((permissions) =>
+    agentSaveDenial(permissions, agent),
+  );
   let permissionsRereads = 0;
+  // The newest reread whose answer the page shows: the summary and every control that follows it.
+  let appliedReread = 0;
   // The newest permission read. Logs compares a remembered status denial with it, so an
   // operate grant read since the page was built applies (finding 1579).
   let latestPermissionsRead = callerPermissionsRead;
+  function retireSaveRead(error: unknown, receipt: string) {
+    const { requestId } = requestFailure(error);
+    context.onProtectedReadDenied(
+      error,
+      element(
+        "section",
+        { className: "agent-card" },
+        element("p", { role: "alert", className: "status", "data-tone": "danger" }, receipt),
+        ...(requestId ? [element("p", { className: "hint" }, requestIdText(requestId))] : []),
+      ),
+    );
+  }
+
   let permissionsReadSettled = false;
   void callerPermissionsRead.then(() => {
     permissionsReadSettled = latestPermissionsRead === callerPermissionsRead;
   });
+  // A caller who may neither update the Agent nor its Configuration reads the draft; the page
+  // says so instead of addressing an editor (finding 2421). An unknown answer keeps the editor.
+  // Each Configuration save also needs Secret operate on every Secret it binds, so a caller
+  // without it reads the Configuration too (finding 2437).
+  const configurationReadOnly = () =>
+    callerPermissions?.configurationUpdate === false ||
+    callerPermissions?.configurationSecretsOperate === false;
+  const configurationReadOnlyReason = () =>
+    callerPermissions?.configurationUpdate === false
+      ? CONFIGURATION_READ_ONLY
+      : CONFIGURATION_SECRETS_READ_ONLY;
+  // Channel saves submit the Secret bindings, and a save is checked only on the Secrets it
+  // submits. Lacking operate only on Secrets bound to the Slack token names, which channel saves
+  // replace, leaves Channels and channel Secrets editable: a save must replace each of them
+  // (finding 2444). The Configuration editor submits no bindings, so it keeps the rule above.
+  const channelBindingsReplace = () => channelBindingsToReplace(callerPermissions);
+  const channelsReadOnly = () => configurationReadOnly() && channelBindingsReplace() === null;
+  const channelsReadOnlyReason = () =>
+    callerPermissions?.configurationUpdate === false
+      ? CONFIGURATION_READ_ONLY
+      : channelSecretsOperateReadOnly(
+          callerPermissions?.configurationSecretsOperateDeniedBindings,
+          CONFIGURATION_SECRETS_READ_ONLY,
+        );
+  // Agent-side saves (plugins, authentication source, repository access) would be refused: the
+  // answer denies Agent update or a grant each Agent update also checks (finding 2441).
+  const agentReadOnly = () => agentSaveDenial(callerPermissions, agent) !== undefined;
+  // Channel saves that replace a bound Secret keep the draft changeable (finding 2444).
+  const draftReadOnly = () => agentReadOnly() && channelsReadOnly();
+  // Draft views that follow Configuration update. Nothing waits for an answer: a view drawn
+  // before the first answer, or before a reread that changes the bit, is redrawn when it lands.
+  // Each view redraws only while shown and only when its access differs from the answer's.
+  const configurationAccessViews = new Set<() => void>();
+  function followConfigurationAccess(rerender: () => void) {
+    configurationAccessViews.add(rerender);
+  }
+  function redrawConfigurationAccessViews() {
+    for (const rerender of configurationAccessViews) {
+      rerender();
+    }
+  }
+  // An Agent-side view (Plugins, Repositories) drawn from one answer is rebuilt when a newer
+  // answer changes whether Agent saves are refused: a channel save that rebinds a Secret the
+  // caller could not operate makes them editable without a reload (finding 2470).
+  function followAgentSaveAccess(isShown: () => boolean) {
+    let shownReadOnly: boolean | null = null;
+    void agentSaveDenied.then((reason) => {
+      shownReadOnly = reason !== undefined;
+    });
+    followConfigurationAccess(() => {
+      if (mountedTab && isShown() && shownReadOnly !== null && agentReadOnly() !== shownReadOnly) {
+        // Rebuild, not restore: a reusable tab would be parked and shown again as it was.
+        mountedTab.reusable = false;
+        void renderTab();
+      }
+    });
+  }
+  // Applies the newest permission answer to the draft's labels and views (findings 2421, 2432).
+  function applyDraftAccess() {
+    if (headerNewVersion) {
+      // This opens the draft; Configuration update and Agent deploy are independent grants.
+      headerNewVersion.textContent = "Open draft";
+    }
+    labelDraftEntry();
+    renderVersionNotice();
+    activeCredentials?.applyAccess();
+    // A draft refresh rebuilds the shown tab and then redraws what its answer changed.
+    if (!refreshingDraft) {
+      redrawConfigurationAccessViews();
+    }
+    refreshDeployControls();
+  }
   let deleting = agent.status === "deleting";
   let currentRevisionId = agent.activeRevisionId;
   // The Agent as last read; Stop and finished deployments update it in place.
@@ -574,6 +759,7 @@ export async function renderAgentDetail(
     tabLabels.push(["repositories", "Repositories"], ["credentials", "Credentials"]);
   }
   tabLabels.push(["workspace", "Workspace files"], ["policy", "Policy denials"]);
+  tabLabels.push(["deployment", "Deployment"]);
   if (selected !== "draft") {
     tabLabels.push(["logs", "Logs"]);
   }
@@ -582,6 +768,52 @@ export async function renderAgentDetail(
   }
   const tabsForSelection = new Set(tabLabels.map(([id]) => id));
   let selectedTab = tab && tabsForSelection.has(tab) ? tab : "configuration";
+  // A link to a tab this version or this reader does not have shows Configuration and says why,
+  // naming the tab (finding 2552).
+  // An empty `tab=` is no tab: it shows Configuration without a note.
+  function unavailableTabNotice(requested: string | null) {
+    if (!requested || tabsForSelection.has(requested)) {
+      return "";
+    }
+    const reason =
+      requested === "access"
+        ? ACCESS_TAB_NEEDS_ADMINISTRATION
+        : requested === "repositories" || requested === "credentials"
+          ? `The ${requested === "credentials" ? "Credentials" : "Repositories"} tab is on the version draft only.`
+          : requested === "logs"
+            ? "The Logs tab is on deployed versions only."
+            : `This Agent has no “${requested.slice(0, 40)}” tab.`;
+    return `${reason} Showing Configuration.`;
+  }
+  const tabNotice = statusBlock("info", null, null, [], {
+    className: "agent-tab-notice",
+    role: "status",
+  });
+  function showTabNotice(text: string) {
+    if (text === "") {
+      cancelAnnouncement(tabNotice);
+      tabNotice.textContent = "";
+    } else {
+      setAnnouncedText(tabNotice, text);
+    }
+    tabNotice.hidden = text === "";
+  }
+  showTabNotice(unavailableTabNotice(tab));
+  // Set when a read the page had the grant for is refused: the caller's access changed, so tab
+  // changes read the page again instead of showing tabs built from earlier reads (findings 2550,
+  // 2568).
+  let accessChanged = false;
+  // Reads that succeeded on this page. A later refusal of one is a revocation (finding 2568).
+  const allowedReads = new Set<string>([path]);
+  // Whether refusing this read means the caller's access changed: the same read succeeded on this
+  // page, or it needs only Agent read, which the page's own Agent read used. A read whose grant
+  // the page never had (a Namespace's Secrets for an Agent reader, say) changes nothing. Runtime
+  // status and log reads are left to Logs, which weighs a refusal against the permission answer.
+  const readHadGrant = (readPath: string) =>
+    !readPath.startsWith(`${path}/deployments/`) &&
+    (allowedReads.has(readPath) ||
+      readPath.startsWith(`${path}/workspace/files/`) ||
+      readPath === `${path}/driver-configurations`);
   let deployInFlight = false;
   // The draft holds below are declared before a deleting Agent's early return: ← Agents and the
   // reload check read them on that page too (finding 2125).
@@ -658,9 +890,9 @@ export async function renderAgentDetail(
   };
   const headerNewVersion =
     selected !== "draft"
-      ? button("Create new version", () => change("draft", "configuration"), { size: "sm" })
+      ? button("Open draft", () => change("draft", "configuration"), { size: "sm" })
       : null;
-  // Create new version sits in the page header beside Refresh (UX spec 3.2); the shell's
+  // Open draft sits in the page header beside Refresh; the shell's
   // ← Agents and Namespace selector ask refuseLeave before they leave.
   const headerActions = element("div", { className: "agent-toolbar-actions" }, headerNewVersion);
   context.setPageActions?.(headerActions);
@@ -704,7 +936,9 @@ export async function renderAgentDetail(
       return;
     }
     node.replaceChildren(
-      version,
+      ...(visibleRevisions[0] && version === `v${visibleRevisions[0].revision}`
+        ? [versionLink(version, visibleRevisions[0].id, "deployment")]
+        : [version]),
       element("span", { className: "visually-hidden" }, " · "),
       element("span", { className: "badge", ...(tone ? { "data-tone": tone } : {}) }, label),
     );
@@ -765,10 +999,26 @@ export async function renderAgentDetail(
         ? answer.status.harness
         : undefined;
     const lost = expected && harness?.state === "lost";
+    // With no current version nothing serves, so there is nothing to verify (finding 2403): a
+    // failed first deployment said "Not verified" here. A requested stop stays unverified: the
+    // page does not show when shutdown completes.
+    const nothingRunning =
+      !deleting &&
+      !currentRevisionId &&
+      !(
+        currentRuntimeState === "stopped" &&
+        (!visibleRevisionsLoaded || visibleRevisions.length > 0)
+      );
     const badge = liveServingBadge;
     setText(
       badge,
-      lost ? "Sandbox lost" : mayBeOfflineAfterFailure ? "May be offline" : "Not verified",
+      lost
+        ? "Sandbox lost"
+        : mayBeOfflineAfterFailure
+          ? "May be offline"
+          : nothingRunning
+            ? "Not running"
+            : "Not verified",
     );
     const tone = lost ? "danger" : mayBeOfflineAfterFailure ? "warning" : undefined;
     if (tone === undefined) {
@@ -779,8 +1029,14 @@ export async function renderAgentDetail(
       badge.dataset.tone = tone;
     }
     liveServingNote.classList.toggle("stat-help-line", expected);
+    // Nothing sends a running version a request to verify it, so "Not verified" says why
+    // (finding 2367); a Sandbox note takes its place.
+    const unchecked =
+      tone === undefined && !deleting && currentRuntimeState === "running" && currentRevisionId
+        ? "OpenClaw Enterprise sends no test request."
+        : "";
     if (!expected) {
-      setText(liveServingNote, "");
+      setText(liveServingNote, unchecked);
     } else if (answer === null) {
       setDelayedText(liveServingNote, "", "Checking Sandbox…");
     } else if (lost) {
@@ -797,7 +1053,7 @@ export async function renderAgentDetail(
       setText(liveServingNote, "Sandbox starting.");
     } else {
       // The Sandbox Driver keeps no record of this Sandbox.
-      setText(liveServingNote, "");
+      setText(liveServingNote, unchecked);
     }
   }
   function setLiveServing(mayBeOffline: boolean) {
@@ -824,7 +1080,7 @@ export async function renderAgentDetail(
   const currentSummary = element(
     "section",
     { className: "agent-current-summary stats", "aria-label": "Agent state at a glance" },
-    stat("Selected version", currentVersionValue, currentVersionNote),
+    stat("Selected for service", currentVersionValue, currentVersionNote),
     stat("Latest visible deployment", latestDeploymentValue, latestDeploymentNote),
     stat("Live serving", liveServingValue, liveServingNote),
   );
@@ -865,35 +1121,70 @@ export async function renderAgentDetail(
   });
   // Revision read is granted per version, so someone who may deploy can still be
   // unable to read the version that is now current, or the one they just requested.
-  function revisionHidden(revisionId: string | undefined) {
-    // Until every page is loaded, an unlisted version may simply be older than those shown.
+  function unlisted(revisionId: string | undefined) {
     return (
       visibleRevisionsLoaded &&
-      olderCursor === null &&
       Boolean(revisionId) &&
       revisionId !== "draft" &&
       !visibleRevisions.some((revision) => revision.id === revisionId)
     );
   }
+  function revisionHidden(revisionId: string | undefined) {
+    // Until every page is loaded, an unlisted version may simply be older than those shown.
+    return unlisted(revisionId) && olderCursor === null;
+  }
+  const deployedHere = (revisionId: string) =>
+    deployedVersions.has(failedVersionKey(path, revisionId));
+  // The newest version this tab deployed for this Agent that the caller cannot read and that is
+  // newer than every version listed, whichever entry is viewed: the draft too (finding D751).
+  // Being newer than the first page, it cannot sit on an older one, so the list need not be
+  // fully loaded (finding 2615).
+  function acceptedHiddenVersion(newestListed: number) {
+    let accepted: { id: string; revision: number } | undefined;
+    for (const [key, revision] of deployedVersions) {
+      const [agentPath, id] = JSON.parse(key) as [string, string];
+      if (
+        agentPath === path &&
+        revision > newestListed &&
+        revision > (accepted?.revision ?? 0) &&
+        unlisted(id)
+      ) {
+        accepted = { id, revision };
+      }
+    }
+    return accepted?.id;
+  }
+  // The picker's entry for a viewed version the caller cannot read.
+  const unavailableVersionLabel = () =>
+    deployedHere(selected) ? "Deployed version · not readable" : "Viewed version unavailable";
   // Members have no console chat, and native admin needs administer (and is off under
   // external sign-in), so point only at paths that work in every sign-in mode.
-  const readAccessHint =
-    "Ask an Agent administrator for read access to new versions. If this Agent is set up for a channel such as Slack, you can message it there when that channel allows you.";
-  function renderCurrentVersion() {
+  const readAccessHint = `${NEW_VERSIONS_READ} If this Agent is set up for a channel such as Slack, you can message it there when that channel allows you.`;
+  // A current version the caller cannot read is named in the Agents list's words, not by its raw
+  // ID (finding D791): newer than every listed version beside the newest one's succeeded
+  // deployment. Null when it is listed or not known to be hidden: until every page of versions is
+  // loaded, it may be on an older one. revisionHidden is false until the version list loads, so
+  // the deployment status below is never read before its declaration.
+  function unreadableCurrentLabel() {
+    if (!currentRevisionId || !revisionHidden(currentRevisionId)) {
+      return null;
+    }
+    return unreadableCurrentVersion(
+      visibleRevisions.length > 0 && latestDeploymentStatus === "succeeded",
+    );
+  }
+  // The current version as the page names it: its number, those words, else its short ID.
+  function currentVersionLabel() {
     const current = visibleRevisions.find((revision) => revision.id === currentRevisionId);
-    const version = current
+    return current
       ? `v${current.revision}`
-      : currentRevisionId
-        ? shortId(currentRevisionId)
-        : "None";
-    setText(currentVersionValue, version);
+      : (unreadableCurrentLabel() ?? shortId(currentRevisionId ?? ""));
+  }
+  function renderCurrentVersion() {
+    setText(currentVersionValue, currentRevisionId ? currentVersionLabel() : "None");
     setText(
       currentVersionNote,
-      !currentRevisionId
-        ? "No version is currently selected for service."
-        : revisionHidden(currentRevisionId)
-          ? "Selected for service · you cannot read this version"
-          : "",
+      currentRevisionId ? "" : "No version is currently selected for service.",
     );
     const stopRequested =
       currentRuntimeState === "stopped" &&
@@ -957,25 +1248,21 @@ export async function renderAgentDetail(
     showDeleting();
     return agent;
   }
-  const selector = element("section", { className: "agent-card revision-selector" });
+  const selector = element("section", {
+    className: "revision-selector",
+    "aria-label": "Version being viewed",
+  });
   const content = element("div");
   const detailPane = element("div", { className: "agent-version-detail" });
   const detailHeading = element("div", { className: "agent-version-heading" });
   const versionEvidence = element("div", { className: "version-evidence" });
-  // The selected version's heading, record and (on a draft) its next step sit beside the Versions
-  // rail; the tabs and open tab run full width below both (UX spec 3.7). Under 1100 px the summary
-  // comes first, so a draft's Deploy is on the first screen of a phone too.
+  // Keep the viewed version and draft actions above the full-width tabs.
   const versionSummary = element("div", { className: "agent-version-summary" });
-  // Known from the address, not from what has loaded, so the tabs never jump as reads land: a
-  // draft's next step or a version's record fills the summary and the tabs run full width below;
-  // with only a heading (Logs, Workspace files, Access on a version) the tab sits beside the rail.
+  // Agent-wide tabs do not imply a selected version, so hide their version controls.
   function setLayoutShape() {
-    versionLayout.dataset.summary =
-      selected === "draft" || !["workspace", "logs", "access"].includes(selectedTab)
-        ? "full"
-        : "heading";
-    // Stacked, a draft's next step leads the rail, so its Deploy is on a phone's first screens.
-    versionLayout.toggleAttribute("data-draft", selected === "draft");
+    const agentWide = ["workspace", "access"].includes(selectedTab);
+    selector.hidden = agentWide;
+    versionSummary.hidden = agentWide;
   }
   const versionLayout = element(
     "div",
@@ -996,6 +1283,24 @@ export async function renderAgentDetail(
       "Loading the most recent visible deployment…",
     ),
   );
+  const deploymentPanels = element(
+    "div",
+    { className: "agent-deployment-panels", hidden: selectedTab !== "deployment" },
+    element("p", { className: "hint" }, "Latest visible deployment"),
+    deploymentStatus,
+    versionEvidence,
+  );
+  const deploymentEmpty = element(
+    "p",
+    { className: "muted", hidden: true },
+    "No deployment history is visible to your account.",
+  );
+  deploymentPanels.append(deploymentEmpty);
+  const deploymentAttention = statusBlock("warning", null, null, [], {
+    className: "agent-deployment-attention",
+    hidden: true,
+    role: null,
+  });
   const tabControls = new Map<string, HTMLButtonElement>();
   const revisionControls = new Map<VersionControl, boolean>();
   // A refused leave says why beside the control whose request holds the page (finding 1962).
@@ -1065,7 +1370,7 @@ export async function renderAgentDetail(
         leaveNote.scrollIntoView({ block: "nearest" });
       }
     } else if (!draftEditorBlocksNavigation()) {
-      showLeaveNote(content, reason, "start");
+      showLeaveNote(selectedTab === "deployment" ? deploymentPanels : content, reason, "start");
       // The note tops the tab panel, which may be scrolled out of view; focus stays put.
       if (leaveNote.isConnected) {
         leaveNote.scrollIntoView({ block: "nearest" });
@@ -1146,6 +1451,9 @@ export async function renderAgentDetail(
   content.id = `${tabIds}-panel`;
   content.setAttribute("role", "tabpanel");
   content.setAttribute("aria-labelledby", `${tabIds}-${selectedTab}`);
+  deploymentPanels.id = `${tabIds}-deployment-panel`;
+  deploymentPanels.setAttribute("role", "tabpanel");
+  deploymentPanels.setAttribute("aria-labelledby", `${tabIds}-deployment`);
   for (const [id, label] of tabLabels) {
     const control = button(
       label,
@@ -1162,7 +1470,7 @@ export async function renderAgentDetail(
       {
         id: `${tabIds}-${id}`,
         role: "tab",
-        "aria-controls": content.id,
+        "aria-controls": id === "deployment" ? deploymentPanels.id : content.id,
         "aria-selected": String(id === selectedTab),
         tabindex: id === selectedTab ? "0" : "-1",
       },
@@ -1217,9 +1525,31 @@ export async function renderAgentDetail(
     );
   };
   tabs.addEventListener("scroll", fadeTabEdges, { passive: true });
-  versionSummary.append(detailHeading, versionEvidence);
-  detailPane.append(tabs, content);
-  const nativeAdmin = renderNativeAdminAccess(context, path);
+  versionSummary.append(detailHeading);
+  detailPane.append(tabs, tabNotice, deploymentPanels, content);
+  if (selected !== "draft") {
+    detailPane.append(pageDisclosure);
+  }
+  const nativeAdmin = renderNativeAdminAccess(
+    context,
+    path,
+    () => latestPermissionsRead.then((permissions) => permissions?.administer),
+    {
+      // One the caller cannot read is not named by its ID (finding D791).
+      versionLabel: () =>
+        unreadableCurrentLabel() === null ? currentVersionLabel() : "current version",
+      recovery: (status) => {
+        if (status === "stopped" || status === "unsupported") {
+          return versionLink("Open draft", "draft", "configuration");
+        }
+        const latest = visibleRevisions[0];
+        return status === "unavailable" && latest
+          ? versionLink("View deployment", latest.id, "deployment")
+          : null;
+      },
+    },
+  );
+  headerActions.append(nativeAdmin.launch, nativeAdmin.unavailable);
   const recovery = createDeploymentRecovery(context, {
     path,
     selected,
@@ -1232,9 +1562,14 @@ export async function renderAgentDetail(
     { className: "agent-overview-status" },
     statCard,
     statusLine,
-    deploymentStatus,
   );
-  view.replaceChildren(recovery.section, nativeAdmin.section, overviewStatus, versionLayout);
+  view.replaceChildren(
+    recovery.section,
+    nativeAdmin.section,
+    deploymentAttention,
+    overviewStatus,
+    versionLayout,
+  );
   // Recovery or native administration can appear above the facts. Keep the Agent heading and
   // controls in place, then reveal the overview once its first deployment reads settle.
   // The bounded wait still exposes loading, refresh and the version controls on a slow read.
@@ -1246,12 +1581,32 @@ export async function renderAgentDetail(
   const revealed = new Promise<void>((resolve) => {
     markRevealed = resolve;
   });
+  // Set while the page replaces its own address after an unavailable tab link: that navigation
+  // keeps the shown Configuration and its note instead of rebuilding the page.
+  let normalizingTabLink = false;
+  if (!tabNotice.hidden) {
+    void revealed.then(() => {
+      if (!context.isCurrent() || deleting || tabNotice.hidden || selectedTab !== "configuration") {
+        return;
+      }
+      // The note was written before the page was on screen: write it again so screen readers
+      // announce it.
+      announceAfterShown(tabNotice, tabNotice.textContent ?? "");
+      // The address drops the unavailable tab, so a reload or a shared link does not repeat the
+      // note (finding 2567).
+      normalizingTabLink = true;
+      try {
+        context.navigate(target(selected, "configuration"), namespaceId, true);
+      } finally {
+        normalizingTabLink = false;
+      }
+    });
+  }
   // A Logs entry that scrolls to its output also waits for that output (within the same bound)
   // and scrolls in the frame that reveals the page, never at the top first (finding 1552).
   let revealHold: Promise<void> | null = null;
   let scrollOnReveal: (() => void) | null = null;
-  // Brings the version's detail (tab strip and open tab) to the top of the window; the heading
-  // and record sit above it beside the Versions rail (UX spec 3.7). A
+  // Brings the version's tabs and open panel to the top of the window. A
   // click in the shown page scrolls smoothly unless the reader asked for reduced motion; a page
   // about to show scrolls at once, so it never paints at the top first (findings 1552, 1586).
   function scrollToVersionDetail({ animate = false } = {}, node: Element = detailPane) {
@@ -1339,7 +1694,7 @@ export async function renderAgentDetail(
       );
     }
     const deployButton = actions?.querySelector<HTMLButtonElement>("button.primary");
-    if (deployButton && !deployButton.disabled) {
+    if (deployButton && !isUnavailable(deployButton)) {
       deployButton.focus({ preventScroll: true });
     } else {
       tabControls.get(selectedTab)?.focus({ preventScroll: true });
@@ -1376,6 +1731,7 @@ export async function renderAgentDetail(
       if (view.classList.contains("agent-detail-pending")) {
         view.classList.remove("agent-detail-pending");
       }
+      versionRecord?.render();
       scrollOnReveal?.();
       markRevealed();
     };
@@ -1437,26 +1793,50 @@ export async function renderAgentDetail(
   let accessPanel: ReturnType<typeof renderAgentAccess> | null = null;
   // Replaces an Access tab whose policy read was refused with Configuration, in place, once the
   // page shows (a page still behind its loading stand-in would rebuild instead) and the
-  // navigation that opened the tab has finished.
+  // navigation that opened the tab has finished. It says why, as a link to the tab would for a
+  // known member: the refusal means the reader does not administer the Installation (finding
+  // D760).
   function leaveDeniedAccess({ refocus = false } = {}) {
     void revealed.then(() => {
-      if (selectedTab === "access" && context.isCurrent() && !deleting) {
+      const leaving = selectedTab === "access" && context.isCurrent() && !deleting;
+      if (leaving) {
         context.navigate(target(selected, "configuration"), namespaceId, true);
+      }
+      // The navigation switched tabs in place, unless it rebuilt the page.
+      if (leaving && selectedTab === "configuration" && context.isCurrent()) {
+        showTabNotice(`${ACCESS_TAB_NEEDS_ADMINISTRATION} Showing Configuration.`);
       }
       if (refocus && context.isCurrent() && document.activeElement === document.body) {
         tabControls.get(selectedTab)?.focus({ preventScroll: true });
       }
     });
   }
+  // Installation administration ended while the page is open: an administrator-only read, such
+  // as the Access tab's recheck after a revoke, was refused and the permission answer settled
+  // "not an administrator". The page kept the administrator's Deploy, saves, Stop and Delete
+  // until Refresh, and Plugins sent a capabilities read the API refused (finding D795). It reads
+  // the Agent's permission answer again, as Refresh would, and its controls follow that answer
+  // without a reload. Views built meanwhile wait for it, so Plugins sends no read it denies.
+  context.onAdministrationEnded?.(() => {
+    if (!context.isCurrent() || deleting) {
+      return;
+    }
+    agentSaveDenied = rereadPermissions().then((permissions) =>
+      agentSaveDenial(permissions, agent),
+    );
+  });
   // Shown once by the tab a draft refresh rebuilds after a save (finding 1445).
   let savedNotice = "";
   let activityPanel = deploymentStatus;
+  let invalidateActivity: ((cause: unknown) => void) | undefined;
+  let acceptActivity: ((record: AgentDeploymentStatusWire) => void) | undefined;
   let activityRevisionId: string | null | undefined;
   let viewedSnapshot: Snapshot | null = null;
   let detailLoadFinished = false;
   let latestRevisionResult: RevisionResult | null = null;
   let latestDeploymentStatus: DeploymentOutcome | null = null;
   let latestDeploymentUnavailable = false;
+  let latestDeploymentReadError: unknown = null;
   let latestDeploymentRecord: AgentDeploymentStatusWire | null = null;
   // Whether the newest version's panel last failed to refresh the Agent or its versions.
   let latestOverviewUnavailable = false;
@@ -1482,15 +1862,24 @@ export async function renderAgentDetail(
   function versionNotice() {
     return selected === "draft"
       ? selectedTab === "plugins"
-        ? "Plugin changes to this Agent appear in the next deployment. Existing versions stay unchanged."
-        : "New version. Changes affect future deployments using this Configuration. Admitted versions stay unchanged."
+        ? // Plugin selections are Agent settings: a caller who may not save them reads them.
+          agentReadOnly()
+          ? READ_ONLY_DRAFT_NOTICE
+          : "Plugin changes to this Agent appear in the next deployment. Existing versions stay unchanged."
+        : draftReadOnly()
+          ? READ_ONLY_DRAFT_NOTICE
+          : "New version. Changes affect future deployments using this Configuration. Admitted versions stay unchanged."
       : selected === currentRevisionId
         ? "Current version · read-only admitted snapshot."
         : deployingRevision()?.id === selected
           ? "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."
           : deployedRevision()?.id === selected
             ? "Deployed version · read-only admitted snapshot. Its deployment completed, but the current version could not be refreshed."
-            : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
+            : // A failed version that is not current is not history: after a failed first
+              // deployment it was the only version and was called "Historical" (finding 2403).
+              failedVersions.has(failedVersionKey(path, selected))
+              ? "Failed version · read-only admitted snapshot. Its deployment did not complete."
+              : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
   }
 
   // The newest version while its deployment is queued or running and it is not yet current. Right
@@ -1532,8 +1921,7 @@ export async function renderAgentDetail(
 
   function renderDetailHeading() {
     detailHeading.hidden = false;
-    // An Agent-wide tab's heading introduces the tab below it; a version's heading leads the
-    // summary beside the Versions rail.
+    // Agent-wide headings introduce their tab; version metadata stays above the tabs.
     const agentWide = ["access", "workspace"].includes(selectedTab);
     if (agentWide && detailHeading.parentElement !== detailPane) {
       detailPane.prepend(detailHeading);
@@ -1545,7 +1933,7 @@ export async function renderAgentDetail(
         element(
           "div",
           {},
-          element("h2", {}, "Agent access"),
+          element("h2", {}, "Agent-wide access"),
           element(
             "p",
             { className: "muted" },
@@ -1560,7 +1948,7 @@ export async function renderAgentDetail(
         element(
           "div",
           {},
-          element("h2", {}, "Agent workspace"),
+          element("h2", {}, "Live Agent workspace"),
           element(
             "p",
             { className: "muted" },
@@ -1601,13 +1989,20 @@ export async function renderAgentDetail(
               : "Loading version details…",
       ),
     );
+    const detailsOpen =
+      detailHeading.querySelector<HTMLDetailsElement>(".agent-version-metadata")?.open ?? false;
+    const metadata = element(
+      "details",
+      { className: "agent-version-metadata", ...(detailsOpen ? { open: true } : {}) },
+      element("summary", {}, "Version details"),
+    );
     if (snapshot) {
       if (selected !== "draft") {
-        heading.append(element("p", { className: "resource-id" }, snapshot.id));
+        metadata.append(element("p", { className: "resource-id" }, snapshot.id));
       }
       if (!("configurationReadError" in snapshot)) {
         const draft = "generation" in snapshot;
-        heading.append(
+        metadata.append(
           element(
             "p",
             { className: "muted" },
@@ -1615,6 +2010,7 @@ export async function renderAgentDetail(
           ),
         );
       }
+      heading.append(metadata);
     }
     detailHeading.replaceChildren(
       heading,
@@ -1632,46 +2028,41 @@ export async function renderAgentDetail(
     );
   }
 
-  // The rail's version buttons by revision ID, for the outcome badge the latest one carries.
-  const versionControls = new Map<
-    string,
-    { control: HTMLButtonElement; line: HTMLElement; label: string }
-  >();
-  // Each rail control's key (a revision ID, "new", "older" or "chooser"), so a rebuild of the
-  // rail gives focus back to the same control instead of dropping it to the page (finding 2115).
-  let railFocusKeys = new Map<VersionControl, string>();
-  // The revisions the rail last listed, not counting a viewed version shown on its own below
-  // them: where the loaded pages ended.
-  let listedRevisionIds = new Set<string>();
-  // A version's own deployment outcome beside its number (finding 2095): the rail knows the
-  // latest version's record, so a failed or deploying latest version is marked; the others have
-  // no record read here and stay plain. The rail may show before that record is read, so the
-  // badge is set in place.
   function markVersionOutcomes() {
-    // The badge uses the page's outcome words (finding 2093).
-    const status = latestDeploymentStatus;
-    const tone = status && status !== "succeeded" && DEPLOYMENT_OUTCOME_TONES[status];
-    const outcome = tone && [outcomeLabel(status), tone];
-    for (const [id, { control, line, label }] of versionControls) {
-      const [text, tone] = (id === activityRevisionId && outcome) || [];
-      const shown = line.querySelector<HTMLElement>(".version-outcome");
-      if (
-        (shown?.textContent ?? "") === (text ?? "") &&
-        (shown?.dataset.tone ?? "") === (tone ?? "")
-      ) {
+    const chooser = selector.querySelector<HTMLSelectElement>("#revision-selector");
+    if (!chooser) {
+      return;
+    }
+    for (const option of chooser.options) {
+      const revision = visibleRevisions.find((revision) => revision.id === option.value);
+      if (!revision) {
         continue;
       }
-      shown?.remove();
-      if (text) {
-        line.append(
-          " ",
-          element("span", { className: "badge version-outcome", "data-tone": tone }, text),
-        );
+      const labels = [`v${revision.revision}`];
+      if (revision.id === currentRevisionId) {
+        labels.push("Selected for service");
       }
-      const name = text ? `${label}, deployment ${text.toLowerCase()}` : label;
-      if (control.getAttribute("aria-label") !== name) {
-        control.setAttribute("aria-label", name);
+      if (
+        revision.id === activityRevisionId &&
+        latestDeploymentStatus &&
+        latestDeploymentStatus !== "succeeded"
+      ) {
+        labels.push(outcomeLabel(latestDeploymentStatus));
+      } else if (failedVersions.has(failedVersionKey(path, revision.id))) {
+        labels.push("Failed");
       }
+      setText(option, labels.join(" · "));
+    }
+  }
+  function labelDraftEntry() {
+    const choice = selector.querySelector("#revision-selector option[value=draft]");
+    if (choice) {
+      setText(
+        choice,
+        configurationReadOnly()
+          ? "Draft · Read-only Configuration"
+          : "Draft · Editable Configuration",
+      );
     }
   }
   function renderVersions(
@@ -1679,113 +2070,17 @@ export async function renderAgentDetail(
     snapshot: Snapshot | null,
     historyError: unknown = null,
   ) {
-    const focusKey = [...railFocusKeys].find(
-      ([control]) => control === document.activeElement,
-    )?.[1];
-    const listedBefore = listedRevisionIds;
-    listedRevisionIds = new Set(revisions.map((revision) => revision.id));
-    // The rebuilt list keeps the reader's scroll position.
-    const listScroll = selector.querySelector(".version-list")?.scrollTop ?? 0;
-    railFocusKeys = new Map();
+    let focus: "older" | "chooser" | null = null;
+    if (selector.contains(document.activeElement)) {
+      focus = document.activeElement?.classList.contains("version-older") ? "older" : "chooser";
+    }
     revisionControls.clear();
-    versionControls.clear();
-    // Opening the draft is navigation. Saving a Configuration and deploying have their own permissions.
-    const newVersion = button(
-      callerPermissions?.update === false ? "Open version draft" : "Create new version",
-      () => change("draft", "configuration"),
-      {
-        className: "revision-create",
-        ...(selected === "draft" ? { "aria-current": "page" } : {}),
-      },
-    );
-    trackRevisionControl(newVersion);
-    railFocusKeys.set(newVersion, "new");
-    // The versions, the viewed one included, are one Tab stop (finding 2101), so the list is a
-    // vertical toolbar: screen readers announce it as one control that the arrows move through.
-    const list = element("div", {
-      className: "version-list",
-      role: "toolbar",
-      "aria-orientation": "vertical",
-      "aria-label": "Versions",
-    });
-    const items = [];
-    for (const revision of revisions) {
-      const label = `View version v${revision.revision}${revision.id === currentRevisionId ? ", current version" : ""}`;
-      const control = button("", () => change(revision.id, "configuration"), {
-        className: "version-item",
-        "aria-label": label,
-        ...(selected === revision.id ? { "aria-current": "page" } : {}),
-      });
-      // The current version's badge follows its number on the same line, after a space.
-      const line = element(
-        "span",
-        {},
-        element("strong", {}, `v${revision.revision}`),
-        ...(revision.id === currentRevisionId
-          ? // Current means only that OCC selected this version; it can be stopped or failed
-            // (finding 1969), so the badge marks it without claiming health.
-            [" ", element("span", { className: "badge", "data-tone": "info" }, "Current")]
-          : []),
-      );
-      control.append(line, element("small", {}, displayDate(revision.createdAt)));
-      versionControls.set(revision.id, { control, line, label });
-      railFocusKeys.set(control, revision.id);
-      trackRevisionControl(control);
-      items.push(control);
-      list.append(control);
-    }
-    if (selected !== "draft" && !revisions.some((revision) => revision.id === selected)) {
-      if (snapshot && "revision" in snapshot) {
-        const control = button("", () => change(selected, "configuration"), {
-          className: "version-item",
-          "aria-label": `View version v${snapshot.revision}`,
-          "aria-current": "page",
-        });
-        control.append(
-          element("strong", {}, `v${snapshot.revision}`),
-          element("small", {}, "Viewed version"),
-        );
-        railFocusKeys.set(control, selected);
-        trackRevisionControl(control);
-        items.push(control);
-        list.append(control);
-      } else {
-        list.append(
-          element(
-            "div",
-            { className: "version-item version-unavailable" },
-            "Viewed version unavailable",
-          ),
-        );
-      }
-    }
-    const focusVersion = rovingVersions(list, items);
-    // Versions list one page at a time, newest first; older pages load on request. The button
-    // follows the list rather than sitting in it: it loads versions, it is not one, so the arrows
-    // stay on versions and Tab reaches it next (finding 2115). While loading it keeps focus.
-    let older = null;
-    if (olderCursor && !historyError) {
-      older = button(
-        olderLoading ? "Loading older versions…" : "Show older versions",
-        () => void loadOlderRevisions(),
-        {
-          className: "version-item version-older",
-          ...(olderLoading ? { "aria-disabled": "true", "aria-busy": "true" } : {}),
-        },
-      );
-      trackRevisionControl(older);
-      railFocusKeys.set(older, "older");
-    }
     const chooser = element(
       "select",
       { id: "revision-selector" },
-      element("option", { value: "draft" }, "New version · editable Configuration"),
+      element("option", { value: "draft" }),
       ...revisions.map((revision) =>
-        element(
-          "option",
-          { value: revision.id },
-          `v${revision.revision} · ${displayDate(revision.createdAt)}`,
-        ),
+        element("option", { value: revision.id }, `v${revision.revision}`),
       ),
     );
     if (selected !== "draft" && !revisions.some((revision) => revision.id === selected)) {
@@ -1795,77 +2090,83 @@ export async function renderAgentDetail(
           { value: selected, disabled: !snapshot },
           snapshot && "revision" in snapshot
             ? `v${snapshot.revision} · Viewed version`
-            : "Viewed version unavailable",
+            : unavailableVersionLabel(),
         ),
       );
     }
     chooser.value = selected;
-    railFocusKeys.set(chooser, "chooser");
     chooser.addEventListener("change", () => {
-      const nextRevision = chooser.value;
       if (draftEditorBlocksNavigation() || sharingWrite) {
         chooser.value = selected;
         showLeaveBlock();
         return;
       }
-      change(nextRevision, "configuration");
+      change(chooser.value, "configuration");
     });
     trackRevisionControl(chooser);
+    const older =
+      olderCursor && !historyError
+        ? button(
+            olderLoading ? "Loading older versions…" : "Load older versions",
+            () => void loadOlderRevisions(),
+            {
+              className: "version-older",
+              ...(olderLoading ? { "aria-disabled": "true", "aria-busy": "true" } : {}),
+            },
+          )
+        : null;
+    if (older) {
+      trackRevisionControl(older);
+    }
+    const viewed = revisions.find((revision) => revision.id === selected);
+    let viewing = "Saved draft for a future deployment";
+    if (selected !== "draft") {
+      viewing = viewed ? displayDate(viewed.createdAt) : "";
+    }
     selector.replaceChildren(
-      ...[
-        element("h2", {}, "Versions"),
-        element("p", { className: "muted" }, "Choose a version to inspect its saved details."),
-        newVersion,
-        list,
+      element(
+        "div",
+        { className: "agent-version-toolbar" },
+        element(
+          "div",
+          { className: "agent-version-control" },
+          element("label", { for: chooser.id }, "Viewing version"),
+          chooser,
+        ),
         older,
-        olderError
-          ? statusBlock("danger", null, `Older versions unavailable. ${message(olderError)}`)
-          : null,
-        revisions.length || selected !== "draft"
-          ? element("label", { for: "revision-selector" }, "Available versions")
-          : null,
-        revisions.length || selected !== "draft" ? chooser : null,
-        historyError
-          ? statusBlock("danger", null, `Version history unavailable. ${message(historyError)}`)
-          : null,
-        !historyError && !revisions.length
-          ? element(
+        element("span", { className: "agent-version-date" }, viewing),
+      ),
+      element("p", { className: "agent-version-context" }, versionContext()),
+      ...(olderError
+        ? [statusBlock("danger", null, `Older versions unavailable. ${message(olderError)}`)]
+        : []),
+      ...(historyError
+        ? [statusBlock("danger", null, `Version history unavailable. ${message(historyError)}`)]
+        : []),
+      ...(!historyError && !revisions.length
+        ? [
+            element(
               "p",
               { className: "muted" },
-              // A current version, or a deploy that set the Agent running, means versions
-              // exist and are hidden. A stopped Agent may have versions too; the record cannot say.
               currentRevisionId || currentRuntimeState === "running"
-                ? "No readable versions. This Agent has versions your access does not include. Ask an Agent administrator for read access to them."
+                ? `No readable versions. This Agent has versions your access does not include. ${askForGrant("AgentRevision read on them")}`
                 : "No readable versions. Creating an Agent alone does not create a version; if this Agent was deployed before, your access does not include its versions.",
-            )
-          : null,
-      ].filter((child) => child !== null),
+            ),
+          ]
+        : []),
     );
+    labelDraftEntry();
+    markVersionOutcomes();
     updateNavigationControls();
-    list.scrollTop = listScroll;
-    // A rebuild while the reader is in the rail (a poll that lands an outcome, or older versions
-    // loading) keeps focus on the same control. Once every older version is shown, focus goes to
-    // the first one that just loaded, below those listed before (a poll may add a newer one
-    // meanwhile; the viewed version shown on its own does not count), else the last version. A version no longer listed gives focus to the list's
-    // Tab stop.
-    if (focusKey !== undefined && !selector.contains(document.activeElement)) {
-      const usable = items.filter((item) => !item.disabled);
-      const wasListed = (item: VersionControl) => listedBefore.has(railFocusKeys.get(item) ?? "");
-      const lastShown = usable.map(wasListed).lastIndexOf(true);
-      const target =
-        [...railFocusKeys].find(([control, key]) => key === focusKey && !control.disabled)?.[0] ??
-        (focusKey === "older"
-          ? (usable.find((item, index) => index > lastShown && !wasListed(item)) ?? usable.at(-1))
-          : ["new", "chooser"].includes(focusKey)
-            ? undefined
-            : (usable.find((item) => item.tabIndex === 0) ?? usable[0]));
-      if (target instanceof HTMLButtonElement && items.includes(target)) {
-        focusVersion(target);
-        target.scrollIntoView({ block: "nearest" });
-      } else {
-        target?.focus({ preventScroll: true });
-      }
+    if (focus) {
+      (focus === "older" && older ? older : chooser).focus({ preventScroll: true });
     }
+  }
+
+  // The line under the version chooser. Its current version's words can change when the newest
+  // version's deployment status arrives, so renderLatestDeployment rewrites it too.
+  function versionContext() {
+    return `${currentRevisionId ? `${currentVersionLabel()} remains selected for service.` : "No version is selected for service."} ${selected === "draft" ? "Deploy new version creates an immutable version from the saved draft." : "Browsing does not deploy or roll back."}`;
   }
 
   // Without a version list yet (still loading), its first render shows the new state.
@@ -1918,36 +2219,109 @@ export async function renderAgentDetail(
     }
     renderDetailHeading();
     renderVersionNotice();
+    versionRecord?.renderDiagnostics();
+  }
+
+  // The failed version the recovery block leads with, if any. The viewed version's record does
+  // not repeat that version's error below it (finding 2368).
+  let recoveryRevisionId: string | null = null;
+  function showRecovery(failure: Parameters<typeof recovery.show>[0]) {
+    recovery.show(failure);
+    recoveryRevisionId = failure?.latest.id ?? null;
+    versionRecord?.setFailureShownAbove(recoveryRevisionId === selected);
   }
 
   function renderLatestDeployment() {
     markVersionOutcomes();
+    // An unreadable current version is newer beside a succeeded deployment (finding D791).
+    renderCurrentVersion();
+    nativeAdmin.updateTarget();
+    const versionContextLine = selector.querySelector(".agent-version-context");
+    if (versionContextLine) {
+      setText(versionContextLine, versionContext());
+    }
     const latest = visibleRevisions[0];
+    setHidden(deploymentEmpty, Boolean(latest) || latestRevisionResult?.status !== "fulfilled");
+    const needsAttention =
+      latest &&
+      (deploymentPending(latestDeploymentStatus) ||
+        latestOverviewUnavailable ||
+        latestDeploymentRecord?.warnings?.length ||
+        (latestDeploymentRecord?.cleanup && latestDeploymentRecord.cleanup.status !== "succeeded"));
+    setHidden(deploymentAttention, !needsAttention || selectedTab === "deployment");
+    let attentionText = "A deployment is queued or in progress.";
+    if (latestDeploymentRecord?.warnings?.length) {
+      attentionText = "The latest deployment has startup warnings.";
+    }
+    if (latestDeploymentRecord?.cleanup && latestDeploymentRecord.cleanup.status !== "succeeded") {
+      attentionText = "Deployment resource cleanup needs attention.";
+    }
+    if (latestOverviewUnavailable) {
+      attentionText = "Current version and version history could not be refreshed.";
+    }
+    const attentionKey = needsAttention ? `${latest.id}:${attentionText}` : "";
+    if (deploymentAttention.dataset.message !== attentionKey) {
+      deploymentAttention.dataset.message = attentionKey;
+    }
+    if (needsAttention && deploymentAttention.dataset.rendered !== attentionKey) {
+      deploymentAttention.dataset.rendered = attentionKey;
+      deploymentAttention.replaceChildren(
+        element("p", {}, attentionText),
+        versionLink("View deployment", latest.id, "deployment"),
+      );
+    }
     if (!latest) {
-      recovery.show(null);
+      showRecovery(null);
       delete latestDeploymentValue.dataset.outcome;
+      const accepted = acceptedHiddenVersion(0);
       if (latestRevisionResult) {
         const rejected = latestRevisionResult.status === "rejected";
-        setText(latestDeploymentValue, rejected ? "Unavailable" : "None");
+        // A version this tab deployed exists, so a first deployment the caller cannot read gets
+        // the same card as a redeploy, not "None" (finding D755).
+        setText(
+          latestDeploymentValue,
+          rejected ? "Unavailable" : accepted ? "Deployment accepted" : "None",
+        );
         setText(
           latestDeploymentNote,
-          rejected ? "Version history could not be read." : "No readable deployments.",
+          rejected
+            ? "Version history could not be read."
+            : accepted
+              ? DEPLOYED_VERSION_UNREADABLE
+              : "No readable deployments.",
         );
       } else {
         setDelayedText(latestDeploymentValue, "", "Loading…");
         setDelayedText(latestDeploymentNote, "", "Reading deployment history.");
       }
-      const hidden = [selected, currentRevisionId].find(revisionHidden);
+      const hidden = accepted ?? [selected, currentRevisionId].find(revisionHidden);
       setHidden(statusLine, hidden === undefined);
+      // The current version is known to exist, and so is one this tab deployed; a requested one
+      // that is neither, such as one from an edited link, may not (findings D750, D751).
       setText(
         statusLine,
-        hidden
-          ? `You cannot read version ${shortId(hidden)}, so its progress and outcome are not shown here. ${readAccessHint}`
-          : "",
+        !hidden
+          ? ""
+          : deployedHere(hidden)
+            ? deployAcceptedVersionUnreadable(shortId(hidden))
+            : hidden === currentRevisionId
+              ? `You cannot read the current version, so its progress and outcome are not shown here. ${readAccessHint}`
+              : requestedVersionUnavailable(shortId(hidden)),
       );
       setLiveServing(false);
+      // This viewer reads no deployment, so Stop keeps its row and says it may cancel one or
+      // interrupt a gateway (finding D691); the API answers if nothing runs.
+      stopPanel.setLatestDeployment(null);
       return;
     }
+    // This tab deployed a version newer than every listed one, which the caller cannot read: the
+    // listed latest outcome is an earlier version's, whichever entry is viewed (finding D751).
+    const acceptedId = acceptedHiddenVersion(latest.revision);
+    const acceptedHidden = acceptedId !== undefined;
+    // Stop hides only for a failed first deployment, and says it cancels one still queued or in
+    // progress (findings 2385, 2580, D691). A failed read is unknown, not failed, and so is a
+    // newer deployment the caller cannot read.
+    stopPanel.setLatestDeployment(acceptedHidden ? null : latestDeploymentStatus);
     const label = latestDeploymentStatus ? outcomeLabel(latestDeploymentStatus) : undefined;
     // A superseded or stopped deployment is neutral: it raises no banner and says nothing about
     // serving.
@@ -1985,7 +2359,13 @@ export async function renderAgentDetail(
       current !== undefined &&
       current.id === latest.id;
     // Each poll rereads the same record, so every text is written once with its final value.
-    if (newerHidden) {
+    if (acceptedHidden) {
+      setText(latestDeploymentValue, "Deployment accepted");
+      setText(
+        latestDeploymentNote,
+        `${DEPLOYED_VERSION_UNREADABLE} v${latest.revision}${label ? ` (${label})` : ""} is older.`,
+      );
+    } else if (newerHidden) {
       setText(latestDeploymentValue, "Newer version hidden");
       setText(
         latestDeploymentNote,
@@ -2001,45 +2381,52 @@ export async function renderAgentDetail(
         label ?? (latestDeploymentUnavailable ? "Unavailable" : "Loading…"),
         latestDeploymentStatus ? DEPLOYMENT_OUTCOME_TONES[latestDeploymentStatus] : undefined,
       );
-      setText(
-        latestDeploymentNote,
-        neutral
-          ? latestDeploymentStatus === "stopped"
+      let note = latestDeploymentUnavailable ? "Update delayed." : "Latest update received.";
+      if (neutral) {
+        note =
+          latestDeploymentStatus === "stopped"
             ? `${NEUTRAL_DEPLOYMENT_NOTES.stopped}. Deploy a new version when you want it running.`
-            : `${NEUTRAL_DEPLOYMENT_NOTES.superseded}.`
-          : latestDeploymentStatus
-            ? ""
-            : "Recorded deployment status could not be read.",
-      );
+            : `${NEUTRAL_DEPLOYMENT_NOTES.superseded}.`;
+      } else if (!latestDeploymentStatus) {
+        note = "Recorded deployment status could not be read.";
+      }
+      setText(latestDeploymentNote, note);
     }
     const mayBeOffline = replacementFailed || selectedFailed;
     setLiveServing(mayBeOffline);
-    const outcome = newerHidden ? "" : (latestDeploymentStatus ?? "");
+    const outcome = newerHidden || acceptedHidden ? "" : (latestDeploymentStatus ?? "");
     if (latestDeploymentValue.dataset.outcome !== outcome) {
       latestDeploymentValue.dataset.outcome = outcome;
     }
-    const hiddenNotice = requestedHidden || newerHidden || failureBehindHidden;
+    // The accepted version may be the current one too (embedded activation selects it at once);
+    // the page then says it once.
+    const currentIsAccepted = acceptedHidden && currentRevisionId === acceptedId;
+    const hiddenNotice = requestedHidden || acceptedHidden || newerHidden || failureBehindHidden;
     setHidden(statusLine, !hiddenNotice && !failureBehindUnknown && !successBehindUnknown);
     if (!statusLine.hidden) {
       setText(
         statusLine,
         [
-          requestedHidden
-            ? `Version ${shortId(selected)} was requested, but you cannot read it, so its progress and outcome are not shown here.`
+          acceptedId ? deployAcceptedVersionUnreadable(shortId(acceptedId)) : null,
+          requestedHidden && selected !== acceptedId
+            ? deployedHere(selected)
+              ? deployAcceptedVersionUnreadable(shortId(selected))
+              : requestedVersionUnavailable(shortId(selected))
             : null,
-          newerHidden
-            ? `The current version, ${shortId(currentRevisionId ?? "")}, is one you cannot read; v${latest.revision} is an older version.`
+          newerHidden && !currentIsAccepted
+            ? `The current version is one you cannot read; v${latest.revision} is an older version.`
             : null,
-          failureBehindHidden
-            ? `The current version, ${shortId(currentRevisionId ?? "")}, is one you cannot read, so this page cannot tell whether the failed v${latest.revision} deployment affects it.`
+          failureBehindHidden && !currentIsAccepted
+            ? `The current version is one you cannot read, so this page cannot tell whether the failed v${latest.revision} deployment affects it.`
             : null,
           failureBehindUnknown
-            ? `The current version, ${shortId(currentRevisionId ?? "")}, is not among the versions listed, so this page cannot tell whether the failed v${latest.revision} deployment affects it.${olderCursor ? " Show older versions to check." : ""}`
+            ? `The current version, ${shortId(currentRevisionId ?? "")}, is not among the versions listed, so this page cannot tell whether the failed v${latest.revision} deployment affects it.${olderCursor ? " Load older versions to check." : ""}`
             : null,
           successBehindUnknown
-            ? `The current version, ${shortId(currentRevisionId ?? "")}, is not among the versions listed, so this page cannot tell whether it is newer than v${latest.revision}.${olderCursor ? " Show older versions to check." : ""}`
+            ? `The current version, ${shortId(currentRevisionId ?? "")}, is not among the versions listed, so this page cannot tell whether it is newer than v${latest.revision}.${olderCursor ? " Load older versions to check." : ""}`
             : null,
-          hiddenNotice ? readAccessHint : null,
+          // The hint is about versions known to exist; a requested one may not (finding D750).
+          (newerHidden || failureBehindHidden) && !currentIsAccepted ? readAccessHint : null,
         ]
           .filter(Boolean)
           .join(" "),
@@ -2050,12 +2437,14 @@ export async function renderAgentDetail(
     // waits for the caller's permission answer, which decides its draft link, so it never
     // shows a draft link the answer then withdraws (finding 1478). That read starts first, so
     // it has usually settled by now.
+    // A deployment accepted after the failed one leaves its recovery behind (finding D751).
     const hideRecovery =
       latestDeploymentStatus !== "failed" ||
+      acceptedHidden ||
       currentHidden ||
       currentUnknown ||
       !callerPermissionsSettled;
-    recovery.show(
+    showRecovery(
       hideRecovery
         ? null
         : {
@@ -2073,6 +2462,41 @@ export async function renderAgentDetail(
             activityPanel,
           },
     );
+    // The permission answer this waits for words the recorded failure too (finding D752).
+    rerenderRecordedFailures();
+  }
+  // The newest version's credential binding, once read, differs from the Agent's: the Agent was
+  // given another credential since that version was deployed.
+  function credentialReplacedSince(revisionId: string) {
+    return (
+      currentAgent.harnessAuth != null &&
+      latestRevisionDetail !== null &&
+      "harnessAuth" in latestRevisionDetail &&
+      latestRevisionDetail.id === revisionId &&
+      latestRevisionDetail.id === visibleRevisions[0]?.id &&
+      JSON.stringify(latestRevisionDetail.harnessAuth) !== JSON.stringify(currentAgent.harnessAuth)
+    );
+  }
+  // A recorded rejected model credential in this caller's words, as the recovery banner says it
+  // (finding D752): the API's step needs Agent update. Once the Agent binds another credential the
+  // record no longer asks for anything, so it is not an alert.
+  function recordedFailureText(error: { code: string }, revisionId: string) {
+    if (error.code !== "RUNTIME_AUTHENTICATION_FAILED") {
+      return undefined;
+    }
+    if (credentialReplacedSince(revisionId)) {
+      return { text: MODEL_CREDENTIAL_REJECTED_REPLACED, settled: true };
+    }
+    const ask = credentialRejectedAsk(error.code, currentAgent.harnessAuth, callerPermissions);
+    return ask === undefined ? undefined : { text: ask };
+  }
+  // The answers recordedFailureText reads changed: the permission answer, the Agent's binding or
+  // the newest version's detail.
+  function rerenderRecordedFailures() {
+    if ("rerender" in activityPanel && typeof activityPanel.rerender === "function") {
+      activityPanel.rerender();
+    }
+    versionRecord?.rerender();
   }
   // List summaries omit the credential binding a revision was admitted with, so the
   // rejected-credential hint reads the newest revision once.
@@ -2094,6 +2518,7 @@ export async function renderAgentDetail(
       }
       latestRevisionDetail = detail;
       refreshDeployControls();
+      rerenderRecordedFailures();
     } catch {
       // Without the detail the hint stays generic; the deployment status still shows.
     } finally {
@@ -2156,8 +2581,13 @@ export async function renderAgentDetail(
     visibleRevisionsLoaded = revisionResult.status === "fulfilled";
     stopPanel.setNoReadableVersions(visibleRevisionsLoaded ? revisions.length === 0 : null);
     const labels = new Map(revisions.map((revision) => [revision.id, `v${revision.revision}`]));
-    stopPanel.setVersionLabel((id) => labels.get(id));
+    // A current version the caller cannot read keeps the page's words, not its ID (finding D791).
+    stopPanel.setVersionLabel(
+      (id) =>
+        labels.get(id) ?? (id === currentRevisionId ? unreadableCurrentLabel() : null) ?? undefined,
+    );
     renderCurrentVersion();
+    nativeAdmin.updateTarget();
     renderVersions(
       revisions,
       snapshot,
@@ -2165,6 +2595,7 @@ export async function renderAgentDetail(
     );
     const mostRecent = revisions[0];
     if (activityRevisionId !== (mostRecent?.id ?? null)) {
+      activityRevisionId = mostRecent?.id ?? null;
       // The version's record panel no longer gets this panel's reads.
       versionRecord?.release();
       latestDeploymentStatus = null;
@@ -2173,6 +2604,7 @@ export async function renderAgentDetail(
       latestDeploymentRecord = null;
       latestOverviewUnavailable = false;
       latestDeploymentUnavailable = false;
+      latestDeploymentReadError = null;
       // On first load the newest version's panel replaces the loading placeholder once its
       // first status read settles, in the same frame as the summary and status line, so the
       // page below moves once instead of once for an empty panel and again for the status.
@@ -2189,9 +2621,13 @@ export async function renderAgentDetail(
           revealDetail,
         );
       };
-      const nextPanel: HTMLElement = mostRecent
+      const nextActivity = mostRecent
         ? createDeploymentStatusPanel(
-            context,
+            {
+              ...context,
+              isCurrent: () => context.isCurrent() && activityRevisionId === mostRecent.id,
+              failureText: (error) => recordedFailureText(error, mostRecent.id),
+            },
             path,
             mostRecent,
             (freshAgent, freshRevisions) =>
@@ -2200,12 +2636,29 @@ export async function renderAgentDetail(
                 { status: "fulfilled", value: revisionsForPage(freshRevisions) },
                 snapshot,
               ),
-            ({ outcome: status, readFailed, record, overviewUnavailable, transientFailure }) => {
-              if (activityRevisionId !== mostRecent.id) {
+            ({
+              outcome: status,
+              readFailed,
+              readError,
+              record,
+              overviewUnavailable,
+              transientFailure,
+            }) => {
+              if (
+                !context.isCurrent() ||
+                activityRevisionId !== mostRecent.id ||
+                (record &&
+                  (record.deploymentId !== mostRecent.id ||
+                    record.namespaceId !== namespaceId ||
+                    record.agentId !== agentId))
+              ) {
                 return;
               }
               showPanel(nextPanel, status === "failed");
               latestDeploymentStatus = status;
+              if (status === "failed") {
+                failedVersions.add(failedVersionKey(path, mostRecent.id));
+              }
               // A refused or missing record ends the wait, so it no longer labels the version.
               if (record || !transientFailure) {
                 latestRecordedStatus = status;
@@ -2215,16 +2668,17 @@ export async function renderAgentDetail(
               }
               latestOverviewUnavailable = overviewUnavailable;
               latestDeploymentUnavailable = readFailed;
+              latestDeploymentReadError = readError;
               if (record?.error?.code === "RUNTIME_AUTHENTICATION_FAILED") {
                 void readLatestRevisionDetail(mostRecent);
               }
               latestDeploymentRecord = record;
               if (mostRecent.id === selected) {
-                // After a failed read, the version's record panel reads its record itself.
+                // Share success and failure only with this same selected version.
                 if (record) {
-                  versionRecord?.show(record);
+                  versionRecord?.show(record, readError);
                 } else {
-                  versionRecord?.release();
+                  versionRecord?.fail(readError);
                 }
               }
               renderLatestDeployment();
@@ -2240,27 +2694,41 @@ export async function renderAgentDetail(
             // opens the details as any new outcome does.
             firstLoad ? () => detailShown : undefined,
           )
-        : element(
-            "section",
-            // With no versions the card would repeat the facts' "No readable deployments", so it
-            // stays out of the way of the draft's next step (UX spec 3.7).
-            {
-              className: "agent-card deployment-status",
-              hidden: revisionResult.status !== "rejected",
-            },
-            element("h2", {}, "Deployment activity"),
-            element(
-              "p",
-              { className: "muted" },
-              revisionResult.status === "rejected"
-                ? "Version history is unavailable."
-                : "No readable deployment records.",
-            ),
-          );
+        : null;
+      invalidateActivity = nextActivity?.invalidate;
+      acceptActivity = nextActivity?.accept;
+      const nextPanel: HTMLElement =
+        nextActivity ??
+        element(
+          "section",
+          // With no versions the card would repeat the facts' "No readable deployments", so it
+          // stays out of the way of the draft's next step (UX spec 3.7).
+          {
+            className: "agent-card deployment-status",
+            hidden: revisionResult.status !== "rejected",
+          },
+          element("h2", {}, "Deployment activity"),
+          element(
+            "p",
+            { className: "muted" },
+            revisionResult.status === "rejected"
+              ? "Version history is unavailable."
+              : "No readable deployment records.",
+          ),
+        );
       if (!mostRecent || !firstLoad) {
         showPanel(nextPanel);
       }
-      activityRevisionId = mostRecent?.id ?? null;
+      nextPanel.addEventListener(
+        "toggle",
+        () => {
+          if (context.isCurrent() && activityPanel === nextPanel) {
+            versionRecord?.render();
+          }
+        },
+        true,
+      );
+      versionRecord?.render();
     }
     renderLatestDeployment();
     return revisions;
@@ -2290,16 +2758,7 @@ export async function renderAgentDetail(
     if (!permissions) {
       return;
     }
-    if (permissions.update === false) {
-      // This opens the draft; Configuration update and Agent deploy are independent grants.
-      if (headerNewVersion) {
-        headerNewVersion.textContent = "Open version draft";
-      }
-      for (const control of selector.querySelectorAll(".revision-create")) {
-        control.textContent = "Open version draft";
-      }
-    }
-    refreshDeployControls();
+    applyDraftAccess();
   });
 
   const snapshotPath =
@@ -2307,9 +2766,44 @@ export async function renderAgentDetail(
       ? `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(agent.configurationId)}`
       : `${path}/revisions/${encodeURIComponent(selected)}`;
 
+  // A version this tab's Deploy created that the newest page of versions leaves out is one the
+  // caller may not read: the list returns only readable versions, newest first, and it is newer
+  // than each listed one. Its read would only be refused and audited (finding D758).
+  async function deployedVersionUnlisted() {
+    const deployed = deployedVersions.get(failedVersionKey(path, selected));
+    if (deployed === undefined) {
+      return false;
+    }
+    const [listed] = await Promise.allSettled([revisionsPromise]);
+    return (
+      listed.status === "fulfilled" &&
+      listed.value.revisions.every(({ id, revision }) => id !== selected && revision < deployed)
+    );
+  }
+
+  // The current version, viewed, when the newest page of versions lists every version the caller
+  // can read and leaves it out: the API sends a cursor only when an older readable version exists,
+  // so it is one the caller cannot read. Its read was an audited 403 on the first view per tab;
+  // the Agents list skips it on the same proof (findings D789, D791).
+  async function currentVersionUnlisted() {
+    if (selected === "draft" || selected !== currentRevisionId) {
+      return false;
+    }
+    const [listed] = await Promise.allSettled([revisionsPromise]);
+    return (
+      listed.status === "fulfilled" &&
+      listed.value.nextCursor === null &&
+      !listed.value.revisions.some(({ id }) => id === selected)
+    );
+  }
+
   async function readSnapshot() {
     // A denied read is audited, so reuse this tab's settled denial instead of asking per view.
-    if (context.deniedReads?.has(snapshotPath)) {
+    if (
+      context.deniedReads?.has(snapshotPath) ||
+      (await deployedVersionUnlisted()) ||
+      (await currentVersionUnlisted())
+    ) {
       throw Object.assign(new Error("Access denied."), {
         status: 403,
         code: "FORBIDDEN",
@@ -2318,6 +2812,7 @@ export async function renderAgentDetail(
     }
     try {
       const value = await request(snapshotPath);
+      allowedReads.add(snapshotPath);
       return selected === "draft"
         ? configurationForPage(value, agent.configurationId)
         : revisionForPage(value, selected);
@@ -2364,13 +2859,69 @@ export async function renderAgentDetail(
       return { error: found.configurationReadError };
     }
     if ("revision" in found) {
-      versionRecord = createVersionDeploymentEvidence(context, path, selected, {
-        shared: activityRevisionId === selected && !latestDeploymentUnavailable,
-        operateAllowed: callerPermissionsRead.then((permissions) => permissions?.operate),
-      });
+      versionRecord = createVersionDeploymentEvidence(
+        { ...context, failureText: (error) => recordedFailureText(error, selected) },
+        path,
+        selected,
+        {
+          shared: activityRevisionId === selected,
+          onRefused: (cause) => {
+            if (context.isCurrent() && activityRevisionId === selected) {
+              invalidateActivity?.(cause);
+            }
+          },
+          onFreshRecord: (record) => {
+            if (
+              context.isCurrent() &&
+              activityRevisionId === selected &&
+              record.deploymentId === selected &&
+              record.namespaceId === namespaceId &&
+              record.agentId === agentId
+            ) {
+              acceptActivity?.(record);
+            }
+          },
+          hasVisibleReadError: (cause) => {
+            if (activityRevisionId !== selected || !latestDeploymentUnavailable) {
+              return false;
+            }
+            const primary = requestFailure(latestDeploymentReadError);
+            const selectedError = requestFailure(cause);
+            // An independent record read keeps its alert unless the same failure is visible above.
+            const sameFailure =
+              latestDeploymentReadError === cause ||
+              (primary.status !== undefined &&
+                primary.status === selectedError.status &&
+                primary.code === selectedError.code);
+            return (
+              sameFailure &&
+              Boolean(
+                activityPanel
+                  .querySelector<HTMLElement>(".deployment-evidence-content > [role=alert]")
+                  ?.checkVisibility({ visibilityProperty: true }),
+              )
+            );
+          },
+          operateAllowed: latestPermissionsRead.then((permissions) => permissions?.operate),
+          isCurrentVersion: () => currentRevisionId === selected,
+          // After a reload only the latest record feeds the cache, so an earlier failed version
+          // read "Historical" with no mark beside its own "Failed" record (finding 2407).
+          onRecord: (record) => {
+            const key = failedVersionKey(path, selected);
+            if (deploymentOutcome(record) === "failed" && !failedVersions.has(key)) {
+              failedVersions.add(key);
+              renderVersionNotice();
+              markVersionOutcomes();
+            }
+          },
+        },
+      );
       versionEvidence.append(...versionRecord.panels);
+      versionRecord.setFailureShownAbove(recoveryRevisionId === selected);
       if (latestDeploymentRecord?.deploymentId === selected) {
-        versionRecord.show(latestDeploymentRecord);
+        versionRecord.show(latestDeploymentRecord, latestDeploymentReadError);
+      } else if (activityRevisionId === selected && latestDeploymentUnavailable) {
+        versionRecord.fail(latestDeploymentReadError);
       }
       return {
         snapshot: found,
@@ -2384,9 +2935,16 @@ export async function renderAgentDetail(
     const executionMode = agent.executionMode;
     let deployPending = false;
     let deployReloadMessage = "";
+    const managedMode: DraftDetails["managedMode"] = {
+      value: document.createTextNode(agent.gatewayManagedMode ? "On" : "Off"),
+      action: null,
+      control: null,
+    };
     let authenticationForm: HTMLElement | undefined;
     const retainedAuthentication = context.drafts.get("authentication") as
       AuthenticationDraft | undefined;
+    // A member's save is finished when it saves and is never retained, so it holds nothing
+    // (findings 2547, D748).
     let authenticationPending = Boolean(
       retainedAuthentication?.outcomeUnknown || retainedAuthentication?.savedAuthentication,
     );
@@ -2417,7 +2975,7 @@ export async function renderAgentDetail(
     const panelNumber = ++channelPanelCount;
     const credentials = !runtimeAuth
       ? createChannelSecretsPanel({
-          context,
+          context: { ...context, secretsOperateDenied },
           path,
           agent,
           configuration: snapshot,
@@ -2429,6 +2987,17 @@ export async function renderAgentDetail(
           // Only an Installation administrator may read the IAM policy that shows a grant.
           checkGrants: context.installationAdmin === true,
           canGrant: context.installationAdmin !== false,
+          // Binding Secrets saves the Configuration (finding 2432).
+          readOnly: channelsReadOnly,
+          readOnlyReason: () =>
+            callerPermissions?.configurationUpdate === false
+              ? CHANNEL_SECRETS_CONFIGURATION_READ_ONLY
+              : channelSecretsOperateReadOnly(
+                  callerPermissions?.configurationSecretsOperateDeniedBindings,
+                ),
+          bindingsToReplace: channelBindingsReplace,
+          bindingRefusal: (secrets) => refusedSecretBinding("configuration", secrets),
+          onReadDenied: context.onProtectedReadDenied,
           isCurrent: () => panelNumber === channelPanelCount,
           onChange() {
             updateNavigationControls();
@@ -2440,6 +3009,11 @@ export async function renderAgentDetail(
             viewedSnapshot = configuration;
             renderDetailHeading();
             updateDeployControls();
+            // The answer's denied binding names describe the bindings before this save. Read it
+            // again, so the panel and the Channels drawer stop asking to replace a binding the
+            // save rebound (findings 2444, 2457), and Deploy names the Secrets now bound.
+            void rereadPermissions();
+            void readDeploySecretsDenied();
           },
           onReload: (carried = null) => {
             carriedChannelSecrets = carried;
@@ -2468,6 +3042,8 @@ export async function renderAgentDetail(
     // missing grant then blocks Deploy until Credentials grants it. The read runs once per draft;
     // a failed or undecided read changes nothing (findings 1920, 2260).
     let harnessGrantMissing = false;
+    // Deploy waits while that read is in flight (#3686 review).
+    let harnessGrantChecking = false;
     let harnessGrantRead: Promise<boolean> | null = null;
     function readHarnessGrant() {
       const credential = harnessCredential(agent.harnessAuth, context.namespaceId);
@@ -2478,16 +3054,77 @@ export async function renderAgentDetail(
       ) {
         return Promise.resolve(false);
       }
-      return credentialOperateGrants(context, agent, credential.kind, [credential.id]).then(
-        (grants) => {
-          if (grants.get(credential.id) !== false || !context.isCurrent()) {
-            return false;
+      harnessGrantChecking = true;
+      updateDeployControls();
+      return credentialOperateGrants(context, agent, credential.kind, [credential.id])
+        .then(
+          (grants) => grants.get(credential.id) === false && context.isCurrent(),
+          () => false,
+        )
+        .then((missing) => {
+          harnessGrantChecking = false;
+          harnessGrantMissing ||= missing;
+          if (context.isCurrent()) {
+            updateDeployControls();
           }
-          harnessGrantMissing = true;
-          updateDeployControls();
-          return true;
+          return missing;
+        });
+    }
+    // Deployment needs Secret operate on each Secret the draft binds: its Configuration's Secret
+    // bindings and a Secret authentication source. The Secret operate answer names the bound ones
+    // this caller may read but not operate, so Deploy says so before a click the API would
+    // refuse. An unknown or unreported answer names none and leaves Deploy to the API (finding
+    // 2546). The answer also counts the bound Secrets the caller may neither read nor operate,
+    // without their IDs: Deploy says so too, never naming them (finding D756). A Secret the caller
+    // may operate but not read holds nothing: the deployment checks only operate.
+    let deploySecretsDenied: DeploySecretsDenied = { names: [], unreadable: 0 };
+    let deploySecretsRead = 0;
+    async function boundSecretsDenied({ fresh = false } = {}): Promise<DeploySecretsDenied> {
+      const bound = new Map<string, unknown>();
+      for (const binding of Object.values(snapshot.secretBindings ?? {})) {
+        const source = secretSourceForBinding(binding);
+        if (source) {
+          bound.set(source.id, source);
+        }
+      }
+      const harness = harnessCredential(agent.harnessAuth, namespaceId);
+      if (harness?.kind === "secret") {
+        bound.set(harness.id, harness);
+      }
+      if (bound.size === 0) {
+        return { names: [], unreadable: 0 };
+      }
+      const denied = await secretsOperateDenied({ fresh });
+      const unreadable = secretsOperateAnswer.unreadable();
+      // The answer lists only Secrets this caller may read, so each one's name reads too.
+      const names = await Promise.all(
+        [...bound]
+          .filter(([id]) => denied?.has(id))
+          .map(async ([id, source]) => {
+            const href = sameNamespaceSecretHref(source, namespaceId);
+            try {
+              return href ? (secretMetadata(await request(href), namespaceId)?.name ?? id) : id;
+            } catch {
+              return id;
+            }
+          }),
+      );
+      return {
+        names: names.sort((left, right) => left.localeCompare(right)),
+        unreadable: unreadable ?? 0,
+      };
+    }
+    function readDeploySecretsDenied(options?: { fresh?: boolean }) {
+      const read = ++deploySecretsRead;
+      return boundSecretsDenied(options).then(
+        (denied) => {
+          if (read === deploySecretsRead && context.isCurrent()) {
+            deploySecretsDenied = denied;
+            updateDeployControls();
+          }
+          return denied;
         },
-        () => false,
+        () => deploySecretsDenied,
       );
     }
     function editedSubject() {
@@ -2514,10 +3151,12 @@ export async function renderAgentDetail(
       return (
         deployPending ||
         callerPermissions?.deploy === false ||
+        Boolean(deploySecretsOperateReason(deploySecretsDenied)) ||
         authenticationSaveState !== "idle" ||
         Boolean(deployReloadMessage) ||
         authenticationPending ||
         harnessGrantMissing ||
+        harnessGrantChecking ||
         authenticationUnsaved ||
         retainedConfiguration.dirty ||
         retainedConfiguration.reloadRequired ||
@@ -2531,28 +3170,59 @@ export async function renderAgentDetail(
         pluginEditorState.reloadRequired ||
         !agent.harnessAuth ||
         revisionResult.status !== "fulfilled" ||
+        retiredSetting() !== null ||
         (!runtimeAuth && !credentials?.canDeploy())
       );
+    }
+    // OCC refuses to deploy a saved Configuration that keeps a setting the pinned OpenClaw
+    // retired, with this message, so the draft says it before Deploy (finding 2810).
+    function retiredSetting() {
+      return retiredOpenClawSettingMessage(values);
     }
     function updateDeployControls() {
       authenticationForm?.toggleAttribute("inert", Boolean(credentials?.mutationPending()));
       credentials?.section?.toggleAttribute("inert", authenticationSaveState !== "idle");
       const retainedConfiguration = retainedConfigurationState();
-      deploy.disabled = deployIsDisabled();
+      if (managedMode.action && managedMode.control) {
+        managedMode.control.hidden = callerPermissions?.update !== true;
+        managedMode.action.disabled =
+          Boolean(managedMode.control.hidden) ||
+          deployPending ||
+          Boolean(deployReloadMessage) ||
+          Boolean(draftEditorNavigationBlock) ||
+          Boolean(credentials?.mutationPending());
+      }
+      const deployUnavailable = deployIsDisabled();
+      const rejectedAccess =
+        !runtimeAuth && credentialRejected()
+          ? credentialFixAccess(agent.harnessAuth, callerPermissions)
+          : null;
       if (setupCredentials) {
+        // A reader's card offers no editor's action; the status says why (finding 2421).
         setupCredentials.hidden =
+          draftReadOnly() ||
+          Boolean(rejectedAccess) ||
           selectedTab === "credentials" ||
           revisionResult.status !== "fulfilled" ||
           channelCredentialBlockReason(values) !== null ||
           (Boolean(agent.harnessAuth) &&
             !authenticationPending &&
             !harnessGrantMissing &&
-            (credentials?.canDeploy() ?? false));
+            (credentials?.canDeploy() || credentials?.checkingGrants()) === true);
         setupCredentials.disabled = deployPending || Boolean(draftEditorNavigationBlock);
       }
       if (!deployPending) {
         if (callerPermissions?.deploy === false) {
-          deployStatus.textContent = "Your access does not include deploying this Agent.";
+          deployStatus.textContent = AGENT_DEPLOY_DENIED;
+        } else if (deploySecretsOperateReason(deploySecretsDenied)) {
+          const reason = deploySecretsOperateReason(deploySecretsDenied);
+          // A refused deployment's alert already says it.
+          const deployReason = deployFeedback.textContent === reason ? "" : reason;
+          deployStatus.textContent = rejectedAccess
+            ? [modelCredentialRejectedReadOnly(rejectedAccess), deployReason]
+                .filter(Boolean)
+                .join(" ")
+            : deployReason;
         } else if (deployReloadMessage) {
           deployStatus.textContent = deployReloadMessage;
         } else if (authenticationSaveState === "saving") {
@@ -2560,6 +3230,9 @@ export async function renderAgentDetail(
         } else if (authenticationSaveState === "uncertain") {
           deployStatus.textContent =
             "Authentication may have been saved. Reload this draft before deploying.";
+        } else if (harnessGrantChecking) {
+          // A read that settles within 250 ms never shows this text (finding 2576).
+          setDelayedText(deployStatus, "", CHECKING_CREDENTIAL_ACCESS);
         } else if (authenticationPending || harnessGrantMissing) {
           deployStatus.textContent =
             "Confirm authentication and Secret access in Credentials before deploying.";
@@ -2590,6 +3263,8 @@ export async function renderAgentDetail(
           deployStatus.textContent = "Save or discard plugin changes before deploying.";
         } else if (deployFeedback?.textContent) {
           deployStatus.textContent = "";
+        } else if (retiredSetting() !== null) {
+          deployStatus.textContent = retiredSetting();
         } else if (revisionResult.status !== "fulfilled") {
           deployStatus.textContent =
             "Version history is required before deploying this new version.";
@@ -2600,21 +3275,40 @@ export async function renderAgentDetail(
           // A rejected operator-managed credential is fixed on the runtime host, not by Deploy.
           deployStatus.textContent = credentialRejected()
             ? "The last deployment's model credential was rejected; ask an operator to replace it on the runtime host before deploying again."
-            : "Configured on the runtime host; not validated by OCC. Gateway readiness does not confirm model access.";
+            : "Configured on the runtime host; OpenClaw Enterprise does not check it. Gateway readiness does not confirm model access.";
         } else {
           const gate =
             credentials?.deployGateMessage() ?? "Credential readiness could not be confirmed.";
           // Secret values can be updated in place, so a rejected credential warns instead of
           // blocking. It never reads "Ready to deploy.": deploying again does not fix it.
-          const rejected =
-            "The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.";
-          deployStatus.textContent = !credentialRejected()
+          // Channel edit access does not grant access to change the Agent's authentication source.
+          const rejected = rejectedAccess
+            ? modelCredentialRejectedReadOnly(rejectedAccess)
+            : "The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.";
+          const status = !credentialRejected()
             ? gate
             : gate === "Ready to deploy."
               ? rejected
               : `${gate} ${rejected}`;
+          if (status === CHECKING_CREDENTIAL_ACCESS && !draftReadOnly()) {
+            // A read that settles within 250 ms never shows this text (finding 2576).
+            setDelayedText(deployStatus, "", status);
+          } else {
+            deployStatus.textContent =
+              draftReadOnly() && status !== "Ready to deploy." && !credentialRejected()
+                ? `${status} Your access does not include changing this version draft.`
+                : status;
+          }
         }
       }
+      // An unavailable Deploy is described by the line that says why, or by a refused
+      // deployment's alert when that line defers to it (finding D749), and stays in the Tab order
+      // while one of them shows (finding 2878).
+      setUnavailable(
+        deploy,
+        deployUnavailable,
+        deployStatus.textContent ? deployStatus : deployFeedback,
+      );
       updateChecklist();
     }
     // The last deployment's model credential was rejected and the draft still uses it.
@@ -2650,6 +3344,7 @@ export async function renderAgentDetail(
       { className: "checklist", role: "list" },
       ...checklistSteps.map((step) => step.item),
     );
+    const draftActionsHeading = element("h2", {}, "Prepare this version");
     function setStep(
       step: (typeof checklistSteps)[number] | undefined,
       done: boolean,
@@ -2663,9 +3358,19 @@ export async function renderAgentDetail(
         step.item.dataset.state = value;
         step.state.textContent = done ? "Done: " : "Not done: ";
       }
-      setText(step.detail, detail);
+      if (detail === CHECKING_CREDENTIAL_ACCESS_STEP) {
+        // Shown only if the grant read outlasts 250 ms (finding 2576).
+        setDelayedText(step.detail, "", detail);
+      } else {
+        setText(step.detail, detail);
+      }
     }
     function updateChecklist() {
+      // A caller who can change nothing here and cannot deploy gets no editor's checklist
+      // (finding 2421); Deploy says why it is disabled.
+      const reader = draftReadOnly() && callerPermissions?.deploy === false;
+      checklist.hidden = reader;
+      setText(draftActionsHeading, reader ? "Version draft" : "Prepare this version");
       const retainedConfiguration = retainedConfigurationState();
       const saving = draftEditorState.saving || pluginEditorState.saving;
       const reload =
@@ -2677,10 +3382,11 @@ export async function renderAgentDetail(
         Boolean(deployReloadMessage);
       const unsaved =
         draftEditorState.dirty || pluginEditorState.dirty || retainedConfiguration.dirty;
+      const retired = retiredSetting() !== null;
       setStep(
         checklistSteps[0],
-        !saving && !reload && !unsaved,
-        `${saving ? "Saving…" : reload ? "Reload this draft" : unsaved ? "Unsaved changes" : "Saved"} · Configuration ${snapshot.id} · generation ${snapshot.generation}`,
+        !saving && !reload && !unsaved && !retired,
+        `${saving ? "Saving…" : reload ? "Reload this draft" : unsaved ? "Unsaved changes" : retired ? "Remove the retired setting" : "Saved"} · Configuration ${snapshot.id} · generation ${snapshot.generation}`,
       );
       const rejected = credentialRejected();
       const authenticationReady =
@@ -2703,7 +3409,9 @@ export async function renderAgentDetail(
                 ? "Saving…"
                 : authenticationSaveState === "uncertain"
                   ? "Reload this draft"
-                  : "Finish in Credentials",
+                  : credentials?.checkingGrants()
+                    ? CHECKING_CREDENTIAL_ACCESS_STEP
+                    : "Finish in Credentials",
       );
       setStep(checklistSteps[2], false, "Creates an immutable version from the saved draft");
     }
@@ -2752,6 +3460,7 @@ export async function renderAgentDetail(
           }
           if (
             freshAgent.executionMode !== agent.executionMode ||
+            freshAgent.gatewayManagedMode !== agent.gatewayManagedMode ||
             freshAgent.backendId !== agent.backendId ||
             JSON.stringify(freshAgent.plugins ?? {}) !== JSON.stringify(agent.plugins ?? {})
           ) {
@@ -2782,6 +3491,18 @@ export async function renderAgentDetail(
               "Channel Secret bindings changed. Refresh this Agent before deploying.";
             return;
           }
+          // A grant read that landed during these rereads can show a bound Secret the Agent may
+          // not use, which the worker would refuse: ask the Credentials panel again (#3686 review).
+          if (!runtimeAuth && credentials?.canDeploy() !== true) {
+            deployFeedback.textContent =
+              credentials?.deployGateMessage() ?? "Credential readiness could not be confirmed.";
+            return;
+          }
+          if (harnessGrantMissing || harnessGrantChecking) {
+            deployFeedback.textContent =
+              "Confirm authentication and Secret access in Credentials before deploying.";
+            return;
+          }
           submitted = true;
           const revision = revisionForPage(await request(`${path}/deploy`, { method: "POST" }));
           if (
@@ -2791,6 +3512,7 @@ export async function renderAgentDetail(
           ) {
             throw new Error("The admitted version could not be confirmed for this Configuration.");
           }
+          deployedVersions.set(failedVersionKey(path, revision.id), revision.revision);
           if (context.isCurrent()) {
             deployInFlight = false;
             content.toggleAttribute("inert", false);
@@ -2805,7 +3527,25 @@ export async function renderAgentDetail(
             context.onExpired();
             return;
           }
-          deployFeedback.textContent = deployFailureText(error, submitted);
+          const failure = requestFailure(error);
+          // A caller's own denial names no bound Secret: an older API's says nothing, and a named
+          // one (finding 2534) names no ID the request did not send. When the Secret operate
+          // answer, read again, names bound Secrets this caller may not operate, the alert names
+          // them and Deploy stays disabled until a grant is read (finding 2546).
+          const deniedSecrets =
+            submitted &&
+            failure.status === 403 &&
+            (failure.serverMessage === undefined ||
+              failure.serverMessage === GENERIC_DENIAL ||
+              namedDenial(error) !== undefined)
+              ? await readDeploySecretsDenied({ fresh: true })
+              : null;
+          if (!context.isCurrent()) {
+            return;
+          }
+          deployFeedback.textContent =
+            (deniedSecrets && deploySecretsOperateReason(deniedSecrets)) ||
+            deployFailureText(error, submitted);
           if (
             !submitted ||
             deployRefusedBeforeAdmission(error) ||
@@ -2841,11 +3581,90 @@ export async function renderAgentDetail(
       // .primary stays for tests that find Deploy new version by it.
       { tone: "primary", className: "primary" },
     );
+    if (context.installationAdmin === true) {
+      const feedback = element("p", { className: "hint", role: "status" });
+      const reload = button("Reload draft", () => void reloadDraftInPlace(context, {}), {
+        hidden: true,
+      });
+      const actionLabel = () =>
+        `Turn ${agent.gatewayManagedMode ? "off" : "on"} managed mode for next deployment`;
+      const action = button(
+        actionLabel(),
+        async () => {
+          const previousBlock = showDraftEditorNavigationBlock;
+          const hold = (text: string, saving = false) => {
+            deployReloadMessage = text;
+            draftEditorNavigationBlock = text || null;
+            draftEditorSaving = saving;
+            showDraftEditorNavigationBlock = text
+              ? () => showLeaveNote(control, text, "end")
+              : previousBlock;
+            content
+              .querySelector(".configuration-draft-editor")
+              ?.toggleAttribute("inert", Boolean(text));
+            updateNavigationControls();
+            updateDeployControls();
+          };
+          feedback.textContent = "";
+          setStatusTone(feedback, null);
+          hold("Saving managed mode. Wait before deploying.", true);
+          try {
+            const savedAgent = agentForPage(
+              await request(path, {
+                method: "PATCH",
+                body: { gatewayManagedMode: !agent.gatewayManagedMode },
+              }),
+            );
+            if (typeof savedAgent.gatewayManagedMode !== "boolean") {
+              throw new Error("The Agent response did not include managed mode.");
+            }
+            if (context.isCurrent()) {
+              agent = savedAgent;
+              managedMode.value.textContent = agent.gatewayManagedMode ? "On" : "Off";
+              action.textContent = actionLabel();
+              feedback.textContent = "Managed mode saved. Deploy a new version to apply it.";
+            }
+          } catch (error) {
+            if (!context.isCurrent()) {
+              return;
+            }
+            if (requestFailure(error).status === 401) {
+              context.onExpired();
+              return;
+            }
+            reload.hidden = refusedWriteStatuses.includes(requestFailure(error).status);
+            feedback.textContent = reload.hidden
+              ? rejectionMessage(refusedSave(error, "managedMode", true), true)
+              : "Managed mode may have been saved. Reload this draft before continuing.";
+            setStatusTone(feedback, "danger");
+          } finally {
+            if (context.isCurrent() && control.isConnected) {
+              hold(reload.hidden ? "" : (feedback.textContent ?? ""));
+              if (feedback.textContent) {
+                focusSaveOutcome(control, [reload, action], feedback);
+              }
+            }
+          }
+        },
+        { disabled: true },
+      );
+      const control = element(
+        "section",
+        { hidden: true },
+        element("h3", {}, "Gateway managed mode"),
+        element("p", { className: "hint" }, GATEWAY_MANAGED_MODE_HINT),
+        element("div", { className: "form-actions" }, action, reload),
+        feedback,
+      );
+      managedMode.action = action;
+      managedMode.control = control;
+    }
     updateDeployControls();
+    void readDeploySecretsDenied();
     const draftActions = element(
       "section",
       { className: "card agent-draft-actions" },
-      element("h2", {}, "Prepare this version"),
+      draftActionsHeading,
       checklist,
       // The status follows Deploy in reading order; on a wide screen it shows to its left.
       element("div", { className: "card-actions" }, setupCredentials, deploy, deployStatus),
@@ -2870,6 +3689,7 @@ export async function renderAgentDetail(
       executionMode,
       credentials,
       channelSecretsNote,
+      managedMode,
       setAuthenticationPending(pending) {
         authenticationPending = pending;
         updateDeployControls();
@@ -3002,17 +3822,71 @@ export async function renderAgentDetail(
     }
   }
 
+  // Every operate-gated control follows the newest answer read, without a reload: the Stop row,
+  // the shown version's Run diagnostics, and Workspace editors, shown or parked (finding 2328).
+  function applyOperateAnswer(allowed: boolean | undefined) {
+    stopPanel.applyOperate(allowed);
+    versionRecord?.applyOperate(allowed);
+    mountedTab?.applyOperate?.(allowed);
+    for (const tab of retainedTabs.values()) {
+      tab.applyOperate?.(allowed);
+    }
+  }
+
+  // Why a save that bound these chosen Secrets was refused: the Secret answer, read again, names
+  // each one the caller may not operate (finding 2453). It is named only when the permission
+  // answer, read again too, allows the save's own grants: update on the Configuration for a
+  // Configuration save; update, Configuration read and the bound sources for an Agent save.
+  // Otherwise the save's usual refusal names every grant it needs: so it does when the permission
+  // read fails, or when the Secret read fails before any answer (a failed reread keeps the last).
+  async function refusedSecretBinding(
+    save: "configuration" | "agent",
+    secrets: readonly Pick<SecretMetadata, "id" | "name">[],
+  ) {
+    secretsOperateAnswer.reset();
+    const [permissions, denied] = await Promise.all([
+      readPermissions().catch(() => null),
+      secretsOperateDenied(),
+    ]);
+    const ownGrants =
+      save === "configuration"
+        ? permissions?.configurationUpdate === true
+        : permissions?.update === true &&
+          permissions.configurationRead === true &&
+          permissions.agentSourcesOperate === true;
+    const names = secrets.filter((secret) => denied?.has(secret.id)).map((secret) => secret.name);
+    return ownGrants && names.length ? secretOperateRefusal(names) : undefined;
+  }
+
   // Reads the caller's permission answer again; a failed read keeps the last answer.
   function rereadPermissions() {
+    secretsOperateAnswer.reset();
     const previous = latestPermissionsRead;
     const reread = ++permissionsRereads;
     const read = readPermissions().then(
       (permissions) => {
-        if (context.isCurrent() && reread === permissionsRereads) {
+        // An older reread still applies when no newer one has answered: a newer read that
+        // fails resolves to this answer. The summary and the controls take it together, so
+        // the failed-version recovery and Delete never keep an answer that Stop has left
+        // (finding 2329).
+        if (context.isCurrent() && reread > appliedReread) {
+          appliedReread = reread;
           callerPermissions = permissions;
+          // Views built from now on take this answer; shown ones follow it below (finding 2470).
+          // While a newer reread is in flight, views built meanwhile wait for it instead, so
+          // Plugins sends no read it denies (findings D795, 2902). A newer reread that fails
+          // resolves to this answer.
+          agentSaveDenied =
+            reread === permissionsRereads
+              ? Promise.resolve(agentSaveDenial(permissions, agent))
+              : latestPermissionsRead.then((newest) => agentSaveDenial(newest, agent));
           if (latestDeploymentStatus === "failed" && !deleting) {
             renderLatestDeployment();
           }
+          // A grant or revocation since the last answer relabels the draft (finding 2421).
+          applyDraftAccess();
+          deletion.applyDelete(permissions?.delete);
+          applyOperateAnswer(permissions?.operate);
         }
         return permissions;
       },
@@ -3033,8 +3907,17 @@ export async function renderAgentDetail(
       updateCurrentAgent(freshAgent, latestRevisionResult, viewedSnapshot);
     }
     // The rebuilt editors take the fresh answer.
-    agentUpdateAllowed = rereadPermissions().then((permissions) => permissions?.update);
+    agentSaveDenied = rereadPermissions().then((permissions) =>
+      agentSaveDenial(permissions, agent),
+    );
     const next = loadDetails();
+    // Other tabs draw from the last answer and follow the reread (finding 2421), but Repositories
+    // draws its editor only once the reread lands. Rebuilt before that, the tab was empty at the
+    // focus step below: Cancel was not found, the tab strip took focus, the shortened page lost
+    // the reader's place, and the editor drawn later showed no saved status (finding 2892).
+    if (selectedTab === "repositories") {
+      await agentSaveDenied;
+    }
     const data = await next;
     if (!context.isCurrent() || deleting || !data) {
       return;
@@ -3068,13 +3951,19 @@ export async function renderAgentDetail(
     if (!context.isCurrent()) {
       return;
     }
+    // The permission reread can land after the rebuilt tab was drawn.
+    redrawConfigurationAccessViews();
     const shrunk = versionLayout.getBoundingClientRect().bottom - bottomBefore;
     if (anchorBelow && shrunk < 0) {
       globalThis.scrollBy({ top: shrunk, behavior: "instant" });
     }
-    // `focus` may list fallbacks; the first enabled match in the tab takes focus.
+    // `focus` may list fallbacks; the first enabled, shown match in the tab takes focus. A
+    // Cancel that the rebuilt editor hides falls back to the tab (finding 2386).
     const named = [...content.querySelectorAll("button")].find(
-      (candidate) => [focus].flat().includes(candidate.textContent) && !candidate.disabled,
+      (candidate) =>
+        [focus].flat().includes(candidate.textContent) &&
+        !isUnavailable(candidate) &&
+        !candidate.closest("[hidden]"),
     );
     const status = saved
       ? [...content.querySelectorAll<HTMLElement>('[role="status"]')].find(
@@ -3104,6 +3993,23 @@ export async function renderAgentDetail(
     }
   }
 
+  function snapshotErrorPanel(cause: unknown, tabContext: DetailContext) {
+    return errorPanel(
+      cause,
+      tabContext,
+      () => {
+        context.deniedReads?.forget(snapshotPath);
+        context.navigate(target(selected, selectedTab), namespaceId, true);
+      },
+      {
+        version: selected !== "draft",
+        // The current version, every listed one and one this tab deployed are known to exist.
+        exists:
+          selected === currentRevisionId || listedRevisions.has(selected) || deployedHere(selected),
+      },
+    );
+  }
+
   async function renderTab({ activated = false } = {}) {
     // A Logs view left before it showed no longer holds the cards below it back.
     view.classList.remove("agent-logs-opening");
@@ -3130,7 +4036,12 @@ export async function renderAgentDetail(
     // page the heading stays in view instead.
     const stripTop = activated && window.scrollY > 0 ? tabs.getBoundingClientRect().top : null;
     renderDetailHeading();
-    versionEvidence.hidden = ["workspace", "logs", "access"].includes(selectedTab);
+    deploymentPanels.hidden = selectedTab !== "deployment";
+    versionRecord?.render();
+    content.hidden = selectedTab === "deployment";
+    pageDisclosure.hidden = selected !== "draft" && !["deployment", "access"].includes(selectedTab);
+    deploymentAttention.hidden =
+      selectedTab === "deployment" || !deploymentAttention.dataset.message;
     setLayoutShape();
     if (stripTop !== null) {
       const moved = tabs.getBoundingClientRect().top - stripTop;
@@ -3162,6 +4073,8 @@ export async function renderAgentDetail(
       // The deployment may have settled while this tab was parked.
       renderVersionNotice();
       retained.resumeDrafts?.();
+      // So may a permission answer that changes Configuration access (finding 2421).
+      redrawConfigurationAccessViews();
       return;
     }
     showDraftEditorNavigationBlock = showBlockInPanel;
@@ -3176,12 +4089,22 @@ export async function renderAgentDetail(
     const tabContext: DetailContext = {
       ...context,
       isCurrent: () => context.isCurrent() && mountedTab === state,
-      request: async (path, options) => {
+      request: async (readPath, options) => {
+        const read = (options?.method ?? "GET") === "GET";
         state.pending += 1;
         try {
-          return await context.request(path, options);
+          const result = await context.request(readPath, options);
+          if (read) {
+            allowedReads.add(readPath);
+          }
+          return result;
         } catch (error) {
           state.reusable = false;
+          // Any tab's refusal of a read the page had the grant for, not only Logs', makes the next
+          // tab change read the page again instead of reusing tabs read before (finding 2568).
+          if (read && requestFailure(error).status === 403 && readHadGrant(readPath)) {
+            accessChanged = true;
+          }
           throw error;
         } finally {
           state.pending -= 1;
@@ -3191,6 +4114,21 @@ export async function renderAgentDetail(
     // Retain the panel's height during reads so loading does not jump the scroll position.
     content.style.minHeight = `${content.getBoundingClientRect().height}px`;
     content.replaceChildren();
+    if (tab === "deployment") {
+      if (selected !== "draft") {
+        const data = await (details ??= loadDetails());
+        if (!tabContext.isCurrent() || deleting) {
+          return;
+        }
+        if (data && "error" in data) {
+          versionEvidence.replaceChildren(snapshotErrorPanel(data.error, tabContext));
+        }
+      }
+      state.reusable = false;
+      state.loading = false;
+      content.style.minHeight = "";
+      return;
+    }
     if (tab === "workspace") {
       const workspace = renderWorkspaceFiles(
         tabContext,
@@ -3199,6 +4137,9 @@ export async function renderAgentDetail(
         latestPermissionsRead.then((permissions) => permissions?.operate),
       );
       state.refresh = workspace.refresh;
+      if (workspace.applyOperate) {
+        state.applyOperate = workspace.applyOperate;
+      }
       content.append(workspace.section);
       state.loading = false;
       content.style.minHeight = "";
@@ -3209,6 +4150,7 @@ export async function renderAgentDetail(
       // page with the page's context, as it was on the overview: a share or removal in flight
       // finishes, and its progress shows again, when the reader leaves the tab and comes back.
       state.reusable = false;
+      const returning = accessPanel !== null;
       accessPanel ??= renderAgentAccess(context, agent, {
         onWriting: (writing) => {
           sharingWrite = writing;
@@ -3233,7 +4175,10 @@ export async function renderAgentDetail(
         // Back to a tab whose policy read was refused.
         leaveDeniedAccess();
       } else {
-        content.append(accessPanel);
+        content.append(accessPanel.section);
+        if (returning) {
+          accessPanel.recheck();
+        }
       }
       state.loading = false;
       content.style.minHeight = "";
@@ -3241,7 +4186,33 @@ export async function renderAgentDetail(
     }
     if (tab === "policy") {
       state.reusable = false;
-      content.append(renderAgentDriverConfigurations(tabContext, { agent, revisionId: selected }));
+      // A remembered denial can predate a grant, so opening the tab compares it with a fresh
+      // answer, which is not audited; an answer still in flight is that fresh answer.
+      const settled = permissionsReadSettled;
+      const policyReadAllowed = latestPermissionsRead.then((permissions) =>
+        permissions?.sandboxPolicyRead === false && settled && tabContext.isCurrent()
+          ? rereadPermissions().then((fresh) => fresh?.sandboxPolicyRead)
+          : permissions?.sandboxPolicyRead,
+      );
+      // The version's snapshot says whether it runs in a Sandbox, whose log alone records
+      // policy denials; without one the tab reads no log (finding 2484). The draft reads none.
+      let sandboxLogSource: Promise<boolean | undefined> | undefined;
+      if (selected !== "draft") {
+        details ??= loadDetails();
+        sandboxLogSource = details.then((result) =>
+          result && "draft" in result && !result.draft
+            ? result.snapshot.sandboxDriverId !== undefined
+            : undefined,
+        );
+      }
+      content.append(
+        renderAgentDriverConfigurations(tabContext, {
+          agent,
+          revisionId: selected,
+          policyReadAllowed,
+          ...(sandboxLogSource ? { sandboxLogSource } : {}),
+        }),
+      );
       state.loading = false;
       content.style.minHeight = "";
       return;
@@ -3251,19 +4222,34 @@ export async function renderAgentDetail(
       details ??= loadDetails();
       // Polling views are rebuilt on every visit instead of being retained.
       state.reusable = false;
+      // An answer still in flight when this view opened is read after it, so it is fresh.
+      const openingRead = permissionsReadSettled ? null : latestPermissionsRead;
       const logs = renderAgentLogs(tabContext, {
         agent,
         revisionId: selected,
         shown: revealed,
         // A rebuilt view asks for a fresh answer when it remembers a status denial; a read
-        // still in flight is that answer.
+        // still in flight, or in flight when the view opened, is that answer.
         permissions: (options) =>
-          options?.fresh && permissionsReadSettled ? rereadPermissions() : latestPermissionsRead,
+          options?.fresh && permissionsReadSettled && latestPermissionsRead !== openingRead
+            ? rereadPermissions()
+            : latestPermissionsRead,
+        // The version read is AgentRevision read: a status refusal names that grant only when
+        // this read was refused (finding D753).
+        versionRead: details.then((result) => {
+          if (result && "snapshot" in result) {
+            return true;
+          }
+          return result && requestFailure(result.error).status === 403 ? false : undefined;
+        }),
         // The failed-version recovery stops offering Logs as soon as they are denied.
         onLogsDenied: () => {
           if (tabContext.isCurrent() && !recovery.section.hidden) {
             renderLatestDeployment();
           }
+        },
+        onAccessChanged: () => {
+          accessChanged = true;
         },
       });
       content.append(logs.section);
@@ -3335,17 +4321,7 @@ export async function renderAgentDetail(
     state.loading = false;
     if (data && "error" in data) {
       state.reusable = false;
-      content.append(
-        errorPanel(
-          data.error,
-          tabContext,
-          () => {
-            context.deniedReads?.forget(snapshotPath);
-            context.navigate(target(selected, selectedTab), namespaceId, true);
-          },
-          { version: selected !== "draft" },
-        ),
-      );
+      content.append(snapshotErrorPanel(data.error, tabContext));
     } else if (data) {
       renderConfigurationTab(tabContext, tab, data);
     }
@@ -3358,7 +4334,7 @@ export async function renderAgentDetail(
       statusBlock("info", null, versionNotice(), [], { className: "version-selection-notice" }),
     );
     if (selectedTab === "repositories" && draft) {
-      content.append(renderRepositoryEditor(context, data));
+      content.append(renderRepositoryTab(context, data));
     } else if (selectedTab === "plugins") {
       const plugins = renderAgentPlugins(context, {
         agent: { ...agent, harnessAuth: agent.harnessAuth ?? null },
@@ -3371,7 +4347,7 @@ export async function renderAgentDetail(
           }
         },
         savedNotice,
-        updateAllowed: agentUpdateAllowed,
+        saveDenied: agentSaveDenied,
         // Saves and reloads rebuild the tab in place (finding 1445's rest).
         onSaved: (savedAgent) => {
           if (!data.draft || agent.configurationReadError) {
@@ -3394,24 +4370,37 @@ export async function renderAgentDetail(
       showDraftEditorNavigationBlock = () =>
         showLeaveNote(plugins, draftEditorNavigationBlock, "after");
       content.append(plugins);
+      if (draft) {
+        followAgentSaveAccess(() => context.isCurrent() && plugins.isConnected);
+      }
     } else if (selectedTab === "channels") {
       const { servicePrincipalId } = agent;
+      // Bound Slack token Secrets this caller may not operate, which a save must replace.
+      const channelReplace = draft ? channelBindingsReplace() : null;
       // Whether the last save left a Secret grant outstanding, for its saved notice.
       let channelGrantOutstanding = false;
       const channels = renderChannels({
         values,
         executionMode,
-        readOnly: !draft,
+        readOnly: !draft || channelsReadOnly(),
         // Every deployment needs a model authentication source, so the drawer asks for one only
         // while the Agent has none; a deployed Agent with its key bound was told to set
         // credentials "before first deploy" (finding 2063).
         copy: {
+          ...(draft && channelsReadOnly()
+            ? {
+                readOnlyDescription: `These are the version draft’s channel settings. ${channelsReadOnlyReason()}`,
+                readOnlyCardMessage: "Read-only with your access.",
+              }
+            : {}),
           drawerNotice: `New version. Changes affect future deployments using this Configuration.${
             agent.harnessAuth
               ? ""
               : " Configure model credentials in the Credentials tab before deploying."
-          }`,
+          }${channelReplace ? ` ${channelReplaceHint(channelReplace)}` : ""}`,
         },
+        // Disable saves no bindings, so a binding it must replace refuses it (finding 2471).
+        disableRefusal: channelDisableRefusal(channelReplace, snapshot.secretBindings),
         drawerContext: {
           drafts: context.drafts,
           baseline: JSON.stringify([
@@ -3420,6 +4409,10 @@ export async function renderAgentDetail(
             servicePrincipalId,
           ]),
           operatorId: context.operatorId,
+          ...(context.installationAdmin === null
+            ? {}
+            : { installationAdmin: context.installationAdmin }),
+          namespace: context.namespace,
           namespaceId,
           request,
           agentName: agent.name,
@@ -3427,6 +4420,8 @@ export async function renderAgentDetail(
           secretBindings: snapshot.secretBindings,
           isCurrent: context.isCurrent,
           onExpired: context.onExpired,
+          secretsCreateAllowed: context.secretsCreateAllowed,
+          secretsOperateDenied,
           credentialsHref: context.pageUrl(
             `agents/${agent.id}?revision=draft&tab=credentials`,
             namespaceId,
@@ -3435,6 +4430,15 @@ export async function renderAgentDetail(
         onSave: async (updatedValues, options = {}) => {
           if (!draft) {
             throw new Error("This version is read-only. Open the draft to edit its channels.");
+          }
+          // A save that keeps a bound Secret this caller may not operate would answer 403.
+          const refusal = channelReplaceRefusal(
+            channelBindingsReplace(),
+            snapshot.secretBindings,
+            options.secretBindings,
+          );
+          if (refusal) {
+            throw new Error(refusal);
           }
           channelGrantOutstanding = false;
           let mutationStarted = false;
@@ -3522,7 +4526,7 @@ export async function renderAgentDetail(
               // Installation administrator, and a 401 still ends the session below.
               throw Object.assign(
                 new Error(
-                  "Configuration saved, but Secret access grants could not be confirmed. Reload the draft, inspect saved bindings in Agent Credentials, then ask an Installation administrator to grant this Agent access to the saved Secret.",
+                  `Configuration saved, but Secret access grants could not be confirmed. Reload the draft, inspect saved bindings in Agent Credentials, then ${ASK_INSTALLATION_ADMINISTRATOR} to grant this Agent access to the saved Secret.`,
                   { cause },
                 ),
                 {
@@ -3551,7 +4555,16 @@ export async function renderAgentDetail(
               throw error;
             }
             if (!configurationSaved) {
-              refusedSave(error, "configuration", mutationStarted);
+              // A refused write names the chosen Secrets the caller may not operate, when a fresh
+              // answer says so (finding 2453).
+              const named =
+                mutationStarted && requestFailure(error).status === 403
+                  ? await refusedSecretBinding("configuration", options.changedSecrets ?? [])
+                  : undefined;
+              if (!context.isCurrent()) {
+                throw error;
+              }
+              refusedSave(error, "configuration", mutationStarted, named);
             }
             if (requestFailure(error).status === 401) {
               context.onExpired();
@@ -3615,6 +4628,23 @@ export async function renderAgentDetail(
         channels,
         navigationFeedback,
       );
+      // An answer that lands after this view changes whether it is read-only (finding 2421).
+      if (draft) {
+        const shownReadOnly = channelsReadOnly();
+        const shownReplace = JSON.stringify(channelReplace);
+        followConfigurationAccess(() => {
+          if (
+            context.isCurrent() &&
+            mountedTab &&
+            (channelsReadOnly() !== shownReadOnly ||
+              JSON.stringify(channelBindingsReplace()) !== shownReplace)
+          ) {
+            // Rebuild, not restore: a reusable tab would be parked and shown again as it was.
+            mountedTab.reusable = false;
+            void renderTab();
+          }
+        });
+      }
     } else if (selectedTab === "credentials" && draft) {
       const { credentials, channelSecretsNote } = data;
       const retained = context.drafts.get("authentication") as AuthenticationDraft | undefined;
@@ -3625,7 +4655,7 @@ export async function renderAgentDetail(
       };
       let syncUnsavedAuthentication = () => {};
       const auth = createHarnessAuthFields(
-        context,
+        { ...context, secretsOperateDenied },
         agent.harnessAuth,
         configuredHarnessId(values),
         {
@@ -3635,6 +4665,9 @@ export async function renderAgentDetail(
         },
       );
       const feedback = element("p", { role: "status", className: "hint" }, savedNotice);
+      // The saved notice describes the saved source. Once the selection differs, the picker's
+      // "staged" hint is the card's one status, not both at once (finding D748).
+      const shownSavedNotice = savedNotice;
       // Progress stays a quiet hint; a refusal is a danger block that takes focus, and a save
       // whose Secret access is unconfirmed a warning (finding 1966).
       const say = (text: string, tone: "danger" | "warning" | null = null) => {
@@ -3653,7 +4686,7 @@ export async function renderAgentDetail(
       const reload = button("Reload authentication source", async () => {
         context.drafts.forget("authentication");
         reload.disabled = true;
-        save.disabled = true;
+        setSaveUnavailable(true);
         let fresh;
         try {
           // The tab's own request keeps this tab from being retained while the read is pending.
@@ -3677,8 +4710,8 @@ export async function renderAgentDetail(
         { className: "agent-card", novalidate: "" },
         auth.section,
         updateNote,
-        save,
-        reload,
+        // One action row, so Save and Reload keep the shared gap (finding 2386).
+        element("div", { className: "form-actions" }, save, reload),
         feedback,
       );
       data.setAuthenticationForm(form);
@@ -3687,18 +4720,48 @@ export async function renderAgentDetail(
       let pending = false;
       // Set when the caller's permission answer denies Agent update (finding 1530).
       let updateDenied = false;
-      void agentUpdateAllowed.then((allowed) => {
-        if (allowed === false && context.isCurrent()) {
-          // Retry credential access only rechecks the Secret grant; it is not an Agent update.
-          if (savedAuthentication) {
-            return;
-          }
-          updateDenied = true;
-          updateNote.textContent = AGENT_UPDATE_DENIED;
-          updateNote.hidden = false;
-          save.disabled = true;
+      let saveUnavailable = false;
+      let authUnavailable = false;
+      // Save and the method select are described by the note that says why they are disabled
+      // (finding D749), and stay in the Tab order while it shows (finding 2899).
+      const setSaveUnavailable = (value: boolean) => {
+        saveUnavailable = value;
+        setUnavailable(save, value, updateDenied ? updateNote : null);
+      };
+      const setAuthUnavailable = (value: boolean) => {
+        authUnavailable = value;
+        auth.setDisabled(value, updateDenied ? updateNote : null);
+      };
+      const describeUpdateDenial = () => {
+        setSaveUnavailable(saveUnavailable);
+        setAuthUnavailable(authUnavailable);
+      };
+      const applyUpdateDenial = (reason: string | undefined) => {
+        // Retry credential access only rechecks the Secret grant; it is not an Agent update.
+        if (savedAuthentication || (reason === undefined && !updateDenied)) {
+          return;
+        }
+        updateDenied = reason !== undefined;
+        updateNote.textContent = reason ?? "";
+        updateNote.hidden = !updateDenied;
+        // A save in flight sets the controls when it ends.
+        if (!pending) {
+          saveUnavailable = outcomeUnknown || updateDenied;
           // An edit that cannot be saved would only block Deploy (finding 1539).
-          auth.setDisabled(true);
+          authUnavailable = outcomeUnknown || updateDenied;
+        }
+        describeUpdateDenial();
+      };
+      void agentSaveDenied.then((reason) => {
+        if (context.isCurrent()) {
+          applyUpdateDenial(reason);
+        }
+      });
+      // A newer answer updates the form in place: the channel Secrets panel below it keeps its
+      // state and focus (finding 2470).
+      followConfigurationAccess(() => {
+        if (context.isCurrent() && form.isConnected) {
+          applyUpdateDenial(agentSaveDenial(callerPermissions, agent));
         }
       });
       let savedAuthentication = retained?.savedAuthentication ?? null;
@@ -3724,13 +4787,65 @@ export async function renderAgentDetail(
       }: AuthenticationFields) =>
         JSON.stringify({ method, secretSource, credentialSource, account });
       syncUnsavedAuthentication = () => {
+        const changed = bindingFields(auth.capture()) !== bindingFields(originalFields);
         // Pending and saved states already gate deployment with their own messages.
         data.setAuthenticationUnsaved(
-          !pending &&
-            !outcomeUnknown &&
-            !savedAuthentication &&
-            bindingFields(auth.capture()) !== bindingFields(originalFields),
+          !pending && !outcomeUnknown && !savedAuthentication && changed,
         );
+        if (changed && shownSavedNotice && feedback.textContent === shownSavedNotice) {
+          feedback.textContent = "";
+        }
+        applySavedGrantWarning();
+      };
+      // The IAM answer is about the saved Secret. A later selection is what Save would grant,
+      // so the warning follows that selection: another Secret clears it, and returning to the
+      // saved Secret restores it. A submit since the read began still owns the status line.
+      let submitted = false;
+      form.addEventListener("submit", () => {
+        submitted = true;
+      });
+      let savedGrantMissing = false;
+      const missingGrantWarning = () =>
+        grantWarning(
+          "missing",
+          harnessGrantSubject(
+            agent.harnessAuth?.method === "credential_source" ? "credential_source" : "secret",
+          ),
+        );
+      const selectionMatchesSavedGrant = () => {
+        const saved = baseline.harnessAuth;
+        const credential = harnessCredential(saved, context.namespaceId);
+        if (!credential) {
+          return false;
+        }
+        const fields = auth.capture();
+        if (credential.kind === "secret") {
+          return (
+            saved?.method === fields.method &&
+            fields.secretSource?.kind === "secret" &&
+            fields.secretSource.id === credential.id &&
+            fields.secretSource.namespaceId === credential.namespaceId
+          );
+        }
+        return (
+          fields.method === "credential_source" &&
+          (fields.credentialSource === null || fields.credentialSource.id === credential.id)
+        );
+      };
+      const applySavedGrantWarning = () => {
+        if (submitted || savedAuthentication || outcomeUnknown) {
+          return;
+        }
+        const warning = missingGrantWarning();
+        if (savedGrantMissing && selectionMatchesSavedGrant()) {
+          setStatusTone(feedback, "warning");
+          feedback.textContent = warning;
+          return;
+        }
+        if (feedback.textContent === warning) {
+          setStatusTone(feedback, null);
+          feedback.textContent = "";
+        }
       };
       form.addEventListener("input", () => syncUnsavedAuthentication());
       form.addEventListener("change", () => syncUnsavedAuthentication());
@@ -3753,48 +4868,29 @@ export async function renderAgentDetail(
       });
       if (savedAuthentication) {
         save.textContent = "Retry credential access";
-        // This session sent no grant because it cannot make one, so a Retry would be refused too.
-        save.hidden = grantProblem === "unverified";
-        auth.setDisabled(true);
+        setAuthUnavailable(true);
         setStatusTone(feedback, "warning");
         feedback.textContent = grantProblem
           ? grantText(grantProblem)
           : "Authentication source saved. Retry credential access to confirm this Agent can use the selected Secret.";
       }
       if (outcomeUnknown) {
-        save.disabled = true;
-        auth.setDisabled(true);
+        setSaveUnavailable(true);
+        setAuthUnavailable(true);
         setStatusTone(feedback, "danger");
         feedback.textContent = "Outcome unknown. Reload authentication source before saving again.";
       }
       // This administrator's console read the saved source's grant as missing: saving the source
-      // again grants it, which the shared wording names (finding 2260).
-      // A submit since the read began owns the status line, even when it failed before saving.
-      let submitted = false;
-      form.addEventListener("submit", () => {
-        submitted = true;
-      });
+      // again grants it, which the shared wording names (finding 2260). The form is retained
+      // while another tab is shown, so the answer is applied even when this tab is parked.
       void data.harnessGrantMissing().then((missing) => {
-        if (
-          missing &&
-          !submitted &&
-          !savedAuthentication &&
-          !outcomeUnknown &&
-          context.isCurrent()
-        ) {
-          setStatusTone(feedback, "warning");
-          feedback.textContent = grantWarning(
-            "missing",
-            harnessGrantSubject(
-              agent.harnessAuth?.method === "credential_source" ? "credential_source" : "secret",
-            ),
-          );
-        }
+        savedGrantMissing = missing;
+        applySavedGrantWarning();
       });
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         // The console's own errors under each field, not the browser's bubble (UX plan C3).
-        if (!validateFields([...form.elements]) || save.disabled) {
+        if (!validateFields([...form.elements]) || saveUnavailable) {
           return;
         }
         let harnessAuth: HarnessAuthBinding | null;
@@ -3805,13 +4901,13 @@ export async function renderAgentDetail(
           say(error instanceof Error ? error.message : message(error), "danger");
           return;
         }
-        save.disabled = true;
+        setSaveUnavailable(true);
         pending = true;
         reload.disabled = true;
-        auth.setDisabled(true);
+        setAuthUnavailable(true);
         data.setAuthenticationSaveState("saving");
         data.setAuthenticationPending(true);
-        say(savedAuthentication ? "Checking Secret access…" : "Saving authentication…");
+        say(savedAuthentication ? "Checking credential access…" : "Saving authentication…");
         let mutationStarted = false;
         // Set once the grant request starts: a retry first rereads the Agent.
         let grantRequested = false;
@@ -3878,12 +4974,18 @@ export async function renderAgentDetail(
           if (credential && context.installationAdmin === false) {
             // Granting writes IAM policy, which needs Installation administration. The session
             // already knows this member lacks it, so it sends no grant that would be refused, and
-            // no IAM read either. Nothing verified the Agent's access, which an administrator may
-            // already have granted. It names who grants it, as Create Agent does (findings 2109,
-            // 2259).
-            grantProblem = "unverified";
+            // no IAM read either (findings 2109, 2259). The save is finished: the card rebuilds
+            // editable, with one status that says the deploy checks the Agent's access and who
+            // gives it, and Deploy is not held (findings 2547, D748).
             if (context.isCurrent()) {
-              say(grantText(grantProblem), "warning");
+              context.drafts.forget("authentication");
+              await refreshDraftInPlace({
+                agent: savedAgent,
+                saved: `Authentication source saved. ${credentialCheckedAtDeploy(
+                  credential.kind === "credential_source" ? "credential source" : "Secret",
+                )}`,
+                focus: "Save authentication source",
+              });
             }
             return;
           }
@@ -3910,9 +5012,18 @@ export async function renderAgentDetail(
           }
           if (requestFailure(error).status === 401) {
             context.onExpired();
+          } else if (!mutationStarted && !grantRequested && requestFailure(error).status === 403) {
+            // The read failed before this attempt could write or grant. Keep its causal receipt,
+            // but retire every protected tab before finally can reenable the old controls.
+            retireSaveRead(
+              error,
+              savedAuthentication
+                ? "Authentication source saved. Could not read the Agent before retrying credential access. No access grant was sent."
+                : rejectionMessage(refusedSave(error, "agent", false), false),
+            );
           } else if (savedAuthentication) {
             const { status, requestId } = requestFailure(error);
-            const requestNote = requestId ? ` Request ID: ${requestId}` : "";
+            const requestNote = requestId ? ` ${requestIdText(requestId)}` : "";
             if (!grantRequested) {
               // A retry rereads the Agent before any grant request: its failure is about that
               // read, not the grant, and Retry stays for when the Agent reads again.
@@ -3927,20 +5038,34 @@ export async function renderAgentDetail(
               grantProblem = grantProblemFor(status) ?? "unconfirmed";
               say(
                 grantText(grantProblem) +
-                  (grantProblem === "refused" ? "" : ` ${message(error)}`) +
+                  // The grant request's own reason, never a form's "entered values".
+                  (grantProblem === "refused" ? "" : ` ${describeFailure(error)}`) +
                   requestNote,
                 "warning",
               );
             }
           } else {
             const fields = responseFields(error);
+            // A refused write names the chosen Secret when a fresh answer says the caller may not
+            // operate it (finding 2453).
+            const chosen = auth.changedSecret;
+            const named =
+              mutationStarted && requestFailure(error).status === 403 && chosen
+                ? await refusedSecretBinding("agent", [chosen])
+                : undefined;
+            if (!context.isCurrent()) {
+              return;
+            }
             outcomeUnknown =
               fields.outcomeUnknown === true ||
               (mutationStarted && !refusedWriteStatuses.includes(requestFailure(error).status));
             say(
               fields.outcomeUnknown && typeof fields.message === "string"
                 ? fields.message
-                : rejectionMessage(refusedSave(error, "agent", mutationStarted), mutationStarted),
+                : rejectionMessage(
+                    refusedSave(error, "agent", mutationStarted, named),
+                    mutationStarted,
+                  ),
               "danger",
             );
             data.setAuthenticationPending(outcomeUnknown);
@@ -3951,11 +5076,10 @@ export async function renderAgentDetail(
             save.textContent = savedAuthentication
               ? "Retry credential access"
               : "Save authentication source";
-            save.hidden = savedAuthentication !== null && grantProblem === "unverified";
             pending = false;
             reload.disabled = false;
-            save.disabled = outcomeUnknown || updateDenied;
-            auth.setDisabled(outcomeUnknown || savedAuthentication !== null || updateDenied);
+            setSaveUnavailable(outcomeUnknown || updateDenied);
+            setAuthUnavailable(outcomeUnknown || savedAuthentication !== null || updateDenied);
             syncUnsavedAuthentication();
           }
         }
@@ -3979,6 +5103,10 @@ export async function renderAgentDetail(
         : snapshot.repositoryCredentials?.bindings;
       const details: Parameters<typeof summary>[1] = [
         ["Execution mode", executionMode === "dedicated" ? "Dedicated" : "Embedded"],
+        [
+          draft ? "Gateway managed mode" : "Requested Gateway managed mode",
+          draft ? data.managedMode.value : snapshot.gatewayManagedMode ? "On" : "Off",
+        ],
         ["Backend (experimental)", draft ? agent.backendId : snapshot.backendId],
         [
           "Repository access",
@@ -4001,6 +5129,30 @@ export async function renderAgentDetail(
           ["Compute", `${snapshot.compute.id} · ${snapshot.compute.implementation}`],
         );
       }
+      let currentConfigurationEntry: HTMLButtonElement | null = null;
+      if (!draft) {
+        // A caller who may not edit the Configuration opens the draft to read it; the entry does
+        // not offer an editor it has none of (finding 2436).
+        const entryLabel = () =>
+          configurationReadOnly() ? "Open draft" : "Edit current Configuration";
+        const entry = button(entryLabel(), () => {
+          const edit = !configurationReadOnly();
+          // The draft this navigation opens takes it with its editor open. Saving
+          // patches the Configuration, which the API authorizes on its own.
+          linkedVersionView = {
+            key: linkedKey("draft", "configuration"),
+            load: consoleLoads + 1,
+            edit,
+          };
+          context.navigate(target("draft", "configuration"));
+        });
+        followConfigurationAccess(() => {
+          if (context.isCurrent() && entry.isConnected) {
+            entry.textContent = entryLabel();
+          }
+        });
+        currentConfigurationEntry = entry;
+      }
       content.append(
         element(
           "section",
@@ -4015,32 +5167,77 @@ export async function renderAgentDetail(
             : element(
                 "div",
                 {},
-                element(
-                  "div",
-                  { className: "form-actions" },
-                  button("Edit current Configuration", () => {
-                    // The draft this navigation opens takes it with its editor open. Saving
-                    // patches the Configuration, which the API authorizes on its own.
-                    linkedVersionView = {
-                      key: linkedKey("draft", "configuration"),
-                      load: consoleLoads + 1,
-                      edit: true,
-                    };
-                    context.navigate(target("draft", "configuration"));
-                  }),
-                ),
+                element("div", { className: "form-actions" }, currentConfigurationEntry),
                 nativeDocument(values, "View admitted native configuration"),
               ),
+          draft
+            ? (data.managedMode.control ??
+                element("p", { className: "hint" }, GATEWAY_MANAGED_MODE_ADMINISTRATOR_ONLY))
+            : null,
         ),
       );
     }
   }
 
+  // The repository choices read needs Agent update, so a caller whose permission answer denies it
+  // reads the saved repository access instead of a refused editor, and is not sent a read that
+  // answers 403 (finding 2454). As on Plugins, a caller missing only a grant that each Agent update
+  // also checks reads the summary too: no save could keep an edit. An unknown answer keeps the
+  // editor.
+  function renderRepositoryTab(context: DetailContext, data: DraftDetails) {
+    const holder = element("div", {});
+    let shown: Element = holder;
+    void agentSaveDenied.then((reason) => {
+      if (!context.isCurrent() || !holder.parentNode) {
+        return;
+      }
+      shown =
+        reason === undefined
+          ? renderRepositoryEditor(context, data)
+          : repositoryAccessSummary(reason);
+      holder.replaceWith(shown);
+    });
+    followAgentSaveAccess(() => context.isCurrent() && shown.isConnected);
+    return holder;
+  }
+
+  function repositoryAccessSummary(reason: string) {
+    const bindings = agent.repositoryBindings ?? [];
+    return element(
+      "section",
+      { className: "agent-card" },
+      element("h2", {}, "Repository access"),
+      element(
+        "p",
+        { className: "muted" },
+        bindings.length
+          ? "These are the version draft’s repository selections, read-only with your access. The next deployment uses them as saved."
+          : "The version draft selects no repositories. The Agent runs without repository access.",
+      ),
+      bindings.length
+        ? element(
+            "ul",
+            { className: "repository-access-summary" },
+            ...bindings.map((binding) =>
+              element(
+                "li",
+                {},
+                `${binding.repositoryRef} · ${repositoryProfile(binding.profile)?.label ?? "Unknown access level"}`,
+              ),
+            ),
+          )
+        : null,
+      bindings.some((binding) => repositoryProfile(binding.profile)?.writes)
+        ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
+        : null,
+      element("p", { className: "muted", role: "status" }, reason),
+    );
+  }
+
   function renderRepositoryEditor(context: DetailContext, data: DraftDetails) {
+    // Drawn only when the permission answer allows Agent saves or is unknown: a caller it denies
+    // reads the summary instead (renderRepositoryTab).
     let saveState = "idle";
-    // Set when the caller's permission answer denies Agent update (finding 1530).
-    let updateDenied = false;
-    const updateNote = element("p", { className: "muted", role: "status", hidden: true });
     const feedback = element("p", { className: "hint", role: "status" }, savedNotice);
     // A refused save is a danger block that takes focus; other notes stay a hint (finding 1966).
     const refuse = (text: string) => {
@@ -4070,6 +5267,7 @@ export async function renderAgentDetail(
       });
       rebuild("", "Cancel");
     });
+    const actions = element("div", { className: "form-actions" }, save, cancel, reload);
     function update() {
       if (reloading) {
         // A Save during the reread would write the edit being discarded, and a late field
@@ -4086,15 +5284,26 @@ export async function renderAgentDetail(
       const reloadRequired = saveState === "conflict";
       const locked = saveState !== "idle";
       data.setDraftEditorState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
-      save.disabled =
-        updateDenied || locked || !dirty || !fields?.isSettled() || fields.blocksCreate();
+      save.disabled = locked || !dirty || !fields?.isSettled() || fields.blocksCreate();
       if (save.getAttribute("aria-busy") !== String(pending)) {
         save.setAttribute("aria-busy", String(pending));
       }
       cancel.disabled = locked;
       reload.hidden = !outcomeUnknown && !reloadRequired;
-      // An edit that cannot be saved would only block leaving the tab (finding 1539).
-      fields?.setDisabled(locked || updateDenied);
+      // Without repository access in the Installation only removing every repository can be
+      // saved (finding 2398). Otherwise the status says so: Save is not offered, and Cancel only
+      // to undo an edit (finding 2386).
+      // A control hidden while focused would drop focus to the page, so the tab takes it.
+      const hide = (control: HTMLButtonElement, hidden: boolean) => {
+        if (hidden && document.activeElement === control) {
+          tabControls.get(selectedTab)?.focus({ preventScroll: true });
+        }
+        control.hidden = hidden;
+      };
+      hide(save, !saveOffered());
+      hide(cancel, Boolean(fields?.notConfigured()) && !dirty);
+      actions.hidden = save.hidden && cancel.hidden && reload.hidden;
+      fields?.setDisabled(locked);
     }
     const fields = createRepositoryFields(
       context,
@@ -4102,7 +5311,7 @@ export async function renderAgentDetail(
         if (changed) {
           setStatusTone(feedback, null);
           feedback.textContent = fields.isDirty()
-            ? "Save or cancel repository changes before deploying."
+            ? pendingEditGuidance("deploying")
             : "No repository changes to save.";
         }
         update();
@@ -4113,8 +5322,17 @@ export async function renderAgentDetail(
       setStatusTone(feedback, null);
       feedback.textContent = draftEditorSaving
         ? draftEditorNavigationBlock
-        : "Save or cancel repository changes before leaving this tab.";
+        : pendingEditGuidance("leaving this tab");
     };
+    function saveOffered() {
+      return !fields?.notConfigured() || (fields.isDirty() && fields.bindings().length === 0);
+    }
+    // While Save is not offered, the guidance names only what the tab offers (finding 2398).
+    function pendingEditGuidance(before: string) {
+      return saveOffered()
+        ? `Save or cancel repository changes before ${before}.`
+        : `Remove every repository and save, or cancel repository changes, before ${before}.`;
+    }
     async function submit() {
       if (save.disabled || !fields.validate()) {
         return;
@@ -4190,22 +5408,7 @@ export async function renderAgentDetail(
       }
     }
     update();
-    void agentUpdateAllowed.then((allowed) => {
-      if (allowed === false && context.isCurrent()) {
-        updateDenied = true;
-        updateNote.textContent = AGENT_UPDATE_DENIED;
-        updateNote.hidden = false;
-        update();
-      }
-    });
-    return element(
-      "section",
-      { className: "agent-card" },
-      fields.section,
-      updateNote,
-      element("div", { className: "form-actions" }, save, cancel, reload),
-      feedback,
-    );
+    return element("section", { className: "agent-card" }, fields.section, actions, feedback);
   }
 
   // Edits carried through a save conflict, merged over the Configuration Reload draft reread
@@ -4273,6 +5476,26 @@ export async function renderAgentDetail(
   function renderDraftConfigurationEditor(context: DetailContext, data: DraftDetails) {
     const { snapshot, values, setDraftEditorState } = data;
     const container = element("div", { className: "configuration-draft-editor" });
+    // The JSON editor and its actions. The collaboration and safety toggles below it stay in
+    // place while it rerenders, so a toggle keeps focus; the editor keeps its place at the top,
+    // where Edit current Configuration brings it into view (finding 2061).
+    const body = element("div", {});
+    // Each toggle stages its change in the Configuration JSON, through the same draft and save
+    // checks as a JSON edit, as Enable gateway password access does.
+    const safety = gatewaySafetyControls({
+      onChange(next) {
+        editor.value = JSON.stringify(next, null, 2);
+        if (editing) {
+          editor.dispatchEvent(new Event("input"));
+        } else {
+          // The editor opens above the toggle the reader just used, which stays in view.
+          editing = true;
+          render();
+          (document.activeElement as HTMLElement | null)?.scrollIntoView({ block: "nearest" });
+        }
+      },
+    });
+    container.append(body, safety.node);
     const { retained, note: carriedNote } = carriedConfigurationDraft(context, snapshot, values);
     let baseline = retained?.baseline ?? { id: snapshot.id, generation: snapshot.generation };
     let editing = Boolean(retained);
@@ -4403,6 +5626,26 @@ export async function renderAgentDetail(
       return editor.value !== initialText;
     }
 
+    // The toggles show the document a save would keep: the editor's JSON while it is open.
+    function syncSafety() {
+      const shown = editing ? parseEditor() : values;
+      safety.update(shown, safetyUnavailable(shown !== undefined));
+    }
+
+    function safetyUnavailable(readable: boolean) {
+      if (!editing && configurationReadOnly()) {
+        // The read-only note above names the grant to ask for.
+        return "These settings are read-only with your access.";
+      }
+      if (pending) {
+        return "Wait for the Configuration save to finish.";
+      }
+      if (outcomeUnknown || reloadRequired) {
+        return "Reload this draft before changing these settings.";
+      }
+      return readable ? null : "Correct the Configuration JSON to change these settings.";
+    }
+
     function parseEditor(reportInvalid = false) {
       const problem = jsonObjectProblem(editor.value);
       if (problem === undefined) {
@@ -4436,6 +5679,7 @@ export async function renderAgentDetail(
       edit.disabled = pending || outcomeUnknown;
       enableGatewayPassword.disabled = pending || outcomeUnknown || reloadRequired;
       editor.readOnly = pending || outcomeUnknown || reloadRequired;
+      syncSafety();
       if (outcomeUnknown) {
         setStatusTone(feedback, "danger");
         feedback.textContent =
@@ -4503,6 +5747,7 @@ export async function renderAgentDetail(
       }
       let mutationStarted = false;
       let configurationSaved = false;
+      let refusedInEditor = false;
       try {
         const [freshAgent, freshConfig] = await Promise.all([
           readAgent(),
@@ -4541,6 +5786,13 @@ export async function renderAgentDetail(
           context.onExpired();
           return;
         }
+        if (!mutationStarted && requestFailure(error).status === 403) {
+          retireSaveRead(
+            error,
+            rejectionMessage(refusedSave(error, "configuration", false), false),
+          );
+          return;
+        }
         // Every refusal below is a danger block: an alert before its text is written.
         feedback.setAttribute("role", "alert");
         if (!configurationSaved) {
@@ -4553,10 +5805,25 @@ export async function renderAgentDetail(
           reloadRequired = true;
           return;
         }
-        setStatusTone(feedback, "danger");
-        feedback.textContent =
-          configurationConflictMessage(error, mutationStarted && !configurationSaved) ??
-          rejectionMessage(error, mutationStarted);
+        // The edited JSON holds the refused channel reference (finding 2319). Like invalid JSON,
+        // it gets one message, under the editor, which takes focus (finding 2494). This editor
+        // saves no Secret bindings, so a refusal that asks for one says where the console makes it.
+        const channelRefusal = channelBindingRefusal(error);
+        if (channelRefusal !== undefined) {
+          editorError.show(
+            channelRefusal.includes(" in secretBindings")
+              ? `${channelRefusal} ${CHANNEL_BINDING_CONSOLE_REMEDY}`
+              : channelRefusal,
+          );
+          setStatusTone(feedback, null);
+          feedback.textContent = "";
+          refusedInEditor = true;
+        } else {
+          setStatusTone(feedback, "danger");
+          feedback.textContent =
+            configurationConflictMessage(error, mutationStarted && !configurationSaved) ??
+            rejectionMessage(error, mutationStarted);
+        }
         feedbackLocked = true;
         outcomeUnknown =
           mutationStarted && !refusedWriteStatuses.includes(requestFailure(error).status);
@@ -4567,7 +5834,10 @@ export async function renderAgentDetail(
           render();
           const refused = feedback.dataset.tone === "danger";
           feedback.setAttribute("role", refused ? "alert" : "status");
-          if (container.isConnected && refused && !outcomeUnknown && !reloadRequired) {
+          if (refusedInEditor && container.isConnected) {
+            editor.focus({ preventScroll: true });
+            editor.scrollIntoView({ block: "nearest" });
+          } else if (container.isConnected && refused && !outcomeUnknown && !reloadRequired) {
             // A refusal Reload cannot fix (a 403, say) is an alert that takes focus and comes
             // into view; under the fold, nothing seemed to happen (finding 1991).
             revealStatus(feedback, container);
@@ -4583,9 +5853,21 @@ export async function renderAgentDetail(
       }
     }
 
+    let shownReadOnly = false;
     function render() {
+      shownReadOnly = !editing && configurationReadOnly();
+      syncSafety();
+      if (shownReadOnly) {
+        // A reader views the saved JSON; no editor whose Save would answer 403 (finding 2421).
+        body.replaceChildren(
+          element("p", { className: "hint" }, configurationReadOnlyReason()),
+          nativeDocument(values, "View native Configuration"),
+          ...(feedback.textContent ? [feedback] : []),
+        );
+        return;
+      }
       if (!editing) {
-        container.replaceChildren(
+        body.replaceChildren(
           element(
             "p",
             { className: "hint" },
@@ -4607,7 +5889,7 @@ export async function renderAgentDetail(
         return;
       }
       updateState();
-      container.replaceChildren(
+      body.replaceChildren(
         element(
           "div",
           { className: "form-field" },
@@ -4632,6 +5914,12 @@ export async function renderAgentDetail(
     }
 
     render();
+    // An answer that lands after this view changes whether it is read-only (finding 2421).
+    followConfigurationAccess(() => {
+      if (context.isCurrent() && !editing && configurationReadOnly() !== shownReadOnly) {
+        render();
+      }
+    });
     return container;
   }
 
@@ -4650,6 +5938,9 @@ export async function renderAgentDetail(
       return false;
     }
     if (nextRevision === selected && nextTab === selectedTab) {
+      if (normalizingTabLink) {
+        return true;
+      }
       // The page's own reloads (a retry, a draft re-read) rebuild it: a share waits for them too.
       if (!sharingWrite) {
         return false;
@@ -4665,11 +5956,12 @@ export async function renderAgentDetail(
       }
       return "blocked";
     }
-    if (nextRevision !== selected) {
+    if (nextRevision !== selected || accessChanged) {
       return false;
     }
     const linked = takeLinkedVersionView(linkedKey(nextRevision, nextTab));
     selectedTab = nextTab;
+    showTabNotice(unavailableTabNotice(requestedTab));
     // A Logs visit may have just been denied: the recovery stops offering its Logs link.
     if (!recovery.section.hidden) {
       renderLatestDeployment();

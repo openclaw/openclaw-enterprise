@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { after } from "node:test";
+import test from "node:test";
 import { kubernetesConfigurationName } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import {
@@ -29,11 +29,9 @@ import {
   assertHarnessWorkspaceClaim,
   createDriver,
   createScopedController,
-  createNamespaceReaper,
+  deleteNamespaces,
 } from "../helpers/kubernetes-compute-real.mjs";
-
-const { deleteNamespaces, waitForDeletedVolumes } = createNamespaceReaper();
-after(waitForDeletedVolumes);
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test(
   "real Kubernetes Drivers safely use and preserve an externally managed tenant namespace",
@@ -825,8 +823,7 @@ test(
     assert.equal(credentials.status, 200, JSON.stringify(credentials.body));
     const workspaceName = harnessWorkspaceClaimName(legacy.data.id);
     const gatewayStateName = `gateway-state-${hash(legacy.data.id)}`;
-    const claimDirectory = await mkdtemp(join(tmpdir(), "openclaw-legacy-rwx-"));
-    context.after(() => rm(claimDirectory, { recursive: true, force: true }));
+    const claimDirectory = await temporaryDirectory(context, "openclaw-legacy-rwx-");
     for (const [name, namespace, accessMode, storage] of [
       [workspaceName, placement, "ReadWriteMany", "40Gi"],
       [gatewayStateName, gatewayPlacement, "ReadWriteOnce", "10Gi"],

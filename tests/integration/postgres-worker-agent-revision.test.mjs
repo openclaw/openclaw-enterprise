@@ -44,9 +44,16 @@ import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revisio
 import {
   advanceCleanupRetries,
   completion,
+  makeWorkDue,
   repositoryAttempts,
   repositoryBoundary,
 } from "../helpers/postgres-worker-revision-support.mjs";
+import {
+  DEPLOYMENT_FAILED,
+  IMAGE_PULL_FAILING,
+  POD_QUOTA_FULL,
+  WORKSPACE_SETUP_RETRYING,
+} from "../helpers/refusal-text.mjs";
 
 // Deployment, dispatch, convergence and the persisted lifecycle. Credential-source withdrawals and
 // listed sources that lose their grant or readiness are in the -credential-sources sibling; the
@@ -532,6 +539,7 @@ revisionTest(
           agentId: malformedAdmission.id,
           revision: 1,
           backendId: null,
+          gatewayManagedMode: malformedAdmission.gatewayManagedMode,
           configuration: {},
           executionAdmission: first.executionAdmission,
           servicePrincipalId: malformedAdmission.servicePrincipalId,
@@ -982,6 +990,47 @@ test(
         reason_code: "REVISION_SUPERSEDED",
       },
     ]);
+    // The Versions list names each version's outcome with the code its record reports. The
+    // superseded version is listed as failed, the record's own status, beside the code that tells
+    // the console it did not fail, so a reloaded console shows no Failed mark on it (finding 2422).
+    const listed = await fixture.controller.listRevisions(
+      fixture.actor.id,
+      fixture.namespace.id,
+      owner.id,
+    );
+    assert.deepEqual(
+      listed.revisions.map(({ id, deploymentStatus, deploymentErrorCode }) => [
+        id,
+        deploymentStatus,
+        deploymentErrorCode,
+      ]),
+      [
+        [newer.id, "succeeded", null],
+        [older.id, "failed", "REVISION_SUPERSEDED"],
+      ],
+    );
+    // A page that stops before the last revision carries the same outcomes.
+    const outcomes = (page) =>
+      page.revisions.map(({ id, deploymentStatus, deploymentErrorCode }) => [
+        id,
+        deploymentStatus,
+        deploymentErrorCode,
+      ]);
+    const first = await fixture.controller.listRevisions(
+      fixture.actor.id,
+      fixture.namespace.id,
+      owner.id,
+      { limit: 1 },
+    );
+    assert.deepEqual(outcomes(first), [[newer.id, "succeeded", null]]);
+    assert.equal(first.nextBefore, newer.revision);
+    const second = await fixture.controller.listRevisions(
+      fixture.actor.id,
+      fixture.namespace.id,
+      owner.id,
+      { limit: 1, before: first.nextBefore },
+    );
+    assert.deepEqual(outcomes(second), [[older.id, "failed", "REVISION_SUPERSEDED"]]);
   },
 );
 
@@ -1004,11 +1053,7 @@ revisionTest(
           [candidate.idempotencyKey],
         )
       ).rows.map(({ code }) => code);
-    const makeDue = () =>
-      fixture.observerPool.query(
-        "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-        [candidate.idempotencyKey],
-      );
+    const makeDue = () => makeWorkDue(fixture.observerPool, candidate.idempotencyKey);
 
     // A normal pending observation restores the failure budget to zero. It must
     // still be distinguishable from a deployment that has never been checked.
@@ -1017,6 +1062,9 @@ revisionTest(
     await queue.defer(first, { code: "REVISION_INCOMPLETE" }, { delayMs: 60_000 });
     const firstDeferred = await readStatus();
     assert.deepEqual(await evidenceCodes(), ["REVISION_INCOMPLETE"]);
+    // The work is queued again between attempts, but a deploy a worker has started never reports
+    // queued again: the console showed In progress -> Queued for ~16 s (finding 2456).
+    assert.equal(firstDeferred.status, "running");
 
     // Repeating the same pending result is not a state transition: it adds no audit row,
     // and progress keeps reporting when that result was first recorded.
@@ -1027,7 +1075,17 @@ revisionTest(
     const deferred = await readStatus();
     assert.deepEqual(await evidenceCodes(), ["REVISION_INCOMPLETE"]);
     assert.deepEqual(deferred.progress.lastAttempt, firstDeferred.progress.lastAttempt);
-    assert.equal(deferred.status, "queued");
+    assert.equal(deferred.status, "running");
+    // The Versions list reads the same status from the same work and evidence.
+    const listed = await fixture.controller.listRevisions(
+      fixture.actor.id,
+      fixture.namespace.id,
+      owner.id,
+    );
+    assert.deepEqual(
+      listed.revisions.map(({ id, deploymentStatus }) => [id, deploymentStatus]),
+      [[candidate.id, "running"]],
+    );
     assert.equal((await queue.findWork(candidate.idempotencyKey)).attemptCount, 0);
     assert.equal(deferred.progress.lastAttempt.code, "REVISION_INCOMPLETE");
     assert.equal(deferred.progress.lastAttempt.message, "Waiting for the runtime to become ready.");
@@ -1062,6 +1120,7 @@ revisionTest(
     assert.deepEqual(running.progress.lastAttempt, deferred.progress.lastAttempt);
     await queue.retry(retry, { code: "PRIVATE_PROVIDER_DETAIL_DO_NOT_EXPOSE" });
     const retrying = await readStatus();
+    assert.equal(retrying.status, "running");
     assert.equal(retrying.progress.lastAttempt.code, "RECONCILIATION_PENDING");
     assert.doesNotMatch(JSON.stringify(retrying), /PRIVATE_PROVIDER/);
 
@@ -1088,7 +1147,7 @@ revisionTest(
 );
 
 revisionTest(
-  "deployment status judges claim liveness by the database clock, not the controller clock",
+  "an expired claim keeps a started deployment running under any controller clock",
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("deployment-clock");
     const queue = new fixture.PostgresWorkQueue(fixture.observerPool, { leaseDurationMs: 60_000 });
@@ -1117,8 +1176,63 @@ revisionTest(
     assert.equal(await statusAhead(), "running");
 
     await fixture.expireClaim(candidate, claim.claimToken);
-    // A controller clock behind the lease still reports the expired claim as waiting.
-    assert.equal(await statusBehind(), "queued");
+    // An expired claim does not take a started deploy back to queued under either clock
+    // (finding 2456): the next claim resumes it.
+    assert.equal(await statusBehind(), "running");
+    assert.equal(await statusAhead(), "running");
+  },
+);
+
+revisionTest(
+  "revision cleanup status reads queued until claimed, running between attempts and its result once recorded",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("cleanup-status");
+    const queue = new fixture.PostgresWorkQueue(fixture.observerPool);
+    const readStatus = () => fixture.deploymentStatus(owner, candidate);
+
+    // The deployment records evidence, then its preparation fails permanently. As the worker
+    // does, the failing claim registers the revision's cleanup and then fails the deployment.
+    const deferredDeploy = await queue.claim();
+    assert.equal(deferredDeploy.idempotencyKey, candidate.idempotencyKey);
+    await queue.defer(deferredDeploy, { code: "REVISION_INCOMPLETE" }, { delayMs: 60_000 });
+    await makeWorkDue(fixture.observerPool, candidate.idempotencyKey);
+    const deploy = await queue.claim();
+    assert.equal(deploy.idempotencyKey, candidate.idempotencyKey);
+    await queue.enqueueRepositoryCleanup(
+      deploy,
+      { namespaceId: fixture.namespace.id, agentId: owner.id, revisionId: candidate.id },
+      "failed-preparation",
+    );
+    await queue.fail(deploy, { code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED" });
+
+    // No worker has claimed the cleanup yet: it waits, whatever its deployment recorded
+    // (findings 2456, 2466 apply only to started work).
+    const waiting = await readStatus();
+    assert.equal(waiting.status, "failed");
+    assert.equal(waiting.cleanup.status, "queued");
+    assert.equal(typeof waiting.cleanup.nextAttemptAt, "string");
+
+    // A claimed cleanup runs and has no next attempt; it has recorded no result.
+    const claim = await queue.claim();
+    assert.match(claim.idempotencyKey, /^agent_revision:[^:]+:repository_cleanup:retire:/);
+    assert.equal(claim.revisionId, candidate.id);
+    assert.deepEqual((await readStatus()).cleanup, { status: "running", nextAttemptAt: null });
+
+    // A retry counts the attempt and queues the cleanup again. It stays running between
+    // attempts and still reports no result.
+    await queue.retry(claim, { code: "DEPENDENCY_UNAVAILABLE" });
+    assert.equal((await queue.findWork(claim.idempotencyKey)).attemptCount, 1);
+    const retrying = await readStatus();
+    assert.equal(retrying.cleanup.status, "running");
+    assert.equal(typeof retrying.cleanup.nextAttemptAt, "string");
+
+    // Only the recorded result completes it.
+    await makeWorkDue(fixture.observerPool, claim.idempotencyKey);
+    const last = await queue.claim();
+    assert.equal(last.idempotencyKey, claim.idempotencyKey);
+    assert.equal((await readStatus()).cleanup.status, "running");
+    await queue.complete(last, { code: "REPOSITORY_CLEANUP_COMPLETE" });
+    assert.deepEqual((await readStatus()).cleanup, { status: "succeeded", nextAttemptAt: null });
   },
 );
 
@@ -1335,20 +1449,17 @@ revisionTest(
     // Finding 1617: a full Namespace Pod quota is named, without its numbers.
     assert.deepEqual(await progress(overQuota, overQuotaRevision), {
       code: "NAMESPACE_POD_QUOTA_EXCEEDED",
-      message:
-        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.",
+      message: POD_QUOTA_FULL,
     });
     // Finding 1677: Kubernetes is restarting a failed workspace setup that may still pass.
     assert.deepEqual(await progress(setupRetrying, setupRetryingRevision), {
       code: "WORKSPACE_SETUP_RETRYING",
-      message:
-        "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an admin to check the Agent's workspace storage and runtime image.",
+      message: WORKSPACE_SETUP_RETRYING,
     });
     // Finding 1762: the kubelet cannot pull an image; fixed copy, never the image reference.
     assert.deepEqual(await progress(imagePull, imagePullRevision), {
       code: "REVISION_IMAGE_PULL_FAILED",
-      message:
-        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.",
+      message: IMAGE_PULL_FAILING,
     });
     const firstDelay = async (revision) => {
       const recorded = delays.get(revision.idempotencyKey);
@@ -1787,8 +1898,10 @@ revisionTest(
     });
     await fixture.stop();
 
+    // The failed cleanup attempt queued its work for a retry. A cleanup a worker has started never
+    // reports queued again between its attempts, as a deployment does not (finding 2466).
     const pendingStatus = await fixture.deploymentStatus(owner, candidate);
-    assert.equal(pendingStatus.cleanup.status, "queued");
+    assert.equal(pendingStatus.cleanup.status, "running");
     assert.equal(typeof pendingStatus.cleanup.nextAttemptAt, "string");
     // The database must reject raw provider output even if a writer bypasses
     // the controller's public evidence validator.
@@ -2087,9 +2200,16 @@ revisionTest(
     // readiness evidence decides: a bootstrap last seen running is retired with the failure
     // (finding 1165), a deployment that got past it keeps its runtime for diagnosis, and a
     // revision published since (only its activation fails) is never retired.
-    const running = await fixture.admitInitialRevision("expired-bootstrap-outage");
-    const progressed = await fixture.admitInitialRevision("expired-runtime-outage");
-    const published = await fixture.admitInitialRevision("expired-activation-outage");
+    // The scripted passes must all run before the deadline, so it is real time from admission
+    // (finding 1171). Each work is admitted 20 s old by the database clock, which the worker judges
+    // the deadline by: 10 s of real time leaves a stalled runner room for those few passes (they
+    // take about 1 s), and the outage then fills the rest without waiting out all 30 s.
+    const timeoutMs = 30_000;
+    const remainingMs = 10_000;
+    const aged = { revision: { workAge: `${(timeoutMs - remainingMs) / 1000} seconds` } };
+    const running = await fixture.admitInitialRevision("expired-bootstrap-outage", aged);
+    const progressed = await fixture.admitInitialRevision("expired-runtime-outage", aged);
+    const published = await fixture.admitInitialRevision("expired-activation-outage", aged);
     // Readiness each pass reports, in order; once exhausted, every pass fails transiently,
     // except that the published revision's later passes are ready and its activation fails.
     const script = new Map([
@@ -2106,9 +2226,6 @@ revisionTest(
         "unavailable",
         "The Kubernetes API answered HTTP 503.",
       );
-    // The scripted passes must all run before the deadline, so it is real time from admission.
-    // 30 s leaves a stalled runner room for them; the outage then fills the rest (finding 1171).
-    const timeoutMs = 30_000;
     await fixture.start(
       {
         ...fixture.compute,
@@ -2155,7 +2272,7 @@ revisionTest(
       ).rows;
 
     for (const { candidate } of [running, progressed, published]) {
-      await fixture.work(candidate, "failed_permanent", timeoutMs + 60_000);
+      await fixture.work(candidate, "failed_permanent", remainingMs + 15_000);
       // The pass that ended it ran at the deadline, by the database clock, not before it.
       const { rows } = await fixture.observerPool.query(
         `SELECT EXTRACT(EPOCH FROM completed_at - created_at) * 1000 AS age_ms
@@ -2247,8 +2364,7 @@ for (const scenario of [
       activeRevisionId: null,
       error: {
         code: "RUNTIME_CPU_STARVED",
-        message:
-          "Deployment runtime did not get enough CPU to finish its startup model check, because of a CPU limit below one core or a busy node. Ask an admin to raise the limit or free node capacity, then deploy a new version.",
+        message: DEPLOYMENT_FAILED.RUNTIME_CPU_STARVED,
       },
     },
   },
@@ -2268,8 +2384,7 @@ for (const scenario of [
       activeRevisionId: null,
       error: {
         code: "WORKSPACE_SETUP_REFUSED",
-        message:
-          "Initial workspace setup refused this version's workspace, and every retry would refuse it again: the workspace files or setup record, or the runtime's default files, do not match what the Agent was created with. Ask an admin to check the Agent's workspace storage and runtime image; do not delete the setup record to force a replay.",
+        message: DEPLOYMENT_FAILED.WORKSPACE_SETUP_REFUSED,
       },
     },
   },
@@ -2316,7 +2431,7 @@ revisionTest(
       error: {
         code: "RUNTIME_MODEL_PROBE_FAILED",
         message:
-          "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
+          "The startup model check failed, but not for a rejected credential: for example an unknown model, bad provider settings, a TLS error, a rate limit, or, with Codex, an unreachable provider. Check these and the provider account, then deploy a new version.",
         data: { runtimeFailure },
       },
     });
@@ -2333,7 +2448,7 @@ revisionTest(
           error: {
             code: "RUNTIME_MODEL_PROBE_TIMEOUT",
             message:
-              "The startup model check did not get a reply from the model provider in time. With OpenClaw this includes a provider the runtime cannot reach (refused connection or unknown host). Check that the runtime can reach the provider (network egress, proxy, or a custom baseUrl in the Configuration) and that the provider is responding, then deploy a new version.",
+              "The startup model check got no reply from the provider in time. With OpenClaw this includes an unreachable provider (refused connection or unknown host). Check egress, proxy or a custom baseUrl and that the provider responds, then deploy a new version.",
           },
         },
       },
@@ -2502,7 +2617,7 @@ revisionTest(
         error: {
           code: "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
           message:
-            "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness.",
+            "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness. Use credential sources instead of Secret bindings, or ask an Installation administrator for a Sandbox Driver that supports them, then deploy again.",
         },
       },
     });
@@ -2542,7 +2657,7 @@ revisionTest(
       error: {
         code: "KUBERNETES_SECRET_WRITE_FORBIDDEN",
         message:
-          "Kubernetes refused access to a Secret this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check that the worker's tenant RoleBindings grant get, create and update on secrets in the Agent's Kubernetes namespaces (with an execution cluster, also the control cluster's Gateway namespace), and that no admission policy or ResourceQuota refuses Secrets there, then deploy again.",
+          "Kubernetes refused access to a Secret this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check the worker's tenant RoleBindings for secrets and any admission policy or ResourceQuota, then deploy again.",
       },
     });
     assert.equal(preparations, 1);
@@ -2728,12 +2843,14 @@ revisionTest(
       30_000,
     );
     assert.equal(waited.attempt_count, 0);
-    // A pass's live lease reads as `running`; read the status between passes.
+    // Read the status between passes, when the work waits for its next attempt. A started
+    // deploy still reads as `running` there (finding 2456).
     const during = await waitFor("the deployment status between outage passes", async () => {
       const status = await fixture.deploymentStatus(owner, candidate);
-      return status.status === "queued" ? status : undefined;
+      return status.progress?.nextAttemptAt ? status : undefined;
     });
     held = false;
+    assert.equal(during.status, "running");
     assert.deepEqual(
       {
         code: during.progress?.lastAttempt?.code,
@@ -3057,79 +3174,166 @@ revisionTest(
 // D381 follow-up: a dedicated Gateway that refuses its own in-Pod CLI as unauthorized
 // can never apply its workspace node for this revision, so activation must fail the
 // deployment with a named code instead of staying pending until the convergence
-// deadline. Both activation paths are covered: the pass that publishes the active
+// deadline. Finding 2265: so must a private Secret write (the workspace setup Secret that
+// activation delivers) that Kubernetes refuses with 403, as it does during preparation
+// (finding 1770). Both activation paths are covered: the pass that publishes the active
 // pointer, and a later pass that finds the pointer already published.
-for (const pendingPasses of [0, 1]) {
+for (const refusal of [
+  {
+    label: "the Gateway refuses as unauthorized",
+    slug: "gateway-unauthorized",
+    failure: () =>
+      new ActivationFailedError(
+        "AGENT_GATEWAY_UNAUTHORIZED",
+        "The exact AgentRevision gateway refused its own CLI as unauthorized.",
+      ),
+    error: {
+      code: "AGENT_GATEWAY_UNAUTHORIZED",
+      message:
+        "The Agent Gateway refused its own CLI as unauthorized. Check that the Agent's Configuration sets gateway.auth.password to OPENCLAW_GATEWAY_PASSWORD (Enable gateway password access), then deploy again.",
+    },
+    cause: "ActivationFailedError",
+  },
+  {
+    label: "whose private Secret write Kubernetes refuses with 403",
+    slug: "activation-secret-forbidden",
+    failure: () =>
+      Object.assign(new KubernetesSecretWriteForbiddenError(), {
+        cause: Object.assign(new Error("The Kubernetes API answered HTTP 403 (Forbidden)."), {
+          code: 403,
+          reason: "Forbidden",
+        }),
+      }),
+    error: {
+      code: "KUBERNETES_SECRET_WRITE_FORBIDDEN",
+      message:
+        "Kubernetes refused access to a Secret this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check the worker's tenant RoleBindings for secrets and any admission policy or ResourceQuota, then deploy again.",
+    },
+    cause: "KubernetesSecretWriteForbiddenError",
+  },
+]) {
+  for (const pendingPasses of [0, 1]) {
+    revisionTest(
+      `an activation ${refusal.label} fails deployment at once (after ${pendingPasses} pending passes)`,
+      async (fixture) => {
+        const { owner, candidate } = await fixture.admitInitialRevision(
+          `${refusal.slug}-${pendingPasses}`,
+        );
+        const events = [];
+        let activations = 0;
+        const stopped = [];
+
+        await fixture.start(
+          {
+            ...fixture.compute,
+            // Exclusive Compute stops a refused candidate, but never the published revision.
+            requiresStoppedPredecessors: () => true,
+            async stopRevision(revision) {
+              stopped.push(revision.id);
+              return fixture.compute.stopRevision(revision);
+            },
+            async activateRevision() {
+              activations += 1;
+              if (activations <= pendingPasses) {
+                throw new ActivationPendingError(
+                  "WORKSPACE_NODE_BINDING_PENDING",
+                  "The exact AgentRevision gateway has not applied its workspace node.",
+                );
+              }
+              throw refusal.failure();
+            },
+          },
+          { emit: (event) => events.push(event) },
+        );
+
+        await assertFailedDeployment(
+          fixture,
+          { owner, candidate },
+          { error: refusal.error },
+          30_000,
+        );
+        // No retry after the refusal: the first refused pass ends the deployment.
+        assert.equal(activations, pendingPasses + 1);
+        assert.deepEqual(stopped, [], "the published revision keeps its workload");
+        await completion(
+          events,
+          "the refused activation's terminal completion",
+          (event) =>
+            event.event === "worker.completed" &&
+            event.revisionId === candidate.id &&
+            event.outcome === "permanent",
+        );
+        const last = events
+          .filter(
+            (event) => event.event === "worker.completed" && event.revisionId === candidate.id,
+          )
+          .at(-1);
+        assert.deepEqual(
+          { outcome: last?.outcome, code: last?.code, cause: last?.cause },
+          { outcome: "permanent", code: refusal.error.code, cause: refusal.cause },
+        );
+      },
+    );
+  }
+}
+
+// Finding 2265: a maintenance pass of a running revision is no deployment anyone waits on. A
+// 403 on a private Secret write there, in preparation or activation, fails only that bounded
+// pass, as an outage does, and keeps the maintenance chain, so the Agent keeps its runtime and
+// recovers by itself once an operator fixes the grant instead of needing a new deployment.
+for (const [step, label] of [
+  ["prepareRevision", "preparation"],
+  ["activateRevision", "activation"],
+]) {
   revisionTest(
-    `an activation the Gateway refuses as unauthorized fails deployment at once (after ${pendingPasses} pending passes)`,
+    `a Kubernetes 403 on a private Secret write during maintenance ${label} keeps the maintenance chain`,
     async (fixture) => {
       const { owner, candidate } = await fixture.admitInitialRevision(
-        `gateway-unauthorized-${pendingPasses}`,
+        `maintenance-secret-forbidden-${label}`,
       );
       const events = [];
-      let activations = 0;
-      const stopped = [];
-
+      let refuse = false;
       await fixture.start(
         {
           ...fixture.compute,
-          // Exclusive Compute stops a refused candidate, but never the published revision.
-          requiresStoppedPredecessors: () => true,
-          async stopRevision(revision) {
-            stopped.push(revision.id);
-            return fixture.compute.stopRevision(revision);
-          },
-          async activateRevision() {
-            activations += 1;
-            if (activations <= pendingPasses) {
-              throw new ActivationPendingError(
-                "WORKSPACE_NODE_BINDING_PENDING",
-                "The exact AgentRevision gateway has not applied its workspace node.",
-              );
+          maintenanceIntervalMs: 200,
+          async [step](...args) {
+            if (refuse) {
+              throw new KubernetesSecretWriteForbiddenError();
             }
-            throw new ActivationFailedError(
-              "AGENT_GATEWAY_UNAUTHORIZED",
-              "The exact AgentRevision gateway refused its own CLI as unauthorized.",
-            );
+            // The fixture's Compute has no activation step of its own.
+            return fixture.compute[step]?.(...args);
           },
         },
         { emit: (event) => events.push(event) },
       );
-
-      await assertFailedDeployment(
-        fixture,
-        { owner, candidate },
-        {
-          error: {
-            code: "AGENT_GATEWAY_UNAUTHORIZED",
-            message:
-              "The Agent Gateway refused its own CLI as unauthorized. Check that the Agent's Configuration sets gateway.auth.password to OPENCLAW_GATEWAY_PASSWORD (Enable gateway password access), then deploy again.",
-          },
-        },
-        30_000,
-      );
-      // No retry after the refusal: the first refused pass ends the deployment.
-      assert.equal(activations, pendingPasses + 1);
-      assert.deepEqual(stopped, [], "the published revision keeps its workload");
-      await completion(
+      await fixture.work(candidate, "succeeded");
+      refuse = true;
+      const maintenance = `agent_revision:${candidate.id}:maintenance:`;
+      const refused = await completion(
         events,
-        "the refused activation's terminal completion",
+        "a maintenance pass refused with 403",
         (event) =>
           event.event === "worker.completed" &&
-          event.revisionId === candidate.id &&
-          event.outcome === "permanent",
+          event.workId?.startsWith(maintenance) &&
+          event.cause === "KubernetesSecretWriteForbiddenError",
       );
-      const last = events
-        .filter((event) => event.event === "worker.completed" && event.revisionId === candidate.id)
-        .at(-1);
       assert.deepEqual(
-        { outcome: last?.outcome, code: last?.code, cause: last?.cause },
-        {
-          outcome: "permanent",
-          code: "AGENT_GATEWAY_UNAUTHORIZED",
-          cause: "ActivationFailedError",
-        },
+        { outcome: refused.outcome, code: refused.code },
+        { outcome: "pending", code: "REVISION_FINALIZATION_INCOMPLETE" },
       );
+      refuse = false;
+      await completion(
+        events,
+        "a later maintenance pass to succeed",
+        (event, index) =>
+          index > events.indexOf(refused) &&
+          event.event === "worker.completed" &&
+          event.workId?.startsWith(maintenance) &&
+          event.outcome === "success",
+      );
+      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
+      assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "succeeded");
     },
   );
 }
@@ -3148,7 +3352,8 @@ for (const { label, failure, code, message } of [
         "A Kubernetes API request timed out.",
       ),
     code: "KUBERNETES_API_UNAVAILABLE",
-    message: "The Kubernetes API was still unavailable at the deployment deadline.",
+    message:
+      "The Kubernetes API was still unavailable at the deployment deadline. Deploy again; if it keeps failing, ask an operator to check the cluster's API server.",
   },
   {
     label: "OpenShell admission limit",
@@ -3160,7 +3365,7 @@ for (const { label, failure, code, message } of [
       }),
     code: "SANDBOX_ADMISSION_LIMIT_REACHED",
     message:
-      "The Sandbox gateway still refused new requests from the controller (request admission limit reached) at the deployment deadline.",
+      "The Sandbox gateway still refused new controller requests (request admission limit reached) at the deployment deadline. Deploy again once other Sandbox work has finished; if it keeps failing, ask an operator to check the gateway's request limit.",
   },
   {
     // Finding 2040: a gateway that never comes back is bounded by the deadline too.
@@ -3168,7 +3373,8 @@ for (const { label, failure, code, message } of [
     failure: () =>
       new SandboxGatewayUnavailableError("OpenShell CreateSandbox failed with gRPC status 14."),
     code: "SANDBOX_GATEWAY_UNAVAILABLE",
-    message: "The Sandbox gateway still did not answer the controller at the deployment deadline.",
+    message:
+      "The Sandbox gateway still did not answer the controller at the deployment deadline. Deploy again; if it keeps failing, ask an operator to check the Sandbox gateway.",
   },
 ]) {
   test(
@@ -3434,6 +3640,325 @@ test(
       [candidate.id],
     );
     assert.ok(evidence.rows.some(({ code }) => code === "CONVERGENCE_DEADLINE_EXCEEDED"));
+  },
+);
+
+// Finding 2415: native prepared Git issues a version's first token only after its active pointer
+// is published, so a ready runtime reported success while every Git request answered 503. The
+// deployment now waits for the token. Owner decision 2026-10-28 (finding 2425) for a version
+// whose token GitHub's answer quarantined: a new Agent's deployment fails and its version is
+// retired; an existing Agent's deployment fails but the version keeps running without Git, so
+// the Agent can still chat and report it. A token still pending at the convergence deadline
+// (finding 2894: no attempt finished, for example an unreadable App key) ends the same way: a new
+// Agent's version is retired, an existing Agent's is kept and gets Git if the token arrives.
+for (const { agent, material } of [
+  { agent: "new", material: "ready" },
+  { agent: "new", material: "quarantined" },
+  { agent: "new", material: "pending" },
+  { agent: "existing", material: "quarantined" },
+  { agent: "existing", material: "pending" },
+  // The earlier version's deployment completed without activation: still a new Agent.
+  { agent: "stopped-before-activation", material: "quarantined" },
+]) {
+  test(
+    `a ${agent} Agent's native repository deployment waits for its first GitHub token, ` +
+      `then handles a ${material} token`,
+    requiresPostgres,
+    async (context) => {
+      const repository = repositoryBoundary();
+      const fixture = await setup(context, { repoDriver: repository.driver });
+      const revisionOptions = { repositoryCredentials: repository.snapshot };
+      // A stopped repository version fails its deployment (REPOSITORY_REVISION_STOPPED), so the
+      // version stopped before activation binds no repository.
+      const { owner, candidate: first } = await fixture.admitInitialRevision(
+        `repository-token-${agent}-${material}`,
+        { revision: agent === "stopped-before-activation" ? {} : revisionOptions },
+      );
+      const ready = async () => "ready";
+      if (agent === "existing") {
+        await fixture.start(fixture.compute, { repositoryGitMaterial: ready });
+        await fixture.work(first, "succeeded");
+        await fixture.stop();
+      } else if (agent === "stopped-before-activation") {
+        // The Agent is stopped while its first version prepares: that deployment completes
+        // REVISION_STOPPED, a succeeded work row that never activated anything.
+        let release;
+        const released = new Promise((resolve) => {
+          release = resolve;
+        });
+        let preparing;
+        const started = new Promise((resolve) => {
+          preparing = resolve;
+        });
+        await fixture.start(
+          {
+            ...fixture.compute,
+            async prepareRevision(revision) {
+              preparing();
+              await released;
+              return fixture.compute.prepareRevision(revision);
+            },
+          },
+          { repositoryGitMaterial: ready },
+        );
+        await started;
+        const stop = await fixture.requestStop(owner);
+        release();
+        await fixture.work(first, "succeeded");
+        await fixture.work(stop, "succeeded");
+        await fixture.stop();
+        assert.equal((await fixture.workResult(first)).rows[0].reason_code, "REVISION_STOPPED");
+      }
+      const candidate = agent === "new" ? first : await fixture.revision(owner, 2, revisionOptions);
+      const checked = [];
+      const stopped = [];
+      const retired = [];
+      let published = 0;
+      let waiting;
+      const compute = {
+        ...fixture.compute,
+        async stopRevision(revision) {
+          stopped.push(revision.id);
+          return fixture.compute.stopRevision(revision);
+        },
+        async retireRevision(revision) {
+          retired.push(revision.id);
+          return fixture.compute.retireRevision(revision);
+        },
+      };
+      const events = [];
+      await fixture.start(compute, {
+        emit: (event) => events.push(event),
+        // A pending token ends at the convergence deadline.
+        ...(material === "pending" ? { convergenceTimeoutMs: 3_000 } : {}),
+        async repositoryGitMaterial(revisionId) {
+          // A later version (below) gets its token at once.
+          if (revisionId !== candidate.id) {
+            return "ready";
+          }
+          checked.push(revisionId);
+          // In production the worker's prepared owner reports the token state; this returns the
+          // states its store returns (postgres-prepared-github-git-use test). Like the owner,
+          // nothing is issued before the pointer is published. The first check after it
+          // records the wait; GitHub answers before the next one.
+          const pointer = (await fixture.activePointer(owner)).rows[0]?.active_revision_id;
+          if (pointer !== candidate.id || published++ === 0) {
+            return "pending";
+          }
+          waiting ??= await fixture.deploymentStatus(owner, candidate);
+          return material;
+        },
+      });
+      await fixture.work(candidate, material === "ready" ? "succeeded" : "failed_permanent");
+      assert.ok(checked.length >= 2 && checked.every((id) => id === candidate.id), checked.join());
+      // The wait is visible as progress, never as success.
+      assert.notEqual(waiting.status, "succeeded");
+      assert.equal(waiting.progress?.lastAttempt?.code, "REPOSITORY_GIT_MATERIAL_PENDING");
+      const status = await fixture.deploymentStatus(owner, candidate);
+      const pointer = async () => (await fixture.activePointer(owner)).rows[0].active_revision_id;
+      if (material === "ready") {
+        assert.equal(status.status, "succeeded");
+        assert.equal(status.error, null);
+        assert.equal(await pointer(), candidate.id);
+        assert.deepEqual(stopped, []);
+        return;
+      }
+      // A quarantined version is never prepared again, so its deployment fails at once instead
+      // of at the convergence deadline, and names the cause and the recovery. A token still
+      // pending ends at the deadline: a new Agent's deployment names the deadline, an existing
+      // Agent's names the missing token and keeps the version.
+      assert.equal(status.status, "failed");
+      assert.equal(
+        status.error.code,
+        material === "quarantined"
+          ? "REPOSITORY_GIT_TOKEN_QUARANTINED"
+          : agent === "existing"
+            ? "REPOSITORY_GIT_TOKEN_PENDING"
+            : "CONVERGENCE_DEADLINE_EXCEEDED",
+      );
+      assert.match(status.error.message, /deploy a new version\.$/);
+      const retirement = () =>
+        fixture.observerPool.query(
+          `SELECT state FROM occ.controller_work
+           WHERE revision_id = $1 AND idempotency_key LIKE $2`,
+          [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:retire:%`],
+        );
+      if (agent !== "existing") {
+        // A new Agent fails: like any repository version that failed for good, its version is
+        // retired, so the Agent has no running version until a deployment succeeds.
+        await waitFor("the failed version's runtime retirement", async () =>
+          (await retirement()).rows[0]?.state === "succeeded" ? true : undefined,
+        );
+        assert.deepEqual(stopped, [candidate.id]);
+        assert.equal(await pointer(), null);
+        return;
+      }
+      // An existing Agent keeps this version serving without Git and says so. Its predecessor
+      // stopped serving when the pointer moved; this deployment neither stops its own version
+      // nor retires the predecessor.
+      assert.match(status.error.message, /keeps this version running without Git/);
+      // The pass ends with its completion event, after any Compute call it makes. A pass that
+      // throws after the failure committed (for example a Compute call for a claim it no longer
+      // holds) logs worker.error instead.
+      const ended = await completion(
+        events,
+        "the failed deployment's completion",
+        ({ event, workId, outcome }) =>
+          event === "worker.error" ||
+          (event === "worker.completed" &&
+            workId === candidate.idempotencyKey &&
+            outcome === "permanent"),
+      );
+      assert.equal(ended.event, "worker.completed", JSON.stringify(ended));
+      assert.equal(await pointer(), candidate.id);
+      assert.equal((await fixture.currentAgent(owner)).desiredRuntimeState, "running");
+      assert.equal((await retirement()).rowCount, 0);
+      assert.deepEqual(stopped, []);
+      assert.deepEqual(retired, []);
+      // A pending token can still commit after the deadline and give the kept version Git: the
+      // prepared owner issues a token for an open session of the running Agent's active version
+      // (postgres-prepared-github-git-use test), and this version keeps its session open.
+      const openSessions = async () => [
+        ...new Set(
+          (await repositoryAttempts(fixture, candidate)).map(({ phase }) => phase === "open"),
+        ),
+      ];
+      assert.deepEqual(await openSessions(), [true]);
+      // The failure starts the version's maintenance chain in the same transaction; its next
+      // pass keeps the version active (and retires the superseded predecessor, as any does).
+      const [maintenance] = (await fixture.advanceMaintenance(candidate)).rows;
+      assert.ok(maintenance, "the failed deployment queued the version's maintenance");
+      const passed = await waitFor("the version's maintenance pass", async () => {
+        const { rows } = await fixture.observerPool.query(
+          "SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
+          [maintenance.idempotency_key],
+        );
+        return rows[0]?.state === "succeeded" ? rows[0] : undefined;
+      });
+      assert.equal(passed.reason_code, "REVISION_ALREADY_ACTIVE");
+      assert.equal(await pointer(), candidate.id);
+      assert.deepEqual(stopped, []);
+      assert.deepEqual(retired, [first.id]);
+      assert.deepEqual(await openSessions(), [true]);
+      // A later version whose token GitHub issues replaces the kept one as usual: its deployment
+      // succeeds, takes the pointer and retires the version that ran without Git.
+      const fixed = await fixture.revision(owner, 3, revisionOptions);
+      await fixture.work(fixed, "succeeded");
+      assert.equal((await fixture.deploymentStatus(owner, fixed)).status, "succeeded");
+      assert.equal(await pointer(), fixed.id);
+      assert.ok(retired.includes(candidate.id), retired.join());
+      assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "failed");
+    },
+  );
+}
+
+// Finding 2894 keeps an existing Agent's version only when the deadline ended its wait for the
+// first Git token. A published version whose runtime never activated is a convergence failure
+// even when its token is pending, and so is Compute's Sandbox install, which shares the token
+// wait's code, once the token is committed: both retire the version as before.
+for (const { wait, material } of [
+  { wait: "WORKSPACE_NODE_PENDING", material: "pending" },
+  { wait: "REPOSITORY_GIT_MATERIAL_PENDING", material: "ready" },
+]) {
+  test(
+    `an existing Agent's native repository version that waits at ${wait} with a ${material} ` +
+      "token fails at the convergence deadline and is retired",
+    requiresPostgres,
+    async (context) => {
+      const repository = repositoryBoundary();
+      const fixture = await setup(context, { repoDriver: repository.driver });
+      const revisionOptions = { repositoryCredentials: repository.snapshot };
+      const { owner, candidate: first } = await fixture.admitInitialRevision(
+        `repository-deadline-${wait.toLowerCase()}`,
+        { revision: revisionOptions },
+      );
+      await fixture.start(fixture.compute, { repositoryGitMaterial: async () => "ready" });
+      await fixture.work(first, "succeeded");
+      await fixture.stop();
+      const candidate = await fixture.revision(owner, 2, revisionOptions);
+      const stopped = [];
+      await fixture.start(
+        {
+          ...fixture.compute,
+          async activateRevision(revision, revisionContext) {
+            // The published version's activation never completes before the deadline.
+            if (revision.id === candidate.id) {
+              throw new ActivationPendingError(wait, "The test runtime is not ready.");
+            }
+            return fixture.compute.activateRevision?.(revision, revisionContext);
+          },
+          async stopRevision(revision) {
+            stopped.push(revision.id);
+            return fixture.compute.stopRevision(revision);
+          },
+        },
+        {
+          convergenceTimeoutMs: 3_000,
+          repositoryGitMaterial: async (revisionId) =>
+            revisionId === candidate.id ? material : "ready",
+        },
+      );
+      await fixture.work(candidate, "failed_permanent");
+      const status = await fixture.deploymentStatus(owner, candidate);
+      assert.equal(status.status, "failed");
+      assert.equal(status.error.code, "CONVERGENCE_DEADLINE_EXCEEDED");
+      await waitFor("the failed version's runtime retirement", async () => {
+        const { rows } = await fixture.observerPool.query(
+          `SELECT state FROM occ.controller_work
+           WHERE revision_id = $1 AND idempotency_key LIKE $2`,
+          [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:retire:%`],
+        );
+        return rows[0]?.state === "succeeded" ? true : undefined;
+      });
+      assert.deepEqual(stopped, [candidate.id]);
+      assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, null);
+    },
+  );
+}
+
+test(
+  "a running native repository version's maintenance ignores a quarantined token renewal",
+  requiresPostgres,
+  async (context) => {
+    // Finding 2415: only a deployment waits for its version's token. A running version whose
+    // renewal GitHub refused keeps its maintenance chain: failing that pass would fail a version
+    // nobody deployed just now, and its renewal failure is reported in the worker log instead.
+    const repository = repositoryBoundary();
+    const fixture = await setup(context, { repoDriver: repository.driver });
+    const { owner, candidate } = await fixture.admitInitialRevision("repository-token-renewal", {
+      revision: { repositoryCredentials: repository.snapshot },
+    });
+    const events = [];
+    let state = "ready";
+    await fixture.start(
+      { ...fixture.compute, maintenanceIntervalMs: 200 },
+      {
+        emit: (event) => events.push(event),
+        repositoryGitMaterial: async () => state,
+      },
+    );
+    await fixture.work(candidate, "succeeded");
+    // The running version's renewal is quarantined from now on.
+    state = "quarantined";
+    const quarantinedAt = events.length;
+    const maintenance = `agent_revision:${candidate.id}:maintenance:`;
+    const passes = () =>
+      events
+        .slice(quarantinedAt)
+        .filter(
+          (event) => event.event === "worker.completed" && event.workId?.startsWith(maintenance),
+        );
+    // Two passes, so at least one began after the quarantine.
+    await waitFor("two maintenance passes after the quarantine", async () =>
+      passes().length >= 2 ? true : undefined,
+    );
+    const completed = passes();
+    assert.ok(
+      completed.every(({ outcome }) => outcome === "success"),
+      completed.map(({ outcome, code }) => `${outcome}:${code}`).join(),
+    );
+    assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "succeeded");
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
   },
 );
 

@@ -35,7 +35,9 @@ import { readRuntimeRepositoryManifest } from "../../apps/controller/src/drivers
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
+import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { relaySockets } from "../helpers/socket-relay.mjs";
 import {
   cleanEnvironment,
   listen,
@@ -84,8 +86,13 @@ const opened = {
 };
 const protocol = (path = "example/project.git", extra = "") =>
   `protocol=https\nhost=credentials.example.test\npath=${path}\n${extra}\n`;
+// Children get an allowlisted environment, so they only share the Node compile cache when
+// it is passed explicitly. Git starts the credential helper, and in the push-policy case
+// the hook dispatcher for every hook (three times per ref update), as Node children.
+const compileCache = await fileCompileCache("repository-credentials-client-config");
+const clean = (extra = {}) => cleanEnvironment({ NODE_COMPILE_CACHE: compileCache, ...extra });
 const gitEnvironment = (root, extra = {}) => {
-  const env = cleanEnvironment({
+  const env = clean({
     HOME: root,
     GIT_CONFIG_SYSTEM: join(root, "gitconfig"),
     ...extra,
@@ -262,7 +269,7 @@ test("generated native configuration selects exact endpoint authority through st
     const result = await run(
       process.execPath,
       [helper, "manifest", material.root, material.manifest.generation, "get"],
-      { env: cleanEnvironment(), input, allowFailure: true },
+      { env: clean(), input, allowFailure: true },
     );
     assert.notEqual(result.code, 0);
     assert.equal(result.stdout, "");
@@ -272,7 +279,7 @@ test("generated native configuration selects exact endpoint authority through st
     const result = await run(
       process.execPath,
       [helper, "manifest", "/absent", "invalid", operation],
-      { env: cleanEnvironment(), input: "ignored\n", allowFailure: true },
+      { env: clean(), input: "ignored\n", allowFailure: true },
     );
     assert.equal(result.code, 0);
     assert.equal(result.stdout, "");
@@ -284,7 +291,7 @@ test("single-session launcher preserves native Git signal exit statuses", async 
   const session = join(parent, "signal-session");
   const repository = join(parent, "repository.git");
   await writeClientConfiguration(opened, session, undefined);
-  const env = cleanEnvironment({ HOME: parent, GIT_CONFIG_GLOBAL: "/dev/null" });
+  const env = clean({ HOME: parent, GIT_CONFIG_GLOBAL: "/dev/null" });
   await run("/usr/bin/git", ["init", "--bare", "--quiet", repository], { env });
 
   // Numeric Git errors must remain numeric; only signal termination gets 128 + signal.
@@ -376,7 +383,7 @@ test("single-session operator helper remains usable and rejects unsafe material"
   await writeClientConfiguration(opened, session, undefined);
   const invoke = (command, args = [], input) =>
     run(process.execPath, [launcher, session, command, ...args], {
-      env: cleanEnvironment({ HOME: parent }),
+      env: clean({ HOME: parent }),
       input,
       allowFailure: true,
     });
@@ -575,7 +582,7 @@ test("encoded session files support the actual client without the operator write
     await writeFile(join(parent, name), value, { mode: 0o600 });
   }
   const result = await run(process.execPath, [launcher, parent, "git", "credential", "fill"], {
-    env: cleanEnvironment({ HOME: parent }),
+    env: clean({ HOME: parent }),
     input: protocol(),
   });
   assert.equal(result.code, 0, result.stderr);
@@ -629,7 +636,7 @@ test("operator rejects unsafe or conflicting bound request files before admissio
         path,
         ...extra,
       ],
-      { allowFailure: true },
+      { env: clean(), allowFailure: true },
     );
   const failed = (result) => {
     assert.equal(result.code, 1);
@@ -644,7 +651,7 @@ test("operator rejects unsafe or conflicting bound request files before admissio
   assert.equal(admitted.stdout, "");
   assert.match(
     admitted.stderr,
-    /^credential-admission [0-9]{13}-[0-9a-f-]{36}; recover with open --admission-id and the same inputs\ncredential-operator-not-found\n$/,
+    /^credential-admission [0-9]{13}-[0-9a-f-]{36}; if the outcome is uncertain, inspect the original owner and use status for any known session\ncredential-operator-not-found\n$/,
   );
   assert.deepEqual(requests, [
     { method: "POST", path: "/v1/sessions", body: { ...request, durableAdmission: true } },
@@ -692,12 +699,10 @@ async function loopbackBrokerTunnel(t, fixture) {
     }
     const upstream = connect(fixture.listeners.address.port, "127.0.0.1", () => {
       socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-      upstream.write(head);
-      socket.pipe(upstream).pipe(socket);
     });
-    socket.on("error", () => upstream.destroy());
-    socket.on("close", () => upstream.destroy());
-    upstream.on("error", () => socket.destroy());
+    // Bytes the client sent after CONNECT go first; the socket queues them until connected.
+    upstream.write(head);
+    relaySockets(socket, upstream);
   });
   return (await listen(t, proxy)).replace("https:", "http:");
 }

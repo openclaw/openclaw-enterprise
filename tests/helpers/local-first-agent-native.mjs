@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
+
+import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const proofPrefix = "OCE_NATIVE_FIRST_AGENT_PROOF ";
@@ -103,10 +106,21 @@ const markerOrAbsent = (value, known) =>
 const failureCategory = (code) => (runtimeFailureCodes.has(code) ? code : "unrecognized");
 const progressCode = (code) => (deploymentProgressCodes.has(code) ? code : "unknown");
 
-// The latest model check in the exact revision's agent log page, as fixed values only.
-function observedModelProbe(logs, revisionId) {
-  if (logs?.revisionId !== revisionId || logs.source !== "agent" || !Array.isArray(logs.records)) {
-    return "unavailable";
+// The deployment failure each held model-check code becomes (worker.ts HELD_RUNTIME_FAILURE_CODES).
+const probeCodeForFailure = new Map([
+  ["RUNTIME_AUTHENTICATION_FAILED", "AUTHENTICATION_FAILED"],
+  ["RUNTIME_MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
+]);
+
+// The latest failed model check (else the latest check) in the exact revision's agent log
+// page, as fixed values only.
+async function observeModelProbe(observation, logs, revision, failureCode, readProbePod, signal) {
+  if (
+    logs?.revisionId !== revision.revisionId ||
+    logs.source !== "agent" ||
+    !Array.isArray(logs.records)
+  ) {
+    return;
   }
   const probes = logs.records.filter(
     (record) =>
@@ -114,8 +128,11 @@ function observedModelProbe(logs, revisionId) {
       record.kind === "wrapper" &&
       record.message === "openclaw.model_probe",
   );
-  const fields = probes.at(-1)?.fields ?? {};
-  return {
+  // A later READY must not hide the failure the deployment is holding.
+  const failed = probes.filter((record) => record.fields?.code !== "READY");
+  const probe = failed.at(-1) ?? probes.at(-1);
+  const fields = probe?.fields ?? {};
+  observation.modelProbe = {
     probes: probes.length,
     code: absentOr(fields.code, (code) => (modelProbeCodes.has(code) ? code : "other")),
     providerStatus: absentOr(fields.providerStatus, (status) =>
@@ -129,15 +146,58 @@ function observedModelProbe(logs, revisionId) {
     providerErrorCode: markerOrAbsent(fields.providerErrorCode, providerErrorCodes),
     providerErrorType: markerOrAbsent(fields.providerErrorType, providerErrorTypes),
   };
+  if (!readProbePod) {
+    return;
+  }
+
+  // The log reader reports stream_replaced if the Pod or container changed during its read.
+  // Compare that stream to one later Pod status; never infer the image from the requested tag.
+  // Attach an image only to the page's one failed check, and only when it names the
+  // deployment's failure; a success-only or ambiguous page reads no Pod.
+  observation.probePodImage = "unavailable";
+  const stream = probe?.stream;
+  if (
+    failed.length !== 1 ||
+    probe.fields?.code !== probeCodeForFailure.get(failureCode) ||
+    logs.records.some(
+      (record) => record?.stream !== undefined && !isDeepStrictEqual(record.stream, logs.stream),
+    ) ||
+    stream?.source !== "agent" ||
+    stream.container !== "agent" ||
+    !stream.pod ||
+    !isDeepStrictEqual(stream, logs.stream) ||
+    !uuidV4.test(stream.podUid) ||
+    !Number.isSafeInteger(stream.restartCount) ||
+    stream.restartCount < 0 ||
+    logs.records.some((record) => record?.type === "gap" && record.reason === "stream_replaced")
+  ) {
+    return;
+  }
+  // The caller's existing diagnostic catch preserves the probe if this read fails.
+  const row = (await readProbePod(revision, signal)).trim();
+  const [pod, podUid, restartCount, imageId, extra] = row.split(/\s+/);
+  if (
+    pod !== stream.pod ||
+    podUid !== stream.podUid ||
+    restartCount !== String(stream.restartCount) ||
+    extra !== undefined
+  ) {
+    return;
+  }
+  const digest = /^(?:[^\s@]+@|[a-z-]+:\/\/)?(sha256:[0-9a-f]{64})$/.exec(imageId)?.[1];
+  if (digest) {
+    observation.probePodImage = { digest, podUid };
+  }
 }
 
 // Codes from the provisioning record, its exact deployment and, for a held model-check
-// failure, that check's log event. Every value comes from a fixed vocabulary.
+// failure, that check's log event and the image observed for its exact container instance.
 async function observeNativeFailure({
   request,
   namespaceId,
   provisioningPath,
   provisioned,
+  readProbePod,
   signal,
 }) {
   const observation = {
@@ -160,7 +220,14 @@ async function observeNativeFailure({
       revisionId: provisioned.revisionId,
       deploymentPath,
     };
-    await observeDeployment(observation, deployment, revision, request, diagnosticSignal);
+    await observeDeployment(
+      observation,
+      deployment,
+      revision,
+      request,
+      diagnosticSignal,
+      readProbePod,
+    );
   } catch {
     // Diagnostic failures cannot replace the terminal failure or reveal peer errors.
   }
@@ -169,7 +236,7 @@ async function observeNativeFailure({
 
 // The exact revision's status and codes and, for a held model-check failure, that check's
 // log event. Sets `deployment` (and `modelProbe`) on the observation as it learns them.
-async function observeDeployment(observation, deployment, revision, request, signal) {
+async function observeDeployment(observation, deployment, revision, request, signal, readProbePod) {
   if (
     deployment?.namespaceId !== revision.namespaceId ||
     deployment.agentId !== revision.agentId ||
@@ -191,16 +258,17 @@ async function observeDeployment(observation, deployment, revision, request, sig
       undefined,
       signal,
     );
-    observation.modelProbe = observedModelProbe(logs, revision.revisionId);
+    await observeModelProbe(observation, logs, revision, code, readProbePod, signal);
   }
 }
 
 // CI keeps only the start of this message. Lead with the probe; its 401 response
 // does not tell us whether credentials were attached when the request was made.
-function failNativeWork(expectation, code, { modelProbe, ...work }) {
+function failNativeWork(expectation, code, { modelProbe, probePodImage, ...work }) {
   const observation = {
     modelProbe,
     credentialAttachment: modelProbe?.providerStatus === 401 ? "not observed" : undefined,
+    probePodImage,
     ...work,
   };
   assert.fail(`${expectation}: ${failureCategory(code)} ${JSON.stringify(observation)}`);
@@ -473,6 +541,448 @@ export async function failNativeProvisioningDeadline({
   );
 }
 
+// Project public RPC observations before crossing the controller stdout boundary.
+// Keep this function self-contained: the trusted controller executes its source.
+export function nativeWorkerPlacementObservation({
+  placement,
+  placementLookup,
+  environment,
+  nodes,
+  expectedNodeId,
+  sessionId,
+  environmentLookup,
+  nodeLookup,
+  elapsedMs,
+}) {
+  const category = (value, values) => {
+    if (value == null) {
+      return "absent";
+    }
+    return values.includes(value) ? value : "other";
+  };
+  const errorCategory = (value) => {
+    if (value == null) {
+      return "absent";
+    }
+    if (typeof value !== "string") {
+      return "other";
+    }
+    // Upstream provider/bootstrap owners wrap the cause before publishing placement errors.
+    // Strip only their fixed prefixes, never arbitrary peer text or identifiers.
+    let detail = value.slice(0, 4096);
+    let fallback = "other";
+    let bundleInstall = false;
+    const wrappers = [
+      ["Worker node bootstrap failed: ", "worker-bootstrap-failed"],
+      ["Device worker bundle installation failed: ", "bundle-install-failed"],
+      ["worker-bundle-install-failed: ", "bundle-install-failed"],
+      ["Worker provider preparation failed: ", "provider-preparation-failed"],
+      ["Worker provider operation failed: ", "provider-operation-failed"],
+      ["Worker provider rejected profile: ", "provider-profile-rejected"],
+    ];
+    for (let depth = 0; depth < 4; depth += 1) {
+      const wrapper = wrappers.find(([prefix]) => detail.startsWith(prefix));
+      if (!wrapper) {
+        break;
+      }
+      detail = detail.slice(wrapper[0].length);
+      fallback = wrapper[1];
+      bundleInstall ||= fallback === "bundle-install-failed";
+    }
+    if (bundleInstall) {
+      const http = /^gateway returned ([0-9]{1,3})(?:\b|$)/.exec(detail);
+      if (http) {
+        const status = Number(http[1]);
+        if ([401, 403, 404].includes(status)) {
+          return `bundle-http-${status}`;
+        }
+        if (status >= 400 && status < 500) {
+          return "bundle-http-client-error";
+        }
+        if (status >= 500 && status < 600) {
+          return "bundle-http-server-error";
+        }
+        return "bundle-http-unexpected-status";
+      }
+      const errno =
+        /^(EACCES|EPERM|EROFS|ENOSPC|ENOENT):/.exec(detail) ??
+        /^spawn .+ (EACCES|EPERM|EROFS|ENOSPC|ENOENT)(?:\b|$)/.exec(detail);
+      if (errno) {
+        return {
+          EACCES: "bundle-storage-access-denied",
+          EPERM: "bundle-operation-denied",
+          EROFS: "bundle-storage-readonly",
+          ENOSPC: "bundle-storage-full",
+          ENOENT: "bundle-file-missing",
+        }[errno[1]];
+      }
+      if (detail.startsWith("Command failed:")) {
+        return "bundle-prewarm-failed";
+      }
+    }
+    // These phrases come from the pinned OpenClaw worker environment and node tunnel owners.
+    const errors = [
+      ["Worker tunnel did not connect within 3 minutes", "tunnel-timeout"],
+      ["node worker workspace command timed out", "workspace-command-timeout"],
+      ["node workspace command failed (", "workspace-command-failed"],
+      ["device worker node transport is unavailable", "node-transport-unavailable"],
+      ["Device worker node transport is unavailable", "node-transport-unavailable"],
+      [
+        "Device worker node is not connected with the installer dialect",
+        "node-installer-disconnected",
+      ],
+      [
+        "Device worker installation connection is no longer current",
+        "node-install-connection-stale",
+      ],
+      [
+        "Device worker bundle installer returned a mismatched build receipt",
+        "bundle-receipt-mismatch",
+      ],
+      ["Device worker bundle installation failed", "bundle-install-failed"],
+      ["Device worker node does not support bundle prefetch", "bundle-prefetch-unsupported"],
+      [
+        "OpenClaw worker deploy artifact is missing; build the running package",
+        "worker-deploy-artifact-missing",
+      ],
+      ["Unsafe worker deploy artifact:", "worker-deploy-artifact-unsafe"],
+      ["Cloud bootstrap requires a built Gateway;", "gateway-build-missing"],
+      ["Cloud bootstrap is missing its built CLI entry;", "gateway-cli-missing"],
+      ["Node bootstrap distribution exceeds its artifact limits", "bootstrap-artifact-too-large"],
+      ["Node bootstrap archive exceeds the transfer limit", "bootstrap-transfer-too-large"],
+      ["INVALID_REQUEST: invalid node worker bundle install request", "bundle-request-invalid"],
+      ["gateway returned an unexpected worker bundle range", "bundle-range-invalid"],
+      ["gateway returned an unexpected worker bundle length", "bundle-transfer-length-invalid"],
+      [
+        "worker bundle download stopped after 3 consecutive no-progress failures",
+        "bundle-download-no-progress",
+      ],
+      ["prepared worker bundle archive has an unexpected length", "bundle-archive-length-invalid"],
+      ["worker bundle archive exceeded its byte limit", "bundle-archive-too-large"],
+      ["worker bundle transfer response exceeded its byte limit", "bundle-response-too-large"],
+      ["worker bundle archive failed integrity validation", "bundle-archive-integrity-failed"],
+      ["published worker bundle failed validation", "bundle-published-invalid"],
+      ["gateway TLS fingerprint mismatch", "bundle-tls-mismatch"],
+      ["Cloudflare Access credentials require HTTPS", "bundle-https-required"],
+      ["gateway transfer is unavailable", "bundle-transfer-unavailable"],
+      [
+        "Worker bundle archive manifest does not match its expected hash",
+        "bundle-manifest-hash-mismatch",
+      ],
+      [
+        "Extracted worker bundle does not match its expected hash",
+        "bundle-extracted-hash-mismatch",
+      ],
+      ["Invalid worker bundle archive path:", "bundle-entry-invalid"],
+      ["Duplicate worker bundle archive path:", "bundle-entry-invalid"],
+      ["Invalid worker bundle archive size:", "bundle-entry-invalid"],
+      ["Invalid worker bundle tar entry:", "bundle-entry-invalid"],
+      ["Worker bundle contains an unsupported entry:", "bundle-entry-invalid"],
+      ["Worker bundle archive exceeds its entry limit", "bundle-extraction-limit"],
+      ["Worker bundle archive exceeds its expanded byte limit", "bundle-extraction-limit"],
+      ["Worker bundle directory exceeds its limits", "bundle-extraction-limit"],
+      ["Worker bundle contains a symbolic link:", "bundle-symlink-refused"],
+      ["Worker bundle file changed while hashing:", "bundle-file-changed"],
+      [
+        "device worker node is not connected with the supervisor dialect",
+        "node-supervisor-disconnected",
+      ],
+      ["node worker workspace is unavailable before sync", "workspace-not-synced"],
+      ["Device folder does not belong to this workspace runner", "workspace-device-mismatch"],
+      ["Device folder validation failed", "workspace-validation-failed"],
+      ["Node workspace sync does not match its bound session", "workspace-session-mismatch"],
+      ["Worker tunnel owner credential is not current", "owner-credential-stale"],
+      ["node worker tunnel owner epoch is stale", "owner-epoch-stale"],
+      ["node worker tunnel owner binding changed within one epoch", "owner-binding-changed"],
+      ["node worker tunnel stopped before connecting", "tunnel-stopped"],
+    ];
+    return errors.find(([phrase]) => detail.startsWith(phrase))?.[1] ?? fallback;
+  };
+  const present = (value) => typeof value === "string" && value.length > 0;
+  const count = (value) =>
+    Array.isArray(value) && value.length <= 4096 ? value.length : undefined;
+  const validNodes = count(nodes) !== undefined ? nodes : undefined;
+  const matches = validNodes?.filter(
+    (node) => present(expectedNodeId) && node?.nodeId === expectedNodeId,
+  );
+  const exact = matches?.length === 1 ? matches[0] : undefined;
+  const bool = (value) => (typeof value === "boolean" ? value : undefined);
+  const attached = environment?.worker?.attachedSessionIds;
+  return {
+    placementLookup:
+      placementLookup === undefined
+        ? undefined
+        : category(placementLookup, ["fresh", "fallback", "absent"]),
+    placementState: category(placement?.state, [
+      "local",
+      "requested",
+      "provisioning",
+      "syncing",
+      "starting",
+      "active",
+      "draining",
+      "reconciling",
+      "reclaimed",
+      "failed",
+    ]),
+    recoveryError: errorCategory(placement?.recoveryError),
+    terminalReason: errorCategory(placement?.terminalReason),
+    workspaceReferencePresent: present(placement?.remoteWorkspaceDir),
+    environmentLookup: category(environmentLookup, ["absent", "found", "unavailable", "mismatch"]),
+    environmentState: category(environment?.worker?.state, [
+      "requested",
+      "provisioning",
+      "bootstrapping",
+      "ready",
+      "attached",
+      "idle",
+      "draining",
+      "destroying",
+      "destroyed",
+      "failed",
+      "orphaned",
+    ]),
+    environmentError: errorCategory(environment?.worker?.error),
+    tunnelStatus: category(environment?.worker?.tunnelStatus, [
+      "stopped",
+      "connecting",
+      "connected",
+      "reconnecting",
+    ]),
+    attachedSessionCount: count(attached),
+    attachedSessionMatches:
+      count(attached) === undefined
+        ? undefined
+        : present(sessionId) && attached.includes(sessionId),
+    nodeLookup: category(nodeLookup, ["found", "unavailable", "invalid"]),
+    nodeCount: count(validNodes),
+    connectedNodeCount: validNodes?.filter((node) => node?.connected === true).length,
+    expectedNodeIdPresent: present(expectedNodeId),
+    expectedNodeMatches: matches?.length,
+    expectedNodeConnected: bool(exact?.connected),
+    expectedNodePaired: bool(exact?.paired),
+    expectedNodeSessionHost: bool(exact?.sessionHost),
+    expectedNodeCaps: count(exact?.caps),
+    expectedNodeCommands: count(exact?.commands),
+    expectedNodeWorkerBundle: category(exact?.workerBundle?.status, ["installed", "missing"]),
+    elapsedMs:
+      Number.isSafeInteger(elapsedMs) && elapsedMs >= 0 && elapsedMs <= 3_600_000
+        ? elapsedMs
+        : undefined,
+  };
+}
+
+// Classify only the selected turn. Error text and transcript bytes stay in the controller.
+export function nativeWorkerTurnObservation({ outcome, error, messages, runId, historyLookup }) {
+  const category = (value, values) =>
+    value == null ? "absent" : values.includes(value) ? value : "other";
+  const classify = (value) => {
+    if (value == null) {
+      return "absent";
+    }
+    if (typeof value !== "string") {
+      return "other";
+    }
+    const detail = value.slice(0, 4096);
+    const patterns = [
+      [
+        "model-authentication",
+        /invalid.api.key|incorrect.api.key|authentication_error|No API key/i,
+      ],
+      ["model-rate-or-quota", /rate.limit|insufficient_quota|quota.exceeded|too many requests/i],
+      [
+        "model-unavailable",
+        /model.not.found|unknown model|model.*does not exist|Worker model is not approved|missing from the Gateway model catalog/i,
+      ],
+      [
+        "tool-policy",
+        /approval required|exec denied|execution denied|not allowed by|host.*not allowed|security policy/i,
+      ],
+      [
+        "filesystem-permission",
+        /\bEACCES\b|\bEPERM\b|\bEROFS\b|permission denied|read.only file system/i,
+      ],
+      [
+        "file-or-command-missing",
+        /\bENOENT\b|command not found|Cannot find module|ERR_MODULE_NOT_FOUND/i,
+      ],
+      [
+        "tls-validation",
+        /certificate verify failed|unable to get local issuer|self.signed certificate|CERT_HAS_EXPIRED|ERR_TLS_CERT_ALTNAME_INVALID/i,
+      ],
+      [
+        "network-connection",
+        /\bENOTFOUND\b|\bECONNREFUSED\b|\bECONNRESET\b|fetch failed|connection refused|connection timed out/i,
+      ],
+      [
+        "worker-authority",
+        /Worker turn.*authority|Worker tool surface owner changed|worker credential handoff failed/i,
+      ],
+      [
+        "worker-transport",
+        /Worker tunnel does not support worker turns|worker transport limit|Worker node.*lost|worker.*disconnected/i,
+      ],
+      ["http-unauthorized", /(?:^|\bHTTP(?: status)? )401\b/i],
+      ["http-forbidden", /(?:^|\bHTTP(?: status)? )403\b/i],
+      ["http-rate-limit", /(?:^|\bHTTP(?: status)? )429\b/i],
+    ];
+    return patterns.find(([, pattern]) => pattern.test(detail))?.[0] ?? "other";
+  };
+  const selected =
+    typeof runId === "string" && runId.length > 0 && Array.isArray(messages)
+      ? messages.slice(-30).filter((message) => message?.__openclaw?.runId === runId)
+      : [];
+  const assistant = selected.filter((message) => message.role === "assistant").at(-1);
+  const results = selected.filter(
+    (message) => message.role === "toolResult" && message.toolName === "exec",
+  );
+  const failed = results.filter((message) => message.isError === true);
+  const failedText = failed.at(-1)?.content;
+  let execError;
+  if (typeof failedText === "string") {
+    execError = failedText;
+  } else if (Array.isArray(failedText)) {
+    execError = failedText.find(
+      (part) => part?.type === "text" && typeof part.text === "string",
+    )?.text;
+  }
+  return {
+    turnStatus: category(outcome?.status, ["ok", "error", "timeout", "pending"]),
+    turnError: classify(outcome?.error),
+    proofError: classify(error?.message),
+    turnStopReason: category(outcome?.stopReason, [
+      "stop",
+      "length",
+      "toolUse",
+      "error",
+      "aborted",
+    ]),
+    providerStarted:
+      typeof outcome?.providerStarted === "boolean" ? outcome.providerStarted : undefined,
+    historyLookup: category(historyLookup, ["found", "unavailable", "invalid", "absent"]),
+    assistantStopReason: category(assistant?.stopReason, [
+      "stop",
+      "length",
+      "toolUse",
+      "error",
+      "aborted",
+    ]),
+    assistantError: classify(assistant?.errorMessage),
+    execError: classify(execError),
+    execResultCount: results.length,
+    execFailureCount: failed.length,
+  };
+}
+
+// Keep reads within one budget and project the current session owner when a turn moved it.
+// Like the projector, this collector is serialized into the trusted controller.
+export async function collectNativeWorkerFailure({
+  request,
+  session,
+  lastPlacement,
+  expectedNodeId,
+  elapsedMs,
+  runId,
+  outcome,
+  error,
+}) {
+  const signal = AbortSignal.timeout(5_000);
+  const read = async (method, params) => {
+    try {
+      return {
+        status: "fulfilled",
+        value: await request(method, params, { signal, timeoutMs: 5_000 }),
+      };
+    } catch {
+      return { status: "rejected" };
+    }
+  };
+  // Observe nodes concurrently without letting their latency delay the environment lookup.
+  const nodeObservation = read("node.list", {});
+  const historyObservation =
+    typeof runId === "string" && runId.length > 0 && typeof session?.key === "string"
+      ? read("chat.history", { sessionKey: session.key, limit: 30 })
+      : undefined;
+  let placement = lastPlacement;
+  let placementLookup = placement === undefined ? "absent" : "fallback";
+  if (
+    typeof session?.key === "string" &&
+    session.key.length > 0 &&
+    typeof session.sessionId === "string" &&
+    session.sessionId.length > 0
+  ) {
+    const described = await read("sessions.describe", { key: session.key, agentId: "main" });
+    if (
+      described.status === "fulfilled" &&
+      described.value?.session?.sessionId === session.sessionId
+    ) {
+      placement = described.value.session.placement;
+      placementLookup = "fresh";
+    }
+  }
+  const environmentId = placement?.environmentId;
+  let environment;
+  let environmentLookup = "absent";
+  if (typeof environmentId === "string" && environmentId.length > 0) {
+    const result = await read("environments.status", { environmentId });
+    environmentLookup = "unavailable";
+    if (result.status === "fulfilled") {
+      environmentLookup = result.value?.id === environmentId ? "found" : "mismatch";
+      if (environmentLookup === "found") {
+        environment = result.value;
+      }
+    }
+  }
+  const nodeResult = await nodeObservation;
+  const nodes = nodeResult.status === "fulfilled" ? nodeResult.value?.nodes : undefined;
+  let nodeLookup = "unavailable";
+  if (nodeResult.status === "fulfilled") {
+    nodeLookup = Array.isArray(nodes) ? "found" : "invalid";
+  }
+  const worker = nativeWorkerPlacementObservation({
+    placement,
+    placementLookup,
+    environment,
+    nodes,
+    expectedNodeId,
+    sessionId: session?.sessionId,
+    environmentLookup,
+    nodeLookup,
+    elapsedMs,
+  });
+  if (runId === undefined) {
+    return worker;
+  }
+  const history = await historyObservation;
+  let historyLookup = "unavailable";
+  if (history?.status === "fulfilled") {
+    historyLookup = Array.isArray(history.value?.messages) ? "found" : "invalid";
+  }
+  return {
+    ...worker,
+    ...nativeWorkerTurnObservation({
+      outcome,
+      error,
+      runId,
+      messages: history?.value?.messages,
+      historyLookup,
+    }),
+  };
+}
+
+// Validate before reading placement so a foreign response cannot poison failure evidence.
+// Self-contained because the controller receives this function as source.
+export function nativeWorkerSessionPlacement(description, sessionId) {
+  if (
+    typeof sessionId !== "string" ||
+    sessionId.length === 0 ||
+    description?.session?.sessionId !== sessionId
+  ) {
+    throw new Error("Native worker session identity mismatch");
+  }
+  return description.session.placement;
+}
+
 // Run in the existing trusted controller: it already has the private route key,
 // cluster DNS and CA. Native admin sign-in is neither enabled nor required.
 async function nativeWorkerProof({
@@ -480,6 +990,7 @@ async function nativeWorkerProof({
   agentId,
   timeout,
   workspaceFile,
+  expectedNodeId,
   session: existingSession,
   sessionFile: retainedSessionFile,
 }) {
@@ -498,6 +1009,11 @@ async function nativeWorkerProof({
   let stage = "startup";
   let client;
   let helloTimer;
+  let collectFailure;
+  let lastPlacement;
+  let runId;
+  let outcome;
+  const proofStarted = performance.now();
   const emit = (data) =>
     process.stdout.write("OCE_NATIVE_FIRST_AGENT_PROOF " + JSON.stringify(data) + "\n");
   try {
@@ -543,6 +1059,17 @@ async function nativeWorkerProof({
     assert.equal(required.inference, "worker");
     assert.ok(required.executionModes.includes("worker-turn"));
     let session = existingSession;
+    collectFailure = (error) =>
+      collectNativeWorkerFailure({
+        request: (method, params, options) => client.request(method, params, options),
+        session,
+        lastPlacement,
+        expectedNodeId,
+        elapsedMs: Math.round(performance.now() - proofStarted),
+        runId,
+        outcome,
+        error,
+      });
     if (session === undefined) {
       stage = "create";
       const key = `agent:main:first-agent-native-${randomUUID()}`;
@@ -555,14 +1082,27 @@ async function nativeWorkerProof({
         worktreeSource: "empty",
       });
       assert.equal(created.key, key);
-      session = { key, sessionId: created.sessionId };
+      stage = "create-session-id-missing";
+      const { sessionId } = created;
+      assert.ok(typeof sessionId === "string" && sessionId.trim().length > 0);
+      session = { key, sessionId };
       stage = "required-placement";
       while (!signal.aborted) {
-        const described = await call("sessions.describe", { key, agentId: "main" });
-        if (described.session?.placement?.state === "active") {
+        const described = await call("sessions.describe", { key, agentId: "main" }).catch(() => {
+          stage = "required-placement-describe-rejected";
+          assert.fail();
+        });
+        stage = "session-identity";
+        lastPlacement = nativeWorkerSessionPlacement(described, session.sessionId);
+        stage = "required-placement";
+        const state = lastPlacement?.state;
+        if (state === "active") {
           break;
         }
-        assert.ok(!["failed", "reclaimed", "local"].includes(described.session?.placement?.state));
+        if (["failed", "reclaimed", "local"].includes(state)) {
+          stage = `required-placement-terminal-${state}`;
+          assert.fail();
+        }
         await delay(500, undefined, { signal });
       }
       signal.throwIfAborted();
@@ -571,7 +1111,7 @@ async function nativeWorkerProof({
     const { key } = session;
     stage = "session-identity";
     const described = await call("sessions.describe", { key, agentId: "main" });
-    assert.equal(described.session?.sessionId, session.sessionId);
+    lastPlacement = nativeWorkerSessionPlacement(described, session.sessionId);
     // A retained placement may recover when the next turn is sent. Check its
     // current directory after that turn, rather than trusting the old owner.
     const sessionFileContent = `FIRST_AGENT_SESSION_${randomUUID()}\n`;
@@ -612,9 +1152,9 @@ async function nativeWorkerProof({
       message: `Use exec to run exactly this command: ${command}. After exec succeeds, reply with exactly ${marker}. Do not print environment values or credentials.`,
     });
     assert.ok(sent.runId);
+    runId = sent.runId;
     assert.ok(!["error", "timeout"].includes(sent.status));
     stage = "model-and-exec";
-    let outcome;
     while (!signal.aborted) {
       outcome = await call("agent.wait", { runId: sent.runId, timeoutMs: 3_000 });
       if (["ok", "error"].includes(outcome.status) || outcome.endedAt !== undefined) {
@@ -622,6 +1162,7 @@ async function nativeWorkerProof({
       }
     }
     signal.throwIfAborted();
+    stage = "model-outcome";
     assert.equal(outcome.status, "ok");
     const text = (content) =>
       typeof content === "string"
@@ -631,6 +1172,7 @@ async function nativeWorkerProof({
             .map((part) => part.text)
             .join("\n");
     while (!signal.aborted) {
+      stage = "model-history";
       const history = await call("chat.history", { sessionKey: key, limit: 30 });
       const messages = (history.messages ?? []).filter(
         (message) => message.__openclaw?.runId === sent.runId,
@@ -653,6 +1195,7 @@ async function nativeWorkerProof({
           ),
       );
       if (tool && final) {
+        stage = "exec-proof";
         let output = text(tool.content);
         try {
           const result = JSON.parse(output);
@@ -701,10 +1244,11 @@ async function nativeWorkerProof({
       await delay(500, undefined, { signal });
     }
     signal.throwIfAborted();
-  } catch {
+  } catch (error) {
     // Dependency/RPC errors can include private headers. Preserve the failing
     // stage, never raw exceptions, keys, transcripts or controller output.
-    emit({ verified: false, stage });
+    const worker = await collectFailure?.(error).catch(() => undefined);
+    emit({ verified: false, stage, worker });
     process.exitCode = 1;
   } finally {
     clearTimeout(helloTimer);
@@ -715,7 +1259,17 @@ async function nativeWorkerProof({
 
 export async function assertNativeWorkerProofInController(
   context,
-  { stateDirectory, state, environment, namespaceId, agentId, workspaceFile, session, sessionFile },
+  {
+    stateDirectory,
+    state,
+    environment,
+    namespaceId,
+    agentId,
+    workspaceFile,
+    expectedNodeId,
+    session,
+    sessionFile,
+  },
 ) {
   context.signal.throwIfAborted();
   const safeEnvironment = {
@@ -727,7 +1281,7 @@ export async function assertNativeWorkerProofInController(
   delete safeEnvironment.OPENAI_API_KEY_FILE;
   delete safeEnvironment.CODEX_ACCESS_TOKEN;
   delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  const input = `await (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, session, sessionFile })});`;
+  const input = `const nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"
@@ -796,11 +1350,20 @@ export async function assertNativeWorkerProofInController(
       }
     });
   });
-  assert.equal(
-    result.code,
-    0,
-    `Native first-Agent proof failed during ${result.proof?.stage ?? "controller startup"}; raw output withheld`,
-  );
+  if (result.code !== 0) {
+    // Only the proof's explicit failure record and exit 1 identify its stage.
+    // A controller exit without that evidence leaves the stage unknown.
+    const diagnostic =
+      result.code === 1 && result.proof?.verified === false
+        ? nativeFirstAgentProofDiagnostic(result.proof.stage, result.proof.worker)
+        : undefined;
+    const at = diagnostic
+      ? `during ${diagnostic.failureStage}`
+      : "without a recognized failure stage";
+    throw Object.assign(new Error(`Native first-Agent proof failed ${at}; raw output withheld`), {
+      openclawCiDiagnostic: diagnostic,
+    });
+  }
   assert.equal(result.proof?.verified, true);
   assert.ok(result.proof.profileId && result.proof.providerId && result.proof.environmentId);
   assert.ok(typeof result.proof.hostname === "string" && result.proof.hostname.length > 0);

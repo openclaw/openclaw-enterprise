@@ -3,7 +3,9 @@ import { createServer } from "node:http";
 import test from "node:test";
 
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { listen } from "../helpers/listen.mjs";
 import {
   detailUrl,
   hasFocus,
@@ -11,8 +13,11 @@ import {
   login,
   nativeValues,
   newPage,
+  recordFocusTrail,
+  stopFocusTrail,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 const SESSION = "**/api/auth/session";
 const activeView = '.content [aria-live="polite"]:not([inert])';
@@ -185,16 +190,6 @@ function goTo(page, url) {
   }, url);
 }
 
-function revokeNamespace(fixture, namespace, id) {
-  fixture.policy.restrictions.push({
-    id,
-    namespaceId: namespace.id,
-    resourceKind: "namespace",
-    action: "read",
-    effect: "deny",
-  });
-}
-
 // Marks the content view node, so a test can tell a remounted retained node from a rebuild.
 function tagView(page, tag) {
   return page.evaluate((value) => {
@@ -250,7 +245,7 @@ for (const moveToSidebar of [false, true]) {
       running: true,
     });
     await openAgent(page, "Header Agent");
-    const action = page.locator(".page-header").getByRole("button", { name: "Create new version" });
+    const action = page.locator(".page-header").getByRole("button", { name: "Open draft" });
     const sidebar = page.getByRole("link", NAMESPACES);
     await action.focus();
     assert.equal(await hasFocus(action), true);
@@ -330,7 +325,7 @@ test("Back to a retained Agent page after access was revoked never shows the cac
   await page.getByRole("link", { name: "Revoked Agent" }).waitFor();
   await page.locator(activeView).waitFor();
 
-  revokeNamespace(fixture, namespace, "revoke-retained-agent-namespace");
+  restrict(fixture.policy, "read", "namespace", { namespaceId: namespace.id });
   // Record every DOM state and painted frame from Back until the refusal.
   await page.evaluate((configurationId) => {
     const seen = [];
@@ -559,15 +554,12 @@ for (const c of [
     ],
   },
   {
-    title: "Create new version keeps the Agent page until the draft's overview reveals",
+    title: "Open draft keeps the Agent page until the draft's overview reveals",
     namespace: "Draft reveal",
     agents: ["Draft Agent"],
     prepare: (page) => openAgent(page, "Draft Agent"),
     enter: (page) =>
-      page
-        .locator(".content .page-header")
-        .getByRole("button", { name: "Create new version" })
-        .click(),
+      page.locator(".content .page-header").getByRole("button", { name: "Open draft" }).click(),
     revision: /revision=draft/,
     frames: [
       "agents | Draft Agent | selector | Agent",
@@ -910,45 +902,21 @@ for (const shown of ["is loading", "has loaded"]) {
       await agentShown(page);
     }
     assert.equal(await page.evaluate(() => globalThis.document.activeElement?.tagName), "H1");
-    // Every frame from Back until the Agent's link has focus: the focused node, numbered so a
-    // replaced heading counts as a new one.
-    await page.evaluate(() => {
-      const ids = new WeakMap();
-      let next = 0;
-      const trail = [];
-      globalThis.focusTrail = trail;
-      globalThis.focusFrames = 0;
-      const sample = () => {
-        globalThis.focusFrames += 1;
-        const node = globalThis.document.activeElement;
-        if (node && node !== globalThis.document.body && !ids.has(node)) {
-          ids.set(node, ++next);
-        }
-        const entry =
-          !node || node === globalThis.document.body
-            ? "BODY"
-            : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
-        if (trail.at(-1) !== entry) {
-          trail.push(entry);
-        }
-        if (node?.tagName !== "A") {
-          globalThis.requestAnimationFrame(sample);
-        }
-      };
-      sample();
-    });
+    // Every node that holds focus from Back until the Agent's link has it, numbered so a replaced
+    // heading counts as a new one.
+    await recordFocusTrail(page, [], { until: "^A#" });
     // The list's recheck takes a while, as on a slow link.
     const recheck = await holdOnce(t, page, agentsRead(namespace));
     await page.goBack();
     await recheck.requested;
     // Hold the list for a dozen sampled frames.
-    const held = await page.evaluate(() => globalThis.focusFrames);
-    await page.waitForFunction((frames) => globalThis.focusFrames >= frames + 12, held);
+    const held = await page.evaluate(() => globalThis.focusFrames.frames);
+    await page.waitForFunction((frames) => globalThis.focusFrames.frames >= frames + 12, held);
     recheck.release();
     const link = page.locator(settledView).getByRole("link", { name: agent.name });
     await link.waitFor();
-    await page.waitForFunction(() => globalThis.focusTrail.at(-1)?.startsWith("A#"));
-    const trail = await page.evaluate(() => globalThis.focusTrail);
+    await page.waitForFunction(() => globalThis.focusFrames.stopped);
+    const { trail } = await stopFocusTrail(page);
     assert.equal(await hasFocus(link), true, trail.join(" | "));
     const heading = shown === "is loading" ? "Agent details" : agent.name;
     // The Agent page's heading, the held page's heading under the same name, then the link.
@@ -1019,35 +987,6 @@ for (const focusTarget of [
   });
 }
 
-// Records the focused node in every frame until a link in the shown page has focus, numbering
-// nodes so a replaced one counts as new: "BODY" marks a frame with focus on the body.
-function trackFocusUntilPageLink() {
-  const document = globalThis.document;
-  const ids = new WeakMap();
-  let next = 0;
-  const trail = [];
-  globalThis.focusTrail = trail;
-  globalThis.focusFrames = 0;
-  const sample = () => {
-    globalThis.focusFrames += 1;
-    const node = document.activeElement;
-    if (node && node !== document.body && !ids.has(node)) {
-      ids.set(node, ++next);
-    }
-    const entry =
-      !node || node === document.body
-        ? "BODY"
-        : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
-    if (trail.at(-1) !== entry) {
-      trail.push(entry);
-    }
-    if (!node?.matches('.content [aria-live="polite"] a')) {
-      globalThis.requestAnimationFrame(sample);
-    }
-  };
-  sample();
-}
-
 // The sidebar's Agents link, pressed on an Agent page, held that page inert until the list
 // revalidated. The shell rebuilt around it replaced the pressed link, so keyboard focus fell to
 // the body for the whole hold (2-12 frames, about 0.9 s on a slow link) before the Agent's link
@@ -1064,18 +1003,19 @@ for (const how of ["Enter", "a click"]) {
     await agentShown(page);
     const sidebar = page.getByRole("link", { name: "Agents", exact: true });
     await sidebar.focus();
-    await page.evaluate(trackFocusUntilPageLink);
+    // Every node that holds focus from here until the Agent's link has it.
+    await recordFocusTrail(page, [], { until: `^A#\\d+: ${agent.name}$` });
     // The list's recheck takes a while, as on a slow link.
     const recheck = await holdOnce(t, page, agentsRead(namespace));
     await (how === "Enter" ? sidebar.press("Enter") : sidebar.click());
     await recheck.requested;
     // Hold the list for a dozen sampled frames.
-    const held = await page.evaluate(() => globalThis.focusFrames);
-    await page.waitForFunction((frames) => globalThis.focusFrames >= frames + 12, held);
+    const held = await page.evaluate(() => globalThis.focusFrames.frames);
+    await page.waitForFunction((frames) => globalThis.focusFrames.frames >= frames + 12, held);
     recheck.release();
     await agentLink.waitFor();
-    await page.waitForFunction(() => globalThis.focusTrail.at(-1)?.startsWith("A#"));
-    const trail = await page.evaluate(() => globalThis.focusTrail);
+    await page.waitForFunction(() => globalThis.focusFrames.stopped);
+    const { trail } = await stopFocusTrail(page);
     assert.equal(await hasFocus(agentLink), true, trail.join(" | "));
     // The pressed link, the held page's heading, then the Agent's link in the list.
     assert.deepEqual(
@@ -1589,9 +1529,7 @@ test("holdRequests sends a held write once, and fails it when its answer is lost
     }
     response.writeHead(202).end("applied");
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const origin = `http://127.0.0.1:${await listen(t, server)}`;
   const fixture = await createConsoleAppFixture(t);
   const { page } = await newPage(t, fixture);
   await page.goto(`${origin}/`);
@@ -1695,7 +1633,7 @@ test("A chat link's Agent lookup that answers after a manual navigation is ignor
 test("A Namespace revoked during a first visit's admission is not repainted by Back", async (t) => {
   const { fixture, namespace, page } = await openList(t, "Revoked during visit", "Revoked Agent");
   await tagView(page, "list");
-  revokeNamespace(fixture, namespace, "revoke-during-first-visit");
+  restrict(fixture.policy, "read", "namespace", { namespaceId: namespace.id });
   // The first visit's admission read drops the Namespace, so its retained list is discarded.
   await page.getByRole("link", NAMESPACES).click();
   await page.locator(settledView).waitFor();
@@ -1780,10 +1718,10 @@ test("A double press on Back to Agents goes back once and stays in the console",
   read.release();
 });
 
-test("A chat link that cannot be resolved says so on the Agents list, once", async (t) => {
+test("A Gateway link that cannot be resolved says so on the Agents list, once", async (t) => {
   const { page } = await openList(t, "Chat link", "Listed Agent", { running: true });
   const notice = page.getByText(
-    "This Agent chat link could not be opened. It may have expired, or your access may not include its Agent.",
+    "This Gateway link could not be opened. It may be out of date, or you may not have access to the Gateway.",
     { exact: true },
   );
   assert.equal(await notice.count(), 0);
@@ -1808,17 +1746,10 @@ test("A chat link that cannot be resolved says so on the Agents list, once", asy
   // A lookup that fails for another reason (here 503) asks to try again instead.
   const key = "d".repeat(32);
   await page.route(`**/native-admin/return/${key}`, (route) =>
-    route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." },
-        meta: { requestId: "req_test_chat_link" },
-      }),
-    }),
+    route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Unavailable.")),
   );
   await openChatLink(page, key);
-  await page.getByText("This Agent chat link could not be opened. Try the link again.").waitFor();
+  await page.getByText("This Gateway link could not be opened. Try the link again.").waitFor();
   assert.equal(await notice.count(), 0);
 });
 
@@ -1872,13 +1803,21 @@ test("the boot status stays hidden through a fast load and the scrollbar keeps i
   await page.goto(`${fixture.origin}/console/agents`, { waitUntil: "commit" });
   await script.requested;
   const status = page.locator("#app > p.startup[role='status']");
-  await status.waitFor({ state: "attached" });
+  // The entry script can be requested before the stylesheet that defines the startup animation.
+  await page.waitForFunction(() =>
+    [...globalThis.document.styleSheets].some((sheet) =>
+      sheet.href?.endsWith("/console/console.css"),
+    ),
+  );
   // Read the status's look at fixed times into its animation, independent of host load. A fresh
   // copy starts its own animation, which a loaded host may already have finished on the original.
   const shown = await status.evaluate((node) => {
     const copy = node.cloneNode(true);
     node.after(copy);
     const [animation] = copy.getAnimations();
+    if (!animation) {
+      throw new Error("The loaded Console stylesheet did not animate the startup status");
+    }
     animation.pause();
     const looks = [0, 300, 399, 600].map((time) => {
       animation.currentTime = time;

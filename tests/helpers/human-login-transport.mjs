@@ -1,20 +1,35 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
+import { jsonChunkDestination } from "./json-lines.mjs";
 import { listen } from "./listen.mjs";
 import { waitUntil } from "./wait-for.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-const { APIError, betterAuth } = await import(require.resolve("better-auth"));
+const { betterAuth } = await import(require.resolve("better-auth"));
 const { memoryAdapter } = await import(require.resolve("better-auth/adapters/memory"));
 
 export const loginOrigin = "https://console.example.test";
 export const loginSecret = "test-only-authentication-secret-with-at-least-32-characters";
 export const attemptBinding = "b".repeat(43);
 export const callbackState = "s".repeat(43);
+
+/**
+ * The provider instance ID that sign-in records for a human-login provider: `<kind>:` and
+ * the hex SHA-256 of the client ID, or for OIDC of `<issuer>\0<clientId>`, so a new issuer
+ * on the same host is a new instance. Written out here, not imported from product code, so
+ * tests check the derivation rather than reuse it.
+ */
+export function providerInstanceId(kind, { clientId, issuer }) {
+  assert.ok(["github", "google", "oidc"].includes(kind), `unknown provider kind ${kind}`);
+  assert.equal(issuer === undefined, kind !== "oidc", "only OIDC instances include the issuer");
+  const input = kind === "oidc" ? `${issuer}\0${clientId}` : clientId;
+  return `${kind}:${createHash("sha256").update(input).digest("hex")}`;
+}
 
 // Runs the actual Better Auth handler and external-provider plugin with a boundary
 // State fixture. Callers make no PostgreSQL or session-commit claims through it.
@@ -37,7 +52,7 @@ export function createLoginFixture({
   const logger = createOccLogger({
     component: "occ-api",
     level: "info",
-    destination: { write: (chunk) => operationalLines.push(JSON.parse(chunk)) },
+    destination: jsonChunkDestination(operationalLines),
   });
   const state = {
     // State's clock is deliberately ahead of the controller's: cookie lifetimes must
@@ -93,26 +108,28 @@ export function createLoginFixture({
     plugins: [login.plugin],
     rateLimit: { enabled: false },
     logger: { level: "debug", log: (...values) => authLogs.push(values) },
-    onAPIError: {
-      onError(error) {
-        if (error instanceof APIError) {
-          throw error;
-        }
-        errors.push(error);
-        throw APIError.fromStatus("SERVICE_UNAVAILABLE", {
-          message: "Authentication dependency unavailable.",
-        });
-      },
-    },
+    // As in the controller's human-login profile: an error Better Auth cannot classify
+    // leaves its router unlogged instead of becoming a console-logged 500.
+    onAPIError: { throw: true },
   });
   // The controller wrapper sets x-occ-client-ip from the socket peer or a trusted ingress.
-  const call = (path, init, ip = "10.0.0.1") =>
-    auth.handler(
-      new Request(`${loginOrigin}/api/auth${path}`, {
-        ...init,
-        headers: { ...init?.headers, "x-occ-client-ip": ip },
-      }),
-    );
+  // It also owns a thrown dependency error and answers it as an outage; that mapping is
+  // proved through the real controller (postgres-github-outage, postgres-github-cookie-commit).
+  // This boundary records the error and rethrows it, as the handler does, so tests prove the
+  // endpoint passed it on unchanged without asserting an answer of the fixture's own.
+  const call = async (path, init, ip = "10.0.0.1") => {
+    try {
+      return await auth.handler(
+        new Request(`${loginOrigin}/api/auth${path}`, {
+          ...init,
+          headers: { ...init?.headers, "x-occ-client-ip": ip },
+        }),
+      );
+    } catch (error) {
+      errors.push(error);
+      throw error;
+    }
+  };
   return {
     auth,
     db,

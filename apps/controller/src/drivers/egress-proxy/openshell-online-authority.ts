@@ -1,11 +1,18 @@
 import { isIP } from "node:net";
 import { hasControlCharacter } from "@openclaw-enterprise/utils";
-import { Server, status, type ServerUnaryCall, type sendUnaryData } from "@grpc/grpc-js";
+import {
+  Server,
+  status,
+  type ServerDuplexStream,
+  type ServerUnaryCall,
+  type sendUnaryData,
+} from "@grpc/grpc-js";
 import {
   describeOpenShellMiddleware,
   loadOpenShellMiddleware,
   middlewareBearer,
   record,
+  type OpenShellHttpPolicySet,
 } from "./openshell-authority.ts";
 import {
   OpenShellExtensionJwtVerifier,
@@ -14,6 +21,13 @@ import {
 
 type Wire = Record<string, unknown>;
 const deny = { decision: 2, reason_code: "online_authorization_denied" };
+/** Decisions in flight on one authority. */
+const pendingDecisionCapacity = 1024;
+/**
+ * Decisions in flight for one Sandbox: a quarter of the pool, like the Credential Proxy's
+ * per-Sandbox shares, so one busy Sandbox cannot deny every other Sandbox.
+ */
+const pendingDecisionSandboxShare = pendingDecisionCapacity / 4;
 
 /** A denial whose stable reason code the supervisor shows the workload instead of the generic
  * one. OpenShell accepts `[a-z][a-z0-9_]{0,63}`; anything else denies with the generic code. */
@@ -75,6 +89,10 @@ export interface OpenShellOnlineAuthorityOptions {
     signal: AbortSignal,
   ) => Promise<OpenShellOnlineDecision>;
   readonly budgetMs?: number;
+  /** Advertise a pinned REST-only policy set. Each binding must name a release in that set. */
+  readonly httpPolicySet?: OpenShellHttpPolicySet & {
+    readonly validateBindingConfig: (id: string, scope: string) => boolean;
+  };
 }
 
 /** Stock v0.1.4's normalized pre-credential view. Omitted headers and original framing
@@ -82,6 +100,7 @@ export interface OpenShellOnlineAuthorityOptions {
 export interface OpenShellOnlineHttpRequest {
   readonly sandboxId: string;
   readonly bindingId: string;
+  readonly bindingConfig?: string;
   readonly requestId: string;
   readonly workspace: string;
   readonly target: {
@@ -117,10 +136,12 @@ function httpRequestView(
   request: Wire,
   sandboxId: string,
   deadlineAt: string,
+  scoped: boolean,
 ): OpenShellOnlineHttpRequest | undefined {
   const context = record(request.context);
   const target = record(request.target);
-  const id = bindingId(request.config);
+  const id = bindingId(request.config, scoped);
+  const config = record(record(record(request.config).fields).request_scope).stringValue;
   const body = request.body ?? new Uint8Array();
   const rawHeaders = request.headers ?? [];
   const query = target.query ?? "";
@@ -177,6 +198,7 @@ function httpRequestView(
   return {
     sandboxId,
     bindingId: id,
+    ...(typeof config === "string" && { bindingConfig: config }),
     requestId: context.request_id,
     workspace: context.workspace,
     target: {
@@ -197,13 +219,23 @@ function httpRequestView(
 export function createOpenShellOnlineHttpAuthority(
   options: OpenShellOnlineHttpAuthorityOptions,
 ): Server {
-  return createAuthority(options, httpRequestView);
+  return createAuthority(options, (request, sandbox, deadline) =>
+    httpRequestView(request, sandbox, deadline, options.httpPolicySet !== undefined),
+  );
 }
 
-function bindingId(config: unknown): string | undefined {
+function bindingId(config: unknown, scoped = false): string | undefined {
   const fields = record(record(config).fields);
   const value = record(fields.binding_id);
-  return Object.keys(fields).length === 1 &&
+  const scope = record(fields.request_scope);
+  const validFields =
+    Object.keys(fields).length === 1 ||
+    (scoped &&
+      Object.keys(fields).length === 2 &&
+      scope.kind === "stringValue" &&
+      typeof scope.stringValue === "string" &&
+      scope.stringValue.length <= 16384);
+  return validFields &&
     Object.keys(value).every((key) => key === "stringValue" || key === "kind") &&
     value.kind === "stringValue" &&
     boundedId(value.stringValue)
@@ -291,14 +323,26 @@ function createAuthority<T>(
   }
   const { service } = loadOpenShellMiddleware();
   const server = new Server({ "grpc.max_receive_message_length": 5 * 1024 * 1024 });
-  const claims = (call: ServerUnaryCall<Wire, Wire>) =>
+  const claims = (call: Pick<ServerUnaryCall<Wire, Wire>, "metadata">) =>
     verifier.verify(middlewareBearer(call.metadata));
   const control = (identity: Wire | undefined) =>
     (identity?.caller_kind === "gateway" &&
       identity.sub === options.identity.issuer &&
       identity.sandbox_id === undefined) ||
     supervisor(identity) !== undefined;
+  const acceptedBinding = (config: unknown) => {
+    const profile = options.httpPolicySet;
+    const id = bindingId(config, profile !== undefined);
+    const scope = record(record(record(config).fields).request_scope).stringValue;
+    return (
+      id !== undefined &&
+      (profile
+        ? typeof scope === "string" && profile.validateBindingConfig(id, scope)
+        : scope === undefined)
+    );
+  };
   let pending = 0;
+  const sandboxPending = new Map<string, number>();
   server.addService(service.SupervisorMiddleware!.service, {
     Describe(call: ServerUnaryCall<Wire, Wire>, callback: sendUnaryData<Wire>) {
       const description =
@@ -307,6 +351,7 @@ function createAuthority<T>(
           call.request.gateway,
           options.identity.audience,
           "online-request-authorization",
+          options.httpPolicySet,
         );
       if (description) {
         callback(null, description);
@@ -319,9 +364,23 @@ function createAuthority<T>(
         valid:
           control(claims(call)) &&
           call.request.middleware_name === options.registrationName &&
-          bindingId(call.request.config) !== undefined,
+          acceptedBinding(call.request.config),
       });
     },
+    ...(options.httpPolicySet !== undefined && {
+      EvaluateWebSocketSession(call: ServerDuplexStream<Wire, Wire>) {
+        const sandboxId = supervisor(claims(call));
+        call.once("data", (event: Wire) => {
+          const preflight = record(event.preflight);
+          if (!sandboxId || record(preflight.context).sandbox_id !== sandboxId) {
+            call.emit("error", { code: status.PERMISSION_DENIED, message: "Supervisor required." });
+            return;
+          }
+          call.write({ preflight_decision: { action: 3, reason_code: "http_only" } });
+          call.end();
+        });
+      },
+    }),
     EvaluateHttpRequest(call: ServerUnaryCall<Wire, Wire>, callback: sendUnaryData<Wire>) {
       // Convert the call deadline once; delayed timers or wall-clock changes cannot extend it.
       const startedAt = performance.now();
@@ -337,15 +396,21 @@ function createAuthority<T>(
           new Date(Date.now() + Math.max(0, expiresAt - performance.now())).toISOString(),
         );
       if (
+        !sandboxId ||
         !request ||
         call.request.middleware_name !== options.registrationName ||
-        pending >= 1024 ||
+        (options.httpPolicySet !== undefined && !acceptedBinding(call.request.config)) ||
+        pending >= pendingDecisionCapacity ||
+        (sandboxPending.get(sandboxId) ?? 0) >= pendingDecisionSandboxShare ||
         expired()
       ) {
         callback(null, deny);
         return;
       }
+      // The share is keyed by the Sandbox ID in the gateway-signed token, never by a value
+      // the caller chooses per request. Both slots return once, when authorization settles.
       pending += 1;
+      sandboxPending.set(sandboxId, (sandboxPending.get(sandboxId) ?? 0) + 1);
       const controller = new AbortController();
       const cancelled = () => controller.abort();
       call.once("cancelled", cancelled);
@@ -364,6 +429,12 @@ function createAuthority<T>(
         )
         .finally(() => {
           pending -= 1;
+          const held = sandboxPending.get(sandboxId)! - 1;
+          if (held === 0) {
+            sandboxPending.delete(sandboxId);
+          } else {
+            sandboxPending.set(sandboxId, held);
+          }
         });
       void Promise.race([authorization, aborted])
         .then((result) =>

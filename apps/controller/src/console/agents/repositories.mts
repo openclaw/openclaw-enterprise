@@ -7,7 +7,12 @@ import type {
 import { requestFailure, responseFields } from "../api-client.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
 import { element, button, setStatusTone } from "../dom.mjs";
-import { message, namespacePath } from "./list.mjs";
+import {
+  AGENT_CREATE_DENIED,
+  askAdministratorTo,
+  REPOSITORY_CHOICES_AGENT_DENIED,
+} from "./access-reasons.mjs";
+import { describeFailure, namespacePath } from "./list.mjs";
 import { visibleText } from "./logs-view.mjs";
 import {
   repositoryProfiles,
@@ -18,7 +23,17 @@ import {
 type RepositoryContext = Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
   namespaceId: string;
   operatorId?: string;
+  installationAdmin?: boolean | null;
 };
+
+// An Installation without repository access (no Repo Driver selected, or draft-only discovery).
+const REPOSITORY_ACCESS_NOT_CONFIGURED =
+  "This Installation has no repository access, so this Agent cannot use repositories.";
+// Create Agent holds the new-Agent read until the permission answer allows Agent create: the API
+// refuses it otherwise, and audits each refusal (finding 2909).
+const REPOSITORY_CHOICES_HELD = "Repository choices load after your permission check.";
+const REPOSITORY_SETUP_GUIDE =
+  "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md";
 
 interface SearchState {
   query: string;
@@ -35,7 +50,7 @@ interface PickerState {
   /** A null override inherits the Agent default. Preserve unapproved selections for explicit repair. */
   selected: Map<string, string | null>;
   profile: string;
-  discovery: "loading" | "ready" | DiscoveryFailure;
+  discovery: "held" | "loading" | "ready" | DiscoveryFailure;
   disabled: boolean;
   showAll: boolean;
   expanded: Set<string>;
@@ -137,8 +152,8 @@ function discoveryFailure(
   if (error.status === 409) {
     return "conflict";
   }
-  // The API answers this code only for the Installation's fixed composition (no Repo Driver
-  // or no compatible Compute Driver), so retrying cannot succeed until an operator changes it.
+  // The API answers this code only for the Installation's fixed composition (no compatible
+  // Compute or Sandbox Driver), so retrying cannot succeed until an operator changes it.
   if (error.status === 503 && error.code === "REPOSITORY_OPTIONS_UNAVAILABLE") {
     if (allowDraft) {
       return "draft-only";
@@ -182,6 +197,8 @@ export function createRepositoryFields(
     repositoryAccess?: RepositoryAccess;
     repositoryBindings?: readonly RepositoryBindingRequest[];
   } = {},
+  // Read no choices until start(): Create Agent's permission answer is not known yet.
+  { held = false }: { held?: boolean } = {},
 ) {
   const intent = initial.repositoryAccess;
   const recentKey = context.operatorId
@@ -199,19 +216,20 @@ export function createRepositoryFields(
           ]),
     ),
     profile: intent?.defaultProfile ?? "git-full",
-    discovery: "loading",
+    discovery: held ? "held" : "loading",
     disabled: false,
     showAll: false,
     expanded: new Set(),
     undo: undefined,
   };
   const initialAccess = JSON.stringify(accessIntent());
-  let searchState: SearchState;
+  // Set before any render: a held form renders before its first read (finding 2909).
+  let searchState: SearchState = { query: "", browsing: false, dismissed: false, page: 0 };
   let loadGeneration = 0;
   const status = element(
     "p",
     { className: "hint", role: "status" },
-    "Loading approved repositories…",
+    held ? REPOSITORY_CHOICES_HELD : "Loading approved repositories…",
   );
   const validation = element("p", {
     className: "status",
@@ -219,7 +237,10 @@ export function createRepositoryFields(
     role: "alert",
     hidden: true,
   });
-  const choices = element("div", { className: "repository-options", "aria-busy": "true" });
+  const choices = element("div", {
+    className: "repository-options",
+    "aria-busy": held ? "false" : "true",
+  });
   const cards = element("div", { className: "repository-selected" });
   const announcements = element("p", { className: "hint", role: "status", "aria-live": "polite" });
   const search = element("input", {
@@ -282,10 +303,30 @@ export function createRepositoryFields(
   const invalid = (ref: string) => !option(ref)?.allowedProfiles.includes(effective(ref));
   const profileLabel = (profile: string) =>
     repositoryProfile(profile)?.label ?? "Unknown access level";
-  const isSettled = () => state.discovery !== "loading";
-  const blocksCreate = () => !["loading", "ready", "draft-only"].includes(state.discovery);
+  const isSettled = () => state.discovery !== "loading" && state.discovery !== "held";
+  // Without repository settings the API still accepts an empty binding list, so removing every
+  // selection unblocks Create Agent and the Repositories tab's Save (findings 2397, 2398).
+  const blocksCreate = () =>
+    !["held", "loading", "ready", "draft-only", "not-configured"].includes(state.discovery) ||
+    (state.discovery === "not-configured" && state.selected.size > 0);
   const editable = () => !state.disabled && isSettled() && !blocksCreate();
   const isDirty = () => JSON.stringify(accessIntent()) !== initialAccess;
+
+  // Why a selected repository has no current option.
+  function unlistedSelectionText() {
+    switch (state.discovery) {
+      case "ready":
+        return "This repository is no longer available. Remove it or retry discovery.";
+      case "loading":
+        return "Checking repository availability…";
+      case "held":
+        return REPOSITORY_CHOICES_HELD;
+      case "not-configured":
+        return "Repository availability cannot be verified because repository access is not available in this Installation's configuration.";
+      default:
+        return "Repository availability cannot be verified. Retry repository choices.";
+    }
+  }
 
   function accessSummary(ref: string, override: string | null) {
     if (!isSettled() || blocksCreate()) {
@@ -323,6 +364,9 @@ export function createRepositoryFields(
   }
 
   function changed({ preserveResults = false } = {}) {
+    if (state.discovery === "draft-only" || state.discovery === "not-configured") {
+      showSetupLink();
+    }
     validation.hidden = true;
     revealInvalidSelections();
     render({ preserveResults });
@@ -804,17 +848,12 @@ export function createRepositoryFields(
         settings.append(
           element(
             "p",
-            // Checking is progress; the other three say the repository cannot be used.
-            state.discovery === "loading"
+            // Checking, or waiting to check, is progress; the others say the repository cannot be
+            // used.
+            state.discovery === "loading" || state.discovery === "held"
               ? { className: "hint" }
               : { className: "status", "data-tone": "danger" },
-            state.discovery === "ready"
-              ? "This repository is no longer available. Remove it or retry discovery."
-              : state.discovery === "loading"
-                ? "Checking repository availability…"
-                : state.discovery === "not-configured"
-                  ? "Repository availability cannot be verified because repository access is not available in this Installation's configuration."
-                  : "Repository availability cannot be verified. Retry repository choices.",
+            unlistedSelectionText(),
           ),
         );
       } else {
@@ -991,15 +1030,24 @@ export function createRepositoryFields(
     }
     render();
     try {
-      const options = await context.request(
+      const { data: options, meta } = (await context.request(
         `${namespacePath(context.namespaceId)}/agents/${initial.agentId ? `${encodeURIComponent(initial.agentId)}/` : ""}repository-options`,
-        { expectedStatus: 200 },
-      );
+        { expectedStatus: 200, includeMeta: true },
+      )) as { data: unknown; meta?: unknown };
       if (!context.isCurrent() || generation !== loadGeneration) {
         return { kind: "obsolete" };
       }
       if (!validOptions(options)) {
         throw new Error("Invalid repository choices response.");
+      }
+      // An Installation without repository settings answers no options and says so (finding
+      // 2387). No retry or reload can change that, so show the setup link in every case.
+      if (responseFields(meta).notConfigured === true) {
+        return showFailure(
+          undefined,
+          discoveryContext(false).allowDraft ? "draft-only" : "not-configured",
+          false,
+        );
       }
       state.options = options;
       state.discovery = "ready";
@@ -1028,58 +1076,93 @@ export function createRepositoryFields(
       if (!context.isCurrent() || generation !== loadGeneration) {
         return { kind: "obsolete" };
       }
-      // A failed read cannot establish which retained choices are still approved.
-      state.options = [];
-      choices.setAttribute("aria-busy", "false");
-      state.discovery = discoveryFailure(failure, {
-        allowDraft: !clearSelections && !initial.agentId && state.selected.size === 0,
-        agentScoped: !clearSelections && Boolean(initial.agentId),
-      });
-      if (state.discovery === "denied") {
-        setStatusTone(status, "danger");
-        status.textContent = initial.agentId
-          ? "Repository choices are denied because you are not authorized to update this Agent."
-          : "Repository choices are denied because you are not authorized to create Agents in this Namespace.";
-      } else if (state.discovery === "conflict") {
-        setStatusTone(status, "danger");
-        status.textContent = initial.agentId
-          ? "Repository choices conflict with the current Agent or Namespace. Reload this draft before continuing."
-          : "This Namespace no longer accepts new Agents.";
-      } else if (clearSelections) {
-        setStatusTone(status, "danger");
-        status.textContent = `Repository choices could not be reloaded. ${message(error)} Retry the reload or start a new draft.`;
-      } else if (state.discovery === "draft-only" || state.discovery === "not-configured") {
-        setStatusTone(status, null);
-        status.replaceChildren(
-          "Repository access is not available in this Installation's configuration. ",
-          element(
-            "a",
-            {
-              href: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",
-              target: "_blank",
-              rel: "noopener noreferrer",
-            },
-            "Set up repository access",
-          ),
-          state.discovery === "draft-only"
-            ? ". You can continue without repository access."
-            : ". You can’t save repository changes on this page until an operator sets up repository access.",
-        );
-      } else {
-        setStatusTone(status, "danger");
-        status.textContent = `Repository choices could not be loaded. ${message(error)} Retry repository choices before ${initial.agentId ? "saving repository access" : "creating an Agent"}.`;
-      }
-      retry.hidden = clearSelections || ["draft-only", "not-configured"].includes(state.discovery);
-      revealInvalidSelections();
-      render();
-      onChange(false);
-      return {
-        kind:
-          state.discovery === "draft-only" || state.discovery === "not-configured"
-            ? "unavailable"
-            : state.discovery,
-      };
+      return showFailure(
+        error,
+        discoveryFailure(failure, discoveryContext(clearSelections)),
+        clearSelections,
+      );
     }
+  }
+
+  function discoveryContext(clearSelections: boolean) {
+    return {
+      allowDraft: !clearSelections && !initial.agentId && state.selected.size === 0,
+      agentScoped: !clearSelections && Boolean(initial.agentId),
+    };
+  }
+
+  function showFailure(
+    error: unknown,
+    discovery: DiscoveryFailure,
+    clearSelections: boolean,
+  ): { kind: LoadResult } {
+    // A failed read cannot establish which retained choices are still approved.
+    state.options = [];
+    choices.setAttribute("aria-busy", "false");
+    state.discovery = discovery;
+    if (state.discovery === "denied") {
+      setStatusTone(status, "danger");
+      // Agent options authorize Agent update; new-Agent options, Agent create (finding D753).
+      status.textContent = initial.agentId
+        ? REPOSITORY_CHOICES_AGENT_DENIED
+        : `Repository choices are not shown. ${AGENT_CREATE_DENIED}`;
+    } else if (state.discovery === "conflict") {
+      setStatusTone(status, "danger");
+      // The API's 409 names the state, such as an Agent being deleted.
+      status.textContent = initial.agentId
+        ? describeFailure(error, {
+            conflict: "Repository choices conflict with the current Agent or Namespace.",
+            next: "Reload this draft before continuing.",
+          })
+        : "This Namespace no longer accepts new Agents.";
+    } else if (clearSelections) {
+      setStatusTone(status, "danger");
+      status.textContent = `Repository choices could not be reloaded. ${describeFailure(error)} Retry the reload or start a new draft.`;
+    } else if (state.discovery === "draft-only" || state.discovery === "not-configured") {
+      showSetupLink();
+    } else {
+      setStatusTone(status, "danger");
+      status.textContent = `Repository choices could not be loaded. ${describeFailure(error)} Retry repository choices before ${initial.agentId ? "saving repository access" : "creating an Agent"}.`;
+    }
+    retry.hidden = clearSelections || ["draft-only", "not-configured"].includes(state.discovery);
+    revealInvalidSelections();
+    render();
+    onChange(false);
+    return {
+      kind:
+        state.discovery === "draft-only" || state.discovery === "not-configured"
+          ? "unavailable"
+          : state.discovery,
+    };
+  }
+
+  // The status line for an Installation without repository access. Only an Installation
+  // administrator can set it up, so only a known administrator gets the setup guide; anyone else
+  // is told whom to ask, in the console's words (finding D754).
+  function showSetupLink() {
+    setStatusTone(status, null);
+    const next =
+      state.selected.size > 0
+        ? ` Remove the selected repositories${initial.agentId ? " and save" : ""} to continue without repository access.`
+        : !initial.agentId
+          ? " You can continue without repository access."
+          : isDirty()
+            ? " Save to continue without repository access."
+            : "";
+    status.replaceChildren(
+      `${REPOSITORY_ACCESS_NOT_CONFIGURED} `,
+      ...(context.installationAdmin === true
+        ? [
+            element(
+              "a",
+              { href: REPOSITORY_SETUP_GUIDE, target: "_blank", rel: "noopener noreferrer" },
+              "Set up repository access",
+            ),
+            ".",
+          ]
+        : [askAdministratorTo("set it up")]),
+      next,
+    );
   }
 
   function recordSuccessfulSave() {
@@ -1094,7 +1177,9 @@ export function createRepositoryFields(
     }
   }
 
-  void load();
+  if (!held) {
+    void load();
+  }
 
   return {
     section,
@@ -1105,8 +1190,35 @@ export function createRepositoryFields(
     hasValidSelection,
     setDisabled,
     reload: () => load(true),
+    /** Reads the choices a held form has not read yet; once read, retries go through Retry. */
+    start: () => {
+      if (state.discovery === "held") {
+        void load();
+      }
+    },
+    /**
+     * Settles a held form whose permission answer refuses Agent create without the read the API
+     * would refuse and audit, and with no retry (finding 2909). Without a reason, a block above
+     * the form gives it.
+     */
+    refuse: (reason?: string) => {
+      if (state.discovery !== "held") {
+        return;
+      }
+      state.discovery = "denied";
+      setStatusTone(status, "danger");
+      status.textContent = ["Repository choices are not shown.", reason].filter(Boolean).join(" ");
+      retry.hidden = true;
+      revealInvalidSelections();
+      render();
+      onChange(false);
+    },
     isDirty,
     isSettled,
     blocksCreate,
+    /** Repository access is not set up in this Installation: only an empty selection saves. */
+    notConfigured: () => state.discovery === "not-configured",
+    /** The Installation has no repository access to offer: the section shows only its setup link. */
+    unavailable: () => state.discovery === "draft-only" || state.discovery === "not-configured",
   };
 }

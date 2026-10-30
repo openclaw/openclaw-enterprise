@@ -15,9 +15,12 @@ import type {
   CredentialSourceToken,
 } from "@openclaw-enterprise/contracts";
 import {
+  configurationSettingMessage,
   CredentialSourceConfigError,
+  CredentialSourceRegistrationConfigError,
   CredentialSourceRevisionError,
   ScopeViolationError,
+  StoredCredentialSourceConfigError,
 } from "@openclaw-enterprise/occ";
 import {
   asRecord,
@@ -26,7 +29,15 @@ import {
   sha256Hex,
 } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
+import { verifyManagedPluginRegistration } from "../sandbox/openshell-plugin-policy.ts";
+import {
+  googleAttachmentConflict,
+  managedCredentialBinding,
+  managedGoogleInstall,
+  managedSlotAcceptsSource,
+} from "../plugin/managed-catalog.ts";
 
+import { nativeOpenAiModelSelections } from "../native-openai-catalog.ts";
 import { normalizeOpenAiBaseUrl, openAiBaseUrlSpellingMessage } from "../openai-endpoint.ts";
 
 import {
@@ -100,6 +111,7 @@ interface OpenShellSourceType {
    */
   validate(
     config: Readonly<Record<string, string>>,
+    options: OpenShellCredentialGatewayOptions,
     gateway?: OpenShellGatewayPlacement,
   ): Readonly<Record<string, string>> | void;
   /** Catalog secret field → the provider credential key OpenShell exposes. */
@@ -147,6 +159,11 @@ const ENDPOINT_CONFIG = Object.freeze([
 
 const OAUTH2_CONFIG = Object.freeze([
   ...ENDPOINT_CONFIG,
+  Object.freeze({
+    name: "binary",
+    required: false,
+    description: "Restrict this source to one executable from the installation toolBinaries.",
+  }),
   Object.freeze({
     name: "token_url",
     required: true,
@@ -285,12 +302,24 @@ function validateEndpointConfig(type: string, config: Readonly<Record<string, st
   }
 }
 
+function allowsOAuthBinary(options: OpenShellCredentialGatewayOptions, binary: string): boolean {
+  // OpenShell treats '*' in a binary path as a glob. A per-source selection names one executable.
+  return !binary.includes("*") && options.toolBinaries?.includes(binary) === true;
+}
+
 function validateOAuth2Config(
   type: string,
   config: Readonly<Record<string, string>>,
+  options: OpenShellCredentialGatewayOptions,
   gateway: OpenShellGatewayPlacement | undefined,
 ): Readonly<Record<string, string>> | void {
   validateEndpointConfig(type, config);
+  if (config.binary !== undefined && !allowsOAuthBinary(options, config.binary)) {
+    throw new CredentialSourceConfigError(
+      "binary",
+      "The OAuth2 binary must be an executable in the installation toolBinaries.",
+    );
+  }
   if (!TOKEN_URL.test(config.token_url ?? "") || !URL.canParse(config.token_url ?? "")) {
     throw new CredentialSourceConfigError(
       "token_url",
@@ -328,11 +357,12 @@ function validateOAuth2Config(
 /**
  * Re-checks a stored source's protected `host` before its profile is written, first as at save.
  * A source stored before the host rules (finding 1360) fails here until it is replaced
- * (finding 1363).
+ * (finding 1363). Registration checks the request first (`registerSource`), so only a stored
+ * source reaches this: a 409 that names the replacement (finding 2536).
  */
-function checkStoredHost(type: string, config: Readonly<Record<string, string>>): void {
+function checkStoredHost(config: Readonly<Record<string, string>>): void {
   if (!exactDnsName(config.host ?? "")) {
-    throw new ScopeViolationError(`The ${type} host must be an exact DNS name.`);
+    throw new StoredCredentialSourceConfigError("host");
   }
 }
 
@@ -358,7 +388,7 @@ function bearerProfile(
       },
     ],
     endpoints: [{ ...bearerTokenEndpoint(config), protocol: "rest" }],
-    binaries: requiredToolBinaries(options),
+    binaries: requiredToolBinaries(options, credential.refresh ? config.binary : undefined),
     inferenceCapable: false,
   };
 }
@@ -381,20 +411,18 @@ function oauth2SourceType(
       rotation: "refresh",
     }),
     refresh: Object.freeze({ strategy, configMaterial: Object.freeze(["client_id", "scope"]) }),
-    validate: (config, gateway) => validateOAuth2Config(type, config, gateway),
+    validate: (config, options, gateway) => validateOAuth2Config(type, config, options, gateway),
     credentials: (config) => Object.freeze({ access_token: config.env_var ?? "" }),
     // The token endpoint lives only in the profile: OpenShell refuses it as refresh material.
     profile: (sourceId, config, options, gateway) => {
-      checkStoredHost(type, config);
+      checkStoredHost(config);
       // A source stored before the token_url host rules fails here until it is replaced.
-      if (!tokenUrlHostAllowed(config.token_url ?? "")) {
-        throw new ScopeViolationError(tokenUrlHostMessage(type));
-      }
-      if (!tokenUrlHostOutsideGateway(config.token_url ?? "", gateway)) {
-        throw new ScopeViolationError(tokenUrlGatewayMessage(type));
-      }
-      if (!tokenUrlPortAllowed(config.token_url ?? "")) {
-        throw new ScopeViolationError(tokenUrlPortMessage(type));
+      if (
+        !tokenUrlHostAllowed(config.token_url ?? "") ||
+        !tokenUrlHostOutsideGateway(config.token_url ?? "", gateway) ||
+        !tokenUrlPortAllowed(config.token_url ?? "")
+      ) {
+        throw new StoredCredentialSourceConfigError("token_url");
       }
       return bearerProfile(sourceId, config, options, `OAuth2 ${type} (OpenClaw Enterprise)`, {
         name: "access_token",
@@ -592,6 +620,27 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
           // The Gateway reads native rate limits when recovering a usage-limit error.
           "/backend-api/wham/usage",
         ].map((path) => ({ host: "chatgpt.com", port: 443, protocol: "rest", path })),
+        {
+          host: "chatgpt.com",
+          port: 443,
+          protocol: "rest",
+          path: "/backend-api/ps/plugins/**",
+          // Shared by this source's Agents: catalog/detail reads and installation only.
+          // Bundle downloads remain credential-free and need their own egress allowance.
+          rules: [
+            { allow: { method: "GET", path: "/backend-api/ps/plugins/*" } },
+            { allow: { method: "POST", path: "/backend-api/ps/plugins/*/install" } },
+          ],
+        },
+        // Native app metadata and hosted tools use separate POST endpoints.
+        // The shared source profile does not replace managed app/tool policy.
+        ...["/backend-api/ps/apps/batch", "/backend-api/ps/mcp"].map((path) => ({
+          host: "chatgpt.com",
+          port: 443,
+          protocol: "rest",
+          path,
+          rules: [{ allow: { method: "POST", path } }],
+        })),
       ],
       binaries: options.binaries,
       inferenceCapable: true,
@@ -609,7 +658,7 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
     validate: (config) => validateEndpointConfig("bearer-token", config),
     credentials: (config) => Object.freeze({ token: config.env_var ?? "" }),
     profile: (sourceId, config, options) => {
-      checkStoredHost("bearer-token", config);
+      checkStoredHost(config);
       return bearerProfile(sourceId, config, options, "Bearer token (OpenClaw Enterprise)", {
         name: "token",
       });
@@ -654,13 +703,22 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
  * OpenShell lets any binary use a profile with an empty binary list, so a bearer-token profile is
  * never written without `toolBinaries`. Never reconcile existing profiles to an empty list.
  */
-function requiredToolBinaries(options: OpenShellCredentialGatewayOptions): readonly string[] {
+function requiredToolBinaries(
+  options: OpenShellCredentialGatewayOptions,
+  binary?: string,
+): readonly string[] {
   if (options.toolBinaries === undefined || options.toolBinaries.length === 0) {
     throw new OpenShellCredentialGatewayFailure(
       "OpenShell bearer-token profiles require configured toolBinaries.",
     );
   }
-  return options.toolBinaries;
+  if (binary === undefined) {
+    return options.toolBinaries;
+  }
+  if (!allowsOAuthBinary(options, binary)) {
+    throw new StoredCredentialSourceConfigError("binary");
+  }
+  return [binary];
 }
 
 function validateOptions(options: OpenShellCredentialGatewayOptions): void {
@@ -794,12 +852,67 @@ function normalizedSourceBaseUrl(config: Readonly<Record<string, string>>): stri
   return baseUrl !== undefined && exactDnsName(new URL(baseUrl).hostname) ? baseUrl : undefined;
 }
 
+/** Only a stored source fails here: registration checks the request first (finding 2536). */
 function sourceBaseUrl(config: Readonly<Record<string, string>>): string {
   const baseUrl = normalizedSourceBaseUrl(config);
   if (baseUrl === undefined) {
-    throw new ScopeViolationError(SOURCE_ENDPOINT_REQUIREMENTS);
+    throw new StoredCredentialSourceConfigError(OPENAI_BASE_URL_CONFIG);
   }
   return baseUrl;
+}
+
+/**
+ * A host and any explicit port for a refusal: never credentials or a path, and short enough
+ * for the 256-character cap.
+ */
+function shownHost(value: unknown): string {
+  const host = typeof value === "string" && URL.canParse(value) ? new URL(value).host : undefined;
+  if (!host) {
+    return "none";
+  }
+  const characters = Array.from(host);
+  return characters.length <= 48 ? host : `${characters.slice(0, 47).join("")}…`;
+}
+
+/**
+ * Dedicated native OpenClaw sends each selected model's requests to its catalog endpoint, and
+ * the source's profile admits only the source endpoint. Compute renders only the selected
+ * entries into the native worker's catalog, so an unselected entry is not checked (finding
+ * 1686). Compute refuses every other catalog shape before this; it stays fail-closed here.
+ */
+function requireSourceEndpointForSelectedModels(
+  configuration: Readonly<Record<string, unknown>> | undefined,
+  endpoint: string,
+): void {
+  const selections =
+    configuration === undefined ? undefined : nativeOpenAiModelSelections(configuration);
+  if (
+    selections === undefined ||
+    selections.length === 0 ||
+    selections.some(
+      ({ provider, id, matches }) => provider !== "openai" || !id || matches.length !== 1,
+    )
+  ) {
+    throw new ScopeViolationError(
+      "Dedicated native OpenClaw model endpoints must match the bound credential source endpoint.",
+    );
+  }
+  const provider = asRecord(asRecord(asRecord(configuration?.models)?.providers)?.openai);
+  for (const { matches } of selections) {
+    const { entry, index } = matches[0]!;
+    const own = entry.baseUrl !== undefined && entry.baseUrl !== null;
+    const written = own ? entry.baseUrl : provider?.baseUrl;
+    if (typeof written !== "string" || normalizeOpenAiBaseUrl(written) !== endpoint) {
+      throw new ScopeViolationError(
+        configurationSettingMessage(
+          own
+            ? `models.providers.openai.models.${index}.baseUrl`
+            : "models.providers.openai.baseUrl",
+          `must be the bound credential source endpoint, path included (source host ${shownHost(endpoint)}, written host ${shownHost(written)})`,
+        ),
+      );
+    }
+  }
 }
 
 /** Stores OCC credential sources as OpenShell providers; the supervisor injects them. */
@@ -882,6 +995,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     // registration's profile check refuses those names before any gateway write.
     return sourceType(input.type, this.options, this.refresh).validate(
       input.config,
+      this.options,
       this.backend.client.placement(),
     );
   }
@@ -891,9 +1005,18 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus> {
     const type = sourceType(input.type, this.options, this.refresh);
-    // Without the gateway placement: ensureProfile below checks it and throws ScopeViolationError,
-    // which OCC passes through; a CredentialSourceConfigError here would surface as a 503.
-    type.validate(input.config);
+    // validateSourceConfig sees no tenant Namespace, so a gateway in each tenant namespace is
+    // known only here. Refuse the request's own value before any gateway write, by field, as
+    // validateSourceConfig does (400); OCC passes this ScopeViolationError through, while a
+    // CredentialSourceConfigError would surface as a 503 (finding 2536).
+    try {
+      type.validate(input.config, this.options, this.placement(context));
+    } catch (error) {
+      if (error instanceof CredentialSourceConfigError) {
+        throw new CredentialSourceRegistrationConfigError(error.field, error.message);
+      }
+      throw error;
+    }
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const credentials = providerCredentials(type, input);
@@ -1058,6 +1181,26 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
   ): Promise<readonly CredentialSourceAttachment[]> {
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
+    const binding = managedCredentialBinding(context.revision.plugins?.plugins);
+    const selected = context.sources.find(({ id }) => id === binding?.sourceId);
+    if (binding && selected) {
+      if (!managedSlotAcceptsSource(binding.credential, selected)) {
+        throw new ScopeViolationError(
+          "The attached Google account does not match the reviewed credential slot.",
+        );
+      }
+      const conflict = googleAttachmentConflict(selected, context.sources);
+      if (conflict) {
+        throw new ScopeViolationError(conflict);
+      }
+      const binaries = requiredToolBinaries(this.options, selected.config.binary);
+      if (binaries.length !== 1 || binaries[0] !== managedGoogleInstall.binaryPath) {
+        throw new ScopeViolationError(
+          "The bound Google account must grant only the pinned Google executable. Set binary on this OAuth2 source when its installation allows other tools.",
+        );
+      }
+      await verifyManagedPluginRegistration(client, context.signal);
+    }
     const attachments: CredentialSourceAttachment[] = [];
     const environment = new Set<string>();
     for (const source of context.sources) {
@@ -1074,13 +1217,10 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
             "OpenShell OpenAI-compatible credential sources require a dedicated Harness.",
           );
         }
-        if (
-          context.revision.harness.id === "openclaw" &&
-          sourceBaseUrl(source.config) !== OPENAI_DEFAULT_BASE_URL
-        ) {
-          // TODO(dedicated-native-custom-endpoints): validate source-bound model endpoints when supported.
-          throw new ScopeViolationError(
-            "Dedicated native OpenClaw credential sources require the default OpenAI endpoint.",
+        if (context.revision.harness.id === "openclaw") {
+          requireSourceEndpointForSelectedModels(
+            context.revision.configuration,
+            sourceBaseUrl(source.config),
           );
         }
       }
@@ -1116,6 +1256,12 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         Object.freeze({
           sourceId: source.id,
           ref: name,
+          ...(source.id === binding?.sourceId && {
+            requestScope: {
+              ...bearerTokenEndpoint(source.config),
+              scopes: (source.config.scope ?? "").split(/\s+/).filter(Boolean),
+            },
+          }),
           ...(source.type === CODEX_OAUTH_TYPE
             ? {
                 externalChatgptAuth: {
