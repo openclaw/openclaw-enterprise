@@ -1,6 +1,6 @@
 ---
 created: 2026-08-25
-updated: 2026-10-30 10:09
+updated: 2026-10-30 11:13
 last_updated_session: authoring-run/80ea08bc-5b26-4327-bd7b-128cc7aaf0fd
 ---
 
@@ -33,19 +33,21 @@ state fails explicitly.
 
 ```mermaid
 graph TD
-  A["Create platform Namespace"] --> B{"existingNamespace selected"}
-  B -->|no| C["Provision deterministic managed namespace"]
-  C --> J["Commit creation intent, then original Namespace UID"]
-  J --> H
-  J -->|unconfirmed or replacement| K["Fail closed"]
-  B -->|yes| D["Authorize administer and persist unique selection"]
-  D --> E["Running worker reauthorizes and verifies exact external namespace"]
-  E --> F["Bind generated tenant identity while preserving external manager"]
-  F --> G["Bind infrastructure and provider identities before ready"]
-  G --> H["Place workloads and ConfigMaps in the bound namespace"]
-  H --> I["Confirm provider cleanup and commit receipt"]
-  I --> L["Remove owned resources with UID and resourceVersion preconditions"]
-  L --> M["Release original claim with durable witness; retain external Namespace"]
+  A["Authorize and create OCC Namespace<br/>Reserve lifecycle journal"] --> B{"External placement selected?"}
+  B -->|no| C["Save creation intent<br/>Create and bind Namespace UID"]
+  B -->|yes| D["Worker verifies external placement<br/>Save intent and original UID"]
+  C --> G["Bind infrastructure and provider identities"]
+  D --> G
+  C -->|unconfirmed or replacement| F["Refuse cleanup authority"]
+  D -->|unconfirmed or foreign claim| F
+  G --> H["Place workloads and ConfigMaps"]
+  H --> I["Confirm provider cleanup<br/>Commit child and resource result"]
+  I --> L["Finish protected Kubernetes cleanup<br/>UID and resourceVersion preconditions"]
+  L --> M{"External placement?"}
+  M -->|yes| N["Release original claim with witness<br/>Retain physical Namespace"]
+  M -->|no| O["Delete original Namespace UID<br/>Confirm physical removal"]
+  N --> P["Worker commits logical deletion"]
+  O --> P
 ```
 
 ## Execution Trace
@@ -109,7 +111,10 @@ saves creation intent before effects and binds readback to its lifecycle nonce
 and original UID. Compute saves each infrastructure attempt separately, so
 cancellation before a later stage needs no nonexistent identity. A first,
 authoritatively rejected create can record no effect; a later refusal cannot
-settle an earlier unknown attempt. The selected Sandbox receives only its child
+settle an earlier unknown attempt. An unknown create with an absent read never
+issues another create; matching creation metadata can recover late original
+readback. Bound infrastructure updates carry the saved UID and observed resourceVersion.
+The selected Sandbox receives only its child
 journal and the saved physical Namespace UID, before it can mutate placement.
 
 ### 3. Colocate Configuration and workload resources
@@ -151,7 +156,13 @@ or other Namespace contents remain. Compute first checks the journal's selected
 targets and any observable physical Namespace UID and owner. A same-name
 replacement or foreign claim refuses before provider or Kubernetes teardown.
 Cancellation before the first ensure dispatch can complete without provider
-cleanup because the initial journal proves no effects were started.
+cleanup because the initial journal proves no effects were started. External
+selection saves its original UID separately from claim progress. Rejected
+validation before any claim attempt can cancel without changing operator resources;
+unknown claim attempts still require confirmation. Only the first authoritative
+PATCH refusal can record no claim effect; post-PATCH read errors do not.
+Current UID and foreign-claim
+checks remain required.
 
 Compute calls Sandbox cleanup with its saved child context, including after the
 tenant Namespace disappears. The Sandbox confirms its original provider resource
@@ -159,7 +170,14 @@ and commits provider completion before deleting configured Kubernetes resources
 or gateway access. Unknown provider outcomes remain blocked; tenant absence and
 bare missing claim labels do not establish cleanup.
 
-For retained external Namespaces, Compute checks saved infrastructure UIDs before
+For retained external Namespaces, Compute also captures the later Agent-created
+`allow-node-gateway` policy's original UID or confirmed absence before provider
+effects. It fences that read against the original Namespace UID, deletes with
+UID/resourceVersion preconditions, and refuses replacement through finalizer retries.
+An attempted infrastructure binding can recover only from matching lifecycle
+creation metadata in the original Namespace, then checkpoint before cleanup.
+
+Compute checks saved infrastructure UIDs before
 provider effects and again in each deletion snapshot. Deletion uses UID and
 current resourceVersion preconditions, then reads back removal. A finalizer or
 failed API call keeps the logical Namespace deleting. Existing orphan cleanup
@@ -170,6 +188,9 @@ retained original UIDs, which Compute commits before parent teardown. Each actua
 sweep list checks these protected references and rechecks the saved Namespace UID
 before deleting unprotected snapshots with UID/resourceVersion preconditions.
 A reappearing or replaced protected object refuses instead of becoming an orphan.
+Namespace-scoped repository-material cleanup likewise checks placement after its
+Secret list before consuming UID/resourceVersion snapshots; missing placement
+discards effects, and a replacement refuses.
 
 After owned-resource removal, Compute checkpoints claim-release intent. An atomic
 UID/resourceVersion-conditional patch removes only this claim and writes
@@ -231,6 +252,8 @@ path exists for missing original identity or permanently lost provider evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 11:13: Correct the managed/external diagram and trace claim progress, partial binding recovery, late policy custody, and material-list placement checks in the accompanying repair. (authoring-run/80ea08bc-5b26-4327-bd7b-128cc7aaf0fd - 922a031ef91f6dc14329034f50964752757ec29b)
 
 - 2026-10-30 10:09: Trace the generic Sandbox cleanup result, parent sweep protection, and post-list Namespace identity fence in the accompanying implementation. (authoring-run/80ea08bc-5b26-4327-bd7b-128cc7aaf0fd - ef2cf007043819118c83fd8339496a92bcab9fb3)
 

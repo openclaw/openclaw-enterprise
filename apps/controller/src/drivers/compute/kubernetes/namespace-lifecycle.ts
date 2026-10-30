@@ -12,6 +12,7 @@ interface NamespaceAttempt {
   readonly nonce: string;
   readonly uid?: string;
   readonly creationRefused?: true;
+  readonly claim?: "attempted" | "complete" | "refused";
 }
 
 export interface KubernetesNamespaceLifecycleBinding {
@@ -41,6 +42,8 @@ interface NamespaceJournalData extends Record<string, unknown> {
   readonly release?: "attempted" | "complete";
   readonly infrastructure?: readonly NamespaceInfrastructureResource[];
   readonly cleanup?: SandboxNamespaceCleanupResult;
+  readonly latePolicy?:
+    { readonly state: "absent" } | { readonly state: "bound"; readonly uid: string };
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -55,7 +58,11 @@ function attempt(value: unknown): value is NamespaceAttempt | undefined {
       value.nonce.length > 0 &&
       (value.uid === undefined || (typeof value.uid === "string" && value.uid.length > 0)) &&
       (value.creationRefused === undefined ||
-        (value.creationRefused === true && value.uid === undefined)))
+        (value.creationRefused === true && value.uid === undefined)) &&
+      (value.claim === undefined ||
+        value.claim === "attempted" ||
+        value.claim === "complete" ||
+        value.claim === "refused"))
   );
 }
 
@@ -189,6 +196,14 @@ export class KubernetesNamespaceJournal {
           namespaceCleanupResult(data.cleanup, this.binding.placement.name),
           data.cleanup,
         )) ||
+      (data.latePolicy !== undefined &&
+        (!record(data.latePolicy) ||
+          (data.latePolicy.state !== "absent" &&
+            !(
+              data.latePolicy.state === "bound" &&
+              typeof data.latePolicy.uid === "string" &&
+              data.latePolicy.uid.length > 0
+            )))) ||
       !attempt(data.namespace) ||
       !attempt(data.gateway) ||
       (data.infrastructure !== undefined &&
@@ -215,7 +230,10 @@ export class KubernetesNamespaceJournal {
 
   async save(
     change: Partial<
-      Pick<NamespaceJournalData, "namespace" | "gateway" | "release" | "infrastructure" | "cleanup">
+      Pick<
+        NamespaceJournalData,
+        "namespace" | "gateway" | "release" | "infrastructure" | "cleanup" | "latePolicy"
+      >
     >,
   ): Promise<void> {
     const current = await this.read();

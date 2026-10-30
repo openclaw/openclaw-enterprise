@@ -1163,6 +1163,14 @@ function missingResource(error: unknown): boolean {
   );
 }
 
+function definitiveKubernetesCreateRefusal(error: unknown): boolean {
+  const observed = asRecord(error);
+  const response = asRecord(observed?.response);
+  return [400, 401, 403, 422].some((status) =>
+    [observed?.code, observed?.statusCode, response?.statusCode, response?.status].includes(status),
+  );
+}
+
 async function applyOperatorNamespaceLabels(
   context: SandboxNamespaceContext,
   desired: Readonly<Record<string, string>> | undefined,
@@ -1205,7 +1213,7 @@ async function applyOperatorNamespaceLabels(
 
 const NAMESPACE_CREATION_ANNOTATION = "openclaw.dev/sandbox-creation-id";
 
-type NamespaceResourceStage = "neverAttempted" | "attempted" | "bound" | "absent";
+type NamespaceResourceStage = "neverAttempted" | "attempted" | "createRefused" | "bound" | "absent";
 type NamespaceWorkspaceStage =
   "neverAttempted" | "attempted" | "createRefused" | "bound" | "deleteAttempted" | "complete";
 interface NamespaceResourceBinding {
@@ -3269,7 +3277,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           resource.kind !== configured.kind ||
           resource.name !== configured.metadata.name ||
           resource.namespace !== configured.metadata.namespace ||
-          !["neverAttempted", "attempted", "bound", "absent"].includes(String(resource.state)) ||
+          !["neverAttempted", "attempted", "createRefused", "bound", "absent"].includes(
+            String(resource.state),
+          ) ||
           (resource.state === "bound" && !isNonEmptyString(resource.uid)) ||
           (!this.operatorOwnedKubernetesResources &&
             resource.state !== "neverAttempted" &&
@@ -3422,7 +3432,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         }
         continue;
       }
-      if (resource.state === "neverAttempted") {
+      const freshAttempt =
+        resource.state === "neverAttempted" || resource.state === "createRefused";
+      if (freshAttempt) {
         if (actual !== undefined) {
           lifecycleRefusal("OpenShell refuses an existing resource without its creation binding.");
         }
@@ -3444,8 +3456,32 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       };
       if (resource.state === "attempted") {
         if (actual === undefined) {
+          if (!freshAttempt) {
+            lifecycleRefusal(
+              "OpenShell resource creation remains unconfirmed; repeating its create is refused.",
+            );
+          }
           await context.lifecycle.read();
-          actual = await api.create(expected, undefined, undefined, "openclaw-enterprise-sandbox");
+          try {
+            actual = await api.create(
+              expected,
+              undefined,
+              undefined,
+              "openclaw-enterprise-sandbox",
+            );
+          } catch (error) {
+            // A later refused request cannot settle an earlier unknown create.
+            // Only a fresh attempt's authoritative rejection proves no object was created.
+            if (freshAttempt && definitiveKubernetesCreateRefusal(error)) {
+              const resources = [...saved.journal.resources];
+              resources[index] = { ...resource, state: "createRefused" };
+              await this.saveNamespaceJournal(context, saved.revision, {
+                ...saved.journal,
+                resources,
+              });
+            }
+            throw error;
+          }
         }
         verifyLifecycleResource(actual, resource, context);
         const resources = [...saved.journal.resources];
@@ -4597,6 +4633,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         if (actual !== undefined) {
           lifecycleRefusal("A confirmed absent OpenShell Namespace resource reappeared.");
         }
+        continue;
+      }
+      if (resource.state === "createRefused") {
+        if (actual !== undefined) {
+          lifecycleRefusal(
+            "A refused OpenShell resource creation has an unexpected current object.",
+          );
+        }
+        await saveResource(index, { ...resource, state: "absent" });
         continue;
       }
       if (resource.state === "neverAttempted") {

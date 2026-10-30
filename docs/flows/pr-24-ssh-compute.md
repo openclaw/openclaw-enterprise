@@ -78,6 +78,8 @@ Namespace preparation receives the worker's claim-checked lifecycle journal.
 `ssh/executor.ts:resolveNamespaceTarget`. This `ssh -G` evaluation can execute
 `Match exec`; it is not passive profile inspection. Matched user/global public
 keys and `HostKeyAlias` identify trust without retaining authentication material.
+The executor looks up an explicit alias verbatim; without an alias, a nondefault
+port uses `[hostname]:port`.
 Dynamic trust limitations belong to the [SSH reference](../reference/drivers/ssh-compute.md#namespace-and-revision-lifecycle).
 
 `ensureNamespace` saves its nonce and exact selector before dispatch. Under the
@@ -249,6 +251,8 @@ retire, which frees its gateway port.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 10:42: Match OpenSSH verbatim alias lookup and retain default-host port selection. (authoring-run/be3c47b9-e273-4252-94cc-50700db0c396 - 922a031ef91f6dc14329034f50964752757ec29b)
 
 - 2026-10-30 09:55: Reject unavailable creation timestamps and probe the selected owned filesystem after identity checks. (authoring-run/be3c47b9-e273-4252-94cc-50700db0c396 - ef2cf007043819118c83fd8339496a92bcab9fb3)
 

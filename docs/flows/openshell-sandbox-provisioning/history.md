@@ -8,6 +8,10 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
+- 2026-10-30 10:40: Trace cleanup after definitive creation refusals. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - 922a031ef91f6dc14329034f50964752757ec29b)
+
+- 2026-10-30 10:00: Trace cleanup results before parent sweeping in the accompanying Driver change. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - ef2cf007043819118c83fd8339496a92bcab9fb3)
+
 - 2026-10-30 09:20: Trace durable Namespace cleanup in the accompanying Driver change. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - 536e71d95bf39797f2b60048cb3677e879ed046b)
 
 - 2026-10-29 21:18: Merge preparation updates with cleanup ownership checks. (authoring-run/fb8f8f69-4a79-4657-90a7-fb1ec9f646c3 - b0178eed8d6722c133fd8f3f3cb0b0e090653642)

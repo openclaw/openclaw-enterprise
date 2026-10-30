@@ -4294,6 +4294,225 @@ test("OpenShell retains an attempted Workspace creation without adopting same-na
   assert.equal((await context.lifecycle.read()).data.workspace.state, "attempted");
 });
 
+test("OpenShell cleans partial preparation after a definitive first configured-resource create refusal", async () => {
+  for (const status of [403, 400, 401, 422]) {
+    const events = [];
+    const configuration = sandboxInstallation().drivers.sandbox.configuration;
+    configuration.gateway.operatorWorkspaceResources = [
+      {
+        apiVersion: "rbac.authorization.k8s.io/v1",
+        kind: "Role",
+        metadata: { name: "prepared-access" },
+        rules: [{ apiGroups: [""], resources: ["pods"], verbs: ["get"] }],
+      },
+      { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "openshell-sandbox" } },
+    ];
+    const gateway = workspaceGatewayClient();
+    const driver = openShellDriver(gateway, configuration);
+    const context = namespaceContext();
+    context.namespace.status = "provisioning";
+    context.kubernetes = kubernetesObjectClient(events);
+    const create = context.kubernetes.create;
+    const refusal = Object.assign(new Error("Kubernetes creation refused"), { code: status });
+    context.kubernetes.create = async (resource) => {
+      if (resource.kind === "ServiceAccount") {
+        throw refusal;
+      }
+      return create(resource);
+    };
+    await assert.rejects(driver.ensureNamespace(context), (error) => error === refusal);
+    assert.equal(
+      context.kubernetes.resources.size,
+      1,
+      "the earlier owned Role exists when the next create is refused",
+    );
+    // Access is restored before normal deletion. The first authoritative refusal
+    // proves no ServiceAccount was created; cleanup must still remove the owned Role.
+    context.kubernetes.create = create;
+    context.namespace.status = "deleting";
+    const result = await driver.cleanup({
+      ...context,
+      lifecycle: { ...context.lifecycle, target: "deleted" },
+    });
+    assert.deepEqual(result, {
+      kubernetesResources: [
+        {
+          apiVersion: "rbac.authorization.k8s.io/v1",
+          kind: "Role",
+          namespace: context.namespace.name,
+          name: "prepared-access",
+          state: "absent",
+        },
+        {
+          apiVersion: "v1",
+          kind: "ServiceAccount",
+          namespace: context.namespace.name,
+          name: "openshell-sandbox",
+          state: "absent",
+        },
+      ],
+    });
+    assert.equal(context.kubernetes.resources.size, 0);
+    assert.deepEqual(
+      events
+        .filter(([owner, operation]) => owner === "kubernetes" && operation === "delete")
+        .map(([, , kind]) => kind),
+      ["Role"],
+    );
+    assert.equal(gateway.calls.length, 0, "preparation never reached the provider Workspace");
+  }
+});
+
+test("OpenShell never reissues an unknown configured-resource create while its first request may finish", async () => {
+  const events = [];
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway.operatorWorkspaceResources = [
+    { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "openshell-sandbox" } },
+  ];
+  const gateway = workspaceGatewayClient();
+  const driver = openShellDriver(gateway, configuration);
+  const context = namespaceContext();
+  context.namespace.status = "provisioning";
+  context.kubernetes = kubernetesObjectClient(events);
+  const create = context.kubernetes.create;
+  let requests = 0;
+  let pending;
+  const unknown = new Error("first create response unknown");
+  context.kubernetes.create = async (resource) => {
+    requests += 1;
+    if (requests === 1) {
+      pending = structuredClone(resource);
+      throw unknown;
+    }
+    return create(resource);
+  };
+  // The controlled transport retains the first request after its client loses
+  // the response. This proves Driver retry policy, not live admission behavior.
+  await assert.rejects(driver.ensureNamespace(context), (error) => error === unknown);
+  const retryError = await driver.ensureNamespace(context).then(
+    () => undefined,
+    (error) => error,
+  );
+  assert.equal(requests, 1, "GET absence does not authorize another POST for the unknown attempt");
+  assert.match(String(retryError), /resource creation remains unconfirmed/);
+  context.namespace.status = "deleting";
+  const deleting = { ...context, lifecycle: { ...context.lifecycle, target: "deleted" } };
+  await assert.rejects(driver.cleanup(deleting), /resource creation remains unconfirmed/);
+  // The original request finally materializes. Its saved nonce permits readback
+  // to bind that actual UID and cleanup, without replaying creation by name.
+  assert.ok(pending);
+  const original = await create(pending);
+  assert.ok(original.metadata.uid);
+  assert.deepEqual(await driver.cleanup(deleting), {
+    kubernetesResources: [
+      {
+        apiVersion: "v1",
+        kind: "ServiceAccount",
+        namespace: context.namespace.name,
+        name: "openshell-sandbox",
+        state: "absent",
+      },
+    ],
+  });
+  assert.equal(requests, 1);
+  assert.equal(context.kubernetes.resources.size, 0);
+  assert.equal(gateway.calls.length, 0);
+});
+
+test("OpenShell can retry a definitively refused configured-resource create as a fresh attempt", async () => {
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway.operatorWorkspaceResources = [
+    { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "openshell-sandbox" } },
+  ];
+  const gateway = workspaceGatewayClient();
+  const driver = openShellDriver(gateway, configuration);
+  const context = namespaceContext();
+  context.namespace.status = "provisioning";
+  const create = context.kubernetes.create;
+  let requests = 0;
+  const forbidden = Object.assign(new Error("first create forbidden"), { code: 403 });
+  context.kubernetes.create = async (resource) => {
+    requests += 1;
+    if (requests === 1) {
+      throw forbidden;
+    }
+    return create(resource);
+  };
+  await assert.rejects(driver.ensureNamespace(context), (error) => error === forbidden);
+  await driver.ensureNamespace(context);
+  assert.equal(requests, 2);
+  assert.equal(gateway.workspaces.size, 1);
+  context.namespace.status = "deleting";
+  assert.deepEqual(
+    await driver.cleanup({ ...context, lifecycle: { ...context.lifecycle, target: "deleted" } }),
+    {
+      kubernetesResources: [
+        {
+          apiVersion: "v1",
+          kind: "ServiceAccount",
+          namespace: context.namespace.name,
+          name: "openshell-sandbox",
+          state: "absent",
+        },
+      ],
+    },
+  );
+  assert.equal(context.kubernetes.resources.size, 0);
+});
+
+test("OpenShell preserves an unknown configured-resource create after a later forbidden retry", async () => {
+  const events = [];
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway.operatorWorkspaceResources = [
+    {
+      apiVersion: "rbac.authorization.k8s.io/v1",
+      kind: "Role",
+      metadata: { name: "prepared-access" },
+      rules: [{ apiGroups: [""], resources: ["pods"], verbs: ["get"] }],
+    },
+    { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "openshell-sandbox" } },
+  ];
+  const gateway = workspaceGatewayClient();
+  const driver = openShellDriver(gateway, configuration);
+  const context = namespaceContext();
+  context.namespace.status = "provisioning";
+  context.kubernetes = kubernetesObjectClient(events);
+  const create = context.kubernetes.create;
+  const unknown = new Error("configured-resource create response unknown");
+  context.kubernetes.create = async (resource) => {
+    if (resource.kind === "ServiceAccount") {
+      throw unknown;
+    }
+    return create(resource);
+  };
+  await assert.rejects(driver.ensureNamespace(context), (error) => error === unknown);
+  const forbidden = Object.assign(new Error("later request forbidden"), { code: 403 });
+  let forbiddenRequests = 0;
+  context.kubernetes.create = async (resource) => {
+    if (resource.kind === "ServiceAccount") {
+      forbiddenRequests += 1;
+      throw forbidden;
+    }
+    return create(resource);
+  };
+  await assert.rejects(driver.ensureNamespace(context), /resource creation remains unconfirmed/);
+  assert.equal(forbiddenRequests, 0, "no later request can overwrite the unknown attempt");
+  context.kubernetes.create = create;
+  context.namespace.status = "deleting";
+  // Even a later request that would be refused cannot settle the original call.
+  // Authorized absence does not prove its unknown creation will not materialize.
+  await assert.rejects(
+    driver.cleanup({ ...context, lifecycle: { ...context.lifecycle, target: "deleted" } }),
+    /resource creation remains unconfirmed/,
+  );
+  assert.equal(context.kubernetes.resources.size, 1);
+  assert.equal(
+    events.filter(([owner, operation]) => owner === "kubernetes" && operation === "delete").length,
+    0,
+  );
+  assert.equal(gateway.calls.length, 0);
+});
+
 test("OpenShell retries a confirmed Workspace creation refusal after access is restored", async () => {
   const gatewayClient = workspaceGatewayClient();
   const create = gatewayClient.createWorkspace;

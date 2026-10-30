@@ -113,7 +113,10 @@ export async function preparedKubernetesNamespaceLifecycle(
     return { nonce: lifecycle.lifecycleId, uid: originalIds.get(resource) };
   };
   await journal.save({
-    namespace: identify(physical),
+    namespace: {
+      ...identify(physical),
+      ...(namespace.existingNamespace === undefined ? {} : { claim: "complete" }),
+    },
     ...(gateway === undefined ? {} : { gateway: identify(gateway) }),
     infrastructure: infrastructure.map((resource) => ({
       kind: resource.kind,

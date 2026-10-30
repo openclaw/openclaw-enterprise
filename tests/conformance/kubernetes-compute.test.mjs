@@ -5164,7 +5164,7 @@ function adoptedNamespaceTeardownFixture(computeOptions = options()) {
   });
   const teardown = async () => driver.deleteNamespace(deleting, await prepared);
   const remaining = () => [...objects.keys()].sort();
-  return { objects, state, kept, teardown, remaining };
+  return { objects, state, kept, teardown, remaining, driver, namespace, prepared, save };
 }
 
 // Finding 1400: an existing namespace outlives its OCC Namespace, so teardown removes the
@@ -22550,4 +22550,90 @@ test("an active embedded revision whose stored Gateway tool policy predates the 
     "a new deployment",
   );
   assert.throws(() => driver.validateConfiguration(revision.configuration), refused, "save");
+});
+
+test("external Namespace teardown removes the Namespace policy created after preparation", async () => {
+  const current = adoptedNamespaceTeardownFixture(routedOptions());
+  await current.prepared;
+  // The actual regular Agent producer creates this Namespace-wide grant after
+  // Namespace preparation; the preparation journal cannot already contain it.
+  const policy = current.driver.workspaceNodeNetworkPolicy(
+    { namespaceId: tenant.id },
+    { name: current.namespace.metadata.name, plane: "execution" },
+  );
+  current.save(policy);
+  assert.equal((await current.teardown()).namespaceDeleted, true);
+  assert.equal(current.objects.has("NetworkPolicy:allow-node-gateway"), false);
+});
+
+test("external Namespace cleanup refuses a late policy replacement after a finalizer wait", async () => {
+  const current = adoptedNamespaceTeardownFixture(routedOptions());
+  await current.prepared;
+  const policy = current.driver.workspaceNodeNetworkPolicy(
+    { namespaceId: tenant.id },
+    { name: current.namespace.metadata.name, plane: "execution" },
+  );
+  current.save(policy);
+  current.state.finalizer = "NetworkPolicy:allow-node-gateway";
+  assert.equal((await current.teardown()).namespaceDeleted, false);
+  const original = current.objects.get("NetworkPolicy:allow-node-gateway");
+  assert.ok(original.metadata.deletionTimestamp);
+  original.metadata.uid = "replacement-policy-uid";
+  delete original.metadata.deletionTimestamp;
+  current.state.finalizer = undefined;
+  const before = current.state.calls.filter(
+    (call) => call === "delete NetworkPolicy:allow-node-gateway",
+  ).length;
+  const result = await current.teardown();
+  assert.equal(result.failure, "permanent");
+  assert.equal(result.namespaceDeleted, false);
+  assert.equal(
+    current.objects.get("NetworkPolicy:allow-node-gateway").metadata.uid,
+    "replacement-policy-uid",
+  );
+  assert.equal(
+    current.state.calls.filter((call) => call === "delete NetworkPolicy:allow-node-gateway").length,
+    before,
+  );
+});
+
+test("external Namespace policy capture refuses a placement replacement during its read", async () => {
+  const current = adoptedNamespaceTeardownFixture(routedOptions());
+  await current.prepared;
+  const policy = current.driver.workspaceNodeNetworkPolicy(
+    { namespaceId: tenant.id },
+    { name: current.namespace.metadata.name, plane: "execution" },
+  );
+  current.save(policy);
+  const clients = await current.driver.apiClients;
+  const read = clients.networking.readNamespacedNetworkPolicy.bind(clients.networking);
+  clients.networking.readNamespacedNetworkPolicy = async (request) => {
+    const observed = await read(request);
+    if (request.name === "allow-node-gateway") {
+      current.namespace.metadata.uid = "replacement-during-policy-read";
+      observed.metadata.uid = "new-namespace-policy-uid";
+    }
+    return observed;
+  };
+  const result = await current.teardown();
+  assert.equal(result.failure, "permanent");
+  assert.equal(result.namespaceDeleted, false);
+  assert.equal(
+    current.state.calls.some((call) => call.startsWith("delete ")),
+    false,
+  );
+});
+
+test("external Namespace cleanup confirms a late policy removed during its delete", async () => {
+  const current = adoptedNamespaceTeardownFixture(routedOptions());
+  await current.prepared;
+  current.save(
+    current.driver.workspaceNodeNetworkPolicy(
+      { namespaceId: tenant.id },
+      { name: current.namespace.metadata.name, plane: "execution" },
+    ),
+  );
+  current.state.vanished = "NetworkPolicy:allow-node-gateway";
+  assert.equal((await current.teardown()).namespaceDeleted, true);
+  assert.equal(current.objects.has("NetworkPolicy:allow-node-gateway"), false);
 });

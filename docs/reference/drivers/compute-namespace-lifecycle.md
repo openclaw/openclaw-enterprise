@@ -8,7 +8,8 @@ Implement Compute `ensureNamespace(namespace, lifecycle)` and
 `deleteNamespace(namespace, lifecycle)` with the supplied
 [`NamespaceLifecycleContext`](../../../packages/contracts/src/drivers/compute/index.ts).
 Use it to save creation intent, immutable resource identities, and confirmed
-cleanup before removing access needed by a retry.
+cleanup before removing access needed by a retry. These generation checks govern
+Namespace preparation and deletion.
 
 ## State and authority
 
@@ -45,7 +46,9 @@ unknown payload versions require explicit refusal.
 
 Save an attempt before creation. Save a binding only after authoritative readback
 or a supported creation response. A later rejected request cannot settle an earlier
-unknown request. Do not adopt a same-name replacement from labels alone.
+unknown request. An unknown create with absent readback must not be resubmitted:
+a delayed earlier request could otherwise create again after cleanup. Bind only
+supported late original readback. Do not adopt a same-name replacement from labels alone.
 
 Kubernetes Compute delegates only the selected Sandbox Driver's child payload.
 Namespace-only Sandbox context also carries `kubernetesNamespaceUid`, the original
@@ -77,6 +80,28 @@ Compute checks protected references in each actual deletion snapshot. Its orphan
 sweep rechecks the original Namespace UID after each list, then deletes
 unprotected objects with the observed UID and resourceVersion. These checks do
 not make multiple Kubernetes objects one atomic transaction.
+
+## Partial preparation and late resources
+
+External placement binding and claim progress are distinct. A rejected selection
+that never attempted a claim can cancel while preserving the original, unclaimed
+physical Namespace. A definitive first claim PATCH rejection also records no
+claim effect; a later refusal or failed verification GET cannot prove this.
+Changed UIDs or current foreign claims refuse. A lost claim
+reply remains attempted until authorized observation confirms its outcome.
+
+The first authoritative refusal of a configured-resource create can establish no
+effect. A later refusal cannot settle an earlier unknown attempt. An infrastructure
+UID checkpoint that did not commit can recover through validated lifecycle
+creation metadata in the original Namespace, then commit before cleanup effects.
+Absent or mismatched unknown creation remains unconfirmed.
+
+Kubernetes Compute records the later Agent-created Namespace policy's UID or
+confirmed absence before provider cleanup. Its deletion retains that original
+binding through finalizer waits and refuses replacement. Repository-material
+cleanup checks the saved Namespace UID after listing Secrets, before consuming
+its UID/resourceVersion snapshots. A missing placement discards the snapshot;
+a replacement refuses.
 
 ## Completion and recovery
 

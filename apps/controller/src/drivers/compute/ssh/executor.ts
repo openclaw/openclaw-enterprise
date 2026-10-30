@@ -115,11 +115,15 @@ export class SystemSshCommandExecutor implements SshCommandExecutor {
     const hostname = settings.get("hostname");
     const port = settings.get("port");
     const user = settings.get("user");
-    const hostKeyAlias = settings.get("hostkeyalias") ?? hostname;
+    const explicitAlias = settings.get("hostkeyalias");
+    const hostKeyAlias = explicitAlias ?? hostname;
     if (!hostname || !port || !user || !hostKeyAlias) {
       throw new Error("SSH target configuration could not be resolved.");
     }
-    const lookup = port === "22" ? hostKeyAlias : `[${hostKeyAlias}]:${port}`;
+    let lookup = hostKeyAlias;
+    if (explicitAlias === undefined && port !== "22") {
+      lookup = `[${hostname}]:${port}`;
+    }
     const files = [
       ...trustFiles(settings.get("userknownhostsfile") ?? command.knownHostsFile),
       ...trustFiles(settings.get("globalknownhostsfile") ?? ""),

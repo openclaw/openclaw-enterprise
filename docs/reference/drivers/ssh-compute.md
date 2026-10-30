@@ -185,7 +185,8 @@ deletion then completes without SSH or hooks.
 Target resolution evaluates the selected trusted OpenSSH profile with `ssh -G`
 and the same connection options. `Match exec` can execute local commands during
 that evaluation. User and global known-hosts files and `HostKeyAlias` remain
-supported. Fingerprints use matched public key bytes; comments, hashed-host salts,
+supported. An explicit alias is used verbatim; without one, a nondefault port uses
+`[hostname]:port`. Fingerprints use matched public key bytes; comments, hashed-host salts,
 unrelated entries, limits, and authentication-key rotation do not change placement.
 This records the selected public trust policy. Each connection still uses ordinary
 OpenSSH peer verification; the host receipt separately identifies the remote tree.

@@ -2004,7 +2004,7 @@ test("SSH selected public trust normalizes aliases, global keys, comments and ha
   const bin = join(f.base, "bin");
   await mkdir(bin);
   const globalFile = join(f.base, "global_known_hosts");
-  const alias = "[selected.example]:2222";
+  const alias = "selected.example";
   const key = (byte) =>
     Buffer.concat([
       Buffer.from("0000000b7373682d6564323535313900000020", "hex"),
@@ -2060,6 +2060,38 @@ test("SSH selected public trust normalizes aliases, global keys, comments and ha
     (await executor.resolveNamespaceTarget(command)).publicTrust,
     original.publicTrust,
   );
+  // OpenSSH uses an explicit HostKeyAlias verbatim, while its default hostname
+  // lookup includes a nondefault port. Both select actual known_hosts records.
+  const withoutAlias = resolved.replace("hostkeyalias selected.example\n", "");
+  await writeFile(
+    join(bin, "ssh"),
+    `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(withoutAlias)});\n`,
+    { mode: 0o755 },
+  );
+  const hostWithPort = "[fixture.example]:2222";
+  await writeFile(
+    f.configured.ssh.knownHostsFile,
+    `${hostWithPort} ssh-ed25519 ${selectedKey} host key\n`,
+  );
+  await writeFile(
+    globalFile,
+    `@cert-authority ${hostWithPort} ssh-ed25519 ${globalKey} public authority\n`,
+  );
+  const defaultHost = await executor.resolveNamespaceTarget(command);
+  assert.equal(defaultHost.hostKeyAlias, "fixture.example");
+  assert.deepEqual(
+    defaultHost.publicTrust,
+    [
+      `:ssh-ed25519:${digest(Buffer.from(selectedKey, "base64"))}`,
+      `@cert-authority:ssh-ed25519:${digest(Buffer.from(globalKey, "base64"))}`,
+    ].sort(),
+  );
+  const hashedHost = spawnSync("ssh-keygen", ["-H", "-f", f.configured.ssh.knownHostsFile], {
+    encoding: "utf8",
+  });
+  assert.equal(hashedHost.status, 0);
+  assert.deepEqual(await executor.resolveNamespaceTarget(command), defaultHost);
+
   for (const setting of ["knownhostscommand /operator/dynamic-trust", "verifyhostkeydns true"]) {
     // The fixture records any attempted remote operation; configuration evaluation alone
     // must refuse dynamic trust before a Namespace intent or remote helper is dispatched.

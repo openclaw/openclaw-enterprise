@@ -147,8 +147,9 @@ the result in the Agent revision. Provisioning status reads return stored work.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:ensureNamespace`
 
 Compute delegates Namespace journal data and the original Namespace UID.
-OpenShell verifies placement, saves creation intents/nonces, creates resources,
-and saves UIDs.
+OpenShell checks placement and saves creation intent before effects. Unknown
+Kubernetes creates are not repeated; readback with the saved nonce binds their UID.
+Definitive refusals cannot settle earlier uncertainty.
 Preinstalled operator-owned resources require full configuration checks and are
 retained. Readiness and health precede Workspace creation.
 
@@ -346,7 +347,7 @@ Namespace/resource UIDs and ownership before provider mutations. It removes owne
 runtime/Git providers and profiles only from the original Workspace ID. A fresh
 `DeleteWorkspace` completion plus removal readback precedes the awaited cleanup
 checkpoint. `ACCEPTED`, `ALREADY_ABSENT`, unknown responses and bare absence do not
-supply that receipt. No provider RPC is needed after no attempt or confirmed creation refusal.
+supply that receipt.
 
 After the receipt commits, reverse-order resource cleanup uses saved UIDs/current
 `resourceVersion` and confirms removal. Finalizers defer completion. Cleanup returns
@@ -417,6 +418,6 @@ live provider removal or Kubernetes concurrency; that combined proof remains unr
 
 ## Changelog
 
-- 2026-10-30 10:00: Trace cleanup results before parent sweeping in the accompanying Driver change. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - ef2cf007043819118c83fd8339496a92bcab9fb3)
+- 2026-10-30 10:50: Refuse replay of unknown configured creates. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - 922a031ef91f6dc14329034f50964752757ec29b)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

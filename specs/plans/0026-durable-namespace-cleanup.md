@@ -126,8 +126,32 @@ The genuine Kubernetes/provider rows above remain unrun.
 Current tools include a Podman-backed engine, k3d, kubectl, Helm, PostgreSQL
 client, OpenSSL, Go, Node, and pnpm. Existing shared contexts and containers are
 out of scope. The full OpenShell CI lane requires model credentials and is not
-a substitute for the narrowly selected cleanup proof. No new stack has been
-created, and no live result is claimed.
+a substitute for the narrowly selected cleanup proof. The first frozen-source
+owned-stack attempt rolled back before cleanup scenarios: runtime-image layer
+commit exhausted available engine storage. No live cleanup result is claimed.
+Further real builds require available authorized capacity; shared resources remain
+untouched.
+
+## Review repair
+
+The initial frozen implementation is `922a031ef91f6dc14329034f50964752757ec29b`.
+The canonical eight-pass P2 review produced findings with **incomplete** coverage:
+unchanged queue, transaction, reconciliation, and supplier context was unavailable
+in individual evidence batches, and genuine runtime proof was absent. It is not
+a clean review result.
+
+Repairs distinguish never-claimed external selection from unknown claims, recover
+attempted infrastructure bindings only through creation metadata, preserve the
+later Agent-created Namespace policy, and record definitive first configured-resource
+creation refusals. SSH uses explicit HostKeyAlias verbatim. An additional actual
+Compute/RepositoryMaterialStore reproduction exposed a placement change during
+Secret listing; the Namespace caller now fences the snapshot before deletion.
+A delayed-create reproduction also exposed repeat requests after unknown outcomes.
+Namespace, Gateway, infrastructure, and OpenShell resource stages now refuse a
+second create on absent readback; matching creation metadata can bind the late
+original. Bound infrastructure updates carry original UID/resourceVersion.
+Focused regressions exercise the real Driver/Store and controlled transports;
+they do not replace the pending owned-stack proof or complete independent review.
 
 ## Delivery record
 
