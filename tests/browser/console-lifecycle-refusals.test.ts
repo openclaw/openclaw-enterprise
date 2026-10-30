@@ -842,17 +842,11 @@ test("Refresh drops a kept Agents list row refusal for later refocus rebuilds", 
   const { page } = await newPage(t, fixture, { browser });
   const id = "req_00000000-0000-4000-8000-000000000b06";
   // The owner holds every grant; only this one Stop is refused, for a caller-state reason.
-  await page.route(
+  await fulfillMethod(
+    page,
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/stop`,
-    (route) =>
-      route.request().method() === "POST"
-        ? route.fulfill(
-            apiErrorResponse(403, "FORBIDDEN", "The acting identity is unavailable.", {
-              requestId: id,
-            }),
-          )
-        : route.fallback(),
-    { times: 1 },
+    "POST",
+    apiErrorResponse(403, "FORBIDDEN", "The acting identity is unavailable.", { requestId: id }),
   );
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   const row = page.getByRole("row").filter({ hasText: "Kept Row" });
@@ -871,10 +865,9 @@ test("Refresh drops a kept Agents list row refusal for later refocus rebuilds", 
 
   // Another Agent added since makes the refocus rebuild the list.
   await fixture.createAgent(namespace.id, "Added Row", nativeValues("added-row"));
-  const view = page.locator('.content [aria-live="polite"]');
-  await view.evaluate((node) => node.setAttribute("data-before-refocus", ""));
-  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
-  await page.locator("[data-before-refocus]").waitFor({ state: "detached" });
+  await tagView(page);
+  await refocus(page);
+  await taggedView(page).waitFor({ state: "detached" });
   await page.locator(settledView).getByRole("link", { name: "Added Row", exact: true }).waitFor();
   assert.equal(await alert.count(), 0, "the refreshed refusal stays dropped");
   assert.equal(await row.getByText("Not stopped: see above", { exact: true }).count(), 0);
