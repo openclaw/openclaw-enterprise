@@ -409,6 +409,7 @@ export function installFixture(scenario, evidence) {
   }
   let agentReadCount = 0;
   let agentListReadCount = 0;
+  let runtimeStatusRead = false;
   const agent = {
     id: scenario.agentId ?? "agt_00000000-0000-4000-8000-000000000001",
     namespaceId,
@@ -2074,11 +2075,11 @@ export function installFixture(scenario, evidence) {
             if (scenario.deletingOnRefresh && ++agentReadCount > 1) {
               saved.status = "deleting";
             }
-            // After the page's first read, another person deploys v8, whose startup model check
-            // times out: the Agent runs again with no version selected.
+            // Once the open Logs view has read its runtime status, another person deploys v8,
+            // whose startup model check times out: the Agent runs again with no version selected.
             if (
               scenario.failedRedeployOnReread &&
-              ++agentReadCount > 1 &&
+              runtimeStatusRead &&
               !revisions.has(redeployRevisionId)
             ) {
               const redeploy = snapshot(saved, redeployRevisionId, 8);
@@ -2249,6 +2250,7 @@ export function installFixture(scenario, evidence) {
             : error(404);
         }
         if (suffix.startsWith("/deployments/") && suffix.endsWith("/runtime") && method === "GET") {
+          runtimeStatusRead = true;
           const revisionId = suffix.split("/")[2];
           if (!revisions.has(revisionId)) {
             return error(404);
