@@ -1021,6 +1021,7 @@
               "guides/deploy/local-sandbox-network-policy",
               "guides/deploy/openshell-credential-sources",
               "guides/deploy/local-openshell-images",
+              "guides/deploy/local-kubernetes-tools",
               "guides/deploy/protected-egress-development",
               "reference/settings/development",
               "design/resources",
