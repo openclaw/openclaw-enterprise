@@ -73,14 +73,25 @@ git rev-parse HEAD
 printf '%s\n' "${OCE_IMAGE_REVISION:?Select the published images first}"
 ```
 
-If they differ, keep the existing checkout and create a separate release
-worktree. Choose a new path; do not reuse a worktree containing other work:
+If they differ, keep the existing checkout. In the Codex app, use the managed
+worktree action to create or select a release checkout at the exact commit in
+`OCE_IMAGE_REVISION`. If the app requests worktree permission, wait for the
+operator to approve that request before continuing. In the shell that holds the
+image selections, change to the path supplied by the app.
+
+For a shell-managed worktree, choose a new path and run:
 
 ```bash
 OCE_RELEASE_CHECKOUT="../oce-release-${OCE_IMAGE_REVISION:?}"
 git fetch origin "$OCE_IMAGE_REVISION" &&
   git worktree add --detach "$OCE_RELEASE_CHECKOUT" "$OCE_IMAGE_REVISION" &&
   cd "$OCE_RELEASE_CHECKOUT"
+```
+
+For either route, confirm the checkout matches before installing:
+
+```bash
+test "$(git rev-parse HEAD)" = "${OCE_IMAGE_REVISION:?}"
 ```
 
 Continue in this shell so the image selections remain exported. Use the chart,
