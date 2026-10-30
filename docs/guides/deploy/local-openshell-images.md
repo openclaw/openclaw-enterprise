@@ -132,7 +132,7 @@ all four candidate selectors; assigning empty values is an error.
 
 On a network that intercepts HTTPS, OpenShell's separate supervisor needs the approved upstream CA to connect to GitHub and the model provider. On the Docker-backed Linux k3d profile, apply this change after installation and before deploying the first Agent. Keep the published OCE controller and runtime. Only the supervisor image changes.
 
-Set `CA_BUNDLE` to a PEM file containing the usual public roots and the network's approved public root, without private keys. Use the generated kubeconfig, context, and release for this installation. For the pinned OpenShell 0.1.5 profile:
+Set `CA_BUNDLE` to a PEM file containing the usual public roots and the network's approved public root, without private keys. Use the generated kubeconfig, context, and release for this installation. Use the supervisor and chart from the selected release checkout. Run from its repository root:
 
 ```bash
 set -euo pipefail
@@ -147,8 +147,12 @@ test "$(kubectl config current-context)" = "$context"
 # Build the supervisor with the approved public trust bundle in an otherwise empty directory.
 dir=$(mktemp -d)
 cp "${CA_BUNDLE:?Supply the approved public CA bundle}" "$dir/ca-certificates.crt"
-cat > "$dir/Dockerfile" <<'DOCKERFILE'
-FROM ghcr.io/nvidia/openshell/supervisor:0.1.5@sha256:fabcd01f656e9d23df4386f82e80b4f48b90f3452d7d5c58889007643a069161
+# Read the upstream digest from the same checkout as the launcher.
+supervisor=$(sed -nE 's/^[[:space:]]*openShellSupervisorImage[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' internal/occdev/openshell.go)
+[[ $supervisor =~ ^ghcr.io/nvidia/openshell/supervisor:([0-9]+\.[0-9]+\.[0-9]+)@sha256:[a-f0-9]{64}$ ]]
+version=${BASH_REMATCH[1]}
+cat > "$dir/Dockerfile" <<DOCKERFILE
+FROM $supervisor
 COPY --chmod=0644 ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 DOCKERFILE
 repo=docker.io/openclaw-development/openshell-supervisor
@@ -163,7 +167,7 @@ docker exec "$node" ctr -n k8s.io images tag "$tag" "$repo@$digest"
 # Reload only the OpenShell Gateway Helm release with the verified supervisor digest.
 helm --kube-context "$context" -n "$ns" get values openshell-gateway -o json > "$dir/values.json"
 helm --kube-context "$context" -n "$ns" upgrade openshell-gateway \
-  "$state/openshell/chart/helm-chart-0.1.5.tgz" -f "$dir/values.json" \
+  "$state/openshell/chart/helm-chart-$version.tgz" -f "$dir/values.json" \
   --set-string supervisor.image.registry=docker.io \
   --set-string supervisor.image.repository=openclaw-development/openshell-supervisor \
   --set-string supervisor.image.digest="$digest" --wait

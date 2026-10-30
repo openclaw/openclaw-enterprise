@@ -20,9 +20,7 @@ assert.deepEqual(rule, {
 });
 policy.networkPolicies = policy.networkPolicies.filter((r) => r !== rule);
 
-// Keep the model binaries and add native Git as a credential-aware tool.
-const gateway = drivers.credential_gateway.configuration;
-gateway.toolBinaries = [...new Set([...(gateway.toolBinaries ?? []), "/usr/bin/git"])];
+// Model and Linear access stay on the Gateway. The repository binding supplies native Git.
 drivers.plugin.configuration.catalogSource = "openai-curated";
 // Save the file that Helm will load from the new versioned Secret.
 writeFileSync(file, dumpYaml(config), { mode: 0o600 });

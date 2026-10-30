@@ -1,6 +1,6 @@
 # Set up OCE locally with OpenShell and Codex
 
-Install OpenClaw Enterprise (OCE) in a private k3d cluster. Then create a dedicated Codex Agent through the OCE API and send it a message through OpenClaw. Start here once before [adding Git support](../repository-credentials/openshell-git-push.md) or [adding Codex plugins](../integrations/codex-plugins.md). You can do either add-on first.
+Install OpenClaw Enterprise (OCE) in a private k3d cluster. Then create a dedicated Codex Agent through the OCE API and send it a message through OpenClaw. Start here once before [adding Git support](../repository-credentials/openshell-git-push.md) or [adding Codex plugins](../integrations/codex-plugins.md). For managed Git, check the [repository-binding release prerequisites](../repository-credentials/openshell-git-push.md#before-you-start) before choosing images. Keep Credential Gateway for the Codex service account and its authorized Linear connection.
 
 ## Before you start
 
@@ -18,9 +18,9 @@ export MODEL=gpt-5.4
 test -r "$CODEX_TOKEN_FILE" && test -s "$CODEX_TOKEN_FILE"
 ```
 
-## 1. Prepare the quickstart files and select the stable release
+## 1. Prepare the quickstart files and select a matching release
 
-Start in Bash at the root of the checkout containing this guide. Copy the files to a private directory before switching to the stable release checkout. The policy, editor and configuration are shown inline at the steps that use them. The [WebSocket chat client](../../assets/openshell-quickstart/chat.mjs) sends the verification turn in step 7.
+Start in Bash at the root of the checkout containing this guide. Copy the files to a private directory before switching to the matching release checkout. The policy, editor and configuration are shown inline at the steps that use them. The [WebSocket chat client](../../assets/openshell-quickstart/chat.mjs) sends the verification turn in step 7.
 
 ```bash
 set -euo pipefail
@@ -36,14 +36,19 @@ install -m 600 docs/assets/openshell-quickstart/configure-installation.mjs "$RUN
 # Stage the Agent configuration template and the client used to verify a turn.
 install -m 600 docs/assets/openshell-quickstart/codex-configuration.jq "$RUN_DIR/codex-configuration.jq"
 install -m 600 docs/assets/openshell-quickstart/chat.mjs "$RUN_DIR/chat.mjs"
+```
 
-# Pull the published OCE images for both components.
+For Codex and Linear alone, use the published stable pair:
+
+```bash
 export OCE_IMAGE_CHANNEL=stable
 docker pull ghcr.io/openclaw/openclaw-enterprise-controller:stable
 docker pull ghcr.io/openclaw/openclaw-enterprise-runtime:stable
 ```
 
-Complete [published image selection](published-images.md) in this shell. Check the publication receipt, export `CONTROLLER_IMAGE` and `RUNTIME_IMAGE`, and switch to the matching release checkout. Continue reading the guide from its original commit. For a different release, confirm the Codex binary paths and package hosts in the network policy.
+For repository bindings, first verify that the release includes `deploy/examples/repository-credentials/openshell.registry.json` and pins OpenShell 0.1.6. The stable publication for `54bfa7f` predates that support. For a compatible source build, use the [matched image build procedure](https://github.com/openclaw/openclaw-enterprise/blob/998a59e3165ee9a09d7b6e0080ebe68d63d0e153/docs/guides/deploy/production-installation.md#build-and-publish-production-images) and supply both immutable references instead of the older pair.
+
+For published images, complete [published image selection](published-images.md) in this shell. Check the publication receipt, export `CONTROLLER_IMAGE` and `RUNTIME_IMAGE`, and switch to the matching release checkout. Continue reading the guide from its original commit. For a different release, confirm the Codex binary paths and package hosts in the network policy.
 
 ## 2. Start a new k3d installation
 
@@ -72,7 +77,7 @@ Wait for `OpenClaw Enterprise development stack is ready`. Record the API URL, K
 
 ## 3. Enable the credential and plugin settings
 
-Run this from the matching release checkout. The editor removes the generated `source-control` rule that gives Git uninspected access to `github.com:443`. It keeps the other rules, adds `/usr/bin/git` to the Credential Gateway tool binaries and selects the curated Codex plugin catalog. Each Agent still needs an explicit Git source or plugin selection.
+Run this from the matching release checkout. The editor removes the generated `source-control` rule that gives Git uninspected access to `github.com:443`. It keeps the other rules and selects the curated Codex plugin catalog. Git access requires an explicit repository binding and its authorized installation profile.
 
 The [Installation editor](../../assets/openshell-quickstart/configure-installation.mjs) checks that the generated rule matches the expected settings before changing it.
 
@@ -170,7 +175,7 @@ printf 'Agent: %s\nPrincipal: %s\n' "$agent" "$principal"
 
 ## 6. Grant model access and deploy
 
-Create one role scoped to credential sources. Bind that role to this Agent's principal for the model source only. The Git guide will reuse the same helper with its own source ID.
+Create one role scoped to credential sources. Bind that role to this Agent's principal for the model source only.
 
 ```bash
 # POST $base/iam/roles: allow the operate action on CredentialSources.
@@ -179,13 +184,9 @@ role=$(jq -n --arg name "$name-sources" \
   request POST "$base/iam/roles" --data-binary @- | jq -er .data.id)
 
 # POST $base/iam/access-bindings: grant access to one exact source.
-grant_source() {
-  local source=$1
-  jq -n --arg p "$principal" --arg r "$role" --arg s "$source" \
-    '{subjectKind:"identity",subjectId:$p,roleId:$r,resourceKind:"credential_source",resourceId:$s}' |
-    request POST "$base/iam/access-bindings" --data-binary @- > "$RUN_DIR/binding-$source"
-}
-grant_source "$modelSource"
+jq -n --arg p "$principal" --arg r "$role" --arg s "$modelSource" \
+  '{subjectKind:"identity",subjectId:$p,roleId:$r,resourceKind:"credential_source",resourceId:$s}' |
+  request POST "$base/iam/access-bindings" --data-binary @- > "$RUN_DIR/model-binding"
 
 # Provision transport once, before the first revision.
 request POST "$base/agents/$agent/runtime-credentials" --data '{}' > "$RUN_DIR/transport"
@@ -236,19 +237,19 @@ Save the operator session for the add-on guides. This file contains resource IDs
 {
   printf '%s\n' 'set -euo pipefail' 'umask 077'
   declare -p RUN_DIR OCC_DEVELOPMENT_STATE_DIRECTORY KUBECONFIG context ns namespace base name agent principal role
-  declare -f request grant_source deploy_and_wait turn
+  declare -f request deploy_and_wait turn
 } > "$RUN_DIR/session.sh"
 printf 'Operator session: %s/session.sh\n' "$RUN_DIR"
 ```
 
 Keep this shell open or run `source /path/from/the/previous/command/session.sh` in Bash with the same tools on `PATH`. The file restores the full Namespace API URL (`$base`), the Agent ID and the authenticated REST and WebSocket helpers.
 
-- [Add Git support](../repository-credentials/openshell-git-push.md) to push a new branch with a repository-scoped credential.
+- [Add Git support](../repository-credentials/openshell-git-push.md) to push a new branch with a repository binding and worker-minted GitHub App credentials.
 - [Add Codex plugins](../integrations/codex-plugins.md) to select Linear and verify a read through OpenClaw.
 
 ## Remove a previous quickstart
 
-Use this section only when retiring the previous disposable installation. This deletes its k3d cluster, database, Agents and generated Kubernetes credentials. Before deletion, withdraw or confirm expiry of its external GitHub installation tokens. Keep the service-account PAT under its credential owner's control; deleting the cluster does not revoke external credentials.
+Use this section only when retiring the previous disposable installation. This deletes its k3d cluster, database, Agents and generated Kubernetes credentials. Before deletion, withdraw repository access and confirm retirement or expiry of any GitHub installation tokens. Keep the service-account PAT under its credential owner's control; deleting the cluster does not revoke external credentials.
 
 Use the previous launcher's printed cleanup command. For the OpenShell profile, the equivalent below requires the **old** state directory and the cluster name from its installation record. Run it from the matching release checkout, using the CLI that created the installation.
 

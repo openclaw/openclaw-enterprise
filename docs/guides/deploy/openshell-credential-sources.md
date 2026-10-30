@@ -19,7 +19,7 @@ OpenShell Sandbox for the dedicated Codex Harness. To run these steps and verify
 a real model turn with the injected key in one command, use
 [Deploy your first Agent](../first-agent.md) with `--harness codex`.
 
-For a Codex service-account token and a separate Git token, use the
+For native Git with worker-managed GitHub App credentials, use the
 [OpenShell Git push guide](../repository-credentials/openshell-git-push.md).
 
 ## Before you start

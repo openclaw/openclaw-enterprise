@@ -4,7 +4,7 @@ Select approved repositories, deploy an Agent, then use ordinary `git` and the `
 The worker Token Service owns GitHub App credentials. Choose an
 [access level](../reference/repository-credentials/access-levels.md) for the task.
 
-For an OpenShell Sandbox with static Credential Gateway credentials, follow
+For a dedicated OpenShell Agent with managed GitHub App credentials, follow
 [Push a Git branch from an OpenShell Agent](repository-credentials/openshell-git-push.md).
 
 Keep the gateway private to approved clients, with enforced NetworkPolicies and
