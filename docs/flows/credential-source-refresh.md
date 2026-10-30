@@ -138,8 +138,8 @@ naming the Agent or Namespace but not the session Secret, before replying.
 `start_unconfirmed` before a start; both authentication forms retain it across
 navigation. Agent detail keeps its Credentials tab during a start; its draft
 records a later reply unless a newer tab owns it. Before the page is left, a
-usable reply supplies the challenge; a `403` permits retry. A `501` or no Codex
-device-login type (`deviceLoginOffered`) disables Sign in.
+usable reply supplies the challenge; a `501`, or no Codex device-login type
+(`deviceLoginOffered`), disables Sign in; other refusals permit retry.
 Unconfirmed attempts cannot start again, poll, or cancel. See
 [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 Compare-and-swap serializes known-session polls. OCC rechecks scope and both
@@ -170,7 +170,7 @@ without reseeding credentials; account metadata changes require a new login and
 version.
 
 For plugin configuration, the Gateway reads ownership/account metadata with its
-Backend identity, then calls `GetProviderCredentials` through the separate
+Backend identity, then calls `GetProviderCredentials` through the
 operator-TLS channel. OpenShell may refresh to keep five minutes of lifetime.
 Only access credentials enter the callback; it
 rechecks the caller's authority and saved-Agent binding/grant before provider I/O.
