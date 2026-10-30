@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appModule } from "../fixtures/repository-credentials/runtime.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.mjs";
 import {
@@ -14,7 +13,7 @@ import {
   eventually,
 } from "../fixtures/repository-credentials/service.mjs";
 
-const { createCredentialService } = await appModule("drivers/repo/credentials/service");
+const { createCredentialService } = await import("../fixtures/repository-credentials/service.ts");
 const completed = { kind: "completed", status: 200 };
 const unavailable = { kind: "not-dispatched", code: "exchange-unavailable" };
 const tick = () => new Promise((resolve) => setImmediate(resolve));

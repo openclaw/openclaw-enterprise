@@ -146,7 +146,7 @@ test("an owned exchange keeps its original lease through replacement and an inje
   await replacementEntered.promise;
   assert.equal(refs.length, 2);
   assert.notEqual(refs[0], refs[1]);
-  assert.equal(service.status(opened.session.sessionId).activeUses, 2);
+  assert.equal(service.status(opened.session.sessionId)?.activeUses, 2);
 
   // A detached caller holding either live ref has no authentication reader, and
   // a fabricated retirement attempt cannot turn the ref into access bytes.
