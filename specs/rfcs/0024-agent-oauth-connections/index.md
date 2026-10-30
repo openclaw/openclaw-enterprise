@@ -98,6 +98,7 @@ Namespace.
 | `displayName`                       | The label on the **Connect** button and consent warning.                                                                                    |
 | `issuer`                            | The authorization server's identifier, an exact `https` URL. It scopes the client ID and is the expected `iss` for `accountIdentity: oidc`. |
 | `authorizationUrl`, `tokenUrl`      | Exact `https` URLs for browser consent and the authorization-code exchange.                                                                 |
+| `revocationUrl`                     | Optional exact `https` URL where the issuer accepts token revocation requests. An administrator can enter it during manual setup.           |
 | `clientId`, `clientSecret`          | For a preregistered client, its ID and any required secret. DCR supplies these for an MCP client registered at setup.                       |
 | `scopes`, `authorizationParameters` | Approved scopes and extra consent parameters. Google uses `access_type=offline` and `prompt=consent`.                                       |
 | `requiredScopes`                    | Defaults to all approved scopes. When some scopes are optional, the owner selects a nonempty subset that includes the required ones.        |
@@ -129,20 +130,22 @@ the owner can check which account they connected. [OIDC verification](contracts.
 
 ### Connection profile
 
-The `AgentConnection` row in PostgreSQL has an optional `profile` alongside its
-credential source ID and template version. Its `externalUserId`, `email`, and
-`name` fields are optional strings describing the external account. Two accounts
-using the same template can have different profiles. The Secret keeps its own
-name. Consent and refresh work without a profile. How OCE populates it is deferred.
+OCE creates a Namespace-scoped `CredentialSource` for each connection made from
+an `OAuthConnectionTemplate`. Its optional `profile` describes the external account.
+The `externalUserId`, `email`, and `name` fields are each optional strings.
+Credential source reads return the profile. An Agent binds the source by ID, and
+its connection list returns the same profile. Each API checks its existing read
+permission. The Secret keeps its own name. How OCE populates the profile is deferred.
 
 ### Versions and consent
 
 An edit never changes what an existing connection does. Changing any field except
 `displayName` creates a new connection template version. The credential source
-pins the version, issuer and its URLs, client registration, resource when present,
-effective scopes, authorization parameters, endpoint and access, variable, binary,
-and OIDC settings. These values govern code exchange, refresh, and credential
-delivery, so later edits cannot redirect a user's grant or credential.
+pins the version, issuer and its URLs (including any `revocationUrl`), client
+registration, resource when present, effective scopes, authorization parameters,
+endpoint and access, variable, binary, and OIDC settings. These values govern
+code exchange, refresh, and credential delivery, so later edits cannot redirect
+a user's grant or credential.
 Source configuration is already immutable.
 
 After a new version, existing connections keep working and Agent details show
@@ -270,7 +273,8 @@ sequenceDiagram
    the Agent's service principal exact source `operate`.
 5. Agent details show the connection with **Reconnect** and **Disconnect**.
    Reconnect creates a new source and replaces the binding. Disconnect removes the
-   binding and requests withdrawal through the existing paths.
+   binding and requests withdrawal. Issuer-side token revocation is a separate
+   operation. [Withdrawal and recovery](../0023-egress-proxy-credential-lifecycle/protocol.md#withdraw-and-recover)
 
 Audit records connection start, completion, failure, reconnect, and disconnect
 with the actor, connection template ID, Agent ID, and source ID. It never records

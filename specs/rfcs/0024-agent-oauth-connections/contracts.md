@@ -20,6 +20,10 @@ secret or approve DCR at the issuer's advertised `registration_endpoint`. OCE
 applies the same egress policy to DCR. If registration is unavailable or refused,
 Console offers the preregistered option.
 
+MCP setup proposes `revocationUrl` from the authorization server's optional
+`revocation_endpoint` metadata. If the issuer omits it, OCE leaves the field
+unset. [OAuth authorization server metadata](https://www.rfc-editor.org/rfc/rfc8414#section-2)
+
 Before saving, OCE rechecks the discovered settings against what the administrator
 approved. Changed settings require another review. The version pins the OAuth
 resource, approved and required scopes, endpoints, and client registration. It
@@ -214,9 +218,10 @@ issue seven-day refresh tokens.
   second sender and a shared reply destination, including while withdrawal is
   delayed or has failed after disconnect. Prove that codes and
   tokens are absent from responses, logs, and audit.
-- **Connection profiles.** Read back two connections using the same template,
-  one with only `profile.name` and one without a profile. Verify each retains
-  its own metadata and the connection without a profile can refresh.
+- **Connection profiles.** For a source with only `profile.name`, verify that
+  a credential source read and its Agent's connection list return the same name.
+  Repeat with a second account using the same template on another Agent. An
+  absent profile is omitted from both responses and the source can still refresh.
 - **Refresh ownership.** For either setup path, verify that a source with a valid
   initial token is ready before its first background tick. Under the
   default strategy, a tick outside the renewal window makes no issuer call or
@@ -228,8 +233,11 @@ issue seven-day refresh tokens.
   the new access token for the same worker placeholder. With no eligible prepared
   token, verify that OpenShell refuses the request without contacting the issuer.
 - **Template setup and consent.** Save one template from manual settings and one
-  from MCP discovery. With the Refresh Driver's browser authorization methods
-  unavailable, complete Connect and callback for both saved versions. Connect a
+  from MCP discovery. Check that an advertised `revocation_endpoint` is saved
+  and an omitted one stays absent. Reject an HTTP revocation URL. Edit the URL
+  and verify an existing source still pins the original endpoint.
+  With the Refresh Driver's browser authorization methods unavailable, complete
+  Connect and callback for both saved versions. Connect a
   fixed-scope template by ID alone. Exercise scope selection and reject stale
   versions or out-of-policy selections before source creation. Reject an extra
   parameter that sets `resource`. For a template with an approved resource, verify
