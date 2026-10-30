@@ -201,6 +201,7 @@ test("a reader reaches the list, Secret and Slack token controls they cannot use
   }
 });
 
+// Configure Slack stays in the Tab order while that reason shows (class of finding 2899).
 test("Configure Slack on an embedded Agent is described by the execution mode", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -213,6 +214,8 @@ test("Configure Slack on an embedded Agent is described by the execution mode", 
   await configure.waitFor();
   assert.equal(await configure.isDisabled(), true);
   assert.equal(await accessibleDescription(configure), CHANNELS_NEED_DEDICATED);
+  await expectReachableReason(page, configure, CHANNELS_NEED_DEDICATED);
+  assert.equal(await page.getByRole("dialog").count(), 0);
   // An Embedded Agent cannot have channels, so the card asks for no Slack token Secrets
   // (finding D708).
   assert.equal(await page.getByText(SLACK_SETUP_HINT).count(), 0);

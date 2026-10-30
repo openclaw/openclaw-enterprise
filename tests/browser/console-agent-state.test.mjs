@@ -11,6 +11,7 @@ import {
   authorizationDenials,
   denyRevisionRead,
   detailUrl,
+  expectReachableReason,
   expireSessions,
   grantInstallationAdministration,
   grantMember,
@@ -1828,6 +1829,23 @@ test("A share after a revoke rereads the policy one list at a time, audited once
       .map(({ method, path }) => `${method} ${path.replace(/^\/namespaces\/[^/]+/, "")}`),
     ["GET /iam/roles"],
   );
+  // The form waits for Refresh sharing. Its controls stay in the Tab order, described by the
+  // refusal that says so, and send nothing (class of finding 2899).
+  const refusal = (await panel.getByRole("alert").textContent())?.trim();
+  // The Principal ID keeps its own help first.
+  const help = (await page.locator("#share-principal-help").textContent())?.trim();
+  await expectReachableReason(
+    page,
+    panel.getByLabel("Existing person’s Principal ID"),
+    `${help} ${refusal}`,
+  );
+  for (const control of [
+    panel.getByRole("checkbox"),
+    panel.getByRole("button", { name: "Share Agent", exact: true }),
+  ]) {
+    await expectReachableReason(page, control, refusal);
+  }
+  assert.deepEqual(iamReads(requests.slice(sent)), ["GET /iam/roles"]);
 });
 
 // Finding D795. Once the Access tab's recheck settled that a revoked administrator no longer

@@ -5694,6 +5694,8 @@ test("the Channels drawer and Disable Slack wait until the replace persona rebin
   const disable = page.getByRole("button", { name: "Disable Slack" });
   await page.getByText(DISABLE_KEEPS_BOT_TOKEN, { exact: true }).waitFor();
   assert.equal(await disable.isDisabled(), true);
+  // Disable stays in the Tab order, described by that hint (class of finding 2899).
+  await expectReachableReason(page, disable, DISABLE_KEEPS_BOT_TOKEN);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 
   await page.getByRole("button", { name: "Edit Slack" }).click();
