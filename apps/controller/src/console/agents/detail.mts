@@ -78,6 +78,7 @@ import {
   CHANNEL_BINDING_PLACES,
   channelBindingRefusal,
   agentSaveDenial,
+  agentSaveGap,
   describeFailure,
   message,
   rejectionMessage,
@@ -672,6 +673,18 @@ export async function renderAgentDetail(
     callerPermissions?.configurationUpdate === false ||
     callerPermissions?.configurationSecretsOperate === false;
   let configurationDeniedSecretNames: readonly string[] = [];
+  let agentDeniedSecretNames: readonly string[] = [];
+  let agentNamesGeneration = 0;
+  let refreshDeniedSecretNames: (() => void) | undefined;
+  const agentSaveReason = (permissions = callerPermissions) => {
+    if (agentSaveGap(permissions, agent) !== "sources" || agentDeniedSecretNames.length === 0) {
+      return agentSaveDenial(permissions, agent);
+    }
+    const names = agentDeniedSecretNames;
+    const listed =
+      names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+    return `${agentSaveDenial(permissions, agent)} Missing Secret operate on ${listed}.`;
+  };
   const configurationReadOnlyReason = () => {
     if (callerPermissions?.configurationUpdate === false) {
       return CONFIGURATION_READ_ONLY;
@@ -3211,15 +3224,18 @@ export async function renderAgentDetail(
     }
     function readDeploySecretsDenied(options?: { fresh?: boolean }) {
       const read = ++deploySecretsRead;
+      const namesGeneration = agentNamesGeneration;
       return boundSecretsDenied(options).then(
         (denied) => {
           if (
             generation === detailsGeneration &&
+            namesGeneration === agentNamesGeneration &&
             read === deploySecretsRead &&
             context.isCurrent()
           ) {
             deploySecretsDenied = denied;
             configurationDeniedSecretNames = denied.configurationNames;
+            agentDeniedSecretNames = denied.names;
             redrawConfigurationAccessViews();
             updateDeployControls();
           }
@@ -3227,6 +3243,15 @@ export async function renderAgentDetail(
         },
         () => deploySecretsDenied,
       );
+    }
+    if (generation === detailsGeneration) {
+      refreshDeniedSecretNames = () => {
+        if (generation === detailsGeneration && context.isCurrent()) {
+          deploySecretsDenied = { names: [], unreadable: 0 };
+          updateDeployControls();
+          void readDeploySecretsDenied();
+        }
+      };
     }
     function editedSubject() {
       if (selectedTab === "repositories") {
@@ -3961,6 +3986,12 @@ export async function renderAgentDetail(
 
   // Reads the caller's permission answer again; a failed read keeps the last answer.
   function rereadPermissions() {
+    // Rechecking grants invalidates names immediately. The admitted answer refreshes the
+    // existing authorized Secret reads; an older metadata completion cannot restore them.
+    ++agentNamesGeneration;
+    agentDeniedSecretNames = [];
+    configurationDeniedSecretNames = [];
+    redrawConfigurationAccessViews();
     secretsOperateAnswer.reset();
     const previous = latestPermissionsRead;
     const reread = ++permissionsRereads;
@@ -3973,6 +4004,9 @@ export async function renderAgentDetail(
         if (context.isCurrent() && reread > appliedReread) {
           appliedReread = reread;
           callerPermissions = permissions;
+          if (permissions && reread === permissionsRereads) {
+            refreshDeniedSecretNames?.();
+          }
           // Views built from now on take this answer; shown ones follow it below (finding 2470).
           // While a newer reread is in flight, views built meanwhile wait for it instead, so
           // Plugins sends no read it denies (findings D795, 2902). A newer reread that fails
@@ -4458,7 +4492,14 @@ export async function renderAgentDetail(
           }
         },
         savedNotice,
-        saveDenied: agentSaveDenied,
+        saveDenied: agentSaveDenied.then(() => agentSaveReason()),
+        followSaveReason: (apply) => {
+          followConfigurationAccess(() => {
+            if (context.isCurrent()) {
+              apply(agentSaveReason());
+            }
+          });
+        },
         // Saves and reloads rebuild the tab in place (finding 1445's rest).
         onSaved: (savedAgent) => {
           if (!data.draft || agent.configurationReadError) {
@@ -4865,16 +4906,16 @@ export async function renderAgentDetail(
         // The missing-grant warning names who grants it once Save is refused (finding 2949).
         applySavedGrantWarning();
       };
-      void agentSaveDenied.then((reason) => {
+      void agentSaveDenied.then(() => {
         if (context.isCurrent()) {
-          applyUpdateDenial(reason);
+          applyUpdateDenial(agentSaveReason());
         }
       });
       // A newer answer updates the form in place: the channel Secrets panel below it keeps its
       // state and focus (finding 2470).
       followConfigurationAccess(() => {
         if (context.isCurrent() && form.isConnected) {
-          applyUpdateDenial(agentSaveDenial(callerPermissions, agent));
+          applyUpdateDenial(agentSaveReason());
         }
       });
       let savedAuthentication = retained?.savedAuthentication ?? null;
