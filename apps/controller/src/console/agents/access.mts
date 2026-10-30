@@ -175,9 +175,14 @@ export function renderAgentAccess(
       setStatusTone(refusal, "danger");
     }
     // After a refused or failed change the form waits for Refresh sharing, and the refusal says
-    // so: each control stays in the Tab order, described by it (class of finding 2899).
+    // so: each control stays in the Tab order, described by it (class of finding 2899). Without
+    // that refusal (pending or not loaded yet) they stay natively disabled, even with focus.
+    const reason = state.needsRefresh ? refusal : null;
     for (const control of [principal, acknowledge, share]) {
-      setUnavailable(control, blocked, state.needsRefresh ? refusal : null);
+      setUnavailable(control, blocked && reason !== null, reason);
+      if (blocked && reason === null) {
+        control.disabled = true;
+      }
     }
     grants.replaceChildren();
     if (!state.loaded) {

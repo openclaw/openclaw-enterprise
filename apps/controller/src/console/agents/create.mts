@@ -2961,8 +2961,12 @@ function renderAgentForm(
       submit.removeAttribute("aria-describedby");
     }
     // While that reason shows, an unavailable Create Agent stays in the Tab order (class of
-    // finding 2899).
-    setUnavailable(submit, submitUnavailable, submitReason);
+    // finding 2899). Without one (a pending create, say) it stays natively disabled, even with
+    // focus, as before.
+    setUnavailable(submit, submitUnavailable && submitReason !== null, submitReason);
+    if (submitUnavailable && submitReason === null) {
+      submit.disabled = true;
+    }
     checkCredentialRegistration.hidden = !credentialRegistration;
     checkCredentialRegistration.disabled = pending;
     removeCredentialRegistration.hidden = !failedCredentialSource;
