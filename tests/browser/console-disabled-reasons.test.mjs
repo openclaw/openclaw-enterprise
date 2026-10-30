@@ -351,7 +351,8 @@ for (const { row, title, confirmName, reason } of [
     assert.equal(await confirm.isDisabled(), true);
     await expectReachableReason(page, confirm, reason);
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-    await dialog.waitFor({ state: "detached" });
+    // The close event, which removes the dialog, comes a task after it closes.
+    await zone.locator("dialog").waitFor({ state: "detached" });
     // The row stays for this viewer, who used it, and its control says why too.
     await zone.getByText(reason, { exact: true }).waitFor();
     await expectReachableReason(page, zone.getByRole("button", { name: row, exact: true }), reason);

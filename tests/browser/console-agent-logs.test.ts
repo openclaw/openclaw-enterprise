@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
-import type { Page, Route } from "playwright";
+import type { Locator, Page, Route } from "playwright";
 
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
 import type {
@@ -3473,8 +3473,8 @@ test("a Pod that comes back drops the no-Pod reason", async (t) => {
   await page.clock.runFor(10_000);
   await page.getByText("the Pod is back").waitFor();
   await page.clock.runFor(1_000);
-  const state = (locator) =>
-    locator.evaluate((node) => ({
+  const state = (locator: Locator) =>
+    locator.evaluate((node: HTMLButtonElement | HTMLSelectElement) => ({
       disabled: node.disabled,
       ariaDisabled: node.getAttribute("aria-disabled"),
       reason: node.dataset.disabledReason ?? null,

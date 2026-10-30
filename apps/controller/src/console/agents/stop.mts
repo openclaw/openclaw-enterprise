@@ -100,14 +100,6 @@ export function createAgentStop(
         ? "Cancels the deployment in progress. The Agent stays and can be deployed again."
         : "Stops the running version. The Agent stays and can be deployed again.",
     );
-    const idleNote =
-      idle && !state.forbidden
-        ? statusBlock(
-            "info",
-            null,
-            "No version is running, so there is nothing to stop. Deploy a new version to start this Agent.",
-          )
-        : null;
     const forbiddenNote = state.forbidden ? statusBlock("info", null, permissionNotice) : null;
     // A running Agent's row is the title, its sentence and Stop; the overview already shows the
     // current version. After a stop request the row reports what Refresh reads back.
@@ -141,7 +133,15 @@ export function createAgentStop(
             ),
           ]
         : []),
-      ...(idleNote ? [idleNote] : []),
+      ...(idle && !state.forbidden
+        ? [
+            statusBlock(
+              "info",
+              null,
+              "No version is running, so there is nothing to stop. Deploy a new version to start this Agent.",
+            ),
+          ]
+        : []),
       ...(forbiddenNote ? [forbiddenNote] : []),
       ...(state.notice ? [statusBlock("info", null, state.notice)] : []),
       ...(state.error
@@ -155,13 +155,12 @@ export function createAgentStop(
           ]
         : []),
     );
-    // A refused or idle Stop, and a refused Request Stop again, stay in the Tab order, described
-    // by the note that says why (finding 2935). A pending one stays natively disabled. After an
-    // uncertain outcome (needsRefresh) neither is shown: the row offers only Refresh.
+    // A refused Stop or Request Stop again stays in the Tab order, described by the note that
+    // says why (finding 2935). A pending one stays natively disabled. After an uncertain outcome
+    // (needsRefresh) neither is shown: the row offers only Refresh.
     const stopUnavailable =
       requested || state.pending || state.needsRefresh || state.forbidden || idle;
-    const stopReason =
-      requested || state.pending || state.needsRefresh ? null : (forbiddenNote ?? idleNote);
+    const stopReason = requested || state.pending || state.needsRefresh ? null : forbiddenNote;
     setUnavailable(stop, stopUnavailable && stopReason !== null, stopReason);
     if (stopUnavailable && stopReason === null) {
       stop.disabled = true;
