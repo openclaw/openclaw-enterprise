@@ -13,7 +13,9 @@ import {
   revokeAdministratorGrant,
   revokeMemberGrant,
   apiRequests,
+  expectReachableReason,
   fileBrowser,
+  hasFocus,
   login,
   nativeValues,
   newPage,
@@ -23,7 +25,7 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 
 // On a first run the only Namespace is still provisioning. The Agents page and Create Agent never
 // said so, and the first sign was the Secret dialog's refusal; a deleting Namespace could be the
@@ -139,6 +141,13 @@ test("Create Agent names a provisioning Namespace's status before any start", as
   const create = view.getByRole("button", { name: "Create Agent", exact: true });
   assert.equal(await create.isDisabled(), true);
   assert.equal(await create.getAttribute("aria-describedby"), "create-agent-capability-status");
+  // It stays in the Tab order, described by that reason, and submits nothing (class of finding
+  // 2899).
+  await expectReachableReason(
+    page,
+    create,
+    (await page.locator("#create-agent-capability-status").textContent())?.trim(),
+  );
   // An Embedded OpenClaw draft still saves (#2867).
   await view.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   await view
@@ -382,7 +391,7 @@ test("the Agents list sees its Namespace become ready without a Refresh", async 
   await waitForEnabled(create);
   assert.equal(await create.getAttribute("aria-describedby"), null);
   assert.equal(await search.inputValue(), "Probe");
-  assert.equal(await search.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  assert.equal(await hasFocus(search), true);
   await search.fill("");
   await view.getByText(INVITATION).waitFor();
   // A ready Namespace needs no more checks.
@@ -673,10 +682,7 @@ for (const reader of [false, true]) {
       await page.clock.runFor(10_000);
       await held.requested;
       // The slow read keeps the focused control until IAM supplies its new answer.
-      assert.equal(
-        await focused.evaluate((node) => node === globalThis.document.activeElement),
-        true,
-      );
+      assert.equal(await hasFocus(focused), true);
       if (reader) {
         revokeMemberGrant(fixture, "idle-reader", ["read", "namespace"]);
       } else {
@@ -687,10 +693,7 @@ for (const reader of [false, true]) {
         .getByText(`${NAMESPACE_UNAVAILABLE}. Choose another Namespace.`, { exact: true })
         .waitFor();
       assert.equal(await page.getByRole("link", { name: agent.name, exact: true }).count(), 0);
-      assert.equal(
-        await search.evaluate((node) => node === globalThis.document.activeElement),
-        true,
-      );
+      assert.equal(await hasFocus(search), true);
       assert.equal(await page.getByRole("heading", { name: /No .*Agents/ }).count(), 0);
       await search.fill("");
       assert.equal(await page.getByRole("heading", { name: /No .*Agents/ }).count(), 0);
@@ -796,10 +799,7 @@ for (const kind of ["stop", "delete"]) {
       // text checked below includes hidden elements, so wait until it is gone.
       await page.locator(`dialog.agent-${kind}-dialog`).waitFor({ state: "detached" });
       const search = page.getByRole("searchbox", { name: "Search Agents" });
-      assert.equal(
-        await search.evaluate((node) => node === globalThis.document.activeElement),
-        true,
-      );
+      assert.equal(await hasFocus(search), true);
       // Expire the session after the Namespace poll, before the pending write reaches IAM.
       if (outcome === "expired") {
         expireSessions(fixture);
@@ -841,10 +841,7 @@ for (const kind of ["stop", "delete"]) {
       );
       assert.equal(writes, outcome === "unsubmitted" ? 0 : 1);
       assert.equal(await page.getByRole("link", { name: agent.name, exact: true }).count(), 0);
-      assert.equal(
-        await search.evaluate((node) => node === globalThis.document.activeElement),
-        true,
-      );
+      assert.equal(await hasFocus(search), true);
     });
   }
 }

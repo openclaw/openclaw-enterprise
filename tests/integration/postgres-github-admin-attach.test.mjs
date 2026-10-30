@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
+  accountPrincipalId,
   assertConsoleSignIn,
+  changeAccount,
   clientAddresses,
   consoleOrigin as origin,
+  createAccount,
   currentSession,
   githubSignIn,
   githubUpgradeSettings,
@@ -11,6 +15,7 @@ import {
   readAccount,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
@@ -55,14 +60,12 @@ test(
     let adminHeaders;
     app = await composeApp(githubUpgradeSettings(admin.id));
     const attach = (headers, userId, subject, expectedVersion) =>
-      app.inject({
-        method: "POST",
-        url: `/api/auth/accounts/${userId}/providers/github`,
+      injectLocalhost(app, "POST", `/api/auth/accounts/${userId}/providers/github`, {
         headers,
-        payload: { subject, expectedVersion },
+        body: { subject, expectedVersion },
       });
-    const change = (headers, path, expectedVersion) =>
-      app.inject({ method: "POST", url: path, headers, payload: { expectedVersion } });
+    const change = (userId, operation, expectedVersion) =>
+      changeAccount(app, adminHeaders, userId, operation, expectedVersion);
     async function assertGitHubSignIn(subject, userId) {
       const { callback } = await githubSignIn(app, origin, subject, address());
       return assertConsoleSignIn(app, callback, userId);
@@ -132,9 +135,8 @@ test(
         // A GitHub session carries the account's Installation authority.
         assert.equal(
           (
-            await app.inject({
-              url: "/api/auth/recovery",
-              headers: { cookie: secondGitHubCookie, origin },
+            await injectLocalhost(app, "GET", "/api/auth/recovery", {
+              session: { cookie: secondGitHubCookie, origin },
             })
           ).json().data.userId,
           admin.id,
@@ -168,20 +170,19 @@ test(
         const account = await readAccount(app, adminHeaders, second.id);
         const credential = account.methods.find(({ providerId }) => providerId === "credential");
         const external = account.methods.find(({ providerId }) => providerId !== "credential");
-        const detachPath = (methodId) =>
-          `/api/auth/accounts/${second.id}/methods/${methodId}/detach`;
+        const detach = (methodId, version) =>
+          change(second.id, `methods/${methodId}/detach`, version);
         assert.equal(
-          (await change(adminHeaders, detachPath(credential.methodId), account.version)).statusCode,
+          (await detach(credential.methodId, account.version)).statusCode,
           409,
           "the password is not an external identity",
         );
         assert.equal(
-          (await change(adminHeaders, detachPath(external.methodId), account.version - 1))
-            .statusCode,
+          (await detach(external.methodId, account.version - 1)).statusCode,
           409,
           "a stale version is refused",
         );
-        const detached = await change(adminHeaders, detachPath(external.methodId), account.version);
+        const detached = await detach(external.methodId, account.version);
         assert.equal(detached.statusCode, 200, detached.body);
         assert.equal(await currentSession(app, secondGitHubCookie), null, "its sessions end");
         await assertGitHubRefused(secondSubject);
@@ -202,22 +203,12 @@ test(
     await t.test("disable ends every sign-in method; enable restores both", async () => {
       const recoveryAccount = await readAccount(app, adminHeaders, admin.id);
       assert.equal(
-        (
-          await change(
-            adminHeaders,
-            `/api/auth/accounts/${admin.id}/disable`,
-            recoveryAccount.version,
-          )
-        ).statusCode,
+        (await change(admin.id, "disable", recoveryAccount.version)).statusCode,
         409,
         "the recovery account cannot be disabled",
       );
       const account = await readAccount(app, adminHeaders, second.id);
-      const disabled = await change(
-        adminHeaders,
-        `/api/auth/accounts/${second.id}/disable`,
-        account.version,
-      );
+      const disabled = await change(second.id, "disable", account.version);
       assert.equal(disabled.statusCode, 200, disabled.body);
       assert.equal(await currentSession(app, secondGitHubCookie), null);
       assert.equal((await passwordSignIn(app, origin, second, address())).statusCode, 401);
@@ -229,52 +220,32 @@ test(
       // A disabled target is a conflict with its state, not an unknown account.
       for (const refused of [
         await attach(adminHeaders, second.id, "424242", disabledAccount.version),
-        await app.inject({
-          method: "POST",
-          url: "/api/auth/recovery",
-          headers: adminHeaders,
-          payload: {
+        await injectLocalhost(app, "POST", "/api/auth/recovery", {
+          session: adminHeaders,
+          body: {
             userId: second.id,
             expectedCurrentUserId: admin.id,
             expectedVersion: disabledAccount.version,
           },
         }),
       ]) {
-        assert.equal(refused.statusCode, 409, refused.body);
-        assert.equal(refused.json().error.code, "RESOURCE_CONFLICT");
+        assertApiError(refused, 409, "RESOURCE_CONFLICT");
       }
       assert.deepEqual(await readAccount(app, adminHeaders, second.id), disabledAccount);
       assert.equal(
-        (
-          await change(
-            adminHeaders,
-            `/api/auth/accounts/${second.id}/enable`,
-            disabledAccount.version - 1,
-          )
-        ).statusCode,
+        (await change(second.id, "enable", disabledAccount.version - 1)).statusCode,
         409,
       );
-      const enabled = await change(
-        adminHeaders,
-        `/api/auth/accounts/${second.id}/enable`,
-        disabledAccount.version,
-      );
+      const enabled = await change(second.id, "enable", disabledAccount.version);
       assert.equal(enabled.statusCode, 200, enabled.body);
       assert.equal((await passwordSignIn(app, origin, second, address())).statusCode, 200);
       await assertGitHubSignIn(secondSubject, second.id);
     });
 
     await t.test("every change is audited to the acting administrator", async () => {
-      const principalOf = async (userId) =>
-        (
-          await pool.query(
-            "SELECT principal_id FROM occ.human_authentication_accounts WHERE user_id = $1",
-            [userId],
-          )
-        ).rows[0].principal_id;
       const [adminPrincipal, secondPrincipal] = [
-        await principalOf(admin.id),
-        await principalOf(second.id),
+        await accountPrincipalId(pool, admin.id),
+        await accountPrincipalId(pool, second.id),
       ];
       const audits = (await state.transact((unit) => unit.audit.list()))
         .filter(({ action }) =>
@@ -351,8 +322,7 @@ test(
         ];
         for (const [method, url, payload] of requests) {
           const refused = await app.inject({ method, url, headers: memberHeaders, payload });
-          assert.equal(refused.statusCode, 403, `${method} ${url}: ${refused.body}`);
-          assert.equal(refused.json().error.code, "FORBIDDEN", `${method} ${url}`);
+          assertApiError(refused, 403, "FORBIDDEN", `${method} ${url}`);
         }
         assert.deepEqual(await readAccount(app, adminHeaders, admin.id), adminAccount);
         assert.deepEqual(await readAccount(app, adminHeaders, member.id), memberAccount);
@@ -373,16 +343,8 @@ test(
     await t.test(
       "two administrators attaching one GitHub identity to two accounts at once: one wins, one conflicts",
       async () => {
-        const createReader = async (email) => {
-          const created = await app.inject({
-            method: "POST",
-            url: "/api/auth/accounts",
-            headers: adminHeaders,
-            payload: { email, password, roleId: roles.reader.id },
-          });
-          assert.equal(created.statusCode, 201, created.body);
-          return { id: created.json().data.id, email, password };
-        };
+        const createReader = (email) =>
+          createAccount(app, adminHeaders, { email, password, roleId: roles.reader.id });
         const third = await createReader("attach-third@example.test");
         // The blocking row's owner is locked by neither attach: its foreign key share
         // lock would otherwise hold an actor's own row lock instead of the identity insert.

@@ -10,7 +10,7 @@ meets the following native admin requirements.
 
 - Trusted-proxy authentication accepts `x-occ-identity: occ-workspace-files`
   with `operator.admin` identity scopes.
-- Trusted-proxy device auto-approval is enabled with `operator.admin` scope.
+- Trusted-proxy device auto-approval is enabled; the machine identity grant supplies administrator authority independently of device scopes.
 - `controlUi.enabled` is true and `controlUi.allowedOrigins` is nonempty.
 - Dangerous device-auth disabling and host-header origin fallback are disabled.
 

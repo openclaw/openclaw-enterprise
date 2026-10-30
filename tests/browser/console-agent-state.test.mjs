@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
+import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, memberRole } from "../helpers/console-app.mjs";
@@ -11,6 +14,7 @@ import {
   authorizationDenials,
   denyRevisionRead,
   detailUrl,
+  expectReachableReason,
   expireSessions,
   grantInstallationAdministration,
   grantMember,
@@ -23,6 +27,7 @@ import {
   nonAuthWriteRequests,
   persistedDeploymentError,
   recordLayoutShifts,
+  selectSecret,
   settledFetches,
   shortId,
   stopAgentButton,
@@ -68,7 +73,7 @@ import {
   VERSION_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
 function deploymentBody(
   namespaceId,
@@ -1167,20 +1172,180 @@ test("A Backends refusal after administration is revoked is read and audited onc
   );
 });
 
-// Settings shows the Installation Driver configuration heading while its schemas read is still in
-// flight. An administrator's Settings page has settled once the schemas are listed; a revoke
+test("Settings inspects nested Driver fields and the same JSON without changing configuration", async (t) => {
+  // Startup integration tests establish projection ownership. This public controller fixture
+  // exercises generic values through the real API and browser without adding a product seam.
+  const accepted = {
+    authentication: {
+      mode: "kubeconfig",
+      kubeconfigPath: "/etc/occ/cluster.yaml",
+      context: "control",
+    },
+    operatorResources: "[redacted]",
+    optionalValues: {
+      enabled: false,
+      capacity: 0,
+      fallback: null,
+      emptyText: "",
+      list: [],
+      record: {},
+      ["customfield".repeat(8)]: "configurationvalue".repeat(20),
+      nested: Array.from({ length: 12 }).reduce(
+        (value, _, index) => ({ [`level${index + 1}`]: [value] }),
+        "Nested leaf",
+      ),
+    },
+    workerGroups: Array.from({ length: 8 }, (_, index) => ({
+      name: `Group ${index + 1}`,
+      routes: ["/workspace/read", "/workspace/write"],
+      description: index === 0 ? "<img src=x onerror=alert(1)>" : "Configured worker group",
+    })),
+  };
+  const fixture = await createConsoleAppFixture(t, {
+    driverConfigurations: [
+      {
+        capability: "configuration",
+        driverId: "console-configuration",
+        implementation: "kubernetes",
+        definition: KubernetesConfigurationDriver,
+        startupConfiguration: accepted,
+      },
+      {
+        capability: "iam",
+        driverId: "console-native-iam",
+        implementation: "native",
+        definition: NativeIAMDriver,
+        startupConfiguration: {},
+      },
+      {
+        capability: "secret",
+        driverId: "console-secret",
+        implementation: "kubernetes",
+        definition: KubernetesSecretDriver,
+      },
+    ],
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Driver inspection", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/settings?namespace=${namespace.id}`);
+  const configuration = page
+    .locator("details.driver-configuration")
+    .filter({ has: page.locator("summary", { hasText: "console-configuration" }) });
+  const fieldsButton = page.getByRole("button", { name: "Fields", exact: true });
+  const jsonButton = page.getByRole("button", { name: "JSON", exact: true });
+  assert.equal(await fieldsButton.getAttribute("aria-pressed"), "true");
+  await configuration.locator("summary").focus();
+  await page.keyboard.press("Enter");
+  const fields = configuration.locator(".driver-configuration-fields").first();
+  for (const value of [
+    "Kubeconfig path",
+    "kubeconfigPath",
+    "/etc/occ/cluster.yaml",
+    "Hidden for security",
+    "false",
+    "0",
+    "null",
+    '""',
+    "[]",
+    "{}",
+    "Group 8",
+    "<img src=x onerror=alert(1)>",
+    "customfield".repeat(8),
+    "configurationvalue".repeat(20),
+    "Nested leaf",
+  ]) {
+    await fields.getByText(value, { exact: true }).waitFor();
+  }
+  assert.equal(await fields.locator("img").count(), 0, "configuration text is never HTML");
+  assert.equal(await configuration.locator("pre").isVisible(), false);
+  await configuration.locator("summary").getByText("4 fields", { exact: true }).waitFor();
+  await jsonButton.click();
+  assert.equal(await jsonButton.getAttribute("aria-pressed"), "true");
+  assert.deepEqual(JSON.parse(await configuration.locator("pre").textContent()), accepted);
+  assert.equal(await fields.isVisible(), false);
+  await fieldsButton.click();
+  assert.equal(await fields.isVisible(), true);
+  assert.equal(
+    await configuration.getAttribute("open"),
+    "",
+    "changing view retains disclosure state",
+  );
+  const iam = page
+    .locator("details.driver-configuration")
+    .filter({ has: page.locator("summary", { hasText: "console-native-iam" }) });
+  await iam.locator("summary").click();
+  await iam.getByText("No startup values to display.", { exact: true }).waitFor();
+  await jsonButton.click();
+  assert.equal(await iam.locator("pre").textContent(), "{}");
+  await fieldsButton.click();
+  // A missing projection cannot become schema output or an empty object.
+  const secret = page
+    .locator("details.driver-configuration")
+    .filter({ has: page.locator("summary", { hasText: "console-secret" }) });
+  await secret.locator("summary").click();
+  await secret
+    .getByText("Accepted startup values are unavailable for this Driver.", { exact: true })
+    .waitFor();
+  assert.equal(await secret.locator("pre").count(), 0);
+  // Both columns belong to one document scroll; the profile reaches the long page's bottom.
+  const desktop = await page.evaluate(() => {
+    const shell = globalThis.document.querySelector(".shell").getBoundingClientRect();
+    const sidebar = globalThis.document.querySelector(".sidebar").getBoundingClientRect();
+    const profile = globalThis.document
+      .querySelector(".sidebar .account-toggle")
+      .getBoundingClientRect();
+    return {
+      shellHeight: shell.height,
+      sidebarHeight: sidebar.height,
+      bottomGap: sidebar.bottom - profile.bottom,
+      viewport: globalThis.innerHeight,
+      fits: globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+    };
+  });
+  assert.ok(desktop.shellHeight > desktop.viewport * 1.5, "exercise a genuinely long page");
+  assert.ok(desktop.sidebarHeight >= desktop.shellHeight - 1, JSON.stringify(desktop));
+  assert.ok(desktop.bottomGap >= 0 && desktop.bottomGap <= 32, JSON.stringify(desktop));
+  assert.equal(desktop.fits, true);
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(
+    await page.evaluate(
+      () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+    ),
+    true,
+  );
+  await page.evaluate(() => globalThis.window.scrollTo(0, 0));
+  await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+  await page.locator(".sidebar nav").waitFor({ state: "visible" });
+  const drawer = await page.locator(".sidebar").boundingBox();
+  assert.ok(drawer.height <= 844 && drawer.y === 0, JSON.stringify(drawer));
+  await page.keyboard.press("Escape");
+  await page.locator(".sidebar").waitFor({ state: "hidden" });
+  await configuration.locator("summary").focus();
+  await page.keyboard.press("Space");
+  assert.equal(await configuration.getAttribute("open"), null);
+  assert.deepEqual(
+    nonAuthWriteRequests(requests),
+    [],
+    "inspection does not change startup configuration",
+  );
+});
+
+// Settings shows the Installation Driver configuration heading while its configuration read is still in
+// flight. An administrator's Settings page has settled once the values are listed; a revoke
 // before then reaches that read and the API refuses and audits it (finding 2654).
-async function waitForDriverSchemas(page) {
-  await page.getByText(/^Inspect startup settings accepted by the selected Drivers\./).waitFor();
+async function waitForDriverConfigurations(page) {
+  await page.getByText(/^Inspect startup values accepted by the selected Drivers\./).waitFor();
 }
 
 // Finding D760. An administrator revoked while signed in keeps the tab's settled answer, so the
 // first page she opens afterwards sends reads only Installation administration may make: sharing
-// policy, a bound Secret by ID, the Installation's Driver schemas. The API audits each refusal.
+// policy, a bound Secret by ID, the Installation's Driver configuration. The API audits each refusal.
 // The first one is read and audited once and settles "not an administrator" for the tab; the
 // reads still waiting are refused unsent. The page takes the member path: the Access tab gives way
 // to Configuration and says why, the bound Secret's name is unavailable, Settings leaves out the
-// Driver schemas, and the Observability link goes away. The other pages read none of them again.
+// Driver configuration, and the Observability link goes away. The other pages read none of them again.
 // Each round starts on another page, opened right after the revoke, so it recalls the stale
 // answer. Then she may read the bound Secret herself. Last, a Restriction on Secret read refuses
 // one such read to an administrator: the permission answer, which audits nothing, still says she
@@ -1248,7 +1413,7 @@ test("Installation-administration reads after a revoke are refused and audited o
       revoke = grantInstallationAdministration(fixture, account.principal);
       await page.goto(settingsUrl);
     }
-    await waitForDriverSchemas(page);
+    await waitForDriverConfigurations(page);
     assert.equal(await observability.getAttribute("href"), url, first);
     revoke();
     await pages[first]();
@@ -1267,7 +1432,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   const named = page.getByRole("link", { name: "Revoked model key", exact: true });
   revoke = grantInstallationAdministration(fixture, account.principal);
   await page.goto(settingsUrl);
-  await waitForDriverSchemas(page);
+  await waitForDriverConfigurations(page);
   revoke();
   await page.goto(agentUrl);
   await named.waitFor();
@@ -1283,7 +1448,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   // the Secret, so she still sees its name.
   revoke = grantInstallationAdministration(fixture, account.principal);
   await page.goto(settingsUrl);
-  await waitForDriverSchemas(page);
+  await waitForDriverConfigurations(page);
   revoke();
   await page.goto(String(detailUrl(fixture, namespace.id, agent.id, "draft", "access")));
   await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
@@ -1368,7 +1533,7 @@ test("Back to a kept Agent page after a revoke sends no more audited administrat
   // Administration again: a page load asks the permission answer, then the probe.
   revoke = grantInstallationAdministration(fixture, account.principal);
   await page.goto(`${fixture.origin}${settingsUrl}`);
-  await waitForDriverSchemas(page);
+  await waitForDriverConfigurations(page);
   revoke();
   await page.goto(accessUrl);
   await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
@@ -1511,6 +1676,411 @@ test("A bound Slack Secret grant read after a revoke is refused and audited once
     ["openclaw.iam.roles.list"],
   );
   assert.deepEqual(iamReads(requests), ["GET /iam/roles"]);
+});
+
+// Findings 2938 and 2939. An Installation administrator's Agent page confirms her administration
+// when it loads. Its dedicated Agent binds a harness Secret and two Slack token Secrets, and its
+// Slack channel names a channel and a person. She opens Channels, or Edit Slack, later.
+const SLACK_TARGETS = {
+  enabled: true,
+  mode: "socket",
+  appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+  botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+  dmPolicy: "allowlist",
+  groupPolicy: "allowlist",
+  allowFrom: ["U123"],
+  channels: { C123: { requireMention: true } },
+};
+
+async function slackAdministratorPage(t, name, tab) {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  const harness = await fixture.createSecret(namespace.id, `${name} model key`, "hidden-model");
+  const secretBindings = {};
+  const secrets = {};
+  for (const token of ["app", "bot"]) {
+    const secret = await fixture.createSecret(
+      namespace.id,
+      `${name} Slack ${token} token`,
+      `hidden-${token}-token`,
+    );
+    secrets[token] = secret;
+    secretBindings[`SLACK_${token.toUpperCase()}_TOKEN`] = {
+      source: secret.ref,
+      delivery: { type: "env" },
+    };
+  }
+  const agent = await fixture.createAgent(
+    namespace.id,
+    `${name} Agent`,
+    nativeValues("slack-reads", { harnessId: "codex", channels: { slack: SLACK_TARGETS } }),
+    {
+      executionMode: "dedicated",
+      secretBindings,
+      harnessAuth: { method: "api_key", source: harness.ref },
+    },
+  );
+  const account = await fixture.createNamespaceMember(
+    name.toLowerCase().replaceAll(" ", "-"),
+    namespace.id,
+    AGENT_READ,
+  );
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  await login(
+    page,
+    fixture,
+    String(detailUrl(fixture, namespace.id, agent.id, "draft", tab)),
+    account.credentials,
+  );
+  await waitForIdleFetches(page);
+  // The page load's probe confirmed administration, so the console sends administrator reads.
+  assert.equal(requests.filter(({ path }) => path === "/observability").length, 1);
+  return { fixture, namespace, page, requests, revoke, secrets };
+}
+
+// Bound Secret metadata reads by ID, and Slack name lookups, among `requests`.
+const secretReads = (requests) =>
+  requests.filter(({ method, path }) => method === "GET" && /\/secrets\/[^/?]+$/.test(path));
+const nameLookups = (requests) =>
+  requests.filter(({ path }) => path.endsWith("/channel-directory/lookup"));
+// The fixture has no Slack workspace: a lookup the API allows fails at Slack. Tests that need an
+// allowed lookup to succeed simulate only this provider answer.
+const SLACK_DIRECTORY = {
+  status: 200,
+  contentType: "application/json",
+  body: JSON.stringify({
+    data: {
+      workspaceId: "TTEST123",
+      workspaceName: "Test workspace",
+      candidates: [
+        { id: "C123", name: "release-room" },
+        { id: "U123", name: "alex", displayName: "Alex" },
+      ],
+      complete: true,
+    },
+    meta: { requestId: "req_test_slack_directory" },
+  }),
+};
+
+// Finding 2938. Revoked before her first Channels open, the Slack card read both bound Slack
+// Secrets by ID at once, and the API refused and audited both reads. They go one at a time: the
+// first refusal settles "not an administrator", the second is refused unsent, and both take the
+// member path, which shows each Secret's name as unavailable.
+test("A first Channels open after a revoke reads one bound Secret, audited once", async (t) => {
+  const { fixture, page, requests, revoke } = await slackAdministratorPage(
+    t,
+    "Revoked channels",
+    "configuration",
+  );
+  revoke();
+  const audited = authorizationDenials(fixture.auditSink).length;
+  const sent = requests.length;
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", selected: true }).waitFor();
+  await page.getByText(BOUND_SECRET_UNLISTED, { exact: true }).nth(1).waitFor();
+  await waitForIdleFetches(page);
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.secrets.read"],
+  );
+  assert.equal(secretReads(requests.slice(sent)).length, 1);
+});
+
+// Finding 2938, an allowed administrator who leaves while the first of the Slack card's Secret
+// reads is in flight: the second read waits for it, and is not sent once the page is gone.
+test("Leaving Channels during its first Secret read sends no later Secret read", async (t) => {
+  const { fixture, namespace, page, requests } = await slackAdministratorPage(
+    t,
+    "Leaving channels",
+    "configuration",
+  );
+  const held = await holdRequests(
+    t,
+    page,
+    (address) => new RegExp(`^/namespaces/${namespace.id}/secrets/[^/]+$`).test(address.pathname),
+    { once: true },
+  );
+  const sent = requests.length;
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  await held.requested;
+  await page.locator("nav").getByRole("link", { name: "Agents", exact: true }).first().click();
+  await page.waitForURL(/\/console\/agents\?/);
+  held.release();
+  await waitForIdleFetches(page);
+  assert.equal(secretReads(requests.slice(sent)).length, 1);
+  assert.equal(authorizationDenials(fixture.auditSink).length, 0);
+});
+
+// Finding 2939. A Slack name lookup needs Secret operate on the bot token Secret, which she held
+// only through administration. Revoked after Channels loaded, Edit Slack's fields looked their
+// names up at once, and the API refused and audited each lookup. They go one at a time: the
+// first refusal answers the other field unsent, and both fields show its reason.
+test("Edit Slack after a revoke looks Slack names up once, audited once", async (t) => {
+  const { fixture, page, requests, revoke } = await slackAdministratorPage(
+    t,
+    "Revoked lookup",
+    "channels",
+  );
+  await page.getByRole("button", { name: "Edit Slack" }).waitFor();
+  await waitForIdleFetches(page);
+  revoke();
+  const audited = authorizationDenials(fixture.auditSink).length;
+  const sent = requests.length;
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  const drawer = page.getByRole("dialog", { name: "Edit Slack" });
+  await drawer.waitFor();
+  // The API names the grant the lookup needs; each field shows that refusal.
+  const refused = drawer.getByText(
+    /^Slack lookup was refused: .* Saved selections are retained\.$/,
+  );
+  await refused.nth(1).waitFor();
+  await waitForIdleFetches(page);
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.channel_directory.lookup"],
+  );
+  assert.equal(nameLookups(requests.slice(sent)).length, 1);
+  const reasons = await refused.allTextContents();
+  assert.equal(reasons.length, 2);
+  assert.equal(reasons[0], reasons[1]);
+});
+
+// Finding 2939, an allowed administrator who leaves while the first of Edit Slack's name lookups
+// is in flight: the second lookup waits for it, and is not sent once the page is gone.
+test("Leaving Edit Slack during its first name lookup sends no later lookup", async (t) => {
+  const { fixture, namespace, page, requests } = await slackAdministratorPage(
+    t,
+    "Leaving lookup",
+    "channels",
+  );
+  await page.getByRole("button", { name: "Edit Slack" }).waitFor();
+  await waitForIdleFetches(page);
+  // In-app navigation, so the page that sent the lookup is left without a reload. The open
+  // drawer blocks the navigation links: Forward leaves it.
+  await page.locator("nav").getByRole("link", { name: "Agents", exact: true }).first().click();
+  await page.waitForURL(/\/console\/agents\?/);
+  await waitForIdleFetches(page);
+  await page.goBack();
+  await page.getByRole("button", { name: "Edit Slack" }).waitFor();
+  await waitForIdleFetches(page);
+  const held = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
+    { once: true },
+  );
+  const sent = requests.length;
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  await held.requested;
+  await page.goForward();
+  await page.waitForURL(/\/console\/agents\?/);
+  held.release();
+  await waitForIdleFetches(page);
+  assert.equal(nameLookups(requests.slice(sent)).length, 1);
+});
+
+// Finding 2938. A Restriction refuses an administrator one bound Secret, not her administration:
+// the refusal asks the permission answer, which confirms it, so the Slack card's next Secret read
+// is still sent and shows its name. One refused read does not hold back the reads after it.
+test("A Restriction on one bound Secret still reads the Slack card's other Secret", async (t) => {
+  const { fixture, namespace, page, requests, secrets } = await slackAdministratorPage(
+    t,
+    "Restricted channels",
+    "configuration",
+  );
+  restrict(fixture.policy, "read", "secret", {
+    namespaceId: namespace.id,
+    resourceId: secrets.app.id,
+  });
+  const audited = authorizationDenials(fixture.auditSink).length;
+  const sent = requests.length;
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  await page.getByText(BOUND_SECRET_READ_REFUSED, { exact: true }).waitFor();
+  await page.getByRole("link", { name: secrets.bot.name, exact: true }).first().waitFor();
+  await waitForIdleFetches(page);
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.secrets.read"],
+  );
+  assert.equal(secretReads(requests.slice(sent)).length, 2);
+});
+
+// Finding 2939. A lookup refusal answers only the waiting lookups for its own Secret. Operate on
+// the bound bot token Secret is restricted; while its first lookup is in flight she picks another
+// bot token Secret, whose lookups queue behind it. They are still sent once the refusal settles.
+test("A lookup refusal for one Slack Secret does not answer another Secret's lookups", async (t) => {
+  const { fixture, namespace, page, requests, secrets } = await slackAdministratorPage(
+    t,
+    "Other lookup",
+    "channels",
+  );
+  await page.getByRole("button", { name: "Edit Slack" }).waitFor();
+  await waitForIdleFetches(page);
+  const other = await fixture.createSecret(
+    namespace.id,
+    "Other lookup spare bot token",
+    "hidden-spare-token",
+  );
+  const restriction = restrict(fixture.policy, "operate", "secret", {
+    namespaceId: namespace.id,
+    resourceId: secrets.bot.id,
+  });
+  const held = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
+    { once: true },
+  );
+  const audited = authorizationDenials(fixture.auditSink).length;
+  const sent = requests.length;
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  const drawer = page.getByRole("dialog", { name: "Edit Slack" });
+  await drawer.waitFor();
+  await held.requested;
+  await selectSecret(drawer, "Slack bot token", other);
+  held.release();
+  await waitForIdleFetches(page);
+  const lookups = nameLookups(requests.slice(sent));
+  assert.equal(lookups.filter(({ body }) => body?.secretId === secrets.bot.id).length, 1);
+  assert.ok(lookups.some(({ body }) => body?.secretId === other.id));
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.channel_directory.lookup"],
+  );
+  // Once no lookup waits, the refusal is forgotten: picking the bound Secret again asks again.
+  liftRestriction(fixture.policy, restriction);
+  await selectSecret(drawer, "Slack bot token", secrets.bot);
+  await waitForIdleFetches(page);
+  const again = nameLookups(requests.slice(sent)).filter(
+    ({ body }) => body?.secretId === secrets.bot.id,
+  );
+  assert.ok(again.length > 1, `the bound Secret was looked up again (${again.length})`);
+});
+
+// Findings 2938 and 2939, an allowed administrator: only the first of a view's lookups waits
+// alone. While Edit Slack's first lookup is in flight she picks another bot token Secret, so three
+// lookups wait behind it. Once the first succeeds, all three are sent at once, not one per round
+// trip: each is held until all three are in flight, which one at a time never are.
+test("Edit Slack sends its waiting lookups at once after the first succeeds", async (t) => {
+  const { fixture, namespace, page, requests } = await slackAdministratorPage(
+    t,
+    "Concurrent lookup",
+    "channels",
+  );
+  await page.getByRole("button", { name: "Edit Slack" }).waitFor();
+  await waitForIdleFetches(page);
+  const other = await fixture.createSecret(
+    namespace.id,
+    "Concurrent lookup spare bot token",
+    "hidden-spare-token",
+  );
+  const lookupUrl = `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`;
+  let inFlight = 0;
+  let mostInFlight = 0;
+  let arrived = 0;
+  let allArrived;
+  const waiting = new Promise((resolve) => {
+    allArrived = resolve;
+  });
+  t.after(() => allArrived());
+  // Registered before the hold, so it receives the lookups after the held first one.
+  await page.route(lookupUrl, async (route) => {
+    inFlight += 1;
+    arrived += 1;
+    mostInFlight = Math.max(mostInFlight, inFlight);
+    if (arrived === 3) {
+      allArrived();
+    }
+    let timer;
+    await Promise.race([
+      waiting,
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, 2_000);
+      }),
+    ]);
+    clearTimeout(timer);
+    inFlight -= 1;
+    await route.fulfill(SLACK_DIRECTORY).catch(() => {});
+  });
+  const held = await holdRequests(t, page, lookupUrl, { once: true, fulfill: SLACK_DIRECTORY });
+  const sent = requests.length;
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  const drawer = page.getByRole("dialog", { name: "Edit Slack" });
+  await drawer.waitFor();
+  await held.requested;
+  await selectSecret(drawer, "Slack bot token", other);
+  // Nothing has answered yet, so the other lookups wait for the first.
+  assert.equal(nameLookups(requests.slice(sent)).length, 1);
+  held.release();
+  await waitForIdleFetches(page);
+  assert.equal(nameLookups(requests.slice(sent)).length, 4);
+  assert.equal(mostInFlight, 3);
+});
+
+// Findings 2938 and 2939. Only a success sends the waiting lookups at once, and only until none
+// is pending. Edit Slack's lookups succeed, then she picks another bot token Secret, whose first
+// lookup goes alone again. While it is in flight she picks the bound Secret back, and operate on
+// both Secrets is restricted. Each Secret's first lookup is refused; that refusal answers its own
+// Secret's other lookup unsent and does not release the next Secret's: two denials in all.
+test("Each Slack Secret's first lookup waits alone after a refusal", async (t) => {
+  const { fixture, namespace, page, requests, secrets } = await slackAdministratorPage(
+    t,
+    "Alone lookup",
+    "channels",
+  );
+  await page.getByRole("button", { name: "Edit Slack" }).waitFor();
+  await waitForIdleFetches(page);
+  const other = await fixture.createSecret(
+    namespace.id,
+    "Alone lookup spare bot token",
+    "hidden-spare-token",
+  );
+  const lookupUrl = `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`;
+  let simulate = true;
+  await page.route(lookupUrl, (route) =>
+    simulate ? route.fulfill(SLACK_DIRECTORY) : route.fallback(),
+  );
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  const drawer = page.getByRole("dialog", { name: "Edit Slack" });
+  await drawer.waitFor();
+  await drawer.getByText("Slack workspace: Test workspace", { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  simulate = false;
+  const held = await holdRequests(t, page, lookupUrl, { once: true });
+  const audited = authorizationDenials(fixture.auditSink).length;
+  const sent = requests.length;
+  await selectSecret(drawer, "Slack bot token", other);
+  await held.requested;
+  await selectSecret(drawer, "Slack bot token", secrets.bot);
+  for (const secret of [other, secrets.bot]) {
+    restrict(fixture.policy, "operate", "secret", {
+      namespaceId: namespace.id,
+      resourceId: secret.id,
+    });
+  }
+  held.release();
+  await waitForIdleFetches(page);
+  const lookups = nameLookups(requests.slice(sent));
+  assert.equal(lookups.filter(({ body }) => body?.secretId === other.id).length, 1);
+  assert.equal(lookups.filter(({ body }) => body?.secretId === secrets.bot.id).length, 1);
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.channel_directory.lookup", "openclaw.channel_directory.lookup"],
+  );
 });
 
 // Finding 2637. A Restriction refuses an administrator's bound Secret read, and the permission
@@ -1827,6 +2397,125 @@ test("A share after a revoke rereads the policy one list at a time, audited once
       .filter(({ path }) => path.includes("/iam/"))
       .map(({ method, path }) => `${method} ${path.replace(/^\/namespaces\/[^/]+/, "")}`),
     ["GET /iam/roles"],
+  );
+  // The form waits for Refresh sharing. Its controls stay in the Tab order, described by the
+  // refusal that says so, and send nothing (class of finding 2899).
+  const refusal = (await panel.getByRole("alert").textContent())?.trim();
+  // The Principal ID keeps its own help first.
+  const help = (await page.locator("#share-principal-help").textContent())?.trim();
+  await expectReachableReason(
+    page,
+    panel.getByLabel("Existing person’s Principal ID"),
+    `${help} ${refusal}`,
+  );
+  for (const control of [
+    panel.getByRole("checkbox"),
+    panel.getByRole("button", { name: "Share Agent", exact: true }),
+  ]) {
+    await expectReachableReason(page, control, refusal);
+  }
+  assert.deepEqual(iamReads(requests.slice(sent)), ["GET /iam/roles"]);
+});
+
+// Finding 2943. A share after a revoke is refused once, settles "not an administrator" and the
+// page follows the member's answer (D795). Administration granted again, Refresh sharing sent
+// nothing: the tab knew she was no administrator, so it hid the Access tab and the page stayed
+// read-only until the page's Refresh. Refresh sharing now rereads the Agent's permission answer
+// and the Namespace's, neither audited, and then the policy, one list at a time. Still revoked,
+// it sends no policy read and adds no audited refusal.
+async function shareRefusedAfterRevoke(t, name) {
+  const opened = await openAsRevocableAdministrator(t, name, "draft");
+  const { fixture, page, revoke, stop, remove } = opened;
+  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  await waitForEnabled(panel.getByRole("button", { name: "Share Agent", exact: true }));
+  revoke();
+  const audited = authorizationDenials(fixture.auditSink).length;
+  await panel.getByLabel("Existing person’s Principal ID").fill("prn_regrant-share-target");
+  await panel.getByRole("checkbox").check();
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await panel
+    .getByText("Sharing policy requires Installation administration.", { exact: false })
+    .waitFor();
+  // The page takes the member's answer: no Stop or Delete.
+  await stop.waitFor({ state: "hidden" });
+  await remove.waitFor({ state: "hidden" });
+  await waitForIdleFetches(page);
+  return { ...opened, panel, audited };
+}
+
+function permissionReads(requests, namespaceId, permissionsPath) {
+  return requests
+    .map(({ path }) => path)
+    .filter((path) => [permissionsPath, `/namespaces/${namespaceId}/permissions`].includes(path))
+    .sort();
+}
+
+test("Refresh sharing after administration is granted again rereads access, then the policy", async (t) => {
+  const { fixture, page, requests, regrant, stop, remove, panel, audited, ...opened } =
+    await shareRefusedAfterRevoke(t, "Regranted share");
+  const accessTab = page.getByRole("tab", { name: "Access", exact: true });
+
+  regrant();
+  const sent = requests.length;
+  await panel.getByRole("button", { name: "Refresh sharing", exact: true }).click();
+  await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
+  // The page follows the administrator's answer again, without the page's Refresh.
+  await waitForEnabled(stop);
+  await waitForEnabled(remove);
+  await waitForIdleFetches(page);
+  assert.equal(await accessTab.getAttribute("aria-selected"), "true");
+  for (const control of [
+    panel.getByLabel("Existing person’s Principal ID"),
+    panel.getByRole("checkbox"),
+    panel.getByRole("button", { name: "Share Agent", exact: true }),
+  ]) {
+    await waitForEnabled(control);
+    assert.equal(await control.getAttribute("aria-disabled"), null);
+  }
+  const after = requests.slice(sent);
+  assert.deepEqual(
+    permissionReads(after, opened.namespaceId, opened.permissionsPath),
+    [opened.permissionsPath, `/namespaces/${opened.namespaceId}/permissions`].sort(),
+  );
+  // Both permission answers come before the policy, which is read one list at a time.
+  const firstPolicyRead = after.findIndex(({ path }) => path.includes("/iam/"));
+  assert.equal(
+    after.slice(0, firstPolicyRead).filter(({ path }) => path.endsWith("/permissions")).length,
+    2,
+  );
+  assert.deepEqual(iamReads(after), ["GET /iam/roles", "GET /iam/access-bindings"]);
+  // The share's refusal is the only audited one.
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.iam.roles.list"],
+  );
+});
+
+test("Refresh sharing while still revoked sends no policy read and adds no audited refusal", async (t) => {
+  const { fixture, page, requests, panel, audited, ...opened } = await shareRefusedAfterRevoke(
+    t,
+    "Still revoked share",
+  );
+  const accessTab = page.getByRole("tab", { name: "Access", exact: true });
+  const sent = requests.length;
+  await panel.getByRole("button", { name: "Refresh sharing", exact: true }).click();
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await accessTab.count(), 0);
+  const after = requests.slice(sent);
+  assert.deepEqual(
+    permissionReads(after, opened.namespaceId, opened.permissionsPath),
+    [opened.permissionsPath, `/namespaces/${opened.namespaceId}/permissions`].sort(),
+  );
+  assert.deepEqual(iamReads(after), []);
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.iam.roles.list"],
   );
 });
 
@@ -2199,6 +2888,8 @@ async function openAsRevocableAdministrator(t, name, version = "active") {
     revision,
     // The draft's entry in the version chooser follows the permission summary (finding 2421).
     draftEntry: page.locator('#revision-selector option[value="draft"]'),
+    namespaceId: namespace.id,
+    regrant: () => grantInstallationAdministration(fixture, account.principal),
   };
 }
 
@@ -3595,6 +4286,9 @@ test("Agents list row actions explain missing access and still report a refused 
   assert.equal(await confirm.isDisabled(), true);
   const cancel = dialog.getByRole("button", { name: "Cancel" });
   assert.equal(await cancel.evaluate((node) => node.ownerDocument.activeElement === node), true);
+  // The confirmation stays in the Tab order, described by the refusal, and sends nothing
+  // (finding 2935).
+  await expectReachableReason(page, confirm, AGENT_STOP_DENIED);
   await cancel.click();
   await dialog.waitFor({ state: "hidden" });
   await page.waitForFunction(() => {
@@ -3624,7 +4318,7 @@ test("Agents list row actions explain missing access and still report a refused 
     await stop.evaluate(
       (node) =>
         globalThis.document.getElementById(node.getAttribute("aria-describedby").split(" ")[0])
-          ?.title,
+          ?.textContent,
     ),
     bothDenied,
   );

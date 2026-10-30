@@ -301,14 +301,31 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	if !strings.HasPrefix(platform, "linux/") {
 		return "", fmt.Errorf("OpenShell %s image must contain a Linux platform", component)
 	}
+	// Docker's containerd image store cannot save a manifest-list reference
+	// as one complete image (see resolveDevelopmentImageSource), so point the
+	// staging tag at the platform child the list names for this host when there
+	// is one.
+	resolved, err := r.resolveDevelopmentImageSource(ctx, source, platform)
+	if err != nil {
+		return "", err
+	}
+	if resolved != source {
+		if err := r.run(ctx, r.engine, "tag", resolved, stagingTag); err != nil {
+			return "", err
+		}
+	}
 	archive := filepath.Join(root, component+"-image.tar")
 	defer func() {
 		if err := os.Remove(archive); err != nil && !os.IsNotExist(err) {
 			resultErr = errors.Join(resultErr, fmt.Errorf("remove OpenShell %s image archive: %w", component, err))
 		}
 	}()
+	// The staging tag names one complete image once it points at the platform
+	// child, so the archive needs no platform selection. Without a resolved
+	// child, keep the platform filter: it still works where the engine can
+	// resolve it, and names the failure otherwise.
 	saveArgs := []string{"image", "save"}
-	if r.engine == "docker" {
+	if r.engine == "docker" && resolved == source {
 		saveArgs = append(saveArgs, "--platform", platform)
 	}
 	saveArgs = append(saveArgs, "--output", archive, recorded)

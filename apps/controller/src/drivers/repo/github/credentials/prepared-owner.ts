@@ -6,7 +6,7 @@ import {
   parseInstallationTokenResponse,
   validateInstallationTokenResponse,
 } from "./installation-token-response.ts";
-import { preparationIssuerAuthority } from "./grants.ts";
+import { preparationIssuerAuthority } from "./origin.ts";
 import { permissionsForProfile } from "./profiles.ts";
 import { createProviderTransport, type ProviderAttempt } from "./provider-transport.ts";
 

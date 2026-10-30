@@ -218,6 +218,10 @@ export const CreateCapabilitiesError = {
   name: "Capability check failure",
 };
 export const CreateNoPresets = { ...story("createNoPresets"), name: "No Presets" };
+export const CreateNoDefaultPreset = {
+  ...story("createNoDefaultPreset"),
+  name: "Other Presets, no default",
+};
 export const CreateWithoutPreset = {
   ...story("createWithoutPreset"),
   name: "Start without Preset",
@@ -232,6 +236,7 @@ export const CreateOAuthPending = story("createOAuthPending");
 export const CreateOAuthReady = story("createOAuthReady");
 export const CreateOAuthDenied = story("createOAuthDenied");
 export const CreateOAuthUnavailable = story("createOAuthUnavailable");
+export const CreateOAuthNotOffered = story("createOAuthNotOffered");
 export const CreateOAuthStartUnconfirmed = story("createOAuthStartUnconfirmed");
 export const CreateOAuthError = story("createOAuthError");
 export const CreateOAuthExpired = story("createOAuthExpired");
@@ -356,3 +361,5 @@ export const PasswordSecretConflict = story("createPasswordSecretConflict");
 export const PasswordSecretConflictPat = story("createPasswordSecretConflictPat");
 
 export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOAuth");
+
+export const CreateOAuthStartNavigation = story("createOAuthStartNavigation");

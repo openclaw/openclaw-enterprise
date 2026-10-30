@@ -29,6 +29,7 @@ import {
   setFieldError,
   setStatusTone,
   setText,
+  setUnavailable,
   statusBlock,
   validateFields,
   requestIdText,
@@ -36,7 +37,7 @@ import {
 } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
-import { type DeviceLogin, createDeviceLogin } from "./device-login.mjs";
+import { type DeviceLogin, createDeviceLogin, deviceLoginOffered } from "./device-login.mjs";
 import {
   agentCreateDenied,
   askAdministratorTo,
@@ -2660,10 +2661,10 @@ function renderAgentForm(
     }
     oauthLogin.setActive(usesOAuth && !binding);
     oauthLogin.setDisabled(planLocked || saved);
-    mode.disabled ||=
-      harness.value === "codex" ||
-      nativeProvider.value === "anthropic" ||
-      binding?.method === "runtime";
+    // Anthropic and a runtime binding fix the mode too; with a pending or saved form they keep it
+    // natively disabled. The Codex harness lock is applied below, once its hint is set.
+    const modeNativelyDisabled =
+      mode.disabled || nativeProvider.value === "anthropic" || binding?.method === "runtime";
     // Why the harness choice is locked, without the request in flight: the hint must not change
     // while Create is pending, or it shifts the refusal the form just scrolled into view.
     const harnessChoiceLocked =
@@ -2735,7 +2736,7 @@ function renderAgentForm(
     runtimeModeSummary.textContent = modeUnavailable
       ? " · Execution mode unavailable"
       : ` · ${mode.value === "dedicated" ? "Dedicated" : "Embedded"}`;
-    const modeHint = form.querySelector("#execution-mode-hint");
+    const modeHint = form.querySelector<HTMLElement>("#execution-mode-hint");
     if (modeHint) {
       modeHint.textContent = sandboxDriverOutage
         ? "Codex and OpenClaw are unavailable while this installation's Sandbox Driver is unavailable."
@@ -2748,6 +2749,12 @@ function renderAgentForm(
               : embeddedRefused
                 ? "Codex uses Dedicated execution. This installation selects a Sandbox Driver, so OpenClaw uses Dedicated execution too. Slack requires Dedicated execution."
                 : "Codex uses Dedicated execution. OpenClaw uses Dedicated execution with a Sandbox Driver that provisions it, and Embedded execution without a Sandbox Driver. Slack requires Dedicated execution.";
+    }
+    // Codex fixes Dedicated execution, and the hint says so: the select stays in the Tab order,
+    // described by it, so a keyboard reader reaches why (finding 2945).
+    setUnavailable(mode, !modeNativelyDisabled && harness.value === "codex", modeHint);
+    if (modeNativelyDisabled) {
+      mode.disabled = true;
     }
     if (capabilitiesSettled()) {
       let nextStatus = "";
@@ -2928,7 +2935,7 @@ function renderAgentForm(
     reloadRepositories.disabled = pending || outcomeUnknown;
     startNewDraft.disabled = pending || outcomeUnknown;
     repositories.setDisabled(planLocked || repositoryRetryLocked());
-    submit.disabled =
+    const submitUnavailable =
       (!savedAgent &&
         (repositoryRetryLocked() ||
           (requiresRepositories() && !repositories.hasValidSelection()) ||
@@ -2944,17 +2951,27 @@ function renderAgentForm(
       (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
       Boolean(provisioningAttempt);
     // Create Agent names why it waits: the status line above says so (finding 2007).
+    let submitReason: HTMLElement | null = null;
     if (
       !savedAgent &&
       capabilitiesSettled() &&
       (namespaceRefusesAgents() || (!selectedModeUnavailable() && provisioningWaitsForNamespace()))
     ) {
+      submitReason = capabilityStatus;
       submit.setAttribute("aria-describedby", capabilityStatus.id);
     } else if (capabilityDiscoveryDenied && !capabilitiesUnreadable && !accessStatus.hidden) {
       // The refused Installation read's block above the form says why Create waits (finding 2092).
+      submitReason = accessStatus;
       submit.setAttribute("aria-describedby", accessStatus.id);
     } else {
       submit.removeAttribute("aria-describedby");
+    }
+    // While that reason shows, an unavailable Create Agent stays in the Tab order (class of
+    // finding 2899). Without one (a pending create, say) it stays natively disabled, even with
+    // focus, as before.
+    setUnavailable(submit, submitUnavailable && submitReason !== null, submitReason);
+    if (submitUnavailable && submitReason === null) {
+      submit.disabled = true;
     }
     checkCredentialRegistration.hidden = !credentialRegistration;
     checkCredentialRegistration.disabled = pending;
@@ -3056,6 +3073,8 @@ function renderAgentForm(
       dedicatedSettingRefusal =
         typeof settingRefusal === "string" && settingRefusal ? settingRefusal : undefined;
       credentialSourceTypes = installation.capabilities?.credentialSources?.types;
+      // Drivers that offer no device login refuse every start (finding 2991).
+      oauthLogin.setOffered(deviceLoginOffered(installation.capabilities));
       provisionableExecutionModes.clear();
       for (const executionMode of installation.capabilities?.agentProvisioning?.executionModes ??
         []) {

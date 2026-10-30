@@ -476,7 +476,9 @@ export async function startApi(env) {
     await app.listen({ host: settings.host, port: settings.port });
     phaseCompleted("listen");
   } catch (error) {
-    await app.close();
+    await app.close().catch(() => {
+      // Cleanup must finish without replacing the startup failure.
+    });
     throw error;
   }
   // One line tells an operator how long the boot took and which phase dominated.

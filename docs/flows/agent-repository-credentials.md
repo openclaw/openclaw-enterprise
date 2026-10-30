@@ -1,33 +1,29 @@
 ---
 created: "2026-09-18"
 updated: "2026-10-30"
-last_updated_session: authoring-run/086003c3-b067-490a-b33b-8083e88519bd
+last_updated_session: authoring-run/58b286d1-0e1a-4666-b77e-e8da815c7d88
 ---
 
 # Agent repository credential flow
 
 ## Overview
 
-The Console lists approved repositories; deployment freezes grants. Prepared native sessions reach
-Compute-owned dedicated Codex without a Sandbox Driver. The opt-in
-[OpenShell path](../reference/repository-credentials/protected-openshell-git.md) gives the sandbox a
-placeholder: the worker delivers prepared material to the provider and checks each signed
-request against the live grant without returning a token.
-See [service forwarding and retirement](repository-credentials.md) and
-[runtime qualification](../testing/repository-credentials.md).
-
-For selected repository sets and mandatory-hook setup, see [OpenShell enrollment](../guides/repository-credentials/openshell-enrollment.md).
+The Console lists approved repositories. Deployment freezes grants.
+Compute-owned dedicated Codex uses prepared native sessions without a Sandbox Driver. On the
+[OpenShell path](../reference/repository-credentials/protected-openshell-git.md), the sandbox gets a placeholder.
+The worker delivers the credential to the provider and checks signed requests against the live grant.
+See [enrollment and mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
+[service forwarding and retirement](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
 
 ## Entry Points
 
-- `apps/controller/src/index.ts:createFastifyApp` registers repository-option and
-  Agent lifecycle routes. Discovery requires Agent-create or exact-Agent update.
+- `apps/controller/src/index.ts:createFastifyApp` registers repository-option and Agent lifecycle routes.
 - `apps/controller/src/console/agents/repositories.mts:createRepositoryFields`
   renders discovery and inherited or custom access.
 - `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` prepares
   repository sessions before invoking Compute.
 
-For access across session expiry, see [standing repository approval](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
+See [standing approval across session expiry](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
 
 ## Flow
 
@@ -142,19 +138,20 @@ grants and an absolute deadline unaffected by renewal or recovery.
 `validateRepositoryBrokerNetworkProxy` then refuses a Codex proxy setting that
 blocks the broker, as Agent save does.
 
-`apps/controller/src/composition/repository-credentials/platform.ts:composeRepositoryAccess`
-constructs `GitHubRepositoryPolicy`, with its ID pinned by the GitHub Backend's `repo`
-member. Protected installations select `repository.preparedGitHub` and the installed
-Sandbox/Credential Proxy Driver. OCC creates finite sessions without a native sender,
-control socket, broker CA or session files.
+`apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
+selects `GitHubRepositoryPolicy` from the Backend's `repo`.
+`apps/controller/src/composition/repository-credentials/policy.ts:composeRepositoryPolicy`
+passes the selected owner to policy. Its Driver ID identifies the policy; its Backend ID must match the registry.
+Protected `repository.preparedGitHub` uses the installed Sandbox/Credential Proxy
+Driver. Its finite sessions need no native sender, control socket, broker CA or
+session files.
 
-Explicit `repository.nativeSender` selects `GitHubNativeRepositorySender` and requires
-prepared GitHub custody. It owns session operations and files, receives no App key, and
-cannot coexist with protected delivery. Controller startup rejects `drivers.repo` in
-every mode, before it constructs a worker or allocates an attempt. Operators must
-drain accepted work on the original owner before cutover.
-Cleanup matches recorded owner identity without resolving policy or restoring authority.
-The worker's prepared provider owns issuance and custody.
+`repository.nativeSender` selects `GitHubNativeRepositorySender` for prepared
+GitHub custody. It owns sessions and files, excludes protected delivery, and
+receives no App key. Startup rejects `drivers.repo` in every mode before worker or attempt
+creation. Drain accepted work on its original owner before cutover. Cleanup matches
+recorded identity without policy resolution or authority restoration. The
+worker's prepared provider owns issuance and custody.
 
 ### 3. Record ownership before opening a session
 
@@ -400,10 +397,14 @@ denied before reaching the provider, and chat continues.
 
 ## Changelog
 
+- 2026-10-30 15:01: Reuse validated policy owner identity. (authoring-run/58b286d1-0e1a-4666-b77e-e8da815c7d88 - 5b20ec5b1501bf1c6c2254ec36d9dc1e0e0bd730)
+
+- 2026-10-30 03:58: Load the native repository transport only for explicit native delivery. (authoring-run/43b61103-4082-4fc2-b9a0-511a18ebc761 - 87ed6c37e543e5501eae6285450d01d03d8abe7d)
+
 - 2026-10-30 02:21: Admit CLI metadata. (authoring-run/086003c3-b067-490a-b33b-8083e88519bd - 35f44276ed5cdcb69b5fd707b085fd59b06009dd)
 
 - 2026-10-29 23:23: Share selected-repository grant projection. (authoring-run/033567f0-1b76-4fba-83a3-d83d36dae4bd - a198a93e81cc88f7ba83edc4de7a949a43b19e17)
 
 - 2026-10-29 21:00: Keep an existing Agent's new version running when its first GitHub token is still pending at the convergence deadline (`REPOSITORY_GIT_TOKEN_PENDING`). (finding 2894)
 
-[Agent repository credential documentation history](agent-repository-credentials/history.md) preserves the older dated entries.
+[Earlier changes](agent-repository-credentials/history.md)

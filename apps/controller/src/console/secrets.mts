@@ -233,6 +233,21 @@ export function renderSecrets(
   // An unavailable Create Secret stays in the Tab order with the note that says why (finding
   // 2899).
   setUnavailable(create, !ready || createDenied, createDeniedNote ?? notReadyNote);
+  const toolbar = element("div", { className: "collection-toolbar" }, search, create);
+  // After the API refuses a create (403), Create Secret says so instead of offering another
+  // attempt it would refuse again, as Create Namespace does. Refresh renders the page anew.
+  function showCreateRefused() {
+    if (!ready || createDenied || create.getAttribute("aria-disabled") === "true") {
+      return;
+    }
+    const note = element(
+      "p",
+      { className: "muted", role: "status", id: "secrets-create-refused" },
+      `${SECRET_CREATE_DENIED} Then select Refresh.`,
+    );
+    toolbar.after(note);
+    setUnavailable(create, true, note);
+  }
   context.view.replaceChildren(
     statusBlock(
       "info",
@@ -242,7 +257,7 @@ export function renderSecrets(
       { role: null },
     ),
     ...(notReadyNote ? [notReadyNote] : []),
-    element("div", { className: "collection-toolbar" }, search, create),
+    toolbar,
     ...(createDeniedNote ? [createDeniedNote] : []),
     list,
   );
@@ -392,10 +407,12 @@ export function renderSecrets(
       context.onExpired();
       return;
     }
-    current.feedback.replaceChildren(statusBlock(tone, null, description));
+    const shown = statusBlock(tone, null, description);
+    current.feedback.replaceChildren(shown);
     if (error.requestId) {
       current.feedback.append(requestIdLine(error.requestId));
     }
+    return shown;
   }
 
   async function refreshList() {
@@ -709,6 +726,9 @@ export function renderSecrets(
           // Create is checked on the Namespace, which no Namespace Role grants; replace is Secret
           // update on this Secret.
           description = replacing ? SECRET_UPDATE_DENIED : SECRET_CREATE_DENIED;
+          if (!replacing) {
+            showCreateRefused();
+          }
         } else if (nameConflict) {
           // The API names the taken name's rule; the generic conflict keeps the hedge.
           const explained = explainedConflict(cause);
@@ -729,12 +749,13 @@ export function renderSecrets(
           description =
             "This Secret or Namespace is no longer available. Close and Refresh the list.";
         }
-        showError(current, error, description, unknown ? "warning" : "danger");
-        submit.disabled = !canSubmit;
+        const refusal = showError(current, error, description, unknown ? "warning" : "danger");
+        // A dialog that cannot submit again keeps its name, value and submit in the Tab order,
+        // described by the alert that says why (finding 2935); focus moves to Close.
+        for (const control of [name, reveal, value, submit]) {
+          setUnavailable(control, !canSubmit, refusal);
+        }
         submit.textContent = replacing ? "Replace value" : "Create Secret";
-        name.disabled = !canSubmit;
-        value.disabled = !canSubmit;
-        reveal.disabled = !canSubmit;
         if (canSubmit) {
           (nameConflict ? name : value).focus();
         }
@@ -802,10 +823,11 @@ export function renderSecrets(
         } else if (error.status === 404) {
           description = "The Secret is no longer available. Close and Refresh the list.";
         }
-        showError(current, error, description, unknown ? "warning" : "danger");
+        const refusal = showError(current, error, description, unknown ? "warning" : "danger");
         confirm.textContent = "Permanently delete Secret";
-        // A new confirmation starts with a fresh consumer read. This dialog never replays DELETE.
-        confirm.disabled = true;
+        // A new confirmation starts with a fresh consumer read. This dialog never replays DELETE,
+        // and its confirmation stays in the Tab order, described by why (finding 2935).
+        setUnavailable(confirm, true, refusal);
         if (unknown) {
           current.feedback.append(button("Check deletion status", () => void checkDeletion()));
         }

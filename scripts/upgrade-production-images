@@ -23,6 +23,7 @@ the same arguments and evidence directory after inspecting any unknown outcomes.
 Use --preflight-only to check the candidate before the maintenance window. It
 creates temporary resources with best-effort cleanup and stops before quiescence;
 its evidence cannot be resumed. To deploy, omit the flag and use a fresh evidence directory.
+After interruption, inspect final preflight-*-identity.json files alongside this run's parameters.json.
 OCC_URL, OCC_SERVICE_KEY_FILE, and OCC_CA_BUNDLE configure the OCC CLI connection.
 With the bundled Collector enabled, its config Secret must carry this checkout's
 deploy/logging collector.yaml and kubernetes.yaml; pass --collector-config-reviewed
@@ -553,6 +554,45 @@ PYTHON
   ((statuses[0] == 0)) || return 1
   ((statuses[1] == 0)) || return 2
 }
+# Register cleanup before local publication: a disk failure is not a failed create.
+# These records are identity evidence only; they are never read for replay.
+acknowledge_preflight() {
+  local slot=$1 resource=$2 delete_options=$3
+  preflight_resources+=("$resource $delete_options")
+  python3 - "$evidence_dir" "$slot" "$resource" 3<<<"$delete_options" 2>/dev/null <<'PYTHON' ||
+import json, os, sys
+root, slot, resource = sys.argv[1:]
+with os.fdopen(3, encoding="utf-8") as options:
+    uid = json.load(options)["preconditions"]["uid"]
+assert slot in ("networkpolicy", "secret", "api", "worker")
+kind, name = resource.split("/", 1)
+record = {"kind": kind, "name": name, "uid": uid}
+# Fixed local names, exclusive staging, and link publication refuse existing
+# files, directories and symlinks. Bind all operations to the same private
+# directory; publish only a complete, synced record.
+directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+filename = "preflight-" + slot + "-identity.json"
+staging = "." + filename + ".tmp"
+try:
+    fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                 0o600, dir_fd=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            json.dump(record, output, ensure_ascii=True, separators=(",", ":"))
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(staging, filename, src_dir_fd=directory, dst_dir_fd=directory,
+                follow_symlinks=False)
+        os.fsync(directory)
+    finally:
+        os.unlink(staging, dir_fd=directory)
+        os.fsync(directory)
+finally:
+    os.close(directory)
+PYTHON
+    die "preflight create acknowledged, but local identity evidence could not be confirmed; no OCC writer was stopped."
+}
 cleanup_preflight() {
   local entry resource name uri delete_options errors
   for entry in ${preflight_resources[@]+"${preflight_resources[@]}"}; do
@@ -615,13 +655,13 @@ preflight_startup() {
     delete_options=$(create_preflight "$evidence_dir/preflight-networkpolicy.json" \
       preflight-networkpolicy-create.err) ||
       unconfirmed_preflight "networkpolicy.networking.k8s.io/$secret" preflight-networkpolicy-create.err $?
-    preflight_resources+=("networkpolicy.networking.k8s.io/$secret $delete_options")
+    acknowledge_preflight networkpolicy "networkpolicy.networking.k8s.io/$secret" "$delete_options"
   fi
   delete_options=$(node scripts/upgrade-startup-preflight.mjs secret "$candidate_installation" \
     "$installation_key" "$secret" "$namespace" "$release" "$drafts" |
     create_preflight - preflight-secret-create.err scrub) ||
     unconfirmed_preflight "secret/$secret" preflight-secret-create.err $?
-  preflight_resources+=("secret/$secret $delete_options")
+  acknowledge_preflight secret "secret/$secret" "$delete_options"
   for component in api worker; do
     pod="$release-upgrade-preflight-$component-$suffix"
     node scripts/upgrade-startup-preflight.mjs pod "$evidence_dir/preflight-rendered.jsonl" \
@@ -632,7 +672,7 @@ preflight_startup() {
     delete_options=$(create_preflight "$evidence_dir/preflight-$component-pod.json" \
       "preflight-$component-pod-create.err") ||
       unconfirmed_preflight "pod/$pod" "preflight-$component-pod-create.err" $?
-    preflight_resources+=("pod/$pod $delete_options")
+    acknowledge_preflight "$component" "pod/$pod" "$delete_options"
   done
   # Wait for every Pod and save each one's status and log before reporting, so a
   # refusal shows every component that failed, not only the first.

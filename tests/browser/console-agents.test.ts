@@ -38,6 +38,7 @@ import {
   accessBindingPostRequests,
   apiRequests,
   detailUrl,
+  expectReachableReason,
   holdRequests,
   login,
   setSlackSelection,
@@ -2231,6 +2232,35 @@ test("Agent creation explains a denied capability check instead of offering a re
   assert.equal(await harnessHint.textContent(), "Codex requires OpenAI and Dedicated execution.");
 });
 
+// Finding 2945. Codex uses Dedicated execution, so the Execution mode select is unavailable with
+// the Codex harness. It was natively disabled, so Tab skipped it and the hint that says why. It
+// stays in the Tab order now, described by that hint, and changes nothing; OpenClaw enables it.
+test("Execution mode locked by the Codex harness stays reachable with its hint", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Codex mode lock", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Create Agent" }).waitFor();
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
+  const harness = page.getByLabel("Harness", { exact: true });
+  await harness.selectOption("codex");
+  await page.locator(".launch-runtime > summary").click();
+  const mode = page.getByLabel("Execution mode");
+  assert.equal(await mode.inputValue(), "dedicated");
+  assert.equal(await mode.isDisabled(), true);
+  const hint = (await page.locator("#execution-mode-hint").textContent())?.trim() ?? "";
+  assert.match(hint, /^Codex uses Dedicated execution\./);
+  await expectReachableReason(page, mode, hint);
+  assert.equal(await mode.inputValue(), "dedicated");
+
+  // OpenClaw lets the reader choose the mode again.
+  await harness.selectOption("openclaw");
+  await waitForEnabled(mode);
+  assert.equal(await mode.getAttribute("aria-disabled"), null);
+});
+
 test("Agent creation withholds Dedicated OpenClaw unless the Installation reports native worker support", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -2287,7 +2317,14 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
   assert.equal(await embeddedChannelNote.getAttribute("class"), "hint");
   // Codex keeps Dedicated execution; only native OpenClaw depends on the runtime.
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
-  assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
+  // The select itself is unavailable with Codex (aria-disabled, finding 2945), so the option's own
+  // state is read: Dedicated is not refused.
+  assert.equal(
+    await mode
+      .locator('option[value="dedicated"]')
+      .evaluate((node: HTMLOptionElement) => node.disabled),
+    false,
+  );
   const dedicatedHint = await modeHint.textContent();
   assert.ok(dedicatedHint);
   assert.match(

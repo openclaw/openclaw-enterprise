@@ -2611,3 +2611,70 @@ test("a reload asks first while an Agent editor holds unsaved work", async (t) =
   await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
   assert.deepEqual(dialogs, ["beforeunload"]);
 });
+
+// A refocus recheck reads the caller's permission answer again, so the controls that follow it
+// pick up a Secret operate grant: Disable Slack on the Channels tab did. The Deploy note above
+// kept naming the Secret until header Refresh, so the page gave two answers about the same
+// Secrets (finding 2977). The permission reread now refreshes the Secret operate answer too.
+test("a refocus after a Secret operate grant updates the Deploy note", async (t) => {
+  const { fixture, namespace, agent, path } = await deployableRepositoryAgent(
+    t,
+    "Regranted Secret Agent",
+  );
+  const operator = await fixture.createNamespaceMember("regranted-operator", namespace.id, [
+    ...AGENT_READ,
+    ["read_logs", "agent"],
+    ["deploy", "agent"],
+    ["operate", "agent"],
+    ["read", "secret"],
+  ]);
+  const reason =
+    "Deploying needs Secret operate on Demo model credential, which your access does not include. Ask an Installation administrator to grant it.";
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "channels"),
+    operator.credentials,
+  );
+  await page.getByRole("heading", { name: "Regranted Secret Agent" }).waitFor();
+  const note = page.getByText(reason, { exact: true });
+  await note.waitFor();
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  assert.equal(await deploy.isDisabled(), true);
+  await settlePageRequests(page);
+  const refocus = async () => {
+    const answered = page.waitForResponse(
+      (reply) =>
+        reply.url() === `${fixture.origin}${path}/permissions/secrets` &&
+        reply.request().method() === "GET" &&
+        reply.status() === 200,
+    );
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await answered;
+    await settlePageRequests(page);
+  };
+
+  // Without a grant, the recheck keeps the note and Deploy stays refused, also while it reads the
+  // Secret operate answer again: the last answer stands until the fresh one lands. The recheck
+  // cleared it first, so each refocus enabled Deploy and said "Ready to deploy." until the
+  // answer came back (finding 2987).
+  const recheck = await holdRequests(t, page, `${fixture.origin}${path}/permissions/secrets`, {
+    once: true,
+    method: "GET",
+  });
+  const rechecked = refocus();
+  await recheck.requested;
+  assert.equal(await note.isVisible(), true);
+  assert.equal(await deploy.isDisabled(), true);
+  recheck.release();
+  await rechecked;
+  await note.waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+
+  grantSecretOperate(fixture, namespace.id, operator.principal, [agent.harnessAuth.source.id]);
+  await refocus();
+  // Without Refresh, the note drops the Secret the operator may now operate, and Deploy follows.
+  await note.waitFor({ state: "detached" });
+  await waitForEnabled(deploy);
+});
