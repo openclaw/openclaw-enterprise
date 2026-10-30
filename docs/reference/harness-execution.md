@@ -6,8 +6,12 @@ kind: reference/driver
 
 **Interface contents**
 
-- [Properties](#properties) — `id`, `version`, `mode`
-- [Methods](#methods) — `HarnessResolver(harnessId, executionMode)`
+- [Properties](#properties)
+  - [`id`](#property-id)
+  - [`version`](#property-version)
+  - [`mode`](#property-mode)
+- [Methods](#methods)
+  - [`HarnessResolver(harnessId, executionMode)`](#method-harness-resolver)
 
 ## Overview
 
@@ -25,19 +29,19 @@ a dedicated Harness.
 The [revision descriptor](../../packages/contracts/src/index.ts) records the
 selection at `AgentRevision.harness`. All three properties are required.
 
-| Property  | Requirement | Meaning                                                                          |
-| --------- | ----------- | -------------------------------------------------------------------------------- |
-| `id`      | Required    | Approved runtime identifier. The bundled resolver accepts `openclaw` or `codex`. |
-| `version` | Required    | Version of the descriptor approved by the resolver.                              |
-| `mode`    | Required    | `embedded` runs inside the gateway. `dedicated` runs in a separate workload.     |
+| Property                               | Requirement | Meaning                                                                          |
+| -------------------------------------- | ----------- | -------------------------------------------------------------------------------- |
+| <a id="property-id"></a>`id`           | Required    | Approved runtime identifier. The bundled resolver accepts `openclaw` or `codex`. |
+| <a id="property-version"></a>`version` | Required    | Version of the descriptor approved by the resolver.                              |
+| <a id="property-mode"></a>`mode`       | Required    | `embedded` runs inside the gateway. `dedicated` runs in a separate workload.     |
 
 ### Methods
 
 <a id="resolver"></a>
 
-| Operation                                   | Requirement | Caller and result                                                                                                                                                                                                                                                                                                              |
-| ------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `HarnessResolver(harnessId, executionMode)` | Required    | At deployment, OCC asks the [resolver](../../packages/occ/src/index.ts) for an approved descriptor. The [bundled implementation](../../apps/controller/src/composition/production-harness.ts) returns an ID and version for a recognized pair, or `undefined` otherwise. OCC rejects an unapproved pair before it queues work. |
+| Operation                                                                       | Requirement | Caller and result                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| <a id="method-harness-resolver"></a>`HarnessResolver(harnessId, executionMode)` | Required    | At deployment, OCC asks the [resolver](../../packages/occ/src/index.ts) for an approved descriptor. The [bundled implementation](../../apps/controller/src/composition/production-harness.ts) returns an ID and version for a recognized pair, or `undefined` otherwise. OCC rejects an unapproved pair before it queues work. |
 
 ### Native runtime selection
 
