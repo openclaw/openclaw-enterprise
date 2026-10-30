@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
+// Load the YAML dependency from the matching release checkout.
 const require = createRequire(process.cwd() + "/apps/controller/package.json");
 const { loadYaml, dumpYaml } = require("@kubernetes/client-node");
 const file = process.env.OCC_DEVELOPMENT_STATE_DIRECTORY + "/installation.yaml";
@@ -23,4 +24,5 @@ policy.networkPolicies = policy.networkPolicies.filter((r) => r !== rule);
 const gateway = drivers.credential_gateway.configuration;
 gateway.toolBinaries = [...new Set([...(gateway.toolBinaries ?? []), "/usr/bin/git"])];
 drivers.plugin.configuration.catalogSource = "openai-curated";
+// Save the file that Helm will load from the new versioned Secret.
 writeFileSync(file, dumpYaml(config), { mode: 0o600 });

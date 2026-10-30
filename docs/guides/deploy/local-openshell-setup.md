@@ -20,14 +20,7 @@ test -r "$CODEX_TOKEN_FILE" && test -s "$CODEX_TOKEN_FILE"
 
 ## 1. Prepare the quickstart files and select the stable release
 
-Start in Bash at the root of the checkout containing **this guide**. Copy the examples below before switching to the source commit for the stable images.
-
-| Example                                                                             | Purpose                                                    |
-| ----------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| [Network policy](../../assets/openshell-quickstart/plugin-network-policy.yaml)      | Permit read-only plugin downloads from the approved hosts. |
-| [Installation editor](../../assets/openshell-quickstart/configure-installation.mjs) | Configure Git and select the curated plugin catalog.       |
-| [Codex configuration](../../assets/openshell-quickstart/codex-configuration.jq)     | Build the Agent's configuration using your chosen model.   |
-| [Chat client](../../assets/openshell-quickstart/chat.mjs)                           | Send a turn through OpenClaw and return its history.       |
+Start in Bash at the root of the checkout containing this guide. Copy the files to a private directory before switching to the stable release checkout. The policy, editor and configuration are shown inline at the steps that use them. The [WebSocket chat client](../../assets/openshell-quickstart/chat.mjs) sends the verification turn in step 7.
 
 ```bash
 set -euo pipefail
@@ -35,8 +28,12 @@ umask 077
 
 # Keep this run's files, credentials and kubeconfig separate from earlier installations.
 RUN_DIR=$(mktemp -d)
+
+# Stage the network policy for cluster startup and the editor for the Helm reload.
 install -m 600 docs/assets/openshell-quickstart/plugin-network-policy.yaml "$RUN_DIR/artifacts.yaml"
 install -m 600 docs/assets/openshell-quickstart/configure-installation.mjs "$RUN_DIR/configure-installation.mjs"
+
+# Stage the Agent configuration template and the client used to verify a turn.
 install -m 600 docs/assets/openshell-quickstart/codex-configuration.jq "$RUN_DIR/codex-configuration.jq"
 install -m 600 docs/assets/openshell-quickstart/chat.mjs "$RUN_DIR/chat.mjs"
 
@@ -51,6 +48,10 @@ Complete [published image selection](published-images.md) in this shell. Check t
 ## 2. Start a new k3d installation
 
 Choose unused local ports for the OCE API and Kubernetes API. The launcher creates `k3d-state` under the new run directory. To repeat the exercise on a host with a previous disposable installation, first [remove only that installation](#remove-a-previous-quickstart).
+
+The [plugin network policy](../../assets/openshell-quickstart/plugin-network-policy.yaml), copied to `$RUN_DIR/artifacts.yaml`, grants the two pinned Codex binaries read-only HTTPS access to the listed package hosts.
+
+<Snippet file="../../assets/openshell-quickstart/plugin-network-policy.yaml" lang="yaml" />
 
 ```bash
 # Select an isolated state directory and the Kubernetes-only OpenShell profile.
@@ -72,6 +73,10 @@ Wait for `OpenClaw Enterprise development stack is ready`. Record the API URL, K
 ## 3. Enable the credential and plugin settings
 
 Run this from the matching release checkout. The editor removes the generated `source-control` rule that gives Git uninspected access to `github.com:443`. It keeps the other rules, adds `/usr/bin/git` to the Credential Gateway tool binaries and selects the curated Codex plugin catalog. Each Agent still needs an explicit Git source or plugin selection.
+
+The [Installation editor](../../assets/openshell-quickstart/configure-installation.mjs) checks that the generated rule matches the expected settings before changing it.
+
+<Snippet file="../../assets/openshell-quickstart/configure-installation.mjs" lang="javascript" />
 
 ```bash
 # Edit the fresh installation.yaml once, before provisioning Agents.
@@ -142,6 +147,10 @@ modelSource=$(jq -er '.data|select(.state=="ready")|.id' "$RUN_DIR/model-source"
 ## 5. Create the Configuration and Agent
 
 Register the model with a fail-closed loopback URL. The Gateway uses authenticated WebSocket transport to the dedicated Codex Harness, which runs inside OpenShell. Give the Agent's own principal `operate` on its exact model source.
+
+The [Codex configuration template](../../assets/openshell-quickstart/codex-configuration.jq) takes the model ID from `MODEL`. The command below renders the template as JSON and posts it to OCE.
+
+<Snippet file="../../assets/openshell-quickstart/codex-configuration.jq" lang="jq" />
 
 ```bash
 # POST $base/configurations: save the model, sandbox and Gateway settings.

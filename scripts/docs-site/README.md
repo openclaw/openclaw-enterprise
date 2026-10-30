@@ -42,6 +42,10 @@ spec links.
 Markdown links in full-line comments under `deploy/examples/` (`.yaml` and
 `.yml`) use the same validation.
 
+Use `<Snippet file="relative/path" lang="yaml" />` to render a source file inside
+`docs/` as a copyable code block. Paths are relative to the including page.
+Omit `lang` for a Markdown snippet. Link the file as well for readers using GitHub.
+
 Before parsing links or rendering, the build removes document `Changelog` sections
 and empty `Manual Notes` sections. It also removes the notes placeholder when real
 notes follow; those notes stay visible. This keeps internal records out of the
