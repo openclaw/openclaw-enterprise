@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import {
   AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
@@ -45,9 +46,7 @@ const SLACK_CHANNEL = {
 // by the sentence a sighted reader sees beside it.
 
 test("a reader's disabled Deploy, diagnostics and authentication controls name their reasons", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Described reader", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Described reader");
   const agent = await fixture.createAgent(namespace.id, "Described Agent", nativeValues("why"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   // An Agent bound to an issued service account. Issuance is outside the console: seed its stored
@@ -140,9 +139,7 @@ test("a reader's disabled Deploy, diagnostics and authentication controls name t
 // Finding 2899: the Agents list, Secrets and Slack token controls a reader cannot use were
 // natively disabled, so Tab skipped them and their reasons.
 test("a reader reaches the list, Secret and Slack token controls they cannot use, and why", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Reachable reader", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Reachable reader");
   const tokens = [
     await fixture.createSecret(namespace.id, "Reachable Slack app token", "xapp-reachable"),
     await fixture.createSecret(namespace.id, "Reachable Slack bot token", "xoxb-reachable"),
@@ -203,9 +200,7 @@ test("a reader reaches the list, Secret and Slack token controls they cannot use
 
 // Configure Slack stays in the Tab order while that reason shows (class of finding 2899).
 test("Configure Slack on an embedded Agent is described by the execution mode", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Described channels", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Described channels");
   const agent = await fixture.createAgent(namespace.id, "Embedded Agent", nativeValues("embed"));
   const { page } = await newPage(t, fixture);
 
@@ -306,9 +301,7 @@ test("Start with default Preset names the missing default as its reason", async 
 // Finding D793. Save plugin selections, Discard changes, Save channel Secrets and Use Preset were
 // disabled with a sentence beside them that no control named. Each is described by it now.
 test("a draft's disabled Save and Discard name their reasons", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Described draft", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Described draft");
   const tokens = [
     await fixture.createSecret(namespace.id, "Described Slack app token", "xapp-described"),
     await fixture.createSecret(namespace.id, "Described Slack bot token", "xoxb-described"),
@@ -346,9 +339,9 @@ test("a draft's disabled Save and Discard name their reasons", async (t) => {
 
 // Use Preset waits for a Preset; the status line under the chooser says so.
 test("Use Preset names the Preset still to choose as its reason", async (t) => {
-  const fixture = await createConsoleAppFixture(t, { defaultPresets: [DEFAULT_CODEX_PRESET] });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Described Preset", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Described Preset", {
+    defaultPresets: [DEFAULT_CODEX_PRESET],
+  });
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
@@ -361,9 +354,7 @@ test("Use Preset names the Preset still to choose as its reason", async (t) => {
 
 // A Slack token without a Secret is the reason too.
 test("Save channel Secrets names an unbound Slack token as its reason", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Unbound Slack", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Unbound Slack");
   const agent = await fixture.createAgent(
     namespace.id,
     "Unbound Slack Agent",
