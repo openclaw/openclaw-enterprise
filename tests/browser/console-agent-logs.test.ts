@@ -2104,6 +2104,7 @@ async function openUnreadableCurrent(
   name: string,
   tab: string,
   actions: PermissionAction[] = ["read", "operate", "read_logs"],
+  pageOptions = {},
 ) {
   const { fixture, computeDriver, namespace, agent, revisionId } = logs;
   computeDriver.state.lines = [line(1, "the hidden version serves")];
@@ -2125,7 +2126,7 @@ async function openUnreadableCurrent(
     revisionId,
   );
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, pageOptions);
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
   await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
@@ -2208,50 +2209,92 @@ test("a refocus shows a stop made elsewhere while a version the caller cannot re
   }
 });
 
-test("Logs of a version the caller cannot read show a stop and a redeploy made elsewhere", async (t) => {
-  const logs = await logsFixture(t);
-  const { fixture, namespace, agent } = logs;
-  const {
-    agentPath,
-    grantVersion,
-    hidden,
-    namesFormerVersion,
-    page,
-    requests,
-    shows,
-    stopElsewhere,
-  } = await openUnreadableCurrent(t, logs, "hidden-current-poll", "logs");
-  await page.getByText(RUNTIME_STATUS_VERSION_UNREADABLE, { exact: true }).waitFor();
-  const denied = authorizationDenials(fixture.auditSink).length;
-  const poll = async () => {
-    const agentReads = await settledFetches(page, agentPath);
-    await page.clock.runFor(10_000);
-    await waitForSettledFetches(page, agentPath, agentReads + 1);
+// Finding 3012 (dogfood r63, D825): the stop showed only in the page summary, which at 390 px wide
+// sits far above the Logs view, so nothing in view changed. The view now says so in place, as a
+// status announced once, in the summary's words. The summary and the Stop row grow as the stop
+// shows; the view stays where the reader has it. At 1440 the browser's scroll anchor was the
+// sidebar's account row, which pinned the page to its end and moved the view up by that growth.
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`Logs of a version the caller cannot read show a stop and a redeploy made elsewhere at ${viewport.width}x${viewport.height}`, async (t) => {
+    const logs = await logsFixture(t);
+    const { fixture, namespace, agent } = logs;
+    const {
+      agentPath,
+      grantVersion,
+      hidden,
+      namesFormerVersion,
+      page,
+      requests,
+      shows,
+      stopElsewhere,
+    } = await openUnreadableCurrent(t, logs, "hidden-current-poll", "logs", undefined, {
+      context: { viewport },
+    });
+    await page.getByText(RUNTIME_STATUS_VERSION_UNREADABLE, { exact: true }).waitFor();
+    await page.locator(settledView).waitFor();
     await waitForIdleFetches(page);
-  };
+    const denied = authorizationDenials(fixture.auditSink).length;
+    const poll = async () => {
+      const agentReads = await settledFetches(page, agentPath);
+      await page.clock.runFor(10_000);
+      await waitForSettledFetches(page, agentPath, agentReads + 1);
+      await waitForIdleFetches(page);
+    };
+    const view = page.locator("section.agent-logs");
+    const notice = view.locator(".log-serving-change");
+    assert.equal(await notice.filter({ hasText: /\S/ }).count(), 0);
+    const viewTop = async () => (await view.boundingBox())?.y;
+    const topBefore = await viewTop();
 
-  // The poll rereads the Agent alone, so the stop shows without a reload.
-  await stopElsewhere();
-  await poll();
-  await shows(/Selected for service\s+None/);
-  await namesFormerVersion();
+    // The poll rereads the Agent alone, so the stop shows without a reload.
+    await stopElsewhere();
+    await poll();
+    await shows(/Selected for service\s+None/);
+    await namesFormerVersion();
+    const STOPPED =
+      "Stop requested. This Agent will not start again until a new version is deployed.";
+    await notice.getByText(STOPPED, { exact: true }).waitFor();
+    // It is a status where the reader is, so a screen reader announces it there.
+    assert.equal(await view.getByRole("status").filter({ hasText: STOPPED }).count(), 1);
+    const box = await notice.boundingBox();
+    assert.ok(box && box.y >= 0 && box.y + box.height <= viewport.height, JSON.stringify(box));
+    // The summary grew above the view; the view did not move.
+    const topAfter = await viewTop();
+    assert.ok(
+      topBefore !== undefined && topAfter !== undefined && Math.abs(topAfter - topBefore) < 1,
+      JSON.stringify({ topBefore, topAfter }),
+    );
+    // A later poll leaves the status untouched, so it is not announced again.
+    const writes = await recordWrites(page, [
+      [".log-serving-change", { childList: true, subtree: true, characterData: true }],
+    ]);
+    await poll();
+    assert.deepEqual(await writes.jsonValue(), []);
+    await writes.dispose();
 
-  // Another session deploys v3, which this caller may read: the view names it and links to it.
-  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id, undefined);
-  grantVersion(revision.id);
-  await poll();
-  await shows(/Selected for service\s+v3/);
-  const notice = page.locator(".log-running-version");
-  await notice.getByText("v3 is selected for service.").waitFor();
-  await notice.getByRole("link", { name: "Open v3 Logs" }).waitFor();
+    // Another session deploys v3, which this caller may read: the view names it and links to it.
+    const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id, undefined);
+    grantVersion(revision.id);
+    await poll();
+    await shows(/Selected for service\s+v3/);
+    await notice
+      .getByText("This version is no longer selected for service.", { exact: true })
+      .waitFor();
+    const running = page.locator(".log-running-version");
+    await running.getByText("v3 is selected for service.").waitFor();
+    await running.getByRole("link", { name: "Open v3 Logs" }).waitFor();
 
-  // Nothing read the hidden version's runtime status, and no read was refused or audited.
-  assert.equal(
-    requests.some(({ path }) => path.endsWith(`/deployments/${hidden.id}/runtime`)),
-    false,
-  );
-  assert.equal(authorizationDenials(fixture.auditSink).length, denied);
-});
+    // Nothing read the hidden version's runtime status, and no read was refused or audited.
+    assert.equal(
+      requests.some(({ path }) => path.endsWith(`/deployments/${hidden.id}/runtime`)),
+      false,
+    );
+    assert.equal(authorizationDenials(fixture.auditSink).length, denied);
+  });
+}
 
 // A refocus recheck reads the Agent before the page applies it. A poll that lands meanwhile carries
 // a newer state, so the recheck's older answer is dropped, as a poll's own reread is (finding

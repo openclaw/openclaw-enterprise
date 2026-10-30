@@ -26,6 +26,21 @@ const runtimeLogsPage = {
   deployed: true,
   candidateDeploymentStatus: "succeeded",
 };
+// The current version, v8, which the viewer cannot read, opened on its Logs tab.
+const hiddenCurrentLogsPage = {
+  group: "Pages/Agent detail",
+  path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&tab=logs",
+  deployed: true,
+  candidateDeploymentStatus: "succeeded",
+  candidateSuperseded: true,
+  rules: [
+    {
+      suffix: "/revisions/rev_00000000-0000-4000-8000-000000000008",
+      status: 403,
+      code: "FORBIDDEN",
+    },
+  ],
+};
 const refuseLogRead = { suffix: "/runtime/logs", status: 403, code: "FORBIDDEN" };
 const form = [click("Start with default Preset")];
 // The OpenShell Sandbox Driver's refusal of Dedicated OpenClaw on its settings alone.
@@ -6570,20 +6585,8 @@ export const scenarios = {
     ],
   },
   agentCurrentVersionHiddenLogs: {
-    group: "Pages/Agent detail",
+    ...hiddenCurrentLogsPage,
     name: "Logs of a current version the viewer cannot read",
-    // The current version, v8, which the viewer cannot read, opened on its Logs tab.
-    path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&tab=logs",
-    deployed: true,
-    candidateDeploymentStatus: "succeeded",
-    candidateSuperseded: true,
-    rules: [
-      {
-        suffix: "/revisions/rev_00000000-0000-4000-8000-000000000008",
-        status: 403,
-        code: "FORBIDDEN",
-      },
-    ],
     description:
       "An operator opens Logs on a current version she cannot read. Runtime status also needs AgentRevision read on it, so the page does not read it and says why in words; log text, which needs no version read, still shows.",
     steps: [
@@ -6591,6 +6594,19 @@ export const scenarios = {
       "The request log shows no /runtime status read and no read of the current version; log output still loads.",
     ],
     gap: "Simulated UI proof: it does not verify the API's refusal of the status read.",
+  },
+  agentCurrentVersionHiddenLogsStopped: {
+    ...hiddenCurrentLogsPage,
+    name: "Logs of a current version the viewer cannot read, stopped elsewhere",
+    stopElsewhereOnReread: true,
+    description:
+      "The operator has Logs open on the current version, which she cannot read. Another person stops the Agent. The Logs view reads no runtime status for this version, so it says in place that a stop was requested (finding 3012), as the summary does.",
+    steps: [
+      "Wait for the next Agent reread (at most 10 seconds). The summary reads Selected for service None.",
+      "Check the Logs view under the runtime status: “Stop requested. This Agent will not start again until a new version is deployed.” It says nothing else about the version. Focus and the Logs view stay where they were, at 1440 and at 390 px wide.",
+      "The request log shows only Agent reads: no /runtime status read and no read of the version.",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live stop or the screen reader announcement.",
   },
   deploymentSucceeded: {
     group: "Pages/Agent detail",

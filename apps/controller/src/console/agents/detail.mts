@@ -2276,6 +2276,7 @@ export async function renderAgentDetail(
     renderDetailHeading();
     renderVersionNotice();
     versionRecord?.renderDiagnostics();
+    logsServingChange?.(servingChange());
   }
 
   // The Logs view of a version with no running Pod asks which version serves now. A stop and
@@ -2380,6 +2381,23 @@ export async function renderAgentDetail(
     }
     const label = `v${serving.revision}`;
     return { label, link: versionLink(`Open ${label} Logs`, serving.id, "logs") };
+  }
+
+  // What the open Logs view says in place once a stop, or another version, takes the place of the
+  // viewed version that was selected for service. The view shows it only for a version the reader
+  // cannot read, whose runtime status it does not read: the stop showed only in the summary, off
+  // screen at phone width (finding 3012). It says no more than the summary does.
+  let logsServingChange: ((text: string | null) => void) | null = null;
+  function servingChange() {
+    if (selected !== currentRevisionId && !formerCurrent.has(selected)) {
+      return null;
+    }
+    if (currentRuntimeState === "stopped") {
+      return "Stop requested. This Agent will not start again until a new version is deployed.";
+    }
+    return selected === currentRevisionId
+      ? null
+      : "This version is no longer selected for service.";
   }
 
   // The failed version the recovery block leads with, if any. The viewed version's record does
@@ -4505,6 +4523,8 @@ export async function renderAgentDetail(
           },
         );
       logsFailure(recoveryLine);
+      logsServingChange = logs.showServingChange;
+      logsServingChange(servingChange());
       content.append(logs.section);
       state.loading = false;
       // The pending view is nearly empty: Stop and Delete sat under it, then the strip and
