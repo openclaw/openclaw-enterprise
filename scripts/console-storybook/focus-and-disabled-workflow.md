@@ -65,7 +65,22 @@ follows `:focus-visible`. No part of any ring may be cut off.
    Embedded Agent, the Share Agent form after a failed change (**Pages / Agent
    detail / Sharing outcome uncertain**) and the Logs controls of a version
    with no running Pod (**Pages / Agent detail / Logs of a version with no
-   running Pod**). So do Previous instance before a restart (**Pages / Agent
+   running Pod**). A dialog that cannot submit after a refusal or an unknown
+   outcome keeps its fields and confirmation in the Tab order, described by
+   its alert, while focus moves to Cancel or Close (finding 2935): **Pages /
+   Namespaces / Create permission denied** and **Create outcome unknown**,
+   **Pages / Secrets / Create denied** and **Concurrent reference conflict**,
+   and the Stop and Delete confirmations when a refusal arrives while they are
+   open (**Pages / Agents / Stop from the list, permission arrives while
+   confirmation is open**, **Components / Stop Agent / Permission arrives while
+   confirmation is open**, **Components / Deletion / Permission arrives while
+   confirmation is open**). Delete Agent after an unknown outcome
+   (**Components / Deletion / Outcome unknown**) is described by its alert. So
+   are the header's Namespace selector with no readable Namespace (**Pages /
+   Agents / No readable Namespaces**, finding 2936) and **Start with default
+   Preset** without a default Preset (**Pages / Create Agent / No Presets**,
+   finding 2937), whose hint says why.
+   So do Previous instance before a restart (**Pages / Agent
    detail / Runtime status after a healthy first deploy**), described by its
    note (finding 2944), and Execution mode with the Codex harness (**Pages /
    Create Agent / OpenAI with Codex harness**, Runtime details open), described

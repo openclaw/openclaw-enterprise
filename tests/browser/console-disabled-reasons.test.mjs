@@ -244,6 +244,56 @@ test("the Namespace selector names no missing reason on a page without the no-Na
   );
 });
 
+// Finding 2936: with no readable Namespace, the header's selector was natively disabled, so Tab
+// skipped it and the no-Namespace panel that says why. It stays in the Tab order, described by
+// that panel, and changes nothing.
+test("the Namespace selector with no readable Namespace is reachable and names the panel", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  await fixture.createNamespace("Hidden from the reader", { ready: true });
+  restrict(fixture.policy, "read", "namespace");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, "/console/agents");
+  const reason = page.locator("#namespace-access-reason");
+  await reason.waitFor();
+  const selector = page.getByLabel("Namespace", { exact: true });
+  assert.equal(await selector.isDisabled(), true);
+  await expectReachableReason(page, selector, (await reason.textContent())?.trim());
+  assert.equal(new URL(page.url()).pathname, "/console/agents");
+});
+
+// Finding 2937: with no default Preset, Start with default Preset was natively disabled with no
+// reason. The hint beside it says why, describes it, and stays when another Preset is chosen
+// (the chooser's status line changes then).
+test("Start with default Preset names the missing default as its reason", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    defaultPresets: [],
+    filesystemConfiguration: true,
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("No default Preset", { ready: true });
+  const other = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: { name: "Team Preset", template: { agent: { name: "Team Agent" } } },
+  });
+  assert.equal(other.status, 201, JSON.stringify(other.body));
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  const reason = "default-codex is not available to you in this Namespace.";
+  await page.getByText(reason, { exact: true }).waitFor();
+  const shortcut = page.getByRole("button", { name: "Start with default Preset", exact: true });
+  assert.equal(await shortcut.isDisabled(), true);
+  await expectReachableReason(page, shortcut, reason);
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+
+  await page.getByLabel("Preset template").selectOption(other.data.id);
+  await page
+    .getByText("Fill in the variables, then use this Preset to create an editable draft.", {
+      exact: true,
+    })
+    .waitFor();
+  await expectReachableReason(page, shortcut, reason);
+});
+
 // Finding D793. Save plugin selections, Discard changes, Save channel Secrets and Use Preset were
 // disabled with a sentence beside them that no control named. Each is described by it now.
 test("a draft's disabled Save and Discard name their reasons", async (t) => {

@@ -720,8 +720,9 @@ export function renderAgentList(context: AgentListContext) {
       if (id !== item.id || !dialog.open || pending || answer?.[permission] !== false) {
         return;
       }
-      confirm.disabled = true;
       description.textContent = stopping ? AGENT_STOP_DENIED : AGENT_DELETE_DENIED;
+      // The confirmation stays in the Tab order, described by the refusal (finding 2935).
+      setUnavailable(confirm, true, description);
       cancel.focus();
     };
     restrictOpenDialog = restrict;

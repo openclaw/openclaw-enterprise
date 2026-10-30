@@ -540,6 +540,9 @@ export const scenarios = {
     ],
     description:
       "The permission answer allowed creation, but the API refuses it (for example, a grant removed after the page loaded). The form clears the value, disables editing, and focuses Close.",
+    steps: [
+      "Tab to Secret name, Value and Create Secret. Each takes focus and looks unavailable, described by the refusal; typing, Enter, Space or a click sends nothing (finding 2935).",
+    ],
   },
   secretsUnknownSave: {
     group: "Pages/Secrets",
@@ -652,6 +655,9 @@ export const scenarios = {
     ],
     description:
       "A newly added reference can refuse deletion after the detail read. Reopen the detail to inspect current consumers.",
+    steps: [
+      "Tab to Permanently delete Secret. It takes focus and looks unavailable, described by the refusal; Enter, Space or a click sends nothing (finding 2935).",
+    ],
   },
   secretsDeletionUnconfirmed: {
     group: "Pages/Secrets",
@@ -1272,6 +1278,22 @@ export const scenarios = {
     ],
     gap: "The summary is advisory. The controller still authorizes each write.",
   },
+  agentsRowStopPermissionDuringConfirmation: {
+    group: "Pages/Agents",
+    name: "Stop from the list, permission arrives while confirmation is open",
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    rules: [
+      { suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions", delayMs: 3500 },
+    ],
+    actions: [{ selector: '[aria-label="Stop Research assistant"]', click: true }],
+    description:
+      "The story opens Stop from the list before the delayed permission answer says no. The confirmation explains the restriction and focuses Cancel.",
+    steps: [
+      "Tab to Stop Agent. It takes focus and looks unavailable, described by the restriction; Enter, Space or a click sends nothing (finding 2935).",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes every request.",
+  },
   agentsRowStopUnknown: {
     group: "Pages/Agents",
     name: "Stop from the list outcome unknown",
@@ -1295,6 +1317,9 @@ export const scenarios = {
     name: "No readable Namespaces",
     emptyNamespaces: true,
     description: "Agent pages need an accessible Namespace.",
+    steps: [
+      "Tab to the Namespace selector. It takes focus and looks unavailable, described by the panel's sentence; arrow keys and a click change nothing (finding 2936).",
+    ],
     gap: "Create a Namespace from Namespaces; granting access still requires an administrator.",
   },
   namespaceMissing: {
@@ -1739,6 +1764,9 @@ export const scenarios = {
     ],
     description:
       "A creation denial explains the missing Installation permission and disables resubmission. Cancel returns to the empty list.",
+    steps: [
+      "Tab to Namespace name and Create Namespace. Each takes focus and looks unavailable, described by the refusal; typing, Enter, Space or a click sends nothing (finding 2935).",
+    ],
   },
   namespaceCreatePending: {
     group: "Pages/Namespaces",
@@ -1765,6 +1793,9 @@ export const scenarios = {
     ],
     description:
       "An unconfirmed write blocks resubmission. Check Namespaces rereads the list before a deliberate new attempt; this fixture does not establish whether the write committed.",
+    steps: [
+      "Tab to Namespace name and Create Namespace. Each takes focus and looks unavailable, described by the Outcome unknown warning; Enter, Space or a click sends nothing (finding 2935).",
+    ],
   },
   namespaceCreateSuccess: {
     group: "Pages/Namespaces",
@@ -3913,6 +3944,9 @@ export const scenarios = {
     rules: [{ path: presetSecretsPath.replace(/secrets$/, "presets"), status: 403 }],
     description:
       "Denied Preset access leaves quick-start disabled and reports the error. Start without Preset remains available as a separate action.",
+    steps: [
+      "Tab to Start with default Preset. It takes focus and looks unavailable, described by the Presets unavailable status; Enter, Space or a click does nothing.",
+    ],
   },
   createPresetInvalidField: {
     group: "Pages/Create Agent",
@@ -4023,6 +4057,9 @@ export const scenarios = {
     emptyPresets: true,
     description:
       "The default starter is unavailable until an administrator installs a readable Preset. Start without Preset opens an independent form.",
+    steps: [
+      "Tab to Start with default Preset. It takes focus and looks unavailable, described by the hint under it, “default-codex is not available to you in this Namespace.” Enter, Space or a click does nothing (finding 2937).",
+    ],
   },
   createWithoutPreset: {
     group: "Pages/Create Agent",
@@ -9175,8 +9212,8 @@ export const scenarios = {
     actions: [click("Delete Agent")],
     description: "The story opens Delete before the delayed permission summary answers no.",
     steps: [
-      "Watch the open confirmation explain the restriction, disable Delete, and move focus to Cancel.",
-      "Cancel or press Escape. The page should explain why Delete is unavailable, without sending a delete request.",
+      "Watch the open confirmation explain the restriction, make Permanently delete Agent unavailable, and move focus to Cancel. Tab to it: it takes focus, described by the restriction, and Enter, Space or a click sends nothing (finding 2935).",
+      "Cancel or press Escape. The page explains why Delete is unavailable, without sending a delete request; Delete Agent stays in the Tab order, described by that note.",
     ],
   },
   deletionConfirm: {
@@ -9294,6 +9331,9 @@ export const scenarios = {
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     description:
       "Deletion may have started. Refresh deletion status checks this Agent without sending another deletion request.",
+    steps: [
+      "Tab to Delete Agent. It takes focus and looks unavailable, described by the Outcome unknown alert; Enter, Space or a click sends nothing (finding 2935).",
+    ],
   },
   createFlow: {
     group: "Flows",
@@ -9589,8 +9629,8 @@ export const scenarios = {
     actions: [click("Stop Agent")],
     description: "The story opens Stop before the delayed permission summary answers no.",
     steps: [
-      "Watch the open confirmation explain the restriction, disable Stop, and move focus to Cancel.",
-      "Cancel or press Escape. The page should explain why Stop is unavailable, without sending a stop request.",
+      "Watch the open confirmation explain the restriction, make Stop Agent unavailable, and move focus to Cancel. Tab to it: it takes focus, described by the restriction, and Enter, Space or a click sends nothing (finding 2935).",
+      "Cancel or press Escape. The page explains why Stop is unavailable, without sending a stop request; Stop Agent stays in the Tab order, described by that note.",
     ],
   },
   dangerZoneReader: {

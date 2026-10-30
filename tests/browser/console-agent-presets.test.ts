@@ -42,6 +42,7 @@ import {
   apiRequests,
   consoleViewports,
   detailUrl,
+  expectReachableReason,
   focusKeptOverClose,
   holdRequests,
   inViewport,
@@ -3571,6 +3572,12 @@ test("Preset list and Preset Secret field name the Namespace read a Restriction 
   await page
     .getByText(`Presets unavailable. ${namespaceListDenied("Presets")}`, { exact: true })
     .waitFor();
+  // The shortcut stays in the Tab order, described by the chooser's status (finding 2937).
+  await expectReachableReason(
+    page,
+    page.getByRole("button", { name: "Start with default Preset", exact: true }),
+    `Presets unavailable. ${namespaceListDenied("Presets")}`,
+  );
 
   // With the list readable again, the chosen Preset's Secret field lists the Namespace's Secrets.
   await page.reload();

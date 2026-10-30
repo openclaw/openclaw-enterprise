@@ -378,6 +378,18 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   );
   // Nothing in the form can succeed now, so the name is not left editable as if it could.
   assert.equal(await dialog.getByLabel("Namespace name").isDisabled(), true);
+  // Both stay in the Tab order, described by the refusal, and send nothing (finding 2935). The
+  // name keeps its own help first.
+  await expectReachableReason(
+    page,
+    dialog.getByRole("button", { name: "Create Namespace", exact: true }),
+    CONSOLE_NAMESPACE_CREATE_DENIED,
+  );
+  await expectReachableReason(
+    page,
+    dialog.getByLabel("Namespace name"),
+    `Unique within this Installation. Names cannot currently be changed. ${CONSOLE_NAMESPACE_CREATE_DENIED}`,
+  );
   await dialog.getByRole("button", { name: "Cancel" }).click();
   // The refusal is the API's answer for this person: the page stops offering creation, says
   // why, and keeps focus on that reason rather than on a disabled button.
@@ -582,9 +594,11 @@ test("a lost Namespace creation response requires inspection before another atte
     .getByRole("alert")
     .filter({ hasText: /Outcome unknown/ })
     .waitFor();
-  assert.equal(
-    await dialog.getByRole("button", { name: "Create Namespace", exact: true }).isDisabled(),
-    true,
+  // Create Namespace stays in the Tab order, described by the warning (finding 2935).
+  await expectReachableReason(
+    page,
+    dialog.getByRole("button", { name: "Create Namespace", exact: true }),
+    (await dialog.getByRole("alert").textContent())?.trim(),
   );
   await dialog.getByRole("button", { name: "Check Namespaces" }).click();
   await page

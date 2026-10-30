@@ -22,6 +22,7 @@ import {
   detailUrl,
   deploymentStatusResponse,
   expectNoText,
+  expectReachableReason,
   expireSessionsWhenSettled,
   holdRequests,
   login,
@@ -391,7 +392,12 @@ test("Agent delete uncertainty requires refresh before another destructive reque
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
 
   await page.getByText("Outcome unknown. Deletion may have started.").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Delete Agent" }).isDisabled(), true);
+  const remove = page.getByRole("button", { name: "Delete Agent" });
+  assert.equal(await remove.isDisabled(), true);
+  // Delete waits for Refresh deletion status. It stays in the Tab order, described by the alert
+  // that says so, and sends nothing (finding 2935).
+  const alert = page.locator("#agent-deletion-error");
+  await expectReachableReason(page, remove, (await alert.textContent())?.trim());
   assert.equal(interceptedDeletes, 1);
   assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
   const deleting = await fixture.request("GET", deletePath);
@@ -405,7 +411,8 @@ test("Agent delete uncertainty requires refresh before another destructive reque
   );
   await page.getByRole("button", { name: "Refresh deletion status" }).click();
   await page.getByText("Could not refresh deletion status.").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Delete Agent" }).isDisabled(), true);
+  assert.equal(await remove.isDisabled(), true);
+  await expectReachableReason(page, remove, (await alert.textContent())?.trim());
 
   const refresh = page.waitForResponse(
     (response) =>
@@ -414,6 +421,16 @@ test("Agent delete uncertainty requires refresh before another destructive reque
   await page.getByRole("button", { name: "Refresh deletion status" }).click();
   assert.equal((await refresh).status(), 200);
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  // The confirmed read clears the wait: the repeat is offered, with no stale reason.
+  const repeat = page.getByRole("button", { name: "Request deletion again", exact: true });
+  await waitForEnabled(repeat);
+  assert.deepEqual(
+    await repeat.evaluate((node) => ({
+      ariaDisabled: node.getAttribute("aria-disabled"),
+      describedby: node.getAttribute("aria-describedby"),
+    })),
+    { ariaDisabled: null, describedby: null },
+  );
   assert.equal(interceptedDeletes, 1);
   assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
 });

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
-import type { Page, Route } from "playwright";
+import type { Locator, Page, Route } from "playwright";
 
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
 import type {
@@ -3491,4 +3491,39 @@ test("Back shows the lines its check read in an unfollowed Logs view", async (t)
   assert.equal(await viewKept(page), true);
   assert.equal(logReads() - before, 1);
   assert.equal(await pane.getByText("before leaving").count(), 1);
+});
+
+// Once a Pod runs again, no log control keeps the stale no-Pod reason (class of finding 2899).
+test("a Pod that comes back drops the no-Pod reason", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.gatewayPod = false;
+  computeDriver.state.lines = [line(1, "the Pod is back")];
+  const { page } = await newPage(t, fixture);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  const reason = "This version has no running Pod for this source.";
+  await page.getByRole("status").filter({ hasText: reason }).waitFor();
+  computeDriver.state.gatewayPod = true;
+  await page.clock.runFor(10_000);
+  await page.getByText("the Pod is back").waitFor();
+  await page.clock.runFor(1_000);
+  const state = (locator: Locator) =>
+    locator.evaluate((node: HTMLButtonElement | HTMLSelectElement) => ({
+      disabled: node.disabled,
+      ariaDisabled: node.getAttribute("aria-disabled"),
+      reason: node.dataset.disabledReason ?? null,
+    }));
+  // No restarts, so Previous instance stays unavailable, but not for the old no-Pod reason.
+  assert.deepEqual(await state(page.getByLabel("Previous instance")), {
+    disabled: true,
+    ariaDisabled: null,
+    reason: null,
+  });
+  for (const name of ["Follow", "Refresh logs", "Download"]) {
+    assert.deepEqual(await state(page.getByRole("button", { name })), {
+      disabled: false,
+      ariaDisabled: null,
+      reason: null,
+    });
+  }
 });

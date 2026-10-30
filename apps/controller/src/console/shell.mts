@@ -1,5 +1,5 @@
 import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
-import { button, describeDisabled, element, requestIdLine } from "./dom.mjs";
+import { button, element, requestIdLine, setUnavailable } from "./dom.mjs";
 import type { createNavigation, pages } from "./navigation.mjs";
 
 interface Account {
@@ -348,23 +348,26 @@ export function createShell({
   }
 
   // A reader with no Namespace sees a panel whose sentence says why the selector is disabled
-  // (finding D749). Only a shown panel describes it: on any other page, such as Settings, the
-  // selector names no reason that is not there.
+  // (finding D749). Only a shown panel in the selector's own shell describes it: on any other
+  // page, such as Backends, or while a new shell is still being built, the selector names no
+  // reason that is not there. While that panel shows, the selector stays in the Tab order,
+  // described by it (finding 2936); otherwise it is natively disabled, even with focus.
   function describeNamespaceSelector(select: HTMLSelectElement) {
-    describeDisabled(
-      select,
+    const unavailable = namespaceAdmissionPending || !session || namespaces.length === 0;
+    const reason =
       session && !namespaceAdmissionPending && namespaces.length === 0
         ? // The page view may still be detached from the document while it renders.
-          (select.closest(".shell") ?? document).querySelector<HTMLElement>(
-            `#${NAMESPACE_ACCESS_REASON_ID}`,
-          )
-        : null,
-    );
+          (select.closest(".shell")?.querySelector<HTMLElement>(`#${NAMESPACE_ACCESS_REASON_ID}`) ??
+          null)
+        : null;
+    setUnavailable(select, unavailable && reason !== null, reason);
+    if (unavailable && reason === null) {
+      select.disabled = true;
+    }
   }
 
   function updateNamespaceSelector(select: HTMLSelectElement) {
     const readable = namespaceAdmissionPending ? [] : namespaces;
-    select.disabled = namespaceAdmissionPending || !session || readable.length === 0;
     describeNamespaceSelector(select);
     select.replaceChildren();
     if (!readable.some((item) => item.id === namespaceId)) {
