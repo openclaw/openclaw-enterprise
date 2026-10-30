@@ -300,7 +300,7 @@ focus fell to the body, using `preventScroll` to preserve return position. An Ag
 opened from the list focuses its heading when the title renders. Tabs (one Tab
 stop; arrows move) and focused controls keep focus. Navigation, Namespace changes, and logout invalidate
 reads; generations reject late responses. Refocus coalesces events.
-`revalidateMountedAgent` rechecks session, Namespace, Agent, and version, then the
+`revalidateMountedAgent` rechecks session, Namespace, Agent, version, and
 [permission answer](platform-console/agent-stop-and-deletion.md#stop-agent);
 unchanged access preserves controls, input, and saves.
 Refocus sends a fresh GET. A repeated 403 on a never-readable draft Configuration

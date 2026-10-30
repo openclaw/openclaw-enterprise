@@ -225,7 +225,9 @@ for (const action of ["Stop", "Delete"] as const) {
       afterServer: true,
     });
     await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
-    assert.equal((await (await reread.requested).json()).data[grant], true);
+    const allowed = await reread.requested;
+    assert.ok(allowed, "the real API answered the reread");
+    assert.equal((await allowed.json()).data[grant], true);
     // The grant is revoked, so the real API refuses the action for grants.
     revokeMemberGrant(fixture, label, [grant, "agent"]);
     await page.locator(settledView).waitFor();
