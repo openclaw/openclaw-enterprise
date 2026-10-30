@@ -10,7 +10,7 @@ author: mrunalp
 - **Created:** 2026-10-29
 - **Last updated:** 2026-10-30
 - **RFC PR:** [#4207](https://github.com/openclaw/openclaw-enterprise/pull/4207)
-- **Implementation plan:** None yet
+- **Implementation plan:** [TASK-0050](../plans/0050-default-users.md)
 - **Related:** [Agent Author role (#4045)](https://github.com/openclaw/openclaw-enterprise/pull/4045),
   [Additional Installation administrators (#889)](https://github.com/openclaw/openclaw-enterprise/pull/889),
   [Agent OAuth connections (#3068)](https://github.com/openclaw/openclaw-enterprise/pull/3068),
@@ -81,10 +81,10 @@ one place.
 
 | Concern                         | Owner                                                                                     |
 | ------------------------------- | ----------------------------------------------------------------------------------------- |
-| Built-in Roles, Default users   | Created at bootstrap, like the Installation administrator Role                            |
+| Built-in Roles, Default users   | Created by a migration, so existing and new Installations get the same rows               |
 | Mapping rules                   | New Installation IAM API and console Settings card; Installation `administer`; PostgreSQL |
 | Account creation and membership | Controller sign-in path, through the IAM Driver, in one transaction with its audit event  |
-| Namespace limit                 | Installation setting (Helm `defaultUser.namespaceLimit`), always set                      |
+| Namespace limit                 | Installation configuration `defaultUser.namespaceLimit`, 1 when absent                    |
 | Owner binding and limit check   | `createNamespace`, in the Namespace creation transaction                                  |
 | Agent credential grants         | `deployAgent`, through the existing Agent operate Roles                                   |
 
@@ -165,9 +165,9 @@ hours). For immediate effect, an administrator disables the account.
 When the caller's `namespace:create` comes from the Default User Role,
 `createNamespace` checks the caller's Namespace limit, then writes the
 Namespace, its `createdBy` Principal, and a Namespace-wide binding of the caller
-to the Namespace owner Role, in one transaction. OCC creates the default Presets
-with its own authority; today that step fails for a caller without
-`preset:create`.
+to the Namespace owner Role, in one transaction. The owner binding comes first,
+so the creator's own grant creates the default Presets; today that step fails
+for a caller without `preset:create`.
 
 The limit counts the caller's Namespaces that are not `deleting`, under the same
 lock as the insert, so concurrent requests cannot exceed it. A refused request
