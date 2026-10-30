@@ -11,6 +11,8 @@ cannot deploy Agents. A separate [Compose OCC with Kubernetes compute profile](d
 has fewer configured capabilities. To install OCC itself in a cluster you already operate,
 use [Kubernetes Setup](kubernetes-setup.md).
 
+For local OpenShell with native Git or Codex plugins, start with [Setup OCE on local k3d](deploy/local-openshell-setup.md). The instructions below use the profile without OpenShell.
+
 ## Before you start
 
 Run the commands below from the repository root on Linux or macOS. You need:

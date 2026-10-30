@@ -15,45 +15,45 @@
         "language": "en",
         "tabs": [
           {
-            "tab": "Getting Started",
+            "tab": "Getting Started (Local)",
             "groups": [
               {
-                "group": "Getting Started",
+                "group": "Local k3d",
                 "pages": [
                   {
-                    "page": "README",
-                    "label": "Overview"
+                    "page": "guides/deploy/local-openshell-setup",
+                    "label": "Setup OCE"
                   },
                   {
-                    "page": "guides/concepts",
-                    "label": "Concepts"
+                    "page": "guides/repository-credentials/openshell-git-push",
+                    "label": "Add Git Support"
+                  },
+                  {
+                    "page": "guides/integrations/codex-plugins",
+                    "label": "Add Codex Plugins"
                   }
                 ]
               },
               {
-                "group": "Quickstart",
+                "group": "Learn More",
                 "pages": [
-                  {
-                    "page": "guides/quickstart",
-                    "label": "Local Setup"
-                  },
-                  {
-                    "page": "guides/kubernetes-setup",
-                    "label": "Kubernetes Setup"
-                  }
-                ]
-              },
-              {
-                "group": "Deploy",
-                "pages": [
-                  {
-                    "page": "guides/first-agent",
-                    "label": "Deploy Your First Agent"
-                  }
+                  { "page": "README", "label": "Overview" },
+                  { "page": "guides/concepts", "label": "Concepts" },
+                  { "page": "guides/quickstart", "label": "Local Setup Without OpenShell" },
+                  { "page": "guides/first-agent", "label": "Deploy Your First Agent" }
                 ]
               }
             ],
             "hidden": ["guides/README"]
+          },
+          {
+            "tab": "Getting Started (K8)",
+            "groups": [
+              {
+                "group": "Kubernetes",
+                "pages": [{ "page": "guides/kubernetes-setup", "label": "Setup OCE" }]
+              }
+            ]
           },
           {
             "tab": "Topics",
@@ -429,10 +429,6 @@
                       {
                         "page": "guides/repository-credentials/installation",
                         "label": "Installation"
-                      },
-                      {
-                        "page": "guides/repository-credentials/openshell-git-push",
-                        "label": "OpenShell Git Push"
                       },
                       {
                         "page": "reference/repository-credentials",

@@ -3,7 +3,7 @@
 Prepare a Kubernetes cluster you already operate, then follow the shared
 [production installation runbook](deploy/production-installation.md) to install
 and authenticate to the OpenClaw Control Plane (OCC). If you want to try
-OpenClaw Enterprise on your machine, use [Local Setup](quickstart.md).
+OpenClaw Enterprise on your machine, use [Setup OCE on local k3d](deploy/local-openshell-setup.md). For an Amazon EKS cluster, start with the [EKS prerequisites](deploy/eks.md#prepare-aws-infrastructure), then return here for the shared Helm installation.
 
 ## What the install creates
 
@@ -29,7 +29,7 @@ You need:
 - Bash for the image-selection and model-verification commands. Node.js 24.22.1 or newer
   for profile generation and the API transport-credential example. Manual YAML
   plus console transport provisioning avoids those Node commands.
-- Docker and Git to [select the latest published images](deploy/published-images.md)
+- Docker and Git to [select the stable published images](deploy/published-images.md)
   and their matching source checkout; Buildx only if building your own images.
 - External PostgreSQL with separate application and migration roles, verified TLS, and a registry your cluster can pull controller and runtime images from.
 - Storage for the bootstrap and gateway volumes, and an approved internal HTTPS origin for OCC. Dedicated Agent workspaces also need a default StorageClass that supports `ReadWriteOnce`. The chart does not create public Ingress or TLS.
