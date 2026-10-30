@@ -6,6 +6,7 @@ import {
   assertSessionUser,
   clientAddresses,
   consoleOrigin as origin,
+  createAccount,
   fakeGoogle,
   githubSignIn,
   githubUpgradeSettings,
@@ -18,6 +19,7 @@ import {
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
@@ -248,22 +250,17 @@ test(
         const supportedEmail = "supported-legacy-recovery@example.test";
         const legacyPassword = "legacy-password-\u0000-\ud800-\ufffd";
         const headers = await signedInHeaders(app, origin, admin, address());
-        const created = await app.inject({
-          method: "POST",
-          url: "/api/auth/accounts",
-          headers,
-          payload: { email: supportedEmail, password: legacyPassword, roleId: roles.admin.id },
+        const { id: userId } = await createAccount(app, headers, {
+          email: supportedEmail,
+          password: legacyPassword,
+          roleId: roles.admin.id,
         });
-        assert.equal(created.statusCode, 201, created.body);
-        const userId = created.json().data.id;
         const target = await readAccount(app, headers, userId);
         const recovery = await app.inject({ url: "/api/auth/recovery", headers });
         assert.equal(recovery.statusCode, 200, recovery.body);
-        const replaced = await app.inject({
-          method: "POST",
-          url: "/api/auth/recovery",
-          headers,
-          payload: {
+        const replaced = await injectLocalhost(app, "POST", "/api/auth/recovery", {
+          session: headers,
+          body: {
             userId,
             expectedCurrentUserId: recovery.json().data.userId,
             expectedVersion: target.version,
@@ -303,8 +300,7 @@ test(
           assert.equal(sessionsAfter.rows[0].count, sessionsBefore.rows[0].count + 1);
           // Credential admission is not usable Console access: the existing session
           // response contract rejects this unsupported stored email spelling.
-          const unsupportedSession = await app.inject({
-            url: "/api/auth/session",
+          const unsupportedSession = await injectLocalhost(app, "GET", "/api/auth/session", {
             headers: { cookie },
           });
           assert.equal(unsupportedSession.statusCode, 500, unsupportedSession.body);
@@ -312,12 +308,10 @@ test(
           assert.equal(unsupportedSession.json().data, undefined);
           const before = await denials();
           for (const email of [legacyEmail, "recovery-nul\u0000@example.test"]) {
-            const refused = await app.inject({
-              method: "POST",
-              url: "/api/auth/sign-in/email",
+            const refused = await injectLocalhost(app, "POST", "/api/auth/sign-in/email", {
               remoteAddress: address(),
-              headers: { origin, cookie },
-              payload: { email, password: legacyPassword },
+              session: { cookie, origin },
+              body: { email, password: legacyPassword },
             });
             assert.equal(refused.statusCode, 400, refused.body);
             assert.equal(refused.json().error.code, "INVALID_REQUEST");

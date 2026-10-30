@@ -12,6 +12,7 @@ import {
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
@@ -170,13 +171,9 @@ test(
         assert.deepEqual(lane, { fresh: 429, former: 200, holder: 200 });
         assert.equal(
           (
-            await app.inject({
-              method: "POST",
-              url: `/api/auth/accounts/${holder.id}/disable`,
-              headers: adminHeaders,
-              payload: {
-                expectedVersion: (await readAccount(app, adminHeaders, holder.id)).version,
-              },
+            await injectLocalhost(app, "POST", `/api/auth/accounts/${holder.id}/disable`, {
+              session: adminHeaders,
+              body: { expectedVersion: (await readAccount(app, adminHeaders, holder.id)).version },
             })
           ).statusCode,
           409,

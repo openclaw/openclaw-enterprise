@@ -7,6 +7,7 @@ import {
   bootstrapProductionInstallation,
   composeProductionSignIn,
   consoleOrigin as origin,
+  createAccount,
   currentSession,
   defaultInstallSettings,
   installationRoles,
@@ -16,6 +17,7 @@ import {
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
 import { testPasswordHasher } from "../helpers/password-hasher.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
@@ -78,31 +80,24 @@ test(
         { cookie: headers.cookie },
         { cookie: headers.cookie, origin: "https://attacker.example.test" },
       ]) {
-        const response = await app.inject({
-          method: "POST",
-          url: "/api/auth/accounts",
+        const response = await injectLocalhost(app, "POST", "/api/auth/accounts", {
           headers: refused,
-          payload,
+          body: payload,
         });
         assert.equal(response.statusCode, 403, response.body);
       }
-      const created = await app.inject({
-        method: "POST",
-        url: "/api/auth/accounts",
-        headers,
-        payload,
+      const created = await injectLocalhost(app, "POST", "/api/auth/accounts", {
+        session: headers,
+        body: payload,
       });
       assert.equal(created.statusCode, 201, created.body);
       member = created.json().data;
       assert.equal(member.email, memberEmail);
-      const withGitHub = await app.inject({
-        method: "POST",
-        url: "/api/auth/accounts",
-        headers,
-        payload: {
+      const withGitHub = await injectLocalhost(app, "POST", "/api/auth/accounts", {
+        session: headers,
+        body: {
+          ...payload,
           email: "password-default-github@example.test",
-          password: memberPassword,
-          roleId: role.id,
           github: { subject: "55555555" },
         },
       });
@@ -120,10 +115,8 @@ test(
         assert.equal(refused.headers["set-cookie"], undefined);
         assert.equal((await sessionOf(cookie)).user.id, member.id, "the session stays current");
       }
-      const signedOut = await app.inject({
-        method: "POST",
-        url: "/api/auth/sign-out",
-        headers: { cookie, origin },
+      const signedOut = await injectLocalhost(app, "POST", "/api/auth/sign-out", {
+        session: { cookie, origin },
       });
       assert.equal(signedOut.statusCode, 200, signedOut.body);
       assert.equal(await sessionOf(cookie), null);
@@ -230,9 +223,7 @@ test(
       });
       const { cookie } = await adminHeaders();
       for (const provider of ["github", "google"]) {
-        const start = await app.inject({
-          method: "POST",
-          url: `/api/auth/providers/${provider}/start`,
+        const start = await injectLocalhost(app, "POST", `/api/auth/providers/${provider}/start`, {
           headers: { origin },
         });
         assert.equal(start.statusCode, 403, start.body);
@@ -292,14 +283,10 @@ test(
         // Reproduce a previously accepted account's encoding with the real PostgreSQL
         // parameter path; the API now rejects malformed input before it reaches State.
         const headers = await adminHeaders();
-        const created = await app.inject({
-          method: "POST",
-          url: "/api/auth/accounts",
-          headers,
-          payload: { email: "supported-legacy-default@example.test", password: legacyPassword },
+        const { id: userId } = await createAccount(app, headers, {
+          email: "supported-legacy-default@example.test",
+          password: legacyPassword,
         });
-        assert.equal(created.statusCode, 201, created.body);
-        const userId = created.json().data.id;
         await pool.query('UPDATE occ."user" SET email = $1 WHERE id = $2', [legacyEmail, userId]);
 
         const stored = await pool.query('SELECT email FROM occ."user" WHERE id = $1', [userId]);
@@ -318,14 +305,10 @@ test(
 
         // The identical unusual password remains usable with a supported email address.
         const ordinaryEmail = "ordinary-unusual-default@example.test";
-        const ordinary = await app.inject({
-          method: "POST",
-          url: "/api/auth/accounts",
-          headers,
-          payload: { email: ordinaryEmail, password: legacyPassword },
+        const { id: ordinaryId } = await createAccount(app, headers, {
+          email: ordinaryEmail,
+          password: legacyPassword,
         });
-        assert.equal(ordinary.statusCode, 201, ordinary.body);
-        const ordinaryId = ordinary.json().data.id;
 
         const accepted = await signIn(ordinaryEmail, legacyPassword);
         assert.equal(accepted.statusCode, 200, accepted.body);
@@ -339,11 +322,9 @@ test(
           );
         const before = (await denials()).length;
         for (const email of [legacyEmail, "legacy-nul\u0000@example.test"]) {
-          const refused = await app.inject({
-            method: "POST",
-            url: "/api/auth/sign-in/email",
-            headers: { origin, cookie },
-            payload: { email, password: legacyPassword },
+          const refused = await injectLocalhost(app, "POST", "/api/auth/sign-in/email", {
+            session: { cookie, origin },
+            body: { email, password: legacyPassword },
           });
           assert.equal(refused.statusCode, 400, refused.body);
           assert.equal(refused.json().error.code, "INVALID_REQUEST");
@@ -375,14 +356,11 @@ test(
           password: adminPassword,
         });
         const { reader: role } = await installationRoles(new PostgresPlatformState(pool), pool);
-        const created = await production.inject({
-          method: "POST",
-          url: "/api/auth/accounts",
-          headers,
-          payload: { email, password, roleId: role.id },
+        const { id: userId } = await createAccount(production, headers, {
+          email,
+          password,
+          roleId: role.id,
         });
-        assert.equal(created.statusCode, 201, created.body);
-        const userId = created.json().data.id;
         const adminId = (await currentSession(production, headers.cookie)).user.id;
         // The initialization Job's administrator (scripts/bootstrap-installation.mjs) and an
         // account the API created: both stored as Better Auth's `<salt>:<key>` scrypt hash.

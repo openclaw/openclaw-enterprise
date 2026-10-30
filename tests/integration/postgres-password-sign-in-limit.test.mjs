@@ -8,7 +8,9 @@ import {
   consoleOrigin as origin,
   defaultInstallSettings,
   memoryLogger,
+  passwordSignIn,
 } from "../helpers/production-sign-in.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { scryptPasswordHasher } from "../helpers/password-hasher.mjs";
 import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.mjs";
@@ -148,21 +150,12 @@ test(
       },
     );
     // Without a trusted proxy every browser reaches the API from the ingress address.
-    const plainSignIn = (account) =>
-      plainApp.inject({
-        method: "POST",
-        url: "/api/auth/sign-in/email",
-        remoteAddress: ingress,
-        headers: { origin },
-        payload: { email: account.email, password: account.password },
-      });
+    const plainSignIn = (account) => passwordSignIn(plainApp, origin, account, ingress);
     const signIn = (client, account) =>
-      app.inject({
-        method: "POST",
-        url: "/api/auth/sign-in/email",
+      injectLocalhost(app, "POST", "/api/auth/sign-in/email", {
         remoteAddress: ingress,
         headers: { origin, "x-forwarded-for": client },
-        payload: { email: account.email, password: account.password },
+        body: { email: account.email, password: account.password },
       });
     const timed = async (client, account) => {
       const started = performance.now();
@@ -396,12 +389,10 @@ test(
         .flat()
         .find((value) => value.startsWith(`${knownDeviceName}=`));
     const plainSignInWith = (cookie, account) =>
-      plainApp.inject({
-        method: "POST",
-        url: "/api/auth/sign-in/email",
+      injectLocalhost(plainApp, "POST", "/api/auth/sign-in/email", {
         remoteAddress: ingress,
         headers: { origin, cookie },
-        payload: { email: account.email, password: account.password },
+        body: { email: account.email, password: account.password },
       });
     let memberDevice;
 

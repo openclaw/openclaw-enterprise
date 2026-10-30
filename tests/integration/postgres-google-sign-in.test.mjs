@@ -22,6 +22,7 @@ import {
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
 import { providerInstanceId } from "../helpers/human-login-transport.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
@@ -94,6 +95,22 @@ test(
       passwordSlowLaneFloors: slowLane,
     });
     let adminHeaders = await signedInHeaders(app, origin, admin, address());
+    // A browser at a fresh client address starts Google sign-in, from the console by default.
+    const startGoogle = (headers = { origin }) =>
+      injectLocalhost(app, "POST", "/api/auth/providers/google/start", {
+        remoteAddress: address(),
+        headers,
+      });
+    // Google sends the member back to the callback for attempt `state` (authorized at `url`).
+    const googleCallback = (state, url, headers) =>
+      injectLocalhost(
+        app,
+        "GET",
+        `/api/auth/providers/google/callback?state=${state}&code=${google.authorize(url, {
+          subject: memberSubject,
+        })}`,
+        { remoteAddress: address(), headers },
+      );
 
     const counts = () => authRowCounts(pool);
     const denials = (reason) => loginDenialCount(state, reason);
@@ -142,20 +159,13 @@ test(
         assert.equal(recovery.statusCode, 200, recovery.body);
         assert.equal(recovery.json().data.userId, admin.id);
         // GitHub stays unconfigured on a Google-only install.
-        const githubStart = await app.inject({
-          method: "POST",
-          url: "/api/auth/providers/github/start",
+        const githubStart = await injectLocalhost(app, "POST", "/api/auth/providers/github/start", {
           remoteAddress: address(),
           headers: { origin },
         });
         assert.equal(githubStart.statusCode, 403, githubStart.body);
         // The controller's fixed endpoints are the ones Google's discovery document names.
-        const start = await app.inject({
-          method: "POST",
-          url: "/api/auth/providers/google/start",
-          remoteAddress: address(),
-          headers: { origin },
-        });
+        const start = await startGoogle();
         assert.equal(start.statusCode, 200, start.body);
         const authorize = new URL(start.json().data.url);
         assert.equal(
@@ -219,12 +229,10 @@ test(
       assert.equal(token.grant_type, "authorization_code");
 
       const result = (headers, attemptId) =>
-        app.inject({
-          method: "POST",
-          url: "/api/auth/providers/google/result",
+        injectLocalhost(app, "POST", "/api/auth/providers/google/result", {
           remoteAddress: address(),
           headers,
-          payload: { attemptId },
+          body: { attemptId },
         });
       const cookie = signIn.cookie;
       assert.equal((await result({ cookie }, signIn.attemptId)).statusCode, 403, "Origin");
@@ -319,66 +327,32 @@ test(
     await t.test("a replayed state and a missing binding cookie are refused", async () => {
       const signIn = await assertGoogleSignIn(memberSubject, member.id);
       const before = await counts();
-      const replay = await app.inject({
-        url: `/api/auth/providers/google/callback?state=${signIn.state}&code=${google.authorize(
-          signIn.url,
-          { subject: memberSubject },
-        )}`,
-        remoteAddress: address(),
-        headers: { cookie: signIn.bindingCookie },
+      const replay = await googleCallback(signIn.state, signIn.url, {
+        cookie: signIn.bindingCookie,
       });
       assert.equal(replay.headers.location, "/console/?authError=google");
       assert.deepEqual(await counts(), before);
 
-      const start = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/google/start",
-        remoteAddress: address(),
-        headers: { origin },
-      });
+      const start = await startGoogle();
       const url = start.json().data.url;
       const state = new URL(url).searchParams.get("state");
       const tokensBefore = google.tokens.length;
-      const unbound = await app.inject({
-        url: `/api/auth/providers/google/callback?state=${state}&code=${google.authorize(url, {
-          subject: memberSubject,
-        })}`,
-        remoteAddress: address(),
-      });
+      const unbound = await googleCallback(state, url);
       assert.equal(unbound.headers.location, "/console/?authError=google");
       assert.equal(google.tokens.length, tokensBefore, "no code exchange without the browser");
       assert.deepEqual(await counts(), before);
       // Another browser's binding cookie does not complete this attempt either.
-      const other = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/google/start",
-        remoteAddress: address(),
-        headers: { origin },
-      });
-      const foreign = await app.inject({
-        url: `/api/auth/providers/google/callback?state=${state}&code=${google.authorize(url, {
-          subject: memberSubject,
-        })}`,
-        remoteAddress: address(),
-        headers: { cookie: cookieHeaderFromSetCookie(other.headers["set-cookie"]) },
+      const other = await startGoogle();
+      const foreign = await googleCallback(state, url, {
+        cookie: cookieHeaderFromSetCookie(other.headers["set-cookie"]),
       });
       assert.equal(foreign.headers.location, "/console/?authError=google");
       assert.deepEqual(await counts(), before);
       // Starting needs the exact Origin.
-      const crossOrigin = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/google/start",
-        remoteAddress: address(),
-        headers: { origin: "https://evil.example.test" },
-      });
+      const crossOrigin = await startGoogle({ origin: "https://evil.example.test" });
       assert.equal(crossOrigin.statusCode, 403);
       // Like sign-out, a supplied Sec-Fetch-Site must be same-origin.
-      const sameSite = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/google/start",
-        remoteAddress: address(),
-        headers: { origin, "sec-fetch-site": "same-site" },
-      });
+      const sameSite = await startGoogle({ origin, "sec-fetch-site": "same-site" });
       assert.equal(sameSite.statusCode, 403, sameSite.body);
       assert.equal(sameSite.headers["set-cookie"], undefined);
     });
@@ -425,12 +399,10 @@ test(
       await assertGoogleRefused({ subject: memberSubject }, "detached subject");
       // The reserved-lane check above spent the member's email budget. The browser's
       // known-device cookie from its Google sign-in keeps its own lane for password fallback.
-      const fallback = await app.inject({
-        method: "POST",
-        url: "/api/auth/sign-in/email",
+      const fallback = await injectLocalhost(app, "POST", "/api/auth/sign-in/email", {
         remoteAddress: address(),
-        headers: { origin, cookie },
-        payload: { email: member.email, password: member.password },
+        session: { cookie, origin },
+        body: { email: member.email, password: member.password },
       });
       assert.equal(fallback.statusCode, 200, fallback.body);
     });

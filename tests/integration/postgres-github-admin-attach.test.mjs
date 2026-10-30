@@ -4,6 +4,7 @@ import {
   assertConsoleSignIn,
   clientAddresses,
   consoleOrigin as origin,
+  createAccount,
   currentSession,
   githubSignIn,
   githubUpgradeSettings,
@@ -11,6 +12,7 @@ import {
   readAccount,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
@@ -55,11 +57,9 @@ test(
     let adminHeaders;
     app = await composeApp(githubUpgradeSettings(admin.id));
     const attach = (headers, userId, subject, expectedVersion) =>
-      app.inject({
-        method: "POST",
-        url: `/api/auth/accounts/${userId}/providers/github`,
+      injectLocalhost(app, "POST", `/api/auth/accounts/${userId}/providers/github`, {
         headers,
-        payload: { subject, expectedVersion },
+        body: { subject, expectedVersion },
       });
     const change = (headers, path, expectedVersion) =>
       app.inject({ method: "POST", url: path, headers, payload: { expectedVersion } });
@@ -229,11 +229,9 @@ test(
       // A disabled target is a conflict with its state, not an unknown account.
       for (const refused of [
         await attach(adminHeaders, second.id, "424242", disabledAccount.version),
-        await app.inject({
-          method: "POST",
-          url: "/api/auth/recovery",
-          headers: adminHeaders,
-          payload: {
+        await injectLocalhost(app, "POST", "/api/auth/recovery", {
+          session: adminHeaders,
+          body: {
             userId: second.id,
             expectedCurrentUserId: admin.id,
             expectedVersion: disabledAccount.version,
@@ -373,16 +371,8 @@ test(
     await t.test(
       "two administrators attaching one GitHub identity to two accounts at once: one wins, one conflicts",
       async () => {
-        const createReader = async (email) => {
-          const created = await app.inject({
-            method: "POST",
-            url: "/api/auth/accounts",
-            headers: adminHeaders,
-            payload: { email, password, roleId: roles.reader.id },
-          });
-          assert.equal(created.statusCode, 201, created.body);
-          return { id: created.json().data.id, email, password };
-        };
+        const createReader = (email) =>
+          createAccount(app, adminHeaders, { email, password, roleId: roles.reader.id });
         const third = await createReader("attach-third@example.test");
         // The blocking row's owner is locked by neither attach: its foreign key share
         // lock would otherwise hold an actor's own row lock instead of the identity insert.
