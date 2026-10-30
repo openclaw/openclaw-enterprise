@@ -4,6 +4,8 @@ Give an existing dedicated Codex Agent access to one GitHub repository. The OCE 
 
 This walkthrough makes two empty commits on one new test branch. Use the same Agent revision for both pushes and verify that the second push used newly minted material. GitHub branch rules still apply.
 
+**Token renewal testing is pending.** The same-Agent, same-revision two-push test below has not completed. Earlier successful Git pushes used a manually supplied static token and do not verify this managed repository-binding procedure.
+
 ## Before you start
 
 - **OCE and OpenShell:** Use a controller, runtime, CLI and Helm chart from the same release supporting the `github-repository` profile, with matching OpenShell 0.1.6 Gateway, supervisor and charts. The earlier stable publication for `54bfa7f` used OpenShell 0.1.5 and does not provide this setup. Select compatible images before starting [Local Setup OCE](../deploy/local-openshell-setup.md). If your published channel lacks the feature, [build the matching image pair](../deploy/production-installation.md#build-and-publish-production-images). The [enrollment guide at source `998a59e`](https://github.com/openclaw/openclaw-enterprise/blob/998a59e3165ee9a09d7b6e0080ebe68d63d0e153/docs/guides/repository-credentials/openshell-enrollment.md) identifies the required release files.
@@ -13,15 +15,36 @@ This walkthrough makes two empty commits on one new test branch. Use the same Ag
 
 ## 1. Enroll one repository in the Installation
 
-Prepare an isolated installation for this procedure. Changing a shared installation's credential owner can affect existing Agents. Use the [matching installation fragment and registry instructions](https://github.com/openclaw/openclaw-enterprise/blob/998a59e3165ee9a09d7b6e0080ebe68d63d0e153/docs/guides/repository-credentials/openshell-enrollment.md#configure-authorized-repositories) from the **release checkout**. Keep its private Gateway routing and authenticated OpenShell management connection.
+Prepare an isolated installation for this procedure. Changing a shared installation's credential owner can affect existing Agents. Use the [matching installation fragment and registry instructions](openshell-enrollment.md#configure-authorized-repositories) from the **release checkout**. Keep its private Gateway routing and authenticated OpenShell management connection.
 
 1. Set one registry reference (here, `application`), one repository ID, one Namespace ID and `profiles: ["github-repository"]`. Give it `permissions: {"contents":"write","metadata":"read"}`. Choose a session duration longer than the token renewal exercise and within the registry maximum. This profile delegates ref restrictions to GitHub.
 2. Mount the immutable registry ConfigMap in the controller and worker. Mount the App signing key and a persistent 32-byte custody key **only in the worker**. Restrict worker egress to the approved GitHub issuer destinations.
 3. Keep the existing Credential Gateway selection for model authentication. Add `repository.preparedGitHub` and `repository.openShell` from the release fragment. Select the same OpenShell Driver ID for the Sandbox and Credential Proxy. Omit `repository.nativeSender` and Compute's broker configuration.
-4. [Configure the request-phase service](https://github.com/openclaw/openclaw-enterprise/blob/998a59e3165ee9a09d7b6e0080ebe68d63d0e153/docs/reference/repository-credentials/protected-openshell-git.md#prepare-the-request-phase-service) with its serving certificate, Gateway JWT public key and exact trusted-client network policies. Set Helm `openshellGit.enabled: true`, `openshellGit.mode: protected`, `repositoryCredentials.authority: prepared-git` and `repositoryCredentials.enabled: false`. Start the worker before restarting the OpenShell Gateway.
-5. [Register the middleware](https://github.com/openclaw/openclaw-enterprise/blob/998a59e3165ee9a09d7b6e0080ebe68d63d0e153/docs/reference/repository-credentials/protected-openshell-git.md#register-the-request-phase-service) under `oce-prepared-git` using TLS, the correct JWT issuer/audience, `binding_policy = "allowlist"` and `bindings = ["http_request_pre_credentials"]`. Remove the generated uninspected `source-control` rule. The repository route must be the sole route to GitHub. Do not bind a separate Git token CredentialSource.
+4. [Configure the request-phase service](../../reference/repository-credentials/protected-openshell-git.md#prepare-the-request-phase-service) with its serving certificate, Gateway JWT public key and exact trusted-client network policies. Set Helm `openshellGit.enabled: true`, `openshellGit.mode: protected`, `repositoryCredentials.authority: prepared-git` and `repositoryCredentials.enabled: false`. Start the worker before restarting the OpenShell Gateway.
+5. [Register the middleware](../../reference/repository-credentials/protected-openshell-git.md#register-the-request-phase-service) under `oce-prepared-git` using TLS, the correct JWT issuer/audience, `binding_policy = "allowlist"` and `bindings = ["http_request_pre_credentials"]`. Remove the generated uninspected `source-control` rule. The repository route must be the sole route to GitHub. Do not bind a separate Git token CredentialSource.
 
-The OCE REST API exposes the authorized registry options for the Agent:
+For the single-repository registry in step 1, set `APP_ID` and `INSTALLATION_ID` from the App settings. Use a unique, versioned ConfigMap name and keep the registry with the deployment record. Run these commands in the same operator shell:
+
+```bash
+repo=openclaw/openclaw-enterprise
+ref=application
+repo_id=$(gh api "repos/$repo" --jq '.id | tostring')
+
+# Scope issuance to exactly this Namespace, repository ID and permission map.
+jq -n --arg app "${APP_ID:?}" --arg installation "${INSTALLATION_ID:?}" \
+  --arg id "$repo_id" --arg repo "$repo" --arg ref "$ref" --arg ns "$namespace" '{
+    version:1,backendId:"repository-backend",providerInstanceId:"github-team",
+    appId:$app,githubInstallationId:$installation,maximumDurationSeconds:86400,
+    repositories:[{repositoryRef:$ref,repositoryId:$id,repository:$repo,
+      namespaces:[{namespaceId:$ns,profiles:["github-repository"],
+        permissions:{metadata:"read",contents:"write"}}]}]}' > "$RUN_DIR/registry.json"
+registry="oce-git-registry-$(date +%s)"
+kubectl --context "$context" -n "$ns" create configmap "$registry" \
+  --from-file="registry.json=$RUN_DIR/registry.json" --dry-run=client -o json |
+  jq '.immutable=true' | kubectl --context "$context" create -f -
+```
+
+After the worker and Gateway rollouts succeed, the OCE REST API exposes the authorized registry options for the Agent:
 
 ```bash
 # GET $base/agents/$agent/repository-options: check that the Namespace allows this reference.
@@ -47,7 +70,7 @@ revision=$(request GET "$base/agents/$agent" | jq -er .data.activeRevisionId)
 printf 'Agent %s, active revision %s\n' "$agent" "$revision"
 ```
 
-A ready Agent alone does not prove Git access. Under a finite grant the worker can renew **tokens** only while the grant remains active. For continuing access beyond the session, consult [standing approval](https://github.com/openclaw/openclaw-enterprise/blob/998a59e3165ee9a09d7b6e0080ebe68d63d0e153/docs/guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
+A ready Agent alone does not prove Git access. Under a finite grant the worker can renew **tokens** only while the grant remains active. For continuing access beyond the session, consult [standing approval](../repository-credentials.md#keep-git-access-on-the-same-running-agent).
 
 ## 3. Push the first empty commit through OpenClaw
 
@@ -130,7 +153,7 @@ WHERE f.source #>> '{session,revisionId}' = :'revision'
   AND a.state = 'committed' AND a.custody = 'current';
 ```
 
-Wait for the new version instead of changing a Secret, restarting a Pod or redeploying. Confirm the same revision is active, then make one fast-forward push whose parent is the first commit:
+Wait for normal worker renewal. The reference implementation starts renewal roughly ten minutes before the usable cutoff for an hour-long token. Do not rotate a key, edit the database, restart the worker or redeploy to force the transition. Confirm the same revision is active, then make one fast-forward push whose parent is the first commit:
 
 ```bash
 test "$(request GET "$base/agents/$agent" | jq -er .data.activeRevisionId)" = "$revision"
@@ -144,4 +167,4 @@ Require a second `receive-pack` receipt using the replacement material version, 
 
 ## Withdraw access after the exercise
 
-Stop the test Agent with bodyless `POST $base/agents/$agent/stop` and wait for its active revision to clear. Remove any standing approval through its generation-checked removal API. Clear the draft's repository bindings with `PATCH $base/agents/$agent` and its current `configurationId`. Check retirement through the [Token Service lifecycle](https://github.com/openclaw/openclaw-enterprise/blob/998a59e3165ee9a09d7b6e0080ebe68d63d0e153/docs/reference/repository-credentials.md#token-service-lifecycle). A stopped workload alone does not confirm external revocation. Keep the test branch for inspection unless its owner requests removal.
+Stop the test Agent with bodyless `POST $base/agents/$agent/stop` and wait for its active revision to clear. Remove any standing approval through its generation-checked removal API. Clear the draft's repository bindings with `PATCH $base/agents/$agent` and its current `configurationId`. Check retirement through the [Token Service lifecycle](../../reference/repository-credentials.md#token-service-lifecycle). A stopped workload alone does not confirm external revocation. Keep the test branch for inspection unless its owner requests removal.
