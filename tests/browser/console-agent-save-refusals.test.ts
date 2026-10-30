@@ -1047,6 +1047,32 @@ test("a Stop refusal clears once a later answer grants Agent operate", async (t)
   assert.equal(await refusal.count(), 0);
 });
 
+// After this viewer's Stop is accepted, a later answer that denies Agent operate keeps the row
+// (they used it). Request Stop again stays in the Tab order, described by the denial notice,
+// and activating it opens no confirmation and sends nothing (finding 2946).
+test("a refused Request Stop again stays reachable with its reason", async (t) => {
+  const scenario = await operateScenario(t, "Repeat stop refusal");
+  const { page } = scenario;
+  scenario.operate(true);
+  await scenario.open({ answered: false });
+  const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
+  const stop = stopRow.getByRole("button", { name: "Stop Agent", exact: true });
+  await waitForEnabled(stop);
+  await stop.click();
+  await page
+    .getByRole("dialog", { name: "Stop this Agent?" })
+    .getByRole("button", { name: "Stop Agent", exact: true })
+    .click();
+  const repeat = stopRow.getByRole("button", { name: "Request Stop again", exact: true });
+  await waitForEnabled(repeat);
+  scenario.operate(false);
+  await scenario.rememberStatusDenial();
+  await scenario.rereadThroughLogs();
+  await stopRow.getByText(AGENT_STOP_DENIED, { exact: true }).waitFor();
+  await expectReachableReason(page, repeat, AGENT_STOP_DENIED);
+  assert.equal(await page.getByRole("dialog", { name: "Stop this Agent?" }).count(), 0);
+});
+
 for (const reply of ["an incomplete preview", "a save with different rules"] as const) {
   test(`Agent policy does not apply after ${reply}`, async (t) => {
     const grant = {
