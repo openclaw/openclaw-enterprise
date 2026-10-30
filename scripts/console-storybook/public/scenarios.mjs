@@ -4269,6 +4269,29 @@ export const scenarios = {
     description:
       "Start a replacement sign-in, navigate to Secrets, and return with Back. The saved authentication remains; the unconfirmed replacement cannot start twice.",
   },
+  authOAuthStartTabSwitch: {
+    group: "Components/Credentials",
+    name: "ChatGPT sign-in answered on another tab (Experimental)",
+    path: `${draft}&tab=credentials`,
+    deployed: true,
+    auth: "oauth",
+    oauthPending: true,
+    rules: [{ suffix: "/device-authorizations", method: "POST", delayMs: 3000, once: true }],
+    description:
+      "Start a replacement sign-in and open Configuration within 3 s. The reply arrives while Configuration shows; Credentials keeps it, so returning shows the code and Cancel login. The fixture delays the reply; it does not prove provider persistence.",
+  },
+  authOAuthStartTabSwitchRefused: {
+    group: "Components/Credentials",
+    name: "ChatGPT sign-in refused on another tab (Experimental)",
+    path: `${draft}&tab=credentials`,
+    deployed: true,
+    auth: "oauth",
+    rules: [
+      { suffix: "/device-authorizations", method: "POST", delayMs: 3000, status: 403, once: true },
+    ],
+    description:
+      "Start a replacement sign-in and open Configuration within 3 s. The simulated refusal arrives while Configuration shows; returning to Credentials names the missing grants and offers Sign in with OAuth again.",
+  },
   authOAuthReconnect: {
     group: "Components/Credentials",
     name: "Explicit ChatGPT credential replacement (Experimental)",
