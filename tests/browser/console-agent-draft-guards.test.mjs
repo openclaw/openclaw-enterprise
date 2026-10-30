@@ -2643,16 +2643,25 @@ test("a refocus after a Secret operate grant updates the Deploy note", async (t)
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   assert.equal(await deploy.isDisabled(), true);
   await settlePageRequests(page);
+  const refocus = async () => {
+    const answered = page.waitForResponse(
+      (reply) =>
+        reply.url() === `${fixture.origin}${path}/permissions/secrets` &&
+        reply.request().method() === "GET" &&
+        reply.status() === 200,
+    );
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await answered;
+    await settlePageRequests(page);
+  };
+
+  // Without a grant, the recheck keeps the note and Deploy stays refused.
+  await refocus();
+  await note.waitFor();
+  assert.equal(await deploy.isDisabled(), true);
 
   grantSecretOperate(fixture, namespace.id, operator.principal, [agent.harnessAuth.source.id]);
-  const answered = page.waitForResponse(
-    (reply) =>
-      reply.url() === `${fixture.origin}${path}/permissions/secrets` &&
-      reply.request().method() === "GET" &&
-      reply.status() === 200,
-  );
-  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
-  await answered;
+  await refocus();
   // Without Refresh, the note drops the Secret the operator may now operate, and Deploy follows.
   await note.waitFor({ state: "detached" });
   await waitForEnabled(deploy);
