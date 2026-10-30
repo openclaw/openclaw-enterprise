@@ -31,18 +31,35 @@ export function clockBehind(behindMs: number): Clock {
   return Object.freeze({ ...system, wallNow: () => system.wallNow() - behindMs });
 }
 
+export interface SelectedRepositories {
+  selectedRepositoryIds: readonly string[];
+  entries: readonly { repositoryRef: string; repositoryId: string; repository: string }[];
+  permissions: Readonly<Record<string, "read" | "write">>;
+}
+
 export async function standingGitOrigin(
   t: TestContext,
   namespaceId: string,
   tokenLifetimeMs = 135_000,
   beforeIssue?: () => Promise<void>,
   installationAccess = false,
+  selection?: SelectedRepositories,
 ) {
   const clock = createSystemClock();
   // Keep the prepared owner's real 60 s clock margin and 60 s minimum validity.
   const github: (t: TestContext, options: object) => ReturnType<typeof startGitHubFixture> =
     startGitHubFixture;
-  const gh = await github(t, { clock, tokenLifetimeMs, beforeIssue, installationAccess });
+  const gh = await github(t, {
+    clock,
+    tokenLifetimeMs,
+    beforeIssue,
+    installationAccess,
+    ...(selection && {
+      expectedRepositoryIds: selection.selectedRepositoryIds.map(Number),
+      additionalRepositories: selection.entries.slice(1),
+      additionalPermissions: [selection.permissions],
+    }),
+  });
   const tls = gh.tls;
   const pushRef = "refs/heads/review";
   const backendId = "prepared-standing";
@@ -53,7 +70,7 @@ export async function standingGitOrigin(
     providerInstanceId: "fixture-provider",
     appId: fixtureAppId,
     githubInstallationId: fixtureInstallationId,
-    maximumDurationSeconds: 180,
+    maximumDurationSeconds: selection ? 600 : 180,
     allowStandingApprovals: true,
     ...(installationAccess && {
       installationAccess: {
@@ -61,22 +78,29 @@ export async function standingGitOrigin(
         namespaces: [{ namespaceId, accessMode: "installation", allowStandingApproval: true }],
       },
     }),
-    repositories: [
-      {
-        repositoryRef: "source",
-        repository: fixtureRepository,
-        repositoryId: fixtureRepositoryId,
-        namespaces: [
+    repositories: selection
+      ? selection.entries.map((entry) => ({
+          ...entry,
+          namespaces: [
+            { namespaceId, profiles: ["github-repository"], permissions: selection.permissions },
+          ],
+        }))
+      : [
           {
-            namespaceId,
-            profiles: ["git-write"],
-            transport: "git-only",
-            allowStandingApproval: true,
-            pushRefAllowlist: [pushRef],
+            repositoryRef: "source",
+            repository: fixtureRepository,
+            repositoryId: fixtureRepositoryId,
+            namespaces: [
+              {
+                namespaceId,
+                profiles: ["git-write"],
+                transport: "git-only",
+                allowStandingApproval: true,
+                pushRefAllowlist: [pushRef],
+              },
+            ],
           },
         ],
-      },
-    ],
   });
   const directory = await temporaryDirectory(t, "standing-peer-");
   const controlSocket = join(directory, "control.sock");
@@ -118,6 +142,7 @@ export async function preparedStandingGitPeer(
     beforeIssue?: () => Promise<void>;
     driver?: DriverRegistrationRef;
     installationAccess?: boolean;
+    selection?: SelectedRepositories;
     /** GitHub's token lifetime, by the system clock. */
     tokenLifetimeMs?: number;
     /** Only the prepared owner's clock. GitHub, PostgreSQL and the runtime keep real time. */
@@ -141,6 +166,7 @@ export async function preparedStandingGitPeer(
     options.tokenLifetimeMs,
     options.beforeIssue,
     options.installationAccess,
+    options.selection,
   );
   // Public OpenShell requires the GitHub.com authority, not an arbitrary API origin.
   // Replace only the issuer's network destination, before DNS; keep fixture TLS verification,
@@ -148,9 +174,23 @@ export async function preparedStandingGitPeer(
   const issue = new URL(gh.origin);
   assert.equal(issue.hostname, "127.0.0.1");
   const request = https.request;
-  const transport = t.mock.method(https, "request", (input: https.RequestOptions) => {
-    assert.equal(input.hostname, "api.github.com", "the prepared issuer is the only caller");
-    return request({ ...input, hostname: issue.hostname, port: issue.port });
+  const transport = t.mock.method(https, "request", (...args: Parameters<typeof https.request>) => {
+    const input = args[0] as string | URL | https.RequestOptions;
+    if (
+      typeof input === "object" &&
+      !(input instanceof URL) &&
+      input.hostname === "api.github.com"
+    ) {
+      return request({ ...input, hostname: issue.hostname, port: issue.port }, args[1] as never);
+    }
+    const host =
+      input instanceof URL
+        ? input.hostname
+        : typeof input === "string"
+          ? new URL(input).hostname
+          : input.hostname;
+    assert.equal(host, "127.0.0.1", "the controlled peer cannot contact a live provider");
+    return request(...args);
   });
   syncBuiltinESMExports();
   t.after(() => {
@@ -250,6 +290,7 @@ export async function preparedStandingGitPeer(
   return {
     registry,
     prepared,
+    origin,
     originCalls: () => origin.traffic().requests,
     installationTransport: {
       httpsRequest: request,

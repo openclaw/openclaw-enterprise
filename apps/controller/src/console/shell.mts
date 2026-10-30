@@ -1,4 +1,5 @@
 import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
+import { NAMESPACE_UNAVAILABLE } from "./agents/access-reasons.mjs";
 import { button, element, requestIdLine, setUnavailable } from "./dom.mjs";
 import type { createNavigation, pages } from "./navigation.mjs";
 
@@ -729,6 +730,8 @@ export function createShell({
             "section",
             { className: "state-panel namespace-recovery", role: "status" },
             element("h2", {}, "Namespace unavailable"),
+            // The reason Agents and Secrets give for the same unreadable ID (finding 2956).
+            element("p", {}, `${NAMESPACE_UNAVAILABLE}. Choose another Namespace.`),
             namespaceSelector("Choose a valid Namespace"),
           ),
         );

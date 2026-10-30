@@ -111,6 +111,14 @@ export interface PreparedGitHubInstallationUseRequest extends Pick<
     | "github-graphql";
 }
 
+export interface PreparedGitHubRepositoryUseRequest extends Omit<
+  PreparedGitHubInstallationUseRequest,
+  "scope"
+> {
+  readonly scope: "github-repository";
+  readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
+}
+
 /** A possible disclosure, not evidence that GitHub received or performed the operation. */
 export interface PreparedGitHubUseResponse {
   readonly value: string;

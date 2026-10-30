@@ -89,8 +89,8 @@ the failed attempt's message. No save is sent. After access is restored, use
 **Settings** (the signed-in account, with **Sign out**) and **Sign out**.
 
 The URL keeps `?namespace=<id>` across navigation, reload, and Back. An unreadable
-ID shows **Namespace unavailable**; on Namespaces, **Choose a valid namespace**
-updates the URL in place.
+ID shows **Namespace unavailable**: the Namespace is missing or your access does not
+include it. On Namespaces, **Choose a valid Namespace** updates the URL in place.
 
 During session and Namespace checks, the selector is disabled and hides its choices.
 Once the list is known, it names the destination's Namespace. On returns to the same page,

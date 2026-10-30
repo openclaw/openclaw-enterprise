@@ -17,10 +17,14 @@ import {
   type OpenShellSandboxDriverOptions,
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
-import { composeRepositoryAccess } from "../../apps/controller/src/composition/repository-credentials/platform.ts";
+import { loadRepositoryPolicy } from "../../apps/controller/src/composition/repository-credentials/policy.ts";
+import { requireConfiguration } from "../../packages/contracts/src/index.ts";
+import type { RepositorySelectionMode } from "../helpers/repository-selection-load.ts";
+import { fileURLToPath } from "node:url";
 import { createServer } from "node:https";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { join } from "node:path";
@@ -442,7 +446,7 @@ test("protected Git resolves repository and installation grants without granting
   const registryPath = join(directory, "registry.json");
   await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
   const compose = () =>
-    composeRepositoryAccess({
+    loadRepositoryPolicy({
       backend: {
         id: registry.backendId,
         type: "github",
@@ -455,7 +459,10 @@ test("protected Git resolves repository and installation grants without granting
         definition: GitHubRepositoryPolicy,
         configuration: { sessionDurationSeconds: 600 },
       },
-      protectedGit: true,
+      policyConfiguration: requireConfiguration<{ readonly sessionDurationSeconds: number }>(
+        GitHubRepositoryPolicy,
+        { sessionDurationSeconds: 600 },
+      ),
     });
   const access = await compose();
   const resolve = access.resolveRepositoryDelivery;
@@ -752,6 +759,46 @@ test("repository scope changes invalidate the external Driver identity while a r
   const original = await load();
   const reloaded = await load();
   assert.deepEqual(reloaded.protectedDriver!.ref, original.protectedDriver!.ref);
+  // A fresh process observes resolution before the installation loader can warm its module cache.
+  const modes: Record<RepositorySelectionMode, object> = {
+    none: base,
+    protected: configuration,
+    native: {
+      ...configuration,
+      repository: {
+        ...configuration.repository,
+        nativeSender: { controlSocket: "/unselected/control.sock", publicCaPath: certFile },
+      },
+      drivers: {
+        ...base.drivers,
+        compute: {
+          ...base.drivers.compute,
+          configuration: {
+            ...base.drivers.compute.configuration,
+            network: {
+              ...base.drivers.compute.configuration.network,
+              repositoryCredentials: {
+                namespace: "occ-system",
+                podLabels: { app: "repository" },
+                port: 8443,
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+  const helper = fileURLToPath(new URL("../helpers/repository-selection-load.ts", import.meta.url));
+  for (const [mode, value] of Object.entries(modes)) {
+    const selectedPath = join(directory, `${mode}.json`);
+    await writeFile(selectedPath, JSON.stringify(value));
+    const child = spawnSync(process.execPath, [helper, mode, selectedPath, directory], {
+      encoding: "utf8",
+      timeout: 30_000,
+      env: { NODE_ENV: "production" },
+    });
+    assert.equal(child.status, 0, child.error?.message ?? child.stderr);
+  }
   const binding = await original.repositoryPolicy!.resolve({
     namespaceId: "namespace-a",
     bindings: [{ repositoryRef: "application", profile: "git-write" }],

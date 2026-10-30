@@ -1,3 +1,4 @@
+import { isGitHubRepositoryPermissions, type GitHubRepositoryGrant } from "./repository-grant.ts";
 import type { RepositoryGitDeliveryResolver } from "../../credentials/delivery.ts";
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
@@ -30,7 +31,8 @@ export interface GitHubRepositoryRegistration {
   readonly repository: string;
   readonly namespaces: readonly Readonly<{
     namespaceId: string;
-    profiles: readonly GitHubProfile[];
+    profiles: readonly (GitHubProfile | "github-repository")[];
+    permissions?: Readonly<Record<string, string>>;
     allowStandingApproval?: true;
     pushRefAllowlist?: readonly string[];
     transport?: "git-only" | "git-and-draft-pr";
@@ -96,8 +98,13 @@ function numericId(value: unknown): string {
   return id;
 }
 
-function profile(value: unknown): GitHubProfile {
-  if (value !== "git-read" && value !== "git-write" && value !== "git-full") {
+function profile(value: unknown): GitHubProfile | "github-repository" {
+  if (
+    value !== "git-read" &&
+    value !== "git-write" &&
+    value !== "git-full" &&
+    value !== "github-repository"
+  ) {
     return invalid();
   }
   return value;
@@ -114,6 +121,14 @@ function unique(values: readonly string[]): void {
   if (new Set(values).size !== values.length) {
     invalid();
   }
+}
+
+function canonicalPermissions(
+  permissions: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> {
+  return Object.freeze(
+    Object.fromEntries(Object.entries(permissions).sort(([a], [b]) => a.localeCompare(b))),
+  );
 }
 
 function validateInstallationAccess(value: unknown): GitHubInstallationAccess {
@@ -184,14 +199,34 @@ export function validateGitHubRepositoryRegistry(
       const policy = object(candidatePolicy, [
         "namespaceId",
         "profiles",
+        "permissions",
         "allowStandingApproval",
         "pushRefAllowlist",
         "transport",
         "pullRequestBase",
         "draftPullLimit",
       ]);
-      const profiles = array(policy.profiles, 3).map(profile).sort();
+      const profiles = array(policy.profiles, 4).map(profile).sort();
       unique(profiles);
+      const selected = profiles.includes("github-repository");
+      if (
+        selected
+          ? !isGitHubRepositoryPermissions(policy.permissions) ||
+            profiles.length !== 1 ||
+            [
+              "transport",
+              "pushRefAllowlist",
+              "pullRequestBase",
+              "draftPullLimit",
+              "allowStandingApproval",
+            ].some((k) => Object.hasOwn(policy, k))
+          : Object.hasOwn(policy, "permissions")
+      ) {
+        return invalid();
+      }
+      const permissions = selected
+        ? canonicalPermissions(policy.permissions as Readonly<Record<string, string>>)
+        : undefined;
       if (Object.hasOwn(policy, "allowStandingApproval") && policy.allowStandingApproval !== true) {
         return invalid();
       }
@@ -245,6 +280,7 @@ export function validateGitHubRepositoryRegistry(
       return Object.freeze({
         namespaceId: text(policy.namespaceId),
         profiles: Object.freeze(profiles),
+        ...(permissions && { permissions }),
         ...(policy.allowStandingApproval === true ? { allowStandingApproval: true as const } : {}),
         ...(pushRefAllowlist === undefined ? {} : { pushRefAllowlist }),
         ...(transport === undefined ? {} : { transport }),
@@ -341,9 +377,15 @@ export function resolveGitHubRepositoryBinding(
       grant: Object.freeze({ providerInstanceId, repositoryId, grantId: `sha256:${fingerprint}` }),
     });
   }
-  const selectedProfile = profile(request.profile === undefined ? "git-write" : request.profile);
   const repository = registry.repositories.find((entry) => entry.repositoryRef === repositoryRef);
   const policy = repository?.namespaces.find((entry) => entry.namespaceId === namespaceId);
+  const selectedProfile = profile(
+    request.profile === undefined
+      ? policy?.profiles.length === 1 && policy.profiles[0] === "github-repository"
+        ? "github-repository"
+        : "git-write"
+      : request.profile,
+  );
   if (!repository || !policy || !policy.profiles.includes(selectedProfile)) {
     throw new Error("repository-binding-not-authorized");
   }
@@ -370,13 +412,16 @@ export function resolveGitHubRepositoryBinding(
           ? {}
           : { pullRequestBase: policy.pullRequestBase }),
         ...(policy.draftPullLimit === undefined ? {} : { draftPullLimit: policy.draftPullLimit }),
-        permissions: permissionsForProfile(
-          policy.transport === "git-only"
-            ? "git-ref-write"
-            : policy.transport === "git-and-draft-pr"
-              ? "git-ref-draft-pr"
-              : selectedProfile,
-        ),
+        permissions:
+          selectedProfile === "github-repository"
+            ? policy.permissions
+            : permissionsForProfile(
+                policy.transport === "git-only"
+                  ? "git-ref-write"
+                  : policy.transport === "git-and-draft-pr"
+                    ? "git-ref-draft-pr"
+                    : selectedProfile,
+              ),
         capabilityPolicy:
           policy.transport === "git-only"
             ? gitOnlyCapabilityPolicy
@@ -406,6 +451,9 @@ export function resolveGitHubStandingApprovalScope(
     binding: AdmittedRepositoryBinding;
   },
 ): RepositoryApprovalScope | undefined {
+  if (input.binding.profile === "github-repository") {
+    return undefined;
+  }
   const scope = standingApprovalScope(registry, input);
   if (!scope) {
     return;
@@ -488,6 +536,23 @@ export function createGitHubRepositoryDeliveryResolver(
   return (revision) => {
     const state = revision.repositoryCredentials;
     const binding = state?.bindings[0];
+    if (state?.bindings.length && state.bindings.every((b) => b.profile === "github-repository")) {
+      const grant = resolveSelectedRepositoryGrant(
+        registry,
+        revision.namespaceId,
+        revision.id,
+        state.bindings,
+      );
+      return Object.freeze({
+        binding: state.bindings[0]!,
+        delivery: Object.freeze({
+          scope: "github-repository" as const,
+          installationId: grant.installationId,
+          repositories: grant.repositories,
+          permissions: grant.permissions,
+        }),
+      });
+    }
     if (!state || state.bindings.length !== 1 || !binding) {
       throw new Error("Repository Git delivery requires one admitted binding.");
     }
@@ -536,4 +601,57 @@ export function createGitHubRepositoryDeliveryResolver(
       }),
     });
   };
+}
+
+/** Resolve every admitted member; neither registry inventory nor installation membership grants access. */
+export function resolveSelectedRepositoryGrant(
+  registry: GitHubRepositoryRegistry,
+  namespaceId: string,
+  revisionId: string,
+  bindings: readonly AdmittedRepositoryBinding[],
+): GitHubRepositoryGrant {
+  if (
+    !bindings.length ||
+    bindings.length > 16 ||
+    new Set(bindings.map((b) => b.repositoryRef)).size !== bindings.length
+  ) {
+    throw new Error("invalid-selected-repository-set");
+  }
+  let permissions: Readonly<Record<string, string>> | undefined;
+  const repositories = bindings
+    .map((binding) => {
+      if (
+        binding.profile !== "github-repository" ||
+        !isDeepStrictEqual(
+          binding,
+          resolveGitHubRepositoryBinding(registry, {
+            namespaceId,
+            repositoryRef: binding.repositoryRef,
+            profile: binding.profile,
+          }),
+        )
+      ) {
+        throw new Error("selected-repository-grant-changed");
+      }
+      const repo = registry.repositories.find((r) => r.repositoryRef === binding.repositoryRef)!;
+      const policy = repo.namespaces.find((p) => p.namespaceId === namespaceId)!;
+      if (
+        !policy.permissions ||
+        (permissions && !isDeepStrictEqual(permissions, policy.permissions))
+      ) {
+        throw new Error("selected-repository-permissions-differ");
+      }
+      permissions = policy.permissions;
+      return Object.freeze({ repositoryId: repo.repositoryId, repository: repo.repository });
+    })
+    .sort((a, b) => Number(a.repositoryId) - Number(b.repositoryId));
+  return Object.freeze({
+    id: bindings[0]!.grant.grantId,
+    isolationId: revisionId,
+    appId: registry.appId,
+    installationId: registry.githubInstallationId,
+    profile: "github-repository",
+    repositories: Object.freeze(repositories),
+    permissions: permissions!,
+  });
 }

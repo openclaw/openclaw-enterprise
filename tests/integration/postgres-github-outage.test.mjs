@@ -6,6 +6,7 @@ import {
   assertProviderAttached,
   assertSessionUser,
   authRowCounts,
+  changeAccount,
   consoleOrigin as origin,
   currentSession,
   githubSignIn,
@@ -14,6 +15,7 @@ import {
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { hashLocalPassword } from "../../apps/controller/src/auth/index.ts";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
@@ -92,10 +94,8 @@ test(
       const signedIn = await passwordSignIn(app, origin, member);
       assert.equal(signedIn.statusCode, 200, signedIn.body);
       const cookie = await assertSessionUser(app, signedIn, member.id);
-      const signedOut = await app.inject({
-        method: "POST",
-        url: "/api/auth/sign-out",
-        headers: { cookie, origin },
+      const signedOut = await injectLocalhost(app, "POST", "/api/auth/sign-out", {
+        session: { cookie, origin },
       });
       assert.equal(signedOut.statusCode, 200, signedOut.body);
       assert.equal(await currentSession(app, cookie), null);
@@ -155,9 +155,7 @@ test(
         // browser's attempt cookie spend only their own key, never a real browser's.
         provider.mode = "up";
         for (let index = 0; index < 35; index += 1) {
-          const start = await app.inject({
-            method: "POST",
-            url: "/api/auth/providers/github/start",
+          const start = await injectLocalhost(app, "POST", "/api/auth/providers/github/start", {
             remoteAddress: ingress,
             headers: { origin },
           });
@@ -238,12 +236,10 @@ test(
         .find((value) => value.startsWith("__Host-occ_known_device="))
         ?.split(";", 1)[0];
     const signInWith = (cookie, account, remoteAddress) =>
-      app.inject({
-        method: "POST",
-        url: "/api/auth/sign-in/email",
+      injectLocalhost(app, "POST", "/api/auth/sign-in/email", {
         remoteAddress,
         headers: { origin, cookie },
-        payload: { email: account.email, password: account.password },
+        body: { email: account.email, password: account.password },
       });
     await t.test("a GitHub sign-in marks the browser for password fallback", async () => {
       provider.mode = "up";
@@ -394,18 +390,8 @@ test(
       }
       assert.fail("the email key is spent");
     };
-    const accountVersion = async (userId) => {
-      const read = await app.inject({ url: `/api/auth/accounts/${userId}`, headers: adminHeaders });
-      assert.equal(read.statusCode, 200, read.body);
-      return read.json().data.version;
-    };
-    const changeAccount = async (userId, operation) => {
-      const response = await app.inject({
-        method: "POST",
-        url: `/api/auth/accounts/${userId}/${operation}`,
-        headers: adminHeaders,
-        payload: { expectedVersion: await accountVersion(userId) },
-      });
+    const assertAccountChanged = async (userId, operation) => {
+      const response = await changeAccount(app, adminHeaders, userId, operation);
       assert.equal(response.statusCode, 200, response.body);
     };
 
@@ -444,7 +430,7 @@ test(
       assert.equal(signedIn.statusCode, 200, signedIn.body);
       const device = knownDeviceOf(signedIn);
       assert.ok(device);
-      await changeAccount(disabledMember.id, "disable");
+      await assertAccountChanged(disabledMember.id, "disable");
       // With the email's budget left, the correct password is refused exactly like a wrong
       // one, with or without the cookie.
       const withCookie = await signInWith(device, disabledMember, "192.0.2.80");
@@ -475,7 +461,7 @@ test(
       assert.deepEqual(limitedBodyOf(stale), limitedBodyOf(fresh));
       // Enabling the account again restores entries issued under the unchanged password;
       // resetting the password is what revokes them for good.
-      await changeAccount(disabledMember.id, "enable");
+      await assertAccountChanged(disabledMember.id, "enable");
       const restored = await signInWith(device, disabledMember, "192.0.2.80");
       assert.equal(restored.statusCode, 200, restored.body);
     });

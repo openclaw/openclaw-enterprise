@@ -644,6 +644,10 @@ p {
   min-height: 100dvh;
   align-self: stretch;
   z-index: 3;
+  /* The account row sits at the bottom of the stretched sidebar. As the browser's scroll anchor
+     it pinned the page to its end, so content that grew anywhere moved the reader's view
+     (finding 3012). The anchor comes from the page content instead. */
+  overflow-anchor: none;
 }
 .sidebar .brand,
 .topbar .brand,
@@ -1849,6 +1853,9 @@ select:not([multiple])[size="1"] {
   gap: var(--space-6);
   margin-bottom: var(--space-8);
   overflow-wrap: anywhere;
+  /* The summary grows when a poll shows a stop or redeploy. As the scroll anchor it moved the open
+     tab below it, such as Logs, down (finding 3012), so the tab stays in place instead. */
+  overflow-anchor: none;
 }
 .agent-overview-status > .agent-card {
   margin: 0;
@@ -3037,10 +3044,18 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   color: var(--danger);
   border-color: var(--danger);
 }
-.deletion-note .danger:not(:disabled):hover,
-.stop-note .danger:not(:disabled):hover {
+.deletion-note .danger:not(:disabled, [aria-disabled="true"]):hover,
+.stop-note .danger:not(:disabled, [aria-disabled="true"]):hover {
   background: var(--danger-subtle);
   color: var(--danger);
+}
+/* An unavailable Stop or Delete Agent that stays in the Tab order (findings 2935, 2951) fades its
+   label and edge, as other unavailable buttons do; the rule above would keep its full danger
+   color, so it would look usable. */
+.deletion-note .danger.control-unavailable,
+.stop-note .danger.control-unavailable {
+  color: color-mix(in srgb, var(--danger) 60%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--danger) 60%, var(--color-surface));
 }
 /* Danger zone (UX spec 3.9): one card at the end of the Agent page with a row each for Stop and
    Delete: title and one sentence, the outlined danger button at the right, and any status the
@@ -4549,6 +4564,9 @@ html:has(#create-agent-form) {
 
 /* Held back until the Logs view's first reads settle (finding 1413). */
 .agent-logs-pending > .runtime-strip,
+.agent-logs-pending > .log-running-version,
+.agent-logs-pending > .log-deployment-failure,
+.agent-logs-pending > .log-serving-change,
 .agent-logs-pending > .log-viewer {
   display: none;
 }
@@ -4563,6 +4581,19 @@ html:has(#create-agent-form) {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
   gap: var(--space-3);
   margin: var(--space-2) 0 var(--space-5);
+}
+/* Names the version selected for service when the viewed one has no running Pod (finding 2975),
+   the latest deployment's failure (finding 2993), and a stop or another version selected for
+   service in place of an unreadable viewed one (finding 3012). */
+.log-running-version,
+.log-deployment-failure,
+.log-serving-change {
+  margin: 0 0 var(--space-5);
+}
+.log-running-version:empty,
+.log-deployment-failure:empty,
+.log-serving-change:empty {
+  display: none;
 }
 .runtime-pod {
   min-width: 0;

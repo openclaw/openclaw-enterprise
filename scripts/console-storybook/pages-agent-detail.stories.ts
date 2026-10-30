@@ -121,6 +121,8 @@ export const RuntimeLogsStartupWarnings = story("runtimeLogsStartupWarnings");
 export const RuntimeLogsDedicatedPods = story("runtimeLogsDedicatedPods");
 export const RuntimeLogsMissingAgentPod = story("runtimeLogsMissingAgentPod");
 export const RuntimeLogsNoPod = story("runtimeLogsNoPod");
+export const RuntimeLogsReplacedVersion = story("runtimeLogsReplacedVersion");
+export const RuntimeLogsFailedRedeploy = story("runtimeLogsFailedRedeploy");
 export const RuntimeLogsFilteredDownload = story("runtimeLogsFilteredDownload");
 export const RuntimeLogsRateLimited = story("runtimeLogsRateLimited");
 export const RuntimeLogsRefreshRateLimited = story("runtimeLogsRefreshRateLimited");
@@ -183,6 +185,9 @@ export const DeployAgentPrincipalDenied = {
 export const DeploySandboxPolicyReadDenied = story("deploySandboxPolicyReadDenied");
 
 export const RepositoryEditor = story("repositoryEditor");
+export const RepositoryCollaborator = story("repositoryCollaborator");
+export const RepositoryCollaboratorSaved = story("repositoryCollaboratorSaved");
+export const RepositoryCollaboratorReadOnly = story("repositoryCollaboratorReadOnly");
 export const RepositoryEditorUpdateDenied = story("repositoryEditorUpdateDenied");
 export const RepositoryEditorNotConfigured = story("repositoryEditorNotConfigured");
 export const RepositoryEditorNotConfiguredMember = story("repositoryEditorNotConfiguredMember");
@@ -214,6 +219,7 @@ export const SharingRegranted = { ...story("agentSharingRegranted") };
 export const SharingUnknown = { ...story("agentSharingUnknown") };
 export const CurrentVersionHidden = story("agentCurrentVersionHidden");
 export const CurrentVersionHiddenLogs = story("agentCurrentVersionHiddenLogs");
+export const CurrentVersionHiddenLogsStopped = story("agentCurrentVersionHiddenLogsStopped");
 
 export const BootstrapFailureCleanupPending = story("deploymentBootstrapCleanup");
 export const BootstrapContainerStatusAndLogs = story("runtimeBootstrapContainers");

@@ -21,8 +21,11 @@ import {
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { ConfigurationConflictError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import {
+  assertProvisioningSourceStatus,
+  assertProvisioningSourceWithdrawal,
+} from "../helpers/provisioning-source-status.ts";
 import { assertProvisioningRepositoryStatus } from "../helpers/provisioning-repository-status.ts";
 import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.ts";
 import {
@@ -939,11 +942,8 @@ test(
 function provisioningRepositoryPolicy(namespaceId, profiles, installationAccess = false) {
   return new GitHubRepositoryPolicy(
     {
-      id: "provisioning-repositories",
-      client: new UnixRepositoryCredentialControlClient({
-        controlSocket: "/unused/provisioning/control.sock",
-      }),
-      drivers: { repo: "provisioning-repo" },
+      driverId: "provisioning-repo",
+      backendId: "provisioning-repositories",
     },
     {
       ...(installationAccess && {
@@ -1955,6 +1955,10 @@ for (const harnessAuth of ["api_key", "credential_source"]) {
           : []),
       ];
       await revokeAuthority();
+      if (sourceBacked) {
+        const denied = await fixture.request("GET", admitted.data.provisioning.url, { session });
+        assert.equal(denied.status, 403, JSON.stringify(denied.body));
+      }
       await fixture.startWorker();
       const work = await waitFor(
         "provisioning work to fail after authority revocation",
@@ -2134,6 +2138,76 @@ function sourceProvisioningBody(sourceId, harness) {
   };
 }
 
+test(
+  "source provisioning status preserves saved work when its Gateway catalog is unavailable",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const drivers = sourceProvisioningDrivers();
+    drivers.computeDriver.provisionAgentRuntimeCredentials = async () => {
+      throw new Error("synthetic transport failure");
+    };
+    const fixture = await createFixture(context, drivers);
+    const namespace = await fixture.bootstrapNamespace();
+    const { source } = await createProvisioningModelSource(fixture, namespace.id);
+    const body = sourceProvisioningBody(source.id, "openclaw");
+    const admissionPath = `/namespaces/${namespace.id}/agents/provision`;
+    const admitted = await fixture.request("POST", admissionPath, { body });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const target = { ...admitted.data.provisioning, admissionPath, body };
+    fixture.cancelQueuedWorkAtTeardown(target.workId, "Source status test completed.");
+    await assertProvisioningSourceStatus(context, fixture, drivers.credentialGatewayDriver, target);
+
+    // The actual worker creates the Agent and exact source grant before transport fails.
+    await fixture.startWorker();
+    const failed = await waitFor("source provisioning transport to fail", async () => {
+      const observed = await fixture.request("GET", target.url);
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      return observed.data.status === "failed" ? observed.data : undefined;
+    });
+    await fixture.stopWorker();
+    assert.ok(failed.agentId);
+    fixture.cancelProvisioningAtTeardown(namespace.id, failed.agentId);
+    await assertProvisioningSourceStatus(context, fixture, drivers.credentialGatewayDriver, target);
+
+    // Removing the Agent's exact source permission must still deny the saved read.
+    const revoked = await fixture.pool.query(
+      `DELETE FROM occ.iam_access_bindings WHERE namespace_id = $1
+       AND resource_kind = 'credential_source' AND resource_id = $2 RETURNING id`,
+      [namespace.id, source.id],
+    );
+    assert.equal(revoked.rowCount, 1);
+    const deniedAgent = await fixture.request("GET", target.url);
+    assert.equal(deniedAgent.status, 403, JSON.stringify(deniedAgent.body));
+    await fixture.revokeCurrentPrincipal();
+    const deniedOperator = await fixture.request("GET", target.url);
+    assert.equal(deniedOperator.status, 403, JSON.stringify(deniedOperator.body));
+  },
+);
+
+test(
+  "source provisioning worker rejects a withdrawn type while failed status remains readable",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const drivers = sourceProvisioningDrivers();
+    const fixture = await createFixture(context, drivers);
+    const namespace = await fixture.bootstrapNamespace();
+    const { source } = await createProvisioningModelSource(fixture, namespace.id);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: sourceProvisioningBody(source.id, "openclaw"),
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    fixture.cancelQueuedWorkAtTeardown(
+      admitted.data.provisioning.workId,
+      "Source withdrawal test completed.",
+    );
+    await assertProvisioningSourceWithdrawal(
+      fixture,
+      drivers.credentialGatewayDriver,
+      admitted.data.provisioning,
+    );
+  },
+);
+
 for (const harness of ["openclaw", "codex"]) {
   test(
     `guided ${harness} provisioning holds its model source and grants only source access`,
@@ -2297,6 +2371,8 @@ test(
         id: "credential-gateway-replacement",
       },
     });
+    const status = await switched.request("GET", admitted.data.provisioning.url);
+    assert.equal(status.status, 503, JSON.stringify(status.body));
     const replay = await switched.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
     });

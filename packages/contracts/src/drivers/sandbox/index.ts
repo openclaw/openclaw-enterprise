@@ -255,7 +255,8 @@ export interface SandboxDriver extends Driver {
   ): OpenClawConfigurationDocument;
   ensureNamespace?(context: SandboxNamespaceContext): Promise<void>;
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
-  /** The v6 launcher stays held. A denial observed here can select material, never release work. */
+  /** The launcher stays held while the Driver observes its request challenge.
+   * A denial observed here can select material, never release work. */
   observeHeldRepositoryGitPreview?(
     context: SandboxHarnessStatusContext,
   ): Promise<"held" | "installed" | undefined>;

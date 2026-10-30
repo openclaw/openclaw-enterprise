@@ -71,6 +71,7 @@ import {
   RESOURCE_CONFLICT,
   RESOURCE_NOT_FOUND,
   SANDBOX_POLICY_READ_DENIED,
+  STOP_REPEAT_CONFIRMATION,
   STOP_REQUESTED,
   STOPPED_NO_VERSION,
   WORKSPACE_API_UNREACHABLE,
@@ -524,10 +525,16 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
   assert.equal(writes, 1);
   serverMessage = GENERIC_DENIAL;
   await confirm();
-  await page.getByRole("alert").getByText(deleteRefused("this Agent"), { exact: false }).waitFor();
+  await page
+    .getByRole("alert")
+    .getByText(deleteRefused("Owned cleanup"), { exact: false })
+    .waitFor();
   assert.equal(writes, 2);
   await page.clock.fastForward(DELETION_POLL_MS * 2);
-  await page.getByRole("alert").getByText(deleteRefused("this Agent"), { exact: false }).waitFor();
+  await page
+    .getByRole("alert")
+    .getByText(deleteRefused("Owned cleanup"), { exact: false })
+    .waitFor();
   await page.getByRole("button", { name: "Refresh deletion status", exact: true }).click();
   await page.getByRole("alert").waitFor({ state: "hidden" });
   assert.equal(writes, 2);
@@ -1007,10 +1014,9 @@ test("Agent delete denial keeps the Agent visible with permission feedback", asy
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
   assert.equal((await denied).status(), 403);
 
-  // The API names the grant the delete checked on the Agent it named (finding 2534).
-  await page
-    .getByText(callerDenied("Agent delete", `Agent ${agent.id}`), { exact: true })
-    .waitFor();
+  // The page names the Agent and the grant the delete checked, not the API's Agent ID
+  // (findings 2534, 2951).
+  await page.getByText(deleteRefused("Denied Candidate"), { exact: true }).waitFor();
   await page.getByRole("heading", { name: "Denied Candidate" }).waitFor();
   assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
   assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
@@ -1864,11 +1870,14 @@ test("A refocus does not read again a version the Agent page proved unreadable",
   const versionDenials = () =>
     authorizationDenials(fixture.auditSink, "openclaw.agent_revisions.read").length;
   const accessDenied = page.getByRole("heading", { name: "Access denied", exact: true });
-  // Returns the paths this refocus check sent, once the page is idle again.
+  // Returns the paths this refocus check sent, once the page is idle again. It waits for the
+  // check to send its version list read, not for that read's answer: the list read and the shown
+  // version's read go out together, and when the version's refusal settles first the page shows
+  // it and abandons the list read, which then gets no response (finding 2983).
   async function refocus() {
     const sent = requests.length;
-    const listed = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === `${path}/revisions`,
+    const listed = page.waitForRequest(
+      (request) => new URL(request.url()).pathname === `${path}/revisions`,
     );
     await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
     await listed;
@@ -5018,6 +5027,9 @@ test("Console can repeat Stop without treating the selected version as cleanup c
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 0);
   await repeat.click();
   dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
+  // The selected version is kept, but the Agent is already requested to stop: the confirmation
+  // repeats the request and does not describe interrupting a running gateway (finding D815).
+  await dialog.getByText(STOP_REPEAT_CONFIRMATION, { exact: true }).waitFor();
   const result = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" && new URL(response.url()).pathname === `${path}/stop`,

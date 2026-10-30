@@ -1950,6 +1950,22 @@ export const preparedGitHubFamilies = occSchema.table(
        OR (source #>> '{grant,profile}' = 'git-ref-draft-pr' AND length(source #>> '{grant,pullRequestBase}') > 0))
    AND source #>> '{grant,pushRef}' LIKE 'refs/heads/%'
    AND source #>> '{grant,repositoryId}' = source #>> '{session,grant,repositoryId}')
+   OR (source->>'adoption' = 'credential_proxy_github_repository'
+       AND jsonb_typeof(source #> '{session,credentialProxyExecution,driver}') = 'object'
+       AND source #>> '{session,credentialProxyExecution,enforcement,repositoryGitRecipient,deliveryProfile}' = 'github_repository'
+       AND source #>> '{session,binding,profile}' = 'github-repository'
+       AND source #>> '{grant,profile}' = 'github-repository'
+       AND jsonb_typeof(source #> '{grant,repositories}') = 'array'
+       AND jsonb_array_length(source #> '{grant,repositories}') BETWEEN 1 AND 16
+       AND jsonb_typeof(source #> '{grant,permissions}') = 'object'
+       AND source #>> '{grant,permissions,metadata}' = 'read'
+       AND jsonb_typeof(source #> '{session,bindings}') = 'array'
+       AND jsonb_array_length(source #> '{session,bindings}') = jsonb_array_length(source #> '{grant,repositories}')
+       AND NOT jsonb_path_exists(source, '$.session.bindings[*] ? (@.profile != "github-repository")')
+       AND jsonb_path_query_array(source, '$.session.bindings[*].grant.repositoryId') @> jsonb_path_query_array(source, '$.grant.repositories[*].repositoryId')
+       AND jsonb_path_query_array(source, '$.grant.repositories[*].repositoryId') @> jsonb_path_query_array(source, '$.session.bindings[*].grant.repositoryId')
+       AND source #>> '{grant,appId}' ~ '^[1-9][0-9]*$'
+       AND source #>> '{grant,installationId}' ~ '^[1-9][0-9]*$')
    OR (source->>'adoption' = 'credential_proxy_github_installation'
        AND jsonb_typeof(source #> '{session,credentialProxyExecution,driver}') = 'object'
        AND source #>> '{session,credentialProxyExecution,enforcement,repositoryGitRecipient,deliveryProfile}' = 'github_installation'
