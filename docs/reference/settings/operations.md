@@ -79,12 +79,11 @@ has 46 through `0046_model_probe_failure_cause`;
 `0048_administrator_credential_source_grants`; `preAgentCredentialSources` has 49
 through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
 through `0050_agent_credential_sources`; later `pre*` shapes add one each, through
-`preCredentialProxy` (59) and `prePreparedAttemptSettlement` (62, through
-`0062_credential_delivery_custody`). After `0063_prepared_attempt_settlement`,
-63 receipts mean `preGatewayManagedMode`; `preSelectedRepositorySet` has 64 and
-`preCredentialSourceRetainedSecrets` has 65. Migration brings each to `completed`
-with 66 receipts. Rerun `--check` after migration and require `completed` from
-the same release.
+`preCredentialProxy` (59), `prePreparedAttemptSettlement` (62, through
+`0062_credential_delivery_custody`), `preGatewayManagedMode` (63),
+`preSelectedRepositorySet` (64) and `preCredentialSourceRetainedSecrets` (65).
+Migration brings each to `completed` (66 receipts); rerun `--check` and require
+`completed` from the same release.
 The [canonical manifest](../../../migrations/meta/_canonical-history.json) records
 accepted source and catalog hashes. Never delete or relabel unsupported preview
 receipts. Empty schemas may be absent or owner-only, with no objects or
