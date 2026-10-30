@@ -28,6 +28,10 @@ on the experimental two-cluster profile, first
 
 ## Prepare the release
 
+For installations retaining conversations, send a unique nonsecret marker in
+your test conversation through the approved interface. Privately record its
+Agent and location.
+
 Prepare:
 
 - each selected image as an immutable lowercase `@sha256:` digest with passing
@@ -356,12 +360,15 @@ For a controller-only release, confirm gateways are ready again (affected Agents
 restart once) and
 verify any repository-bound Agents that required replacement versions. For a runtime release, inspect
 `deployments.jsonl`, `status/*.doctor.json`, and the before/after workload
-inventories. Then follow
+inventories. Follow
 [Verify production workloads](production-agents.md#verify-production-workloads)
-for every execution mode and provider used by the fleet. Require a fresh model
-response and check relevant channels, credentials, workspace data, and native UI
-access. Doctor lint proves that OpenClaw found no error-level diagnostic; it does
-not prove those application paths.
+for each execution mode and provider in use. Require a fresh model response and
+check relevant channels, credentials, workspace data, and native UI access. Doctor
+lint checks only for error-level diagnostics.
+
+On the new release, reopen that conversation, find your marker, and get the fresh
+reply there. On failure, follow
+[recovery](production-upgrade-recovery.md).
 
 ## Recover from a partial failure
 
