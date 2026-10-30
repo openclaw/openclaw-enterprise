@@ -54,8 +54,9 @@ route set must still enforce deny-all.
 bindings to `github_repository`. All members must have that profile. One
 `git-write` binding maps to `repository_git` and keeps its ref restrictions.
 One installation binding maps to `github_installation` and requires positive
-counterpart confirmation. Deploy refuses mixed profiles, multiple legacy
-bindings, and standalone `git-read` or `git-full` with
+counterpart confirmation. Mixed profiles, multiple legacy bindings, and standalone
+`git-read` or `git-full` do not qualify for protected delivery. If a resolved
+selection reaches protected admission without a supported profile, deploy returns
 `409 REPOSITORY_GIT_PROFILE_UNSUPPORTED`.
 
 For bundled OpenShell, `github_repository` and `repository_git` require a
