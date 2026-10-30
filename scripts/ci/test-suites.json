@@ -44,6 +44,7 @@
     "qa-matrix": "./test-suites/qa-matrix.json",
     "keycloak-oidc": "./test-suites/keycloak-oidc.json",
     "egress-connected": "./test-suites/egress-connected.json",
+    "strands-sender": "./test-suites/strands-sender.json",
     "skipper-prepared-git-installed": "./test-suites/skipper-prepared-git-installed.json",
     "egress-custody-installed": "./test-suites/egress-custody-installed.json"
   },

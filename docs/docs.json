@@ -1093,6 +1093,7 @@
               "flows/agent-presets",
               "flows/credential-source-egress",
               "testing/static-egress",
+              "testing/static-egress-connected",
               "testing/protected-repository-custody",
               "reference/sandbox-policies",
               "guides/topics/agent-sandbox-policy",

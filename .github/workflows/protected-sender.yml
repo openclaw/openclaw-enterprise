@@ -1,0 +1,64 @@
+name: Reference protected sender
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "runtimes/strands-credential-proxy/**"
+      - "packages/contracts/src/credential-proxy*"
+      - "packages/occ/src/credential-proxy.ts"
+      - "apps/controller/src/drivers/egress-proxy/**"
+      - "tests/integration/strands-protected-sender.test.ts"
+      - "tests/helpers/static-egress.mjs"
+      - "tests/helpers/strands-sender-client.ts"
+      - "tests/helpers/certificates.mjs"
+      - ".github/workflows/protected-sender.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  sender:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - uses: ./.github/actions/setup-pnpm-store-cache
+        with:
+          node-version: "24.22.1"
+      - name: Reserve disk for cold native builds
+        run: |
+          # This dedicated hosted runner needs neither Android, .NET nor Haskell.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h "$GITHUB_WORKSPACE"
+          test "$(df --output=avail -B1 "$GITHUB_WORKSPACE" | tail -1)" -ge 21474836480
+      - name: Prepare compiler inputs
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev strace bubblewrap
+          protoc --proto_path=apps/controller/src/drivers/egress-proxy/proto \
+            --descriptor_set_out="$RUNNER_TEMP/supervisor-middleware.pb" --include_imports \
+            apps/controller/src/drivers/egress-proxy/proto/supervisor_middleware.proto
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup default 1.98.1
+          pnpm install --frozen-lockfile
+          bash runtimes/strands-credential-proxy/prepare-box.sh
+      - name: Build and verify the reference transport
+        run: |
+          cargo test --locked --manifest-path runtimes/strands-credential-proxy/Cargo.toml --lib
+          cargo build --locked --manifest-path runtimes/strands-credential-proxy/Cargo.toml --features reference-gateway
+          OCC_TEST_STRANDS_SENDER_BINARY="$PWD/runtimes/strands-credential-proxy/target/debug/oce-reference-gateway" \
+            node --test tests/integration/strands-protected-sender.test.ts
+      - name: Build and check the native launcher
+        run: |
+          bash runtimes/strands-credential-proxy/package-native.sh "$RUNNER_TEMP/oce-native"
+          python3 runtimes/strands-credential-proxy/checks/native-startup.py "$RUNNER_TEMP/oce-native/oce-protected-box" --hosted-fixture

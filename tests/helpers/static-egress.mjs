@@ -98,7 +98,9 @@ export async function staticEgressFixture(
     inertProviderRule = false,
     serviceTransport,
     admitRevision = true,
-    resolutionFinished,
+    resolutionFinished = /** @type {((result: import("../../packages/contracts/src/index.ts").EgressResolution) => void | Promise<void>) | undefined} */ (
+      undefined
+    ),
     preparedGitHub,
     createPreparedGitHub,
     configurePreparedTokens,
@@ -114,6 +116,9 @@ export async function staticEgressFixture(
   // Only ephemeral test-generated material is used; no operator credential files are involved.
   const generated = await selfSigned(directory, {
     subjectAltName: "DNS:localhost,DNS:provider.example.test,IP:127.0.0.1",
+    // This certificate is presented by a server, not an intermediate CA.
+    // Rustls enforces this distinction on the real reference sender's TLS path.
+    extensions: ["basicConstraints=critical,CA:FALSE"],
   });
   // gRPC credentials take Buffers.
   const [key, cert] = [Buffer.from(generated.key), Buffer.from(generated.cert)];
@@ -708,7 +713,7 @@ export async function staticEgressFixture(
           const resolve = forwarder.resolve.bind(forwarder);
           forwarder.resolve = async (...input) => {
             const result = await resolve(...input);
-            resolutionFinished(result);
+            await resolutionFinished(result);
             return result;
           };
           return forwarder;
@@ -1005,6 +1010,51 @@ export async function staticEgressFixture(
       return authority;
     },
     metadata,
+    // Export only this fixture's generated, enrolled identity to a real external sender.
+    // The sender still crosses the production signed exchange and fresh policy checks.
+    async writeSenderInstallation(destination) {
+      const seedPath = join(destination, "sender-seed");
+      const bearerPath = join(destination, "sender-bearer");
+      const authorityCaPath = join(destination, "authority-ca.pem");
+      const configPath = join(destination, "sender.json");
+      await writeFile(
+        seedPath,
+        Buffer.from(exchangeKeys.privateKey.export({ format: "jwk" }).d, "base64url"),
+        { mode: 0o600 },
+      );
+      await writeFile(
+        bearerPath,
+        metadata()
+          .get("authorization")[0]
+          .replace(/^Bearer /u, ""),
+        { mode: 0o600 },
+      );
+      await writeFile(authorityCaPath, cert);
+      await writeFile(
+        configPath,
+        JSON.stringify({
+          sandboxId,
+          instanceId: installation.enforcement.instanceId,
+          audience: "oce-egress",
+          authorityUri: `https://localhost:${authorityPort}`,
+          authorityCaPath,
+          exchangeSeedPath: seedPath,
+          bearerPath,
+          policyHash: installation.enforcement.policyHash,
+          route: {
+            host: "provider.example.test",
+            port: providerPort,
+            method: "POST",
+            path: "/v1/responses",
+            deadlineMs: 20000,
+            connectIp: "127.0.0.1",
+            originCaPem: cert.toString(),
+          },
+        }),
+        { mode: 0o600 },
+      );
+      return { configPath, providerPort };
+    },
     beginExchange,
     resolve,
     authorize,

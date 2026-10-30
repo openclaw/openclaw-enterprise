@@ -1,6 +1,6 @@
 ---
 created: "2026-10-14"
-updated: "2026-10-27"
+updated: "2026-10-29"
 last_updated_session: authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d
 ---
 
@@ -29,35 +29,28 @@ and [threat model](../reference/security/credential-proxy.md).
 
 ### Follow the metadata GET
 
-Suppose the revision admits `github-app-metadata` for repository ID `12345`,
-`acme/widgets`, at `https://api.github.com`.
+For a revision admitting `github-app-metadata` for repository ID `12345`,
+`acme/widgets`, at `https://api.github.com`:
 
-1. **Match the request.** The supervisor captures the process's bodyless
-   `GET /repos/acme/widgets` and binds the reply to that exchange. The GitHub
-   adapter checks the method, URL, headers and body against the installed route.
-2. **Resolve the token.** OCC checks the installation, binding, withdrawal
-   state and the Agent's current `credential_source:operate`. The resolver
-   selects a usable installation token that the worker already prepared.
-   OCC returns the resulting `Authorization: Bearer …` header to the supervisor.
-3. **Permit one send.** On the same stream, OCC rechecks authority and the
-   token version. If the Agent lost its source grant after resolution, OCC
-   refuses the send. Otherwise, the supervisor can start the request by the
-   deadline in the permit. Issuing a permit does not confirm receipt by GitHub.
-4. **Release the identity.** The supervisor submits GitHub's complete reply.
-   The adapter checks for a `200` JSON response of at most 64 KiB with the
-   admitted ID and name (ASCII letter case may differ). For example, even if
-   GitHub returns `"full_name":"Acme/Widgets"` and a description, the caller
-   can receive a `200` with `Content-Type: application/json`,
-   `Cache-Control: no-store` and this body.
+1. The supervisor captures the bodyless `GET /repos/acme/widgets` and its reply
+   sink. The adapter checks method, URL, headers and body against the route.
+2. OCC checks installation, binding, withdrawal and current
+   `credential_source:operate`, then selects a worker-prepared installation
+   token and returns `Authorization: Bearer …` to the supervisor.
+3. On the same stream, OCC rechecks authority and token version before permitting
+   one send by the deadline. Permission does not confirm GitHub received it.
+4. The supervisor submits the complete reply. The adapter accepts only `200`
+   JSON of at most 64 KiB with the admitted ID and name, ignoring ASCII letter
+   case. It returns `Content-Type: application/json`, `Cache-Control: no-store`
+   and only:
 
 ```json
 { "id": 12345, "full_name": "acme/widgets" }
 ```
 
-If GitHub returns ID `67890` under the same name, the supervisor withholds the
-response. GitHub has already received the request. With the credential-free
-profile the same filters apply, but resolution records `no_material_required`
-and the supervisor sends no credential header.
+A different ID withholds the response after GitHub received the request. The
+credential-free profile uses the same filters, records `no_material_required`
+and sends no credential header.
 [GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/0418ef3a2c116b73f025281395d92477daf665d2/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
 
 ```mermaid
@@ -117,24 +110,22 @@ fence refuses; legacy observations cannot substitute. The gateway compares unkno
 fields too. The local fingerprint covers both hashes and full policies, but is neither
 a canonical supplier hash nor supervisor attestation.
 
-Compute adds `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` from the immutable admitted
-revision only to protected provider Harness requirements. Before opening its authenticated
-listener on the existing service port, the generated helper requires the literal to equal
-the manifest's enrollment execution revision; missing or mismatched values refuse.
-Compute suppresses its private status revision, port, container name and Pod UID; the
-provider receives the transport verifier, not the raw transport token.
+Compute adds `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` only to protected provider
+Harness requirements. The helper requires it to match the manifest's enrollment
+revision before listening on the existing authenticated service port. Compute
+suppresses private status revision, port, container name and Pod UID; the provider
+gets a transport verifier, not the raw token.
 
-Before the first model probe, the Harness waits on this listener. Compute awaits the
-installation commit, requeries current evidence and calls the selected Sandbox Driver,
-which checks the exact Sandbox and service and reads the execution/plan challenge.
-Compute signs its fresh process nonce and current installation with a control-plane-only
-key. The listener closes before Codex starts. Restart creates a new challenge; stale
-release cannot unlock the replacement. After 180 seconds, startup fails closed and remains held.
-Reconciliation may repeat readiness exchanges, but enrollment neither
-resolves material nor retries business requests. The worker's active-revision branch can
-repeat this sequence when work is queued. Default Kubernetes has no periodic maintenance
-interval, so Harness-only restart recovery is not automatic;
-see the [supported recovery boundary](../reference/credential-sources/protected-inference.md#installation-configuration).
+Before the first model probe, Compute awaits installation commit, requeries
+evidence and asks the selected Sandbox Driver to check the exact Sandbox,
+service and execution/plan challenge. Compute signs the listener's fresh nonce
+and current installation with a control-plane-only key. The listener closes
+before Codex starts. Restart invalidates old challenges; startup fails closed
+after 180 seconds. Reconciliation may repeat readiness exchanges without
+resolving material or retrying business requests. Queued work can trigger this
+sequence; default Kubernetes has no periodic maintenance, so Harness-only
+restart recovery is not automatic. See the
+[supported recovery boundary](../reference/credential-sources/protected-inference.md#installation-configuration).
 
 ### 2. Capture identity, operation and first authority decision
 
@@ -238,6 +229,16 @@ deadline. A lost acknowledgment, handle or deadline yields no permit. Restart ca
 reauthorize the attempt. Revocation may race an authorized send; an origin write with a
 lost reply remains a possible effect and must not be retried.
 
+The [reference Box sender](../../runtimes/strands-credential-proxy/README.md)
+implements this phase in `src/exchange.rs:CredentialProxy::exchange` and
+`src/origin.rs:SocketGate::poll_write` under `runtimes/strands-credential-proxy`.
+It rejects unsupported headers before resolution, discards the documented SDK
+placeholder and informational fields, and gates the same pinned TLS socket after
+authorization. Its guide owns the allowlist, deadline and no-retry
+rules. The [optional native caller](../../runtimes/strands-credential-proxy/README.md#optional-native-launcher)
+initializes after Box hardening; installed enrollment and containment remain
+separate qualification requirements.
+
 ### 4. Protect response and finish
 
 `packages/occ/src/credential-proxy.ts:protectResponse` binds the complete response to its peer,
@@ -258,6 +259,11 @@ preserves safe response bytes. The origin has already received the credential.
 Only this exchange can claim the response. `EgressSendReceipts.observe` atomically records
 the decision and any exact rejection fence without bodies, headers, credentials or handles.
 Failure withholds bytes; success still requires checking cancellation and deadline.
+
+The reference sender submits the complete response and trailers on that exchange,
+reports progress to recheck policy, and returns approved bytes to Box's original
+writer. Its [transport limits](../../runtimes/strands-credential-proxy/README.md#embed-in-the-trusted-host)
+are stricter than the general protocol; approval does not prove delivery.
 
 Structured OpenAI `invalid_api_key` can establish rejection; a bare 401 cannot. At
 its next scheduled check, the prepared owner excludes a positively rejected version.
@@ -335,6 +341,10 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-10-29 02:00: Trace the optional native launcher and post-hardening sender initialization. (protected-sender - 0c4ef4ddfdb78)
+
+- 2026-10-29 00:59: Trace the reference Box sender, final write gate, and current response lifecycle. (protected-sender - 328dacc04bf5132f98c244bc9e5537e528b2916c)
 
 - 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
 

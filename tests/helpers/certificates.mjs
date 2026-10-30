@@ -34,6 +34,7 @@ export async function selfSigned(
     subjectAltName = "DNS:localhost,IP:127.0.0.1",
     keyPem,
     days = 1,
+    extensions = [],
   } = {},
 ) {
   const keyPath = join(directory, `${name}.key`);
@@ -50,6 +51,7 @@ export async function selfSigned(
     `/CN=${commonName}`,
     "-addext",
     `subjectAltName=${subjectAltName}`,
+    ...extensions.flatMap((extension) => ["-addext", extension]),
   ]);
   return {
     key: await readFile(keyPath, "utf8"),

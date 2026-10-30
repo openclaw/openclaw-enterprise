@@ -18,6 +18,12 @@ The configuration excludes `legacy/`; do not import archived implementations.
 The Go CLI uses the root [Go module](../go.mod). The documentation renderer in
 `scripts/docs-site/` has its own package manifest, pnpm workspace, and lockfile;
 keep its dependency installation separate from the root workspace.
+
+`runtimes/strands-credential-proxy/` is a separate Rust reference sender for the
+Box terminal exchange. Its public source preparation and verification commands
+are in its [README](../runtimes/strands-credential-proxy/README.md). It is not part
+of the TypeScript workspace and does not install a native Sandbox Driver.
+
 API example metadata and export enrichment live in `scripts/api-examples.mjs`
 and `scripts/document-api-examples.mjs`; `scripts/docs-site/` owns the explorer
 and OpenAPI lint configuration. The controller route schemas remain the source
