@@ -276,8 +276,7 @@ contextual recovery. Lifecycle polling remains separately owned.
 
 Deployment also authorizes the caller's Secret `operate` on each bound Secret. When the
 Agent's `permissions/secrets` answer lists one, Deploy is disabled with a note naming it; a
-generic deploy `403` rereads the answer and names them in its alert. A window refocus rereads
-it too, so the note follows a grant as the draft's controls do. A caller with Agent
+generic deploy `403` rereads the answer and names them in its alert. A caller with Agent
 `deploy` but neither update gets an answer only on the Secrets the draft binds.
 
 **Operator-managed credentials** saves `{ "method": "runtime" }` without a source,

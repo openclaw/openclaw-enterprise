@@ -1690,10 +1690,16 @@ test("Logs of a stopped version show a redeploy from elsewhere that failed", asy
     .getByRole("log", { name: "Runtime log output" })
     .getByText("the first version serves")
     .waitFor();
-  const main = page.locator("main");
-  const shows = (pattern: RegExp) =>
-    waitForCondition(async () => pattern.test(await main.innerText()), `the page shows ${pattern}`);
-  await shows(/Latest visible deployment\s+v1 · Completed/);
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  const shows = async (pattern: RegExp) => {
+    try {
+      await waitForCondition(async () => pattern.test(await summary.innerText()), String(pattern));
+    } catch (error) {
+      console.log("SUMMARY", JSON.stringify(await summary.innerText()));
+      throw error;
+    }
+  };
+  await shows(/Latest visible deployment\s+v1\s+·\s+Completed/);
   // One status poll (10 s), which rereads the Agent; answers the version list reads so far.
   const poll = async () => {
     const agentReads = await settledFetches(page, agentPath);
@@ -1726,7 +1732,7 @@ test("Logs of a stopped version show a redeploy from elsewhere that failed", asy
   // It deploys a new version, which runs with no version selected while its deployment is queued.
   const deployed = await fixture.deployAgent(namespace.id, agent.id);
   const queued = await poll();
-  await shows(/Latest visible deployment\s+v2 · Queued/);
+  await shows(/Latest visible deployment\s+v2\s+·\s+Queued/);
   assert.equal(await poll(), queued);
 
   // The deployment fails: the page names it as the latest one and leads with its failure.
@@ -1737,7 +1743,7 @@ test("Logs of a stopped version show a redeploy from elsewhere that failed", asy
     code: "RUNTIME_MODEL_PROBE_TIMEOUT",
   });
   await poll();
-  await shows(/Latest visible deployment\s+v2 · Failed/);
+  await shows(/Latest visible deployment\s+v2\s+·\s+Failed/);
   await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
   const failed = await poll();
   assert.equal(await poll(), failed);

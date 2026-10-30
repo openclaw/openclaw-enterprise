@@ -1847,10 +1847,6 @@ export async function renderAgentDetail(
     agentSaveDenied = rereadPermissions().then((permissions) =>
       agentSaveDenial(permissions, agent),
     );
-    // The reread dropped the Secret operate answer, so the Deploy note reads it again too and
-    // names the Secrets the Channels tab's controls now follow: a Secret operate grant made
-    // Disable Slack usable on refocus while the note kept naming those Secrets (finding 2977).
-    rereadDeploySecrets();
   });
   // Shown once by the tab a draft refresh rebuilds after a save (finding 1445).
   let savedNotice = "";
@@ -2833,8 +2829,6 @@ export async function renderAgentDetail(
     renderDetailHeading();
   }
   let refreshDeployControls = () => {};
-  // Rereads the Secret operate answer the draft's Deploy note names, once the draft is shown.
-  let rereadDeploySecrets = () => {};
   void callerPermissionsRead.then((permissions) => {
     if (!context.isCurrent()) {
       return;
@@ -3523,7 +3517,6 @@ export async function renderAgentDetail(
       setStep(checklistSteps[2], false, "Creates an immutable version from the saved draft");
     }
     refreshDeployControls = updateDeployControls;
-    rereadDeploySecrets = () => void readDeploySecretsDenied();
     const deployStatus = element("p", { className: "muted", role: "status" });
     const deployFeedback = statusBlock("danger", null, null);
     const deploy = button(
