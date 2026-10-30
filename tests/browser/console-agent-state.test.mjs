@@ -3776,6 +3776,9 @@ test("Agents list row actions explain missing access and still report a refused 
   assert.equal(await confirm.isDisabled(), true);
   const cancel = dialog.getByRole("button", { name: "Cancel" });
   assert.equal(await cancel.evaluate((node) => node.ownerDocument.activeElement === node), true);
+  // The confirmation stays in the Tab order, described by the refusal, and sends nothing
+  // (finding 2935).
+  await expectReachableReason(page, confirm, AGENT_STOP_DENIED);
   await cancel.click();
   await dialog.waitFor({ state: "hidden" });
   await page.waitForFunction(() => {

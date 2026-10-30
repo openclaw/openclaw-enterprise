@@ -6,6 +6,7 @@ import {
   mayReturnFocus,
   setHidden,
   setText,
+  setUnavailable,
   statusBlock,
   requestIdLine,
 } from "../dom.mjs";
@@ -99,6 +100,15 @@ export function createAgentStop(
         ? "Cancels the deployment in progress. The Agent stays and can be deployed again."
         : "Stops the running version. The Agent stays and can be deployed again.",
     );
+    const idleNote =
+      idle && !state.forbidden
+        ? statusBlock(
+            "info",
+            null,
+            "No version is running, so there is nothing to stop. Deploy a new version to start this Agent.",
+          )
+        : null;
+    const forbiddenNote = state.forbidden ? statusBlock("info", null, permissionNotice) : null;
     // A running Agent's row is the title, its sentence and Stop; the overview already shows the
     // current version. After a stop request the row reports what Refresh reads back.
     feedback.replaceChildren(
@@ -131,16 +141,8 @@ export function createAgentStop(
             ),
           ]
         : []),
-      ...(idle && !state.forbidden
-        ? [
-            statusBlock(
-              "info",
-              null,
-              "No version is running, so there is nothing to stop. Deploy a new version to start this Agent.",
-            ),
-          ]
-        : []),
-      ...(state.forbidden ? [statusBlock("info", null, permissionNotice)] : []),
+      ...(idleNote ? [idleNote] : []),
+      ...(forbiddenNote ? [forbiddenNote] : []),
       ...(state.notice ? [statusBlock("info", null, state.notice)] : []),
       ...(state.error
         ? [
@@ -153,8 +155,23 @@ export function createAgentStop(
           ]
         : []),
     );
-    stop.disabled = requested || state.pending || state.needsRefresh || state.forbidden || idle;
-    repeat.disabled = state.pending || state.needsRefresh || state.forbidden;
+    // A refused or idle Stop, and a refused Request Stop again, stay in the Tab order, described
+    // by the note that says why (finding 2935). A pending one stays natively disabled. After an
+    // uncertain outcome (needsRefresh) neither is shown: the row offers only Refresh.
+    const stopUnavailable =
+      requested || state.pending || state.needsRefresh || state.forbidden || idle;
+    const stopReason =
+      requested || state.pending || state.needsRefresh ? null : (forbiddenNote ?? idleNote);
+    setUnavailable(stop, stopUnavailable && stopReason !== null, stopReason);
+    if (stopUnavailable && stopReason === null) {
+      stop.disabled = true;
+    }
+    const repeatUnavailable = state.pending || state.needsRefresh || state.forbidden;
+    const repeatReason = state.pending || state.needsRefresh ? null : forbiddenNote;
+    setUnavailable(repeat, repeatUnavailable && repeatReason !== null, repeatReason);
+    if (repeatUnavailable && repeatReason === null) {
+      repeat.disabled = true;
+    }
     refresh.disabled = state.pending;
     refresh.textContent = state.pending ? "Checking…" : "Refresh stop status";
     // An Agent created through the API starts stopped and has no version until its first
@@ -397,8 +414,9 @@ export function createAgentStop(
       if (!dialog.open || state.pending) {
         return;
       }
-      confirm.disabled = true;
       description.textContent = permissionNotice;
+      // The confirmation stays in the Tab order, described by the refusal (finding 2935).
+      setUnavailable(confirm, true, description);
       cancel.focus();
     };
     restrictConfirmation = showRestriction;

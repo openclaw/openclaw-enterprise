@@ -6,6 +6,7 @@ import {
   replaceChildrenIfChanged,
   setHidden,
   setText,
+  setUnavailable,
   statusBlock,
   requestIdLine,
 } from "../dom.mjs";
@@ -105,13 +106,18 @@ export function createAgentDeletion(
     replaceChildrenIfChanged(feedback, [
       ...(status ? [statusBlock("info", null, status)] : []),
       ...(state.forbidden && !state.accessEnded
-        ? [statusBlock("info", null, permissionNotice)]
+        ? [statusBlock("info", null, permissionNotice, [], { id: "agent-deletion-refused" })]
         : []),
       ...(state.error
         ? [
             element(
               "div",
-              { className: "status", "data-tone": "danger", role: "alert" },
+              {
+                className: "status",
+                "data-tone": "danger",
+                role: "alert",
+                id: "agent-deletion-error",
+              },
               element("p", { className: "status-body" }, state.error.text),
               state.error.requestId ? requestIdLine(state.error.requestId) : null,
             ),
@@ -119,7 +125,19 @@ export function createAgentDeletion(
         : []),
     ]);
     setText(remove, state.deleting ? "Request deletion again" : "Delete Agent");
-    remove.disabled = checking || state.needsRefresh || state.forbidden;
+    // A refused Delete, or one that waits for Refresh after a failure, stays in the Tab order,
+    // described by the note or alert that says why (finding 2935). The shown nodes are read back:
+    // an unchanged render keeps the earlier ones. While checking it stays natively disabled.
+    const removeUnavailable = checking || state.needsRefresh || state.forbidden;
+    const removeReason = checking
+      ? null
+      : feedback.querySelector<HTMLElement>(
+          state.forbidden ? "#agent-deletion-refused" : "#agent-deletion-error",
+        );
+    setUnavailable(remove, removeUnavailable && removeReason !== null, removeReason);
+    if (removeUnavailable && removeReason === null) {
+      remove.disabled = true;
+    }
     refresh.disabled = checking;
     setText(refresh, checking ? "Checking…" : "Refresh deletion status");
     // A viewer whose permission answer denies Agent delete has no row (UX spec 3.9). A missing
@@ -407,8 +425,9 @@ export function createAgentDeletion(
         dialog.close();
         return;
       }
-      confirm.disabled = true;
       description.textContent = permissionNotice;
+      // The confirmation stays in the Tab order, described by the refusal (finding 2935).
+      setUnavailable(confirm, true, description);
       cancel.focus();
     };
     restrictConfirmation = showRestriction;

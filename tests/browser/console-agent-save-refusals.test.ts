@@ -14,6 +14,7 @@ import {
   AGENT_READ,
   apiRequests,
   detailUrl,
+  expectReachableReason,
   fileBrowser,
   holdRequests,
   login,
@@ -1028,10 +1029,21 @@ test("a Stop refusal clears once a later answer grants Agent operate", async (t)
   const notice = stopRow.getByText(AGENT_STOP_DENIED, { exact: true });
   await scenario.rereadThroughLogs();
   await notice.waitFor();
+  // The refused Stop stays in the Tab order, described by that notice (finding 2935).
+  const stop = stopRow.getByRole("button", { name: "Stop Agent", exact: true });
+  await expectReachableReason(page, stop, AGENT_STOP_DENIED);
   scenario.operate(true);
   await scenario.rereadThroughLogs();
   await notice.waitFor({ state: "hidden" });
-  await waitForEnabled(stopRow.getByRole("button", { name: "Stop Agent", exact: true }));
+  await waitForEnabled(stop);
+  // The grant leaves no stale reason on Stop.
+  assert.deepEqual(
+    await stop.evaluate((node) => ({
+      ariaDisabled: node.getAttribute("aria-disabled"),
+      describedby: node.getAttribute("aria-describedby"),
+    })),
+    { ariaDisabled: null, describedby: null },
+  );
   assert.equal(await refusal.count(), 0);
 });
 

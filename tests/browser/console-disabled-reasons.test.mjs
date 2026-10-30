@@ -6,7 +6,9 @@ import test from "node:test";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   AGENT_CREATE_DENIED,
+  AGENT_DELETE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
+  AGENT_STOP_DENIED,
   CHANNELS_NEED_DEDICATED,
   DIAGNOSTICS_DENIED,
   SECRET_CREATE_DENIED,
@@ -17,6 +19,7 @@ import {
   accessibleDescription,
   detailUrl,
   expectReachableReason,
+  holdRequests,
   login,
   nativeValues,
   newPage,
@@ -243,6 +246,119 @@ test("the Namespace selector names no missing reason on a page without the no-Na
     [],
   );
 });
+
+// Finding 2936: with no readable Namespace, the header's selector was natively disabled, so Tab
+// skipped it and the no-Namespace panel that says why. It stays in the Tab order, described by
+// that panel, and changes nothing.
+test("the Namespace selector with no readable Namespace is reachable and names the panel", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  await fixture.createNamespace("Hidden from the reader", { ready: true });
+  restrict(fixture.policy, "read", "namespace");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, "/console/agents");
+  const reason = page.locator("#namespace-access-reason");
+  await reason.waitFor();
+  const selector = page.getByLabel("Namespace", { exact: true });
+  assert.equal(await selector.isDisabled(), true);
+  await expectReachableReason(page, selector, (await reason.textContent())?.trim());
+  assert.equal(new URL(page.url()).pathname, "/console/agents");
+});
+
+// Finding 2937: with no default Preset, Start with default Preset was natively disabled with no
+// reason. The hint beside it says why, describes it, and stays when another Preset is chosen
+// (the chooser's status line changes then).
+test("Start with default Preset names the missing default as its reason", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    defaultPresets: [],
+    filesystemConfiguration: true,
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("No default Preset", { ready: true });
+  const other = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: { name: "Team Preset", template: { agent: { name: "Team Agent" } } },
+  });
+  assert.equal(other.status, 201, JSON.stringify(other.body));
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  const reason = "default-codex is not available to you in this Namespace.";
+  await page.getByText(reason, { exact: true }).waitFor();
+  const shortcut = page.getByRole("button", { name: "Start with default Preset", exact: true });
+  assert.equal(await shortcut.isDisabled(), true);
+  await expectReachableReason(page, shortcut, reason);
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+
+  await page.getByLabel("Preset template").selectOption(other.data.id);
+  await page
+    .getByText("Fill in the variables, then use this Preset to create an editable draft.", {
+      exact: true,
+    })
+    .waitFor();
+  await expectReachableReason(page, shortcut, reason);
+});
+
+// Finding 2935: a permission answer that denies Stop or Delete while its confirmation is open
+// disabled the confirmation natively, with the refusal unlinked. It stays in the Tab order,
+// described by the refusal, and sends nothing; after Cancel the row's control does the same.
+for (const { row, title, confirmName, reason } of [
+  {
+    row: "Stop Agent",
+    title: "Stop this Agent?",
+    confirmName: "Stop Agent",
+    reason: AGENT_STOP_DENIED,
+  },
+  {
+    row: "Delete Agent",
+    title: "Delete Late refusal Agent?",
+    confirmName: "Permanently delete Agent",
+    reason: AGENT_DELETE_DENIED,
+  },
+]) {
+  test(`a late refusal keeps ${row}'s confirmation and row control reachable, with why`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Late refusal", { ready: true });
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Late refusal Agent",
+      nativeValues("late"),
+    );
+    const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    const reader = await fixture.createNamespaceMember(
+      "late-refusal-reader",
+      namespace.id,
+      AGENT_READ,
+    );
+    const { page } = await newPage(t, fixture);
+    const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    // Hold the permission answer so the reader opens the confirmation before it arrives.
+    const answer = await holdRequests(t, page, `${fixture.origin}${agentPath}/permissions`, {
+      once: true,
+    });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+      reader.credentials,
+    );
+    const zone = page.getByRole("region", { name: row, exact: true });
+    await zone.getByRole("button", { name: row, exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: title, exact: true });
+    await dialog.waitFor();
+    answer.release();
+    await dialog.getByText(reason, { exact: true }).waitFor();
+    const confirm = dialog.getByRole("button", { name: confirmName, exact: true });
+    assert.equal(await confirm.isDisabled(), true);
+    await expectReachableReason(page, confirm, reason);
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await dialog.waitFor({ state: "detached" });
+    // The row stays for this viewer, who used it, and its control says why too.
+    await zone.getByText(reason, { exact: true }).waitFor();
+    await expectReachableReason(page, zone.getByRole("button", { name: row, exact: true }), reason);
+    assert.equal(await page.getByRole("dialog").count(), 0);
+    assert.equal((await fixture.request("GET", agentPath)).data.desiredRuntimeState, "running");
+  });
+}
 
 // Finding D793. Save plugin selections, Discard changes, Save channel Secrets and Use Preset were
 // disabled with a sentence beside them that no control named. Each is described by it now.
