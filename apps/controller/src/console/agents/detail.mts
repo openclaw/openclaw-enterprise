@@ -5559,7 +5559,12 @@ export async function renderAgentDetail(
       const reloadRequired = saveState === "conflict";
       const locked = saveState !== "idle";
       data.setDraftEditorState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
-      save.disabled = locked || !dirty || !fields?.isSettled() || fields.blocksCreate();
+      save.disabled =
+        locked ||
+        !dirty ||
+        !fields?.isSettled() ||
+        fields.blocksCreate() ||
+        (fields.bindings().length > 0 && !fields.hasValidSelection());
       if (save.getAttribute("aria-busy") !== String(pending)) {
         save.setAttribute("aria-busy", String(pending));
       }

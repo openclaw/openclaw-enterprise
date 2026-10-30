@@ -244,10 +244,13 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 62) {
     return "prePreparedAttemptSettlement";
   }
+  if (count === 64) {
+    return "preSelectedRepositorySet";
+  }
   if (count === 63) {
     return "preGatewayManagedMode";
   }
-  if (count === 64) {
+  if (count === 65) {
     return "preNamespaceLifecycle";
   }
   refuse("an incomplete or unsupported development history is installed");

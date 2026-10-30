@@ -1499,9 +1499,7 @@ const RETRY_LATER_MESSAGES = Object.freeze({
   deviceLoginFailed: () =>
     "The sign-in service did not complete this device login, so it was cancelled. Start a new device login. If it keeps failing, ask an operator to check the API logs.",
   proxyRegistration: () =>
-    "The OpenShell gateway does not offer the protected egress middleware the Credential Proxy is configured to use. Ask an operator to check the gateway's middleware registration and version, then retry.",
-  previewGatewayVersion: () =>
-    "Installation-wide repository access uses the observed-hook preview, which needs OpenShell gateway 0.1.5, and the gateway reports another version. Ask an operator to run 0.1.5 or turn the preview off, then retry.",
+    "The OpenShell gateway does not offer the protected egress middleware the Credential Proxy is configured to use. Ask an operator to check the gateway's middleware registration, protocol and capabilities, then retry.",
 });
 
 /**
@@ -1511,12 +1509,12 @@ const RETRY_LATER_MESSAGES = Object.freeze({
  * workers still retry it. A failed device login keeps the Refresh Driver's error as `cause`, so
  * the API's 503 log record, which the text points the caller to, names that error's class and
  * code (never its message). The bundled OpenShell Credential Proxy raises the gateway states an
- * operator can fix (`proxyRegistration`, `previewGatewayVersion`) from its availability check.
+ * operator can fix (`proxyRegistration`) from its availability check.
  */
 export class RetryLaterError extends DependencyUnavailableError {
   constructor(reason: "deviceLoginFailed", cause: unknown);
   constructor(reason: "registrationFence", seconds: number);
-  constructor(reason: "proxyRegistration" | "previewGatewayVersion");
+  constructor(reason: "proxyRegistration");
   constructor(reason: keyof typeof RETRY_LATER_MESSAGES, detail?: unknown) {
     super(
       RETRY_LATER_MESSAGES[reason](

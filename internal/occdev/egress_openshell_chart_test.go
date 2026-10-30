@@ -1,12 +1,38 @@
 package occdev
 
 import (
+	"context"
+	"os"
 	"strings"
 	"testing"
 )
 
 func TestProtectedOpenShellGatewayRenderContract(t *testing.T) {
 	state := &developmentState{PlatformNamespace: "oce-system"}
+	if os.Getenv("OCC_TEST_OPENSHELL_STOCK_RELEASE") == "1" {
+		t.Run("ordinary stock chart preflight", func(t *testing.T) {
+			r := newRunner(Options{})
+			// Exercise the normal source download, checksum and chart packaging path.
+			for _, key := range []string{
+				"OCC_DEVELOPMENT_OPENSHELL_HELM_CHART",
+				"OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART",
+				"OCC_DEVELOPMENT_OPENSHELL_GATEWAY_IMAGE",
+				"OCC_DEVELOPMENT_OPENSHELL_SUPERVISOR_IMAGE",
+				"OCC_DEVELOPMENT_OPENSHELL_SANDBOX_IMAGE",
+				"OCC_DEVELOPMENT_OPENSHELL_SOURCE_REVISION",
+			} {
+				delete(r.env, key)
+			}
+			images, err := r.selectOpenShellImages("openshell")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r.checkProtectedOpenShellChart(context.Background(), state, images); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+
 	const render = `kind: StatefulSet
 metadata: {name: openshell-gateway}
 spec:
@@ -34,6 +60,8 @@ data:
     tls_ca_cert_path = "/trust/public.pem"
     max_payload_bytes = 4194304
     timeout = "30s"
+    binding_policy = "allowlist"
+    bindings = ["http_request_pre_credentials"]
 `
 	if err := verifyProtectedOpenShellChart([]byte(render), state); err != nil {
 		t.Fatalf("valid mounted registration: %v", err)
@@ -65,6 +93,10 @@ data:
 	for _, tt := range []struct{ from, to, want string }{
 		{"openshell.supervisor.middleware", "unrelated.middleware", "exactly one supervisor middleware"},
 		{"transport = false", "transport = true", "secure transport"},
+		{`    binding_policy = "allowlist"`, "", "pre-credentials"},
+		{`binding_policy = "allowlist"`, `binding_policy = "dynamic"`, "pre-credentials"},
+		{`    bindings = ["http_request_pre_credentials"]`, "", "pre-credentials"},
+		{`bindings = ["http_request_pre_credentials"]`, `bindings = ["http_response_pre_return"]`, "pre-credentials"},
 		{":9444", ":9445", "required HTTPS endpoint"},
 		{args, "args: [--config, /other/config]", "must load gateway.toml"},
 		{args, "args: [--config=/gateway/config.toml, extra]", "must load gateway.toml"},

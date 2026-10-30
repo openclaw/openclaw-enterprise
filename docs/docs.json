@@ -435,6 +435,10 @@
                         "label": "Installation"
                       },
                       {
+                        "page": "guides/repository-credentials/openshell-enrollment",
+                        "label": "OpenShell Enrollment"
+                      },
+                      {
                         "page": "guides/repository-credentials/team-runbook",
                         "label": "Team Runbook"
                       },

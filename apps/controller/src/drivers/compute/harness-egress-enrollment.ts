@@ -96,7 +96,7 @@ function waitForHarnessEgressEnrollment(enrollment) {
           chunks.push(chunk);
         }
         const release = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        if (preview && Object.hasOwn(release, "probePath")) {
+        if (online && Object.hasOwn(release, "probePath")) {
           const {probePath, startupId} = release;
           if (probeSent || startupId !== challenge.startupId ||
               !/^\/oce-observe-request\/[0-9a-f]{32}\.git\/info\/refs$/.test(probePath)) {
@@ -131,6 +131,7 @@ function waitForHarnessEgressEnrollment(enrollment) {
             !isDeepStrictEqual(release.challenge, challenge) || !isPlainObject(installation) ||
             (online && (installation.repositoryGitRecipient?.authorization !== enrollment.repositoryGitAuthorization ||
               Object.hasOwn(installation, "peerKeyId"))) ||
+            (probeSent && !observed) ||
             (preview && (!observed || installation.repositoryGitRecipient?.observedHook?.startupId !== challenge.startupId)) ||
             !["sandboxId", "instanceId", "configurationId", ...(online ? [] : ["peerKeyId"])].every((k) =>
               typeof installation[k] === "string" && installation[k].length > 0) ||

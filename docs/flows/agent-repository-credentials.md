@@ -8,24 +8,22 @@ last_updated_session: authoring-run/58b286d1-0e1a-4666-b77e-e8da815c7d88
 
 ## Overview
 
-The Console lists approved repositories; deployment freezes grants. Prepared native sessions reach
-Compute-owned dedicated Codex without a Sandbox Driver. The opt-in
-[OpenShell path](../reference/repository-credentials/protected-openshell-git.md) gives the sandbox a
-placeholder: the worker delivers prepared material to the provider and checks each signed
-request against the live grant without returning a token.
-See [service forwarding and retirement](repository-credentials.md) and
-[runtime qualification](../testing/repository-credentials.md).
+The Console lists approved repositories. Deployment freezes grants.
+Compute-owned dedicated Codex uses prepared native sessions without a Sandbox Driver. On the
+[OpenShell path](../reference/repository-credentials/protected-openshell-git.md), the sandbox gets a placeholder.
+The worker delivers the credential to the provider and checks signed requests against the live grant.
+See [enrollment and mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
+[service forwarding and retirement](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
 
 ## Entry Points
 
-- `apps/controller/src/index.ts:createFastifyApp` registers repository-option and
-  Agent lifecycle routes. Discovery requires Agent-create or exact-Agent update.
+- `apps/controller/src/index.ts:createFastifyApp` registers repository-option and Agent lifecycle routes.
 - `apps/controller/src/console/agents/repositories.mts:createRepositoryFields`
   renders discovery and inherited or custom access.
 - `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` prepares
   repository sessions before invoking Compute.
 
-For access across session expiry, see [standing repository approval](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
+See [standing approval across session expiry](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
 
 ## Flow
 
@@ -186,18 +184,21 @@ bounded by the configured interval and ten minutes.
 `worker.repository-cleanup-warning` with `cause` once per worker.
 
 `apps/controller/src/drivers/repo/credentials/control.ts:createControlAdmission`
-reserves before releasing material.
+reserves before release.
 `apps/controller/src/backends/repository-credentials/receipt-store.ts:RepositoryReceiptStore`
-retains fences and original-broker disposal evidence across service pruning.
-Transport failure cannot establish absence. The receipt store matches
-`preparedOnly` to protocol 3 throughout receipt operations. Unmarked v1 requests
-can recover and close on their original IDs but cannot reserve.
+retains fences and original-broker disposal evidence after pruning.
+Transport failure cannot establish absence. `preparedOnly` requires protocol 3;
+unmarked v1 requests can recover and close original IDs but cannot reserve.
 `RepositoryCredentialLifecycle.verifyRelease` and
 `apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts:sessionQuery`
-require protocol 3 for native release and prepared-material selection.
-Protected sessions retain protocol 2. The query matches policy-reduction version 2
-with execution admission v7. It retains the exact installed-plan, recipient,
-standing-approval and session-lifetime checks before selecting prepared material.
+require protocol 3 for native release and material selection.
+Protected sessions use protocol 2. Selection checks policy-reduction version 2
+against execution admission v7, the exact installed plan, recipient, standing
+approval and session lifetime.
+
+`apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts:selectedRepositoryGrantSql`
+shares per-member selection, Driver and expiry checks between production and
+withdrawal. Frozen identities reject session replacement. Transaction locks remain.
 
 ### 4. Deliver and retain one complete runtime generation
 
@@ -276,11 +277,14 @@ without changing shared selection.
 
 See [draft creation from a prepared Git session](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
 
-`apps/controller/src/drivers/repo/github/credentials/profiles.ts` owns the exact
-Reader, Contributor and Collaborator permission maps. The GitHub route classifier admits
-profile-selected REST operations and GraphQL limited by token permissions for all three.
-Every GraphQL POST is a possible write; Reader's token, not a query parser, enforces its
-read-only grant. See
+`apps/controller/src/drivers/repo/github/credentials/profiles.ts` defines Reader,
+Contributor and Collaborator permissions. REST uses profile-selected operations;
+GraphQL uses token permissions. Every GraphQL POST can write; Reader's token
+enforces read-only access.
+OpenShell's
+`apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:requestHead`
+validates [CLI metadata](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
+Route, JSON and current-authority checks remain. See
 [access levels](../reference/repository-credentials/access-levels.md).
 
 The [service exchange flow](repository-credentials.md#4-reserve-acquire-and-dispatch)
@@ -397,6 +401,10 @@ denied before reaching the provider, and chat continues.
 
 - 2026-10-30 03:58: Load the native repository transport only for explicit native delivery. (authoring-run/43b61103-4082-4fc2-b9a0-511a18ebc761 - 87ed6c37e543e5501eae6285450d01d03d8abe7d)
 
+- 2026-10-30 02:21: Admit CLI metadata. (authoring-run/086003c3-b067-490a-b33b-8083e88519bd - 35f44276ed5cdcb69b5fd707b085fd59b06009dd)
+
+- 2026-10-29 23:23: Share selected-repository grant projection. (authoring-run/033567f0-1b76-4fba-83a3-d83d36dae4bd - a198a93e81cc88f7ba83edc4de7a949a43b19e17)
+
 - 2026-10-29 21:00: Keep an existing Agent's new version running when its first GitHub token is still pending at the convergence deadline (`REPOSITORY_GIT_TOKEN_PENDING`). (finding 2894)
 
-[Agent repository credential documentation history](agent-repository-credentials/history.md) preserves the older dated entries.
+[Earlier changes](agent-repository-credentials/history.md)

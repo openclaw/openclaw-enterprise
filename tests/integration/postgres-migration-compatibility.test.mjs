@@ -1992,7 +1992,8 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [63, "preGatewayManagedMode"],
-      [64, "preNamespaceLifecycle"],
+      [64, "preSelectedRepositorySet"],
+      [65, "preNamespaceLifecycle"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });

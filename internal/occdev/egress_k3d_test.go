@@ -36,6 +36,10 @@ func TestProtectedEgressSelectionFailsBeforeEffects(t *testing.T) {
 		}
 	}
 	check("kubernetes", "openshell", "enabled")
+	original := r.env
+	r.env = map[string]string{"OCC_DEVELOPMENT_PROTECTED_EGRESS": "1"}
+	check("kubernetes", "openshell", "enabled")
+	r.env = original
 	check("compose", "openshell", "rejected")
 	check("kubernetes", "none", "rejected")
 	for key, value := range env {
@@ -43,7 +47,7 @@ func TestProtectedEgressSelectionFailsBeforeEffects(t *testing.T) {
 			continue
 		}
 		delete(env, key)
-		check("kubernetes", "openshell", "rejected")
+		check("kubernetes", "openshell", "enabled")
 		env[key] = value
 	}
 	// Only an explicitly selected owned private host can receive the native alias.

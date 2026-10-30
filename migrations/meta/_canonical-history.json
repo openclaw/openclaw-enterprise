@@ -517,8 +517,16 @@
     {
       "idx": 65,
       "version": "7",
+      "when": 1787000000065,
+      "tag": "0065_selected_repository_set",
+      "breakpoints": true,
+      "sha256": "4c1bb4e42c6b23f3ef30c66e98ff892d952986e20c2855d5dd1732b9f5854496"
+    },
+    {
+      "idx": 66,
+      "version": "7",
       "when": 1793365038662,
-      "tag": "0065_namespace_lifecycle",
+      "tag": "0066_namespace_lifecycle",
       "breakpoints": true,
       "sha256": "72efd102f74ab146f093557bb8de2207acaf003e66cf6004d7296579dbf770d7"
     }
@@ -553,9 +561,17 @@
       "133a7bdb5d29ffee331293add98f24e8ccef44eba230202aeb37c824d073d3b9",
       "c486dd5d3f9577fbedb1e3795f5dc70915584b16caefe0ade80ce3785ff8ffda"
     ],
+    "fd7ca52d240d5431c76167a39aa5187cd3631d6dceee959b260f7c82cc1edf40": [
+      "5c905f886a1ae8de7363dfb56d17f0b90a9827d8758f2d3f932d670e189cb353",
+      "74bc7d9b1503b6c6916e95b0789c9232a25a4a72fbf4bdb2212c95f17f60d5ef"
+    ],
     "4d102ec8439d039d8a0cdae400d8cd6990509a4787416471bb48a38e2c526b7a": [
       "81c13a7acd9939a09c9e0aa91da6494cf3d33c532e5ce3240a7fae1f6ce546b0",
       "46381596aed1129e57f9b1d29fa1cf8baf75e6969e580c503ba6509845a6309b"
+    ],
+    "2c71d79ecaaf162d0d83f720d5357435e88dd03b630bacd183c34915e93a5f27": [
+      "71be5526457db42a3b0e04c331a5f1590145d3db447fe1e9e4c94ae198d1c8fc",
+      "262fd26390f1bfeaa17f9d448ae65dae27e3f9b0c07e4cc4d788569d6e42c685"
     ]
   },
   "catalogs": {
@@ -564,7 +580,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "4d102ec8439d039d8a0cdae400d8cd6990509a4787416471bb48a38e2c526b7a",
+    "completed": "2c71d79ecaaf162d0d83f720d5357435e88dd03b630bacd183c34915e93a5f27",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -599,7 +615,8 @@
     "preCredentialProxy": "34374bccb6342bc15262d9d8e77abf1c3a0e317a2623b2bda541d1d06202a3ff",
     "prePreparedAttemptSettlement": "df4fafcfd49395d0522b53a3b1a6abe828b53e91843a6d24d8cd0e9490aa84cc",
     "preGatewayManagedMode": "ead0bf1743197edac2cd369f4822fec0d9686d4c215b8f6dcc16745c9addf155",
-    "preNamespaceLifecycle": "15676f224ccd3cbd54e1d541db393b12297e3b2aa8e8eb70b192b5350c4c3c59"
+    "preSelectedRepositorySet": "15676f224ccd3cbd54e1d541db393b12297e3b2aa8e8eb70b192b5350c4c3c59",
+    "preNamespaceLifecycle": "fd7ca52d240d5431c76167a39aa5187cd3631d6dceee959b260f7c82cc1edf40"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

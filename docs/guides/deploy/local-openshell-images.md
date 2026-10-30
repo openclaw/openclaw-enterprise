@@ -52,29 +52,33 @@ not select candidate images.
 
 ## Select the protected profile
 
-Use a reviewed Kubernetes Compute and OpenShell candidate pair. The bundled
-OpenShell release cannot enforce this profile. In the candidate, Compute verifies
-the current installation before [signing the workload release](../../reference/credential-sources/protected-inference.md#execution-admission-cutoff).
+The ordinary installer selects stock OpenShell 0.1.6 for the Gateway, supervisor,
+sandbox runtime and both charts. No OpenShell candidate selectors are required.
+Compute still verifies the current installation before [signing the workload release](../../reference/credential-sources/protected-inference.md#execution-admission-cutoff).
 Launching the profile prepares the pair for qualification.
 
-For a fresh Kubernetes control plane with a matching protected-inference
-candidate, set the image selectors above without starting the stack, then add:
+For a fresh Kubernetes control plane, select protected egress explicitly:
 
 ```bash
 export OCC_DEVELOPMENT_PROTECTED_EGRESS=1
-export OCC_DEVELOPMENT_CONTROLLER_IMAGE='<reviewed-controller-image>'
-export OCC_KUBERNETES_RUNTIME_IMAGE='<reviewed-runtime-image>'
-export OCC_DEVELOPMENT_OPENSHELL_HELM_CHART='<absolute-gateway-chart-directory>'
-export OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART='<absolute-workspace-chart-directory>'
+export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
+export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
+export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 export OCC_DEVELOPMENT_DATABASE_NAME=openclaw_k8s_connected
 ./scripts/dev-up
 ```
 
-OpenShell can version its runtime and Gateway chart separately. Pin both reviewed
-revisions. A chart can accept `supervisor.middleware` values and silently ignore them.
-Before creating the cluster, the launcher renders the selected chart and checks that
-the Gateway configuration registers only `oce-authority`, uses the expected HTTPS
+The installer verifies the release source archive and pins all three image digests.
+Overrides still require a complete image selection and paired charts.
+Before creating the cluster, the launcher renders the chart and checks that the
+Gateway configuration registers only `oce-authority`, uses the expected HTTPS
 endpoint and audience, and mounts the authority's public CA read-only.
+The native `gatewayConfig` registration requires `binding_policy = "allowlist"`
+and `bindings = ["http_request_pre_credentials"]`. Missing, dynamic or response-only
+registration is refused. The released Gateway and supervisor also reject a service
+that does not advertise the required request binding. Runtime policy must attach
+this middleware with `on_error: fail_closed`; registration alone does not authorize
+or protect a destination. This does not replace repository scope or sender checks.
 Compute still verifies the installed capabilities before releasing a workload.
 
 The profile registers the authority, generates its server certificate, and uses

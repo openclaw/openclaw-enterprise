@@ -125,7 +125,7 @@ parent handoff, and post-list replacement; they are not live cluster proof.
 OpenShell controlled-provider and pinned wire cases, Docker conformance, and SSH
 actual local-helper fixtures exercise their respective ownership boundaries.
 Targeted guard-removal mutants fail the corresponding ownership/lease assertions.
-The genuine Kubernetes/provider rows above remain unrun.
+The OpenShell provider rows above remain unrun.
 
 Current tools include a Podman-backed engine, k3d, kubectl, Helm, PostgreSQL
 client, OpenSSL, Go, Node, and pnpm. Existing shared contexts and containers are
@@ -173,11 +173,29 @@ preserves selected Sandbox progress, and binds declared operator resources befor
 readiness. Four memory-State/controlled-SDK controls and the closed Installation
 case pass, including later policy/Workspace replacement refusal. The exact
 PostgreSQL audit and silent-lease cases pass after asserting the binding event and
-using the production pool factory. Live Kubernetes and Docker reruns remain unrun.
+using the production pool factory. That repair's live Kubernetes and Docker results
+were pending at publication.
+
+Subsequent CI run `41114382175` passed for `fc1aea3`, testing merge `72492348`
+with main `8e96e9da`. Actual artifacts qualify PostgreSQL API/worker on Kubernetes
+4/4, Kubernetes provisioning 2/2, Kubernetes Driver 1/1, Docker retry 2/2 and
+runtime retained state 3/3, with no skips and successful cleanup. Fixture or stub
+workloads do not establish genuine OpenShell cleanup or model execution.
+
+The full-PR P2 review of `75ac1fa` against main `5f8ba607` completed one validated
+pass without findings. All 71 changed files and complete missing helper,
+transaction and worker declarations were intact; final source verification
+passed. This closes the earlier static-review context gap. The later upstream
+repository-selection migration takes position 65, so this journal moves to 66
+without changing its SQL. Actual combined native and restore catalog qualification
+passes 43 cases; the application changes remain identical apart from patch offsets.
+Namespace protocol checks pass 40/40, affected OpenShell/Git component checks 28/28,
+and closed-Installation custody 1/1. RFC, security and genuine-provider proof holds
+remain.
 
 ## Delivery record
 
-- Each RFC submission precedes its corresponding contract code. Implementation and component qualification are in progress; genuine provider proof and independent review remain pending.
+- Each RFC submission precedes its corresponding contract code. Component qualification and upstream integration are in progress; genuine provider proof remains pending. The complete static review applies to `75ac1fa`, before the later upstream integration.
 - RFC submission: documentation-only commit `536e71d95bf39797f2b60048cb3677e879ed046b`; [explicit human-review request](https://github.com/openclaw/openclaw-enterprise/pull/4088#issuecomment-6523250103). Decision status remains Proposed.
 - Operator-owned binding clarification: documentation-only commit `dc724484d59f5446e9cceea41f0b38192372b8dd`; [explicit human-review request](https://github.com/openclaw/openclaw-enterprise/pull/4088#issuecomment-6529363877), submitted before the observed-ID binding repair.
 - Implementation PR: [#4088](https://github.com/openclaw/openclaw-enterprise/pull/4088), draft with existing proof/security holds.

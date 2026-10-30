@@ -79,7 +79,7 @@ with its generated platform Namespace ID before queuing worker provisioning.
 Partial database uniqueness prevents simultaneous active claims for the same name.
 
 `packages/occ/src/state/postgres-schema.ts:namespaceLifecycle` and
-`migrations/0065_namespace_lifecycle.sql:reserve_namespace_lifecycle` reserve a
+`migrations/0066_namespace_lifecycle.sql:reserve_namespace_lifecycle` reserve a
 stable lifecycle UUID with the Namespace insertion, before any dispatch. The
 initial revision-zero record proves no effect was attempted. The worker's
 `ControllerWorker.namespaceLifecycle` locks work before Namespace, rechecks its

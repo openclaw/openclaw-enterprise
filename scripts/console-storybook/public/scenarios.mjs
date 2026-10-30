@@ -10227,6 +10227,71 @@ scenarios.policyDenialsNoSandboxDriver = {
   ],
 };
 
+// Collaborator-only approval exercises the same editor as the legacy default story.
+const collaboratorRepositoryOptions = [
+  {
+    repositoryRef: "application",
+    displayName: "example/application",
+    allowedProfiles: ["github-repository", "github-installation"],
+  },
+  {
+    repositoryRef: "api-only",
+    displayName: "example/api-only",
+    allowedProfiles: ["github-installation"],
+  },
+  {
+    repositoryRef: "handbook",
+    displayName: "example/handbook",
+    allowedProfiles: ["git-read"],
+  },
+];
+scenarios.repositoryCollaborator = {
+  ...scenarios.repositoryEditor,
+  name: "Select repository collaborator from an empty set",
+  repositoryOptions: collaboratorRepositoryOptions,
+  repositoryAccess: { defaultProfile: "git-full", repositories: [] },
+  repositoryBindings: [],
+  description:
+    "An empty selection offers the approved collaborator repository. API-only access is not a Git repository choice; the existing Contributor default stays unchanged.",
+  steps: [
+    "Select example/application. Its access reads Repository collaborator; the Agent default remains Contributor.",
+    "Save repository access. Confirm the saved message, visit Channels, and return to Repositories to inspect the saved selection.",
+    "Confirm example/api-only is absent from repository choices.",
+  ],
+  gap: "Simulated API state only; saving does not prove Controller persistence, authorization, or runtime Git access.",
+};
+scenarios.repositoryCollaboratorSaved = {
+  ...scenarios.repositoryCollaborator,
+  name: "Saved inheritance survives delayed collaborator discovery",
+  repositoryAccess: {
+    defaultProfile: "git-full",
+    repositories: [{ repositoryRef: "application" }],
+  },
+  repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+  rules: [{ suffix: "/repository-options", delayMs: 3000 }],
+  description:
+    "A saved inherited Contributor selection meets a changed collaborator-only approval after a three-second discovery delay. Discovery must not migrate the saved intent or mark it dirty.",
+  steps: [
+    "During discovery, inspect Access awaiting verification. After discovery, inspect Choose approved access; Save stays disabled and Channels stays enabled.",
+    "Expand Access for example/application, clear Use Agent default, and choose Repository collaborator. Save the explicit change and confirm the saved message.",
+  ],
+};
+scenarios.repositoryCollaboratorReadOnly = {
+  ...scenarios.repositoryCollaborator,
+  name: "Explicit Read-only refuses implicit collaborator access",
+  actions: [
+    { selector: "#repository-default-git-read", click: true },
+    { selector: 'input[data-repository-ref="application"]', click: true },
+  ],
+  description:
+    "Choosing Read-only before adding a collaborator-only repository preserves that intent. The editor requires an explicit per-repository choice before saving.",
+  steps: [
+    "Confirm Read-only stays selected, the repository needs approved access, and Save is disabled.",
+    "Expand Access for example/application, clear Use Agent default, and choose Repository collaborator. The Agent default stays Read-only; Save now succeeds.",
+    "Reset, remove example/application, and select example/handbook. Save succeeds with inherited Read-only access.",
+  ],
+};
+
 // The shell and assets are produced by the API's actual theme loader/renderer.
 for (const [id, source, name, theme] of [
   ["themeSignIn", "login", "Custom sign-in", "custom"],

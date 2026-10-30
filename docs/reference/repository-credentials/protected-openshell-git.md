@@ -1,33 +1,24 @@
 # Protected repository access with OpenShell
 
-**Stock OpenShell 0.1.5 is not qualified for protected access.** Registered
-middleware, a loaded policy and a successful rollout do not prove mandatory
-per-request authorization or an identity that cannot be reused. Qualify the exact
-sender and TLS path before enrolling credentials. See the
-[release requirements](../../../specs/rfcs/0023-egress-proxy-credential-lifecycle/online-authorization.md)
-and [Driver delivery profiles](../drivers/credential-proxy.md#delivery-profiles).
-OCC's v7 support is for a capable exact-dispatch Driver with verified reduction;
-it does not qualify this stock adapter or upgrade its v5/v6 guarantees.
+Selected repositories require a pre-credentials request binding. Before issuing
+credentials, OCE verifies the registration and matches a held launcher request to
+an authenticated middleware denial. The Agent starts after credential installation
+and signed release.
 
-The bundled OpenShell Driver therefore refuses `git-write` delivery: deploy returns
-`409 REPOSITORY_GIT_SENDER_UNQUALIFIED` and creates no revision, and a revision
-admitted before this check fails with the same code instead of waiting for the
-convergence deadline. Remove the binding, select a separately installed sender qualified
-for the profile, or use [native prepared Git](prepared-native-git.md), which runs without
-a Sandbox or Credential Proxy. A `git-read` or
-`git-full` binding has no protected delivery profile, so deploy refuses it on any
-Credential Proxy with `409 REPOSITORY_GIT_PROFILE_UNSUPPORTED`.
+Follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md).
+Select repositories sharing an explicit permission map. OCE requests their canonical
+IDs and verifies GitHub’s returned scope. GitHub governs refs and REST/GraphQL
+operations. Changing or removing a grant blocks subsequent use of that grant.
 
-This composition's Credential Proxy serves only repository Git. Creating a Proxy-owned
-credential source (static, prepared or metadata), or deploying an Agent without a repository
-binding, answers `409 RESOURCE_CONFLICT` naming `repository.openShell`. A Git Agent's model uses an
-existing Gateway Harness source; see
-[enroll prepared GitHub access](../../guides/credential-proxy.md#enroll-prepared-github-access).
+Existing `git-write` grants retain their exact ref policy. OCE qualifies the live
+sender by its configured capabilities and runtime evidence. `git-read` and
+`git-full` keep their existing semantics. Installation preview requires separate
+opt-in. Exact-dispatch and v7 reduction guarantees remain unqualified.
 
-For an existing installation, first follow the
+Keep Credential Gateway with the bundled OpenShell Backend. The Proxy serves
+repository access, while model access uses a Gateway Harness source. For an
+existing installation, follow the
 [compatibility upgrade](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
-You can retain current selections and unprotected admissions. Keep Credential
-Gateway while using the bundled OpenShell Backend, even with no sources.
 
 ## Prerequisites
 
@@ -127,7 +118,8 @@ combined production values, then use your normal Helm upgrade procedure.
 
 ## Register the request-phase service
 
-The adapter uses static operator middleware configuration. Add the following entry
+Use matching stock OpenShell 0.1.6 Gateway and supervisor images for required
+request bindings. The adapter uses static operator middleware configuration. Add the following entry
 to the Gateway configuration, using the certificate's exact Service DNS name.
 Mount the serving CA's public certificate at `tls_ca_cert_path` on the Gateway.
 Its existing `[openshell.gateway.gateway_jwt]` must be configured with signing key,
@@ -135,6 +127,8 @@ public key, key ID and gateway ID matching the OCE verifier settings.
 
 ```toml
 [[openshell.supervisor.middleware]]
+binding_policy = "allowlist"
+bindings = ["http_request_pre_credentials"]
 name = "oce-prepared-git"
 grpc_endpoint = "https://openclaw-enterprise-openshell-git.openclaw-system.svc:8445"
 tls_ca_cert_path = "/etc/openshell/certs/oce-git-ca.pem"
@@ -143,12 +137,14 @@ max_payload_bytes = 4194304
 timeout = "5s"
 ```
 
-The `github-installation` preview requires exactly `5s` here. OCE still caps its
+The selected repository path and `github-installation` preview require exactly `5s` here. OCE still caps its
 authorization decision at three seconds.
 
 Start the configured OCE worker before restarting the Gateway: Gateway startup
 calls authenticated `Describe` and refuses an unavailable or incompatible service.
 OCE advertises the request-phase binding; policy admission calls `ValidateConfig`.
+The allowlist requires that binding: a service advertising only response hooks is
+refused by both Gateway and supervisor. Do not remove the required binding.
 The registration name must match `repository.openShell.registrationName`.
 OCE attaches the selected binding to the sandbox policy with `on_error: fail_closed`
 for `github.com` and `api.github.com`. Do not hand-author its binding identifier.
@@ -170,18 +166,29 @@ Retain HTTPS, hostname verification and authenticated Gateway JWTs; do not enabl
 
 ## Grant access to a GitHub App installation
 
-Use the [GitHub App setup](../../guides/repository-credentials/team-runbook.md#register-and-install-the-github-app)
-for membership and permissions, and the
+Use [GitHub App setup](../../guides/repository-credentials/team-runbook.md#register-and-install-the-github-app)
+for permissions and the
 [registry reference](../repository-credentials.md#canonical-platform-registry)
-for policy fields. Keep repository scope when it is sufficient. To expose an
+for policy. Prefer repository scope. To expose an
 installation scope, set a distinct `installationAccess.repositoryRef`, allow the
 Namespace with `accessMode: installation`, and select that reference with
 `profile: github-installation` in the Agent's `repositoryBindings`, as its only
-binding (Agent save and deploy refuse it next to another). No default profile or
-wildcard selects this scope. The installed sender must positively confirm
+binding (Agent save and deploy refuse it next to another). No default or wildcard selects this scope; the sender must confirm
 `github_installation` support. With the bundled OpenShell Credential Proxy, that
 needs its `observedHookPreviewWorkspace` setting: without it, deploy answers
-`409 RESOURCE_CONFLICT`, and on a gateway other than 0.1.5, `503`.
+`409 RESOURCE_CONFLICT`. Missing or incompatible gateway registration returns
+`503 DEPENDENCY_UNAVAILABLE`.
+
+Repository grants require authenticated `allowlist`/`exact` with only `pre_credentials`.
+Opted-in installation preview also accepts both binding fields absent; partial,
+malformed or explicit optional/wrong values fail. Both paths retain policy,
+recipient, isolation and authenticated launcher-denial checks.
+
+Absence grants only observed assurance: 0.1.5 and 0.1.6 default dynamic registrations
+emit identical absence, without a distinct advertised support signal. Before
+qualification, intentional downgrade is indistinguishable. After qualification,
+registration changes break the recipient fingerprint and close the route.
+Repository grants never use this fallback.
 
 OCE does not add a ref allowlist to installation scope. GitHub's membership,
 permissions and branch rules set its limit. See
@@ -190,7 +197,13 @@ for profile-specific allowed/denied requests and the required model-source choic
 
 ## Use the admitted repository
 
-With repository scope, clone, fetch and push exactly
+With `github-repository`, use selected HTTPS Git URLs. API operations
+use token permissions. Both API scopes refuse runner-token and deploy-key
+creation. For selected repositories, the sender accepts the CLI’s
+`Time-Zone: Etc/UTC` and, on GraphQL POSTs, `Graphql-Features: merge_queue`.
+Duplicate headers are refused. Each request requires current authorization.
+
+For an explicit `git-write` grant, clone, fetch and push exactly
 `https://github.com/$OCE_OPENSHELL_GIT_REPOSITORY.git`: the lowercase name OCE
 gives the Sandbox, with `.git`. Git and OpenShell match the credential path
 case-sensitively, so GitHub's mixed-case spelling, such as
@@ -204,7 +217,7 @@ each token and session still expires. Remove standing approval with its current
 approval generation **before** clearing the repository binding. An already
 authorized request can finish after withdrawal.
 
-By default (`draftPullLimit: one-per-grant`), a repository-scoped draft grant allows one
+For `git-write` grants permitting draft pull requests, `draftPullLimit: one-per-grant` allows one
 draft, and every Agent and version that has the grant shares it. To let Agents open a new
 draft from the same review ref, set `draftPullLimit: none` in the Namespace policy. OCE then
 records each draft use without spending an allowance; the draft-only, head and base checks
@@ -278,13 +291,13 @@ a moved Sandbox version or an outcome the gateway cannot tell retires the runtim
 An empty OpenShell profile workspace selects the platform profile, not a same-named
 Workspace profile.
 
-A failed read closes the route until the same installation verifies, with retry
-backoff from 1 s to 10 s. A failed read before the route's first provider write
-is retried by the next preparation pass; a refused identity still closes the
-route. A provider write runs to its own deadline, not the rest of a pass's read
-budget. After restart, the worker reads durable delivery facts, re-observes the
-installation and reads eligible prepared material. It does not replay an
-uncertain provider write. Generic fences and pending-write rules are in
+A transient observation failure closes access until the same installation verifies,
+with retry backoff from 1 s to 10 s. The held-launch paths (`github-repository`,
+protected `git-write`, and installation preview) cannot be adopted by a replacement
+worker: deploy a new revision after `worker_replaced` or terminal `bootstrap_failed`.
+Waiting for reconciliation cannot reopen that route. Other qualified paths may retry
+a pre-write read or re-observe durable delivery after restart. No path replays an
+uncertain provider write. Provider writes retain their own deadline. See
 [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
 Prepared-material expiry, quarantine and retirement belong to
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and

@@ -57,7 +57,6 @@ import {
   CREDENTIAL_PROXY_INSTALLATION_ACCESS,
   CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
   DEPENDENCY_UNAVAILABLE,
-  PREVIEW_GATEWAY_VERSION,
   PROXY_REGISTRATION_UNAVAILABLE,
   REPOSITORY_ACCESS_OR_BINDINGS,
   REPOSITORY_SELECTION_NOT_APPROVED,
@@ -1838,20 +1837,24 @@ test("Deploy refuses OpenShell Git when its Credential Proxy has no qualified se
 });
 
 test("Deploy names what installation-wide access needs from the OpenShell Proxy and its gateway", async (t) => {
-  // Finding 2536: without observedHookPreviewWorkspace the OpenShell Credential Proxy cannot
-  // enforce a github-installation binding, an Installation setting no retry changes; with it,
-  // the preview needs gateway 0.1.5, a gateway state an operator changes. Deploy answered both
-  // with a generic 503. Now the setting is a 409 before any gateway read, and the gateway state a
-  // 503 that names it. Neither creates a revision.
+  // Opt-in is an Installation setting (409); missing registration is gateway state (503).
+  // Neither refusal creates a revision or changes with the gateway release label.
   const installation = [{ repositoryRef: "installation", profile: "github-installation" }];
   for (const [label, options, status, code, message, reads] of [
-    ["no preview", {}, 409, "RESOURCE_CONFLICT", CREDENTIAL_PROXY_INSTALLATION_PREVIEW, 0],
     [
-      "preview on another gateway",
-      { preview: true, gatewayVersion: "0.1.6" },
+      "no preview",
+      { gatewayVersion: "0.1.6" },
+      409,
+      "RESOURCE_CONFLICT",
+      CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
+      0,
+    ],
+    [
+      "preview without registration",
+      { preview: true, gatewayVersion: "unknown", registered: false },
       503,
       "DEPENDENCY_UNAVAILABLE",
-      PREVIEW_GATEWAY_VERSION,
+      PROXY_REGISTRATION_UNAVAILABLE,
       1,
     ],
   ]) {
