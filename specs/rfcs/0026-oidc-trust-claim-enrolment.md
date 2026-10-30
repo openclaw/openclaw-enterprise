@@ -6,7 +6,7 @@ author: jhjaggars
 
 # Proposal: OIDC trust-claim just-in-time enrolment
 
-- **ID:** RFC-0024
+- **ID:** RFC-0026
 - **Created:** 2026-10-28
 - **Last updated:** 2026-10-28
 - **RFC PR:** [openclaw/openclaw-enterprise#3899](https://github.com/openclaw/openclaw-enterprise/pull/3899) (also carries the experimental implementation)
