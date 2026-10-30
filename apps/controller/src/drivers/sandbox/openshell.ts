@@ -2465,16 +2465,16 @@ export const configurationSchema = Object.freeze({
       properties: {
         workspaceMode: { type: "string", enum: ["managed", "operator"] },
         managedPluginMiddleware: { type: "string", pattern: "^https://" },
-        operatorNamespaceLabels: { type: "object" },
-        operatorWorkspaceResources: { type: "array" },
-        networkPolicyResources: { type: "array" },
+        operatorNamespaceLabels: { type: "object", writeOnly: true },
+        operatorWorkspaceResources: { type: "array", writeOnly: true },
+        networkPolicyResources: { type: "array", writeOnly: true },
         readiness: {
           type: "object",
           required: ["serviceName", "podSelector", "timeoutMs"],
           additionalProperties: false,
           properties: {
             serviceName: { type: "string" },
-            podSelector: { type: "object" },
+            podSelector: { type: "object", writeOnly: true },
             timeoutMs: { type: "integer", minimum: 1 },
             // A Node.js timer fires a longer delay after 1 ms.
             pollIntervalMs: { type: "integer", minimum: 1, maximum: MAX_TIMER_DELAY_MS },
@@ -2561,7 +2561,7 @@ export const configurationSchema = Object.freeze({
                   additionalProperties: false,
                   required: ["host", "ports"],
                   properties: {
-                    host: { type: "string" },
+                    host: { type: "string", writeOnly: true },
                     // The Gateway refuses an endpoint without ports at CreateSandbox.
                     ports: { type: "array", minItems: 1, items: { type: "integer" } },
                     protocol: { type: "string" },
@@ -2580,7 +2580,7 @@ export const configurationSchema = Object.freeze({
     startupDelayMs: { type: "integer", minimum: 1, maximum: MAX_SANDBOX_STARTUP_DELAY_MS },
     logLevel: { type: "string" },
     providers: { type: "array", items: { type: "string" } },
-    egress: { type: "object" },
+    egress: { type: "object", writeOnly: true },
   },
 });
 
@@ -3666,9 +3666,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const git = this.openShellGit;
     if (
       !git ||
-      revision.executionAdmission.version !== 6 ||
-      plan?.repositoryGitAuthorization !== "request-hook-observed" ||
-      workspaceName(context.namespace) !== git.configuration.observedHookPreviewWorkspace
+      !(
+        plan?.repositoryGitAuthorization === "online-request" ||
+        (revision.executionAdmission.version === 6 &&
+          plan?.repositoryGitAuthorization === "request-hook-observed" &&
+          workspaceName(context.namespace) === git.configuration.observedHookPreviewWorkspace)
+      )
     ) {
       return;
     }
@@ -3748,7 +3751,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     );
     // A service may still be starting, or may already serve Codex/a held failure.
     // Normal Harness observation decides readiness; none of these answers releases startup.
-    const preview = installation.plan.repositoryGitAuthorization === "request-hook-observed";
+    const preview =
+      installation.plan.repositoryGitAuthorization === "request-hook-observed" ||
+      installation.plan.repositoryGitAuthorization === "online-request";
     if (document.status !== 200) {
       if (
         preview &&

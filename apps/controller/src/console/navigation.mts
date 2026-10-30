@@ -26,12 +26,22 @@ interface NavigationOptions {
   }): void;
 }
 
+// A page address with trailing slashes names the same page (finding 1906), however many there
+// are; `/console/` itself stays. The server answers both alike (console-assets.ts).
+function canonicalUrl(href: string) {
+  const url = new URL(href);
+  if (url.pathname.startsWith("/console/")) {
+    url.pathname = `/console/${url.pathname.slice("/console/".length).replace(/\/+$/, "")}`;
+  }
+  return url.href;
+}
+
 export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: NavigationOptions) {
   // The initial entry is position zero. Keep the position on replaceState, including sign-in,
   // so a refused Back or Forward can return to its starting entry without rewriting history.
   let position: number | null = entryPosition() ?? 0;
   let restoring: number | null = null;
-  replaceUrl(location.href);
+  replaceUrl(canonicalUrl(location.href));
 
   function route() {
     const url = new URL(location.href);

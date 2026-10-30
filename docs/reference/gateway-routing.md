@@ -149,16 +149,16 @@ cluster-wide binding for it. The worker
 is part of the trusted control plane. Harnesses receive a node-only setup code
 and public CA bundle, never this administrative service key.
 
-The HTTPRoute sets `x-occ-identity: occ-workspace-files` and sets `x-real-ip`
-from Envoy's direct downstream connection. It removes `authorization`, `cookie`,
-`x-forwarded-for`, `forwarded`, and `x-openclaw-scopes`. Kubernetes Compute renders native
-trusted-proxy auth from the operator's `network.gatewayTrustedProxyCidrs`, enables
-`allowRealIpFallback`, and grants the fixed identity `operator.admin`. Agent
-Configuration cannot override that trust boundary. A direct loopback connection
-can still use the Driver-managed gateway password if the native Configuration
-explicitly selects its [environment SecretRef](drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
-This password is separate from the Envoy service key. See the complete
-[operator proxy trust setup](../guides/deploy/workspace-routing.md#configure-native-gateway-authentication).
+The HTTPRoute sets `x-occ-identity: occ-workspace-files`, `x-openclaw-scopes:
+operator.admin` and direct-connection `x-real-ip`, removing `authorization`,
+`cookie`, `x-forwarded-for`, `forwarded`. Compute renders `network.gatewayTrustedProxyCidrs`,
+`allowRealIpFallback: true`, and the machine identity's exact `operator.admin` grant.
+Agent Configuration may add human grants, never replace machine access or
+Driver-owned trust. Humans need [separate ingress](drivers/kubernetes-compute/gateway-authentication.md).
+Loopback access requires the Driver-managed password's
+[environment SecretRef](drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
+Keep that password separate from the Envoy service key. See
+[proxy trust setup](../guides/deploy/workspace-routing.md#configure-native-gateway-authentication).
 
 This key grants native administrative access across the Installation's routed
 gateways. OCC separately checks the caller's exact Agent permission. Keep the

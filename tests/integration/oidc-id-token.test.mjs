@@ -339,11 +339,7 @@ test("code exchange fetches only the pinned token and JWKS URLs", async (t) => {
     });
     return respond(url);
   });
-  const json = (value, status = 200) =>
-    new Response(JSON.stringify(value), {
-      status,
-      headers: { "content-type": "application/json" },
-    });
+  const json = (value, status = 200) => Response.json(value, { status });
   const valid = (url) =>
     url === environment.OCC_AUTH_OIDC_TOKEN_URL
       ? json({ access_token: "fixture-access", id_token: token(live), token_type: "Bearer" })

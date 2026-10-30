@@ -1294,3 +1294,189 @@ for (const discoveryState of ["later page", "search filter", "dismissed results"
     assert.equal(agent.configurationId, firstAttempt.configurationId);
   });
 }
+
+test("selected repository collaborators never override an explicit Read-only Agent default", async (t) => {
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+    ...["a", "b"].map((repositoryRef, index) => ({
+      repositoryRef,
+      repositoryId: String(800 + index),
+      repository: `example/${repositoryRef}`,
+      namespaces: [
+        {
+          namespaceId,
+          profiles: ["github-repository"] as const,
+          permissions: { metadata: "read", contents: "write" },
+        },
+      ],
+    })),
+    {
+      repositoryRef: "legacy",
+      repositoryId: "802",
+      repository: "example/legacy",
+      namespaces: [{ namespaceId, profiles: ["git-read"] }],
+    },
+  ]);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  const modelSecret = await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
+  await page.getByLabel("Agent name").fill("Explicit repository access");
+  await repositoryCheckbox(page, "example/a").check();
+  await repositoryCheckbox(page, "example/b").check();
+  await page.locator("#repository-default-git-read").check();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page
+    .getByText("Choose approved access for each selected repository.", { exact: true })
+    .waitFor();
+  // The reverse order must retain the same inherited Read-only intent.
+  await page.getByRole("button", { name: "Remove example/a", exact: true }).click();
+  await page.getByRole("button", { name: "Remove example/b", exact: true }).click();
+  await repositoryCheckbox(page, "example/a").check();
+  await repositoryCheckbox(page, "example/b").check();
+  await repositoryCheckbox(page, "example/legacy").check();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page
+    .getByText("Choose approved access for each selected repository.", { exact: true })
+    .waitFor();
+  await page.getByRole("button", { name: "Remove example/legacy", exact: true }).click();
+  // An intentional per-row choice survives narrowing; a convenience choice does not.
+  await page.locator("#repository-default-git-full").check();
+  if (!(await page.locator("#repository-inherit-a").isVisible())) {
+    await page.getByRole("button", { name: "Access for example/a", exact: true }).click();
+  }
+  await page.locator("#repository-inherit-a").uncheck();
+  await page.locator("#repository-override-a-git-full").check();
+  await page.locator("#repository-default-git-read").check();
+  await page.getByText("Repository collaborator · Custom", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Remove example/b", exact: true }).click();
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page
+    .getByText("Choose approved access for each selected repository.", { exact: true })
+    .waitFor();
+  await page.locator("#repository-inherit-b").uncheck();
+  await page.locator("#repository-override-b-git-full").check();
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
+  assert.deepEqual(created.repositoryAccess, {
+    defaultProfile: "git-read",
+    repositories: ["a", "b"].map((repositoryRef) => ({
+      repositoryRef,
+      profile: "github-repository",
+    })),
+  });
+  assert.deepEqual(created.repositoryBindings, created.repositoryAccess.repositories);
+  await page.getByRole("tab", { name: "Repositories", exact: true }).click();
+  await page.getByRole("button", { name: "Access for example/a", exact: true }).click();
+  await page.locator("#repository-inherit-a").check();
+  const save = page.getByRole("button", { name: "Save repository access" });
+  assert.equal(await save.isDisabled(), true);
+  await page.getByRole("button", { name: "Remove example/a", exact: true }).click();
+  await page.getByRole("button", { name: "Remove example/b", exact: true }).click();
+  await repositoryCheckbox(page, "example/legacy").check();
+  const response = page.waitForResponse(
+    (r) => r.url().endsWith(`/agents/${created.id}`) && r.request().method() === "PATCH",
+  );
+  await save.click();
+  const saved: AgentResponse = await (await response).json();
+  assert.deepEqual(saved.data.repositoryBindings, [
+    { repositoryRef: "legacy", profile: "git-read" },
+  ]);
+  assert.equal(saved.data.repositoryAccess?.defaultProfile, "git-read");
+
+  await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  assert.ok(modelSecret);
+  await page.locator("#provider-credential-secret").fill(modelSecret.name);
+  await page.getByRole("option", { name: modelSecret.name, exact: true }).click();
+  await page.getByRole("button", { name: "Enter model ID manually" }).click();
+  await page.getByLabel("Model ID", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Agent name").fill("Fresh collaborators");
+  await repositoryCheckbox(page, "example/a").check();
+  await repositoryCheckbox(page, "example/b").check();
+  const fresh = await createAgentThroughForm(page, fixture, namespace.id);
+  assert.deepEqual(
+    fresh.repositoryBindings,
+    ["a", "b"].map((repositoryRef) => ({ repositoryRef, profile: "github-repository" })),
+  );
+});
+
+for (const defaultProfile of ["git-read", "git-write", "git-full"] as const) {
+  test(`saved inherited ${defaultProfile} survives repository offering changes without edits`, async (t) => {
+    const entries = (namespaceId: string, selected: boolean) =>
+      ["a", "b"].map((repositoryRef, index) => ({
+        repositoryRef,
+        repositoryId: String(900 + index),
+        repository: `example/${repositoryRef}`,
+        namespaces: [
+          {
+            namespaceId,
+            profiles: selected
+              ? ["github-repository" as const]
+              : (["git-read", "git-write", "git-full"] as const),
+            ...(selected
+              ? { permissions: { metadata: "read" as const, contents: "write" as const } }
+              : {}),
+          },
+        ],
+      }));
+    const { fixture, namespace, replacePolicy } = await createRepositoryLaunchFixture(
+      t,
+      (id) => entries(id, false),
+      { reloadablePolicy: true },
+    );
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Saved inheritance",
+      nativeValues("saved-inheritance"),
+    );
+    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    const original = { defaultProfile, repositories: [{ repositoryRef: "a" }] };
+    const initial = await fixture.request("PATCH", path, {
+      body: { configurationId: agent.configurationId, repositoryAccess: original },
+    });
+    assert.equal(initial.status, 200);
+    replacePolicy(entries(namespace.id, true));
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await login(
+      page,
+      fixture,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=repositories`,
+    );
+    await repositoryCheckbox(page, "example/b").waitFor();
+    const save = page.getByRole("button", { name: "Save repository access" });
+    assert.equal(await save.isDisabled(), true);
+    assert.equal(
+      await page.getByRole("tab", { name: "Channels", exact: true }).isEnabled(),
+      true,
+      "discovery must leave saved intent clean",
+    );
+    await page.getByText("Choose approved access", { exact: true }).waitFor();
+    await repositoryCheckbox(page, "example/b").check();
+    assert.equal(await save.isDisabled(), true, "another edit must not migrate inherited A");
+    const unchanged = await fixture.request("GET", path);
+    assert.deepEqual(unchanged.data.repositoryAccess, original);
+    assert.equal(requests.filter((r) => r.method === "PATCH" && r.path === path).length, 0);
+    for (const ref of ["a", "b"]) {
+      const inherit = page.locator(`#repository-inherit-${ref}`);
+      if (!(await inherit.isVisible())) {
+        await page.getByRole("button", { name: `Access for example/${ref}`, exact: true }).click();
+      }
+      await inherit.uncheck();
+      await page.locator(`#repository-override-${ref}-git-full`).check();
+    }
+    const response = page.waitForResponse(
+      (r) => r.url().endsWith(`/agents/${agent.id}`) && r.request().method() === "PATCH",
+    );
+    await save.click();
+    const saved: AgentResponse = await (await response).json();
+    assert.deepEqual(saved.data.repositoryAccess, {
+      defaultProfile,
+      repositories: ["a", "b"].map((repositoryRef) => ({
+        repositoryRef,
+        profile: "github-repository",
+      })),
+    });
+    assert.deepEqual(saved.data.repositoryBindings, saved.data.repositoryAccess.repositories);
+  });
+}

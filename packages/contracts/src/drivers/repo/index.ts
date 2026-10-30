@@ -1,5 +1,5 @@
-import type { RepositoryGitDeliveryProfile } from "./credential-proxy.ts";
-import type { Driver } from "./driver.ts";
+import type { RepositoryGitDeliveryProfile } from "../credential-proxy/index.ts";
+import type { Driver } from "../index.ts";
 
 /** Opaque, nonempty identities: at most 512 UTF-8 bytes each, without ASCII controls. */
 export type RepositoryCredentialGrantIdentity = Readonly<{
@@ -181,6 +181,12 @@ export type RepositoryCredentialRuntimeBinding = RepositoryCredentialMaterialRef
 export function repositoryGitDeliveryProfile(
   repository: RepositoryRevisionState | undefined,
 ): RepositoryGitDeliveryProfile | undefined {
+  if (
+    repository?.bindings?.length &&
+    repository.bindings.every((b) => b.profile === "github-repository")
+  ) {
+    return "github_repository";
+  }
   if (repository?.bindings?.length !== 1) {
     return undefined;
   }

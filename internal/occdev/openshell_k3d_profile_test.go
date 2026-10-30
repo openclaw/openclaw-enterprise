@@ -23,7 +23,7 @@ import (
 // controller downloads and network-policy probes, which only a real cluster proves
 // (see dev-up-openshell-k3d-real and local-first-agent-openshell-k3d-real).
 
-const profileTestDigest = "sha256:ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6"
+const profileTestDigest = "sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea"
 
 // fakeProfileCommands puts fake binaries on PATH. Each records its arguments and
 // answers only the listed cases, so a step that issues a new command fails.
@@ -314,9 +314,9 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 			// Fixed source pins guard the released default; candidate digests deliberately
 			// differ from the containerd manifests returned by the import fixture.
 			sources := []string{
-				"ghcr.io/nvidia/openshell/gateway:0.1.5@sha256:ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6",
-				"ghcr.io/nvidia/openshell/sandbox:0.1.5@sha256:e9adf9ecde328122414ad2ee8c6fc5d5b389e4cf168daf4357c46f5a77d55851",
-				"ghcr.io/nvidia/openshell/supervisor:0.1.5@sha256:fabcd01f656e9d23df4386f82e80b4f48b90f3452d7d5c58889007643a069161",
+				"ghcr.io/nvidia/openshell/gateway:0.1.6@sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea",
+				"ghcr.io/nvidia/openshell/sandbox:0.1.6@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63",
+				"ghcr.io/nvidia/openshell/supervisor:0.1.6@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b",
 			}
 			selection := candidateOpenShellEnvironment()
 			if candidate {
@@ -524,6 +524,156 @@ func TestDevelopmentNodeSubnet(t *testing.T) {
 				t.Fatalf("an invalid endpoint reached the engine: %v", commands())
 			}
 		})
+	}
+}
+
+// Docker's containerd image store cannot save a manifest-list reference as one
+// complete image, so the staging tag must move to the platform child the
+// registry's list names for the host platform.
+func TestOpenShellImageImportTagsThePlatformChildOfAManifestList(t *testing.T) {
+	state := kubernetesOnlyOpenShellState(t)
+	root := t.TempDir()
+	source := "registry.example/gateway@" + profileTestDigest
+	child := "sha256:" + strings.Repeat("c", 64)
+	resolved := "registry.example/gateway@" + child
+	staging := "openclaw-development/openshell-gateway:" + state.Cluster
+	server := "k3d-" + state.Cluster + "-server-0"
+	listing := `{"manifest":{"manifests":[{"digest":"` + child + `","platform":{"os":"linux","architecture":"amd64"}},{"digest":"sha256:` + strings.Repeat("d", 64) + `","platform":{"os":"linux","architecture":"arm64"}}]}}`
+	commands := fakeProfileCommands(t, map[string]string{
+		"docker": `"image inspect ` + source + `") exit 1 ;;
+"pull ` + source + `") ;;
+"image inspect ` + staging + `") exit 1 ;;
+"tag ` + source + ` ` + staging + `") ;;
+"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
+"image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
+"buildx imagetools inspect --format {{json .}} ` + source + `") printf '%s\n' '` + listing + `' ;;
+"image inspect ` + resolved + `") exit 1 ;;
+"pull ` + resolved + `") ;;
+"tag ` + resolved + ` ` + staging + `") ;;
+"image save --output "*" ` + staging + `") printf archive > "$4" ;;
+"exec ` + server + ` ctr -n k8s.io images list") echo "` + staging + ` application/vnd.oci.image.manifest.v1+json ` + child + `" ;;
+"exec ` + server + ` ctr -n k8s.io images tag ` + staging + ` openclaw-development/openshell-gateway@` + child + `") ;;
+"image rm ` + staging + `") ;;`,
+		"k3d": `"image import --mode direct "*" -c ` + state.Cluster + `") ;;`,
+	})
+	r := newRunner(Options{Repository: state.Repository})
+	r.engine = "docker"
+
+	reference, err := r.importOpenShellImage(context.Background(), state, root, "gateway", source, false)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, strings.Join(commands(), "\n"))
+	}
+	calls := commands()
+	if !slices.Contains(calls, "docker tag "+resolved+" "+staging) {
+		t.Fatalf("staging tag never moved to the platform child: %v", calls)
+	}
+	save := "docker image save --output " + filepath.Join(root, "gateway-image.tar") + " " + staging
+	if !slices.Contains(calls, save) {
+		t.Fatalf("the platform child was not saved without a platform filter: %v", calls)
+	}
+	if reference != "openclaw-development/openshell-gateway@"+child {
+		t.Fatalf("unexpected runtime reference: %q", reference)
+	}
+}
+
+// A pinned source that already names one manifest has no platform child to
+// resolve, so its staging tag keeps pointing at the source and the save keeps
+// selecting the platform on Docker.
+func TestOpenShellImageImportKeepsAPlainManifestSource(t *testing.T) {
+	state := kubernetesOnlyOpenShellState(t)
+	root := t.TempDir()
+	source := "registry.example/gateway@" + profileTestDigest
+	staging := "openclaw-development/openshell-gateway:" + state.Cluster
+	server := "k3d-" + state.Cluster + "-server-0"
+	// buildx reports a single manifest without a manifests list.
+	listing := `{"manifest":{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}}`
+	commands := fakeProfileCommands(t, map[string]string{
+		"docker": `"image inspect ` + source + `") exit 1 ;;
+"pull ` + source + `") ;;
+"image inspect ` + staging + `") exit 1 ;;
+"tag ` + source + ` ` + staging + `") ;;
+"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
+"image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
+"buildx imagetools inspect --format {{json .}} ` + source + `") printf '%s\n' '` + listing + `' ;;
+"image save --platform linux/amd64 --output "*" ` + staging + `") printf archive > "$6" ;;
+"exec ` + server + ` ctr -n k8s.io images list") echo "` + staging + ` application/vnd.oci.image.manifest.v1+json ` + profileTestDigest + `" ;;
+"exec ` + server + ` ctr -n k8s.io images tag ` + staging + ` openclaw-development/openshell-gateway@` + profileTestDigest + `") ;;
+"image rm ` + staging + `") ;;`,
+		"k3d": `"image import --mode direct "*" -c ` + state.Cluster + `") ;;`,
+	})
+	r := newRunner(Options{Repository: state.Repository})
+	r.engine = "docker"
+
+	reference, err := r.importOpenShellImage(context.Background(), state, root, "gateway", source, false)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, strings.Join(commands(), "\n"))
+	}
+	calls := commands()
+	for _, call := range calls {
+		if strings.HasPrefix(call, "docker tag ") && call != "docker tag "+source+" "+staging {
+			t.Fatalf("a plain manifest source was re-tagged: %v", calls)
+		}
+	}
+	save := "docker image save --platform linux/amd64 --output " + filepath.Join(root, "gateway-image.tar") + " " + staging
+	if !slices.Contains(calls, save) {
+		t.Fatalf("a plain manifest source lost its platform filter: %v", calls)
+	}
+	if reference != "openclaw-development/openshell-gateway@"+profileTestDigest {
+		t.Fatalf("unexpected runtime reference: %q", reference)
+	}
+}
+
+// A cached source that exported before must keep exporting when the platform
+// child resolves in the listing but its pull fails, so the failed pull falls
+// back to the pinned reference instead of aborting the import.
+func TestOpenShellImageImportKeepsTheSourceWhenTheChildPullFails(t *testing.T) {
+	state := kubernetesOnlyOpenShellState(t)
+	root := t.TempDir()
+	source := "registry.example/gateway@" + profileTestDigest
+	child := "sha256:" + strings.Repeat("c", 64)
+	resolved := "registry.example/gateway@" + child
+	staging := "openclaw-development/openshell-gateway:" + state.Cluster
+	server := "k3d-" + state.Cluster + "-server-0"
+	listing := `{"manifest":{"manifests":[{"digest":"` + child + `","platform":{"os":"linux","architecture":"amd64"}}]}}`
+	commands := fakeProfileCommands(t, map[string]string{
+		"docker": `"image inspect ` + source + `") exit 1 ;;
+"pull ` + source + `") ;;
+"image inspect ` + staging + `") exit 1 ;;
+"tag ` + source + ` ` + staging + `") ;;
+"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
+"image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
+"buildx imagetools inspect --format {{json .}} ` + source + `") printf '%s\n' '` + listing + `' ;;
+"image inspect ` + resolved + `") exit 1 ;;
+"pull ` + resolved + `") echo 'registry unavailable' >&2; exit 1 ;;
+"image save --platform linux/amd64 --output "*" ` + staging + `") printf archive > "$6" ;;
+"exec ` + server + ` ctr -n k8s.io images list") echo "` + staging + ` application/vnd.oci.image.manifest.v1+json ` + profileTestDigest + `" ;;
+"exec ` + server + ` ctr -n k8s.io images tag ` + staging + ` openclaw-development/openshell-gateway@` + profileTestDigest + `") ;;
+"image rm ` + staging + `") ;;`,
+		"k3d": `"image import --mode direct "*" -c ` + state.Cluster + `") ;;`,
+	})
+	var stdout bytes.Buffer
+	r := newRunner(Options{Repository: state.Repository, Out: &stdout})
+	r.engine = "docker"
+
+	reference, err := r.importOpenShellImage(context.Background(), state, root, "gateway", source, false)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, strings.Join(commands(), "\n"))
+	}
+	calls := commands()
+	for _, call := range calls {
+		if strings.HasPrefix(call, "docker tag ") && call != "docker tag "+source+" "+staging {
+			t.Fatalf("the staging tag moved although the child pull failed: %v", calls)
+		}
+	}
+	save := "docker image save --platform linux/amd64 --output " + filepath.Join(root, "gateway-image.tar") + " " + staging
+	if !slices.Contains(calls, save) {
+		t.Fatalf("a failed child pull lost the pinned save path: %v", calls)
+	}
+	if !strings.Contains(stdout.String(), "Could not pull the platform child") {
+		t.Fatalf("the fallback was not reported: %q", stdout.String())
+	}
+	if reference != "openclaw-development/openshell-gateway@"+profileTestDigest {
+		t.Fatalf("unexpected runtime reference: %q", reference)
 	}
 }
 

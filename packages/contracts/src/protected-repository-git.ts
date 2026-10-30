@@ -1,7 +1,8 @@
 import type { CredentialProxyBinding } from "./credential-proxy-exchange.ts";
-import type { EgressInstallation } from "./credential-proxy.ts";
+import type { EgressInstallation } from "./drivers/credential-proxy/index.ts";
 import type {
   PreparedGitHubInstallationUseRequest,
+  PreparedGitHubRepositoryUseRequest,
   PreparedGitHubUseRequest,
 } from "./prepared-github-egress.ts";
 
@@ -37,6 +38,14 @@ export interface ProtectedGitHubInstallationMaterial extends Omit<
 > {
   readonly scope: "github-installation";
   readonly installationId: string;
+}
+
+export interface ProtectedGitHubRepositoryMaterial extends Omit<
+  ProtectedGitHubInstallationMaterial,
+  "scope"
+> {
+  readonly scope: "github-repository";
+  readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
 }
 
 type Route = RepositoryGitInstallationFence;
@@ -121,6 +130,21 @@ export interface RepositoryGitAuthority<
 > {
   /** Neither the other scope nor another sender guarantee can release this material. */
   readonly githubInstallation?: GitHubInstallationAuthority<Allow>;
+  readonly githubRepository?: {
+    readMaterial(
+      route: Route,
+      signal: AbortSignal,
+    ): Promise<
+      | ProtectedGitHubRepositoryMaterial
+      | { readonly absent: "withdrawn" | "unprepared" }
+      | undefined
+    >;
+    authorize(
+      request: PreparedGitHubRepositoryUseRequest,
+      installed: Version & { readonly route: Route },
+      signal: AbortSignal,
+    ): Promise<RepositoryGitDenied | Allow>;
+  };
   /** Read eligible committed material only for this verified installation; never issue from here. */
   readMaterial(
     route: Route,

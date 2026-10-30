@@ -48,13 +48,14 @@ owns their deployment, workspace resource rendering, and image import.
 | `apps/controller/src/auth/`                               | Authentication integrations.                                                                                 |
 | `apps/controller/src/composition/`                        | Runtime assembly and wiring of selected implementations.                                                     |
 | `apps/controller/src/drivers/`                            | Bundled infrastructure Driver implementations, organized by capability.                                      |
+| `apps/controller/src/drivers/plugin/google-workspace/`    | Google Workspace operation loading and request authorization for the shared plugin guard.                    |
 | `apps/controller/src/backends/`                           | Backend implementations.                                                                                     |
 | `apps/controller/src/gateway/`                            | Agent gateway transport and workspace access.                                                                |
 | `apps/controller/src/console/`                            | Browser console modules, styles, and assets.                                                                 |
 | `apps/controller/src/drivers/repo/credentials/`           | Private repository credential contracts, sessions, custody, lifecycle, listeners, and transport.             |
 | `apps/controller/src/drivers/repo/github/credentials/`    | GitHub credential backend, grant policy, authentication, provider transport, and Git/gh clients.             |
 | `apps/controller/src/composition/repository-credentials/` | Protected file loading, key/TLS assembly, configuration checking, and separate service startup.              |
-| `packages/contracts/src/`                                 | Shared resource models, Driver interfaces, and API schemas under `api/`.                                     |
+| `packages/contracts/src/`                                 | Shared resource models, Driver contracts under `drivers/`, and API schemas under `api/`.                     |
 | `packages/occ/src/`                                       | Platform lifecycle and resource ownership, persistence ports and state implementations, and controller work. |
 | `packages/iam/src/`                                       | Native identity lookup and authorization.                                                                    |
 | `packages/audit/src/`                                     | Audit event construction and sensitive-value sanitization.                                                   |
@@ -71,10 +72,11 @@ owning Driver or Backend and wire it through composition. See
 status, and remaining design requirements.
 
 Within `packages/contracts/src/`, `runtime-logs.ts` owns runtime inspection and
-container/Sandbox log types. `driver.ts` owns the base `Driver` and registry types.
-Each Driver capability has one interface file named for it, such as `compute.ts` or
-`iam.ts`, with the request, context, and result types of that Driver. `index.ts`
-remains the public export entrypoint for all of them.
+container/Sandbox log types. `drivers/index.ts` owns the shared base `Driver` and
+registry types. Each Driver capability has its own directory with an `index.ts`,
+such as `drivers/compute/index.ts` or `drivers/iam/index.ts`, containing that
+Driver's interface, request, context, and result types. The root `index.ts` retains
+shared resource definitions and the public package exports.
 
 Within controller composition, `installation-presets.ts` owns Preset file loading
 and bundled-version assembly; `installation-config.ts` owns Driver composition.
@@ -86,7 +88,7 @@ from verbose validation errors after their details are built.
 
 The [repository capability](reference/repository-credentials.md#repo-driver-contract)
 uses `RepositoryPolicyDriver` and `NativeRepositorySender` in
-`packages/contracts/src/repo.ts`, implemented by `drivers/repo/github/policy.ts`
+`packages/contracts/src/drivers/repo/index.ts`, implemented by `drivers/repo/github/policy.ts`
 and `drivers/repo/github/driver.ts`, respectively. Under `apps/controller/src/`, its owners are:
 
 - `drivers/repo/credentials/`: private common sessions, custody, lifecycle,
@@ -200,7 +202,7 @@ guides and inventories may remain directly under `docs/`; `docs/testing/` owns
 code verification and test setup. The [documentation taxonomy](taxonomy.md) maps page kinds to their templates.
 
 The [documentation map](README.md) has six menus. **Getting Started**, **Topics**,
-**Integrations**, **Operate**, and **Reference** serve product users and operators;
+**Integrations**, **Deploy & Operate**, and **Reference** serve product users and operators;
 **Contribute** serves people changing the platform. A menu opens its sidebar.
 Register every Markdown page once in [docs/docs.json](docs.json) and link it from
 its owning overview. Deep implementation and testing pages can use the owning

@@ -363,8 +363,8 @@ A Namespace pass that observes the same pending state this worker last audited,
 such as a terminating namespace, writes no new lifecycle audit or `reconcile` row;
 a changed pending state or the terminal pass does.
 Lease loss reports `worker.error` `CLAIM_LOST` instead of stale lifecycle state.
-On `SIGTERM` or `SIGINT`, shutdown removes readiness, aborts in-flight work,
-waits for the loop, closes PostgreSQL, and emits `worker.stopped`.
+On `SIGTERM` or `SIGINT`, shutdown aborts in-flight work, waits for the loop,
+removes readiness, closes the other parts and then PostgreSQL, and emits `worker.stopped`.
 
 Each `PostgresWorkQueue.recoverStale()` statement atomically publishes exhausted
 work, failure of a still-provisioning Namespace targeted for `ready`, and audit
@@ -423,7 +423,6 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
-- 2026-10-29 20:37: Document the tenant access log hint. (authoring-run/85796888-a7be-4de9-bdcb-ca8f7ef74264 - 03372ea89128)
-- 2026-10-11 11:30: Predecessor stops yield their Gateway drain. (fix-1090)
+- 2026-10-30 17:22: Shutdown stops the loop before readiness and parts close. (fix-2997)
 
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.

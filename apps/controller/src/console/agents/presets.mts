@@ -182,10 +182,10 @@ export function createPresetFields(
   };
   inputs.addEventListener("input", markTouched);
   inputs.addEventListener("change", markTouched);
+  // Without default-codex, the hint under the shortcut already says it is not available, so the
+  // status line does not repeat it (finding 2946).
   const chooseHint = () =>
-    defaultId
-      ? "Choose a Preset or start with the default Preset."
-      : "Choose a Preset. default-codex is not available to you in this Namespace.";
+    defaultId ? "Choose a Preset or start with the default Preset." : "Choose a Preset.";
   const startDefault = button(
     "Start with default Preset",
     () => {
@@ -649,10 +649,15 @@ export function createPresetFields(
       );
       selector.disabled = false;
       defaultId = presets.find((preset) => preset.name === "default-codex")?.id;
-      startDefault.disabled = !defaultId;
+      // The hint beside the shortcut names the default Preset, or says that it is not
+      // available, and then describes the unavailable shortcut, which stays in the Tab order
+      // (finding 2937).
+      defaultHint.textContent = defaultId
+        ? "The default Preset is default-codex."
+        : "default-codex is not available to you in this Namespace.";
+      defaultHint.hidden = false;
+      setUnavailable(startDefault, !defaultId, defaultHint);
       if (defaultId) {
-        defaultHint.textContent = "The default Preset is default-codex.";
-        defaultHint.hidden = false;
         startDefault.setAttribute("aria-describedby", defaultHint.id);
       }
       if (retained && presets.some((preset) => preset.id === retained?.id)) {
@@ -677,6 +682,8 @@ export function createPresetFields(
       } else {
         status.textContent = `Presets unavailable. ${message(error, false, namespaceListNeed("Presets"))}`;
         describeApply();
+        // The chooser stays unavailable, so its status says why the shortcut is too.
+        setUnavailable(startDefault, true, status);
       }
     });
   return { section, startDefault, defaultHint };

@@ -190,16 +190,16 @@ Ordinary delivery grants use of the key on the profile's route. A child process
 of the configured binary can use it too. The profile neither authorizes a
 specific inference body nor filters the response for that caller.
 
-**Online GitHub preview.** For the opt-in `github-installation` profile
-on stock OpenShell 0.1.5, the launcher waits for a one-use probe in the selected workspace to return the expected denial. This observes the hook at startup.
-Enforcement on later requests remains unverified. [Protected Git profiles](../repository-credentials/protected-openshell-git.md)
+**Online GitHub preview.** On stock OpenShell 0.1.5, the opt-in `github-installation`
+profile verifies a one-use denial in the selected workspace at startup. Later
+enforcement remains unverified. [Protected Git profiles](../repository-credentials/protected-openshell-git.md)
 
-**Protected delivery** requires a qualified sender that binds the request and
-response recipient to the execution. OCC checks authority before releasing
-material and again before authorizing the send. The sender enforces the
-[response policy](../credential-sources/protected-inference.md#static-source-and-response-policy) before release.
-The bundled [OpenShell Driver](../../../apps/controller/src/drivers/egress-proxy/openshell.ts)
-refuses repository-scoped `git-write` at deploy with `409 REPOSITORY_GIT_SENDER_UNQUALIFIED`.
+**Protected delivery** binds the request and response recipient to the execution.
+OCC checks authority before releasing material and before authorizing the send.
+The qualified sender enforces the [response policy](../credential-sources/protected-inference.md#static-source-and-response-policy).
+For Git, the bundled Proxy verifies the mandatory pre-credentials binding and launcher
+denial for selected repository sets or a single ref-limited `git-write` grant.
+[Delivery profiles](credential-proxy.md#delivery-profiles)
 
 ### Provider and Sandbox state
 

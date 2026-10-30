@@ -92,7 +92,6 @@ import {
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
   namespaceListDenied,
-  PREVIEW_GATEWAY_VERSION,
   PROXY_REGISTRATION_UNAVAILABLE,
   RESOURCE_CONFLICT,
   RESOURCE_NOT_FOUND,
@@ -328,11 +327,6 @@ const cases = [
     "an OpenShell gateway without the Proxy's middleware names the operator fix",
     new RetryLaterError("proxyRegistration"),
     { status: 503, code: "DEPENDENCY_UNAVAILABLE", message: PROXY_REGISTRATION_UNAVAILABLE },
-  ],
-  [
-    "the observed-hook preview on another OpenShell gateway version names the operator fix",
-    new RetryLaterError("previewGatewayVersion"),
-    { status: 503, code: "DEPENDENCY_UNAVAILABLE", message: PREVIEW_GATEWAY_VERSION },
   ],
   [
     "a stored credential source that breaks a later Gateway rule names the replacement",

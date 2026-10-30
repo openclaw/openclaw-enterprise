@@ -156,10 +156,14 @@ export function createDeploymentRecovery(
   let readableConfigurationId: string | null = null;
   let configurationCheckId: string | null = null;
 
-  function show(failure: FailureToShow | null) {
+  // Returns the failure in one line for the Logs view, which is far below this card at phone
+  // width (finding 2993): the lead without its code, then the same next step.
+  function show(
+    failure: FailureToShow | null,
+  ): { revisionId: string; version: string; text: string } | null {
     if (!failure) {
       setHidden(recovery, true);
-      return;
+      return null;
     }
     const {
       latest,
@@ -299,6 +303,7 @@ export function createDeploymentRecovery(
       recoveryActions.replaceChildren(...actions);
       recoveryActions.hidden = actions.length === 0;
     }
+    return { revisionId: latest.id, version, text: `${lead}. ${impact}` };
   }
 
   // Another version's tabs have no reason to read the Configuration, so recovery reads it once

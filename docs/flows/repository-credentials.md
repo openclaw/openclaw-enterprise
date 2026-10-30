@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: 2026-10-27
-last_updated_session: authoring-run/2af9e346-e424-4bb7-8b0e-a6e1126f9832
+updated: 2026-10-30
+last_updated_session: authoring-run/d49a5c43-d13a-4c18-8850-b9e95cca726c
 ---
 
 # Repository credential service flow
@@ -28,7 +28,7 @@ protected files and control; clients receive session files and public connection
 
 ```mermaid
 graph TD
-  Operator["Worker or operator<br/>opens session"] --> Admission["Service freezes grant<br/>and creates bearer"]
+  Operator["Worker or operator<br/>opens session"] --> Admission["Reserve slot, resolve grant<br/>then construct session"]
   Admission -->|Construction failed| ConstructionCleanup["Seal renewal access<br/>drain unpublished custody"]
   Operator -->|Uncertain admission| Recovery["Inspect original owner<br/>and known session status"]
   Admission --> Files["CLI publishes private<br/>client directory"]
@@ -73,7 +73,7 @@ The production native sender consumes READY material from the worker Token Servi
 It owns no App signing key, cannot issue installation tokens and does not load the
 development static-token implementation. The development backend requires both
 `developmentOnly: true` and the `--development-authority` process flag.
-`packages/contracts/src/repo.ts` owns public `RepositoryPolicyDriver` and
+`packages/contracts/src/drivers/repo/index.ts` owns public `RepositoryPolicyDriver` and
 `NativeRepositorySender`, grant identity and four-field status. Private contracts under
 `apps/controller/src/drivers/repo/credentials/` separate full status/admission/bearer
 results (`service-contracts.ts`), the dependency-free six-field client DTO
@@ -96,12 +96,11 @@ until the control socket has mode `0600` and its identity is recorded.
 `apps/controller/src/drivers/repo/credentials/control.ts:handleControl` validates the local
 request method, target, content type, and body before invoking the common
 service. The body limit is the smaller of 16,384 bytes and `controlBodyBytes`. `apps/controller/src/drivers/repo/credentials/service.ts:createCredentialService`
-checks duration, allowed profile and capacity, then freezes the resolved binding.
-Profiles are opaque to the common service. GitHub resolves `git-read`, `git-write`
-and `git-full` to the [permission maps](../reference/repository-credentials.md#configuration)
-and includes the profile in grant identity. Startup rejects unknown names,
-including `read-write`; the example defaults to `git-write`. Bearer lookup stores
-a digest; only the original admission response contains the bearer.
+reserves capacity through binding resolution and construction. Shutdown cancels unclaimed
+selections and drains in-flight work within grace; expiry or shutdown closes unpublished
+sessions. GitHub maps `git-read`, `git-write` and `git-full` to
+[permissions](../reference/repository-credentials.md#configuration); startup rejects
+unknown profiles. Only the original response contains the bearer; lookup stores its digest.
 
 `apps/controller/src/drivers/repo/credentials/server.ts:startListeners` owns the
 correlation registry from
@@ -360,6 +359,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 06:21: Reserve admission capacity and drain shutdown work. (authoring-run/d49a5c43-d13a-4c18-8850-b9e95cca726c - 4a27fe5e2ff5fc4b216040bcf1227bfb6a7e0a88)
 
 - 2026-10-27 17:25: Resend a disposal whose acknowledgement was lost with its original status. (fix-3873-dispose)
 

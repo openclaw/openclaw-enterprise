@@ -5,10 +5,10 @@ import type {
 import { requestFailure } from "../api-client.mjs";
 import {
   button,
-  describeDisabled,
   element,
   focusSaveOutcome,
   patchChildren,
+  setUnavailable,
   statusBlock,
 } from "../dom.mjs";
 import type { DeploymentContext } from "./deployment-evidence.mjs";
@@ -251,13 +251,14 @@ export function createVersionDiagnostics(
     // is the one announcement, and a changed label inside the Agent view's live region was
     // announced as well (finding 1698).
     const runButton = button("Run diagnostics for this version", () => void run(), {
-      disabled: waitingShown || operateDenied,
       ...(outcomeId ? { "aria-describedby": outcomeId } : {}),
     });
     const denied = operateDenied
       ? statusBlock("info", null, DIAGNOSTICS_DENIED, [], { id: deniedId })
       : null;
-    describeDisabled(runButton, denied);
+    // A denied Run diagnostics stays in the Tab order with its reason (finding 2899). The patch
+    // below copies this button's state onto the shown one, whose first render added the guard.
+    setUnavailable(runButton, waitingShown || operateDenied, denied);
     patchChildren(section, [
       element(
         "div",

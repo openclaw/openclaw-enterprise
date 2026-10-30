@@ -4,6 +4,13 @@ import type { AdmittedRepositoryBinding, AgentRevision } from "@openclaw-enterpr
 export interface RepositoryGitDeliveryBinding {
   readonly binding: AdmittedRepositoryBinding;
   readonly delivery:
+    | {
+        readonly scope: "github-repository";
+        readonly repository?: never;
+        readonly installationId: string;
+        readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
+        readonly permissions: Readonly<Record<string, string>>;
+      }
     | { readonly repository: string; readonly installationId?: never }
     | { readonly repository?: never; readonly installationId: string };
   readonly repository?: {

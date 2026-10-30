@@ -14,21 +14,26 @@ import {
   nativeValues,
   newPage,
   recordFocusTrail,
+  settledView,
   stopFocusTrail,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
+import {
+  heldView,
+  refocus,
+  refocusHeld,
+  tagView,
+  taggedView,
+  viewTag,
+} from "./console-refocus-helpers.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 
 const SESSION = "**/api/auth/session";
 const activeView = '.content [aria-live="polite"]:not([inert])';
-const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
-const heldView = '.content [aria-live="polite"][inert]';
 // An Agent page rendering behind the page that stands in for it.
 const hiddenView = '.content [aria-live="polite"][hidden]';
 const NAMESPACES = { name: "Namespaces", exact: true };
 const SUMMARY = { name: "Agent state at a glance" };
-// Refocusing the window rechecks the session and Namespace access.
-const refocus = (page) => page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
 // Holds only the first matching request (the session check unless named).
 const holdOnce = (t, page, url = SESSION) => holdRequests(t, page, url, { once: true });
 // The Agent's own read; its overview's first reads are its deployment record reads.
@@ -191,19 +196,6 @@ function goTo(page, url) {
 }
 
 // Marks the content view node, so a test can tell a remounted retained node from a rebuild.
-function tagView(page, tag) {
-  return page.evaluate((value) => {
-    globalThis.document.querySelector('.content [aria-live="polite"]').dataset.navTag = value;
-  }, tag);
-}
-
-function viewTag(page) {
-  return page.evaluate(
-    () =>
-      globalThis.document.querySelector('.content [aria-live="polite"]')?.dataset.navTag ?? null,
-  );
-}
-
 test("Refocusing a loaded page keeps it steady while access is rechecked", async (t) => {
   const { namespace, page } = await openList(t, "Steady return", "Steady Agent", { running: true });
   const selector = page.locator("#namespace-selector");
@@ -250,16 +242,12 @@ for (const moveToSidebar of [false, true]) {
     await action.focus();
     assert.equal(await hasFocus(action), true);
 
-    const session = await holdOnce(t, page);
-    await refocus(page);
-    await session.requested;
-    await page.locator(heldView).waitFor();
-    assert.equal(await action.evaluate((node) => node.closest("[inert]") !== null), true);
-    if (moveToSidebar) {
-      await sidebar.focus();
-    }
-    session.release();
-    await page.locator(settledView).waitFor();
+    await refocusHeld(t, page, async () => {
+      assert.equal(await action.evaluate((node) => node.closest("[inert]") !== null), true);
+      if (moveToSidebar) {
+        await sidebar.focus();
+      }
+    });
     assert.equal(await hasFocus(moveToSidebar ? sidebar : action), true);
   });
 }
@@ -1074,16 +1062,12 @@ for (const target of [
     const focusedIn = (locator) =>
       locator.evaluate((node) => node.contains(globalThis.document.activeElement));
     const heading = page.getByRole("heading", { level: 1, name: "Agents" });
-    const session = await holdOnce(t, page);
-    await refocus(page);
-    await session.requested;
-    await page.locator(heldView).waitFor();
-    if (moved) {
-      // The reader moved on while the page was held: the remount leaves their focus alone.
-      await sidebar.focus();
-    }
-    session.release();
-    await page.locator(settledView).waitFor();
+    await refocusHeld(t, page, async () => {
+      if (moved) {
+        // The reader moved on while the page was held: the remount leaves their focus alone.
+        await sidebar.focus();
+      }
+    });
     assert.equal(await viewTag(page), "refocused", "the list remounted unchanged");
     assert.equal(await hasFocus(heading), false, "focus stays off the heading");
     if (deployment) {
@@ -1207,6 +1191,8 @@ test("Forward during a return's recheck keeps the returning page for the next Ba
   ]);
   const opened = agents[1];
   await tagView(page, "list");
+  // The tag is on the shown list, so its absence below means the list is gone.
+  assert.equal(await taggedView(page, "list").count(), 1);
   // The first read is held, so the destination shows its loading status.
   const firstRead = await holdAgent(t, page, namespace, opened);
   await page.getByRole("link", { name: "Opened Agent" }).click();
@@ -1218,7 +1204,7 @@ test("Forward during a return's recheck keeps the returning page for the next Ba
   await recheck.requested;
   // Keep the pending destination inert until Back is admitted, not the retained private list.
   await page.locator(heldView).getByText("Loading agent details…", { exact: true }).waitFor();
-  assert.equal(await page.locator('[data-nav-tag="list"]').count(), 0);
+  assert.equal(await taggedView(page, "list").count(), 0);
   // Forward abandons the return before it mounts the list.
   await page.goForward();
   await page.waitForURL(`**/console/agents/${opened.id}**`);
@@ -1233,7 +1219,7 @@ test("Forward during a return's recheck keeps the returning page for the next Ba
   await listRead.requested;
   await page.clock.runFor(300);
   assert.equal(await page.locator(heldView).getByRole("region", SUMMARY).count(), 1);
-  assert.equal(await page.locator('[data-nav-tag="list"]').count(), 0);
+  assert.equal(await taggedView(page, "list").count(), 0);
   assert.equal(await page.getByText("Reading agents.", { exact: true }).count(), 0);
   listRead.release();
   await listShown(page, "Opened Agent");
@@ -1633,6 +1619,8 @@ test("A chat link's Agent lookup that answers after a manual navigation is ignor
 test("A Namespace revoked during a first visit's admission is not repainted by Back", async (t) => {
   const { fixture, namespace, page } = await openList(t, "Revoked during visit", "Revoked Agent");
   await tagView(page, "list");
+  // The tag is on the shown list, so its absence below means the list is gone.
+  assert.equal(await taggedView(page, "list").count(), 1);
   restrict(fixture.policy, "read", "namespace", { namespaceId: namespace.id });
   // The first visit's admission read drops the Namespace, so its retained list is discarded.
   await page.getByRole("link", NAMESPACES).click();
@@ -1641,7 +1629,7 @@ test("A Namespace revoked during a first visit's admission is not repainted by B
   await page.waitForURL(`**/console/agents?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Namespace unavailable" }).waitFor();
   await page.locator(settledView).waitFor();
-  assert.equal(await page.locator('[data-nav-tag="list"]').count(), 0);
+  assert.equal(await taggedView(page, "list").count(), 0);
   assert.ok(
     // Only the first entry, before the click, may show the list active.
     !(await shownPages(page)).slice(1).includes("Agents"),

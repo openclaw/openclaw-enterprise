@@ -2053,12 +2053,12 @@ async function verifyCredentialSourceContract(
     servicePrincipalId: sourceAgent.servicePrincipalId,
     harnessAuth: {
       ...sourceBinding,
-      credentialGatewayId: "openshell-contract",
+      credentialGatewayId: source.driverId,
       sourceType: source.type,
       loginMode: "api_key",
     },
     credentialSources: [
-      { sourceId: source.id, credentialGatewayId: "openshell-contract", sourceType: source.type },
+      { sourceId: source.id, credentialGatewayId: source.driverId, sourceType: source.type },
     ],
   };
   const sourceReferences = (transaction) =>
@@ -2206,15 +2206,175 @@ async function verifyCredentialSourceContract(
     "A Secret used by a credential source cannot be deleted.",
   );
 
+  // Exercise listed-only readiness and Proxy ownership without adding retained references
+  // to the lifecycle fixture below. A successful insertion is rolled back deliberately.
+  const probeRollback = new Error("rollback listed source checks");
+  await assert.rejects(
+    store.transact(async (transaction) => {
+      const probeAgent = {
+        ...sourceAgent,
+        id: identifier("agt"),
+        name: "Listed source probe",
+        servicePrincipalId: identifier("service-agent"),
+        harnessAuth: { method: "runtime" },
+      };
+      await transaction.agents.createAgent(probeAgent);
+      const probeRevision = {
+        ...sourceRevision,
+        id: identifier("rev"),
+        agentId: probeAgent.id,
+        servicePrincipalId: probeAgent.servicePrincipalId,
+        harnessAuth: { method: "runtime" },
+      };
+      const second = { ...source, id: identifier("cs"), name: "Second listed source" };
+      await transaction.credentialSources.createCredentialSource(second);
+      const pairAgent = {
+        ...sourceAgent,
+        id: identifier("agt"),
+        name: "Two listed sources",
+        servicePrincipalId: identifier("service-agent"),
+        credentialSources: [{ sourceId: source.id }, { sourceId: second.id }],
+      };
+      await transaction.agents.createAgent(pairAgent);
+      await assert.rejects(
+        transaction.revisions.createRevision({
+          ...sourceRevision,
+          id: identifier("rev"),
+          agentId: pairAgent.id,
+          servicePrincipalId: pairAgent.servicePrincipalId,
+          credentialSources: [
+            sourceRevision.credentialSources[0],
+            { sourceId: second.id, sourceType: second.type, credentialProxyId: second.driverId },
+          ],
+        }),
+        {
+          name: "ScopeViolationError",
+          message:
+            "The AgentRevision credential source snapshot does not match its current owner or type.",
+        },
+      );
+      await transaction.credentialSources.markCredentialSourceDeleting(
+        sourceNamespace.id,
+        source.id,
+      );
+      await assert.rejects(transaction.revisions.createRevision(probeRevision), {
+        name: "ScopeViolationError",
+        message: "The AgentRevision references an unavailable credential source.",
+      });
+      const installation = await transaction.installations.getInstallation();
+      const proxyId = identifier("cs");
+      const proxy = {
+        ...source,
+        id: proxyId,
+        name: "Listed proxy",
+        ownerCapability: "credential_proxy",
+        egress: {
+          key: {
+            installationId: installation.id,
+            namespaceId: sourceNamespace.id,
+            source: { id: proxyId, generation: 1 },
+            backend: { id: "contract-backend", generation: 1 },
+            provider: { id: source.driverId, generation: 1 },
+          },
+          schemaVersion: 1,
+          adoption: "live",
+          retention: "none",
+          materialRefId: "contract-material",
+          secret: { kind: "secret", namespaceId: sourceNamespace.id, id: sourceSecret.id },
+          secretDriver: { id: sourceSecret.driverId, generation: 1 },
+          sender: { id: "contract-sender", generation: 1 },
+          resolver: { id: "contract-resolver", generation: 1 },
+        },
+      };
+      await transaction.credentialSources.createCredentialSource(proxy);
+      const proxyAgent = {
+        ...probeAgent,
+        id: identifier("agt"),
+        name: "Proxy listing",
+        servicePrincipalId: identifier("service-agent"),
+        credentialSources: [{ sourceId: proxyId }],
+      };
+      await transaction.agents.createAgent(proxyAgent);
+      const proxyRevision = {
+        ...probeRevision,
+        agentId: proxyAgent.id,
+        servicePrincipalId: proxyAgent.servicePrincipalId,
+        credentialSources: [
+          { sourceId: proxyId, sourceType: source.type, credentialProxyId: source.driverId },
+        ],
+      };
+      assertCreatedRevision(
+        await transaction.revisions.createRevision(proxyRevision),
+        proxyRevision,
+      );
+      const registering = {
+        ...source,
+        id: identifier("cs"),
+        name: "Listed registering",
+        state: "registering",
+      };
+      await transaction.credentialSources.createCredentialSource(registering);
+      const registeringAgent = {
+        ...probeAgent,
+        id: identifier("agt"),
+        name: "Registering listing",
+        servicePrincipalId: identifier("service-agent"),
+        credentialSources: [{ sourceId: registering.id }],
+      };
+      await transaction.agents.createAgent(registeringAgent);
+      await assert.rejects(
+        transaction.revisions.createRevision({
+          ...probeRevision,
+          id: identifier("rev"),
+          agentId: registeringAgent.id,
+          servicePrincipalId: registeringAgent.servicePrincipalId,
+          credentialSources: [{ ...sourceRevision.credentialSources[0], sourceId: registering.id }],
+        }),
+        {
+          name: "ScopeViolationError",
+          message: "The AgentRevision references an unavailable credential source.",
+        },
+      );
+      throw probeRollback;
+    }),
+    (error) => error === probeRollback,
+  );
+
   await store.transact(async (transaction) => {
     assert.equal(await sourceReferences(transaction), false);
     await transaction.agents.createAgent(sourceAgent);
     // The Agent draft binding alone retains the source.
     assert.equal(await sourceReferences(transaction), true);
-    assertCreatedRevision(
-      await transaction.revisions.createRevision(sourceRevision),
-      sourceRevision,
-    );
+    // Each mismatch has one cause; capability changes retain the real Driver ID.
+    const listed = sourceRevision.credentialSources[0];
+    for (const change of [
+      {
+        harnessAuth: { ...sourceRevision.harnessAuth, credentialGatewayId: "wrong-owner" },
+        credentialSources: [{ ...listed, credentialGatewayId: "wrong-owner" }],
+      },
+      { harnessAuth: { ...sourceRevision.harnessAuth, credentialGatewayId: "wrong-owner" } },
+      { credentialSources: [{ ...listed, credentialGatewayId: "wrong-owner" }] },
+      { credentialSources: [{ ...listed, sourceType: "other" }] },
+      {
+        credentialSources: [
+          { sourceId: source.id, sourceType: source.type, credentialProxyId: source.driverId },
+        ],
+      },
+    ]) {
+      await assert.rejects(transaction.revisions.createRevision({ ...sourceRevision, ...change }), {
+        name: "ScopeViolationError",
+        message:
+          "The AgentRevision credential source snapshot does not match its current owner or type.",
+      });
+    }
+    // The refusal consumes neither the revision ID nor its number; retry correctly below.
+    const mutableRevision = structuredClone(sourceRevision);
+    const insertion = transaction.revisions.createRevision(mutableRevision);
+    mutableRevision.credentialSources[0] = {
+      ...mutableRevision.credentialSources[0],
+      credentialGatewayId: "changed-after-entry",
+    };
+    assertCreatedRevision(await insertion, sourceRevision);
     await transaction.agents.updateConfiguration(
       sourceNamespace.id,
       sourceAgent.id,
@@ -2523,7 +2683,7 @@ async function verifyCredentialSourceContract(
     credentialSources: [
       {
         sourceId: tokenSource.id,
-        credentialGatewayId: "openshell-contract",
+        credentialGatewayId: tokenSource.driverId,
         sourceType: tokenSource.type,
       },
     ],
@@ -2669,7 +2829,7 @@ async function verifyCredentialSourceContract(
   // A revision freezes exactly the draft's list, in order, as well-formed snapshots.
   const snapshot = (sourceId) => ({
     sourceId,
-    credentialGatewayId: "openshell-contract",
+    credentialGatewayId: (sourceId === secondToken.id ? secondToken : tokenSource).driverId,
     sourceType: tokenSource.type,
   });
   const listedRevision = {

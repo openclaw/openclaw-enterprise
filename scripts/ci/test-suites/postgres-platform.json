@@ -55,7 +55,9 @@
     "tests/integration/postgres-standing-expiry-authority.test.ts",
     "tests/integration/credential-proxy-withdrawal.test.ts",
     "tests/integration/credential-proxy-revision-currentness.test.ts",
-    "tests/integration/postgres-egress-policy-transaction.test.ts"
+    "tests/integration/postgres-egress-policy-transaction.test.ts",
+    "tests/integration/postgres-credential-source-revision-owner.test.ts",
+    "tests/integration/postgres-worker-process-shutdown.test.ts"
   ],
   "files": [
     {
@@ -194,7 +196,9 @@
         "Delete before admission cancels provisioning while a worker holds its claim, and finishes without a deployment",
         "failed provisioning keeps the accepted plan reserved until retry or deletion",
         "a Plugin Driver switch leaves the provisioning status readable; retry still refuses the plan",
-        "provisioning worker reauthorizes an accepted source after only its exact operate grant is revoked"
+        "provisioning worker reauthorizes an accepted source after only its exact operate grant is revoked",
+        "source provisioning status preserves saved work when its Gateway catalog is unavailable",
+        "source provisioning worker rejects a withdrawn type while failed status remains readable"
       ]
     },
     {
@@ -327,7 +331,12 @@
       "path": "tests/integration/postgres-protected-git-recipient-custody.test.ts",
       "expectedTests": [
         "only the installed Git recipient owner may use its material or retire its ended admission",
-        "changing between repository and installation scope waits for the previous owner to settle its token"
+        "changing between repository and installation scope waits for the previous owner to settle its token",
+        "selected repository set retires after B session across owner restart",
+        "selected repository set retires after B replacement across owner restart",
+        "selected repository set retires after B deadline across owner restart",
+        "selected repository set retires after NULL selection across owner restart",
+        "selected repository set retires after empty selection across owner restart"
       ]
     },
     {
@@ -388,7 +397,8 @@
     {
       "path": "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
       "expectedTests": [
-        "standing OpenShell installation grant crosses both expiries, serves two Git repositories and the API, then loses only GitHub"
+        "standing OpenShell installation grant crosses both expiries, serves two Git repositories and the API, then loses only GitHub",
+        "one deployed OpenShell Agent pushes A and B with one repository-scoped token and cannot push C"
       ]
     },
     {
@@ -539,6 +549,21 @@
         "final placement binds the original Credential Proxy method",
         "authorization throw before mint fences a retained callback",
         "authorization throw after mint fences a retained callback"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-credential-source-revision-owner.test.ts",
+      "expectedTests": [
+        "revision insertion owns its snapshot before a source lock wait",
+        "reversed source lists commit in their original order",
+        "direct insertion respects OCC Namespace Agent source lock order",
+        "deleting source refuses waiting insertion and preserves archived bytes"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-process-shutdown.test.ts",
+      "expectedTests": [
+        "worker.mjs exits cleanly on SIGTERM after stopping the worker and its metrics listener"
       ]
     }
   ]

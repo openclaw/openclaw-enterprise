@@ -757,6 +757,65 @@ export async function assertHarnessAuthAvailable(
   }
 }
 
+/** Validate new snapshots against rows held by the insertion transaction, never archive reads. */
+export async function assertRevisionAuthAvailable(
+  state: Pick<PlatformReadView, "secrets" | "serviceAccounts" | "credentialSources">,
+  revision: AgentRevision,
+  loadSources: (
+    ids: readonly string[],
+  ) => Promise<
+    readonly Pick<
+      CredentialSource,
+      "id" | "namespaceId" | "type" | "state" | "ownerCapability" | "driverId"
+    >[]
+  >,
+): Promise<void> {
+  const snapshots: CredentialSourceSnapshot[] = [...(revision.credentialSources ?? [])];
+  if (revision.harnessAuth?.method === "credential_source") {
+    snapshots.push(revision.harnessAuth);
+  } else {
+    await assertHarnessAuthAvailable(
+      state,
+      revision.namespaceId,
+      harnessAuthBindingFromSnapshot(revision.harnessAuth),
+    );
+  }
+  if (snapshots.length === 0) {
+    return;
+  }
+  const sources = new Map(
+    (await loadSources([...new Set(snapshots.map(({ sourceId }) => sourceId))])).map((source) => [
+      source.id,
+      source,
+    ]),
+  );
+  // Deduplicate locks, not assertions: the Harness and list can disagree on the same ID.
+  for (const snapshot of snapshots) {
+    const source = sources.get(snapshot.sourceId);
+    if (
+      source === undefined ||
+      source.namespaceId !== revision.namespaceId ||
+      source.state !== "ready"
+    ) {
+      throw new ScopeViolationError(
+        "The AgentRevision references an unavailable credential source.",
+      );
+    }
+    const ownerMatches =
+      (source.ownerCapability === "credential_gateway" &&
+        snapshot.credentialProxyId === undefined &&
+        snapshot.credentialGatewayId === source.driverId) ||
+      (source.ownerCapability === "credential_proxy" &&
+        snapshot.credentialGatewayId === undefined &&
+        snapshot.credentialProxyId === source.driverId);
+    if (source.type !== snapshot.sourceType || !ownerMatches) {
+      throw new ScopeViolationError(
+        "The AgentRevision credential source snapshot does not match its current owner or type.",
+      );
+    }
+  }
+}
+
 /** In-memory mirror of `agents_harness_credential_source_listed`. */
 export function assertHarnessCredentialSourceListed(
   harnessAuth: HarnessAuthBinding | null,
@@ -3133,7 +3192,8 @@ function repositories(
         ...(older.length > limit ? { nextBefore: page.at(-1)!.revision } : {}),
       });
     },
-    createRevision: async (revision) => {
+    createRevision: async (input) => {
+      const revision = immutableCopy(input);
       assertInitialized(snapshot);
       assertAdmittedAgentRevision(revision);
       const owner = await agents.findAgent(revision.namespaceId, revision.agentId);
@@ -3147,10 +3207,15 @@ function repositories(
       ) {
         throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
       }
-      await assertHarnessAuthAvailable(
+      await assertRevisionAuthAvailable(
         { secrets, serviceAccounts, credentialSources },
-        revision.namespaceId,
-        harnessAuthBindingFromSnapshot(revision.harnessAuth),
+        revision,
+        async (ids) => {
+          const sources = await Promise.all(
+            ids.map((id) => findCredentialSource(revision.namespaceId, id)),
+          );
+          return sources.filter((source) => source !== undefined);
+        },
       );
       const secretBindings = normalizedSecretBindings(revision.secretBindings);
       const plugins = revision.plugins === undefined ? undefined : immutableCopy(revision.plugins);
