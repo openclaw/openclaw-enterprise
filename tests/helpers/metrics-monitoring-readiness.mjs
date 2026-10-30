@@ -13,7 +13,8 @@ function monitoringFailure(stage, reason, details = {}) {
 export async function waitForMonitoring(stage, read, containers, inspectContainer) {
   const end = Date.now() + 60_000;
   let lastHttpStatus;
-  while (Date.now() < end) {
+  // The deadline is checked after each read, so the last read happens at or past it.
+  for (;;) {
     // A detached container can exit before its listener binds; surface that
     // setup failure instead of waiting for a scrape that cannot succeed.
     for (const [role, name] of containers) {
@@ -54,6 +55,9 @@ export async function waitForMonitoring(stage, read, containers, inspectContaine
         });
       }
       lastHttpStatus = error.httpStatus ?? lastHttpStatus;
+    }
+    if (Date.now() >= end) {
+      break;
     }
     await delay(500);
   }
