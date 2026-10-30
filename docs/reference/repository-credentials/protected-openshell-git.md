@@ -1,27 +1,23 @@
 # Protected repository access with OpenShell
 
-For selected repositories, use OpenShell with a required pre-credentials request
-binding. Before
-issuing credentials, OCE verifies the selected registration and correlates a
-request from the held Agent launcher with its authenticated middleware denial.
-Configuration readback and `ACCEPTED` alone do not establish that the hook ran.
-The launcher starts work only after credential installation and its signed release.
+Selected repositories require a pre-credentials request binding. Before issuing
+credentials, OCE verifies the registration and matches a held launcher request to
+an authenticated middleware denial. The Agent starts after credential installation
+and signed release.
 
 Follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md).
-Select repositories with the same explicit permission map. OCE requests
-canonical IDs and accepts only GitHub's matching scope. GitHub rules govern Git refs
-and permitted REST/GraphQL operations. Removing or changing
-a grant prevents subsequent authorization; permissions are configured, not inherited.
+Select repositories sharing an explicit permission map. OCE requests their canonical
+IDs and verifies GitHub’s returned scope. GitHub governs refs and REST/GraphQL
+operations. Changing or removing a grant blocks subsequent use of that grant.
 
-Explicit `git-write` grants retain their exact ref policy. Release labels do not
-qualify a sender; the configured facilities and current runtime proof do.
-`git-read` and `git-full` gain no protected delivery semantics.
-Installation preview remains a separate opt-in. This path does not claim
-exact-dispatch or v7 reduction guarantees.
+Existing `git-write` grants retain their exact ref policy. OCE qualifies the live
+sender by its configured capabilities and runtime evidence. `git-read` and
+`git-full` keep their existing semantics. Installation preview requires separate
+opt-in. Exact-dispatch and v7 reduction guarantees remain unqualified.
 
-The Proxy serves repository access only; model access needs an existing Gateway
-Harness source. Keep Credential Gateway when using the bundled OpenShell Backend.
-For existing installations, follow the
+Keep Credential Gateway with the bundled OpenShell Backend. The Proxy serves
+repository access, while model access uses a Gateway Harness source. For an
+existing installation, follow the
 [compatibility upgrade](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
 
 ## Prerequisites
