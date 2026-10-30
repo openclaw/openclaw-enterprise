@@ -914,9 +914,10 @@ fi
 # Keep all settings protected except the supported proxy and curated catalog
 # selections. New configuration fields remain protected until explicitly reviewed.
 values_guard='del(.api.channelDirectoryProxyUrl) | if .api == {} then del(.api) else . end'
-installation_guard='del(.drivers.plugin.id, .drivers.plugin.configuration.catalogSource) |
+installation_guard='if (.drivers.plugin | type) == "array" then . else
+  del(.drivers.plugin.id, .drivers.plugin.configuration.catalogSource) |
   if .drivers.plugin.configuration == {} then del(.drivers.plugin.configuration) else . end |
-  if .drivers.plugin == {} then del(.drivers.plugin) else . end'
+  if .drivers.plugin == {} then del(.drivers.plugin) else . end end'
 project_yaml "$evidence_dir/before-values.yaml" "$values_guard" "$evidence_dir/values-guard.json"
 project_yaml "${candidate_values}.requested" "$values_guard" "$evidence_dir/candidate-values-guard.json"
 cmp -s "$evidence_dir/values-guard.json" "$evidence_dir/candidate-values-guard.json" ||

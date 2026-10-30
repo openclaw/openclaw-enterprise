@@ -60,7 +60,7 @@ Sandbox packages in trusted YAML in either mode.
 | `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                            | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only.                                                   |
 | `credential_refresh` | [CredentialRefreshDriver](credential-refresh.md)                            | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                                                          |
 | `service_account`    | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                                  |
-| `plugin`             | [PluginDriver](plugin.md)                                                   | Optional bundled `occ-plugin` or `codex-plugin`; no installed-package selector.                                                                          |
+| `plugin`             | [PluginDriver](plugin.md)                                                   | Optional: `occ-plugin`, `codex-plugin`, or both, by Harness.                                                                                             |
 | `repo`               | [RepositoryPolicyDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; Kubernetes supports native Git or the protected sender described below.                                          |
 
 Installed packages run unsandboxed with control-plane authority and

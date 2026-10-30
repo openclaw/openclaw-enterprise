@@ -4,7 +4,10 @@ import { fileURLToPath } from "node:url";
 import { after, describe, test } from "node:test";
 
 import { initializeInstallationPresets } from "../../apps/controller/src/composition/installation-config.ts";
-import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  OCCPluginDriver,
+  CodexPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -882,9 +885,7 @@ describe("Presets", { concurrency: 2 }, () => {
     });
     assert.deepEqual(unplugged.template.agent.pluginApprovers, [{ channel: "teams", id: "U123" }]);
     await deletePreset(fixture, namespace.id, unplugged.id);
-    const pluginDriver = new OCCPluginDriver();
-    fixture.controller.registerDriver(pluginDriver);
-    fixture.controller.selectDriver("plugin", pluginDriver.id);
+    fixture.controller.installPluginDrivers([new OCCPluginDriver(), new CodexPluginDriver()]);
     const cases = [
       [
         { agent: { executionMode: "turbo" } },

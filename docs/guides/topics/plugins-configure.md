@@ -6,6 +6,11 @@ bundled Diffs plugin on an embedded OpenClaw Agent running on Kubernetes. Dedica
 Codex Agents use a different catalog and approval policy; see
 [plugin support](../../reference/agent-plugins.md#current-support).
 
+If an existing selection belongs to a different or unknown Driver, save an empty
+plugin map first. Then select the plugins offered for the Agent's Harness and
+deploy a new version. This also lets you correct an older embedded OpenClaw Agent
+whose selections belonged to the Codex Driver.
+
 ## Use the console
 
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.

@@ -1539,6 +1539,8 @@ test(
     );
     assert.equal(persistedAgent.configurationId, configuration.id);
     assert.deepEqual(persistedAgent.pluginApprovers, []);
+    const driverIdentity = { id: pluginDriver.id, implementation: pluginDriver.implementation };
+    assert.deepEqual(persistedAgent.pluginDriver, driverIdentity);
 
     const storedSelection = await pool.query(
       "SELECT plugins, plugin_approvers FROM occ.agents WHERE id = $1",
@@ -1646,6 +1648,7 @@ test(
       configurationId: replacementConfiguration.id,
     });
     assert.deepEqual(omittedPlugins.plugins, initialPlugins);
+    assert.deepEqual(omittedPlugins.pluginDriver, driverIdentity);
     assert.deepEqual(omittedPlugins.pluginApprovers, []);
     const replacementPlugins = {
       "occ-plugin:diffs": {
@@ -1666,6 +1669,7 @@ test(
       pluginApprovers: rawSlackApprovers,
     });
     assert.deepEqual(replacedPlugins.plugins, replacementPlugins);
+    assert.deepEqual(replacedPlugins.pluginDriver, driverIdentity);
     assert.deepEqual(replacedPlugins.pluginApprovers, rawSlackApprovers);
     const clearedPlugins = await controller.updateAgent(principalId, {
       namespaceId: namespace.id,
@@ -1681,6 +1685,8 @@ test(
       await view.revisions.findRevision(namespace.id, agent.id, revision.id),
     ]);
     assert.deepEqual(reloadedAgent.plugins, {});
+    assert.equal(reloadedAgent.pluginDriver, undefined);
+    assert.deepEqual(reloadedRevision.plugins.driver, driverIdentity);
     assert.deepEqual(reloadedAgent.pluginApprovers, rawSlackApprovers);
     assert.deepEqual(reloadedRevision.plugins.plugins, initialPlugins);
     assert.deepEqual(reloadedRevision.pluginApprovers, []);

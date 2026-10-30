@@ -409,7 +409,7 @@ function installationDrivers({
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
     ...(repoDriver === undefined ? {} : { repositoryPolicy: repoDriver }),
-    ...(pluginDriver === undefined ? {} : { pluginDriver }),
+    pluginDrivers: pluginDriver === undefined ? [] : [pluginDriver],
     createIAMDriver: (state) =>
       new NativeIAMDriver(state, { id: "native-iam", implementation: "native" }),
   };

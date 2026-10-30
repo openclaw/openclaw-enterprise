@@ -1236,9 +1236,9 @@ test("production native examples satisfy the current Helm, Installation, and PVC
     "Standard OpenClaw",
     "default-codex",
   ]);
-  assert.equal(drivers.pluginDriver.id, "codex-plugin");
-  assert.equal(drivers.pluginDriver.discoveryCredential, "none");
-  const catalog = await drivers.pluginDriver.discoverCatalog({ q: "Linear" });
+  assert.equal(drivers.pluginDrivers[0].id, "codex-plugin");
+  assert.equal(drivers.pluginDrivers[0].discoveryCredential, "none");
+  const catalog = await drivers.pluginDrivers[0].discoverCatalog({ q: "Linear" });
   assert.ok(catalog.plugins.some(({ name }) => name === "Linear"));
   assert.equal(drivers.computeDriver.id, "compute-kubernetes");
   const compute = drivers.installation.drivers.compute.configuration;

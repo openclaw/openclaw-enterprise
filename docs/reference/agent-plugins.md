@@ -1,15 +1,11 @@
 # Agent plugins
 
-Plugins add Agent tools or integrations. Selections belong to that Agent,
-separately from its reusable [Configuration](configuration.md). Changes apply on
-the next successful deployment; other Agents and selected versions stay unchanged.
-New Agents start without user-selected plugins.
-
-[Configure Agent plugins](../guides/topics/plugins-configure.md) explains selection,
-deployment and verification. Deploying requires a bundled [Plugin Driver](drivers/plugin.md);
-none is selected by default. OpenClaw Control Plane (OCC) validates policy shape
-and supported controls before saving nonempty selections. Startup runs
-[remaining checks](#failures-and-boundaries).
+Plugin selections belong to an Agent, independently of its reusable
+[Configuration](configuration.md). Changes apply on its next successful deployment.
+New Agents have no selected plugins. Nonempty selections require a [Driver](drivers/plugin.md)
+for the Agent's Harness. OCC checks policy before saving and performs
+[additional checks at startup](#failures-and-boundaries).
+[Configure Agent plugins](../guides/topics/plugins-configure.md)
 
 ## Current support
 
@@ -163,9 +159,10 @@ Approval cannot re-enable a disabled tool.
 
 ### Discover policy controls
 
-Authorized `GET /installation` responses expose the selected Driver's controls
-at `data.capabilities.pluginPolicies`. The field is absent when no PluginDriver
-is selected. It contains:
+Read `data.capabilities.pluginCatalogs` from an authorized `GET /installation`.
+Each entry identifies the `harnessId` and gives its `pluginPolicies` and available
+`pluginDiscovery` settings. With one enabled catalog, the same fields are also
+available directly under `data.capabilities`. Each policy object includes:
 
 - `driver`: the selected `id` and `implementation`.
 - `toolDefaults` and `tools`: each has an `enabled` support Boolean, an `approval`

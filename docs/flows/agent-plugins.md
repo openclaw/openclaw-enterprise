@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-29
-last_updated_session: 01a184cd-7ec2-7fa2-8547-9629c51ad0ba
+updated: 2026-10-30
+last_updated_session: 01a18bab-5cd7-7170-8773-c53b0bae2273
 ---
 
 # Agent Plugin Deployment Flow
@@ -66,43 +66,34 @@ graph TD
 ### Credential-scoped discovery
 
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) accepts
-transient PATs, same-Namespace Secrets/CredentialSources, or no credential.
-OCC checks Agent `create`. For stored sources, it checks source `operate` and
-rechecks both before Driver use. Cross-Namespace references return
-`400 INVALID_REQUEST`. After caller authorization, missing Secrets return `404`.
-Missing or non-ready explicitly selected CredentialSources return `409 RESOURCE_CONFLICT`.
-Unsupported discovery reads no credential.
+a transient PAT, same-Namespace Secret or CredentialSource, or no credential.
+With both catalogs enabled, the request must identify its target Harness.
+OCC resolves the Driver and checks Agent `create` before reading credentials.
+Stored-source reads require source `operate` and reauthorization before Driver use.
+Cross-Namespace references return `400`, missing Secrets `404`, and missing or
+unready explicitly selected CredentialSources `409`.
 
-Saved-Agent discovery requires an active dedicated Agent and caller `read` and
-`update`. It lists only plugins that Agent save admits for this Agent; details for
-others return the save refusal. Bound Secrets use [`SecretDriver.withValue`](../reference/drivers/secret.md).
-Bound and explicitly supplied CredentialSources use Credential Gateway `withSourceToken`,
-which may refresh tokens and return account metadata. Bound credential callbacks
-recheck binding and caller and Agent `operate` grants. Missing or non-ready
-Agent-bound CredentialSources return `404` at binding lookup.
-For a caller-specified `credentialSource`, OCC rechecks Agent scope and caller
-source `operate` before the Driver call.
-Stored sources outlive [login sessions](credential-source-lifecycle.md#device-authorization-and-configuration).
-Curated reads need no credential. Source failures stop discovery. Reads may
-precede rotation. Discovery stores no catalog results. Authorization denials
-emit `authorization_denial` audit events.
+Saved discovery requires an active dedicated Agent and caller `read` and `update`.
+OCC filters the catalog to plugins available on that Agent. It uses
+[`SecretDriver.withValue`](../reference/drivers/secret.md) or Credential Gateway
+`withSourceToken`, which can refresh tokens. Before provider access and again on
+return, OCC checks the current Agent, catalog and credential binding. Bound sources
+require caller and Agent `operate` and return `404` if unavailable. A caller-specified
+source requires caller `operate`. Curated discovery reads no credential. Denials
+emit `authorization_denial`. OCC does not persist results. [Source lifecycle](credential-source-lifecycle.md#device-authorization-and-configuration)
 
 The [Codex Driver](../../apps/controller/src/drivers/plugin/index.ts) hydrates
 identity, searches `q`, and pages GLOBAL entries with opaque cursors.
 [Console discovery](../../apps/controller/src/console/agents/plugin-discovery.mjs)
-prefetches catalogs on create or edit. Closing the picker or changing views cancels reads.
-Changing credentials clears results and preserves selections.
-A hidden tab cancels deferred prefetch before sending; reopening its picker can load again.
-See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
-for search, paging and tool loading.
+prefetches on create or edit. Closing or hiding the picker cancels reads.
+Changing credentials clears results. Changing Harness also clears selections.
+[Catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
 
-Disconnects during IAM lookup abort the Driver signal before hosted reads start.
-Hosted reads forbid redirects, with a 15-second timeout and 4 MiB response limit.
-Responses use `Cache-Control: no-store`, reject credential echoes, and omit raw
-upstream errors and private artifact URLs. HTTP retains the hosted Driver’s safe
-setup guidance, links, public HTTPS presentation URLs, and availability help. See
-[catalog metadata](../reference/drivers/plugin.md#selection-and-catalogs).
-Connections remain unverified. HTTPS logos omit referrers. Initials are the default.
+Disconnects abort pending hosted reads. The Driver forbids redirects, enforces
+a 15-second timeout and a 4 MiB response limit, and suppresses credential echoes,
+private URLs and raw upstream errors. HTTP sends `Cache-Control: no-store` and
+retains safe setup guidance and public metadata. Logos omit referrers and fall
+back to initials. [Catalog metadata](../reference/drivers/plugin.md#selection-and-catalogs)
 
 Optional `CodexPluginDriver.listCatalog` uses
 [`NativeCodexPluginCatalogReader`](../../apps/controller/src/drivers/plugin/stdio-catalog-reader.ts)
@@ -117,17 +108,19 @@ teardown sends `SIGTERM`, then `SIGKILL` after one second if needed. HTTP discov
 HTTP contracts validate input before [OpenClawController](../../packages/occ/src/index.ts)
 checks the exact Namespace and Agent. Reads require Agent `read`; create/PATCH
 stores the `plugins` map. Shared validators check the nested selection shape.
-`OpenClawController.validatePluginPolicies` calls the selected Driver's
+OCC resolves the Driver for the Agent’s Harness and calls its
 `validatePolicies` before Agent create/update and provisioning writes. Its optional
 `validateAgentConfiguration` checks selections against Configuration values here and at
 deployment. The OpenClaw Driver refuses a selection whose tools `tools.deny`, the sole
 `agents.entries` entry's list, the primary provider's `byProvider` lists, or these together block,
 any selection beside an entry denying `*`, or one a sole entry's `alsoAllow` hides under a profile. Unsupported
 controls, reviewer scopes, and combinations return `400 INVALID_REQUEST`;
-a missing selected Driver returns `501 NOT_IMPLEMENTED`. Validation is static: native app mapping,
+a nonempty selection requires the matching Harness catalog. Validation is static: native app mapping,
 authentication, and release/tool metadata remain startup checks. Agent mutations store desired state and audit evidence atomically without changing
 the reusable Configuration or active runtime. On update, omission preserves the
-map, `{}` clears it, and a nonempty map replaces it.
+map, `{}` clears it, and a nonempty map replaces it. OCC saves the Driver identity
+with the selection. If existing selections have a different or unknown owner,
+clear them before selecting plugins from the current catalog.
 
 Installation uses `GET /installation`; Agent editors use
 `GET .../plugins/capabilities` with Agent read/update. Both return policy capabilities.
@@ -137,10 +130,17 @@ Installation uses `GET /installation`; Agent editors use
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
 Deployment revalidates selections and Configuration, records the Driver and
-policy-only plugin map in an Agent revision, and queues it. Native app mapping,
+policy-only plugin map in an Agent revision, and queues it. Before preparing
+the revision, the worker verifies its pinned Driver ID and implementation against
+the enabled Driver for that Harness. It refuses a mismatch before stopping the
+predecessor. An operator can still stop or remove a historical revision. Native app mapping,
 release metadata, and configuration resolve later.
 
-Google Workspace binds an attached Agent credential to a pinned release. The OpenClaw Gateway loads the skill. At deployment, the Sandbox Driver binds the credential’s host, path and scopes. When the worker runs `gog`, its OpenShell supervisor asks the execution cluster’s shared guard to check the actual request against that binding and the release’s operation map. OpenShell injects the bearer after approval. Withdrawal detaches that source. Worker recovery preserves other attachments. [Deployment and inspection](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+For Google Workspace, the Gateway loads the pinned skill. The Sandbox binds an
+attached credential's host, path and scopes. When the worker runs `gog`, the
+OpenShell guard checks the request against that binding and the release's operation
+map before injecting a bearer. Withdrawal detaches only that source.
+[Deployment and inspection](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -369,6 +369,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 08:06: Trace Harness-scoped catalog selection and revision checks. (01a18bab-5cd7-7170-8773-c53b0bae2273 - 689413776)
 
 - 2026-10-29 22:19: Release deferred catalog loading when its tab is no longer current. (authoring-run/7a2bb516-4223-4156-b1a8-1d89f60a54d4)
 
