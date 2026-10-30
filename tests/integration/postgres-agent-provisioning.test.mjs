@@ -3177,6 +3177,9 @@ test(
   },
 );
 
+const missingCodexPluginCatalog =
+  "No Plugin Driver is enabled for the codex Harness. Remove the Agent's plugins or enable its catalog.";
+
 test(
   "a Plugin Driver switch leaves the provisioning status readable; retry still refuses the plan",
   { ...requiresPostgres, timeout: 60_000 },
@@ -3231,8 +3234,7 @@ test(
     // Rule out the Configuration outage as the cause of the retry refusal below.
     configurationOutage = false;
 
-    // The administrator restarts the API with a Plugin Driver that does not offer the stored
-    // plugin. Reading status reports the stored work: plugin admission belongs to writes.
+    // Restart with only the OpenClaw catalog. Status still returns the persisted failure.
     const switched = await createFixture(context, {
       computeDriver,
       configurationDriver,
@@ -3243,16 +3245,10 @@ test(
     assert.equal(status.status, 200, JSON.stringify(status.body));
     assert.deepEqual(status.data, failed);
 
-    // Retry would run the plan again, so it is still refused, naming the stored plugin
-    // without a request-body detail, and queues nothing.
+    // Retry must resolve the plan's Codex Harness catalog before validating any plugin ID.
     const retried = await switched.request("POST", `${admitted.data.provisioning.url}/retry`);
     assertApiError(retried, 400, "INVALID_REQUEST");
-    assert.match(
-      retried.body.error.message,
-      new RegExp(
-        `^A plugin selection names a plugin that the selected Plugin Driver \\(occ-plugin\\) does not offer: ${pluginId}\\.`,
-      ),
-    );
+    assert.equal(retried.body.error.message, missingCodexPluginCatalog);
     assert.equal(Object.hasOwn(retried.body.error, "details"), false);
     // A replay of the original request rechecks the stored plan, so it is refused the same way
     // and returns no progress.
@@ -3289,15 +3285,13 @@ test(
     });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    // A hosted-app plugin ID makes the refusal outgrow the 256-character status message.
-    const pluginId = "codex-plugin:app-69312da8e4dc81919370cb86fd172b6c@openai-curated-remote";
+    const pluginId = "codex-plugin:linear@openai-curated-remote";
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body: provisioningBody(namespace.id, secrets, { plugins: { [pluginId]: { enabled: true } } }),
     });
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
 
-    // The Installation now selects a Plugin Driver that does not offer the stored plugin. Every
-    // attempt would refuse the plan the same way, so the worker fails it on the first one.
+    // The plan was admitted for Codex. A worker with only OpenClaw must refuse it on its first attempt.
     const switched = await createFixture(context, {
       computeDriver,
       configurationDriver,
@@ -3313,17 +3307,8 @@ test(
     await switched.stopWorker();
     const failed = await switched.request("GET", admitted.data.provisioning.url);
     assert.equal(failed.status, 200, JSON.stringify(failed.body));
-    // The refusal names the stored plugin, as HTTP retry would, so Console can say why.
     assert.equal(failed.data.error.code, "PROVISIONING_REJECTED");
-    assert.ok(
-      failed.data.error.message.startsWith(
-        `A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: ${pluginId}.`,
-      ),
-      failed.data.error.message,
-    );
-    // Cut to the 256-character cap with an ellipsis that says text is missing.
-    assert.equal(Array.from(failed.data.error.message).length, 256);
-    assert.ok(failed.data.error.message.endsWith("…"), failed.data.error.message);
+    assert.equal(failed.data.error.message, missingCodexPluginCatalog);
     const work = await switched.pool.query(
       "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
       [admitted.data.provisioning.workId],
