@@ -529,6 +529,14 @@
       "tag": "0066_oauth_revocation_url",
       "breakpoints": true,
       "sha256": "6f7e7b10f30e5f635a3825022e879bed76eb659f79193aedf9ae14f71f830df1"
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1787000000067,
+      "tag": "0067_namespace_connection_templates",
+      "breakpoints": true,
+      "sha256": "ec8aaa5042fe0bb0a56c8122f697d1240d908df373be40c29144c40b7a2a074f"
     }
   ],
   "initialSchemaStates": {
@@ -556,7 +564,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "3bfff85d09330c08b3c2e6e6d075915a7bef04eee248d569a8e94d4f14f23393",
+    "completed": "6f65e0843810fceca58956a78461b5162608cd6edc478f0bb0b2f97594193727",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -594,7 +602,8 @@
     "preMcpConnectionTemplates": "84a84426bcbd5c0d7197a64db94eb94400a36460236a240574f6f12ef7180ec9",
     "preAgentConnectionProfiles": "60136dbd3b8ba1a0f999df3f31fbdabb583c55cdb9fb021d66c91e8479f5a5bb",
     "preCredentialSourceProfiles": "d2ca6c8efb0559a8808c5f09706a04968b75fe147a828ed05cf2c071dcd28e38",
-    "preOAuthRevocationUrl": "e97463e4bff306ae0e8f6c6d8cd902315dc88e4eca554c4e3f32122be3ac658a"
+    "preOAuthRevocationUrl": "e97463e4bff306ae0e8f6c6d8cd902315dc88e4eca554c4e3f32122be3ac658a",
+    "preNamespaceConnectionTemplates": "3bfff85d09330c08b3c2e6e6d075915a7bef04eee248d569a8e94d4f14f23393"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

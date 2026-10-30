@@ -791,8 +791,9 @@ export interface ConnectionTemplateInput {
   readonly envVar: string;
 }
 
-export type CreateConnectionTemplateInput = Omit<ConnectionTemplateInput, "clientId"> &
-  (
+export type CreateConnectionTemplateInput = Omit<ConnectionTemplateInput, "clientId"> & {
+  readonly namespaceId?: string;
+} & (
     | {
         readonly clientId: string;
         readonly clientSecret?: string;
@@ -1142,8 +1143,8 @@ function connectionTemplateSettings(
 }
 
 function connectionDisplayName(value: string): string {
-  if (!isNonEmptyString(value)) {
-    throw new ScopeViolationError("The connection template display name is required.");
+  if (!isName(value)) {
+    throw new ScopeViolationError("The connection template display name is invalid.");
   }
   return value;
 }
@@ -6058,6 +6059,9 @@ export class OpenClawController {
     );
     const usable: Readonly<ConnectionTemplate>[] = [];
     for (const template of templates) {
+      if (template.namespaceId !== undefined && template.namespaceId !== namespaceId) {
+        continue;
+      }
       const decision = await this.authorizationDecision(
         principalId,
         "use",
@@ -6110,6 +6114,18 @@ export class OpenClawController {
   ): Promise<Readonly<ConnectionTemplate>> {
     await this.authorize(principalId, "create", this.connectionTemplateRef(this.installation.id));
     const refresh = this.connectionRefreshDriver();
+    const { namespaceId } = input;
+    if (namespaceId !== undefined) {
+      await this.authorize(principalId, "read", {
+        kind: "namespace",
+        id: namespaceId,
+        namespaceId,
+      });
+      const namespace = await this.read((state) => this.exactNamespace(state, namespaceId));
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+    }
     const templateId = this.nextIdentifier("connection_template");
     const createdAt = this.timestamp();
     const displayName = connectionDisplayName(input.displayName);
@@ -6117,12 +6133,7 @@ export class OpenClawController {
     const metadata = await this.validateConnectionTemplate(settings, input.clientId);
     let clientId: string;
     let clientSecret: string | undefined;
-    if (input.registrationUrl !== undefined) {
-      if (!metadata || metadata.registrationUrl !== input.registrationUrl) {
-        throw new ResourceStateConflictError(
-          "The MCP registration endpoint changed. Discover settings again.",
-        );
-      }
+    if (metadata?.registrationUrl && metadata.registrationUrl === input.registrationUrl) {
       if (!this.registerMcpOAuthClient || !redirectUri) {
         throw new NotImplementedError(
           "connection_templates",
@@ -6134,8 +6145,12 @@ export class OpenClawController {
         redirectUri,
         settings.scopes,
       ));
-    } else {
+    } else if (input.registrationUrl === undefined) {
       ({ clientId, clientSecret } = input);
+    } else {
+      throw new ResourceStateConflictError(
+        "The MCP registration endpoint changed. Discover settings again.",
+      );
     }
     const values = { ...settings, clientId };
     const registration = await this.connectionClientRegistration(
@@ -6143,6 +6158,7 @@ export class OpenClawController {
       values.issuer,
       values.clientId,
       clientSecret,
+      namespaceId,
     );
     try {
       return await this.mutate(async (state) => {
@@ -6151,11 +6167,19 @@ export class OpenClawController {
           "create",
           this.connectionTemplateRef(this.installation.id),
         );
+        // Order the save against logical Namespace deletion after the provider call.
+        if (
+          namespaceId !== undefined &&
+          (await this.lockNamespace(state, namespaceId)).status !== "ready"
+        ) {
+          throw new NamespaceNotReadyError();
+        }
         if (registration.created) {
           await state.connectionTemplates.createClientRegistration(registration.record);
         }
         return state.connectionTemplates.createConnectionTemplate({
           id: templateId,
+          ...(namespaceId === undefined ? {} : { namespaceId }),
           displayName,
           createdAt,
           current: {
@@ -6195,6 +6219,7 @@ export class OpenClawController {
           values.issuer,
           values.clientId,
           input.clientSecret,
+          current.namespaceId,
         )
       : undefined;
     if (!changed && input.clientSecret !== undefined) {
@@ -6396,12 +6421,13 @@ export class OpenClawController {
     issuer: string,
     clientId: string,
     clientSecret: string | undefined,
+    namespaceId: string | undefined,
   ): Promise<{
     readonly record: Readonly<ConnectionClientRegistration>;
     readonly created: boolean;
   }> {
     const existing = await this.read((state) =>
-      state.connectionTemplates.findClientRegistration(issuer, clientId),
+      state.connectionTemplates.findClientRegistration(issuer, clientId, namespaceId),
     );
     if (existing !== undefined) {
       if (clientSecret !== undefined) {
@@ -6416,6 +6442,7 @@ export class OpenClawController {
     }
     const record = Object.freeze({
       id: `ccr_${crypto.randomUUID()}`,
+      ...(namespaceId === undefined ? {} : { namespaceId }),
       issuer,
       clientId,
       credentialRefreshDriverId: refresh.id,
@@ -6497,6 +6524,15 @@ export class OpenClawController {
         kind: "installation",
         id: this.installation.id,
       });
+      if (input.resourceKind === "connection_template" && input.subjectKind === "namespace") {
+        const template = await state.connectionTemplates.findConnectionTemplate(input.resourceId);
+        if (template?.namespaceId !== undefined && template.namespaceId !== input.subjectId) {
+          throw new IAMPolicyValidationError(
+            "/subjectId",
+            "A Namespace grant must match the connection template's Namespace.",
+          );
+        }
+      }
       return this.iamPolicyOperation(() =>
         driver.createInstallationAccessBinding!(
           { policy: state.iamPolicy },
@@ -6564,8 +6600,12 @@ export class OpenClawController {
     const agentRef = { kind: "agent" as const, id: agentId, namespaceId };
     await this.authorize(principalId, "read", agentRef);
     await this.authorize(principalId, "update", agentRef);
-    await this.authorizeConnectionTemplateUse(principalId, input.connectionTemplateId, namespaceId);
-    const { template, agent } = await this.read(async (state) => {
+    const template = await this.authorizeConnectionTemplateUse(
+      principalId,
+      input.connectionTemplateId,
+      namespaceId,
+    );
+    const agent = await this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
@@ -6577,13 +6617,7 @@ export class OpenClawController {
       if (agent.status !== "active") {
         throw new AgentDeletingError();
       }
-      const template = await state.connectionTemplates.findConnectionTemplate(
-        input.connectionTemplateId,
-      );
-      if (template === undefined) {
-        throw new ScopeViolationError("The connection template does not exist.");
-      }
-      return { template, agent };
+      return agent;
     });
     await this.assertPersonalAgentOwner(principalId, agent);
     const metadata = await this.read((state) =>
@@ -6962,7 +6996,7 @@ export class OpenClawController {
     principalId: string,
     templateId: string,
     namespaceId: string,
-  ): Promise<void> {
+  ): Promise<Readonly<ConnectionTemplate>> {
     const decision = await this.authorizationDecision(
       principalId,
       "use",
@@ -6976,6 +7010,18 @@ export class OpenClawController {
         { action: "use", resource: this.connectionTemplateRef(templateId) },
       );
     }
+    const template = await this.read((state) =>
+      state.connectionTemplates.findConnectionTemplate(templateId),
+    );
+    if (template === undefined) {
+      throw new ScopeViolationError("The connection template does not exist.");
+    }
+    if (template.namespaceId !== undefined && template.namespaceId !== namespaceId) {
+      throw new AuthorizationDeniedError(
+        "The caller cannot use this connection template for this Namespace.",
+      );
+    }
+    return template;
   }
 
   /** The caller already consumed this session as its starting actor. */
@@ -9470,6 +9516,10 @@ export class OpenClawController {
           "credential sources",
           await state.credentialSources.listCredentialSources(namespace.id),
         );
+      }
+      const templates = await state.connectionTemplates.listConnectionTemplates(namespace.id);
+      if (templates.length > 0) {
+        remaining("connection templates", templates);
       }
       if (await state.namespaces.hasServiceAccounts(namespace.id)) {
         remaining(

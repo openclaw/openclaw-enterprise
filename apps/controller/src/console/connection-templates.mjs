@@ -162,6 +162,7 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
   let useRoleId = null;
 
   const namespaceName = (id) => namespaces.find((item) => item.id === id)?.name ?? id;
+  const scopeLabel = (name) => (name ? `Namespace · ${name}` : "Installation-wide");
 
   function handle(cause, target = error) {
     if (!isCurrent()) {
@@ -217,7 +218,9 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
     const namespaceChoice = element(
       "select",
       { id: `grant-namespace-${template.id}`, "aria-label": "Namespace" },
-      ...namespaces.map((item) => element("option", { value: item.id }, item.name)),
+      ...(template.namespaceId
+        ? [element("option", { value: template.namespaceId }, namespaceName(template.namespaceId))]
+        : namespaces.map((item) => element("option", { value: item.id }, item.name))),
     );
     const identity = element("input", {
       id: `grant-identity-${template.id}`,
@@ -281,6 +284,8 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
       element(
         "dl",
         { className: "settings connection-template-facts" },
+        element("dt", {}, "Template scope"),
+        element("dd", {}, scopeLabel(namespaceName(template.namespaceId))),
         element("dt", {}, "Client"),
         element("dd", {}, element("code", {}, version.clientId), ` at ${version.issuer}`),
         element("dt", {}, "Scopes"),
@@ -465,6 +470,17 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
       invoker,
     );
     const before = template ? formValues(template) : null;
+    const scopeId = "connection-template-scope";
+    const scope = template
+      ? element("output", { id: scopeId }, scopeLabel(namespaceName(template.namespaceId)))
+      : element(
+          "select",
+          { id: scopeId },
+          element("option", { value: "" }, "Installation-wide"),
+          ...namespaces
+            .filter((item) => item.status === "ready")
+            .map((item) => element("option", { value: item.id }, scopeLabel(item.name))),
+        );
     const initial = { ...before };
     if (discovered) {
       const endpoint = new URL(discovered.serverUrl);
@@ -567,6 +583,9 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
           },
           before,
         );
+        if (!template && scope.value) {
+          body.namespaceId = scope.value;
+        }
         if (
           mcp &&
           body.scopes &&
@@ -643,6 +662,13 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
       element(
         "div",
         { className: "connection-template-form" },
+        field({
+          label: "Template scope",
+          control: scope,
+          help: template
+            ? undefined
+            : "Choose where Agents can use this template. Access grants still apply.",
+        }),
         registration
           ? field({
               label: "OAuth client",

@@ -1324,6 +1324,7 @@ List Installation connection templates
 | `data[].current.version` | `integer` | Yes | minimum: 1 |
 | `data[].displayName` | `string` | Yes | — |
 | `data[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].redirectUri` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -1354,7 +1355,7 @@ Create an Installation connection template
 | `authorizationUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
 | `clientId` | `string` | No | min length: 1; max length: 256 |
 | `clientSecret` | `string` | No | min length: 1; max length: 4096 |
-| `displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `displayName` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `endpoint` | `object` | Yes | — |
 | `endpoint.host` | `string` | Yes | min length: 1; max length: 253 |
 | `endpoint.path` | `string` | No | min length: 1; max length: 512; pattern: `^/` |
@@ -1364,6 +1365,7 @@ Create an Installation connection template
 | `mcp` | `object` | No | — |
 | `mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
 | `mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `registrationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `scopes` | `array<string>` | Yes | min items: 1; max items: 32 |
@@ -1412,6 +1414,7 @@ Create an Installation connection template
 | `data.current.version` | `integer` | Yes | minimum: 1 |
 | `data.displayName` | `string` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.redirectUri` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -1565,6 +1568,7 @@ Get one connection template
 | `data.current.version` | `integer` | Yes | minimum: 1 |
 | `data.displayName` | `string` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.redirectUri` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -1601,7 +1605,7 @@ Rename a connection template, or create a version with new approved values
 | `authorizationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `clientId` | `string` | No | min length: 1; max length: 256 |
 | `clientSecret` | `string` | No | min length: 1; max length: 4096 |
-| `displayName` | `string` | No | min length: 1; max length: 200 |
+| `displayName` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `endpoint` | `object` | No | — |
 | `endpoint.host` | `string` | Yes | min length: 1; max length: 253 |
 | `endpoint.path` | `string` | No | min length: 1; max length: 512; pattern: `^/` |
@@ -1657,6 +1661,7 @@ Rename a connection template, or create a version with new approved values
 | `data.current.version` | `integer` | Yes | minimum: 1 |
 | `data.displayName` | `string` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.redirectUri` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -1733,6 +1738,7 @@ Replace the OAuth client secret used by new connections
 | `data.current.version` | `integer` | Yes | minimum: 1 |
 | `data.displayName` | `string` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.redirectUri` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -1951,6 +1957,7 @@ List connection templates the caller may connect in this Namespace
 | `data[].current.version` | `integer` | Yes | minimum: 1 |
 | `data[].displayName` | `string` | Yes | — |
 | `data[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].redirectUri` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |

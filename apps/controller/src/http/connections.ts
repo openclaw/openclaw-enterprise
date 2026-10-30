@@ -23,6 +23,7 @@ function templateResponse(
   const { templateId: _templateId, ...current } = template.current;
   return {
     id: template.id,
+    ...(template.namespaceId === undefined ? {} : { namespaceId: template.namespaceId }),
     displayName: template.displayName,
     current,
     ...(redirectUri === undefined ? {} : { redirectUri }),

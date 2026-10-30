@@ -44,6 +44,15 @@ function supportsRegistrationGrants(supported?: readonly string[]): boolean {
   );
 }
 
+// Match the template's persisted OAuth URL formats before offering issuer-side registration.
+function isTemplateOAuthUrl(value: string, allowQuery = false): boolean {
+  return (
+    value.length <= 2048 &&
+    /^https:\/\/[^/?#@\s]+(?:\/[^#\s]*)?$/u.test(value) &&
+    (allowQuery || !value.includes("?"))
+  );
+}
+
 const mcpUnavailable = () =>
   new DependencyUnavailableError("OCC could not reach the MCP OAuth endpoint.");
 
@@ -200,12 +209,17 @@ export async function discoverMcpAuthorization(
       throw new BrowserAuthorizationError("mcp_requires_one_issuer", "fix_configuration");
     }
     const issuer = issuers[0];
+    if (!isTemplateOAuthUrl(issuer)) {
+      throw new BrowserAuthorizationError("invalid_mcp_metadata", "fix_configuration");
+    }
     await pinEndpoint(issuer);
     const metadata = await discoverAuthorizationServerMetadata(issuer, { fetchFn: readMetadata });
     if (
       !metadata?.authorization_endpoint ||
       !metadata.token_endpoint ||
       metadata.issuer !== issuer ||
+      !isTemplateOAuthUrl(metadata.authorization_endpoint, true) ||
+      !isTemplateOAuthUrl(metadata.token_endpoint) ||
       !metadata.response_types_supported.includes("code") ||
       (metadata.code_challenge_methods_supported &&
         !metadata.code_challenge_methods_supported.includes("S256"))

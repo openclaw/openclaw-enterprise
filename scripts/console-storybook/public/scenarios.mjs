@@ -635,7 +635,7 @@ export const scenarios = {
     path: "/console/settings",
     actions: [click("New connection template"), click("Fill in the Gmail example")],
     description:
-      "The template form filled from the Gmail example. The client secret is write-only and leaves the page once saved.",
+      "The Gmail example defaults to Installation-wide. Choose a Namespace to limit which Agents can connect.",
   },
   settingsMcpConnectionTemplate: {
     group: "Pages/Settings",
@@ -655,9 +655,10 @@ export const scenarios = {
       click("New MCP connection template"),
       { selector: "#mcp-server-url", value: "https://tools.example.test/mcp" },
       click("Discover"),
+      { selector: "#connection-template-scope", value: "ns_00000000-0000-4000-8000-000000000001" },
     ],
     description:
-      "Review simulated MCP metadata and choose approved scopes. Supply a preregistered client or ask the issuer to register one on save.",
+      "Review simulated MCP metadata for an Engineering template. Supply a preregistered client or ask the issuer to register one on save.",
   },
   runtimeImages: {
     group: "Pages/Navigation",

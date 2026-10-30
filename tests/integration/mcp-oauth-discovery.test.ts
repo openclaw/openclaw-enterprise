@@ -215,6 +215,40 @@ test("MCP setup offers only compatible registration and performs DCR only on exp
   assert.deepEqual(credentials, { clientId: "new-client", clientSecret: "test-secret" });
 });
 
+test("discovery only offers DCR for OAuth URLs the template version can persist", async () => {
+  const dcr = {
+    registration_endpoint: registrationUrl,
+    token_endpoint_auth_methods_supported: ["client_secret_post"],
+  };
+  const authorizationWithQuery = authorizationUrl + "?tenant=work";
+  const supported = discoveryFixture(undefined, [issuer], {
+    ...dcr,
+    authorization_endpoint: authorizationWithQuery,
+  });
+  assert.equal(
+    (await discoverMcpAuthorization(server, undefined, supported)).authorizationUrl,
+    authorizationWithQuery,
+  );
+
+  for (const [issuerUrl, endpoints] of [
+    [issuer + "?", {}],
+    [issuer, { token_endpoint: tokenUrl + "?tenant=work" }],
+    [issuer, { token_endpoint: tokenUrl + "?" }],
+    [issuer, { authorization_endpoint: "https://login.example.test?tenant=work" }],
+    [issuer, { authorization_endpoint: authorizationUrl + "/".repeat(2048) }],
+  ] as const) {
+    const fixture = discoveryFixture(undefined, [issuerUrl], { ...dcr, ...endpoints });
+    await assert.rejects(
+      discoverMcpAuthorization(server, undefined, fixture),
+      (e) => e instanceof BrowserAuthorizationError && e.code === "invalid_mcp_metadata",
+    );
+    assert.equal(fixture.requests.includes(registrationUrl), false);
+    if (issuerUrl !== issuer) {
+      assert.deepEqual(fixture.requests, [server, metadataUrl]);
+    }
+  }
+});
+
 test("MCP registration rechecks destination DNS and refuses redirects before forwarding the request", async () => {
   const fixture = discoveryFixture(undefined, [issuer], {
     registration_endpoint: registrationUrl,

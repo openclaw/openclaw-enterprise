@@ -1644,13 +1644,19 @@ export const connectionClientRegistrations = occSchema.table(
   "connection_client_registrations",
   {
     id: text("id").primaryKey(),
+    namespaceId: text("namespace_id").references(() => namespaces.id, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
     issuer: collatedText("issuer").notNull(),
     clientId: collatedText("client_id").notNull(),
     credentialRefreshDriverId: collatedText("credential_refresh_driver_id").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [
-    unique("connection_client_registrations_pair_unique").on(table.issuer, table.clientId),
+    unique("connection_client_registrations_pair_unique")
+      .on(table.namespaceId, table.issuer, table.clientId)
+      .nullsNotDistinct(),
     unique("connection_client_registrations_identity").on(table.id, table.issuer, table.clientId),
   ],
 );
@@ -1659,6 +1665,10 @@ export const connectionTemplates = occSchema.table(
   "connection_templates",
   {
     id: text("id").primaryKey(),
+    namespaceId: text("namespace_id").references(() => namespaces.id, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
     displayName: collatedText("display_name").notNull(),
     currentVersion: integer("current_version").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),

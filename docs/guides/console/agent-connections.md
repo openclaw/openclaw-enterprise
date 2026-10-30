@@ -19,6 +19,10 @@ its OAuth settings and offers client registration when the issuer supports it.
 Follow the [MCP setup steps](../../reference/connection-templates.md#discover-an-mcp-connection-template).
 For a provider configured manually, follow the steps below.
 
+In either form, **Template scope** defaults to **Installation-wide**. Choose a
+ready Namespace to limit the template to its Agents. Scope is permanent. Each
+account connected later belongs to the Agent's Namespace.
+
 1. Open **Settings**. The **Connection templates** card lists each template, its
    version, its OAuth client, and its **Redirect URI**.
 2. Choose **New connection template**. For Google, choose

@@ -74,6 +74,7 @@ function versionFromRow(row: Row): ConnectionTemplateVersion {
 function templateFromRow(row: Row): Readonly<ConnectionTemplate> {
   return immutableCopy({
     id: text(row, "id"),
+    ...(row.namespace_id === null ? {} : { namespaceId: text(row, "namespace_id") }),
     displayName: text(row, "display_name"),
     current: versionFromRow(row),
     createdAt: timestamp(row, "created_at"),
@@ -83,6 +84,7 @@ function templateFromRow(row: Row): Readonly<ConnectionTemplate> {
 function registrationFromRow(row: Row): Readonly<ConnectionClientRegistration> {
   return immutableCopy({
     id: text(row, "id"),
+    ...(row.namespace_id === null ? {} : { namespaceId: text(row, "namespace_id") }),
     issuer: text(row, "issuer"),
     clientId: text(row, "client_id"),
     credentialRefreshDriverId: text(row, "credential_refresh_driver_id"),
@@ -130,7 +132,7 @@ export function postgresConnectionTemplates(
   const selectTemplates = async (where: string, values: unknown[], lock = "") =>
     (
       await client.query(
-        `SELECT t.id, t.display_name, t.created_at, ${versionColumns}
+        `SELECT t.id, t.namespace_id, t.display_name, t.created_at, ${versionColumns}
          FROM occ.connection_templates t
          JOIN occ.connection_template_versions v
            ON v.template_id = t.id AND v.version = t.current_version
@@ -142,7 +144,12 @@ export function postgresConnectionTemplates(
   return {
     findConnectionTemplate: async (templateId) =>
       (await selectTemplates("WHERE t.id = $1", [templateId]))[0],
-    listConnectionTemplates: async () => Object.freeze(await selectTemplates("", [])),
+    listConnectionTemplates: async (namespaceId) =>
+      Object.freeze(
+        namespaceId === undefined
+          ? await selectTemplates("", [])
+          : await selectTemplates("WHERE t.namespace_id = $1", [namespaceId]),
+      ),
     findConnectionTemplateVersion: async (templateId, version) => {
       const [row] = (
         await client.query(
@@ -153,11 +160,12 @@ export function postgresConnectionTemplates(
       ).rows;
       return row === undefined ? undefined : immutableCopy(versionFromRow(row as Row));
     },
-    findClientRegistration: async (issuer, clientId) => {
+    findClientRegistration: async (issuer, clientId, namespaceId) => {
       const [row] = (
         await client.query(
-          `SELECT * FROM occ.connection_client_registrations WHERE issuer = $1 AND client_id = $2`,
-          [issuer, clientId],
+          `SELECT * FROM occ.connection_client_registrations WHERE issuer = $1 AND client_id = $2
+           AND namespace_id IS NOT DISTINCT FROM $3`,
+          [issuer, clientId, namespaceId ?? null],
         )
       ).rows;
       return row === undefined ? undefined : registrationFromRow(row as Row);
@@ -176,14 +184,15 @@ export function postgresConnectionTemplates(
       await requireInitialized();
       await client.query(
         `INSERT INTO occ.connection_client_registrations
-         (id, issuer, client_id, credential_refresh_driver_id, created_at)
-         VALUES ($1, $2, $3, $4, $5)`,
+         (id, issuer, client_id, credential_refresh_driver_id, created_at, namespace_id)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         [
           registration.id,
           registration.issuer,
           registration.clientId,
           registration.credentialRefreshDriverId,
           registration.createdAt,
+          registration.namespaceId ?? null,
         ],
       );
       return immutableCopy(registration);
@@ -203,9 +212,15 @@ export function postgresConnectionTemplates(
       await requireInitialized();
       // The current-version foreign key is deferred, so the template row goes in first.
       await client.query(
-        `INSERT INTO occ.connection_templates (id, display_name, current_version, created_at)
-         VALUES ($1, $2, $3, $4)`,
-        [template.id, template.displayName, template.current.version, template.createdAt],
+        `INSERT INTO occ.connection_templates (id, display_name, current_version, created_at, namespace_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          template.id,
+          template.displayName,
+          template.current.version,
+          template.createdAt,
+          template.namespaceId ?? null,
+        ],
       );
       await insertVersion(client, template.current);
       return immutableCopy(template);

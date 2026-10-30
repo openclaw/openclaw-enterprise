@@ -915,10 +915,18 @@ export function installFixture(scenario, evidence) {
         return response(connectionTemplates.map(templateResponse));
       }
       if (method === "POST") {
-        const { displayName, clientSecret: _secret, registrationUrl, endpoint, ...rest } = body;
+        const {
+          displayName,
+          namespaceId,
+          clientSecret: _secret,
+          registrationUrl,
+          endpoint,
+          ...rest
+        } = body;
         const created = {
           id: nextId("ctp"),
           displayName,
+          ...(namespaceId ? { namespaceId } : {}),
           current: {
             version: 1,
             clientRegistrationId: "ccr_storybook",
@@ -1195,7 +1203,11 @@ export function installFixture(scenario, evidence) {
       if (resource === "connection-templates" && method === "GET") {
         return scenario.connectionTemplatesDenied
           ? error(403)
-          : response(connectionTemplates.map((template) => ({ ...template })));
+          : response(
+              connectionTemplates.filter(
+                (template) => !template.namespaceId || template.namespaceId === ns,
+              ),
+            );
       }
       if (resource === "credential-sources") {
         if (method === "GET") {

@@ -347,7 +347,8 @@ export interface PresetRepository extends PresetReadRepository {
 
 export interface ConnectionTemplateReadRepository {
   findConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
-  listConnectionTemplates(): Promise<readonly Readonly<ConnectionTemplate>[]>;
+  /** Without a filter, list templates in all scopes. */
+  listConnectionTemplates(namespaceId?: string): Promise<readonly Readonly<ConnectionTemplate>[]>;
   findConnectionTemplateVersion(
     templateId: string,
     version: number,
@@ -355,6 +356,7 @@ export interface ConnectionTemplateReadRepository {
   findClientRegistration(
     issuer: string,
     clientId: string,
+    namespaceId?: string,
   ): Promise<Readonly<ConnectionClientRegistration> | undefined>;
   findClientRegistrationById(
     registrationId: string,
@@ -1577,9 +1579,10 @@ function repositories(
   };
   const connectionTemplates: ConnectionTemplateRepository = {
     findConnectionTemplate,
-    listConnectionTemplates: async () =>
+    listConnectionTemplates: async (namespaceId) =>
       Object.freeze(
         Array.from(snapshot.connectionTemplates.values())
+          .filter((template) => namespaceId === undefined || template.namespaceId === namespaceId)
           .sort((a, b) => a.id.localeCompare(b.id))
           .map((template) => immutableCopy(template)),
       ),
@@ -1587,9 +1590,12 @@ function repositories(
       const found = snapshot.connectionTemplateVersions.get(versionKey(templateId, version));
       return found === undefined ? undefined : immutableCopy(found);
     },
-    findClientRegistration: async (issuer, clientId) => {
+    findClientRegistration: async (issuer, clientId, namespaceId) => {
       const found = Array.from(snapshot.clientRegistrations.values()).find(
-        (registration) => registration.issuer === issuer && registration.clientId === clientId,
+        (registration) =>
+          registration.namespaceId === namespaceId &&
+          registration.issuer === issuer &&
+          registration.clientId === clientId,
       );
       return found === undefined ? undefined : immutableCopy(found);
     },
@@ -1600,12 +1606,14 @@ function repositories(
     lockConnectionTemplate: findConnectionTemplate,
     createClientRegistration: async (registration) => {
       assertInitialized(snapshot);
-      // Mirrors the database's unique pair: one registration per issuer and client ID.
+      // The issuer and client ID identify a registration within the template's scope.
       if (
         snapshot.clientRegistrations.has(registration.id) ||
         Array.from(snapshot.clientRegistrations.values()).some(
           (existing) =>
-            existing.issuer === registration.issuer && existing.clientId === registration.clientId,
+            existing.namespaceId === registration.namespaceId &&
+            existing.issuer === registration.issuer &&
+            existing.clientId === registration.clientId,
         )
       ) {
         throw new ResourceConflictError("The OAuth client is already registered.");

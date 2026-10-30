@@ -56,7 +56,7 @@ const ConnectionEndpointSchema = Type.Object(
 
 const ConnectionTemplateFields = {
   mcp: Type.Optional(McpResource),
-  displayName: Type.String({ minLength: 1, maxLength: 200 }),
+  displayName: Name,
   issuer: HttpsUrl,
   authorizationUrl: HttpsUrl,
   tokenUrl: HttpsUrl,
@@ -83,6 +83,7 @@ export const ConnectionTemplateParams = Type.Object(
 export const CreateConnectionTemplateBody = Type.Object(
   {
     ...ConnectionTemplateFields,
+    namespaceId: Type.Optional(NamespaceId),
     clientId: Type.Optional(ClientId),
     clientSecret: Type.Optional(ClientSecret),
     registrationUrl: Type.Optional(HttpsUrl),
@@ -145,6 +146,7 @@ const ConnectionTemplateVersionSchema = Type.Object(
 export const ConnectionTemplateSchema = Type.Object(
   {
     id: ConnectionTemplateId,
+    namespaceId: Type.Optional(NamespaceId),
     displayName: Type.String(),
     current: ConnectionTemplateVersionSchema,
     /** The exact URI administrators register with the provider. */

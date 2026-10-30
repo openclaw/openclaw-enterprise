@@ -81,7 +81,9 @@ graph TD
 The dispatcher refuses a service key with `403` and answers `503` when no
 callback URI is configured. The controller checks exact Agent `read` and
 `update`, then `use` on the template through `authorizationDecision` with the
-Agent's Namespace as `namespaceContext`. These checks and the personal-Agent
+Agent's Namespace as `namespaceContext`. At both consent start and callback,
+OCC checks that the template is Installation-wide or belongs to that Namespace.
+These checks and the personal-Agent
 rules also authorize the source and Secret the connection creates, so the person
 needs no Namespace `credential_source` or `secret` grant (`CONNECTION_AUTHORIZED`).
 It requires a `ready` Namespace and active Agent. `assertPersonalAgentOwner` refuses

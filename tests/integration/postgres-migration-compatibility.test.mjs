@@ -1196,14 +1196,16 @@ async function assertCompletedHistory(db, previous = []) {
     WHERE n.nspname='occ' AND p.prosecdef ORDER BY identity`)
     ).rows,
     [
+      ["occ.check_connection_registration_scope()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
+      ["occ.remove_connection_template_access()", false, "search_path=pg_catalog, occ"],
       ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
       ["occ.retry_failed_namespace_deletion(text,text,text)", true],
       // The Agent trigger keeps the credential-source join table exact; occ_app cannot write it.
       ["occ.sync_agent_credential_sources()", false],
-      ["occ.validate_access_binding_scope()", false],
+      ["occ.validate_access_binding_scope()", false, "search_path=pg_catalog, occ"],
       ["occ.validate_group_membership()", false],
       ["occ.validate_restriction_scope()", false],
     ].map(([identity, app_execute, searchPath = "search_path=pg_catalog, occ, pg_temp"]) => ({
@@ -1591,14 +1593,13 @@ async function canonicalData(db) {
 }
 
 async function seedLegacyConnectionTemplate(db) {
-  const store = postgresConnectionTemplates(db.app, async () => {});
-  const registration = await store.createClientRegistration({
-    id: `ccr_${randomUUID()}`,
-    issuer: "https://issuer.example",
-    clientId: "fixture",
-    credentialRefreshDriverId: "fixture-refresh",
-    createdAt: new Date().toISOString(),
-  });
+  const registrationId = `ccr_${randomUUID()}`;
+  await db.app.query(
+    `INSERT INTO occ.connection_client_registrations
+     (id, issuer, client_id, credential_refresh_driver_id, created_at)
+     VALUES ($1, 'https://issuer.example', 'fixture', 'fixture-refresh', now())`,
+    [registrationId],
+  );
   const templateId = `ctp_${randomUUID()}`;
   // This template predates MCP metadata. Its consented version may already have connections.
   await db.app.query(
@@ -1611,7 +1612,7 @@ async function seedLegacyConnectionTemplate(db) {
      endpoint_host, endpoint_port, endpoint_path, env_var, created_at)
    SELECT id, 1, $2, $3, $4, 'https://issuer.example/authorize', 'https://issuer.example/token',
      ARRAY['tools'], '{}', 'tools.example', 443, '/mcp', 'MCP_TOKEN', now() FROM inserted`,
-    [templateId, registration.id, registration.issuer, registration.clientId],
+    [templateId, registrationId, "https://issuer.example", "fixture"],
   );
   return templateId;
 }
@@ -1699,6 +1700,127 @@ test(
         await store.findConnectionTemplateVersion(templateId, version.version),
         version,
       );
+    }
+  },
+);
+
+test(
+  "Namespace templates isolate client registrations, credential use, and explicit grants",
+  requiresHistoryPostgres,
+  async (t) => {
+    const db = await historyDatabase(t, await migrationHistoryFixture(), "namespace_template", {
+      prefix: 66,
+    });
+    const namespaceId = await seedCanonicalData(db);
+    const legacyId = await seedLegacyConnectionTemplate(db);
+    assert.deepEqual(await runHistoryMigration(db), {
+      ok: true,
+      history: "preNamespaceConnectionTemplates",
+    });
+    const store = postgresConnectionTemplates(db.app, async () => {});
+    const legacy = await store.findConnectionTemplate(legacyId);
+    const { issuer, clientId } = legacy.current;
+    const shared = await store.findClientRegistration(issuer, clientId);
+    assert.equal(Object.hasOwn(legacy, "namespaceId"), false);
+    assert.equal(Object.hasOwn(shared, "namespaceId"), false);
+
+    const otherNamespaceId = `ns_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'other','ready',now())",
+      [otherNamespaceId],
+    );
+    const templates = [];
+    for (const owner of [namespaceId, otherNamespaceId]) {
+      const registration = await store.createClientRegistration({
+        ...shared,
+        id: `ccr_${randomUUID()}`,
+        namespaceId: owner,
+      });
+      const id = `ctp_${randomUUID()}`;
+      await db.app.query("BEGIN");
+      const template = await store.createConnectionTemplate({
+        ...legacy,
+        id,
+        namespaceId: owner,
+        current: { ...legacy.current, templateId: id, clientRegistrationId: registration.id },
+      });
+      await db.app.query("COMMIT");
+      templates.push(template);
+      assert.deepEqual(await store.listConnectionTemplates(owner), [template]);
+      assert.deepEqual(await store.findClientRegistration(issuer, clientId, owner), registration);
+      await assert.rejects(
+        store.createClientRegistration({ ...registration, id: `ccr_${randomUUID()}` }),
+        { code: "23505" },
+      );
+    }
+    assert.equal((await store.listConnectionTemplates()).length, 3);
+    assert.deepEqual(await store.findClientRegistration(issuer, clientId), shared);
+
+    const [mine, other] = templates;
+    await assert.rejects(
+      db.migrator.query("UPDATE occ.connection_templates SET namespace_id=NULL WHERE id=$1", [
+        mine.id,
+      ]),
+      { code: "55000" },
+    );
+    await assert.rejects(
+      store.updateConnectionTemplate(mine.id, {
+        version: {
+          ...mine.current,
+          version: 2,
+          clientRegistrationId: other.current.clientRegistrationId,
+        },
+      }),
+      { code: "23514" },
+    );
+    assert.equal((await store.findConnectionTemplate(mine.id)).current.version, 1);
+
+    const roleId = `role_${randomUUID()}`;
+    await db.app.query(
+      `INSERT INTO occ.iam_roles(id,name,permissions) VALUES($1,'Template users',
+      '[{"action":"use","resourceKind":"connection_template"}]')`,
+      [roleId],
+    );
+    const grantUse = (templateId) =>
+      db.app.query(
+        `INSERT INTO occ.iam_access_bindings
+      (id,namespace_subject_id,role_id,resource_kind,resource_id) VALUES($1,$2,$3,'connection_template',$4)`,
+        [`binding_${randomUUID()}`, namespaceId, roleId, templateId],
+      );
+    await grantUse(legacyId);
+    await grantUse(mine.id);
+    await assert.rejects(grantUse(other.id), { code: "23514" });
+
+    const ownerId = `principal-${randomUUID()}`;
+    const sourceId = `cs_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES($1,'principal','fixture',$1)",
+      [ownerId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,driver_id,state,created_at)
+      VALUES($1,$2,'test','oauth2-refresh-token','{}','fixture','ready',now())`,
+      [sourceId, namespaceId],
+    );
+    const saveSession = (templateId) =>
+      db.app.query(
+        `INSERT INTO occ.connection_sessions
+      (state_hash,namespace_id,agent_id,credential_source_id,secret_id,actor_id,connection_template_id,
+       connection_template_version,created_at,expires_at)
+      SELECT repeat('a',64),namespace_id,id,$2,'session-secret',$3,$4,1,now(),now()+interval '1 hour'
+      FROM occ.agents WHERE namespace_id=$1`,
+        [namespaceId, sourceId, ownerId, templateId],
+      );
+    const saveConnection = (templateId) =>
+      db.app.query(
+        `INSERT INTO occ.agent_connections
+      (namespace_id,credential_source_id,agent_id,owner_principal_id,connection_template_id,connection_template_version,created_at)
+      SELECT namespace_id,$2,id,$3,$4,1,now() FROM occ.agents WHERE namespace_id=$1`,
+        [namespaceId, sourceId, ownerId, templateId],
+      );
+    for (const save of [saveSession, saveConnection]) {
+      await assert.rejects(save(other.id), { code: "23514" });
+      assert.equal((await save(mine.id)).rowCount, 1);
     }
   },
 );

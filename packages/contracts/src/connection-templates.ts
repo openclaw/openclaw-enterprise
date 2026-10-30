@@ -42,9 +42,11 @@ export interface ConnectionTemplateVersion extends ConnectionTemplateValues {
   readonly createdAt: string;
 }
 
-/** An Installation resource; credential sources created from it live in Agent Namespaces. */
+/** Administrators may limit where a template can be used. Credentials live in the Agent's Namespace. */
 export interface ConnectionTemplate {
   readonly id: string;
+  /** Absent for an Installation-wide template. Set at creation. */
+  readonly namespaceId?: string;
   readonly displayName: string;
   readonly current: Readonly<ConnectionTemplateVersion>;
   readonly createdAt: string;
@@ -56,6 +58,7 @@ export interface ConnectionTemplate {
  */
 export interface ConnectionClientRegistration {
   readonly id: string;
+  readonly namespaceId?: string;
   readonly issuer: string;
   readonly clientId: string;
   readonly credentialRefreshDriverId: string;

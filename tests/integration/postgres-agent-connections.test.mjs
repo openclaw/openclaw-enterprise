@@ -234,6 +234,116 @@ function selectConnectionDrivers(fixture) {
   return openShell;
 }
 
+test(
+  "Namespace-scoped templates isolate their OAuth clients and where an Agent may use them",
+  requiresPostgres,
+  async (t) => {
+    const fixture = await createPostgresAgentApp(t, {
+      label: "template-scope",
+      authSecret: "openclaw-template-scope-test-auth-secret",
+      appOptions: { publicOrigin },
+    });
+    const { inject } = fixture;
+    const { namespace: consumer, agent } = await fixture.deployAgent("Template consumer");
+    const created = await inject("POST", "/namespaces", { name: `Template owner ${randomUUID()}` });
+    assert.equal(created.statusCode, 201, created.body);
+    const owner = created.json().data;
+    await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, owner.id, "ready");
+    const openShell = selectConnectionDrivers(fixture);
+    const clientId = randomUUID();
+    async function createTemplate(namespaceId, secret) {
+      const response = await inject("POST", "/connection-templates", {
+        ...(namespaceId ? { namespaceId } : {}),
+        displayName: `Scoped template ${randomUUID()}`,
+        issuer: "https://issuer.example.test",
+        authorizationUrl: "https://issuer.example.test/authorize",
+        tokenUrl: "https://issuer.example.test/token",
+        clientId,
+        clientSecret: secret,
+        scopes: ["read"],
+        endpoint: { host: "api.example.test", port: 443, path: "/**" },
+        envVar: "SCOPE_TEST_TOKEN",
+      });
+      assert.equal(response.statusCode, 201, response.body);
+      const template = response.json().data;
+      assert.equal(template.namespaceId, namespaceId);
+      return template;
+    }
+    const ownerTemplate = await createTemplate(owner.id, "owner-test-secret");
+    const consumerTemplate = await createTemplate(consumer.id, "consumer-test-secret");
+    const installationTemplate = await createTemplate(undefined, "installation-test-secret");
+
+    const rotated = await inject(
+      "POST",
+      `/connection-templates/${ownerTemplate.id}/rotate-client-secret`,
+      {
+        clientSecret: "rotated-owner-test-secret",
+      },
+    );
+    assert.equal(rotated.statusCode, 200, rotated.body);
+    const secretsByRegistration = new Map(
+      [...openShell.providers.values()]
+        .filter((provider) => provider.workspace === clientWorkspace)
+        .map((provider) => [
+          provider.labels["openclaw.dev/client-registration-id"],
+          provider.credentials.OCE_CLIENT_SECRET,
+        ]),
+    );
+    assert.equal(secretsByRegistration.size, 3);
+    assert.equal(
+      secretsByRegistration.get(ownerTemplate.current.clientRegistrationId),
+      "rotated-owner-test-secret",
+    );
+    assert.equal(
+      secretsByRegistration.get(consumerTemplate.current.clientRegistrationId),
+      "consumer-test-secret",
+    );
+    assert.equal(
+      secretsByRegistration.get(installationTemplate.current.clientRegistrationId),
+      "installation-test-secret",
+    );
+
+    // The caller is an Installation administrator, so a missing "use" grant cannot explain exclusion.
+    for (const [namespace, ownTemplate] of [
+      [owner, ownerTemplate],
+      [consumer, consumerTemplate],
+    ]) {
+      const listed = await inject("GET", `/namespaces/${namespace.id}/connection-templates`);
+      assert.equal(listed.statusCode, 200, listed.body);
+      assert.deepEqual(
+        new Set(
+          listed
+            .json()
+            .data.filter((template) => template.current.clientId === clientId)
+            .map((template) => template.id),
+        ),
+        new Set([ownTemplate.id, installationTemplate.id]),
+      );
+    }
+    const denied = await inject(
+      "POST",
+      `/namespaces/${consumer.id}/agents/${agent.id}/connections`,
+      {
+        connectionTemplateId: ownerTemplate.id,
+      },
+    );
+    assert.equal(denied.statusCode, 403, denied.body);
+    const wrongGrant = await inject("POST", "/iam/access-bindings", {
+      subjectKind: "namespace",
+      subjectId: consumer.id,
+      roleId: "role_connection_template_user",
+      resourceKind: "connection_template",
+      resourceId: ownerTemplate.id,
+    });
+    assert.equal(wrongGrant.statusCode, 400, wrongGrant.body);
+    assert.equal(wrongGrant.json().error.details[0].path, "/subjectId");
+
+    const blockedDeletion = await inject("DELETE", `/namespaces/${owner.id}`);
+    assert.equal(blockedDeletion.statusCode, 409, blockedDeletion.body);
+    assert.match(blockedDeletion.json().error.message, /template/i);
+  },
+);
+
 test("the connections API returns each account's optional profile", requiresPostgres, async (t) => {
   const fixture = await createPostgresAgentApp(t, {
     label: "connection-profiles",
@@ -804,6 +914,7 @@ test(
     const name = `Keycloak ${clientId}`;
     await templates.getByRole("button", { name: "New connection template" }).click();
     const editor = page.getByRole("dialog", { name: "New connection template" });
+    await editor.getByLabel("Template scope").selectOption(namespace.id);
     const realm = `${new URL(issuer).origin}/realms/oce`;
     for (const [label, value] of [
       ["Name", name],
@@ -821,8 +932,10 @@ test(
     }
     await editor.getByRole("button", { name: "Create template" }).click();
     await editor.waitFor({ state: "detached" });
+    await page.reload();
     const row = templates.getByRole("listitem").filter({ hasText: name });
     await row.getByText(consoleCallback).waitFor();
+    await row.getByText(`Namespace · ${namespace.name}`, { exact: true }).waitFor();
 
     // Grant use to the Agent's Namespace from the template's row.
     await row.getByLabel("Namespace", { exact: true }).selectOption(namespace.id);
@@ -832,6 +945,7 @@ test(
       .json()
       .data.find((item) => item.displayName === name);
     assert.ok(template, "the console created the template");
+    assert.equal(template.namespaceId, namespace.id);
     assert.equal(template.redirectUri, consoleCallback);
     assert.deepEqual(template.current.scopes, ["openid"]);
     assert.equal("clientSecret" in template.current, false, "the secret is write-only");
@@ -956,6 +1070,7 @@ test(
     }
     const name = `Tools ${randomUUID()}`;
     await openMcpEditor(name);
+    await editor.getByLabel("Template scope").selectOption(namespace.id);
     // The Installation admin can preview metadata before selecting any credential drivers.
     assert.equal(discoverMcpAuthorization.mock.callCount(), 1);
     assert.doesNotMatch(await editor.innerText(), /\bnull\b/);
@@ -999,6 +1114,11 @@ test(
     const saved = (await fixture.inject("GET", "/connection-templates"))
       .json()
       .data.find((item) => item.displayName === name);
+    assert.equal(
+      saved.namespaceId,
+      namespace.id,
+      "retrying with a preregistered client preserves scope",
+    );
     assert.deepEqual(saved.current.mcp, {
       serverUrl: metadata.serverUrl,
       resource: metadata.resource,
@@ -1022,6 +1142,7 @@ test(
     const dynamicBody = await dynamic.json();
     assert.equal(dynamic.status(), 201, dynamicBody.error?.message);
     assert.equal(dynamicBody.data.current.clientId, issuedClient.clientId);
+    assert.equal(dynamicBody.data.namespaceId, undefined);
     assert.deepEqual(dynamicBody.data.current.scopes, ["documents:write"]);
     assert.doesNotMatch(JSON.stringify(dynamicBody), /issuer-generated-secret/);
     const [registered] = registerMcpOAuthClient.mock.calls;
@@ -1037,6 +1158,11 @@ test(
     };
     const refused = await fixture.inject("POST", "/connection-templates", mixed);
     assert.equal(refused.statusCode, 400, refused.body);
+    const invalidName = await fixture.inject("POST", "/connection-templates", {
+      ...dynamic.request().postDataJSON(),
+      displayName: "Line\nbreak",
+    });
+    assert.equal(invalidName.statusCode, 400, invalidName.body);
     const templates = (await fixture.inject("GET", "/connection-templates")).json().data;
     assert.ok(!templates.some((template) => template.displayName === mixed.displayName));
     assert.equal(registerMcpOAuthClient.mock.callCount(), 1);
@@ -1047,6 +1173,13 @@ test(
     assert.equal(renamed.statusCode, 200, renamed.body);
     assert.equal(renamed.json().data.current.version, dynamicBody.data.current.version);
     assert.equal(registerMcpOAuthClient.mock.callCount(), 1);
+    await page.reload();
+    await row.getByText(`Namespace · ${namespace.name}`, { exact: true }).waitFor();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: `${dynamicName} renamed` })
+      .getByText("Installation-wide", { exact: true })
+      .waitFor();
     // A caller can bypass the editor, but cannot register a new client at an unreviewed endpoint.
     const registrations = providers.size;
     const tampered = await fixture.inject("PATCH", `/connection-templates/${saved.id}`, {

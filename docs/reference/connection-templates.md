@@ -45,24 +45,27 @@ endpoint. Include their HTTPS ports. The gateway Pod needs its own egress.
 
 ## Connection templates
 
-A connection template is an Installation resource of IAM kind
-`connection_template`, managed through the
-[HTTP API](api.md#get-connectiontemplates). Credential sources created from it
-belong to the Agent's Namespace.
+Installation administrators manage templates in **Settings → Connection templates**
+or through the [HTTP API](api.md#get-connectiontemplates). At creation they choose
+**Installation-wide** or a ready Namespace. A Namespace template can be used only
+by Agents in that Namespace, including when the person connecting is an
+Installation administrator. Every resulting credential belongs to the Agent's
+Namespace.
 
-| Field                     | Meaning                                                                                         |
-| ------------------------- | ----------------------------------------------------------------------------------------------- |
-| `displayName`             | The label people see.                                                                           |
-| `issuer`                  | The authorization server identifier, an `https` URL. It scopes the client ID.                   |
-| `authorizationUrl`        | The provider consent page.                                                                      |
-| `tokenUrl`                | The token endpoint the Refresh Driver and gateway call.                                         |
-| `revocationUrl`           | Optional HTTPS token revocation endpoint, pinned to the template version.                       |
-| `clientId`                | The administrator's OAuth client at `issuer`.                                                   |
-| `clientSecret`            | Write-only. Required only when this `issuer` and `clientId` pair is not registered yet.         |
-| `scopes`                  | The fixed scopes the person approves.                                                           |
-| `authorizationParameters` | Extra consent-URL parameters, such as Google's `access_type=offline`. Reserved names fail.      |
-| `endpoint`                | The API `host`, `port` (default `443`), and `path` (default `/**`) that receive the credential. |
-| `envVar`                  | The placeholder variable in the Sandbox.                                                        |
+| Field                     | Meaning                                                                                             |
+| ------------------------- | --------------------------------------------------------------------------------------------------- |
+| `displayName`             | The label people see.                                                                               |
+| `namespaceId`             | Optional, immutable Namespace in which Agents can use the template. Omit for Installation-wide use. |
+| `issuer`                  | The authorization server identifier, an `https` URL. It scopes the client ID.                       |
+| `authorizationUrl`        | The provider consent page.                                                                          |
+| `tokenUrl`                | The token endpoint the Refresh Driver and gateway call.                                             |
+| `revocationUrl`           | Optional HTTPS token revocation endpoint, pinned to the template version.                           |
+| `clientId`                | The administrator's OAuth client at `issuer`.                                                       |
+| `clientSecret`            | Write-only. Required only when this `issuer` and `clientId` pair is not registered yet.             |
+| `scopes`                  | The fixed scopes the person approves.                                                               |
+| `authorizationParameters` | Extra consent-URL parameters, such as Google's `access_type=offline`. Reserved names fail.          |
+| `endpoint`                | The API `host`, `port` (default `443`), and `path` (default `/**`) that receive the credential.     |
+| `envVar`                  | The placeholder variable in the Sandbox.                                                            |
 
 PostgreSQL enforces value formats: `https` URLs, RFC 6749 scope tokens, a DNS
 endpoint host (not an IP address), and the variable rules of
@@ -97,7 +100,8 @@ access token to OpenShell for worker requests.
 
 ### Versions and consent
 
-Changing any field except `displayName` creates a new immutable version. A
+The template's scope is fixed at creation. Changing any approved OAuth setting
+creates a new immutable version. A
 connection keeps the version its owner approved, and its credential source keeps
 that version's endpoint and issuer, so an edit never redirects an existing
 connection. A concurrent edit returns `409`. Deletion returns `409` while any
@@ -105,8 +109,9 @@ connection uses one of the template's versions; disconnect those first.
 
 ### Client registrations
 
-OCC records one client registration per `issuer` and `clientId` pair. Templates
-with the same pair share it; the same client ID at another issuer is separate. The
+OCC records one client registration per `issuer` and `clientId` pair within
+each template scope. If two Namespaces use the same client, an administrator
+supplies a secret for each scope and can rotate them independently. The
 Credential Refresh Driver keeps the secret, and OCC stores no copy. The OpenShell
 Driver stores it in a Driver-owned `oce-cr-*` provider in `clientWorkspace` that no
 Sandbox attaches, and reads it back over operator TLS. Sending
@@ -129,8 +134,9 @@ need `use`, granted through an
 [Installation access binding](api.md#post-iamaccessbindings) of the built-in
 Installation Role `role_connection_template_user`:
 
-- `subjectKind: identity` grants one person.
-- `subjectKind: namespace` grants anyone acting for an Agent in that Namespace.
+- `subjectKind: identity` grants one person access within the template's scope.
+- `subjectKind: namespace` grants people acting for Agents in that Namespace.
+  For a Namespace template, the grant must name its owning Namespace.
 
 OCC checks `use` with the Agent's Namespace as context, so a Namespace grant does
 not apply to Agents elsewhere. Service keys and Namespace-bound identities cannot
