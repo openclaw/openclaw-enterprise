@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
 updated: 2026-10-30
-last_updated_session: authoring-run/ba84d894-356c-419d-ab61-c51ce59bdec6
+last_updated_session: authoring-run/264fbe79-1af9-492d-aa8b-c020cde317f2
 ---
 
 # Credential source refresh Flow
@@ -137,10 +137,10 @@ Namespace, not the session Secret.
 
 `apps/controller/src/console/agents/device-login.mts:createDeviceLogin` records
 `start_unconfirmed` before sending a start. Both authentication forms retain it
-across navigation; Agent detail keeps its Credentials tab during a start. Until
-the page is left, a usable reply supplies the challenge; a refusal permits
-retry. Unconfirmed attempts cannot start again,
-poll, or cancel. See
+across navigation. Agent detail keeps its Credentials tab during a start, and
+its draft records a later reply unless a newer tab owns it. Until the page is
+left, a usable reply supplies the challenge; a refusal permits retry.
+Unconfirmed attempts cannot start again, poll, or cancel. See
 [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 Compare-and-swap serializes known-session polls. OCC rechecks scope and both
 Driver selections before completion. Uncertain exchanges close the handle but
@@ -339,6 +339,8 @@ detached reads. Clearing bytes cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 12:27: Record late starts in drafts. (authoring-run/264fbe79-1af9-492d-aa8b-c020cde317f2 - cd2a58116a69f1a6d68a572a226ef8945408ef54)
 
 - 2026-10-30 11:39: Keep pending-start tabs. (authoring-run/ba84d894-356c-419d-ab61-c51ce59bdec6 - 01c78bee6b7eac13f95585291232ff763edb7828)
 

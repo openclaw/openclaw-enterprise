@@ -687,11 +687,20 @@ for (const before of ["a refused start", "Cancel login"]) {
     test(`an OAuth start after ${before} ${refused ? "refused" : "answered"} while another Agent tab shows lands in Credentials`, async (t) => {
       const oauth = await openAgentOAuth(t, "OAuth second start");
       const { page, start } = oauth;
+      // Fetches the tab may still have in flight; none may be, or the tab is not kept.
+      let idle = {};
       if (before === "Cancel login") {
+        const first = page.waitForResponse(
+          (response) => new URL(response.url()).pathname === oauth.beginPath,
+        );
         await start.click();
+        const { session } = (await (await first).json()).data;
         await page.getByText(WAITING, { exact: true }).waitFor();
         await page.getByRole("button", { name: "Cancel login", exact: true }).click();
         await page.getByText("Sign in to connect your ChatGPT account.", { exact: true }).waitFor();
+        // The Console never reads the cancel's empty 204 body, so the fetch hook keeps
+        // counting it in flight although the tab's request has settled.
+        idle = { except: `${oauth.beginPath}/${session.id}` };
       } else {
         // The real Native IAM Driver refuses the first start without Secret create.
         const restoreCreate = revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
@@ -704,7 +713,7 @@ for (const before of ["a refused start", "Cancel login"]) {
         revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
       }
       const held = await holdNextStart(t, oauth);
-      await waitForIdleFetches(page);
+      await waitForIdleFetches(page, idle);
       await start.click();
       const { status, body } = await held.answered;
       assert.equal(status, refused ? 403 : 200);
