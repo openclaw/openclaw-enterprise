@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-29
-last_updated_session: authoring-run/7671e83f-de1e-402c-bc7c-7704dbdd54dd
+updated: 2026-10-30
+last_updated_session: authoring-run/9120ced5-00df-4b42-bd89-da00f981ef38
 ---
 
 # Credential source refresh Flow
@@ -128,25 +128,24 @@ marks the source `ready` with its audit event.
 `packages/occ/src/index.ts:startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
-For a type declaring `deviceAuthorization.harnessId`, OCC registers the source
-before provider login. `source_registering` and `source_ready` audit events
-commit with their transitions and identify actor, request, and source. Audit
-failure stops login. Failed starts retain the audited source.
+`deviceAuthorization.harnessId` sources register before login.
+`source_registering` and `source_ready` audit events commit with state, identifying
+actor, request, and source. Audit failure blocks login; failed starts retain audited sources.
 
-OCC stores the handle, actor, source, and Driver IDs in a session Secret,
-committed with its `session_pending` event. Known commit failure
-removes the metadata and private Driver value; unknown outcomes skip compensation.
-The session event names the Agent or Namespace and source ID. Audit excludes
-handles, credentials, and user codes.
+OCC commits the session Secret's handle, actor, source, and Driver IDs with
+`session_pending`. Known commit failure deletes metadata and private Driver value;
+unknown outcomes skip compensation. Session events identify Agent or Namespace
+and source ID. Audit excludes handles, credentials, and user codes.
 
-`apps/controller/src/console/agents/device-login.mts:createDeviceLogin` keeps
-`start_unconfirmed` in the form draft if the start has no response status or its
-successful response is unusable. The form blocks another start. Without a
-confirmed session reference, it also cannot poll or cancel. See
+`apps/controller/src/console/agents/device-login.mts:createDeviceLogin` records
+`start_unconfirmed` before sending a start. Both authentication forms retain it
+across navigation. A usable current response supplies the challenge; a refusal
+received while the form is shown permits retry. Unconfirmed attempts cannot
+start again, poll, or cancel. See
 [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
-For a known session, compare-and-swap permits one poll at a time. OCC rechecks scope and
-both Driver selections before accepting completion. An uncertain exchange closes
-the handle without removing the source or repeating the exchange.
+Compare-and-swap serializes known-session polls. OCC rechecks scope and both
+Driver selections before completion. Uncertain exchanges close the handle
+without removing the source or replaying the exchange.
 
 `apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
 uses fixed `auth.openai.com` endpoints from API Pods for start, poll, and exchange.
@@ -340,7 +339,13 @@ detached reads. Clearing bytes cannot revoke a token.
 
 ## Changelog
 
+- 2026-10-30 08:11: Reconcile device login. (authoring-run/9120ced5-00df-4b42-bd89-da00f981ef38 - 0ef6ddffdbe0688b9d7d3d87f75093ace992852b)
+
+- 2026-10-29 16:08: Qualify retry visibility. (authoring-run/91cf4dad-e612-4f33-8307-7989dfcd611e - 0dae5b3d5a3d4be177e8edad6d1baa07aa0747ed)
+
 - 2026-10-29 15:03: Trace device-start audit transactions. (authoring-run/7671e83f-de1e-402c-bc7c-7704dbdd54dd - 72dfce5bfdbde5a79f714dc62777425c26619581)
+
+- 2026-10-29 14:58: Retain unconfirmed Console starts across navigation. (authoring-run/f0c1d1b2-80e6-4a5b-9dce-e888c5e30bb2 - 2de02b7f995d5401c9a300b1e350b9f80be1073d)
 
 - 2026-10-27 19:10: Clarify GitHub token renewal and withdrawal. (authoring-run/0430a401-05fb-4e0b-9166-a02b77498311 - d0d593e0f6b4d2c8c1282f0f05e4d83aa607608f)
 

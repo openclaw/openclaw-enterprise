@@ -1,11 +1,8 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:https";
 import { createConnection } from "node:net";
 import { once } from "node:events";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
@@ -26,9 +23,15 @@ import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createReadyComputeDriver } from "../helpers/development.mjs";
+import {
+  createHarnessConfiguration,
+  withNativeAdminGateway,
+} from "../helpers/harness-configuration.mjs";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
+import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
 import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
@@ -60,86 +63,30 @@ function nativeOriginForAgent(installationId, namespaceId, agentId) {
   return `${publicUrl.protocol}//${publicUrl.host}`;
 }
 
-function nativeAdminHarnessConfiguration(nativeOrigin) {
-  const configuration = createHarnessConfiguration("openclaw", "gpt-4.1");
-  return {
-    ...configuration,
-    gateway: {
-      ...configuration.gateway,
-      controlUi: { enabled: true, allowedOrigins: [nativeOrigin] },
-      auth: {
-        mode: "trusted-proxy",
-        trustedProxy: {
-          userHeader: "x-occ-identity",
-          allowUsers: ["occ-workspace-files"],
-          deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
-        },
-        identityScopes: { "occ-workspace-files": ["operator.admin"] },
-      },
-    },
-  };
-}
-
 function nativeComputeDriver(upstreamPort) {
-  return {
-    id: "native-admin-postgres-compute",
-    capability: "compute",
+  return createReadyComputeDriver("native-admin-postgres-compute", {
     implementation: "native-admin-postgres-test-upstream",
+    // The HTTPS upstream is no OC Gateway, so this Compute applies no managed mode.
+    supportsGatewayManagedMode: undefined,
     validateHarnessAuth() {},
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
     getGatewayEndpoint(revision) {
       return `wss://localhost:${upstreamPort}/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`;
     },
-  };
+  });
 }
 
 async function startNativeHttpsUpstream(t) {
   const directory = await temporaryDirectory(t, "openclaw-native-admin-pg-upstream-");
-  const keyPath = join(directory, "tls.key");
-  const certPath = join(directory, "tls.crt");
-  const generated = spawnSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-days",
-      "2",
-      "-keyout",
-      keyPath,
-      "-out",
-      certPath,
-      "-subj",
-      "/CN=localhost",
-      "-addext",
-      "subjectAltName=DNS:localhost,IP:127.0.0.1",
-    ],
-    { encoding: "utf8", timeout: 10_000 },
-  );
-  assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
+  const { key, cert } = await selfSigned(directory, {
+    keyPem: sharedRsaPrivateKeyPem("native-admin-pg-upstream"),
+    days: 2,
+  });
 
   const requests = [];
   const upgrades = [];
   const peers = [];
   const upgradedSockets = new Set();
-  const cert = await readFile(certPath, "utf8");
-  const server = createServer({ key: await readFile(keyPath), cert }, async (request, response) => {
+  const server = createServer({ key, cert }, async (request, response) => {
     requests.push({
       method: request.method,
       url: request.url,
@@ -349,7 +296,12 @@ async function createNativeAgent(api, session, upstream) {
     `/namespaces/${namespace.id}/configurations/${configuration.id}`,
     {
       session,
-      body: { values: nativeAdminHarnessConfiguration(nativeOrigin) },
+      body: {
+        values: withNativeAdminGateway(
+          createHarnessConfiguration("openclaw", "gpt-4.1"),
+          nativeOrigin,
+        ),
+      },
     },
   );
   assert.equal(compatibleConfiguration.statusCode, 200, compatibleConfiguration.body);

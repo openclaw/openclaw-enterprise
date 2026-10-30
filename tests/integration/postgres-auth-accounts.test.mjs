@@ -9,9 +9,11 @@ import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { signInToControllerApp } from "../helpers/auth-session.mjs";
+import { injectJson } from "../helpers/inject-json.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
@@ -50,36 +52,6 @@ function installationPrincipal(state) {
           administratorRoles.has(binding.roleId),
       ),
   );
-}
-
-async function fetchFromInjectedApp(app, request) {
-  const url = new URL(request.url);
-  const headers = {};
-  request.headers.forEach((value, name) => {
-    headers[name] = value;
-  });
-  headers.host = url.host;
-  const body = request.body ? Buffer.from(await request.arrayBuffer()) : undefined;
-  const result = await app.inject({
-    method: request.method,
-    url: `${url.pathname}${url.search}`,
-    headers,
-    ...(body === undefined ? {} : { payload: body }),
-  });
-  const convertedHeaders = new Headers();
-  for (const [name, value] of Object.entries(result.headers)) {
-    if (Array.isArray(value)) {
-      for (const entry of value) {
-        convertedHeaders.append(name, entry);
-      }
-    } else if (value !== undefined) {
-      convertedHeaders.set(name, String(value));
-    }
-  }
-  return new Response(result.statusCode === 204 ? null : new Uint8Array(result.rawPayload), {
-    status: result.statusCode,
-    headers: convertedHeaders,
-  });
 }
 
 test(
@@ -199,11 +171,7 @@ test(
     assert.equal(stored.rows[0].reference_id, servicePrincipal.id);
     assert.deepEqual(JSON.parse(stored.rows[0].metadata), { installationId: installation.id });
 
-    const authorized = await app.inject({
-      method: "GET",
-      url: "/installation",
-      headers: { "x-api-key": output.data.key, host: "127.0.0.1" },
-    });
+    const authorized = await injectJson(app, "GET", "/installation", { key: output.data.key });
     assert.equal(authorized.statusCode, 200, authorized.body);
     assert.equal(authorized.json().data.id, installation.id);
     const defaultNamespace = await observerPool.query(
@@ -222,16 +190,11 @@ test(
       `namespace:${defaultNamespace.rows[0].id}:reconcile:ready`,
     );
 
-    const session = await signInWithEmailPassword({
-      fetch: (request) => fetchFromInjectedApp(app, request),
+    const session = await signInToControllerApp(app, {
       email: adminEmail,
       password: adminPassword,
     });
-    const humanAuthorized = await app.inject({
-      method: "GET",
-      url: "/installation",
-      headers: authenticatedHeaders(session, { host: "127.0.0.1" }),
-    });
+    const humanAuthorized = await injectJson(app, "GET", "/installation", { session });
     assert.equal(humanAuthorized.statusCode, 200, humanAuthorized.body);
   },
 );
@@ -273,8 +236,7 @@ test(
       configurationDriver: createTestConfigurationDriver(),
     });
 
-    const session = await signInWithEmailPassword({
-      fetch: (request) => fetchFromInjectedApp(appA, request),
+    const session = await signInToControllerApp(appA, {
       email: adminEmail,
       password: adminPassword,
     });
@@ -290,11 +252,7 @@ test(
     });
 
     const iamBeforeNoGrant = await state.loadNativeIAMState(installation.id);
-    const adminNamespaces = await appA.inject({
-      method: "GET",
-      url: "/namespaces",
-      headers: authenticatedHeaders(session, { host: "127.0.0.1" }),
-    });
+    const adminNamespaces = await injectJson(appA, "GET", "/namespaces", { session });
     assert.equal(adminNamespaces.statusCode, 200, adminNamespaces.body);
     const deniedNamespaceId = adminNamespaces.json().data[0].id;
     const noGrantAuditBefore = await observerPool.query(
@@ -302,22 +260,17 @@ test(
     );
     const noGrantEmail = `postgres-no-grant-${randomUUID()}@example.com`;
     const noGrantPassword = `generated-password-${randomUUID()}`;
-    const noGrant = await appA.inject({
-      method: "POST",
-      url: "/api/auth/accounts",
-      headers: authenticatedHeaders(session, { host: "127.0.0.1" }),
-      payload: { email: noGrantEmail, password: noGrantPassword, name: "Postgres No Grant" },
+    const noGrant = await injectJson(appA, "POST", "/api/auth/accounts", {
+      session,
+      body: { email: noGrantEmail, password: noGrantPassword, name: "Postgres No Grant" },
     });
     assert.equal(noGrant.statusCode, 201, noGrant.body);
-    const noGrantSession = await signInWithEmailPassword({
-      fetch: (request) => fetchFromInjectedApp(appB, request),
+    const noGrantSession = await signInToControllerApp(appB, {
       email: noGrantEmail,
       password: noGrantPassword,
     });
-    const noGrantInstallation = await appB.inject({
-      method: "GET",
-      url: "/installation",
-      headers: authenticatedHeaders(noGrantSession, { host: "127.0.0.1" }),
+    const noGrantInstallation = await injectJson(appB, "GET", "/installation", {
+      session: noGrantSession,
     });
     assert.equal(noGrantInstallation.statusCode, 403, noGrantInstallation.body);
     // The zero-grant create is audited exactly once as an administrator mutation.
@@ -350,10 +303,8 @@ test(
       },
     );
     // Before any grant the human sees an empty Namespace list and is denied everywhere else.
-    const noGrantNamespaces = await appB.inject({
-      method: "GET",
-      url: "/namespaces",
-      headers: authenticatedHeaders(noGrantSession, { host: "127.0.0.1" }),
+    const noGrantNamespaces = await injectJson(appB, "GET", "/namespaces", {
+      session: noGrantSession,
     });
     assert.equal(noGrantNamespaces.statusCode, 200, noGrantNamespaces.body);
     assert.deepEqual(noGrantNamespaces.json().data, []);
@@ -378,14 +329,11 @@ test(
         },
       ],
     ]) {
-      const denied = await appB.inject({
-        method,
-        url,
-        headers: authenticatedHeaders(noGrantSession, { host: "127.0.0.1" }),
-        ...(payload === undefined ? {} : { payload }),
+      const denied = await injectJson(appB, method, url, {
+        session: noGrantSession,
+        body: payload,
       });
-      assert.equal(denied.statusCode, 403, `${method} ${url}: ${denied.body}`);
-      assert.equal(denied.json().error.code, "FORBIDDEN");
+      assertApiError(denied, 403, "FORBIDDEN", `${method} ${url}`);
     }
     const iamBefore = await state.loadNativeIAMState(installation.id);
     assert.equal(iamBefore.identities.length, iamBeforeNoGrant.identities.length + 1);
@@ -407,11 +355,9 @@ test(
        WHERE action = 'openclaw.auth.accounts.create'`,
     );
 
-    const created = await appA.inject({
-      method: "POST",
-      url: "/api/auth/accounts",
-      headers: authenticatedHeaders(session, { host: "127.0.0.1" }),
-      payload: { email, password, name: "Postgres Provisioned Operator", roleId: role.id },
+    const created = await injectJson(appA, "POST", "/api/auth/accounts", {
+      session,
+      body: { email, password, name: "Postgres Provisioned Operator", roleId: role.id },
     });
     assert.equal(created.statusCode, 201, created.body);
     const createdAccount = created.json().data;
@@ -425,11 +371,9 @@ test(
     assert.equal(accountSessions.rows[0].count, 0);
 
     // A duplicate email is a conflict, never a synthetic identity or hidden active session.
-    const duplicate = await appA.inject({
-      method: "POST",
-      url: "/api/auth/accounts",
-      headers: authenticatedHeaders(session, { host: "127.0.0.1" }),
-      payload: { email, password, name: "Duplicate Operator", roleId: role.id },
+    const duplicate = await injectJson(appA, "POST", "/api/auth/accounts", {
+      session,
+      body: { email, password, name: "Duplicate Operator", roleId: role.id },
     });
     assert.equal(duplicate.statusCode, 409, duplicate.body);
     const iamAfterDuplicate = await state.loadNativeIAMState(installation.id);
@@ -441,15 +385,9 @@ test(
     );
     assert.equal(sessionsAfterDuplicate.rows[0].count, 0);
 
-    const provisionedSession = await signInWithEmailPassword({
-      fetch: (request) => fetchFromInjectedApp(appB, request),
-      email,
-      password,
-    });
-    const authorized = await appB.inject({
-      method: "GET",
-      url: "/installation",
-      headers: authenticatedHeaders(provisionedSession, { host: "127.0.0.1" }),
+    const provisionedSession = await signInToControllerApp(appB, { email, password });
+    const authorized = await injectJson(appB, "GET", "/installation", {
+      session: provisionedSession,
     });
     assert.equal(authorized.statusCode, 200, authorized.body);
     assert.equal(authorized.json().data.id, installation.id);
@@ -491,18 +429,12 @@ test(
 
     // Grant the existing human exact Namespace access through the public policy API.
     // The second controller must observe it without gaining Installation or sibling access.
-    const namespaces = await appA.inject({
-      method: "GET",
-      url: "/namespaces",
-      headers: authenticatedHeaders(session, { host: "127.0.0.1" }),
-    });
+    const namespaces = await injectJson(appA, "GET", "/namespaces", { session });
     assert.equal(namespaces.statusCode, 200, namespaces.body);
     const namespaceId = namespaces.json().data[0].id;
-    const namespaceRole = await appA.inject({
-      method: "POST",
-      url: `/namespaces/${namespaceId}/iam/roles`,
-      headers: authenticatedHeaders(session, { host: "127.0.0.1" }),
-      payload: { permissions: [{ action: "read", resourceKind: "namespace" }] },
+    const namespaceRole = await injectJson(appA, "POST", `/namespaces/${namespaceId}/iam/roles`, {
+      session,
+      body: { permissions: [{ action: "read", resourceKind: "namespace" }] },
     });
     assert.equal(namespaceRole.statusCode, 201, namespaceRole.body);
     // A Namespace-scoped Role cannot back an account's Installation binding: 400, no writes.
@@ -511,18 +443,15 @@ test(
       `SELECT count(*)::integer AS count FROM occ.audit_events
        WHERE action = 'openclaw.auth.accounts.create'`,
     );
-    const namespaceRoleAccount = await appA.inject({
-      method: "POST",
-      url: "/api/auth/accounts",
-      headers: authenticatedHeaders(session, { host: "127.0.0.1" }),
-      payload: {
+    const namespaceRoleAccount = await injectJson(appA, "POST", "/api/auth/accounts", {
+      session,
+      body: {
         email: namespaceRoleEmail,
         password: `generated-password-${randomUUID()}`,
         roleId: namespaceRole.json().data.id,
       },
     });
-    assert.equal(namespaceRoleAccount.statusCode, 400, namespaceRoleAccount.body);
-    assert.equal(namespaceRoleAccount.json().error.code, "INVALID_REQUEST");
+    assertApiError(namespaceRoleAccount, 400, "INVALID_REQUEST");
     assert.deepEqual(
       (await observerPool.query(`SELECT id FROM occ."user" WHERE email = $1`, [namespaceRoleEmail]))
         .rows,
@@ -537,34 +466,31 @@ test(
       ).rows,
       auditBeforeNamespaceRole.rows,
     );
-    const binding = await appA.inject({
-      method: "POST",
-      url: `/namespaces/${namespaceId}/iam/access-bindings`,
-      headers: authenticatedHeaders(session, { host: "127.0.0.1" }),
-      payload: {
-        subjectKind: "identity",
-        subjectId: noGrant.json().data.principalId,
-        roleId: namespaceRole.json().data.id,
-        resourceKind: "namespace",
-        resourceId: namespaceId,
+    const binding = await injectJson(
+      appA,
+      "POST",
+      `/namespaces/${namespaceId}/iam/access-bindings`,
+      {
+        session,
+        body: {
+          subjectKind: "identity",
+          subjectId: noGrant.json().data.principalId,
+          roleId: namespaceRole.json().data.id,
+          resourceKind: "namespace",
+          resourceId: namespaceId,
+        },
       },
-    });
+    );
     assert.equal(binding.statusCode, 201, binding.body);
-    const visibleNamespaces = await appB.inject({
-      method: "GET",
-      url: "/namespaces",
-      headers: authenticatedHeaders(noGrantSession, { host: "127.0.0.1" }),
+    const visibleNamespaces = await injectJson(appB, "GET", "/namespaces", {
+      session: noGrantSession,
     });
     assert.equal(visibleNamespaces.statusCode, 200, visibleNamespaces.body);
     assert.deepEqual(
       visibleNamespaces.json().data.map(({ id }) => id),
       [namespaceId],
     );
-    const stillDenied = await appB.inject({
-      method: "GET",
-      url: "/installation",
-      headers: authenticatedHeaders(noGrantSession, { host: "127.0.0.1" }),
-    });
+    const stillDenied = await injectJson(appB, "GET", "/installation", { session: noGrantSession });
     assert.equal(stillDenied.statusCode, 403, stillDenied.body);
   },
 );
@@ -604,8 +530,7 @@ test(
       configurationDriver: createTestConfigurationDriver(),
     });
 
-    const session = await signInWithEmailPassword({
-      fetch: (request) => fetchFromInjectedApp(app, request),
+    const session = await signInToControllerApp(app, {
       email: adminEmail,
       password: adminPassword,
     });
@@ -634,23 +559,13 @@ test(
 
     const email = `postgres-audit-rollback-${randomUUID()}@example.com`;
     const password = `generated-password-${randomUUID()}`;
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/auth/accounts",
-      headers: authenticatedHeaders(session, { host: "127.0.0.1" }),
-      payload: { email, password, name: "Postgres Audit Rollback", roleId: role.id },
+    const response = await injectJson(app, "POST", "/api/auth/accounts", {
+      session,
+      body: { email, password, name: "Postgres Audit Rollback", roleId: role.id },
     });
-    assert.equal(response.statusCode, 503, response.body);
-    assert.equal(response.json().error.code, "DEPENDENCY_UNAVAILABLE");
+    assertApiError(response, 503, "DEPENDENCY_UNAVAILABLE");
 
-    await assert.rejects(
-      signInWithEmailPassword({
-        fetch: (request) => fetchFromInjectedApp(app, request),
-        email,
-        password,
-      }),
-      /HTTP 401/,
-    );
+    await assert.rejects(signInToControllerApp(app, { email, password }), /HTTP 401/);
     const iamAfter = await state.loadNativeIAMState(installation.id);
     assert.equal(iamAfter.identities.length, iamBefore.identities.length);
     assert.equal(iamAfter.bindings.length, iamBefore.bindings.length);
@@ -714,8 +629,7 @@ test(
     apps.push(faulted);
     await faulted.ready();
 
-    const session = await signInWithEmailPassword({
-      fetch: (request) => fetchFromInjectedApp(ordinary, request),
+    const session = await signInToControllerApp(ordinary, {
       email: adminEmail,
       password: adminPassword,
     });
@@ -756,15 +670,12 @@ test(
     // the provisioning COMMIT, after PostgreSQL has committed the account, Principal,
     // binding and audit.
     proxy.arm({ skipCommits: 3 });
-    const unknown = await faulted.inject({
-      method: "POST",
-      url: "/api/auth/accounts",
-      headers: authenticatedHeaders(session, { host: "127.0.0.1" }),
-      payload,
+    const unknown = await injectJson(faulted, "POST", "/api/auth/accounts", {
+      session,
+      body: payload,
     });
     assert.equal(proxy.observedCommit, true);
-    assert.equal(unknown.statusCode, 503, unknown.body);
-    assert.equal(unknown.json().error.code, "DEPENDENCY_UNAVAILABLE");
+    assertApiError(unknown, 503, "DEPENDENCY_UNAVAILABLE");
     assert.match(unknown.json().error.message, /outcome is unknown/i);
 
     // Nothing was compensated: the login and its Principal committed together.
@@ -780,28 +691,19 @@ test(
       },
       { passwords: 1, principals: 1, bindings: 1, audits: 1 },
     );
-    const provisionedSession = await signInWithEmailPassword({
-      fetch: (request) => fetchFromInjectedApp(ordinary, request),
-      email,
-      password,
-    });
-    const authorized = await ordinary.inject({
-      method: "GET",
-      url: "/installation",
-      headers: authenticatedHeaders(provisionedSession, { host: "127.0.0.1" }),
+    const provisionedSession = await signInToControllerApp(ordinary, { email, password });
+    const authorized = await injectJson(ordinary, "GET", "/installation", {
+      session: provisionedSession,
     });
     assert.equal(authorized.statusCode, 200, authorized.body);
 
     // A deliberate retry of the same request converges on the committed account:
     // the email conflicts and no second login, Principal or audit event appears.
-    const retry = await ordinary.inject({
-      method: "POST",
-      url: "/api/auth/accounts",
-      headers: authenticatedHeaders(session, { host: "127.0.0.1" }),
-      payload,
+    const retry = await injectJson(ordinary, "POST", "/api/auth/accounts", {
+      session,
+      body: payload,
     });
-    assert.equal(retry.statusCode, 409, retry.body);
-    assert.equal(retry.json().error.code, "RESOURCE_CONFLICT");
+    assertApiError(retry, 409, "RESOURCE_CONFLICT");
     assert.deepEqual(await persisted(), committed);
     const iamAfter = await state.loadNativeIAMState(installation.id);
     assert.equal(iamAfter.identities.length, iamBefore.identities.length + 1);

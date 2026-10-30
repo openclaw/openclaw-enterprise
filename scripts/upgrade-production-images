@@ -458,6 +458,17 @@ fi
 mkdir "$evidence_dir/.upgrade-lock" 2>/dev/null || die "the evidence directory is locked; check for a running upgrade before removing its stale .upgrade-lock directory."
 trap 'rmdir "$evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
 
+# An interrupted caller does not establish that its child or remote operation stopped.
+# Keep the lock and preflight resources until the operator reconciles that work.
+interrupted_upgrade() {
+  trap - EXIT
+  warn "upgrade interrupted; evidence lock retained. Check running helper and child commands and reconcile unfinished operations before removing .upgrade-lock." || true
+  exit "$1"
+}
+trap 'interrupted_upgrade 129' HUP
+trap 'interrupted_upgrade 130' INT
+trap 'interrupted_upgrade 143' TERM
+
 # Bind resume to the same inputs and chart. Kubeconfig bytes bind the selected
 # context to the same cluster even if the file is later replaced.
 parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$OCC_URL" "$occ" "${OCC_CA_BUNDLE:-}" "$requested_values" "$requested_installation" "$broker_image" <<'PYTHON'

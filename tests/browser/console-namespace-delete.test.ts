@@ -8,6 +8,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 import { NAMESPACE_DELETE_DENIED, NAMESPACE_DELETE_RESTRICTED } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture, grantMember, memberRole } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import {
   apiRequests,
   fileBrowser,
@@ -55,9 +56,7 @@ function refusedFocusLook(control: Locator) {
 }
 
 test("Namespace trash action confirms, keeps pending cleanup visible, and repairs the selected Namespace after removal", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const target = await fixture.createNamespace("Retired team", { ready: true });
+  const { fixture, namespace: target } = await createReadyConsoleNamespace(t, "Retired team");
   const remaining = await fixture.createNamespace("Remaining team", { ready: true });
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
@@ -120,9 +119,7 @@ test("Namespace trash action confirms, keeps pending cleanup visible, and repair
 });
 
 test("Namespace deletion blockers name real Agent resources and keep cleanup navigation in their owning Namespace", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Occupied team", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Occupied team");
   const agent = await fixture.createAgent(namespace.id, "Remaining assistant");
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`);
@@ -147,9 +144,7 @@ test("Namespace deletion blockers name real Agent resources and keep cleanup nav
 });
 
 test("a lost Namespace deletion response requires a status read without automatically replaying DELETE", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Uncertain cleanup", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Uncertain cleanup");
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`);
@@ -185,9 +180,7 @@ test("a lost Namespace deletion response requires a status read without automati
 });
 
 test("Namespace deletion permission is advisory and a later revocation is enforced by the real write", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Restricted cleanup", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Restricted cleanup");
   const label = "restricted-namespace-deleter";
   const member = await fixture.createNamespaceMember(label, namespace.id, [["read", "namespace"]]);
   const { page } = await newPage(t, fixture, { browser });
@@ -227,9 +220,7 @@ test("Namespace deletion permission is advisory and a later revocation is enforc
 // and administration cannot lift it. Her permission answer shows administration without delete,
 // so the reason names the Restriction and who lifts it, not an administrator to ask: she is one.
 test("a Restriction on Namespace delete names the Restriction to an Installation administrator", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Held cleanup", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Held cleanup");
   restrict(fixture.policy, "delete", "namespace", { namespaceId: namespace.id });
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`);
@@ -256,9 +247,7 @@ test("a Restriction on Namespace delete names the Restriction to an Installation
 });
 
 test("losing Namespace read permission during cleanup does not report deletion", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Lost read access", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Lost read access");
   const label = "namespace-cleanup-reader";
   const member = await fixture.createNamespaceMember(label, namespace.id, [
     ["read", "namespace"],
@@ -299,9 +288,7 @@ test("losing Namespace read permission during cleanup does not report deletion",
 });
 
 test("a background Namespace deletion poll keeps keyboard focus and the shown status", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Polled cleanup", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Polled cleanup");
   const { page } = await newPage(t, fixture, { browser });
   await trackSettledFetches(page);
   await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`);
@@ -340,9 +327,7 @@ test("a background Namespace deletion poll keeps keyboard focus and the shown st
 });
 
 test("a Namespace deletion confirmation opened during a background poll closes when that poll finds the Namespace removed", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Finishing cleanup", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Finishing cleanup");
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Delete Finishing cleanup", exact: true }).click();
@@ -425,9 +410,7 @@ test("returning to an unchanged Namespaces page reads each row's delete permissi
 });
 
 test("a refused Namespace deletion retry keeps its reason through a background poll", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Owned retry", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Owned retry");
   const path = `/namespaces/${namespace.id}`;
   assert.equal((await fixture.request("DELETE", path)).status, 202);
   const { page } = await newPage(t, fixture, { browser });

@@ -15,7 +15,7 @@ import {
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 
 // Create Agent open on a provisioning Namespace rechecks it every 10 s while a Dedicated plan
 // waits for it (finding 2012). These cases pin when that recheck runs and stops: a failed read
@@ -426,9 +426,13 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     namespaces.status = null;
     release();
     await waitForSettledFetches(page, "/namespaces", answered + 1);
-    assert.deepEqual(await replaced.evaluate((node) => [node.isConnected, node.disabled]), [
-      false,
-      true,
-    ]);
+    // Still unavailable: natively, or aria-disabled while its wait shows (class of finding 2899).
+    assert.deepEqual(
+      await replaced.evaluate((node) => [
+        node.isConnected,
+        node.disabled || node.getAttribute("aria-disabled") === "true",
+      ]),
+      [false, true],
+    );
   });
 });

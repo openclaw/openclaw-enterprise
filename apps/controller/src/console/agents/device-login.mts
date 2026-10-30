@@ -206,6 +206,9 @@ export function createDeviceLogin({
     if (busy || disabled || login || !active) {
       return;
     }
+    // Navigation captures the draft before aborting the view's requests. Retain the
+    // attempt now, because a committed start may lose its response when the view leaves.
+    login = { status: "start_unconfirmed" };
     busy = true;
     error = "";
     update();
@@ -222,6 +225,7 @@ export function createDeviceLogin({
           login = { status: "start_unconfirmed" };
           onChange?.(null);
         } else {
+          login = null;
           fail(failure, "start");
         }
       }

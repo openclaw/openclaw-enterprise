@@ -159,9 +159,11 @@ pg_restore --exit-on-error --single-transaction --dbname "$RESTORE_DATABASE_URL"
 
 Keep normal ownership and ACL restoration; do not use `--no-owner` or
 `--no-acl`. Set `RESTORED_MIGRATION_DATABASE_URL` privately to the dedicated
-migrator login for that same restored database. From the matching release, run:
+migrator login for that same restored database. From the root of a checkout of
+the matching release, install its dependencies and run:
 
 ```bash
+pnpm install --frozen-lockfile
 OCC_MIGRATION_DATABASE_URL="$RESTORED_MIGRATION_DATABASE_URL" pnpm db:migrate:production --check
 ```
 

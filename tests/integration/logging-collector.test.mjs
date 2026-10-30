@@ -31,7 +31,8 @@ async function docker(args) {
 // had stopped.
 async function waitFor(outcome, check, fixture) {
   const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
+  // The deadline is checked after each check, so the last check happens at or past it.
+  for (;;) {
     let done;
     try {
       done = await check();
@@ -43,6 +44,9 @@ async function waitFor(outcome, check, fixture) {
     }
     if (done) {
       return;
+    }
+    if (Date.now() >= deadline) {
+      break;
     }
     await delay(100);
   }

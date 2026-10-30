@@ -448,7 +448,11 @@ const failure = (status) =>
       : apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.");
 const UNAVAILABLE = failure(503);
 
-async function deployingVersion(t, name, { status = "running", older = false } = {}) {
+async function deployingVersion(
+  t,
+  name,
+  { status = "running", older = false, beforeLogin = undefined } = {},
+) {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
   const agent = await fixture.createAgent(namespace.id, `${name} Agent`, nativeValues("v1"));
   const { revision: current } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
@@ -488,6 +492,7 @@ async function deployingVersion(t, name, { status = "running", older = false } =
         });
   });
   await page.clock.install({ time: new Date("2026-10-20T12:00:00Z") });
+  await beforeLogin?.(page, { namespace, agent, current, next });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, next.id, "configuration"));
   const summary = page.getByRole("region", { name: "Agent state at a glance" });
   const outcome = { queued: "Queued", running: "In progress", succeeded: "Completed" }[status];
@@ -549,6 +554,59 @@ test("A version that is deploying is labelled Deploying, not Historical, until i
   assert.equal(labels.at(-1), "Current version");
   assert.equal(labels.includes("Historical version"), false, labels.join(" → "));
 });
+
+// A finished deployment rereads native admin access, and Open Agent UI swaps between the live
+// launch link and the unavailable button in the same place. Keyboard focus on the one replaced
+// moves to its replacement instead of dropping to the page (finding 2880), both ways. This
+// fixture runs no native admin domain, so the access read answers with the API's own status
+// shapes: the deployment completing is what makes the page ask again.
+for (const [from, to] of [
+  ["unavailable", "available"],
+  ["available", "stopped"],
+]) {
+  test(`Open Agent UI keeps keyboard focus when access goes from ${from} to ${to} after a deployment`, async (t) => {
+    const access = { status: from };
+    const { fixture, namespace, agent, current, next, page, record } = await deployingVersion(
+      t,
+      `Native focus ${from}`,
+      {
+        beforeLogin: (page, { namespace, agent, current }) =>
+          page.route(`**/namespaces/${namespace.id}/agents/${agent.id}/native-admin`, (route) => {
+            const host = `${agent.id}.agents.example.test`;
+            return route.fulfill({
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify({
+                data:
+                  access.status === "available"
+                    ? {
+                        status: "available",
+                        host,
+                        origin: `https://${host}`,
+                        activeRevisionId: current.id,
+                        url: `https://${host}/`,
+                      }
+                    : { status: access.status },
+                meta: { requestId: "req_test_native_focus" },
+              }),
+            });
+          }),
+      },
+    );
+    const link = page.getByRole("link", { name: "Open Agent UI", exact: true });
+    const unavailable = page.getByRole("button", { name: "Open Agent UI", exact: true });
+    const [before, after] = from === "available" ? [link, unavailable] : [unavailable, link];
+    await before.waitFor();
+    await before.focus();
+    access.status = to;
+    await fixture.activateRevision(namespace.id, agent.id, next.id, current.id);
+    record.status = "succeeded";
+    await page.clock.runFor(DEPLOYMENT_POLL_MS);
+    await after.waitFor();
+    await before.waitFor({ state: "hidden" });
+    assert.equal(await after.evaluate((node) => node === globalThis.document.activeElement), true);
+  });
+}
 
 // A Configuration tab parked while the deployment fails shows Failed when it comes back: a failed
 // version that never became current is not history (finding 2403).

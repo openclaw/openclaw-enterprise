@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile, spawn, spawnSync } from "node:child_process";
@@ -11,6 +12,7 @@ import { join } from "node:path";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { waitFor } from "../helpers/qa-utils.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { openAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
@@ -83,7 +85,14 @@ async function preparedEndpoint(fixture = providerEndpointFixture(), context) {
 }
 
 test("provider Harness endpoint bootstraps Gateway before provisioning and requests node setup", async () => {
-  const fixture = providerEndpointFixture();
+  const fixture = providerEndpointFixture({
+    revisionOverrides: {
+      plugins: {
+        driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+        plugins: { "codex-plugin:linear@openai-curated-remote": { enabled: true } },
+      },
+    },
+  });
   const {
     driver,
     revision,
@@ -106,6 +115,17 @@ test("provider Harness endpoint bootstraps Gateway before provisioning and reque
   assert.equal(endpoints.length, 0);
   const bootstrapGateway = read("Deployment", gatewayName, gatewayNamespace);
   assert.ok(bootstrapGateway);
+  // This Gateway must issue the setup needed to create the Harness. Waiting for
+  // the Harness's ordinary peer status here would deadlock first deployment.
+  const gatewayEnvironment = bootstrapGateway.spec.template.spec.containers[0].env;
+  assert.equal(
+    gatewayEnvironment.find(({ name }) => name === "OPENCLAW_CODEX_PLUGINS_PREPARED")?.value,
+    "true",
+  );
+  assert.equal(
+    gatewayEnvironment.some(({ name }) => name === "OPENCLAW_PLUGIN_STATUS_PORT"),
+    false,
+  );
   assert.notEqual(
     bootstrapGateway.spec.template.spec.containers[0].env.find(
       ({ name }) => name === "APP_SERVER_URL",
@@ -124,11 +144,18 @@ test("provider Harness endpoint bootstraps Gateway before provisioning and reque
   assert.deepEqual(setupRequests, [
     {
       url: driver.getGatewayEndpoint(revision),
-      nodeUrl: `ws://${gatewayName}.${gatewayNamespace}.svc.cluster.local:8080/node`,
+      // The node needs the scoped TLS route for HTTP transfers and proxy attribution.
+      nodeUrl: `wss://agents.example.internal/namespaces/${revision.namespaceId}/agents/${revision.agentId}/node`,
     },
   ]);
   assert.equal(provisions.length, 1);
   assert.equal(endpoints.length, 1);
+  assert.equal(
+    provisions[0].requirements.environment.some(
+      ({ name }) => name === "OPENCLAW_PLUGIN_STATUS_PORT",
+    ),
+    false,
+  );
 });
 
 test("provider Harness endpoint preparation re-observes the same revision across Pod transitions", async (t) => {
@@ -732,15 +759,14 @@ test("provider Harness verified endpoint trust is projected before rollout and i
       client.terminate();
     }
     sockets.close();
-    return new Promise((resolve) => server.close(resolve));
   });
   sockets.on("connection", (socket, request) => {
     assert.equal(request.headers.authorization, "Bearer test-transport");
     socket.send("trust-ok");
   });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const providerPort = server.address().port;
+  // listen() registers the server close after the WebSocket teardown above, so the
+  // clients and the WebSocket server still close first.
+  const providerPort = await listen(t, server);
   let providerCaBundle = tls.caBundle;
 
   const providerUrl = `wss://localhost:${providerPort}/`;
@@ -906,6 +932,7 @@ test("provider Harness protected execution is released only on current signed in
   const sandbox = {
     ...fixture.sandbox,
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     cleanup: assert.fail,
     enrollHarness: assert.fail,

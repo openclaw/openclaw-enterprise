@@ -17,9 +17,12 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import {
   AGENT_READ,
   apiRequests,
+  authorizationDenials,
+  denyRevisionRead,
   detailUrl,
   deploymentStatusResponse,
   expectNoText,
+  expectReachableReason,
   expireSessionsWhenSettled,
   holdRequests,
   login,
@@ -68,6 +71,7 @@ import {
   RESOURCE_CONFLICT,
   RESOURCE_NOT_FOUND,
   SANDBOX_POLICY_READ_DENIED,
+  STOP_REPEAT_CONFIRMATION,
   STOP_REQUESTED,
   STOPPED_NO_VERSION,
   WORKSPACE_API_UNREACHABLE,
@@ -389,7 +393,12 @@ test("Agent delete uncertainty requires refresh before another destructive reque
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
 
   await page.getByText("Outcome unknown. Deletion may have started.").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Delete Agent" }).isDisabled(), true);
+  const remove = page.getByRole("button", { name: "Delete Agent" });
+  assert.equal(await remove.isDisabled(), true);
+  // Delete waits for Refresh deletion status. It stays in the Tab order, described by the alert
+  // that says so, and sends nothing (finding 2935).
+  const alert = page.locator("#agent-deletion-error");
+  await expectReachableReason(page, remove, (await alert.textContent())?.trim());
   assert.equal(interceptedDeletes, 1);
   assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
   const deleting = await fixture.request("GET", deletePath);
@@ -403,7 +412,8 @@ test("Agent delete uncertainty requires refresh before another destructive reque
   );
   await page.getByRole("button", { name: "Refresh deletion status" }).click();
   await page.getByText("Could not refresh deletion status.").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Delete Agent" }).isDisabled(), true);
+  assert.equal(await remove.isDisabled(), true);
+  await expectReachableReason(page, remove, (await alert.textContent())?.trim());
 
   const refresh = page.waitForResponse(
     (response) =>
@@ -412,6 +422,16 @@ test("Agent delete uncertainty requires refresh before another destructive reque
   await page.getByRole("button", { name: "Refresh deletion status" }).click();
   assert.equal((await refresh).status(), 200);
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  // The confirmed read clears the wait: the repeat is offered, with no stale reason.
+  const repeat = page.getByRole("button", { name: "Request deletion again", exact: true });
+  await waitForEnabled(repeat);
+  assert.deepEqual(
+    await repeat.evaluate((node) => ({
+      ariaDisabled: node.getAttribute("aria-disabled"),
+      describedby: node.getAttribute("aria-describedby"),
+    })),
+    { ariaDisabled: null, describedby: null },
+  );
   assert.equal(interceptedDeletes, 1);
   assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
 });
@@ -505,10 +525,16 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
   assert.equal(writes, 1);
   serverMessage = GENERIC_DENIAL;
   await confirm();
-  await page.getByRole("alert").getByText(deleteRefused("this Agent"), { exact: false }).waitFor();
+  await page
+    .getByRole("alert")
+    .getByText(deleteRefused("Owned cleanup"), { exact: false })
+    .waitFor();
   assert.equal(writes, 2);
   await page.clock.fastForward(DELETION_POLL_MS * 2);
-  await page.getByRole("alert").getByText(deleteRefused("this Agent"), { exact: false }).waitFor();
+  await page
+    .getByRole("alert")
+    .getByText(deleteRefused("Owned cleanup"), { exact: false })
+    .waitFor();
   await page.getByRole("button", { name: "Refresh deletion status", exact: true }).click();
   await page.getByRole("alert").waitFor({ state: "hidden" });
   assert.equal(writes, 2);
@@ -988,10 +1014,9 @@ test("Agent delete denial keeps the Agent visible with permission feedback", asy
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
   assert.equal((await denied).status(), 403);
 
-  // The API names the grant the delete checked on the Agent it named (finding 2534).
-  await page
-    .getByText(callerDenied("Agent delete", `Agent ${agent.id}`), { exact: true })
-    .waitFor();
+  // The page names the Agent and the grant the delete checked, not the API's Agent ID
+  // (findings 2534, 2951).
+  await page.getByText(deleteRefused("Denied Candidate"), { exact: true }).waitFor();
   await page.getByRole("heading", { name: "Denied Candidate" }).waitFor();
   assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
   assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
@@ -1824,6 +1849,92 @@ test("A refused recheck of an open Agent page names the grant the API checked", 
   await refused;
   await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
   await page.getByText(callerDenied("Agent read", `Agent ${agent.id}`), { exact: true }).waitFor();
+});
+
+// Finding D799. A refocus rechecks the session, the Agent and its versions, and reads the shown
+// version again only when the page had it on screen. A version the page proved unreadable on load
+// is not read again: that read would add an audited denial per refocus and its refusal would
+// replace the page with "Access denied". One the page showed and that is revoked since is still
+// taken off the page, current version or not (finding 2913).
+test("A refocus does not read again a version the Agent page proved unreadable", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unreadable refocus", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Unreadable refocus", nativeValues("ur"));
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const versionDenials = () =>
+    authorizationDenials(fixture.auditSink, "openclaw.agent_revisions.read").length;
+  const accessDenied = page.getByRole("heading", { name: "Access denied", exact: true });
+  // Returns the paths this refocus check sent, once the page is idle again.
+  async function refocus() {
+    const sent = requests.length;
+    const listed = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === `${path}/revisions`,
+    );
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await listed;
+    await waitForIdleFetches(page);
+    return requests.slice(sent).map((request) => request.path);
+  }
+
+  // The current version v2 is readable and shown, opened without ?revision. Revoked since, the
+  // newest page of versions leaves it out too, but the page had it on screen: a refocus still
+  // reads it and takes it off the page (finding 2913).
+  await login(page, fixture, `/console/agents/${agent.id}?namespace=${namespace.id}`);
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await waitForIdleFetches(page);
+  denyRevisionRead(fixture, namespace, second.revision);
+  assert.ok((await refocus()).includes(`${path}/revisions/${second.revision.id}`));
+  await accessDenied.waitFor();
+  assert.equal(versionDenials(), 1);
+
+  // Opened again, the newest page of versions lists every version this reader can read and leaves
+  // the current version out, so the page reads it neither on load (finding D791) nor on any
+  // refocus, and keeps its tabs.
+  await page.goto(detailUrl(fixture, namespace.id, agent.id).href);
+  await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  for (let check = 0; check < 2; check += 1) {
+    const sent = await refocus();
+    assert.ok(sent.includes(path), "the refocus check reads the Agent again");
+    assert.equal(sent.filter((sentPath) => sentPath.startsWith(`${path}/revisions/`)).length, 0);
+  }
+  await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
+  assert.equal(await accessDenied.count(), 0);
+  assert.equal(await page.locator(".agent-tabs").count(), 1);
+  assert.equal(versionDenials(), 1);
+
+  // v1 is readable and shown. Revoked since, a refocus finds it and takes it off the page.
+  const olderPath = `${path}/revisions/${first.revision.id}`;
+  await page.goto(
+    detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration").href,
+  );
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await waitForIdleFetches(page);
+  denyRevisionRead(fixture, namespace, first.revision);
+  assert.ok((await refocus()).includes(olderPath));
+  await accessDenied.waitFor();
+  assert.equal(versionDenials(), 2);
+
+  // Opened again, the page shows v1's refusal. A refocus keeps it without another refusal: v1 is
+  // not the current version, so this tab's settled refusal is the proof.
+  await page.goto(
+    detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration").href,
+  );
+  await page.getByRole("heading", { name: "Unreadable refocus", exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  const denials = versionDenials();
+  const tabs = await page.locator(".agent-tabs").count();
+  assert.equal(await accessDenied.count(), 0);
+  assert.equal((await refocus()).includes(olderPath), false);
+  assert.equal(await accessDenied.count(), 0);
+  assert.equal(await page.locator(".agent-tabs").count(), tabs);
+  assert.equal(versionDenials(), denials);
 });
 
 for (const kind of ["agent", "configuration", "namespace"]) {
@@ -4913,6 +5024,9 @@ test("Console can repeat Stop without treating the selected version as cleanup c
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 0);
   await repeat.click();
   dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
+  // The selected version is kept, but the Agent is already requested to stop: the confirmation
+  // repeats the request and does not describe interrupting a running gateway (finding D815).
+  await dialog.getByText(STOP_REPEAT_CONFIRMATION, { exact: true }).waitFor();
   const result = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" && new URL(response.url()).pathname === `${path}/stop`,

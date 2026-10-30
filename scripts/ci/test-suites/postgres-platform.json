@@ -54,7 +54,9 @@
     "tests/integration/postgres-standing-session-worker.test.ts",
     "tests/integration/postgres-standing-expiry-authority.test.ts",
     "tests/integration/credential-proxy-withdrawal.test.ts",
-    "tests/integration/postgres-egress-policy-transaction.test.ts"
+    "tests/integration/credential-proxy-revision-currentness.test.ts",
+    "tests/integration/postgres-egress-policy-transaction.test.ts",
+    "tests/integration/postgres-credential-source-revision-owner.test.ts"
   ],
   "files": [
     {
@@ -193,7 +195,9 @@
         "Delete before admission cancels provisioning while a worker holds its claim, and finishes without a deployment",
         "failed provisioning keeps the accepted plan reserved until retry or deletion",
         "a Plugin Driver switch leaves the provisioning status readable; retry still refuses the plan",
-        "provisioning worker reauthorizes an accepted source after only its exact operate grant is revoked"
+        "provisioning worker reauthorizes an accepted source after only its exact operate grant is revoked",
+        "source provisioning status preserves saved work when its Gateway catalog is unavailable",
+        "source provisioning worker rejects a withdrawn type while failed status remains readable"
       ]
     },
     {
@@ -450,6 +454,13 @@
       ]
     },
     {
+      "path": "tests/integration/credential-proxy-revision-currentness.test.ts",
+      "expectedTests": [
+        "provisioning validates Harness authentication with the source descriptor that supplied its login mode (PostgreSQL)",
+        "credential exchange consults revision history only for inactive executions"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-standing-expiry-authority.test.ts",
       "expectedTests": [
         "standing expiry worker distinguishes model withdrawn",
@@ -531,6 +542,15 @@
         "final placement binds the original Credential Proxy method",
         "authorization throw before mint fences a retained callback",
         "authorization throw after mint fences a retained callback"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-credential-source-revision-owner.test.ts",
+      "expectedTests": [
+        "revision insertion owns its snapshot before a source lock wait",
+        "reversed source lists commit in their original order",
+        "direct insertion respects OCC Namespace Agent source lock order",
+        "deleting source refuses waiting insertion and preserves archived bytes"
       ]
     }
   ]

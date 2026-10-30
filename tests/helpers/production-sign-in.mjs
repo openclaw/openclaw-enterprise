@@ -967,3 +967,19 @@ export async function assertReservedLane(app, { origin, holder, former, label })
     holder: holderResponse.statusCode,
   };
 }
+
+/**
+ * Posts an account operation (`disable`, `enable`, `revoke` or `methods/<methodId>/detach`) as
+ * an administrator, at `expectedVersion` or else the account's current version; returns the
+ * response.
+ */
+export async function changeAccount(app, headers, userId, operation, expectedVersion) {
+  return app.inject({
+    method: "POST",
+    url: `/api/auth/accounts/${userId}/${operation}`,
+    headers,
+    payload: {
+      expectedVersion: expectedVersion ?? (await readAccount(app, headers, userId)).version,
+    },
+  });
+}

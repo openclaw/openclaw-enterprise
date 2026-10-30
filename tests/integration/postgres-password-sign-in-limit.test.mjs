@@ -4,21 +4,19 @@ import { setTimeout as delay } from "node:timers/promises";
 import pg from "pg";
 import { hashLocalPassword } from "../../apps/controller/src/auth/index.ts";
 import { passwordFailureBudget } from "../../apps/controller/src/auth/admission.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
-  composeProductionSignIn,
   consoleOrigin as origin,
   defaultInstallSettings,
   memoryLogger,
-  onboardPasswordAccounts,
-  postgresSignInState,
+  passwordSignIn,
 } from "../helpers/production-sign-in.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { scryptPasswordHasher } from "../helpers/password-hasher.mjs";
 import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "limit-admin@example.test";
-const authSecret = "password-limit-auth-test-secret-at-least-32-bytes";
-const secrets = { "occ-auth/secret": authSecret };
 const ingress = "10.0.0.9";
 const wrongPassword = "wrong-guess-password";
 
@@ -93,7 +91,16 @@ test(
   async (t) => {
     let app;
     let plainApp;
-    const { pool, state } = postgresSignInState(t, () => [app, plainApp]);
+    const { pool, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app, plainApp],
+      {
+        email: "limit-admin@example.test",
+        password: "limit-account-password",
+        secrets: { "occ-auth/secret": "password-limit-auth-test-secret-at-least-32-bytes" },
+        github: false,
+      },
+    );
     const {
       admin,
       accounts: {
@@ -108,14 +115,7 @@ test(
         knownReset,
         proofFairness,
       },
-    } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password: "limit-account-password",
+    } = await onboard({
       // The limiter and its timing parity are under test: keep the real scrypt cost.
       passwordHasher: scryptPasswordHasher,
       accounts: {
@@ -133,39 +133,30 @@ test(
       },
     });
     const proxiedLog = memoryLogger();
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: { ...defaultInstallSettings, OCC_AUTH_TRUSTED_PROXY_CIDRS: "10.0.0.0/24" },
-      secrets,
-      logger: proxiedLog.logger,
-      passwordSlowLaneFloors: slowLane,
-      passwordHasher: scryptPasswordHasher,
-    });
+    app = await composeApp(
+      { ...defaultInstallSettings, OCC_AUTH_TRUSTED_PROXY_CIDRS: "10.0.0.0/24" },
+      {
+        logger: proxiedLog.logger,
+        passwordSlowLaneFloors: slowLane,
+        passwordHasher: scryptPasswordHasher,
+      },
+    );
     const plainLog = memoryLogger();
-    plainApp = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: { ...defaultInstallSettings },
-      secrets,
-      logger: plainLog.logger,
-      passwordSlowLaneFloors: slowLane,
-      passwordHasher: scryptPasswordHasher,
-    });
+    plainApp = await composeApp(
+      { ...defaultInstallSettings },
+      {
+        logger: plainLog.logger,
+        passwordSlowLaneFloors: slowLane,
+        passwordHasher: scryptPasswordHasher,
+      },
+    );
     // Without a trusted proxy every browser reaches the API from the ingress address.
-    const plainSignIn = (account) =>
-      plainApp.inject({
-        method: "POST",
-        url: "/api/auth/sign-in/email",
-        remoteAddress: ingress,
-        headers: { origin },
-        payload: { email: account.email, password: account.password },
-      });
+    const plainSignIn = (account) => passwordSignIn(plainApp, origin, account, ingress);
     const signIn = (client, account) =>
-      app.inject({
-        method: "POST",
-        url: "/api/auth/sign-in/email",
+      injectLocalhost(app, "POST", "/api/auth/sign-in/email", {
         remoteAddress: ingress,
         headers: { origin, "x-forwarded-for": client },
-        payload: { email: account.email, password: account.password },
+        body: { email: account.email, password: account.password },
       });
     const timed = async (client, account) => {
       const started = performance.now();
@@ -291,8 +282,7 @@ test(
           email: "guess-20@example.test",
           password: wrongPassword,
         });
-        assert.equal(refused.statusCode, 429, refused.body);
-        assert.equal(refused.json().error.code, "RATE_LIMITED");
+        assertApiError(refused, 429, "RATE_LIMITED");
         const retryAfter = Number(refused.headers["retry-after"]);
         assert.ok(retryAfter >= 1 && retryAfter <= 60, `Retry-After ${retryAfter}`);
         // A correct password for an ordinary account does not pass the exhausted client.
@@ -399,12 +389,10 @@ test(
         .flat()
         .find((value) => value.startsWith(`${knownDeviceName}=`));
     const plainSignInWith = (cookie, account) =>
-      plainApp.inject({
-        method: "POST",
-        url: "/api/auth/sign-in/email",
+      injectLocalhost(plainApp, "POST", "/api/auth/sign-in/email", {
         remoteAddress: ingress,
         headers: { origin, cookie },
-        payload: { email: account.email, password: account.password },
+        body: { email: account.email, password: account.password },
       });
     let memberDevice;
 

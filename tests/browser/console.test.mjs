@@ -1354,7 +1354,8 @@ test("console retained views clear after session expiry and exact Agent denial",
   await expectNoText(page, /Configuration draft|Selected revision/, () => waitForIdleFetches(page));
 });
 
-// Both shared admission reads must revoke every preview when their outcome is unknown.
+// Both shared admission reads must revoke every preview when their outcome is unknown. Here the
+// API answers 503; a read that never reaches it is covered in console-shell.test.ts.
 for (const gate of ["/api/auth/session", "/namespaces"]) {
   test(`console clears all retained pages after ${gate} fails`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
@@ -1368,7 +1369,7 @@ for (const gate of ["/api/auth/session", "/namespaces"]) {
     await page.getByRole("link", { name: "Namespaces", exact: true }).click();
     await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
 
-    await page.route(`**${gate}`, (route) => route.abort("failed"));
+    await page.route(`**${gate}`, (route) => route.fulfill({ status: 503 }));
     await page.getByRole("link", { name: "Agents", exact: true }).click();
     await page
       .getByRole("heading", {
@@ -2505,6 +2506,13 @@ test("Namespaces recovers stale selection inline and handles losing all readable
   const selector = page.getByRole("combobox", { name: "Choose a valid Namespace", exact: true });
   assert.equal(await selector.isVisible(), true);
   assert.equal(await page.locator(".page-header select").count(), 0);
+  // The panel gives the reason Agents and Secrets give for the same ID, not a bare heading
+  // (finding 2956).
+  const reason = page
+    .getByRole("status")
+    .filter({ has: page.getByRole("heading", { name: "Namespace unavailable", exact: true }) })
+    .getByText(`${NAMESPACE_UNAVAILABLE}. Choose another Namespace.`, { exact: true });
+  await reason.waitFor();
   await selector.selectOption({ label: "Alpha" });
   await shownList.waitFor();
   assert.equal(new URL(page.url()).pathname, "/console/namespaces");
@@ -2513,6 +2521,7 @@ test("Namespaces recovers stale selection inline and handles losing all readable
     await page.getByRole("heading", { name: "Namespace unavailable", exact: true }).count(),
     0,
   );
+  assert.equal(await page.getByText(NAMESPACE_UNAVAILABLE, { exact: false }).count(), 0);
   assert.equal(await page.getByRole("combobox").count(), 0);
 
   await page.goBack();
@@ -2532,6 +2541,8 @@ test("Namespaces recovers stale selection inline and handles losing all readable
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await shownList.waitFor();
   await selector.waitFor();
+  // A Namespace that still exists but is no longer readable gets the same reason.
+  await reason.waitFor();
   assert.equal(await page.getByRole("option", { name: "Alpha", exact: true }).count(), 0);
   await selector.selectOption({ label: "Beta" });
   await shownList.waitFor();
@@ -2845,6 +2856,34 @@ test("a first visit to a deep link asks to sign in; a tab whose session expired 
   await page.goto(`${fixture.origin}/console/agents`);
   await page.getByText("Your session has expired").waitFor();
   await page.getByLabel("Email", { exact: true }).waitFor();
+});
+
+// A page address with a trailing slash names the same page, through sign-in and when
+// signed in, and the address bar shows it without the slash (finding 1906).
+test("a page address with a trailing slash opens that page", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Trailing slash", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await loginThroughForm(page, fixture, "/console/namespaces/");
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/namespaces");
+  await page.goto(`${fixture.origin}/console/agents/new/?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  const url = new URL(page.url());
+  assert.equal(url.pathname + url.search, `/console/agents/new?namespace=${namespace.id}`);
+  // Every trailing slash goes, not only the last; the query and tab stay.
+  const agent = await fixture.createAgent(namespace.id, "Trailing assistant");
+  await page.goto(`${fixture.origin}/console/agents//?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Agents" }).waitFor();
+  const listUrl = new URL(page.url());
+  assert.equal(listUrl.pathname + listUrl.search, `/console/agents?namespace=${namespace.id}`);
+  const detail = `/console/agents/${agent.id}`;
+  await page.goto(`${fixture.origin}${detail}///?namespace=${namespace.id}&tab=configuration`);
+  await page.getByRole("heading", { name: "Trailing assistant" }).waitFor();
+  const detailUrl = new URL(page.url());
+  assert.equal(detailUrl.pathname, detail);
+  assert.equal(detailUrl.searchParams.get("tab"), "configuration");
 });
 
 test("login ignores untrusted returns and resolves an opaque Agent key only after authentication", async (t) => {
