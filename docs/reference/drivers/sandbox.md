@@ -287,6 +287,27 @@ any workload it owns. Namespace cleanup follows revision cleanup.
   failure. The worker retries transient authentication failures within the
   attempt budget. Leave removal pending if the provider cannot confirm absence.
 
+## Configuration
+
+Select the Sandbox for the Installation under `drivers.sandbox` in the trusted
+startup YAML. Its `configuration` contains settings defined by the selected
+implementation; the base `SandboxDriver` interface defines no common startup
+fields. The implementation supplies the schema and semantic validation. Both API
+and worker load the selection at startup; changing these settings requires a
+restart. See [Driver selection and configuration discovery](selection.md#configuration-definitions-and-discovery)
+and the [OpenShell settings](openshell-sandbox.md#configuration).
+
+Per-Agent network additions use the `sandbox-network-policy` configuration
+contribution when the selected Driver declares network policy support. The
+[SandboxPolicy resource](../sandbox-policies.md) owns those settings and their
+application. Admission saves the policy used by a deployment; changing startup
+defaults does not rewrite that saved policy. See [network policy operations](#optional-network-policy-operations)
+for admission and live-update behavior.
+
+Compute supplies [provisioning inputs](#provisioning-inputs), including workload
+identity and credential references. Operators do not configure those method
+inputs as Sandbox startup fields.
+
 ## Limits
 
 - Sandbox selection is optional. Only dedicated execution with bundled Kubernetes Compute supports a Sandbox, including one from an installed package.

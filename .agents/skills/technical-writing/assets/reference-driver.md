@@ -60,6 +60,14 @@ sequenceDiagram
 [Briefly explain any retry or cleanup rules the diagram needs. Distinguish the
 Driver instance from the resources it manages.]
 
+## Configuration
+
+[Explain shared configuration inputs, their scope, validation, and when changes
+take effect. Distinguish Installation settings from per-resource configuration.
+Link the shared selection and configuration contract. Keep implementation-specific
+fields, defaults, and examples in the implementation references. State explicitly
+when this Driver contract defines no common settings.]
+
 ## Limits
 
 [State supported combinations, enforced limits, and behavior outside those limits.]
