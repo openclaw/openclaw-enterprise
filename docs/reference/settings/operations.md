@@ -45,7 +45,7 @@ superuser, create roles or databases, replicate, or bypass row security. The
 migrator needs database `CREATE` and owns the `occ` and `drizzle` schemas. The
 application role must not inherit the migrator or have database/schema `CREATE`.
 
-Classify a database without applying migrations:
+From the target release checkout, classify the database without applying migrations:
 
 ```sh
 pnpm db:migrate --check
@@ -80,7 +80,9 @@ has 46 through `0046_model_probe_failure_cause`;
 through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
 through `0050_agent_credential_sources`; later `pre*` shapes add one each, through
 `preCredentialProxy` (59) and `prePreparedAttemptSettlement` (62, through
-`0062_credential_delivery_custody`). Migration brings each to `completed` with 63 receipts.
+`0062_credential_delivery_custody`). After `0063_prepared_attempt_settlement`,
+63 receipts mean `preGatewayManagedMode`; `0064_gateway_managed_mode` is pending.
+Rerun `--check` after migration and require `completed` from the same release.
 The [canonical manifest](../../../migrations/meta/_canonical-history.json) records
 accepted source and catalog hashes. Never delete or relabel unsupported preview
 receipts. Empty schemas may be absent or owner-only, with no objects or
