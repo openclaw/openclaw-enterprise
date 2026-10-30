@@ -5,7 +5,7 @@ Install OpenClaw Enterprise (OCE) in a private k3d cluster. Then create a dedica
 ## Before you start
 
 - Install the [local Kubernetes tools on Linux](local-kubernetes-tools.md). Use Bash, curl and jq.
-- Ask the credential owner to transfer the **raw Codex personal access token (PAT)** for the approved ChatGPT service account through your secret manager or approved private-file handoff. Set `CODEX_TOKEN_FILE` to the owner-only file containing the token bytes. The [OCE-managed ChatGPT account APIs](../integrations/chatgpt.md) return credential metadata and do not export that token. Set `MODEL` to a native model ID the account can use.
+- [Create a ChatGPT workspace service account and generate its Codex access token](https://learn.chatgpt.com/docs/enterprise/service-accounts).
 - Use the generated OCE service key for REST and the [private Gateway routing key and CA](workspace-routing.md) for WebSocket access. Keep credential files outside the checkout with owner-only permissions.
 - The operator needs permission to create Namespace Secrets, CredentialSources, Configurations, Agents, roles and bindings, and to update and operate the Agent.
 
