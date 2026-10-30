@@ -1624,6 +1624,7 @@ test("Logs of an older version picked on purpose stay on it and link to the serv
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id, revisionId);
   computeDriver.state.podlessRevisions.push(revisionId);
   const { page } = await newPage(t, fixture);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
   const notice = page.locator(".log-running-version");
   await notice.getByText("v2 is selected for service.").waitFor();
@@ -1636,6 +1637,19 @@ test("Logs of an older version picked on purpose stay on it and link to the serv
   const href = new URL((await link.getAttribute("href")) ?? "", page.url());
   assert.equal(href.searchParams.get("revision"), revision.id);
   assert.equal(href.searchParams.get("tab"), "logs");
+
+  // Once the Agent is stopped, no version runs, so the view names none.
+  const stopped = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${agent.id}/stop`,
+  );
+  assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
+  await page.clock.runFor(10_000);
+  await page.getByText("Stop requested", { exact: true }).waitFor();
+  await waitForCondition(
+    async () => (await notice.innerText()) === "",
+    "the notice still names a version after the stop",
+  );
 });
 
 // Finding 2944. A running container that has never restarted has no previous instance, so
