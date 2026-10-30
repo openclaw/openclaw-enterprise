@@ -176,7 +176,7 @@ the key. Private Gateway configuration qualifies parent and subagent selections
 Transport uses the authenticated app server and fail-closed HTTP. See [Harness execution](../harness-execution.md).
 
 `runtime.codexModelSupportsStandaloneWebSearch` declares an explicit endpoint's
-standalone-search capability. See [custom Codex provider capabilities](kubernetes-compute/storage-and-credentials.md#custom-codex-provider-capabilities)
+standalone-search capability. See [custom Codex provider capabilities](kubernetes-compute/managed-native-configuration.md#custom-codex-provider-capabilities)
 for defaults, restrictions, and deployment behavior.
 
 ### Authentication

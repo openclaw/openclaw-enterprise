@@ -211,14 +211,6 @@ How runtime gateways read the managed native configuration, and when native
 admin editing uses a writable copy, is in
 [Managed native configuration](managed-native-configuration.md).
 
-## Custom Codex provider capabilities
-
-Set `runtime.codexModelSupportsStandaloneWebSearch: true` with an explicit
-`runtime.codexModelBaseUrl` supporting standalone search. Default: false.
-OCE writes `supports_standalone_web_search = true` to the existing dedicated
-Codex API-key provider. Protected sources ignore it; `providerTools: none`
-disables search. Network access remains unchanged. Redeploy to apply.
-
 ## Runtime credentials
 
 Canonical Configuration, OCC Secret and managed account credential sources live
