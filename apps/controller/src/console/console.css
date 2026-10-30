@@ -3037,10 +3037,18 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   color: var(--danger);
   border-color: var(--danger);
 }
-.deletion-note .danger:not(:disabled):hover,
-.stop-note .danger:not(:disabled):hover {
+.deletion-note .danger:not(:disabled, [aria-disabled="true"]):hover,
+.stop-note .danger:not(:disabled, [aria-disabled="true"]):hover {
   background: var(--danger-subtle);
   color: var(--danger);
+}
+/* An unavailable Stop or Delete Agent that stays in the Tab order (findings 2935, 2951) fades its
+   label and edge, as other unavailable buttons do; the rule above would keep its full danger
+   color, so it would look usable. */
+.deletion-note .danger.control-unavailable,
+.stop-note .danger.control-unavailable {
+  color: color-mix(in srgb, var(--danger) 60%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--danger) 60%, var(--color-surface));
 }
 /* Danger zone (UX spec 3.9): one card at the end of the Agent page with a row each for Stop and
    Delete: title and one sentence, the outlined danger button at the right, and any status the
