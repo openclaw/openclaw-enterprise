@@ -1,3 +1,4 @@
+import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
 import type { AuditEvent } from "@openclaw-enterprise/contracts";
@@ -144,6 +145,9 @@ export async function composeProduction(
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
   });
 
+  let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
+  const close = (database: { close(): Promise<void> }) =>
+    closeResources(exchange, protectedDriver, preparedGitHub, database);
   try {
     const state = new PostgresPlatformState(pool, {
       preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
@@ -399,24 +403,18 @@ export async function composeProduction(
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
     await preparedGitHub?.connect(pool);
-    const exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
+    exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     app.get("/readyz", async () => {
       await pool.query("SELECT 1");
       return { status: "ready" };
     });
-    app.addHook("onClose", async () => {
-      await exchange?.close();
-      await config.drivers.protectedDriver?.close();
-      await preparedGitHub?.close();
-      await state.close();
-    });
+    app.addHook("onClose", () => close(state));
     phaseCompleted("routes");
     return app;
   } catch (error) {
-    await config.drivers.protectedDriver?.close();
-    await preparedGitHub?.close();
-    await pool.end();
+    // Preserve the startup failure after attempting each cleanup.
+    await close({ close: () => pool.end() }).catch(() => undefined);
     throw error;
   }
 }
