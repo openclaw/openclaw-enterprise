@@ -131,6 +131,38 @@ for (const action of ["Stop", "Delete"] as const) {
   });
 }
 
+// Request Stop again on an Agent already stopped follows the same rule as Stop: the API's grant
+// refusal names the Agent, and the control stays unavailable, described by it (finding 2955).
+test("a refused Request Stop again names the Agent and stays unavailable", async (t) => {
+  const name = "Refused repeat stop";
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
+  const agent = await fixture.createAgent(namespace.id, name, nativeValues("repeat-stop"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  assert.equal((await fixture.request("POST", `${agentPath}/stop`)).status, 202);
+  const member = await fixture.createNamespaceMember(MEMBER, namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture, { browser });
+  // With no permission answer the page offers the repeat, and the API decides.
+  await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id).href,
+    member.credentials,
+  );
+  const row = page.getByRole("region", { name: "Stop Agent", exact: true });
+  const repeat = row.getByRole("button", { name: "Request Stop again", exact: true });
+  await waitForEnabled(repeat);
+  await repeat.click();
+  await page
+    .getByRole("dialog", { name: "Stop this Agent?" })
+    .getByRole("button", { name: "Stop Agent", exact: true })
+    .click();
+  const alert = row.getByRole("alert");
+  await alert.getByText(stopRefused(name), { exact: true }).waitFor();
+  await expectReachableReason(page, repeat, (await alert.textContent())?.trim() ?? "");
+});
+
 // A first Stop or Delete that the API refuses for a reason other than grants shows the API's text
 // as written (findings 2534, 2955): the caller-state denial any authorized request can get, and
 // the retry-ownership denial a Delete gets when another actor's deletion failed after this page
@@ -305,8 +337,11 @@ test("a refused Request deletion again names the Agent, not the API's denial", a
   const response = await refused;
   assert.equal(response.status(), 403);
   assert.ok((await response.json()).error.message.startsWith("Not authorized: "));
-  await row.getByRole("alert").getByText(deleteRefused(name), { exact: true }).waitFor();
+  const alert = row.getByRole("alert");
+  await alert.getByText(deleteRefused(name), { exact: true }).waitFor();
   assert.equal(await row.getByText("Not authorized:").count(), 0);
+  // A grant refusal keeps the repeat unavailable, described by the alert, as for a first Delete.
+  await expectReachableReason(page, repeat, (await alert.textContent())?.trim() ?? "");
 });
 
 // After the API refused a Create Secret, the dialog's Show value toggle was natively disabled
