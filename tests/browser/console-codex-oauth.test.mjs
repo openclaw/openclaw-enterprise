@@ -7,6 +7,7 @@ import {
   DEVICE_ACCOUNT_ID,
 } from "../helpers/device-credential-gateway.mjs";
 import {
+  MEMBER_WRITE,
   apiRequests,
   expectNoText,
   login,
@@ -751,6 +752,24 @@ test("Sign in with OAuth and Cancel login keep keyboard focus", async (t) => {
   assert.equal(oauth.starts(), 1);
 });
 
+// Focus moves only off the control the reader pressed. A reader who moved on while the start ran
+// keeps focus where they put it when the reply replaces Sign in with Cancel login.
+test("a start's reply leaves focus where the reader moved it", async (t) => {
+  const oauth = await openAgentOAuth(t, "OAuth focus elsewhere");
+  const { page, start } = oauth;
+  const held = await holdNextStart(t, oauth);
+  await waitForIdleFetches(page);
+  await start.focus();
+  await page.keyboard.press("Enter");
+  await held.answered;
+  const source = page.getByLabel("Authentication source");
+  await source.focus();
+  held.release();
+  await page.getByText(WAITING, { exact: true }).waitFor();
+  await settlePageRequests(page);
+  assert.equal(await source.evaluate((node) => node === globalThis.document.activeElement), true);
+});
+
 // A start's reply that lands after the reader switched to another tab of the same Agent page
 // belongs to the Credentials tab, which is kept while the start is pending (finding 2980). Before
 // the fix, the reply was dropped and the return rebuilt the tab from its draft: a usable challenge
@@ -948,6 +967,38 @@ test("a refused device login start on Create Agent names the create grants it ch
       `/namespaces/${namespace.id}/agents/device-authorizations`,
   );
   await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
+  assert.equal((await refused).status(), 403);
+  await page.getByText(DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
+});
+
+// Only an Installation administrator reads the Installation. A member's refused read says nothing
+// about the Drivers, so Sign in stays offered and the API's answer decides (finding 2991): here its
+// 403 names the grants, never the Drivers reason.
+test("a member's refused Installation read leaves Sign in offered on Create Agent", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth member");
+  const { gateway, refresh } = createDeviceCredentialDrivers();
+  for (const driver of [gateway, refresh]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const member = await fixture.createNamespaceMember("oauth-member", namespace.id, MEMBER_WRITE);
+  const { page } = await newPage(t, fixture);
+  const installationRead = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/installation",
+  );
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Authentication method").selectOption("credential_source");
+  assert.equal((await installationRead).status(), 403);
+  await page.getByText("Sign in to connect your ChatGPT account.", { exact: true }).waitFor();
+  const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
+  assert.equal(await start.getAttribute("aria-disabled"), null);
+  const refused = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname ===
+      `/namespaces/${namespace.id}/agents/device-authorizations`,
+  );
+  await start.click();
   assert.equal((await refused).status(), 403);
   await page.getByText(DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
 });
