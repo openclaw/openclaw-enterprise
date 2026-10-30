@@ -137,12 +137,14 @@ Set `CA_BUNDLE` to a PEM file containing the usual public roots and the network'
 ```bash
 set -euo pipefail
 umask 077
+# Use only the cluster recorded by this quickstart.
 state=${OCC_DEVELOPMENT_STATE_DIRECTORY:?}
 cluster=$(jq -er .cluster "$state/state.json")
 context="k3d-$cluster"
 ns=$(jq -er .platformNamespace "$state/state.json")
 export KUBECONFIG="$state/kubeconfig"
 test "$(kubectl config current-context)" = "$context"
+# Build the supervisor with the approved public trust bundle in an otherwise empty directory.
 dir=$(mktemp -d)
 cp "${CA_BUNDLE:?Supply the approved public CA bundle}" "$dir/ca-certificates.crt"
 cat > "$dir/Dockerfile" <<'DOCKERFILE'
@@ -153,10 +155,12 @@ repo=docker.io/openclaw-development/openshell-supervisor
 tag="$repo:local-ca-$(date +%s)"
 docker build -t "$tag" "$dir"
 node="k3d-$cluster-server-0"
+# Import the image and read back the manifest digest actually stored on this node.
 docker save "$tag" | docker exec -i "$node" ctr -n k8s.io images import -
 digest=$(docker exec "$node" ctr -n k8s.io images ls | awk -v tag="$tag" '$1==tag {print $3}')
 [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
 docker exec "$node" ctr -n k8s.io images tag "$tag" "$repo@$digest"
+# Reload only the OpenShell Gateway Helm release with the verified supervisor digest.
 helm --kube-context "$context" -n "$ns" get values openshell-gateway -o json > "$dir/values.json"
 helm --kube-context "$context" -n "$ns" upgrade openshell-gateway \
   "$state/openshell/chart/helm-chart-0.1.5.tgz" -f "$dir/values.json" \
@@ -170,6 +174,7 @@ Check the supervisor Pod's image ID against the imported manifest. Keep the Sand
 If installation stalls while pulling the Agent Sandbox controller, check the `agent-sandbox-system` Pod events with the new cluster's kubeconfig. When the host can pull the required image but the node cannot, import that exact image from another terminal while the launcher waits:
 
 ```bash
+# Use only the cluster recorded by this quickstart.
 state=${OCC_DEVELOPMENT_STATE_DIRECTORY:?}
 cluster=$(jq -er .cluster "$state/state.json")
 node="k3d-$cluster-server-0"

@@ -5,6 +5,7 @@ Use these commands in Bash on a Linux AMD64 or ARM64 host. Start from the OCE ch
 On Ubuntu, install the base utilities if they are missing. If Docker is missing, follow [Docker Engine for Ubuntu](https://docs.docker.com/engine/install/ubuntu/) and check access from your operator account. Authenticate the GitHub reader with your approved account for the independent repository check.
 
 ```bash
+# Install only the missing host utilities; the remaining downloads use a private tools directory.
 sudo apt-get update
 sudo apt-get install -y ca-certificates curl git gh jq openssl tar xz-utils
 docker version --format '{{.Server.Version}}'
@@ -17,6 +18,7 @@ Install the Node and Go versions pinned for this release into a new user-owned d
 set -euo pipefail
 umask 077
 tools=$(mktemp -d)
+# Select the checksums for the host architecture.
 case "$(uname -m)" in
   x86_64)
     node_arch=x64; go_arch=amd64
@@ -37,6 +39,7 @@ tar -xf "$tools/node.tar.xz" -C "$tools"
 tar -xf "$tools/go.tar.gz" -C "$tools"
 mkdir "$tools/bin"
 export PATH="$tools/bin:$tools/$node_dir/bin:$tools/go/bin:$PATH"
+# Keep the package manager cache writable even when the default user cache is read-only.
 export COREPACK_HOME="$tools/corepack"
 corepack enable --install-directory "$tools/bin" pnpm
 ```
@@ -44,6 +47,7 @@ corepack enable --install-directory "$tools/bin" pnpm
 Use the repository's k3d tool installer. It checks the Docker daemon and installs checksum-verified kubectl, k3d, Helm and yq. Corepack reads the pnpm version and integrity hash from the checkout's `package.json`.
 
 ```bash
+# Install the pinned k3d tools and print the versions the next steps will use.
 RUNNER_TEMP="$tools" bash scripts/ci/setup-tools.sh k3d
 node --version
 go version
