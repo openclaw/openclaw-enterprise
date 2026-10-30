@@ -25,8 +25,11 @@ function reach(path: string): Promise<string> {
 // worker shutdown skipped the receipt server. Its listener kept the worker process alive after
 // SIGTERM until the kubelet's SIGKILL. Every later step must still close, and the first failure
 // is the one worker.mjs reports as SHUTDOWN_FAILED.
-for (const failing of [["transport", "prepared"], ["prepared"]]) {
-  test(`worker shutdown closes the receipt server after a ${failing[0]} close failure`, async (t) => {
+for (const failing of [
+  { first: "transport", also: ["prepared"] },
+  { first: "prepared", also: [] },
+]) {
+  test(`worker shutdown closes the receipt server after a ${failing.first} close failure`, async (t) => {
     const directory = await socketDirectory(t, "occ-worker-shutdown-", {
       longest: "receipt.sock",
     });
@@ -44,7 +47,9 @@ for (const failing of [["transport", "prepared"], ["prepared"]]) {
     assert.equal(await reach(receiptPath), "connected");
 
     const events: string[] = [];
-    const failures = new Map(failing.map((name) => [name, new Error(`${name} close failed`)]));
+    const failures = new Map(
+      [failing.first, ...failing.also].map((name) => [name, new Error(`${name} close failed`)]),
+    );
     const step = (name: string) => async () => {
       events.push(name);
       const failure = failures.get(name);
@@ -66,7 +71,7 @@ for (const failing of [["transport", "prepared"], ["prepared"]]) {
         preparedGitHub: { close: step("github") },
         worker: { stop: step("worker") },
       }),
-      (error) => error === failures.get(failing[0]),
+      (error) => error === failures.get(failing.first),
     );
 
     // Same order as before the fix, with no step skipped.
