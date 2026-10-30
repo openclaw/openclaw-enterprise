@@ -524,7 +524,7 @@ export const scenarios = {
     description:
       "The caller's access does not include Secret creation. Create Secret is disabled and the note under the toolbar names the reason.",
     steps: [
-      "Check that Create Secret is disabled and that a screen reader names the note as its description.",
+      "Tab to Create Secret. It takes focus and looks unavailable, a screen reader names the note as its description, and Enter, Space or a click opens nothing.",
     ],
   },
   secretsCreateDenied: {
@@ -560,7 +560,10 @@ export const scenarios = {
     name: "Consumers and restricted references",
     path: "/console/secrets",
     secretConsumers: {
-      agents: ["agt_00000000-0000-4000-8000-000000000001"],
+      agents: [
+        "agt_00000000-0000-4000-8000-000000000001",
+        "agt_00000000-0000-4000-8000-000000000099",
+      ],
       configurations: ["cfg_00000000-0000-4000-8000-000000000001"],
       credentialSources: [],
       provisioningRequests: [],
@@ -569,7 +572,7 @@ export const scenarios = {
     },
     actions: [click("Demo model API key (simulated)")],
     description:
-      "Agent links and other consumer IDs are grouped by resource. The blue notice explains restricted visibility; the amber warning identifies an incomplete list. Simulated UI proof.",
+      "The readable Agent keeps its link. A previously listed Agent shows no identity or link and asks you to reopen the Secret to check again. Hidden count, incomplete-list warning and disabled deletion remain. Simulated UI proof.",
   },
   secretsReadOnly: {
     group: "Pages/Secrets",
@@ -587,6 +590,9 @@ export const scenarios = {
     actions: [click("Demo model API key (simulated)")],
     description:
       "The Secret read says this caller may neither replace nor delete the Secret. Both buttons are disabled before any typing, and each names its reason. Consumers name the Agent, with its ID beside it. Simulated UI proof.",
+    steps: [
+      "Tab to Replace value and Delete Secret. Each takes focus and looks unavailable. Replace value is described by its note; Delete Secret by the blocked-deletion sentence and its note. Enter, Space or a click opens nothing.",
+    ],
     gap: "The answer is advisory. The controller still authorizes each write.",
   },
   secretsLinkUnlisted: {
@@ -1192,7 +1198,7 @@ export const scenarios = {
       "The row's Stop icon opens the same confirmation as Agent detail. Cancel returns focus to the icon without a write; Stop Agent requests the stopped state.",
     steps: [
       "Cancel the dialog and check focus returns to the Stop icon.",
-      "Open it again and select Stop Agent. The row shows Stop requested, its Stop icon is disabled, and the list stays open.",
+      "Open it again and select Stop Agent. The row shows Stop requested, its Stop icon is disabled but keeps focus with Stop requested as its description, and the list stays open.",
       "In Populated, never-deployed Agents show no Stop icon, as on Agent detail.",
     ],
     gap: "The fixture records the requested state only. Live runtime shutdown is not simulated.",
@@ -1206,7 +1212,7 @@ export const scenarios = {
       { selector: ".agent-stop-dialog button.danger", click: true },
     ],
     description:
-      "An accepted row Stop shows a status notice, a Stop requested badge, and a disabled Stop icon. Delete stays available.",
+      "An accepted row Stop shows a status notice, a Stop requested badge, and a disabled Stop icon that keeps focus, described by the badge. Delete stays available.",
   },
   agentsRowDeleteConfirm: {
     group: "Pages/Agents",
@@ -1260,6 +1266,7 @@ export const scenarios = {
     description:
       "The permission summary says this caller can neither stop nor delete these Agents. Each row disables its icons and says why before any confirmation.",
     steps: [
+      "Tab to a row's Stop and Delete icons. Each takes focus and looks unavailable, its description is the row's note, and Enter, Space or a click opens no confirmation.",
       "Find Needs operate and delete under each row's icons. Hover it for the whole reason, which names an Installation administrator as who grants them. The icons do not open a confirmation.",
       "Open an Agent: its detail page explains the same restrictions.",
     ],
@@ -1320,6 +1327,7 @@ export const scenarios = {
     description: "The permission summary says this caller cannot create an Agent here.",
     steps: [
       "Find the explanation beside Create Agent. The action is unavailable; opening a readable Agent still works.",
+      "Tab to Create Agent. It takes focus and looks unavailable, its description is the explanation, and Enter, Space or a click does nothing.",
     ],
   },
   agentsCreateRestrictedEmpty: {
@@ -1659,6 +1667,9 @@ export const scenarios = {
     ],
     description:
       "After the API refuses creation, the page disables Create Namespace, says why, and focuses that reason. Refresh or a browser reload offers creation again.",
+    steps: [
+      "Tab to Create Namespace. It takes focus and looks unavailable, described by the refusal; Enter, Space or a click opens nothing.",
+    ],
   },
   namespaceCreate: {
     group: "Pages/Namespaces",
@@ -1856,6 +1867,9 @@ export const scenarios = {
     actions: [click("Start without Preset"), { selector: "#agent-auth-method", value: "api_key" }],
     description:
       "The Create form keeps the provisioning Namespace's warning note, and says a Dedicated Agent can be created once the Namespace is ready instead of promising it deploys when created. Create Agent stays disabled, described by that line; an Embedded OpenClaw draft still saves.",
+    steps: [
+      "Tab to Create Agent. It takes focus and looks unavailable, described by that line; Enter, Space or a click submits nothing.",
+    ],
   },
   createFormNamespaceBecomesReady: {
     group: "Pages/Create Agent",
@@ -3868,12 +3882,37 @@ export const scenarios = {
       { suffix: "/permissions", status: 503, code: "DEPENDENCY_UNAVAILABLE" },
     ],
     description:
-      "The Installation read is refused and the Namespace permission read failed, so whether this caller may create Agents is unknown. Create Agent stays disabled, a warning above the form says the permission check failed, and its Retry permission check rereads only the permission answer: a grant continues as Member with Agent create, a denial keeps the refusal in the same block.",
+      "The Installation read is refused and the Namespace permission read failed, so whether this caller may create Agents is unknown. Create Agent stays disabled, a warning above the form says the permission check failed, and its Retry permission check rereads only the permission answer: a grant continues as Member with Agent create, a denial replaces the form with the refusal a fresh load shows. Repository access reads no choices until the answer allows Agent create.",
     steps: [
       'Above the form, the "Your access" warning reads "Your permissions in this Namespace could not be checked"; the hint under the form fields is empty.',
+      'Repository access reads "Repository choices load after your permission check." and offers no retry.',
       "Retry permission check is the warning's action; the fixture keeps failing the read, so the text stays.",
     ],
-    gap: "The member creation browser test also covers a successful retry.",
+    gap: "The member creation browser tests cover a retry that grants and one that refuses Agent create.",
+  },
+  createPermissionRetryDenied: {
+    group: "Pages/Create Agent",
+    name: "Permission retry refuses Agent create",
+    path: create,
+    actions: [...form, click("Retry permission check")],
+    rules: [
+      { path: "/installation", status: 403, code: "FORBIDDEN" },
+      { suffix: "/permissions", status: 503, code: "DEPENDENCY_UNAVAILABLE", once: true },
+      {
+        suffix: "/permissions",
+        data: {
+          agents: { create: false },
+          secrets: { create: false },
+          installation: { administer: false },
+        },
+      },
+    ],
+    description:
+      "The Installation read is refused and the first Namespace permission read failed. Retry permission check then answers that this caller may not create Agents: the form is replaced by the refusal a fresh load shows. Repository access never read its choices.",
+    steps: [
+      'The page shows "Creating Agents is not available" with the access reason, and no form or start choices.',
+    ],
+    gap: "The story presses Retry permission check from a script, so focus stays on the page heading. The member creation browser test presses it, checks that the refusal takes focus, and counts repository reads and audited denials against the real API.",
   },
   createMember: {
     group: "Pages/Create Agent",
@@ -4633,6 +4672,9 @@ export const scenarios = {
     rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 503, once: true }],
     description:
       "A failed mutation response leaves the outcome uncertain. Refresh current policy before explicitly retrying; no automatic replay occurs.",
+    steps: [
+      "Tab to the Principal ID, the acknowledgement and Share Agent. Each takes focus and looks unavailable, described by the alert that asks for Refresh sharing; typing, Enter, Space or a click changes nothing.",
+    ],
   },
   agentSharingRequiredFields: {
     group: "Pages/Agent detail",
@@ -6222,6 +6264,7 @@ export const scenarios = {
     steps: [
       'Selected for service reads "A newer version you cannot read"; the line under the version chooser reads "A newer version you cannot read remains selected for service." and the status line "The current version is one you cannot read; v7 is an older version." No raw version ID shows.',
       "The request log shows no read of the current version.",
+      "Switch to another window and back: the page checks the session, the Agent and its versions again and keeps this page. The request log still shows no read of the current version.",
     ],
   },
   agentCurrentVersionHiddenLogs: {
@@ -6385,6 +6428,9 @@ export const scenarios = {
     agentPermissionSummary: { update: true, deploy: true, operate: false, delete: true },
     description:
       "Diagnostics need Agent operate. For a viewer whose permission answer denies it, Run diagnostics is disabled and says why, and the danger zone has no Stop row.",
+    steps: [
+      "Tab to Run diagnostics for this version. It takes focus and looks unavailable, its description is the note under it, and Enter, Space or a click runs nothing.",
+    ],
     gap: "The permission answer is simulated; the API still authorizes every request.",
   },
   diagnosticsRefused: {
@@ -6509,6 +6555,17 @@ export const scenarios = {
     ],
     gap: "Simulated UI state only; this preview does not prove a live Pod transition.",
   },
+  runtimeLogsNoPod: {
+    ...runtimeLogsPage,
+    name: "Logs of a version with no running Pod",
+    runtimePod: "none",
+    description:
+      "The version has no running Pod, so Previous instance, Follow, Refresh logs and Download are unavailable, and the output status says why.",
+    steps: [
+      "Tab through the log controls. Previous instance, Follow, Refresh logs and Download each take focus and look unavailable, described by “This version has no running Pod for this source.” Enter, Space or a click does nothing (finding 2929).",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live Pod transition.",
+  },
   runtimeLogsFilteredDownload: {
     group: "Pages/Agent detail",
     name: "Runtime logs filtered and downloaded",
@@ -6577,6 +6634,7 @@ export const scenarios = {
       "An Agent operator sees Pod status and Events but no log text. The page names the missing grants and does not request the log view again.",
     steps: [
       "Check that the permission message is visible inside the Logs card and unavailable actions remain disabled.",
+      "Tab through Source, Previous instance, Include debug, Follow, Refresh logs and Download. Each takes focus and looks unavailable, its description is the permission message, and Enter, Space, a click or an arrow key changes nothing.",
     ],
   },
   runtimeLogPodReplaced: {
@@ -6979,6 +7037,29 @@ export const scenarios = {
     description:
       "A denial for the Agent's own service principal names the grant the Agent lacks and who gives it. The Secret is named only to a caller who may read it. A caller's own denial keeps the console's guidance.",
   },
+  deploySandboxPolicyReadDenied: {
+    group: "Pages/Agent detail",
+    name: "Deployment needs SandboxPolicy read",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Not authorized: this needs SandboxPolicy read on SandboxPolicy sbp_00000000-0000-4000-8000-000000000001. Ask an Installation administrator to grant it.",
+      },
+    ],
+    actions: [click("Deploy new version")],
+    description:
+      "The Agent's network policy has saved rules, so deploying also needs SandboxPolicy read on it. The API's denial names the policy by its ID; the alert under Deploy new version names it in words and says who grants the read.",
+    steps: [
+      'The alert reads "Deploying this Agent needs SandboxPolicy read on its network policy, which your access does not include. Ask an Installation administrator to grant it." No sbp_ ID shows.',
+      "Deploy new version is enabled again for a retry after a grant.",
+    ],
+    gap: "The refusal is simulated; the API decides whether the policy has saved rules and whether the caller may read it.",
+  },
   revisionDeployDenied: {
     group: "Pages/Agent detail",
     name: "New version deployment denied",
@@ -7106,6 +7187,9 @@ export const scenarios = {
     },
     description:
       "The permission answer lists the bot token binding as the only one whose Secret the editor cannot operate. Disable saves no bindings, so it would keep that Secret bound: Disable Slack is shown disabled with a note to choose another Secret in Edit Slack first. Edit Slack stays available.",
+    steps: [
+      "Tab to Disable Slack. It takes focus and looks unavailable, described by the note; Enter, Space or a click saves nothing.",
+    ],
     gap: "The permission answer is simulated, so a rebind here does not enable Disable; the browser test covers that step.",
   },
   slackThreadedDefault: {
@@ -7750,6 +7834,9 @@ export const scenarios = {
     readOnlyPermissionSummary: true,
     description:
       "The permission answer denies Agent update, so Save authentication source and its fields are disabled, and the note names the grant to ask for.",
+    steps: [
+      "Tab to Authentication source, API key Secret and Save authentication source. Each takes focus and looks unavailable. The select and Save are described by the note; the Secret field by its status. Enter, Space, a click, an arrow key or typing changes nothing.",
+    ],
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   credentialsSourcesOperateDenied: {
@@ -7859,6 +7946,9 @@ export const scenarios = {
     },
     description:
       "The permission answer allows Configuration update but not Secret operate on every Secret the Configuration binds, which each Configuration save needs. The Slack token pickers are disabled, Save channel Secrets is not offered, and a note names the missing grant. Each Agent update checks the same Secrets, so Save authentication source is disabled too.",
+    steps: [
+      "Tab to Slack app token and Slack bot token. Each takes focus and looks unavailable, its description is its status line, and an arrow key or typing opens no list and changes nothing.",
+    ],
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   credentialsSlackReplaceDenied: {
@@ -8566,6 +8656,7 @@ export const scenarios = {
     steps: [
       "Switch Authentication source to API key, Service Accounts, and Operator-managed credentials. The issued-account error disappears; each source shows its own fields with consistent styling.",
       "Return to Issued ChatGPT service account. The unavailable-account feedback and saved account return; the failed lookup does not change its selection.",
+      "Tab to the account select. It takes focus and looks unavailable, its description is the feedback, and Enter, Space, a click or an arrow key changes nothing.",
     ],
   },
   nativeAdmin: {

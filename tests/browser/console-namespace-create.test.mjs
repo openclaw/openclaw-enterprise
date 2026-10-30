@@ -12,6 +12,7 @@ import {
 import {
   apiRequests,
   authorizationDenials,
+  expectReachableReason,
   expectWriteAsksBeforeUnload,
   fileBrowser,
   holdRequests,
@@ -391,6 +392,10 @@ test("a member is not invited to create, and a real IAM denial disables Create N
     await emptyText.textContent(),
     "Ask an Installation administrator to create a Namespace or to give you access to an existing one.",
   );
+  // The refused Create Namespace stays in the Tab order, described by the refusal, and opens
+  // nothing (class of finding 2899).
+  await expectReachableReason(page, opener, REFUSED);
+  assert.equal(await dialog.count(), 0);
   // The page's Refresh offers creation again, as the refusal says (finding 2083); Escape after
   // the next refusal also leaves focus on it.
   await page.getByRole("button", { name: "Refresh", exact: true }).click();

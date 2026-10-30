@@ -10,6 +10,7 @@ import {
   element,
   revealStatus,
   setStatusTone,
+  setUnavailable,
   statusBlock,
   validateOnSubmit,
   withRequestId,
@@ -146,9 +147,6 @@ export function renderAgentAccess(
 
   function render() {
     const blocked = state.pending || !state.loaded || state.needsRefresh;
-    principal.disabled = blocked;
-    acknowledge.disabled = blocked;
-    share.disabled = blocked;
     refresh.disabled = state.pending;
     // The form shows disabled while the policy loads, instead of popping in above the grants
     // once it has (finding 1410); it hides only when the policy could not be read.
@@ -175,6 +173,16 @@ export function renderAgentAccess(
     const refusal = feedback.querySelector<HTMLElement>("[role=alert]");
     if (refusal) {
       setStatusTone(refusal, "danger");
+    }
+    // After a refused or failed change the form waits for Refresh sharing, and the refusal says
+    // so: each control stays in the Tab order, described by it (class of finding 2899). Without
+    // that refusal (pending or not loaded yet) they stay natively disabled, even with focus.
+    const reason = state.needsRefresh ? refusal : null;
+    for (const control of [principal, acknowledge, share]) {
+      setUnavailable(control, blocked && reason !== null, reason);
+      if (blocked && reason === null) {
+        control.disabled = true;
+      }
     }
     grants.replaceChildren();
     if (!state.loaded) {
@@ -233,15 +241,13 @@ export function renderAgentAccess(
     }
   }
 
-  // A recheck reads one list at a time: a reader whose administration ended is refused, and
-  // audited, once.
-  async function readPolicy({ oneAtATime = false } = {}) {
-    const readRoles = () => context.request(`${path}/roles`, INSTALLATION_ADMINISTRATION);
-    const readBindings = () =>
-      context.request(`${path}/access-bindings`, INSTALLATION_ADMINISTRATION);
-    const [roles, bindings] = oneAtATime
-      ? [await readRoles(), await readBindings()]
-      : await Promise.all([readRoles(), readBindings()]);
+  // The two lists are read one at a time: a reader whose administration ended is refused, and
+  // audited, once. The page confirms administration when it loads and the tab can open much
+  // later, so a first open after a revoke was refused twice (finding D804), as a return was
+  // (finding D790).
+  async function readPolicy() {
+    const roles = await context.request(`${path}/roles`, INSTALLATION_ADMINISTRATION);
+    const bindings = await context.request(`${path}/access-bindings`, INSTALLATION_ADMINISTRATION);
     if (!context.isCurrent()) {
       throw new DOMException("View closed", "AbortError");
     }
@@ -293,7 +299,7 @@ export function renderAgentAccess(
     state.error = null;
     render();
     try {
-      await readPolicy({ oneAtATime: recheck });
+      await readPolicy();
       section.hidden = false;
       state.needsRefresh = false;
       // What the listed bindings cannot confirm is said once, in the page's disclosure. A recheck

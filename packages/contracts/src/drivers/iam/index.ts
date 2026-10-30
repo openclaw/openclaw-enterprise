@@ -1,4 +1,4 @@
-import type { Driver } from "./driver.ts";
+import type { Driver } from "../index.ts";
 import type {
   AccessBinding,
   AuthorizationDecision,
@@ -11,7 +11,7 @@ import type {
   Restriction,
   Role,
   ServicePrincipal,
-} from "./index.ts";
+} from "../../index.ts";
 
 export interface IAMDriver extends Driver {
   readonly capability: "iam";

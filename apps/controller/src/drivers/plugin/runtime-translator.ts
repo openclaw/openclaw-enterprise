@@ -572,6 +572,38 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     });
   }
 
+  function codexSearchPlan(selections: unknown) {
+    return selectionEntries(selections).map(([pluginId]) => ({
+      pluginId,
+      params: {
+        searchTerm: codexSlugFromNativeId(codexNativeIdFromPluginId(pluginId)),
+        scope: "global",
+        limit: 100,
+      },
+    }));
+  }
+
+  function codexReadParamsFromSearch(pluginId: string, response: unknown) {
+    if (!isRecord(response)) {
+      throw new Error("Codex plugin search response is missing.");
+    }
+    const nativeId = codexNativeIdFromPluginId(pluginId);
+    for (const result of requiredArray(response.data, "Codex plugin search results")) {
+      if (
+        isRecord(result) &&
+        result.marketplaceName === CODEX_MARKETPLACE &&
+        isRecord(result.plugin) &&
+        result.plugin.id === nativeId
+      ) {
+        return {
+          remoteMarketplaceName: CODEX_MARKETPLACE,
+          pluginName: codexSummaryRemotePluginId(result.plugin),
+        };
+      }
+    }
+    return undefined;
+  }
+
   function detailRecord(value: unknown): Record<string, unknown> {
     const wrapped = isRecord(value) && isRecord(value.plugin) ? value.plugin : value;
     if (!isRecord(wrapped)) {
@@ -1062,6 +1094,8 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     hasAliasedSelections,
     validatePolicies,
     codexReadParamsForSelections,
+    codexSearchPlan,
+    codexReadParamsFromSearch,
     codexRuntimeArtifact,
     openClawCatalogEntries,
     openClawManagedEntryConfig,

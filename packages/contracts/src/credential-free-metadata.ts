@@ -1,4 +1,4 @@
-import type { EgressRef, EgressSourceKey } from "./credential-proxy.ts";
+import type { EgressRef, EgressSourceKey } from "./drivers/credential-proxy/index.ts";
 
 export const credentialFreeMetadataType = "credential-free-repository-metadata";
 export const credentialFreeProviderRef = { id: credentialFreeMetadataType, generation: 1 } as const;

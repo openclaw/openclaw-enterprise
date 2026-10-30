@@ -26,12 +26,21 @@ interface NavigationOptions {
   }): void;
 }
 
+// A page address with a trailing slash names the same page (finding 1906).
+function canonicalUrl(href: string) {
+  const url = new URL(href);
+  if (url.pathname.length > "/console/".length && url.pathname.endsWith("/")) {
+    url.pathname = url.pathname.slice(0, -1);
+  }
+  return url.href;
+}
+
 export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: NavigationOptions) {
   // The initial entry is position zero. Keep the position on replaceState, including sign-in,
   // so a refused Back or Forward can return to its starting entry without rewriting history.
   let position: number | null = entryPosition() ?? 0;
   let restoring: number | null = null;
-  replaceUrl(location.href);
+  replaceUrl(canonicalUrl(location.href));
 
   function route() {
     const url = new URL(location.href);

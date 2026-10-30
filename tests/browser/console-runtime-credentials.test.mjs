@@ -12,6 +12,8 @@ import {
   apiRequests,
   detailUrl,
   expectNoText,
+  expectReachableReason,
+  holdRequests,
   login,
   nativeValues,
   newPage,
@@ -871,12 +873,15 @@ test("Deploy waits for the Agent's Secret grant read and sends no deploy it woul
   const readsReleased = new Promise((resolve) => {
     releaseReads = resolve;
   });
-  let heldReads = 0;
+  let readHeld;
+  const readStarted = new Promise((resolve) => {
+    readHeld = resolve;
+  });
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
     async (route, request) => {
       if (request.method() === "GET") {
-        heldReads += 1;
+        readHeld();
         await readsReleased;
       }
       await route.fallback();
@@ -897,7 +902,8 @@ test("Deploy waits for the Agent's Secret grant read and sends no deploy it woul
     .locator("section.agent-draft-actions p.muted[role=status]")
     .filter({ hasText: /\S/ })
     .waitFor();
-  assert.ok(heldReads > 0, "the grant read is in flight");
+  // The grant read asks for the bindings once the roles have answered (finding 2919).
+  await readStarted;
   assert.equal(await deploy.isDisabled(), true);
   await page.getByText("Checking this Agent's credential access before deploying.").waitFor();
   // The checking text sits in the 250 ms delayed-status span, in the deploy status and the
@@ -954,11 +960,16 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
     releaseRead = resolve;
   });
   let heldRead = null;
+  let readHeld;
+  const readStarted = new Promise((resolve) => {
+    readHeld = resolve;
+  });
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
     async (route, request) => {
       if (request.method() === "GET" && heldRead === null) {
         heldRead = request;
+        readHeld();
         await readReleased;
       }
       await route.fallback();
@@ -994,7 +1005,8 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   const deployStatus = page.locator("section.agent-draft-actions p.muted[role=status]");
   await deployStatus.filter({ hasText: /\S/ }).waitFor();
-  assert.ok(heldRead, "the grant read is in flight");
+  // The grant read asks for the bindings once the roles have answered (finding 2919).
+  await readStarted;
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await selectSecret(page, "Slack bot token", replacement);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
@@ -1479,7 +1491,10 @@ test("missing Slack credential fields require both Secret references before savi
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 });
 
-test("Credentials shows issued-account denial only while that source is selected", async (t) => {
+// A codex Agent bound to an issued account, on a Credentials tab whose Service Account list is
+// denied after Console admission. With `heldList`, the list waits for `list.release()`, so a test
+// can change the method while it is in flight. `denied()` checks the refusal and lifts the denial.
+async function deniedIssuedAccountList(t, { heldList = false } = {}) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Issued-account feedback", { ready: true });
@@ -1520,29 +1535,58 @@ test("Credentials shows issued-account denial only while that source is selected
   };
   // Namespace access changes after Console admission. Native IAM must produce the list's 403;
   // denied ServiceAccount reads alone would instead filter the collection to an empty 200.
-  page.on("request", (request) => {
-    if (new URL(request.url()).pathname === accountsPath) {
-      fixture.policy.restrictions.push(restriction);
-    }
-  });
+  const deny = () => fixture.policy.restrictions.push(restriction);
+  const held = heldList
+    ? await holdRequests(t, page, `${fixture.origin}${accountsPath}`, { method: "GET", once: true })
+    : null;
+  if (!held) {
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === accountsPath) {
+        deny();
+      }
+    });
+  }
   const deniedList = page.waitForResponse(
     (response) => new URL(response.url()).pathname === accountsPath,
   );
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  assert.equal((await deniedList).status(), 403);
-  liftRestriction(fixture.policy, restriction);
-  // The refusal names the grant the list checks and who can grant it.
-  const feedback = page.getByText(
-    `Service Accounts unavailable. ${namespaceListDenied("Service Accounts")}`,
-    { exact: true },
-  );
-  const issuedAccount = page.getByLabel("Issued ChatGPT service account", { exact: true });
+  return {
+    page,
+    requests,
+    account,
+    // The held list reaches the server, and is denied, only once released.
+    list: held && {
+      requested: () => held.requested,
+      release() {
+        deny();
+        held.release();
+      },
+    },
+    async denied() {
+      assert.equal((await deniedList).status(), 403);
+      liftRestriction(fixture.policy, restriction);
+    },
+    method: page.getByLabel("Authentication source", { exact: true }),
+    issuedAccount: page.getByLabel("Issued ChatGPT service account", { exact: true }),
+    // The refusal names the grant the list checks and who can grant it.
+    feedback: page.getByText(
+      `Service Accounts unavailable. ${namespaceListDenied("Service Accounts")}`,
+      { exact: true },
+    ),
+  };
+}
+
+test("Credentials shows issued-account denial only while that source is selected", async (t) => {
+  const { page, requests, account, denied, method, issuedAccount, feedback } =
+    await deniedIssuedAccountList(t);
+  await denied();
   await feedback.waitFor();
   assert.equal(await issuedAccount.inputValue(), account.id);
   assert.equal(await issuedAccount.isDisabled(), true);
+  // The select cannot be used, but a keyboard reader still reaches it and hears why (finding 2925).
+  await expectReachableReason(page, issuedAccount, await feedback.textContent());
 
   // Other methods remain usable without presenting the issued-account permission error.
-  const method = page.getByLabel("Authentication source", { exact: true });
   for (const source of ["api_key", "codex_pat", "runtime"]) {
     await method.selectOption(source);
     assert.equal(await feedback.isVisible(), false);
@@ -1551,6 +1595,29 @@ test("Credentials shows issued-account denial only while that source is selected
   assert.equal(await feedback.isVisible(), true);
   assert.equal(await issuedAccount.inputValue(), account.id);
   assert.equal(await issuedAccount.isDisabled(), true);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("an issued-account denial read under ChatGPT OAuth is reachable after switching back", async (t) => {
+  const { page, requests, list, denied, method, issuedAccount, feedback } =
+    await deniedIssuedAccountList(t, { heldList: true });
+  // The list fails while the codex Agent's ChatGPT OAuth method hides its feedback, so the select
+  // has no reason to read and is natively disabled.
+  await list.requested();
+  await method.selectOption("credential_source");
+  list.release();
+  await denied();
+  await feedback.waitFor({ state: "attached" });
+  assert.equal(await feedback.isVisible(), false);
+  assert.equal(
+    await issuedAccount.evaluate((node) => node.disabled && !node.hasAttribute("aria-disabled")),
+    true,
+  );
+  // Switching to the issued account source shows the failed read's reason, so a keyboard reader
+  // reaches the select again and hears it (finding 2928).
+  await method.selectOption("service_account");
+  await feedback.waitFor();
+  await expectReachableReason(page, issuedAccount, await feedback.textContent());
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 

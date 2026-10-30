@@ -26,7 +26,7 @@ The public [contracts entry point](../../../packages/contracts/src/index.ts)
 exports `CredentialProxyDriver`, `DriverRegistration`, the
 [exchange types](../../../packages/contracts/src/credential-proxy-exchange.ts)
 and [repository delivery types](../../../packages/contracts/src/protected-repository-git.ts).
-The [Driver source](../../../packages/contracts/src/credential-proxy.ts) defines
+The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/index.ts) defines
 these operations:
 
 | Member                                      | Caller, inputs and result                                                                                                                                               | Requirement                                                                                              |
@@ -71,7 +71,7 @@ independently admitted routes. Reduction can remove Git while preserving the exa
 recipient and other bindings. It does not convert v5 online authorization or v6
 observed hooks to exact dispatch. Existing v3–v6 admissions keep their semantics.
 The [admission source](../../../packages/occ/src/index.ts) and
-[version checks](../../../packages/contracts/src/credential-proxy.ts) implement
+[version checks](../../../packages/contracts/src/drivers/credential-proxy/index.ts) implement
 this support; they do not qualify stock OpenShell or any installed deployment.
 
 ## IAM
@@ -236,8 +236,10 @@ cannot use the whole operation cap or ID table, but four busy Sandboxes can. A r
 by the installation or route checks reserves no ID. From exchange capture on, its ID
 stays reserved for the whole window, even if the request is refused.
 Past any bound, `resolve` refuses with `unavailable`/`resolver`. The bundled
-OpenShell authority also admits at most 1024 pending exchange openings and 1024
-accepted exchanges.
+OpenShell authority also admits at most 1024 pending exchange openings (256 for
+one Sandbox) and 1024 accepted exchanges. Its online request authorization holds
+at most 1024 decisions in flight (256 for one Sandbox) and denies the rest with
+`online_authorization_denied`.
 
 ## Troubleshooting
 

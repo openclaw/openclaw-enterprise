@@ -460,7 +460,7 @@ function forgetInstallationAccess() {
 // The caller does not administer the Installation: true for this tab, not kept across reloads,
 // which ask the permission answer again at no audited cost. The Observability link goes away.
 // A page built while the answer was another one is told, so it takes the new answer in place, as
-// its Refresh would (finding D795).
+// its Refresh would (finding D795), and the Namespace list is read again (finding 2917).
 function settleNotAdministrator() {
   const ended = installationAdmin !== false;
   forgetInstallationAccess();
@@ -472,7 +472,50 @@ function settleNotAdministrator() {
     for (const handler of mountedViewState?.administrationEnded ?? []) {
       handler();
     }
+    void rereadNamespacesAfterAdministration();
   }
+}
+
+// An administrator reads every Namespace, so the selector of a page loaded under administration
+// kept the Namespaces only administration could read until Refresh (finding 2917). Administration
+// ending reads the list once more: a member may list Namespaces, so the read audits nothing. The
+// selector keeps a Namespace still readable; a Namespace-scoped page whose Namespace is gone
+// settles as a refocus finds it gone. A failed read keeps the list; Refresh reads it again. A page
+// load in flight reads the list itself: the answer can settle after the page that asked was left,
+// and a Backends refusal settles it within its own load.
+async function rereadNamespacesAfterAdministration() {
+  if (mountedRouteKey === null) {
+    return;
+  }
+  const owner = sessionOwnerKey(session);
+  const active = lifetime.capture();
+  let readable;
+  try {
+    readable = await request("/namespaces");
+  } catch {
+    return;
+  }
+  if (
+    !lifetime.isCurrent(active) ||
+    owner === null ||
+    owner !== sessionOwnerKey(session) ||
+    !Array.isArray(readable)
+  ) {
+    return;
+  }
+  clearRetainedViewsOutsideNamespaces(readable);
+  setNamespaces(readable);
+  const current = route();
+  if (
+    ["agents", "secrets"].includes(current.feature) &&
+    !namespaces.some((item) => item.id === namespaceId)
+  ) {
+    clearRetainedViewsForNamespace(namespaceId);
+    resetReads();
+    namespaceUnavailablePanel(renderShell(current.feature, false, { page: null }).view);
+    return;
+  }
+  shellUI.updateNamespaces(namespaces);
 }
 
 // The refusal of a read only Installation administration may make, refused here without sending
@@ -2888,22 +2931,37 @@ async function revalidateMountedAgent(current) {
           : `${path}/revisions/${encodeURIComponent(selected)}`;
       const previousSnapshotRead = mountedViewState?.reads.get(snapshotPath);
       const snapshotWasReadable = mountedViewState?.readablePaths.has(snapshotPath);
+      // A refusal this page already showed, or this tab already settled, for a read it never had.
+      const refusalSettled =
+        snapshotWasReadable === false &&
+        (previousSnapshotRead === refusedRead(403) || deniedReadsFor(owner).has(snapshotPath));
+      const versions = request(`${path}/revisions`, { includeMeta: true });
+      // A version this page showed as unreadable has nothing on screen to scrub: its read would
+      // only be refused and audited again on every refocus, and the refusal would replace the
+      // page (finding D799). The page proved it on load as the version's own view does: a settled
+      // refusal, or a current version left out of a newest page of versions that lists every
+      // version the caller can read (finding D791). Refresh reads it again.
+      const shownUnreadable = async () =>
+        selected !== "draft" &&
+        snapshotWasReadable === false &&
+        (refusalSettled ||
+          (selected === agent.activeRevisionId &&
+            (await versions.then(
+              ({ data, meta }) =>
+                (meta?.nextCursor ?? null) === null && !data.some(({ id }) => id === selected),
+            ))));
       await Promise.all([
-        request(`${path}/revisions`),
-        request(snapshotPath).catch((error) => {
-          // Initial admission can show an Agent with its draft Configuration denied. Keep
-          // that same refusal, but scrub a page whose previously readable data was revoked.
-          if (
-            selected === "draft" &&
-            error.status === 403 &&
-            (previousSnapshotRead === refusedRead(403) ||
-              deniedReadsFor(owner).has(snapshotPath)) &&
-            snapshotWasReadable === false
-          ) {
-            return;
-          }
-          throw error;
-        }),
+        versions,
+        shownUnreadable()
+          .then((unreadable) => (unreadable ? undefined : request(snapshotPath)))
+          .catch((error) => {
+            // Initial admission can show an Agent with its draft Configuration denied. Keep
+            // that same refusal, but scrub a page whose previously readable data was revoked.
+            if (selected === "draft" && error.status === 403 && refusalSettled) {
+              return;
+            }
+            throw error;
+          }),
       ]);
     }
   } catch (error) {

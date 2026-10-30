@@ -29,6 +29,7 @@ import {
   setFieldError,
   setStatusTone,
   setText,
+  setUnavailable,
   statusBlock,
   validateFields,
   requestIdText,
@@ -760,7 +761,6 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
 const MEMBER_CREDENTIAL_ACCESS =
   "An Installation administrator then gives the new Agent access to its Secrets.";
 const MEMBER_GRANT_REFUSED = `The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration. ${askAdministratorTo("open the saved Agent and grant it")}`;
-const INSTALLATION_REFUSAL = `Creating an Agent needs Installation access that your account does not have. ${askAdministratorTo("create this Agent")}`;
 // The Installation read was refused and the Namespace's permission answer is unknown (its read
 // failed), so whether this account may create Agents here is not known (finding 2110).
 const PERMISSIONS_UNREAD =
@@ -2117,6 +2117,9 @@ function renderAgentForm(
         updateControls();
       },
       { ...agent, ...(draft.repositoryAccess ? { repositoryAccess: draft.repositoryAccess } : {}) },
+      // New-Agent repository choices authorize Agent create: read them once an answer allows it,
+      // never to learn the answer (finding 2909).
+      { held: namespacePermissions?.agents?.create !== true },
     )).section,
     pluginFields.section,
     element(
@@ -2926,7 +2929,7 @@ function renderAgentForm(
     reloadRepositories.disabled = pending || outcomeUnknown;
     startNewDraft.disabled = pending || outcomeUnknown;
     repositories.setDisabled(planLocked || repositoryRetryLocked());
-    submit.disabled =
+    const submitUnavailable =
       (!savedAgent &&
         (repositoryRetryLocked() ||
           (requiresRepositories() && !repositories.hasValidSelection()) ||
@@ -2942,17 +2945,27 @@ function renderAgentForm(
       (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
       Boolean(provisioningAttempt);
     // Create Agent names why it waits: the status line above says so (finding 2007).
+    let submitReason: HTMLElement | null = null;
     if (
       !savedAgent &&
       capabilitiesSettled() &&
       (namespaceRefusesAgents() || (!selectedModeUnavailable() && provisioningWaitsForNamespace()))
     ) {
+      submitReason = capabilityStatus;
       submit.setAttribute("aria-describedby", capabilityStatus.id);
     } else if (capabilityDiscoveryDenied && !capabilitiesUnreadable && !accessStatus.hidden) {
       // The refused Installation read's block above the form says why Create waits (finding 2092).
+      submitReason = accessStatus;
       submit.setAttribute("aria-describedby", accessStatus.id);
     } else {
       submit.removeAttribute("aria-describedby");
+    }
+    // While that reason shows, an unavailable Create Agent stays in the Tab order (class of
+    // finding 2899). Without one (a pending create, say) it stays natively disabled, even with
+    // focus, as before.
+    setUnavailable(submit, submitUnavailable && submitReason !== null, submitReason);
+    if (submitUnavailable && submitReason === null) {
+      submit.disabled = true;
     }
     checkCredentialRegistration.hidden = !credentialRegistration;
     checkCredentialRegistration.disabled = pending;
@@ -3060,6 +3073,14 @@ function renderAgentForm(
         provisionableExecutionModes.add(executionMode);
       }
       capabilityDiscoveryDone = true;
+      // A readable Installation is an administrator's: without a permission answer, the form
+      // goes on as allowed, and so do its repository choices. A known refusal (a kept draft a
+      // Restriction now refuses) reads none and says why: nothing else on the form does.
+      if (namespacePermissions?.agents?.create === false) {
+        repositories.refuse(agentCreateDenied(namespacePermissions));
+      } else {
+        repositories.start();
+      }
       // A mode the form chose but the Installation refuses becomes the usable one, if any.
       if (
         openclawExecutionModes !== undefined &&
@@ -3099,8 +3120,9 @@ function renderAgentForm(
   }
   // After a refused Installation read, the permission answer decides. A member the Namespace lets
   // create Agents goes on without the Installation's capabilities (UX plan A2); only an explicit
-  // grant does. A known denial keeps the refusal; an unknown answer says the check failed and
-  // offers a retry of it (finding 2110).
+  // grant does. An unknown answer says the check failed and offers a retry of it (finding 2110).
+  // A known denial shows what a fresh load with that answer shows: the refusal instead of the form
+  // (finding 2908). A form that already saved resources keeps them in view, under the same refusal.
   function settleRefusedCapabilities() {
     const create = namespacePermissions?.agents?.create;
     permissionsUnknown = typeof create !== "boolean";
@@ -3108,12 +3130,18 @@ function renderAgentForm(
     if (create === true) {
       capabilitiesUnreadable = true;
       showAccess("info", memberAccess);
+      repositories.start();
       return;
     }
     if (permissionsUnknown) {
       showAccess("warning", PERMISSIONS_UNREAD);
+    } else if (!savedSecret && !savedCredentialSource && !savedConfiguration && !savedAgent) {
+      context.permissions = namespacePermissions;
+      renderCreateAgent(context);
     } else {
-      showAccess("danger", INSTALLATION_REFUSAL);
+      showAccess("danger", agentCreateDenied(namespacePermissions));
+      // The block above gives the reason; the held repository line no longer waits for anything.
+      repositories.refuse();
     }
   }
   async function rereadPermissions() {
@@ -3138,12 +3166,23 @@ function renderAgentForm(
     if (!context.isCurrent()) {
       return;
     }
-    settleRefusedCapabilities();
-    updateControls();
     // The pressed retry was disabled while the check ran: it takes focus back when the check
     // failed again; once answered it hides and the answer takes focus rather than the page.
     const active = document.activeElement;
-    if (!active || active === document.body || active === retryPermissionCheck) {
+    const focusOutcome = !active || active === document.body || active === retryPermissionCheck;
+    settleRefusedCapabilities();
+    if (!form.isConnected) {
+      // The refusal replaced the form: it is the answer.
+      const refusal = context.view.querySelector<HTMLElement>(".state-panel");
+      if (focusOutcome && refusal) {
+        refusal.tabIndex = -1;
+        refusal.focus({ preventScroll: true });
+        refusal.scrollIntoView({ block: "nearest" });
+      }
+      return;
+    }
+    updateControls();
+    if (focusOutcome) {
       const outcome = accessActions.hidden ? accessStatus : retryPermissionCheck;
       if (outcome === accessStatus) {
         accessStatus.tabIndex = -1;

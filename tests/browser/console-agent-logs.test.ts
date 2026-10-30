@@ -34,9 +34,9 @@ import {
   createRuntimeLogComputeDriver,
 } from "../helpers/runtime-logs.mjs";
 import {
-  accessibleDescription,
   apiRequests,
   detailUrl,
+  expectReachableReason,
   fileBrowser,
   holdRequests,
   login,
@@ -70,6 +70,7 @@ type LogTestDriver = ReturnType<typeof createRuntimeLogComputeDriver> & {
     harnessPod: { ready: boolean; stale?: boolean } | { created: false } | undefined;
     events: AgentRuntimeEvent[];
     extraPods: { name: string; uid: string }[];
+    gatewayPod: boolean;
     restartCount: number;
     observedAt?: string;
     readPodUid?: string;
@@ -1349,9 +1350,10 @@ test("an operator without administer sees status but no log text and is never re
   await page.locator(".runtime-pod").getByRole("heading", { name: "Gateway" }).waitFor();
   await page.getByText(LOG_TEXT_DENIED).waitFor();
   assert.equal(await page.getByText("operator must not see this").count(), 0);
-  // Every log control is disabled and described by the refusal beside it (finding D749).
-  const refusal = await page.locator(".log-error").textContent();
-  assert.ok(refusal?.startsWith(LOG_TEXT_DENIED));
+  // Every log control is disabled and described by the refusal beside it (finding D749), and
+  // Tab still reaches it (finding 2899).
+  const refusal = (await page.locator(".log-error").textContent())?.trim() ?? "";
+  assert.ok(refusal.startsWith(LOG_TEXT_DENIED));
   for (const control of [
     page.locator("#runtime-log-source"),
     page.getByLabel("Previous instance"),
@@ -1361,7 +1363,7 @@ test("an operator without administer sees status but no log text and is never re
     page.getByRole("button", { name: "Download" }),
   ]) {
     assert.equal(await control.isDisabled(), true);
-    assert.equal(await accessibleDescription(control), refusal);
+    await expectReachableReason(page, control, refusal);
   }
   // The permission answer says log text is denied, so the read the API would refuse and audit
   // is never sent (finding D758).
@@ -1541,6 +1543,29 @@ test("the Logs tab explains cluster RBAC, unsupported Drivers and unavailable re
     .getByText(/This Compute Driver does not expose runtime status or logs/)
     .first()
     .waitFor();
+});
+
+// Finding 2929. A version with no running Pod leaves Previous instance, Follow, Refresh logs and
+// Download unavailable, and the output status says why. They were natively disabled, so Tab
+// skipped them and that reason; each stays in the Tab order now, described by it.
+test("log controls a version with no running Pod leaves unavailable name that reason", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.gatewayPod = false;
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  const reason = "This version has no running Pod for this source.";
+  await page.getByRole("status").filter({ hasText: reason }).waitFor();
+  for (const control of [
+    page.getByLabel("Previous instance"),
+    page.getByRole("button", { name: "Follow" }),
+    page.getByRole("button", { name: "Refresh logs" }),
+    page.getByRole("button", { name: "Download" }),
+  ]) {
+    assert.equal(await control.isDisabled(), true);
+    await expectReachableReason(page, control, reason);
+  }
+  // No read was sent for a selection with no Pod.
+  assert.equal(computeDriver.calls.filter(({ operation }) => operation === "read").length, 0);
 });
 
 const rateLimitRequestId = "req_12345678-1234-1234-1234-123456789abc";

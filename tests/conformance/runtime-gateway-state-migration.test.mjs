@@ -912,11 +912,15 @@ test("Harness names a failed native setup that reported no message", async (t) =
 // `directory`/node-state, until it starts its connect child or holds. Real files;
 // replaced: runtime asset publication, the model probe (it answers "ok"), the
 // readiness listener (`ready()` asks it) and every child process. Doctor runs
-// `doctor(child, { ready })`; `node identity` answers with a fixed device id.
+// `doctor(child, { ready })`; `node identity` runs `identity(callback)`, which answers
+// with a fixed device id by default.
 async function runNativeWorker(
   directory,
   doctor = () => assert.fail("Doctor must not run"),
-  { env = COMPUTE_STATUS_ENV } = {},
+  {
+    env = COMPUTE_STATUS_ENV,
+    identity = (callback) => callback(null, JSON.stringify({ deviceId: "a".repeat(64) })),
+  } = {},
 ) {
   const spawned = [];
   const identities = [];
@@ -990,7 +994,7 @@ async function runNativeWorker(
       return {
         execFile(command, args, options, callback) {
           identities.push(args[2]);
-          callback(null, JSON.stringify({ deviceId: "a".repeat(64) }));
+          identity(callback);
         },
         spawnSync: (command, args) =>
           args.includes("--probe") ? { status: 0, stdout: probe } : { status: 0 },
@@ -1026,6 +1030,71 @@ test("Native worker connects current and fresh node state without Doctor", async
     assert.deepEqual(outcome.synchronous, ["connect"]);
     assert.equal(await outcome.ready(), 200);
   }
+});
+
+// Each readiness check spawns `openclaw node identity`. The kubelet, the agent Gateway
+// and status-proxy callers can ask at once, so concurrent requests share the running
+// check instead of each spawning another (finding 1789). No answer is cached: a request
+// after the check settles runs a fresh one.
+test("Native worker readiness shares one running identity check among concurrent requests", async (t) => {
+  const callbacks = [];
+  const outcome = await runNativeWorker(await harnessDirectory(t, STATE_CURRENT), undefined, {
+    identity: (callback) => callbacks.push(callback),
+  });
+  const answers = Promise.all(Array.from({ length: 5 }, () => outcome.ready()));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 1);
+  callbacks[0](null, JSON.stringify({ deviceId: "a".repeat(64) }));
+  assert.deepEqual(await answers, [200, 200, 200, 200, 200]);
+  // A failed fresh check answers 503, not the earlier success.
+  const later = outcome.ready();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 2);
+  callbacks[1](new Error("node identity failed"));
+  assert.equal(await later, 503);
+  assert.deepEqual(outcome.identities, ["identity", "identity"]);
+});
+
+// A check that throws or fails frees the slot as a success does, so a worker that recovers
+// reports ready on the next probe instead of keeping the failure. A caller that disconnects
+// while it waits gets no answer and does not stop or restart the check the others share.
+test("Native worker readiness checks again after a failed check and ignores a disconnected caller", async (t) => {
+  const callbacks = [];
+  let throwNext = true;
+  const outcome = await runNativeWorker(await harnessDirectory(t, STATE_CURRENT), undefined, {
+    identity: (callback) => {
+      if (throwNext) {
+        throwNext = false;
+        throw new Error("spawn failed");
+      }
+      callbacks.push(callback);
+    },
+  });
+  assert.deepEqual(await Promise.all([outcome.ready(), outcome.ready()]), [503, 503]);
+  const failed = outcome.ready();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 1);
+  callbacks[0](new Error("node identity failed"));
+  assert.equal(await failed, 503);
+
+  const handler = outcome.servers.find(
+    ({ port }) => port === Number(COMPUTE_STATUS_ENV.OPENCLAW_RUNTIME_STATUS_PORT),
+  ).handler;
+  const first = outcome.ready();
+  // node:http marks a response destroyed and emits "close" when its client disconnects.
+  const dropped = Object.assign(new EventEmitter(), { destroyed: false, writes: [] });
+  dropped.writeHead = (code) => dropped.writes.push(code);
+  dropped.end = () => dropped.writes.push("end");
+  handler({ method: "GET", url: "/readyz", headers: {} }, dropped);
+  dropped.destroyed = true;
+  dropped.emit("close");
+  const last = outcome.ready();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 2);
+  callbacks[1](null, JSON.stringify({ deviceId: "a".repeat(64) }));
+  assert.deepEqual(await Promise.all([first, last]), [200, 200]);
+  assert.deepEqual(dropped.writes, []);
+  assert.deepEqual(outcome.identities, ["identity", "identity", "identity"]);
 });
 
 test("Native worker migrates older node state without the model credential before it connects", async (t) => {

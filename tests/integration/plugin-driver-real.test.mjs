@@ -387,9 +387,14 @@ test(
     const deployed = await fixture.deployAndWait(agent);
     assert.ok(Object.hasOwn(deployed.revision.plugins?.plugins ?? {}, linear.id));
     assert.deepEqual(deployed.status.warnings, []);
-    const [native] = await fixture.listCodexNativeCatalog(agent, [linear.id]);
-    assert.equal(native?.remotePluginId, linear.remoteId);
-    assert.ok(native.detailAvailable && native.appCount > 0);
+    // Read the selected native plugin to verify its installed identity and app mapping.
+    const native = await fixture.codexNativePluginDetail(agent, {
+      remotePluginId: linear.remoteId,
+    });
+    assert.equal(native.summaryId, "linear@openai-curated-remote");
+    assert.equal(native.installed, true);
+    assert.equal(native.enabled, true);
+    assert.ok(native.appCount > 0);
 
     // A transcript with the exact tool and result proves execution, not just selection.
     const turnMarker = `CODEX_LINEAR_CATALOG_${randomUUID()}`;

@@ -301,6 +301,12 @@ for (const page of pages.values()) {
     return tag + (alias ? '<span class="anchor-alias" id="' + escape(alias) + '"></span>' : "");
   });
 }
+for (const page of pages.values()) {
+  if (page.source === "reference/api-explorer.md") {
+    page.html +=
+      '<p><a href="/assets/occ-api.openapi.json" download="occ-api.openapi.json">Download OpenAPI JSON</a></p><div id="occ-api-explorer"></div>';
+  }
+}
 if (checkOnly) {
   console.log("Validated " + pages.size + " pages and " + linkCount + " links.");
   process.exit(0);
@@ -332,6 +338,21 @@ fs.copyFileSync(
   path.join(assets, "compute-matrix-browser.mjs"),
   path.join(output, "assets/compute-matrix-browser.mjs"),
 );
+if (pages.has("reference/api-explorer.md")) {
+  fs.copyFileSync(
+    path.join(assets, "api-explorer.mjs"),
+    path.join(output, "assets/api-explorer.mjs"),
+  );
+  const scalar = path.dirname(fileURLToPath(import.meta.resolve("@scalar/api-reference")));
+  fs.copyFileSync(
+    path.join(scalar, "browser/standalone.js"),
+    path.join(output, "assets/scalar.js"),
+  );
+  fs.copyFileSync(
+    path.join(root, "packages/contracts/openapi/occ-api.openapi.json"),
+    path.join(output, "assets/occ-api.openapi.json"),
+  );
+}
 const mermaid = path.dirname(fileURLToPath(import.meta.resolve("mermaid")));
 fs.cpSync(mermaid, path.join(output, "assets/mermaid"), {
   recursive: true,
@@ -438,6 +459,9 @@ for (const page of pages.values()) {
   const html =
     '<!doctype html><html lang="en" data-theme="dark" data-oc-theme="product"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
     themeBootstrap +
+    (page.source === "reference/api-explorer.md"
+      ? '<script src="/assets/scalar.js" defer></script><script type="module" src="/assets/api-explorer.mjs"></script>'
+      : "") +
     "<title>" +
     escape(page.title) +
     " · OpenClaw Enterprise</title>" +

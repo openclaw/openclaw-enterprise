@@ -2247,6 +2247,10 @@ export function installFixture(scenario, evidence) {
               },
             );
           }
+          if (scenario.runtimePod === "none") {
+            // A version whose Pods are gone, such as an older one: nothing runs to read.
+            pods.length = 0;
+          }
           if (scenario.runtimePod === "rollover") {
             const retiring = podRolloverStatusReads++ === 0;
             pods.push({
@@ -2271,7 +2275,8 @@ export function installFixture(scenario, evidence) {
                     container: "gateway",
                     restartCount: 1,
                   })),
-                available: true,
+                available: pods.length > 0,
+                ...(pods.length > 0 ? {} : { unavailableCode: "NO_POD" }),
                 retention:
                   "Kubernetes keeps only the current and the previous instance of each container; older output and output from deleted Pods is gone.",
               },

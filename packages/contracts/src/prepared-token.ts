@@ -5,7 +5,7 @@ import type {
   EgressRef,
   EgressRoute,
   EgressSourceKey,
-} from "./credential-proxy.ts";
+} from "./drivers/credential-proxy/index.ts";
 import type { GitHubMetadataGrant } from "./prepared-github-egress.ts";
 
 /** Scope normalized by the issuer, always isolated to one dedicated execution's Agent. */

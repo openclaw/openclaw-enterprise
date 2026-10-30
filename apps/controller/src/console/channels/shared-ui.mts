@@ -10,10 +10,10 @@ import type { SlackDirectoryContext } from "../agents/slack-directory.mjs";
 import {
   element,
   button,
-  describeDisabled,
   dismissOnBackdrop,
   field as formField,
   focusSaveOutcome,
+  setUnavailable,
   statusBlock,
   validateOnSubmit,
   withRequestId,
@@ -276,7 +276,8 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
       provider.secretBindings.some(
         (binding) => !state.drawerContext.secretBindings?.[binding.key]?.source,
       ));
-  // A disabled action is described by the reason shown on the card (findings 2495, D749).
+  // A disabled action is described by the reason shown on the card (findings 2495, D749), and
+  // stays in the Tab order while it shows (class of finding 2899).
   const reasonId = `channel-${provider.id}-unavailable`;
   let reason: HTMLElement | null = null;
   if (state.readOnly) {
@@ -303,9 +304,23 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
   }
   const actionButton = state.readOnly
     ? null
-    : button(action, () => openDrawer(section, state, provider), canOpen ? {} : { disabled: "" });
+    : button(action, () => openDrawer(section, state, provider));
   if (actionButton) {
-    describeDisabled(actionButton, reason);
+    setUnavailable(actionButton, !canOpen, reason);
+  }
+  // Disable keeps a Secret this caller cannot operate: the hint under the card says which, and
+  // describes the unavailable Disable (finding 2471).
+  const disableReason =
+    canDisable && state.disableRefusal
+      ? element("p", { className: "hint" }, state.disableRefusal)
+      : null;
+  const disableButton = canDisable
+    ? button(`Disable ${provider.name}`, () => void disableProvider(state, provider), {
+        tone: "danger",
+      })
+    : null;
+  if (disableButton) {
+    setUnavailable(disableButton, Boolean(state.disableRefusal), disableReason);
   }
   const card = element(
     "section",
@@ -324,21 +339,9 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
         ),
         setupShown ? element("p", { className: "hint" }, provider.setup) : null,
       ),
-      element(
-        "div",
-        { className: "channel-actions" },
-        actionButton,
-        canDisable
-          ? button(`Disable ${provider.name}`, () => void disableProvider(state, provider), {
-              tone: "danger",
-              ...(state.disableRefusal ? { disabled: "" } : {}),
-            })
-          : null,
-      ),
+      element("div", { className: "channel-actions" }, actionButton, disableButton),
     ),
-    canDisable && state.disableRefusal
-      ? element("p", { className: "hint" }, state.disableRefusal)
-      : null,
+    disableReason,
   );
   const credentials = element("dl", { className: "configuration-summary" });
   for (const binding of provider.secretBindings ?? []) {

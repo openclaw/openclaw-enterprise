@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-10-29
-last_updated_session: authoring-run/d88f92d2-4a34-4001-aaa0-70d424201741
+last_updated_session: authoring-run/833462ab-9c82-438a-95c4-53d1dbb2e7e9
 ---
 
 # Credential source lifecycle Flow
@@ -121,6 +121,10 @@ material.
 For a live versioned static OpenAI source without refresh, OCC skips placement
 and Gateway registration. The Gateway still owns the catalog and the source record.
 
+Codex PAT profiles include native app metadata and MCP transport; the
+[Driver reference](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
+owns the exact source-wide routes.
+
 A definitive failed/absent result triggers cleanup and record deletion; failed
 cleanup retains `deleting`. Thrown calls may still take effect, so cleanup retains
 `deleting` for another DELETE. Success commits `ready` and audit atomically. A
@@ -181,6 +185,20 @@ source whose Gateway no longer offers it.
 The revision records `sourceId`, `sourceType` and the owner's `credentialGatewayId`
 or `credentialProxyId`. Older sources keep their Gateway owner, even when a Proxy
 with the same Driver ID enforces the revision's egress plan.
+
+Before saving a new revision, both State adapters call
+`packages/occ/src/state/platform-state.ts:assertRevisionAuthAvailable` from
+`createRevision`. Every listed snapshot and the source-backed Harness snapshot
+must match a ready source in the same Namespace: ID, type, owner capability and
+Driver ID. An unavailable source or mismatched snapshot raises `ScopeViolationError`.
+`packages/occ/src/state/postgres-state.ts:createRevision` locks all unique source
+IDs in one ordered `SELECT FOR SHARE` and holds them through commit. Source-bearing
+insertions first take a shared Namespace lock and an Agent key-share lock, following
+OCC admission's Namespace, Agent, then source order. Both adapters copy the input
+before their first await and use that copy for validation, persistence and return.
+They compare every snapshot without reordering the saved list. Memory checks its
+transaction snapshot. These insertion checks reject stale or forged owners. Reads of historical revisions do not repeat
+this check; their saved snapshots remain readable after legitimate source deletion.
 
 ### 6. Resolve the source at dispatch
 
@@ -329,6 +347,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 21:40: Validate an owned revision snapshot under ordered storage locks. (authoring-run/833462ab-9c82-438a-95c4-53d1dbb2e7e9 - a9884d11bf325a39f3308f787a5ea266ebab5144)
 
 - 2026-10-29 19:11: Use the recorded owner’s catalog for fresh source admission. (authoring-run/d88f92d2-4a34-4001-aaa0-70d424201741 - 3a4244461)
 

@@ -10,10 +10,10 @@ import type {
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import {
   button,
-  describeDisabled,
   element,
   replaceChildrenIfChanged,
   setText,
+  setUnavailable,
   statusBlock,
   withRequestId,
 } from "../dom.mjs";
@@ -64,6 +64,9 @@ const STATUS_POLL_MS = 10_000;
 const FOLLOW_POLL_MS = 2_000;
 const MAX_ROWS = 5_000;
 const TAIL_LINES = 200;
+// The output status for a selection with no running Pod. It is also why the log controls that
+// read output are unavailable then (finding 2929).
+const NO_POD_STATUS = "This version has no running Pod for this source.";
 // The longest the Logs view keeps its strip and output back for their first reads.
 const FIRST_VIEW_WAIT_MS = 2_000;
 // A 403 is audited; remember it for this sign-in instead of re-asking every poll or every
@@ -296,6 +299,12 @@ export function renderAgentLogs(
   // Status refreshes rebuild the picker enabled-state. A download still in flight
   // must stay disabled across those refreshes (issue 3387).
   let downloadPending = false;
+  // Whether each log control is unavailable; describeDeniedControls applies it.
+  const unavailable = new Map<HTMLButtonElement | HTMLInputElement | HTMLSelectElement, boolean>(
+    [sourceSelect, previous, includeDebug, followButton, refreshButton, downloadButton].map(
+      (control) => [control, true],
+    ),
+  );
   const hiddenLevels = new Set<string>();
   const levelChips = LEVELS.map((level) =>
     button(
@@ -465,17 +474,13 @@ export function renderAgentLogs(
   }
 
   // A refused log read disables every log control; each is described by the refusal that says
-  // why (finding D749).
+  // why (finding D749) and stays in the Tab order while it shows (finding 2899). So do the
+  // controls a selection with no running Pod leaves unavailable, described by the output status
+  // that says so (finding 2929).
   function describeDeniedControls() {
-    for (const control of [
-      sourceSelect,
-      previous,
-      includeDebug,
-      followButton,
-      refreshButton,
-      downloadButton,
-    ]) {
-      describeDisabled(control, logsDenied ? logError : null);
+    const noPod = !logsDenied && logStatus.textContent === NO_POD_STATUS;
+    for (const [control, off] of unavailable) {
+      setUnavailable(control, off, logsDenied ? logError : noPod ? logStatus : null);
     }
   }
 
@@ -619,16 +624,16 @@ export function renderAgentLogs(
       : statusDenied && lastStream !== null && lastStream.source === source?.id
         ? lastStream.restartCount
         : 0;
-    previous.disabled = logsDenied || restarts === 0;
-    if (previous.disabled) {
+    unavailable.set(previous, logsDenied || restarts === 0);
+    if (unavailable.get(previous)) {
       previous.checked = false;
     }
     const readable = !logsDenied && readableSelection();
-    sourceSelect.disabled = logsDenied || description.sources.length === 0;
-    includeDebug.disabled = logsDenied || description.sources.length === 0;
-    refreshButton.disabled = !readable;
-    downloadButton.disabled = downloadPending || !readable;
-    followButton.disabled = !readable || previous.checked;
+    unavailable.set(sourceSelect, logsDenied || description.sources.length === 0);
+    unavailable.set(includeDebug, logsDenied || description.sources.length === 0);
+    unavailable.set(refreshButton, !readable);
+    unavailable.set(downloadButton, downloadPending || !readable);
+    unavailable.set(followButton, !readable || previous.checked);
     describeDeniedControls();
   }
 
@@ -899,7 +904,8 @@ export function renderAgentLogs(
     const query = logQuery(source, pod);
     query.set("download", "true");
     downloadPending = true;
-    downloadButton.disabled = true;
+    unavailable.set(downloadButton, true);
+    describeDeniedControls();
     try {
       const text = await read(`${base}/logs?${query}`, { responseType: "text" });
       if (!current() || logsDenied) {
@@ -939,7 +945,8 @@ export function renderAgentLogs(
       showLogReadError(error, source, { manualRead: true });
     } finally {
       downloadPending = false;
-      downloadButton.disabled = logsDenied || !readableSelection();
+      unavailable.set(downloadButton, logsDenied || !readableSelection());
+      describeDeniedControls();
     }
   }
 
@@ -987,7 +994,8 @@ export function renderAgentLogs(
     }
     if (!current() || reading || logsDenied || !source || !readableSelection(source)) {
       if (source && !readableSelection(source)) {
-        logStatus.textContent = "This version has no running Pod for this source.";
+        logStatus.textContent = NO_POD_STATUS;
+        describeDeniedControls();
       }
       return;
     }
@@ -1048,7 +1056,7 @@ export function renderAgentLogs(
       if (restart || hasLine) {
         const text =
           page.stream === null
-            ? "This version has no running Pod for this source."
+            ? NO_POD_STATUS
             : !hasLine && page.withheld > 0
               ? `Only withheld output in the last ${TAIL_LINES} lines.`
               : !hasLine

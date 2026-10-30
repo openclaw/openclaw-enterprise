@@ -1,7 +1,10 @@
-import type { ConfigurationValidationOptions } from "./configuration.ts";
-import type { CredentialAttachmentStatus } from "./credential-gateway.ts";
-import type { CredentialPolicyWithdrawalOptions, EgressInstallation } from "./credential-proxy.ts";
-import type { Driver, SelectedDriverRegistration } from "./driver.ts";
+import type { ConfigurationValidationOptions } from "../configuration/index.ts";
+import type { CredentialAttachmentStatus } from "../credential-gateway/index.ts";
+import type {
+  CredentialPolicyWithdrawalOptions,
+  EgressInstallation,
+} from "../credential-proxy/index.ts";
+import type { Driver, SelectedDriverRegistration } from "../index.ts";
 import type {
   Agent,
   AgentRevision,
@@ -17,20 +20,20 @@ import type {
   SecretBindings,
   SecretEnvironmentProjection,
   ServiceAccountCredential,
-} from "./index.ts";
+} from "../../index.ts";
 import type {
   RepositoryCredentialMaterialRef,
   RepositoryCredentialRuntimeBinding,
   RepositoryExecutionIdentity,
-} from "./repo.ts";
+} from "../repo/index.ts";
 import type {
   AgentRuntimeDescribeOptions,
   AgentRuntimeDescription,
   AgentRuntimeLogChunk,
   AgentRuntimeLogRequest,
-} from "./runtime-logs.ts";
-import type { SandboxHarnessObservation } from "./sandbox.ts";
-import type { WorkspaceSetup } from "./workspace-setup.ts";
+} from "../../runtime-logs.ts";
+import type { SandboxHarnessObservation } from "../sandbox/index.ts";
+import type { WorkspaceSetup } from "../../workspace-setup.ts";
 
 export interface ComputeRevisionContext {
   /** Worker persists only an authenticated receipt for this admitted plan. */

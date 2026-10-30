@@ -1,5 +1,5 @@
-import type { CredentialSourceContext } from "./credential-gateway.ts";
-import type { Driver } from "./driver.ts";
+import type { CredentialSourceContext } from "../credential-gateway/index.ts";
+import type { Driver } from "../index.ts";
 
 export interface CredentialRefreshInput {
   readonly config: Readonly<Record<string, string>>;
