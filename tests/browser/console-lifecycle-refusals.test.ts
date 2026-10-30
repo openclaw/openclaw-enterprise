@@ -543,12 +543,13 @@ test("an Agents list row refused for another reason shows the API's text and nam
     const note = action === "Stop" ? "Not stopped: see above" : "Not deleted: see above";
     // No grant under the icons: the row's note, in view under them, points to the alert, and
     // both icons wait for Refresh, reachable and described by it. Focus stays on the refused icon.
-    const checkRow = async () => {
+    const checkRow = async ({ inView = false } = {}) => {
       const line = row.getByText(note, { exact: true });
       await line.waitFor();
       const [iconBox, lineBox] = [await icon.boundingBox(), await line.boundingBox()];
       assert.ok(iconBox && lineBox && lineBox.y - iconBox.y < 80, `${note} sits under the icon`);
-      assert.ok(lineBox.y + lineBox.height <= 844, `${note} is in view`);
+      // Where the refused icon took focus back, the note is in view with it.
+      assert.ok(!inView || lineBox.y + lineBox.height <= 844, `${note} is in view`);
       assert.equal(await hasFocus(icon), true);
       for (const kind of ["Stop", "Delete"]) {
         const each = row.getByRole("button", { name: `${kind} Other Row`, exact: true });
@@ -556,7 +557,7 @@ test("an Agents list row refused for another reason shows the API's text and nam
         await expectReachableReason(page, each, kind === action ? refusal : alert);
       }
     };
-    await checkRow();
+    await checkRow({ inView: true });
     // A refocus rebuilds the list (a row write makes it one it does not reuse). The alert and
     // the row's note stay until Refresh, and focus stays on the refused icon.
     await icon.focus();

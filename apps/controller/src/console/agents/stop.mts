@@ -191,13 +191,22 @@ export function createAgentStop(
     // After a request, a disabled Stop beside Request Stop again only adds noise, and an
     // uncertain outcome offers only Refresh (finding 1899).
     if (neverStarted || (idle && !state.used)) {
-      actions.replaceChildren();
+      showActions();
     } else if (state.needsRefresh) {
-      actions.replaceChildren(refresh);
+      showActions(refresh);
     } else if (requested) {
-      actions.replaceChildren(repeat, refresh);
+      showActions(repeat, refresh);
     } else {
-      actions.replaceChildren(stop);
+      showActions(stop);
+    }
+  }
+
+  // Replacing the same controls would detach the focused one: a re-grant that lifts a refused
+  // Stop dropped keyboard focus to the page (r54 row 11).
+  function showActions(...controls: HTMLButtonElement[]) {
+    const shown = actions.children;
+    if (shown.length !== controls.length || controls.some((control, i) => shown[i] !== control)) {
+      actions.replaceChildren(...controls);
     }
   }
 
