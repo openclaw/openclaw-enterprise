@@ -58,8 +58,8 @@ export function createAgentStop(
      * read it (no readable version, or a failed read). Undefined until the page knows.
      */
     latestDeployment: string | null | undefined;
-    /** This viewer's Stop cancelled a first deployment, before any version was selected. */
-    cancelledFirstDeployment: boolean;
+    /** This viewer requested Stop during a first deployment, before any version was selected. */
+    requestedFirstDeploymentStop: boolean;
   } = {
     agent,
     pending: false,
@@ -73,7 +73,7 @@ export function createAgentStop(
     // Set once this viewer opens Stop or refreshes here, so the row never vanishes under them.
     used: false,
     latestDeployment: undefined,
-    cancelledFirstDeployment: false,
+    requestedFirstDeploymentStop: false,
   };
 
   // Focus lands here when the control that would take it is not rendered.
@@ -87,18 +87,17 @@ export function createAgentStop(
 
   function render() {
     const requested = state.agent.desiredRuntimeState === "stopped";
-    // A first deployment that failed leaves the Agent requested to run with no version selected:
-    // Stop would change nothing, so the row is hidden, as on the Agents list (findings 2385,
-    // D691). Only a failure this page read decides it. A succeeded deployment read against an
-    // older Agent read, an unreadable deployment, or a failed read keeps Stop, and the API answers
-    // if nothing runs.
-    const idle = !requested && !state.agent.activeRevisionId && state.latestDeployment === "failed";
-    setText(
-      summary,
-      cancelsFirstDeployment(state.agent, state.latestDeployment)
-        ? "Cancels the deployment in progress. The Agent stays and can be deployed again."
-        : "Stops the running version. The Agent stays and can be deployed again.",
-    );
+    // A failed readable deployment can hide newer queued work. As on the Agents list,
+    // its outcome informs confirmation copy, not whether Agent-level Stop is available.
+    let summaryText = "Stops this Agent without deleting its data.";
+    if (cancelsFirstDeployment(state.agent, state.latestDeployment)) {
+      summaryText = "Cancels this deployment without deleting Agent data.";
+    } else if (state.agent.activeRevisionId || state.latestDeployment === "succeeded") {
+      summaryText = "Stops the running version without deleting Agent data.";
+    }
+    setText(summary, summaryText);
+    // The result below replaces the action description once Stop has been requested.
+    setHidden(summary, requested);
     // A running Agent's row is the title, its sentence and Stop; the overview already shows the
     // current version. After a stop request the row reports what Refresh reads back.
     feedback.replaceChildren(
@@ -124,19 +123,10 @@ export function createAgentStop(
               null,
               // Initial drafts and completed stops both have no selected revision.
               state.agent.activeRevisionId
-                ? "Stop requested. This Agent will not start again until you deploy a new version. The console does not show when its runtime finishes shutting down."
-                : state.cancelledFirstDeployment
-                  ? "Stop requested. The deployment in progress is cancelled, and this Agent will not start until you deploy a new version."
+                ? "Stop requested. Deploy a new version to restart. Runtime shutdown is not verified here."
+                : state.requestedFirstDeploymentStop
+                  ? "Deployment cancellation requested. Deploy a new version to restart."
                   : "No version is selected. Deploy a new version to start this Agent.",
-            ),
-          ]
-        : []),
-      ...(idle && !state.forbidden
-        ? [
-            statusBlock(
-              "info",
-              null,
-              "No version is running, so there is nothing to stop. Deploy a new version to start this Agent.",
             ),
           ]
         : []),
@@ -153,7 +143,7 @@ export function createAgentStop(
           ]
         : []),
     );
-    stop.disabled = requested || state.pending || state.needsRefresh || state.forbidden || idle;
+    stop.disabled = requested || state.pending || state.needsRefresh || state.forbidden;
     repeat.disabled = state.pending || state.needsRefresh || state.forbidden;
     refresh.disabled = state.pending;
     refresh.textContent = state.pending ? "Checking…" : "Refresh stop status";
@@ -170,10 +160,10 @@ export function createAgentStop(
     // A viewer whose permission answer denies Agent operate has no row either (UX spec 3.9).
     // A missing answer keeps it, and the API still decides. An answer that lands while this
     // viewer has the confirmation open keeps the row, so the reason stays where they were.
-    setHidden(section, (neverStarted || idle || state.forbidden) && !state.used);
+    setHidden(section, (neverStarted || state.forbidden) && !state.used);
     // After a request, a disabled Stop beside Request Stop again only adds noise, and an
     // uncertain outcome offers only Refresh (finding 1899).
-    if (neverStarted || (idle && !state.used)) {
+    if (neverStarted) {
       actions.replaceChildren();
     } else if (state.needsRefresh) {
       actions.replaceChildren(refresh);
@@ -217,11 +207,20 @@ export function createAgentStop(
     };
   }
 
+  function applyAgent(next: AgentRead) {
+    // The local Stop result belongs only to this stopped, unselected lifecycle. A later
+    // deployment or selected version retires it, including reads from the detail page.
+    if (next.desiredRuntimeState !== "stopped" || next.activeRevisionId) {
+      state.requestedFirstDeploymentStop = false;
+    }
+    state.agent = next;
+  }
+
   function setAgent(next: AgentRead) {
     const lifecycleChanged =
       state.agent.desiredRuntimeState !== next.desiredRuntimeState ||
       state.agent.activeRevisionId !== next.activeRevisionId;
-    state.agent = next;
+    applyAgent(next);
     state.needsRefresh = false;
     state.notice =
       next.desiredRuntimeState === "stopped" ? "" : "The Agent is still requested to run.";
@@ -317,8 +316,8 @@ export function createAgentStop(
       if (stopped.desiredRuntimeState !== "stopped") {
         throw new Error("Invalid Agent stop response");
       }
-      // Only a stop whose dialog said it cancels a deployment in progress reports that it did.
-      state.cancelledFirstDeployment =
+      // Remember the requested cancellation, not deployment or runtime completion.
+      state.requestedFirstDeploymentStop =
         cancelsFirstDeployment(state.agent, state.latestDeployment) && !stopped.activeRevisionId;
       dialog.close();
       setAgent(stopped);
@@ -511,7 +510,7 @@ export function createAgentStop(
       ) {
         return;
       }
-      state.agent = next;
+      applyAgent(next);
       state.notice = "";
       render();
     },

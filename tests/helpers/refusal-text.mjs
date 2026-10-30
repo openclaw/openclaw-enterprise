@@ -189,10 +189,8 @@ export const STOP_FIRST_DEPLOYMENT_CONFIRMATION = `No version is serving yet, so
 // No version is selected and the page could not read the latest deployment's outcome.
 export const STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION = `This cancels a deployment in progress or, if a version already started, interrupts its runtime gateway and ends any reply in progress. ${STOP_KEEPS}`;
 // The Agent page's Stop row, by whether Stop would cancel a first deployment in progress.
-export const STOP_CANCELS_FIRST_DEPLOYMENT =
-  "Cancels the deployment in progress. The Agent stays and can be deployed again.";
-export const STOP_RUNNING_VERSION =
-  "Stops the running version. The Agent stays and can be deployed again.";
+export const STOP_CANCELS_FIRST_DEPLOYMENT = "Cancels this deployment without deleting Agent data.";
+export const STOP_RUNNING_VERSION = "Stops the running version without deleting Agent data.";
 // Each version has its own AgentRevision read grant, so a reader who deploys still needs read on
 // each new version, granted after it exists.
 export const NEW_VERSIONS_READ =
@@ -418,11 +416,11 @@ export const WORKSPACE_API_UNREACHABLE =
   "The request did not reach the API. Check your connection, then reload this file.";
 // A Stop that the API accepted for an Agent with a running version.
 export const STOP_REQUESTED =
-  "Stop requested. This Agent will not start again until you deploy a new version. The console does not show when its runtime finishes shutting down.";
+  "Stop requested. Deploy a new version to restart. Runtime shutdown is not verified here.";
 // A Stop that the API accepted while a first deployment was queued or in progress.
 export const STOP_REQUESTED_FIRST_DEPLOYMENT =
-  "Stop requested. The deployment in progress is cancelled, and this Agent will not start until you deploy a new version.";
-// The Stop panel with no version selected and no first deployment it cancelled.
+  "Deployment cancellation requested. Deploy a new version to restart.";
+// The Stop panel with no version selected and no first-deployment Stop requested here.
 export const STOPPED_NO_VERSION =
   "No version is selected. Deploy a new version to start this Agent.";
 // A Stop status read that failed: the prefix, then why (agents/stop.mts).

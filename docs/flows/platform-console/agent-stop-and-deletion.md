@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-10-20
-last_updated_session: 8b95a6fb-7095-4556-9028-0723f32cc534
+updated: 2026-10-28
+last_updated_session: authoring-run/4b2306f4-4b43-4bec-b246-0e4b1f9819fb
 ---
 
 # Console Agent stop and deletion
@@ -14,7 +14,7 @@ from confirmation to readback. See the [parent flow](../platform-console.md) and
 
 ## Entry Points
 
-- `apps/controller/src/console/agents/stop.mjs:createAgentStop` sends the stop request.
+- `apps/controller/src/console/agents/stop.mts:createAgentStop` sends the stop request.
 - `apps/controller/src/console/agents/deletion.mjs:createAgentDeletion` sends the deletion request.
 - `apps/controller/src/console/agents/detail.mts:renderAgentDetail` mounts both as rows of one **Danger zone** card;
   [Agents list rows](#stop-or-delete-from-an-agents-list-row) also offer them.
@@ -53,7 +53,7 @@ A negative [permission answer](../../reference/api.md#get-namespacesnamespaceida
 hides the Stop or Delete row, and the card when neither remains. If the dialog is open, it disables
 confirmation, focuses Cancel and keeps the row. A missing answer keeps the rows; late advice cannot recall a request.
 
-`apps/controller/src/console/agents/stop.mjs:createAgentStop` sends a bodyless `POST` to the
+`apps/controller/src/console/agents/stop.mts:createAgentStop` sends a bodyless `POST` to the
 Agent’s `/stop` route. OCC’s `packages/occ/src/index.ts:stopAgent` checks Agent `operate`,
 persists the requested stopped state, and queues reconciliation. Success means admission,
 not that Compute has shut down. Cancel restores focus to the invoking button; submission focuses
@@ -62,13 +62,16 @@ not that Compute has shut down. Cancel restores focus to the invoking button; su
 For a stopped Agent, **Request Stop again** confirms a new stop intent, even with no selected
 version; the Console cannot inspect history or candidate cleanup. With no selected version
 and no readable versions yet (`setNoReadableVersions`), the Stop row is hidden unless the viewer
-just used it. A running Agent with no selected version hides the row only when the latest
-deployment the page read failed (`setLatestDeployment`). A queued or in-progress one keeps Stop,
-and the confirmation says Stop cancels that deployment. An unreadable deployment or a failed read
-keeps Stop with a confirmation that names both outcomes; a succeeded one read before the Agent
-reread keeps the running-gateway text. A failed readable deployment alone does not hide Stop
-on the Agents list; a newer deployment may be unreadable. The overview's **Runtime** row reports
-a requested stop.
+just used it. A running Agent keeps Stop regardless of the latest readable deployment outcome
+(`setLatestDeployment`), as on the Agents list: a failed readable deployment can hide newer queued
+work. Agent `operate` still controls access. The latest readable outcome supplies confirmation
+text, not visibility. A queued or in-progress one says Stop cancels that deployment. An unreadable
+deployment or a failed read keeps the confirmation that names both outcomes; a succeeded one read
+before the Agent reread keeps the running-gateway text. The overview's **Runtime** row reports
+a requested stop. After an accepted Stop during a first deployment, the Stop row reports
+**Deployment cancellation requested**, not deployment or runtime completion. `applyAgent` clears
+that local result when either Stop readback or a detail-page update observes a running request
+or a selected version. An unchanged stopped read with no selected version keeps it.
 
 Refresh reads desired state and selected version, not live health. Denial stays inline; changed
 state updates panels in place. If the read finds deletion in progress, Agent detail switches to
@@ -144,6 +147,8 @@ uncertain outcome, the requested row’s actions stay disabled until **Refresh**
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-28 21:55: Scope first-deployment Stop feedback to the observed lifecycle and distinguish requested cancellation from completion in the accompanying fix. (authoring-run/4b2306f4-4b43-4bec-b246-0e4b1f9819fb - 3b5e7834b9111ea31e22766811e228a43d4aa537)
 
 - 2026-10-20 08:02: Trace Stop and Delete from Agents list rows, moved from the Agent editing flow, in the accompanying merge. (8b95a6fb-7095-4556-9028-0723f32cc534 - a8fb50b1babb68f3eb759841f92b042da039248e)
 - 2026-10-20 07:57: Describe deletion discovered by a stop-status read in the accompanying change. (authoring-run/28365356-ae7e-47dc-9790-888c3592251f - 6aedac546aad8308b4e9954648268f14545e39b2)
