@@ -122,12 +122,18 @@ The callback URI is derived from the console origin as
 `https://<console-host>/oauth/callback`. The template response shows the exact URI
 for manual registration. OCE includes the same URI in its DCR request.
 
-With `accountIdentity: oidc`, the Refresh Driver verifies the provider before it
-accepts the connection template version, and verifies each ID token against it
-([OIDC verification](contracts.md#oidc-account-identity)). OCC stores the verified
-address on the credential source and shows "Connected as alice@example.com". The
-consent screen lists the two extra scopes. Use it to catch a user who approved the
-wrong account; it does not affect who may use the Agent.
+With `accountIdentity: oidc`, the consent screen lists the two extra scopes. The
+Refresh Driver verifies the provider before accepting the template version and
+verifies the ID token at callback. Console can then show the verified address so
+the owner can check which account they connected. [OIDC verification](contracts.md#oidc-account-identity)
+
+### Connection profile
+
+The `AgentConnection` row in PostgreSQL has an optional `profile` alongside its
+credential source ID and template version. Its `externalUserId`, `email`, and
+`name` fields are optional strings describing the external account. Two accounts
+using the same template can have different profiles. The Secret keeps its own
+name. Consent and refresh work without a profile. How OCE populates it is deferred.
 
 ### Versions and consent
 

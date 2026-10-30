@@ -46,8 +46,8 @@ When the template specifies a `resource`, OCE sends it in both the authorization
 token requests and pins it for refresh. Before storing tokens, OCE checks granted
 scopes against those requested for this connection. For OIDC it passes the ID
 token, pinned template version, and session nonce to the shared verifier. A
-missing or invalid ID token fails the connection before the Secret write. OCC
-records the verified email on the source. [OIDC verifier](#oidc-account-identity) · [Token storage and refresh](#token-storage-and-refresh)
+missing or invalid ID token fails the connection before the Secret write. Console
+can show the verified email when consent completes. [OIDC verifier](#oidc-account-identity) · [Token storage and refresh](#token-storage-and-refresh)
 
 ## Token storage and refresh
 
@@ -214,6 +214,9 @@ issue seven-day refresh tokens.
   second sender and a shared reply destination, including while withdrawal is
   delayed or has failed after disconnect. Prove that codes and
   tokens are absent from responses, logs, and audit.
+- **Connection profiles.** Read back two connections using the same template,
+  one with only `profile.name` and one without a profile. Verify each retains
+  its own metadata and the connection without a profile can refresh.
 - **Refresh ownership.** For either setup path, verify that a source with a valid
   initial token is ready before its first background tick. Under the
   default strategy, a tick outside the renewal window makes no issuer call or
