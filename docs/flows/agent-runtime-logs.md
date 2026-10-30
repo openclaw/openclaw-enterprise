@@ -198,7 +198,7 @@ take `-previous.log` from the request.
 Only a readable replacement starts a fresh tail. Status denial preserves log access; cached `403` avoids repeat denials.
 A version the page could not read gets no status read.
 With no running Pod, each status poll rereads the Agent (`detail.mts:runningVersion`) and links to another running version's Logs.
-A running Agent with no selected version also rereads the version list, so a newer deployment's failure shows.
+A running Agent with no selected version also rereads the version list, so a newer deployment's failure shows. With no Agent change it rereads at most once a minute; an unchanged list keeps the version chooser.
 Follow leaves loaded rows and unchanged statuses alone; its first line replaces an empty-tail status.
 Pod cards show state/exit; Gateway links Harness output or Deployment activity.
 
@@ -230,6 +230,7 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 
 ## Changelog
 
+- 2026-10-30: Bound the version list reread; show a redeploy after a failed one. (2988)
 - 2026-10-30 16:00: Show a newer deployment's failure when the Agent runs with no selected version. (fix-dogfood-r60)
 - 2026-10-29 18:00: Skip status reads of unreadable versions. (D794)
 - 2026-10-29: Report frontier lines that de-duplication withheld once time advances.
