@@ -2361,8 +2361,12 @@ export function installFixture(scenario, evidence) {
               },
             );
           }
-          if (scenario.runtimePod === "none") {
-            // A version whose Pods are gone, such as an older one: nothing runs to read.
+          if (
+            scenario.runtimePod === "none" ||
+            (scenario.runtimePod === "replaced" && revisionId !== saved.activeRevisionId)
+          ) {
+            // A version whose Pods are gone, such as an older one: nothing runs to read. Under
+            // "replaced" only the version selected for service still runs.
             pods.length = 0;
           }
           if (scenario.runtimePod === "rollover") {

@@ -12,6 +12,8 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
 
 1. Open the Agent and select a deployed version. The editable draft is not a
    version and has no runtime; a version without a running Pod shows no Pod.
+   If another version is selected for service while the Agent runs, for example
+   after a stop and redeploy, the view names it and links to its Logs.
 2. Select **Logs**. The runtime strip refreshes every 10 seconds. Each Pod card
    lists every main and init container's state and recent warning Events, prefixed
    with their container. Last termination

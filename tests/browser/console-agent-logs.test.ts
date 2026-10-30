@@ -71,6 +71,7 @@ type LogTestDriver = ReturnType<typeof createRuntimeLogComputeDriver> & {
     events: AgentRuntimeEvent[];
     extraPods: { name: string; uid: string }[];
     gatewayPod: boolean;
+    podlessRevisions: string[];
     restartCount: number;
     observedAt?: string;
     readPodUid?: string;
@@ -1566,6 +1567,75 @@ test("log controls a version with no running Pod leaves unavailable name that re
   }
   // No read was sent for a selection with no Pod.
   assert.equal(computeDriver.calls.filter(({ operation }) => operation === "read").length, 0);
+});
+
+// Finding 2975 (dogfood r56 row 12, r59 row 23). The Agent was stopped and redeployed from
+// elsewhere while its Logs stayed open: the view kept the stopped version, still named as
+// selected for service, and said only that it had no running Pod. Its status poll now rereads
+// the Agent, so the page names the new version and the view links to that version's Logs.
+test("Logs of a stopped version name the redeployed version and link to its Logs", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "the first version serves")];
+  const { page } = await newPage(t, fixture);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  // The Agent's own address, as the dogfood reader opened it: no version chosen.
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, undefined, "logs"));
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("the first version serves").waitFor();
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const notice = page.locator(".log-running-version");
+  const noPod = "This version has no running Pod for this source.";
+
+  // A stop leaves no version running: the view says so and names no other version.
+  const stopped = await fixture.request("POST", `${agentPath}/stop`);
+  assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
+  computeDriver.state.podlessRevisions.push(revisionId);
+  await page.clock.runFor(10_000);
+  await page.getByRole("status").filter({ hasText: noPod }).waitFor();
+  // The reread shows the stop on the page, which a poll of the version alone never did.
+  await page.getByText("Stop requested", { exact: true }).waitFor();
+  assert.equal(await notice.innerText(), "");
+
+  // Another operator deploys a new version; the next poll names it and links to its Logs.
+  const before = (await fixture.request("GET", agentPath)).data;
+  const { revision } = await fixture.seedActiveAgentRevision(
+    namespace.id,
+    agent.id,
+    before.activeRevisionId,
+  );
+  await page.clock.runFor(10_000);
+  await notice.getByText("v2 is selected for service.").waitFor();
+  assert.match(await page.locator("main").innerText(), /Selected for service\s+v2/);
+  // The stopped version stays selected and keeps its true no-Pod reason.
+  assert.equal(new URL(page.url()).searchParams.get("revision"), null);
+  await expectReachableReason(page, page.getByRole("button", { name: "Refresh logs" }), noPod);
+  const open = notice.getByRole("link", { name: "Open v2 Logs" });
+  await open.click();
+  await page.waitForURL((url) => url.searchParams.get("revision") === revision.id);
+  await page.getByText(computeDriver.podName(revision)).first().waitFor();
+  await waitForEnabled(page.getByRole("button", { name: "Refresh logs" }));
+  assert.equal(await page.locator(".log-running-version").innerText(), "");
+});
+
+// A version picked on purpose stays selected: its view still says it has no running Pod and
+// only links to the version selected for service (finding 2975).
+test("Logs of an older version picked on purpose stay on it and link to the serving version", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id, revisionId);
+  computeDriver.state.podlessRevisions.push(revisionId);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  const notice = page.locator(".log-running-version");
+  await notice.getByText("v2 is selected for service.").waitFor();
+  assert.equal(new URL(page.url()).searchParams.get("revision"), revisionId);
+  await page
+    .getByRole("status")
+    .filter({ hasText: "This version has no running Pod for this source." })
+    .waitFor();
+  const link = notice.getByRole("link", { name: "Open v2 Logs" });
+  const href = new URL((await link.getAttribute("href")) ?? "", page.url());
+  assert.equal(href.searchParams.get("revision"), revision.id);
+  assert.equal(href.searchParams.get("tab"), "logs");
 });
 
 // Finding 2944. A running container that has never restarted has no previous instance, so

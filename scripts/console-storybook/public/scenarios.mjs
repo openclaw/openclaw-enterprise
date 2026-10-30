@@ -6742,6 +6742,19 @@ export const scenarios = {
     ],
     gap: "Simulated UI state only; this preview does not prove a live Pod transition.",
   },
+  runtimeLogsReplacedVersion: {
+    ...runtimeLogsPage,
+    name: "Logs of a version stopped and replaced since",
+    path: `${currentVersion}&tab=logs`,
+    runtimePod: "replaced",
+    description:
+      "v6 has no running Pod: it was stopped and v7 is now selected for service. The Logs view keeps v6, says it has no running Pod, and names v7 with a link to its Logs.",
+    steps: [
+      "Check the notice under the runtime status: “v7 is selected for service.” with Open v7 Logs. The version picker still shows v6, and its log controls stay unavailable, described by “This version has no running Pod for this source.” (finding 2975).",
+      "Select Open v7 Logs. The page opens v7's Logs with its running Gateway Pod and no notice.",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live stop and redeploy.",
+  },
   runtimeLogsFilteredDownload: {
     group: "Pages/Agent detail",
     name: "Runtime logs filtered and downloaded",

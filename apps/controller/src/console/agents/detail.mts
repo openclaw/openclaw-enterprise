@@ -2237,6 +2237,53 @@ export async function renderAgentDetail(
     versionRecord?.renderDiagnostics();
   }
 
+  // The Logs view of a version with no running Pod asks which version serves now. A stop and
+  // redeploy from elsewhere left this page on the stopped version, still named as selected for
+  // service, with no hint (finding 2975). The reread updates the page in place, as a finished
+  // deployment does; a new current version also needs the version list for its label.
+  let servingReread: Promise<void> | null = null;
+  async function rereadServing() {
+    const fresh = await readAgent();
+    if (!context.isCurrent() || deleting) {
+      return;
+    }
+    const changed =
+      fresh.status === "deleting" ||
+      fresh.activeRevisionId !== currentRevisionId ||
+      fresh.desiredRuntimeState !== currentRuntimeState;
+    if (!changed) {
+      return;
+    }
+    const unknownVersion =
+      fresh.activeRevisionId !== undefined && !listedRevisions.has(fresh.activeRevisionId);
+    const revisionResult: RevisionResult | null = unknownVersion
+      ? {
+          status: "fulfilled",
+          value: revisionsForPage(await readRevisionPage(request, path)),
+        }
+      : latestRevisionResult;
+    if (context.isCurrent() && !deleting) {
+      updateCurrentAgent(fresh, revisionResult, viewedSnapshot);
+    }
+  }
+  async function runningVersion() {
+    servingReread ??= rereadServing()
+      .catch(() => {})
+      .finally(() => {
+        servingReread = null;
+      });
+    await servingReread;
+    const serving =
+      currentRuntimeState === "running" && currentRevisionId !== selected
+        ? visibleRevisions.find(({ id }) => id === currentRevisionId)
+        : undefined;
+    if (!context.isCurrent() || deleting || !serving) {
+      return null;
+    }
+    const label = `v${serving.revision}`;
+    return { label, link: versionLink(`Open ${label} Logs`, serving.id, "logs") };
+  }
+
   // The failed version the recovery block leads with, if any. The viewed version's record does
   // not repeat that version's error below it (finding 2368).
   let recoveryRevisionId: string | null = null;
@@ -4275,6 +4322,7 @@ export async function renderAgentDetail(
         onAccessChanged: () => {
           accessChanged = true;
         },
+        runningVersion,
       });
       content.append(logs.section);
       state.loading = false;
