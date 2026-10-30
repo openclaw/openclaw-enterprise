@@ -575,15 +575,15 @@ function lifecycleCommand(fake, invocation, io) {
             ["openclaw-development/import-b9b4e5950649:occ-dev-owned", "c".repeat(64)],
             [
               "openclaw-development/openshell-gateway:occ-dev-owned",
-              "ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6",
+              "f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea",
             ],
             [
               "openclaw-development/openshell-sandbox:occ-dev-owned",
-              "e9adf9ecde328122414ad2ee8c6fc5d5b389e4cf168daf4357c46f5a77d55851",
+              "1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63",
             ],
             [
               "openclaw-development/openshell-supervisor:occ-dev-owned",
-              "fabcd01f656e9d23df4386f82e80b4f48b90f3452d7d5c58889007643a069161",
+              "ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b",
             ],
           ]
             .map(

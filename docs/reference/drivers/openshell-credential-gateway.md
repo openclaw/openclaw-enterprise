@@ -191,7 +191,7 @@ of the configured binary can use it too. The profile neither authorizes a
 specific inference body nor filters the response for that caller.
 
 **Online GitHub preview.** For the opt-in `github-installation` profile
-on stock OpenShell 0.1.5, the launcher waits for a one-use probe in the selected workspace to return the expected denial. This observes the hook at startup.
+on OpenShell 0.1.5/0.1.6, the launcher waits for a one-use probe in the selected workspace to return the expected denial. This observes the hook at startup.
 Enforcement on later requests remains unverified. [Protected Git profiles](../repository-credentials/protected-openshell-git.md)
 
 **Protected delivery** requires a qualified sender that binds the request and

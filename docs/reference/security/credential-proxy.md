@@ -38,7 +38,7 @@ the request and response checks, even on a credential-free read. A proxy setting
 startup hook cannot establish that every request takes this path. See the
 [installed bypass checks](../../testing/protected-repository-custody.md#qualify-installed-custody).
 
-Stock OpenShell 0.1.5 offers a separately approved installation-wide GitHub
+Stock OpenShell 0.1.5 and 0.1.6 offer a separately approved installation-wide GitHub
 preview. GitHub installation membership, permissions and branch rules bound
 that access. OpenClaw Enterprise adds no Git ref allowlist. The bundled Driver refuses
 repository-scoped `git-write`. See [OpenShell Git profiles](../repository-credentials/protected-openshell-git.md).

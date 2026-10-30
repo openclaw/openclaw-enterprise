@@ -181,7 +181,9 @@ binding (Agent save and deploy refuse it next to another). No default profile or
 wildcard selects this scope. The installed sender must positively confirm
 `github_installation` support. With the bundled OpenShell Credential Proxy, that
 needs its `observedHookPreviewWorkspace` setting: without it, deploy answers
-`409 RESOURCE_CONFLICT`, and on a gateway other than 0.1.5, `503`.
+`409 RESOURCE_CONFLICT`, and on a gateway other than 0.1.5 or 0.1.6, `503`. Use patched 0.1.6;
+0.1.5 remains admitted for existing-installation compatibility; it lacks the
+incident distrust fix. Upgrade to 0.1.6.
 
 OCE does not add a ref allowlist to installation scope. GitHub's membership,
 permissions and branch rules set its limit. See

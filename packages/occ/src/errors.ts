@@ -1501,7 +1501,7 @@ const RETRY_LATER_MESSAGES = Object.freeze({
   proxyRegistration: () =>
     "The OpenShell gateway does not offer the protected egress middleware the Credential Proxy is configured to use. Ask an operator to check the gateway's middleware registration and version, then retry.",
   previewGatewayVersion: () =>
-    "Installation-wide repository access uses the observed-hook preview, which needs OpenShell gateway 0.1.5, and the gateway reports another version. Ask an operator to run 0.1.5 or turn the preview off, then retry.",
+    "Installation-wide repository access uses the observed-hook preview, which needs a qualified OpenShell gateway (0.1.5 or 0.1.6), and the gateway reports another version. Ask an operator to run patched 0.1.6 or turn the preview off, then retry.",
 });
 
 /**

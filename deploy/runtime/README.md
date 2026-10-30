@@ -54,6 +54,13 @@ does the same.
 private Linux PID namespace stopped recover only Gateway records from that
 namespace. OC still compares its lock fingerprint before recovery. An
 unattributed owner requires operator confirmation.
+`openclaw-linux-private-store-setgid.patch` normalizes only an owner-only
+Linux directory newly created with inherited setgid before private-store
+admission. This lets native setup create its control, client and state stores
+under the Sandbox workspace without changing existing parent permissions or
+relaxing ownership and symlink checks. The build runs the owning private-store
+regressions with the patched source. Remove this bridge after selecting an
+OpenClaw commit that contains the repair.
 The source archive and patch hashes identify the resulting custom build.
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it

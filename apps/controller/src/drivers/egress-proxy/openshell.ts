@@ -62,7 +62,7 @@ function registeredWithoutExecution(extensions: unknown, registration: string): 
 export interface OpenShellProxyOptions {
   readonly middlewareName: string;
   readonly repositoryMiddlewareName?: string;
-  /** Installation operator promises a dedicated, operator-controlled stock 0.1.5 gateway. */
+  /** Installation operator promises a dedicated, operator-controlled qualified stock gateway. */
   readonly observedHookPreviewWorkspace?: string;
   readonly authorityScope: "execution";
 }
@@ -400,7 +400,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           profile === "github_installation" &&
           this.options.observedHookPreviewWorkspace &&
           this.previewEnforcement &&
-          info.gateway_version === "0.1.5"
+          (info.gateway_version === "0.1.5" || info.gateway_version === "0.1.6")
         ) {
           return { profile, authorization: "request-hook-observed" as const };
         }

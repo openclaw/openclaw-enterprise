@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-29
-last_updated_session: 01a184cd-7ec2-7fa2-8547-9629c51ad0ba
+updated: 2026-10-30
+last_updated_session: authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -201,7 +201,7 @@ selects a named provider and HTTPS Responses transport.
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
 Only dedicated Codex or OpenClaw versions pinned to this Driver qualify.
-Kubernetes, filesystem, process and binary-scoped network policy use `v0.1.5`.
+Kubernetes, filesystem, process and binary-scoped network policy use `v0.1.6`.
 Path relocation preserves opaque `OCE_CODEX_CHATGPT_ACCOUNT` JSON.
 Landlock is required. Unsupported enums, inherited keys, `passthrough` TLS,
 missing executable paths and invalid readiness `timeoutMs` prevent Kubernetes
@@ -390,6 +390,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 10:12: Select patched OpenShell 0.1.6 for Sandbox provisioning. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
 
 - 2026-10-29 04:23: Route OpenShell workspace nodes through Envoy for worker HTTP transfers and client attribution. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - 15440bacfc5a6553190c9580eb0eccf6f301f0ed)
 
