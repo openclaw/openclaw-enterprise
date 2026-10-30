@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { createOpenShellOnlineGitAuthority } from "../../apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts";
 import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
@@ -569,18 +570,35 @@ test("expired binding lookup cannot begin durable Git approval", { timeout: 1000
 // Exercise the signed production RPC and prove refusal precedes the material owner.
 test("repository API credential issuance is refused while ordinary collaboration stays available", async (t) => {
   let approvals = 0;
+  let current = true;
+  const repositories = [
+    { repositoryId: binding.repositoryId, repository: binding.repository },
+    { repositoryId: "43", repository: "openclaw/openclaw-enterprise" },
+  ];
   let scope = "github-repository";
   const { client, keys } = await openShellOnlineGitWire(t, {
-    lookupBinding: async () => ({
-      ...binding,
-      scope,
-      installationId: "71",
-      apiOrigin: "https://api.github.com",
-      repositories: [{ repositoryId: binding.repositoryId, repository: binding.repository }],
-      installed: { ...binding.installed, route: { revisionId: binding.executionId, fence: 1 } },
-    }),
+    lookupBinding: async () =>
+      scope === undefined
+        ? binding
+        : {
+            ...binding,
+            scope,
+            installationId: "71",
+            apiOrigin: "https://api.github.com",
+            repositories,
+            installed: {
+              ...binding.installed,
+              route: { revisionId: binding.executionId, fence: 1 },
+            },
+          },
     authorizeOnlineRequest: async (q, installed) => {
       approvals++;
+      if (scope === "github-repository") {
+        assert.deepEqual(q.repositories, repositories);
+      }
+      if (!current) {
+        return { kind: "denied", reason: "access_withdrawn" };
+      }
       return {
         kind: "allow",
         exchangeId: q.exchangeId,
@@ -591,6 +609,8 @@ test("repository API credential issuance is refused while ordinary collaboration
       };
     },
   });
+  const send = (input) =>
+    invoke(client, "EvaluateHttpRequest", input, token(keys, "supervisor", binding.sandboxId));
   const evaluate = async (path, method = "POST", body) => {
     const input = request(
       path,
@@ -599,12 +619,7 @@ test("repository API credential issuance is refused while ordinary collaboration
       body === undefined ? [] : [{ name: "content-type", value: "application/json" }],
     );
     input.target.host = "api.github.com";
-    return invoke(
-      client,
-      "EvaluateHttpRequest",
-      input,
-      token(keys, "supervisor", binding.sandboxId),
-    );
+    return send(input);
   };
   for (scope of ["github-repository", "github-installation"]) {
     for (const prefix of ["/repos/example/project", "/orgs/example"]) {
@@ -661,4 +676,57 @@ test("repository API credential issuance is refused while ordinary collaboration
       1,
     );
   }
+
+  await t.test("shipped gh metadata stays within selected-repository authority", async () => {
+    // Exact captured bodies; stock 0.1.6 lowercases visible header names and
+    // omits credentials/framing. REST overrides only its differing metadata.
+    const fixture = JSON.parse(
+      readFileSync(new URL("../fixtures/gh-pr-create-2.103.2.json", import.meta.url), "utf8"),
+    );
+    const captured = (entry = fixture.requests[0]) => {
+      const target = { ...fixture.target, ...entry.target };
+      const headers = fixture.headers.flatMap(([name, value]) =>
+        entry.headers?.[name] === null ? [] : [{ name, value: entry.headers?.[name] ?? value }],
+      );
+      return { ...request(target.path, target.method, Buffer.from(entry.body), headers), target };
+    };
+    scope = "github-repository";
+    for (const entry of fixture.requests) {
+      const result = await send(captured(entry));
+      assert.equal(result.decision, 1, entry.operation);
+      assert.equal(result.has_body ?? false, false);
+      assert.deepEqual(result.header_mutations ?? [], []);
+    }
+    const beforeWithdrawal = approvals;
+    current = false;
+    assert.equal((await send(captured())).reason_code, "access_withdrawn");
+    assert.equal(approvals, beforeWithdrawal + 1, "valid shape still reaches the current owner");
+    current = true;
+    const refused = async (input) => {
+      const before = approvals;
+      assert.equal((await send(input)).decision, 2);
+      assert.equal(approvals, before, "shape/scope refusal must precede owner approval");
+    };
+    for (const name of ["graphql-features", "time-zone"]) {
+      const input = captured();
+      const header = input.headers.find((h) => h.name === name);
+      await refused({ ...input, headers: [...input.headers, header] });
+      header.value = "unapproved";
+      await refused(input);
+    }
+    for (const target of [
+      { host: "github.com" },
+      { path: "/repos/openclaw/openclaw-enterprise" },
+    ]) {
+      const input = captured();
+      await refused({ ...input, target: { ...input.target, ...target } });
+    }
+    await refused({
+      ...captured(),
+      body: Buffer.from(JSON.stringify({ query: "query { repository { tempCloneToken } }" })),
+    });
+    for (scope of ["github-installation", undefined]) {
+      await refused(captured());
+    }
+  });
 });

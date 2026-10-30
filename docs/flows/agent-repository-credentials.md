@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-10-29"
-last_updated_session: authoring-run/033567f0-1b76-4fba-83a3-d83d36dae4bd
+updated: "2026-10-30"
+last_updated_session: authoring-run/086003c3-b067-490a-b33b-8083e88519bd
 ---
 
 # Agent repository credential flow
@@ -280,11 +280,14 @@ without changing shared selection.
 
 See [draft creation from a prepared Git session](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
 
-`apps/controller/src/drivers/repo/github/credentials/profiles.ts` owns the exact
-Reader, Contributor and Collaborator permission maps. The GitHub route classifier admits
-profile-selected REST operations and GraphQL limited by token permissions for all three.
-Every GraphQL POST is a possible write; Reader's token, not a query parser, enforces its
-read-only grant. See
+`apps/controller/src/drivers/repo/github/credentials/profiles.ts` defines Reader,
+Contributor and Collaborator permissions. REST uses profile-selected operations;
+GraphQL uses token permissions. Every GraphQL POST can write; Reader's token
+enforces read-only access.
+OpenShell's
+`apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:requestHead`
+validates [CLI metadata](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
+Route, JSON and current-authority checks remain. See
 [access levels](../reference/repository-credentials/access-levels.md).
 
 The [service exchange flow](repository-credentials.md#4-reserve-acquire-and-dispatch)
@@ -396,6 +399,8 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 02:21: Admit CLI metadata. (authoring-run/086003c3-b067-490a-b33b-8083e88519bd - 35f44276ed5cdcb69b5fd707b085fd59b06009dd)
 
 - 2026-10-29 23:23: Share selected-repository grant projection. (authoring-run/033567f0-1b76-4fba-83a3-d83d36dae4bd - a198a93e81cc88f7ba83edc4de7a949a43b19e17)
 

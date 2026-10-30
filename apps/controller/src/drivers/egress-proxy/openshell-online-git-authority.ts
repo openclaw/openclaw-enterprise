@@ -232,7 +232,10 @@ function validBinding(
   );
 }
 
-function requestHead(request: OpenShellOnlineHttpRequest): RequestHead | undefined {
+function requestHead(
+  request: OpenShellOnlineHttpRequest,
+  binding: OpenShellOnlineGitBinding,
+): RequestHead | undefined {
   const headers: Record<string, string> = Object.create(null);
   // Stock has already removed protected headers. Refuse unknown or repeated visible headers;
   // never interpret their absence as proof of original framing or authentication.
@@ -248,8 +251,18 @@ function requestHead(request: OpenShellOnlineHttpRequest): RequestHead | undefin
     "x-github-api-version",
   ];
   for (const [name, value] of request.headers) {
+    // Shipped gh metadata survives stock's visible-header projection. Admit only
+    // these values on selected-repository bindings; operation() still selects the route.
+    const apiMetadata =
+      binding.scope === "github-repository" &&
+      matchesOrigin("https://api.github.com", request) &&
+      ((name === "time-zone" && value === "Etc/UTC") ||
+        (name === "graphql-features" &&
+          value === "merge_queue" &&
+          request.target.method === "POST" &&
+          request.target.path === "/graphql"));
     if (
-      !allowed.includes(name) ||
+      (!allowed.includes(name) && !apiMetadata) ||
       Object.hasOwn(headers, name) ||
       (name === "accept-language" && value.length > 256) ||
       (name === "pragma" && value !== "no-cache") ||
@@ -572,7 +585,7 @@ export function createOpenShellOnlineGitAuthority(
       if (!validBinding(binding, request)) {
         return deny("binding_mismatch");
       }
-      const head = requestHead(request);
+      const head = requestHead(request, binding);
       if (!head) {
         return deny("request_invalid");
       }

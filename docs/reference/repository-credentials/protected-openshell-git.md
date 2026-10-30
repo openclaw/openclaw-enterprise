@@ -198,7 +198,10 @@ for profile-specific allowed/denied requests and the required model-source choic
 ## Use the admitted repository
 
 With `github-repository`, use each selected repository’s HTTPS Git URL. REST and
-GraphQL operations use the selected token’s permissions.
+GraphQL operations use the selected token’s permissions. Shipped `gh` metadata
+accepts only `Time-Zone: Etc/UTC` and, for GraphQL POSTs,
+`Graphql-Features: merge_queue`. Duplicate headers refuse; current authority
+remains required.
 
 For an explicit `git-write` grant, clone, fetch and push exactly
 `https://github.com/$OCE_OPENSHELL_GIT_REPOSITORY.git`: the lowercase name OCE
