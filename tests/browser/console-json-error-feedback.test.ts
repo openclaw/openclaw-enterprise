@@ -6,6 +6,7 @@ import type { Page } from "playwright";
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import {
   detailUrl,
