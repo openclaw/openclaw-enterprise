@@ -13931,10 +13931,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     // OCC applies the same rule at Agent save, provisioning and deployment, without the broker
     // host, which only the prepared material names. This check stays as the backstop for a deny
     // of that host and for revisions admitted before OCC checked.
-    if (
-      repositoryConsumer === undefined ||
-      !codexProxiesRepositoryBroker(revision.harness, revision.plugins?.driver.implementation)
-    ) {
+    if (repositoryConsumer === undefined || !codexProxiesRepositoryBroker(revision.harness)) {
       return undefined;
     }
     if (this.options.network.repositoryCredentials === undefined) {

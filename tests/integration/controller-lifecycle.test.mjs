@@ -6,6 +6,10 @@ import {
   PRODUCTION_HARNESS_DESCRIPTOR,
   resolveApprovedHarness as resolveApprovedDevelopmentHarness,
 } from "../../apps/controller/src/composition/production-harness.ts";
+import {
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   AgentPrincipalAuthorizationError,
@@ -415,6 +419,35 @@ test("controller validates selected lifecycle hooks and registered Driver owners
     DriverSelectionError,
   );
   assert.equal(controller.selectedDriver("configuration"), configuration);
+});
+
+test("selecting one plugin catalog replaces the mixed catalog's Compute lifecycle hooks", () => {
+  const controller = new OpenClawController(installation);
+  const { compute } = createDrivers(createIAMDriver());
+  const codex = new CodexPluginDriver();
+  const openclaw = new OCCPluginDriver();
+  for (const driver of [codex, openclaw]) {
+    driver.computeLifecycleHooks = { beforeWorkloadStart: async () => {} };
+  }
+  let hooks;
+  let refuseSingleton = true;
+  compute.setLifecycleDrivers = (drivers) => {
+    if (refuseSingleton && drivers.length === 1) {
+      throw new Error("Cannot install the requested hooks.");
+    }
+    hooks = drivers;
+  };
+  controller.registerDriver(compute);
+  controller.selectDriver("compute", compute.id);
+  controller.installPluginDrivers([codex, openclaw]);
+  assert.throws(() => controller.selectDriver("plugin", codex.id), /Cannot install/);
+  assert.throws(() => controller.selectedDriver("plugin"), DriverSelectionError);
+  assert.deepEqual(hooks, [codex, openclaw]);
+
+  refuseSingleton = false;
+  controller.selectDriver("plugin", codex.id);
+  assert.equal(controller.selectedDriver("plugin"), codex);
+  assert.deepEqual(hooks, [codex]);
 });
 
 test("lifecycle-owner selection fails atomically when compute cannot accept hooks", () => {

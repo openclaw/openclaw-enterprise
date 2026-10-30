@@ -201,7 +201,7 @@ export function renderAgentPlugins(
   let catalogCredential: PluginCapabilities["discoveryCredential"] | null = null;
   let catalogCapabilityChecked = false;
   // The failed capabilities read's reason, shown once under the policy controls.
-  let catalogCapabilityError = false;
+  let catalogCapabilityError: "missing" | "unreadable" | undefined;
   const hasBoundCredential =
     agent.harnessAuth?.method === "credential_source" ||
     (agent.harnessAuth?.method === "codex_pat" && agent.harnessAuth.source?.kind === "secret");
@@ -239,9 +239,9 @@ export function renderAgentPlugins(
         ? "Plugin browsing needs Agent update access."
         : !catalogCapabilityChecked
           ? "Checking plugin catalog availability…"
-          : catalogCapabilityError
+          : catalogCapabilityError === "unreadable"
             ? "Plugin browsing needs the plugin capabilities, which could not be read. Refresh this page, or edit existing plugin selections."
-            : !codex || openClawDriver
+            : catalogCapabilityError === "missing" || !codex || openClawDriver
               ? "The selected Plugin Driver does not offer a catalog for this harness and execution mode. You can still edit existing plugin selections."
               : // Only the Codex Plugin Driver's catalog depends on Codex auth (finding 2791).
                 apiKeyAuth
@@ -549,13 +549,18 @@ export function renderAgentPlugins(
         if (!context.isCurrent()) {
           return;
         }
-        if (requestFailure(cause).status === 401) {
+        const status = requestFailure(cause).status;
+        if (status === 401) {
           context.onExpired();
         } else {
-          catalogCapabilityError = true;
+          catalogCapabilityError = status === 501 ? "missing" : "unreadable";
           catalogCapabilityChecked = true;
           discovery.fields.setCapabilities(null, true);
           discovery.update();
+          // A removed catalog can leave saved defaults that must be cleared with its selections.
+          if (status === 501 && initialApprovers?.length) {
+            defaultApprovers.hidden = false;
+          }
           // A refusal names the grant this read checks, an outage who to ask (finding 2538).
           capabilitiesStatus.textContent = `${readFailure(
             "Plugin policy controls",

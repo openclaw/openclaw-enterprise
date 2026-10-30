@@ -1875,7 +1875,7 @@ test("Create Agent's preflight refuses what Configuration and Agent create would
   assert.equal(unknown.status, 400, JSON.stringify(unknown.body));
   assert.equal(
     unknown.body.error.message,
-    "A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: occ-plugin:missing. Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.",
+    "A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: occ-plugin:missing. Check each plugin ID and its Driver prefix against the catalog for the Agent's Harness.",
   );
 
   // No route lists Configurations; the Agent and Secret collections stay empty.
@@ -3828,7 +3828,7 @@ test("Agent plugin reviewer selection preserves omission and rejects unsupported
   const namespace = await createNamespace(controller, "plugin-reviewer-api");
   // The automatic reviewer below needs an explicit on-request session policy at save.
   const configuration = await createConfiguration(controller, namespace.id, {
-    agents: { defaults: { model: "codex/gpt-6-astra" } },
+    ...createHarnessConfiguration("codex", "gpt-6-astra"),
     plugins: { entries: { codex: { config: { appServer: { approvalPolicy: "on-request" } } } } },
   });
   const pluginDriver = new CodexPluginDriver();
@@ -4078,8 +4078,8 @@ test("Agent save and deployment refuse plugins the Plugin Driver cannot run in t
   controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
   const plugins = { [diffsPluginId]: pluginPolicy() };
   const message = (harness) =>
-    `The Installation's Plugin Driver runs plugins only in ${harness}: remove the Agent's plugins, or change its Configuration or execution mode to a Harness that runs them.`;
-  const assertRefused = (refused, label, harness = "an OpenClaw Harness") => {
+    `No Plugin Driver is enabled for the ${harness} Harness. Remove the Agent's plugins or enable its catalog.`;
+  const assertRefused = (refused, label, harness = "codex") => {
     assertApiError(refused, 400, "INVALID_REQUEST", label);
     assert.equal(refused.body.error.message, message(harness), label);
   };
@@ -4134,19 +4134,29 @@ test("Agent save and deployment refuse plugins the Plugin Driver cannot run in t
   );
   assertRefused(await controller.request("POST", `${agentPath}/deploy`), "deploy");
   assert.deepEqual((await controller.request("GET", `${agentPath}/revisions`)).data, []);
+  // Even a compatible Harness cannot confer ownership on existing IDs saved without an owner.
+  const unowned = await controller.request("PATCH", agentPath, {
+    body: { configurationId: openclaw.id, plugins },
+  });
+  assertApiError(unowned, 400, "INVALID_REQUEST");
+  assert.match(unowned.body.error.message, /Clear the Agent's existing plugin selections/);
   // The refusal's advice works: clearing the plugins saves.
   const cleared = await controller.request("PATCH", agentPath, {
     body: { configurationId: codex.id, plugins: {} },
   });
   assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
 
-  // The Codex Plugin Driver runs in dedicated Codex or embedded OpenClaw, not dedicated
-  // OpenClaw; Create Agent's preflight refuses the pair as create does.
+  const reselected = await controller.request("PATCH", agentPath, {
+    body: { configurationId: openclaw.id, executionMode: "embedded", plugins },
+  });
+  assert.equal(reselected.status, 200, JSON.stringify(reselected.body));
+
+  // An Installation offering only Codex plugins refuses both OpenClaw modes at save.
   const codexDriver = new CodexPluginDriver();
   controller.fixture.controller.registerDriver(codexDriver);
   controller.fixture.controller.selectDriver("plugin", codexDriver.id);
   const codexPlugins = { [linearPluginId]: { enabled: true } };
-  const codexHarness = "a dedicated Codex Harness or embedded OpenClaw Harness";
+  const codexHarness = "openclaw";
   assertRefused(
     await controller.request("POST", agents, {
       body: {
@@ -4173,7 +4183,7 @@ test("Agent save and deployment refuse plugins the Plugin Driver cannot run in t
   const codexEmbedded = await controller.request("POST", agents, {
     body: { name: "embedded-codex-plugins", configurationId: openclaw.id, plugins: codexPlugins },
   });
-  assert.equal(codexEmbedded.status, 201, JSON.stringify(codexEmbedded.body));
+  assertRefused(codexEmbedded, "embedded OpenClaw cannot use the Codex catalog", codexHarness);
 });
 
 test("a saved Google package refuses an incompatible Agent mode, Harness or Compute", async () => {
@@ -4198,8 +4208,7 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
     createHarnessConfiguration("openclaw", "gpt-5.1"),
   );
   const driver = new OCCPluginDriver();
-  controller.fixture.controller.registerDriver(driver);
-  controller.fixture.controller.selectDriver("plugin", driver.id);
+  controller.fixture.controller.installPluginDrivers([driver, new CodexPluginDriver()]);
   const packageId = "occ-plugin:google@1.0.0";
   const plugins = { [packageId]: { enabled: true } };
   const agentsPath = `/namespaces/${namespace.id}/agents`;
@@ -4256,7 +4265,24 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
   await changeHarness("codex");
   const deploy = await controller.request("POST", `${path}/deploy`);
   assert.equal(deploy.status, 400, JSON.stringify(deploy.body));
-  assert.equal(deploy.body.error.message, mode.body.error.message);
+  assert.match(deploy.body.error.message, /Clear the Agent's existing plugin selections/);
+  // A second Agent in the same Installation can select and admit a plugin through Codex.
+  const codexAgent = await controller.request("POST", agentsPath, {
+    body: {
+      name: "Codex Agent",
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      plugins: { [linearPluginId]: { enabled: true } },
+    },
+  });
+  assert.equal(codexAgent.status, 201, JSON.stringify(codexAgent.body));
+  await bindHarnessKey(controller.fixture, namespace.id, codexAgent.data);
+  const codexRevision = await controller.request(
+    "POST",
+    `${agentsPath}/${codexAgent.data.id}/deploy`,
+  );
+  assert.equal(codexRevision.status, 202, JSON.stringify(codexRevision.body));
+  assert.equal(codexRevision.data.plugins.driver.id, "codex-plugin");
 
   // The Sandbox can provision native workers. The replacement Compute cannot deliver the package.
   await changeHarness("openclaw");
@@ -4317,7 +4343,10 @@ test("the OpenClaw Plugin Driver refuses a selection whose every tool the Config
   }
   // Every session runs as a sole roster entry, so its tools.deny counts too (finding 1848).
   const entryDenying = await createConfiguration(controller, namespace.id, {
-    agents: { entries: { main: { tools: { deny: ["*"] } } } },
+    agents: {
+      ...createHarnessConfiguration("openclaw", "gpt-5.1").agents,
+      entries: { main: { tools: { deny: ["*"] } } },
+    },
   });
   const refusedEntry = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: { name: "tool-deny-agent", configurationId: entryDenying.id, plugins },
@@ -4329,7 +4358,7 @@ test("the OpenClaw Plugin Driver refuses a selection whose every tool the Config
   );
   // The primary model's tools.byProvider deny list is its own deny step (finding 1855).
   const providerDenying = await createConfiguration(controller, namespace.id, {
-    agents: { defaults: { model: "openai/gpt-5.1" } },
+    ...createHarnessConfiguration("openclaw", "gpt-5.1"),
     tools: { byProvider: { openai: { deny: ["*"] } } },
   });
   const refusedProvider = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
@@ -4397,7 +4426,7 @@ test("Codex Agents refuse plugin and tool approver overrides and keep Agent-wide
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "codex-plugin-approvers-api");
   const configuration = await createConfiguration(controller, namespace.id, {
-    agents: { defaults: { model: "codex/gpt-6-astra" } },
+    ...createHarnessConfiguration("codex", "gpt-6-astra"),
   });
   const pluginDriver = new CodexPluginDriver();
   controller.fixture.controller.registerDriver(pluginDriver);
@@ -4654,6 +4683,22 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
   });
   assertApiError(foreignUpdate, 403, "FORBIDDEN");
 
+  // A catalog refusal must not bypass the exact grant on a newly requested source.
+  const requestedSourceId = `cs_${randomUUID()}`;
+  const deniedSource = await injectedRequest(exactAgentApp, "PATCH", agentPath, {
+    body: {
+      configurationId: configuration.id,
+      credentialSources: [{ sourceId: requestedSourceId }],
+      plugins: { [linearPluginId]: { enabled: true } },
+    },
+  });
+  assertApiError(deniedSource, 403, "FORBIDDEN");
+  assert.deepEqual(controller.fixture.auditSink.events.at(-1).authorization.resource, {
+    kind: "credential_source",
+    namespaceId: namespace.id,
+    id: requestedSourceId,
+  });
+
   const updated = await injectedRequest(exactAgentApp, "PATCH", agentPath, {
     body: { configurationId: configuration.id, plugins: { [diffsPluginId]: pluginPolicy() } },
   });
@@ -4705,7 +4750,7 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
     assertApiError(response, 400, "INVALID_REQUEST");
     assert.match(
       response.body.error.message,
-      /^A plugin selection names a plugin that the selected Plugin Driver \(codex-plugin\) does not offer: occ-plugin:diffs\./,
+      /No Plugin Driver is enabled for the openclaw Harness/,
     );
     assert.equal(Object.hasOwn(response.body.error, "details"), false);
   }
@@ -6666,6 +6711,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     `/namespaces/${namespace.data.id}/agents/provision`,
     {
       body: provisioningRequestBody(namespace.data.id, secrets, {
+        configuration: { values: createHarnessConfiguration("codex", "gpt-6-astra") },
         plugins: {
           [linearPluginId]: { enabled: true, tools: { "app/search": { reviewer: "auto" } } },
         },
@@ -6687,7 +6733,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     plugins: { [linearPluginId]: { enabled: true, toolDefaults: { reviewer: "auto" } } },
   });
   automaticReviewer.configuration.values = {
-    ...automaticReviewer.configuration.values,
+    ...createHarnessConfiguration("codex", "gpt-6-astra"),
     plugins: { entries: { codex: { config: { appServer: { approvalPolicy: "never" } } } } },
   };
   const refusedReviewer = await injectedRequest(
@@ -6714,7 +6760,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     plugins: { [diffsPluginId]: pluginPolicy() },
   });
   deniedTools.configuration.values = {
-    ...deniedTools.configuration.values,
+    ...createHarnessConfiguration("openclaw", "gpt-5.1"),
     tools: { deny: ["*"] },
   };
   const refusedDenial = await injectedRequest(
@@ -6751,7 +6797,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     {
       code: "INVALID_REQUEST",
       message:
-        "The Installation's Plugin Driver runs plugins only in an OpenClaw Harness: remove the Agent's plugins, or change its Configuration or execution mode to a Harness that runs them.",
+        "No Plugin Driver is enabled for the codex Harness. Remove the Agent's plugins or enable its catalog.",
     },
   );
   assert.deepEqual(
@@ -9095,19 +9141,23 @@ test("saved-Agent discovery offers the Google package only where Agent save admi
   // Each step compares discovery with what saving the package on this Agent returns.
   const discoverAndSave = async () => {
     const catalog = await controller.request("POST", `${path}/plugins`, { body: {} });
-    assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
+
     const details = await controller.request("POST", `${path}/plugins/details`, {
       body: { pluginId: packageId },
     });
     const save = await controller.request("PATCH", path, {
       body: { configurationId: configuration.id, plugins: { [packageId]: { enabled: true } } },
     });
-    return { ids: catalog.data.plugins.map((entry) => entry.id), details, save };
+    return { catalog, details, save };
   };
 
   // A dedicated OpenClaw Agent on Kubernetes Compute is offered the package and may save it.
   const offered = await discoverAndSave();
-  assert.deepEqual(offered.ids, [packageId]);
+  assert.equal(offered.catalog.status, 200);
+  assert.deepEqual(
+    offered.catalog.data.plugins.map((entry) => entry.id),
+    [packageId],
+  );
   assert.equal(offered.details.status, 200, JSON.stringify(offered.details.body));
   assert.equal(offered.details.data.id, packageId);
   assert.equal(offered.save.status, 200, JSON.stringify(offered.save.body));
@@ -9124,14 +9174,13 @@ test("saved-Agent discovery offers the Google package only where Agent save admi
   );
   assert.equal(codex.status, 200, JSON.stringify(codex.body));
   const codexOffer = await discoverAndSave();
-  assert.deepEqual(codexOffer.ids, []);
+  assertApiError(codexOffer.catalog, 501, "NOT_IMPLEMENTED");
+  assertApiError(codexOffer.details, 501, "NOT_IMPLEMENTED");
   assertApiError(codexOffer.save, 400, "INVALID_REQUEST");
   assert.match(
     codexOffer.save.body.error.message,
-    /Google Workspace requires a dedicated OpenClaw/,
+    /No Plugin Driver is enabled for the codex Harness/,
   );
-  assertApiError(codexOffer.details, 400, "INVALID_REQUEST");
-  assert.equal(codexOffer.details.body.error.message, codexOffer.save.body.error.message);
 
   // Back on OpenClaw, Compute that cannot deliver the package refuses it the same way.
   const openclaw = await controller.request(
@@ -9149,7 +9198,8 @@ test("saved-Agent discovery offers the Google package only where Agent save admi
     controller.fixture.controller.selectDriver(replacement.capability, replacement.id);
   }
   const computeOffer = await discoverAndSave();
-  assert.deepEqual(computeOffer.ids, []);
+  assert.equal(computeOffer.catalog.status, 200);
+  assert.deepEqual(computeOffer.catalog.data.plugins, []);
   assertApiError(computeOffer.save, 400, "INVALID_REQUEST");
   assert.equal(
     computeOffer.save.body.error.message,

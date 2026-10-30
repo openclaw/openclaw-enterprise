@@ -373,12 +373,17 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
 });
 
 test("Create Agent keeps the search Secret out of plugin approver lookups", async (t) => {
-  const preset = JSON.parse(
-    await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
-  );
   const pluginId = "occ-plugin:diffs";
-  preset.template.agent.plugins = {
-    [pluginId]: { enabled: true, approvers: [{ channel: "slack", id: "UOTHER123" }] },
+  const preset = {
+    name: "OpenClaw approvers",
+    template: {
+      configuration: { values: nativeValues("approver-privacy") },
+      agent: {
+        plugins: {
+          [pluginId]: { enabled: true, approvers: [{ channel: "slack", id: "UOTHER123" }] },
+        },
+      },
+    },
   };
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [preset] });
   await fixture.bootstrap();
@@ -413,7 +418,8 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
     },
   );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await page.getByLabel("Preset template").selectOption({ label: preset.name });
+  await page.getByRole("button", { name: "Use Preset", exact: true }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
   // The people search's Secret picker follows the answer: its inline Create Secret is disabled
@@ -771,7 +777,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
 
 test("Unsaved default plugin approvers block deployment after leaving Plugins", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Unsaved plugin approvers");
-  const pluginDriver = new CodexPluginDriver();
+  const pluginDriver = new OCCPluginDriver();
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
   const agent = await fixture.createAgent(
@@ -809,7 +815,7 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
 // (finding 2447).
 test("A reader sees the version draft's default plugin approvers", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Reader plugin approvers");
-  const pluginDriver = new CodexPluginDriver();
+  const pluginDriver = new OCCPluginDriver();
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
   const agent = await fixture.createAgent(
@@ -850,16 +856,48 @@ test("A reader sees the version draft's default plugin approvers", async (t) => 
   assert.deepEqual(pathRequests(requests, "GET", `${path}/plugins/capabilities`), []);
 });
 
+test("A saved Agent can clear its selections and default approvers after its catalog is removed", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Removed plugin catalog");
+  fixture.controller.installPluginDrivers([new CodexPluginDriver(), new OCCPluginDriver()]);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Disconnected catalog",
+    nativeValues("removed-catalog", { harnessId: "codex" }),
+    { executionMode: "dedicated", harnessAuth: null },
+  );
+  await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    plugins: { "codex-plugin:calendar@openai-curated-remote": { enabled: true } },
+    pluginApprovers: [{ channel: "slack", id: "team:TTEST123:user:UTEST123" }],
+  });
+  fixture.controller.selectDriver("plugin", "occ-plugin");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByLabel("Default plugin approvers mode").selectOption("inherit");
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  await page.getByLabel("Plugin selections JSON", { exact: true }).fill("{}");
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const saved = page.waitForResponse(
+    (response) => response.url().endsWith(path) && response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+  assert.equal((await saved).status(), 200);
+  const fresh = await fixture.request("GET", path);
+  assert.deepEqual(fresh.data.plugins, {});
+  assert.equal(fresh.data.pluginApprovers, undefined);
+  assert.equal(fresh.data.pluginDriver, undefined);
+});
+
 test("Codex Agents offer only default plugin approvers", async (t) => {
-  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Codex plugin approvers");
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Codex plugin approvers");
   const pluginDriver = new CodexPluginDriver();
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
   const agent = await fixture.createAgent(
     namespace.id,
     "Codex Approver Agent",
-    nativeValues("codex-approvers"),
-    { executionMode: "embedded", harnessAuth: { method: "runtime" } },
+    nativeValues("codex-approvers", { harnessId: "codex" }),
+    { executionMode: "dedicated", harnessAuth: null },
   );
   const pluginId = "codex-plugin:calendar@openai-curated-remote";
   const toolId = "app_calendar/create_event";

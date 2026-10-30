@@ -279,7 +279,7 @@ export async function createProvisioningApiFixture(
   let worker;
   const drivers = {
     ...runtimeDrivers({ computeDriver, configurationDriver, secretDriver }),
-    pluginDriver: new CodexPluginDriver(),
+    pluginDrivers: [new CodexPluginDriver()],
   };
   const app = await composePostgresDevelopment(
     {

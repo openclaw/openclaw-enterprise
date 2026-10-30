@@ -26,6 +26,7 @@ import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/driver
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
+import { loadYaml } from "../helpers/qa-utils.mjs";
 
 const execute = promisify(execFile);
 const readyCapability = { status: 200, body: '{"durableAdmissionVersion":1}' };
@@ -1161,6 +1162,7 @@ async function fixture(
     inventoryNamespaces = null,
     names = null,
     configurationValues = null,
+    pluginDrivers,
     olderDraftRules = false,
   } = {},
 ) {
@@ -1250,6 +1252,7 @@ async function fixture(
         }
       : {}),
     drivers: {
+      ...(pluginDrivers && { plugin: pluginDrivers }),
       compute: {
         id: "compute-kubernetes",
         configuration: {
@@ -1467,6 +1470,20 @@ async function fixture(
     failNext: (name) => writeFile(join(directory, name), ""),
   };
 }
+
+test("an image upgrade preserves both enabled plugin catalogs", async (t) => {
+  const pluginDrivers = [
+    { id: "occ-plugin", configuration: {} },
+    { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
+  ];
+  const f = await fixture(t, { pluginDrivers });
+  await f.run();
+  const state = await f.state();
+  const installed = loadYaml(
+    Buffer.from(state.secret.data["installation.yaml"], "base64").toString(),
+  );
+  assert.deepEqual(installed.drivers.plugin, pluginDrivers);
+});
 
 test("resume reads an accepted Secret write before Helm and preserves its other data", async (t) => {
   const f = await fixture(t);
@@ -2552,6 +2569,7 @@ test(
       "plugin-executable",
       "plugin-hosted",
       "plugin-null",
+      "plugin-array",
       "unreviewed-values",
     ]) {
       cases.push(
@@ -2599,6 +2617,8 @@ test(
             installation.drivers.plugin.configuration.codexExecutable = "/etc/other/codex";
           } else if (change === "plugin-hosted") {
             installation.drivers.plugin.configuration.catalogSource = "hosted";
+          } else if (change === "plugin-array") {
+            installation.drivers.plugin = [installation.drivers.plugin];
           } else if (change === "plugin-null") {
             installation.drivers.plugin = { id: null, configuration: { catalogSource: null } };
           } else {

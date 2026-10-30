@@ -184,8 +184,11 @@ restart discovery, and selection removal through the Agent workflow; see
 [plugin installation proof](openshell.md#codex-plugin-installation).
 
 The matrix creates disposable Compose and Kubernetes control planes, both with
-Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. It does
-not use existing clusters or change the default kubeconfig. The exact test list
+Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. Before
+launching the first preset, QA enables both Plugin Drivers in one installation
+and checks that OpenClaw discovery returns Google Workspace and Codex discovery
+returns Linear from the curated catalog. Both drivers stay enabled across presets.
+The matrix creates its own clusters and kubeconfigs. The exact test list
 is in the [QA manifest](../../scripts/ci/test-suites/qa-matrix.json).
 
 The `model-ui` scenario mounts the example console theme on Compose or Kubernetes

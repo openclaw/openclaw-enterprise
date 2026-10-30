@@ -2343,27 +2343,17 @@ test("Embedded OpenClaw plugin runtime does not receive Codex broker policy", as
   assert.equal(manifest.repositoryBrokerNetworkPolicy, undefined);
 });
 
-test("Embedded Codex plugin runtime receives broker network policy centrally", async () => {
-  const address = "10.43.0.19";
-  const f = await fixture("embedded", undefined, {
-    publicGithubRead: { namespace: "control", podLabels: { app: "read-public-github" }, address },
-  });
+test("An embedded OpenClaw revision pinned to Codex cannot mount the repository broker bridge", async () => {
+  const f = await fixture("embedded");
   f.revision.plugins = codexPluginState();
-  const networkProxy = { enabled: true, domains: { [address]: "allow" } };
-  f.revision.configuration.plugins = {
-    entries: { codex: { config: { appServer: { networkProxy } } } },
-  };
-  await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
-  const manifest = preparedCodexManifest(f);
-  assert.equal(
-    manifest.publicGithubRead,
-    undefined,
-    "the public reader is scoped to ordinary dedicated Codex",
+  await assert.rejects(
+    f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])),
+    /dedicated Codex Harness/,
   );
-  assert.deepEqual(manifest.repositoryBrokerNetworkPolicy, {
-    host: "git.credentials.svc.cluster.local",
-    domains: { [address]: "allow" },
-  });
+  assert.equal(
+    [...f.objects.values()].some((resource) => resource.kind === "Deployment"),
+    false,
+  );
 });
 
 // Both consumer shapes must trust the projected CA without disabling TLS verification.

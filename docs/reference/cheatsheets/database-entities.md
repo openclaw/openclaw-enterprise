@@ -46,6 +46,7 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `execution_mode`
 - `gateway_managed_mode`
 - `plugins`
+- `plugin_driver` (registered ID and implementation that admitted the saved selections)
 - `plugin_approvers`
 - `repository_bindings`
 - `repository_access` (default and explicit per-repository overrides)

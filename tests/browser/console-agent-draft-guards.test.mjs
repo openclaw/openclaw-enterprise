@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { NAMESPACE_NOT_READY_MESSAGE } from "../../apps/controller/src/console/agents/list.mts";
-import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
@@ -1309,7 +1309,7 @@ for (const [field, change] of [
     "plugin policy",
     {
       plugins: {
-        "codex-plugin:linear@openai-curated-remote": {
+        "occ-plugin:diffs": {
           enabled: true,
           toolDefaults: { approval: "none" },
         },
@@ -1331,7 +1331,7 @@ for (const [field, change] of [
           };
         })()
       : await createRuntimeAuthFixture(t, `Deployment ${field}`);
-    const pluginDriver = new CodexPluginDriver();
+    const pluginDriver = new OCCPluginDriver();
     fixture.controller.registerDriver(pluginDriver);
     fixture.controller.selectDriver("plugin", pluginDriver.id);
     const agent = await fixture.createAgent(

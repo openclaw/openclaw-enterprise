@@ -2525,8 +2525,8 @@ export async function createPluginDriverRealFixture(
       environment: { ...driverEnvironment, OCC_CONFIG_PATH: workerConfigurationPath },
     }),
   ]);
-  assert.equal(apiDrivers.pluginDriver?.id, pluginDriverId);
-  assert.equal(workerDrivers.pluginDriver?.id, pluginDriverId);
+  assert.equal(apiDrivers.pluginDrivers[0]?.id, pluginDriverId);
+  assert.equal(workerDrivers.pluginDrivers[0]?.id, pluginDriverId);
 
   const serviceAccountDriverFactory =
     codexServiceAccountImport === undefined

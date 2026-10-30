@@ -13,7 +13,10 @@ import {
   EMBEDDED_API_KEY_REQUIRED,
 } from "../helpers/refusal-text.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
-import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import { codexRuntimeArtifact } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState, PluginDiscoveryError } from "../../packages/occ/src/index.ts";
@@ -53,6 +56,8 @@ async function createFixture(
   t,
   {
     supported = true,
+    additionalPluginDriver,
+    onCatalogDetails,
     secretDriver = createTestSecretDriver(),
     logger,
     onSend,
@@ -78,6 +83,7 @@ async function createFixture(
   // Only the external Driver boundary is controlled: HTTP, IAM and OCC remain real.
   const driver = {
     id: "plugin-discovery-test",
+    harnessId: "codex",
     capability: "plugin",
     implementation: "test-plugin-catalog",
     async listCatalog() {
@@ -97,6 +103,7 @@ async function createFixture(
           },
           async getCatalogPlugin(input) {
             calls.push({ operation: "details", input });
+            await onCatalogDetails?.();
             if (failure) {
               throw failure;
             }
@@ -105,8 +112,9 @@ async function createFixture(
         }
       : {}),
   };
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("plugin", driver.id);
+  fixture.controller.installPluginDrivers(
+    additionalPluginDriver ? [driver, additionalPluginDriver] : [driver],
+  );
   return {
     ...fixture,
     state,
@@ -794,9 +802,59 @@ test("Saved Agent plugin discovery refuses a credential replaced during the back
   assert.equal(changed.status, 409, JSON.stringify(changed.body));
   assert.equal(
     changed.body.error.message,
-    "The Agent's plugin credential changed. Refresh and retry.",
+    "The Agent's plugin credential or catalog changed. Refresh and retry.",
   );
   assert.deepEqual(fixture.calls, []);
+});
+
+test("Changing a saved Agent's configured Harness during discovery withholds the old catalog credential", async (t) => {
+  const fixture = await createFixture(t, { additionalPluginDriver: new OCCPluginDriver() });
+  const { agent, path } = await createSavedAgent(fixture);
+  const withValue = fixture.secretDriver.withValue.bind(fixture.secretDriver);
+  let changed;
+  fixture.secretDriver.withValue = (source, use) =>
+    withValue(source, async (value) => {
+      changed = await fixture.request(
+        "PATCH",
+        `/namespaces/${fixture.namespace.id}/configurations/${agent.configurationId}`,
+        {
+          body: { values: createHarnessConfiguration("openclaw", "gpt-5.1") },
+        },
+      );
+      return use(value);
+    });
+  const result = await fixture.request("POST", path, { body: {} });
+  assert.equal(changed?.status, 200, JSON.stringify(changed?.body));
+  assert.equal(result.status, 409, JSON.stringify(result.body));
+  assert.deepEqual(fixture.calls, []);
+});
+
+test("Saved Agent discovery discards a hosted result after the Agent changes Harness", async (t) => {
+  let changed;
+  const fixture = await createFixture(t, {
+    additionalPluginDriver: new OCCPluginDriver(),
+    onCatalogDetails: async () => {
+      changed = await fixture.request(
+        "PATCH",
+        `/namespaces/${fixture.namespace.id}/configurations/${agent.configurationId}`,
+        { body: { values: createHarnessConfiguration("openclaw", "gpt-5.1") } },
+      );
+    },
+  });
+  const { agent, path } = await createSavedAgent(fixture);
+  const result = await fixture.request("POST", `${path}/details`, {
+    body: { pluginId: catalogEntry.id },
+  });
+  assert.equal(changed?.status, 200, JSON.stringify(changed?.body));
+  assert.deepEqual(
+    fixture.calls.map(({ operation }) => operation),
+    ["details"],
+  );
+  assert.equal(result.status, 409, JSON.stringify(result.body));
+  assert.equal(
+    result.body.error.message,
+    "The Agent's plugin credential or catalog changed. Refresh and retry.",
+  );
 });
 
 test("Saved Agent plugin discovery rechecks the caller's Secret authority after the backend read", async (t) => {
@@ -1561,6 +1619,57 @@ test("Selected Secret backend failures suppress sensitive error details", async 
     (await fixture.request("POST", fixture.path, { body: { accessToken } })).status,
     200,
   );
+});
+
+test("Mixed Installation targets each Harness catalog before reading a discovery Secret", async (t) => {
+  const secretDriver = createTestSecretDriver();
+  const reads = trackSecretValueReads(secretDriver);
+  const fixture = await createConsoleAppFixture(t, { secretDriver });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Mixed plugin catalogs", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Discovery Secret", accessToken);
+  const path = `/namespaces/${namespace.id}/agents/plugins`;
+  fixture.controller.installPluginDrivers([
+    new OCCPluginDriver(),
+    new CodexPluginDriver({ catalogSource: "openai-curated" }),
+  ]);
+  const installation = await fixture.request("GET", "/installation");
+  const capabilities = installation.data.capabilities;
+  assert.equal(capabilities.pluginPolicies, undefined);
+  assert.deepEqual(
+    Object.fromEntries(
+      capabilities.pluginCatalogs.map(({ harnessId, pluginPolicies, pluginDiscovery }) => [
+        harnessId,
+        [pluginPolicies.driver.id, pluginDiscovery.credential],
+      ]),
+    ),
+    {
+      openclaw: ["occ-plugin", "none"],
+      codex: ["codex-plugin", "none"],
+    },
+  );
+  for (const [harnessId, name] of [
+    ["openclaw", "Google Workspace"],
+    ["codex", "Linear"],
+  ]) {
+    const page = await fixture.request("POST", path, { body: { harnessId, q: name } });
+    assert.equal(page.status, 200, JSON.stringify(page.body));
+    const entry = page.data.plugins.find((entry) => entry.name === name);
+    assert.ok(entry, JSON.stringify(page.data));
+    const details = await fixture.request("POST", `${path}/details`, {
+      body: { harnessId, pluginId: entry.remoteId ?? entry.id },
+    });
+    assert.equal(details.status, 200);
+    assert.equal(details.data.id, entry.id);
+  }
+  for (const body of [
+    { secretRef: secret.ref },
+    { harnessId: "openclaw", secretRef: secret.ref },
+  ]) {
+    const rejected = await fixture.request("POST", path, { body });
+    assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+  }
+  assert.equal(reads(), 0);
 });
 
 test("Curated discovery admits plugins with skills without provider I/O and saves selections in a revision", async (t) => {

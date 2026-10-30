@@ -945,12 +945,11 @@ test("Runtime-auth Presets are refused before anything is saved where Compute re
   });
 });
 
-test("Create Agent browses the curated plugin catalog without a discovery credential", async (t) => {
+test("Create Agent browses the Codex catalog and discards its selections when switching to OpenClaw", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("plugin", driver.id);
+  fixture.controller.installPluginDrivers([new OCCPluginDriver(), driver]);
   const namespace = await fixture.createNamespace("Curated plugin browsing", { ready: true });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -976,7 +975,7 @@ test("Create Agent browses the curated plugin catalog without a discovery creden
   await linear.waitFor();
   assert.deepEqual(
     pathRequests(requests, "POST", catalogPath).map(({ body }) => body),
-    [{}],
+    [{ harnessId: "codex" }],
   );
   await linear.click();
   await dialog.getByRole("button", { name: "Add Linear", exact: true }).click();
@@ -985,8 +984,19 @@ test("Create Agent browses the curated plugin catalog without a discovery creden
   });
   assert.deepEqual(
     pathRequests(requests, "POST", `${catalogPath}/details`).map(({ body }) => body),
-    [{ pluginId: "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c" }],
+    [{ harnessId: "codex", pluginId: "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c" }],
   );
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await dialog
+    .getByText("To install Google Workspace, open Plugins on a saved dedicated OpenClaw Agent", {
+      exact: false,
+    })
+    .waitFor();
+  assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), {});
+  assert.equal(await linear.count(), 0);
 });
 
 test("Create Agent discovers hosted plugins with a transient PAT through the selected Driver", async (t) => {

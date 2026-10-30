@@ -471,62 +471,50 @@ const PluginDiscoveryAccessToken = Type.String({
   writeOnly: true,
 });
 
+export const PluginCatalogHarnessId = Type.Union([Type.Literal("openclaw"), Type.Literal("codex")]);
+
+const PluginCatalogTarget = {
+  harnessId: Type.Optional(PluginCatalogHarnessId),
+};
+const PluginCatalogPageFields = {
+  ...PluginCatalogTarget,
+  cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+  q: Type.Optional(Type.String({ maxLength: 1024 })),
+};
+const PluginCatalogDetailsFields = {
+  ...PluginCatalogTarget,
+  pluginId: Type.String({ minLength: 1, maxLength: 256 }),
+};
+
 // At most one credential source is accepted; the selected Driver determines whether it is required.
 export const DiscoverAgentPluginsBody = Type.Union([
   Type.Object(
-    {
-      credentialSource: CredentialSourceReference,
-      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
-      q: Type.Optional(Type.String({ maxLength: 1024 })),
-    },
+    { ...PluginCatalogPageFields, credentialSource: CredentialSourceReference },
+    { additionalProperties: false },
+  ),
+  Type.Object(PluginCatalogPageFields, { additionalProperties: false }),
+  Type.Object(
+    { ...PluginCatalogPageFields, accessToken: PluginDiscoveryAccessToken },
     { additionalProperties: false },
   ),
   Type.Object(
-    {
-      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
-      q: Type.Optional(Type.String({ maxLength: 1024 })),
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      accessToken: PluginDiscoveryAccessToken,
-      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
-      q: Type.Optional(Type.String({ maxLength: 1024 })),
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      secretRef: SecretReference,
-      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
-      q: Type.Optional(Type.String({ maxLength: 1024 })),
-    },
+    { ...PluginCatalogPageFields, secretRef: SecretReference },
     { additionalProperties: false },
   ),
 ]);
 
 export const DiscoverAgentPluginDetailsBody = Type.Union([
   Type.Object(
-    {
-      credentialSource: CredentialSourceReference,
-      pluginId: Type.String({ minLength: 1, maxLength: 256 }),
-    },
+    { ...PluginCatalogDetailsFields, credentialSource: CredentialSourceReference },
+    { additionalProperties: false },
+  ),
+  Type.Object(PluginCatalogDetailsFields, { additionalProperties: false }),
+  Type.Object(
+    { ...PluginCatalogDetailsFields, accessToken: PluginDiscoveryAccessToken },
     { additionalProperties: false },
   ),
   Type.Object(
-    { pluginId: Type.String({ minLength: 1, maxLength: 256 }) },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      accessToken: PluginDiscoveryAccessToken,
-      pluginId: Type.String({ minLength: 1, maxLength: 256 }),
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    { secretRef: SecretReference, pluginId: Type.String({ minLength: 1, maxLength: 256 }) },
+    { ...PluginCatalogDetailsFields, secretRef: SecretReference },
     { additionalProperties: false },
   ),
 ]);

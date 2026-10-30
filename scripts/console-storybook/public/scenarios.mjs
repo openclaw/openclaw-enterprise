@@ -2210,8 +2210,24 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "Select Linear from the curated catalog",
     path: create,
-    pluginCapabilities,
-    pluginDiscoveryCredential: "none",
+    pluginCatalogs: [
+      {
+        harnessId: "codex",
+        pluginPolicies: pluginCapabilities,
+        pluginDiscovery: { credential: "none" },
+      },
+      {
+        harnessId: "openclaw",
+        pluginPolicies: {
+          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+          approvers: { agent: true, plugin: true, tools: true },
+          toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
+          tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
+          driverPolicySchema: {},
+        },
+        pluginDiscovery: { credential: "none" },
+      },
+    ],
     pluginDiscovery: (() => {
       const linear = {
         id: "codex-plugin:linear@openai-curated-remote",
@@ -2244,12 +2260,16 @@ export const scenarios = {
         details: { [linear.remoteId]: linear },
       };
     })(),
-    actions: [...form, click("Configure plugins")],
+    actions: [
+      ...form,
+      { selector: "#agent-auth-method", value: "codex_pat" },
+      click("Configure plugins"),
+    ],
     description:
-      "The selected Driver exposes Linear without a discovery token. Its tool inventory remains unknown.",
+      "Both plugin catalogs are enabled. The Codex Harness offers Linear without a discovery token.",
     steps: [
       "Choose Linear, add it, and set a default policy. Close the modal and inspect Plugin selections JSON.",
-      "The catalog does not establish account access or runtime readiness; configure the Agent's actual credentials separately.",
+      "Change Harness to OpenClaw and reopen Configure plugins. The form clears the Codex selections and directs you to the saved Agent to install Google Workspace.",
     ],
     gap: "The catalog and provider responses are simulated. This preview does not invoke Linear or verify runtime authentication.",
   },

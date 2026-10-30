@@ -1111,6 +1111,7 @@ export function installFixture(scenario, evidence) {
           ...(scenario.credentialSourceTypes !== undefined
             ? { credentialSources: { types: scenario.credentialSourceTypes } }
             : {}),
+          ...(scenario.pluginCatalogs ? { pluginCatalogs: scenario.pluginCatalogs } : {}),
           ...(scenario.pluginCapabilities ? { pluginPolicies: scenario.pluginCapabilities } : {}),
           ...(scenario.pluginDiscoveryCredential
             ? { pluginDiscovery: { credential: scenario.pluginDiscoveryCredential } }
