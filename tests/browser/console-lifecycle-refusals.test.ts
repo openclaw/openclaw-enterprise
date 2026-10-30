@@ -138,11 +138,12 @@ for (const action of ["Stop", "Delete"] as const) {
 // identity or permanently failed deletion work.
 test("a first Stop or Delete refused for another reason shows the API's text and stays unavailable", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Other refusals");
-  for (const [action, message] of [
-    ["Stop", "The acting identity is unavailable."],
+  for (const [action, message, requestId] of [
+    ["Stop", "The acting identity is unavailable.", "req_00000000-0000-4000-8000-000000000a01"],
     [
       "Delete",
       "Only the actor that started this deletion can retry it while that actor still holds delete. Retry as that actor, or remove its delete permission first.",
+      "req_00000000-0000-4000-8000-000000000a02",
     ],
   ] as const) {
     const stopping = action === "Stop";
@@ -158,7 +159,7 @@ test("a first Stop or Delete refused for another reason shows the API's text and
             contentType: "application/json",
             body: JSON.stringify({
               error: { code: "FORBIDDEN", message },
-              meta: { requestId: `req_other_${action}` },
+              meta: { requestId },
             }),
           })
         : route.continue(),
@@ -177,7 +178,7 @@ test("a first Stop or Delete refused for another reason shows the API's text and
       .click();
     const alert = row.getByRole("alert");
     await alert.getByText(message, { exact: true }).waitFor();
-    await alert.getByText(`Request ID: req_other_${action}`, { exact: true }).waitFor();
+    await alert.getByText(`Request ID: ${requestId}`, { exact: true }).waitFor();
     assert.equal(await hasFocus(control), true);
     await expectReachableReason(page, control, (await alert.textContent())?.trim() ?? "");
   }
