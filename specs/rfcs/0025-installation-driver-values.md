@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Implemented
+implementation_status: Partially implemented
 author: kevinlin-openai
 ---
 
@@ -13,94 +13,97 @@ author: kevinlin-openai
 
 ## Summary
 
-Let Installation administrators inspect the startup values accepted by the
-selected Drivers. Each Driver implementation owns a pure projection that returns
-only values suitable for administrator inspection. Composition retains that
-projection with the selected identity. The existing Installation discovery API
-and Console display it under the existing authorization check.
+Show accepted Driver startup values through one shared serializer using the
+existing `configurationSchema`. Values are visible unless an applicable schema
+marks them `writeOnly: true`. The serializer replaces marked fields or complete
+subtrees with the existing string marker `[redacted]`. Remove the per-Driver
+projection methods and field allowlists. Keep the approved Fields/JSON Console
+layout and existing Installation administrator authorization.
 
 ## Motivation
 
-The Console says it shows accepted startup settings, but renders JSON Schema.
-For example, the Credential Gateway section describes an array of binaries
-instead of showing the configured binary paths. The accepted input already exists
-in the process's [startup selections](../../apps/controller/src/composition/installation-config.ts),
-but registration forwards only the definition and identity.
+Installation administrators need configured values rather than schema definitions.
+The first implementation added a separate projection method and copied field
+inventories into each Driver. The existing schemas already describe the accepted
+configuration. Standard `writeOnly` annotations let each owner identify confidential
+fields without maintaining another public interface or an exposure allowlist.
 
-[RFC-0022](0022-driver-configuration-contributions.md#discovery-preview-and-editing) deliberately excludes
-startup values from discovery. This proposal changes that inspection boundary;
-the historical RFC remains intact. It does not introduce configuration editing,
-persistence, or another startup lifecycle.
+This active proposal revises its earlier callback design. It changes
+[RFC-0022](0022-driver-configuration-contributions.md#discovery-preview-and-editing)'s
+schema-only inspection boundary while preserving that historical RFC.
 
 ## Proposal
 
-Extend `DriverImplementation<T>` with an optional synchronous
-`projectStartupConfiguration(input: Readonly<T>)` method. It returns a JSON object
-containing the accepted values that the implementation permits administrators to
-inspect. The method must be pure: it cannot read credential files, environment
-variables, provider state, or network services. It must omit secret material and
-replace confidential or opaque sections with an explicit redaction marker.
+Each Driver marks secret-bearing fields and opaque blocks in its existing
+`configurationSchema` with `writeOnly: true`. Ordinary unmarked fields remain
+visible, including dynamic keys and values accepted by an open nested object.
+A marked object or array becomes one `[redacted]` value: its children and dynamic
+keys do not appear. `writeOnly: false` cannot cancel a true annotation from another
+schema branch. The string `[redacted]` is reserved for hidden values in this
+inspection response; the Console renders it as **Hidden for security**.
 
-The projection receives an isolated, deeply immutable copy of the accepted startup
-configuration retained by composition, after successful Driver construction. It must not manufacture values from schema defaults or examples.
-Constructor defaults that are absent from that input are not represented as
-configured values. The UI describes the result as accepted startup values, not a
-complete report of runtime state or every effective default.
+Bundled schemas must mark operator resource bodies, confidential free-form maps,
+and certificate bodies previously hidden by projections. Credential file paths
+and other approved references remain visible, without reading their contents.
+Where existing protection depends on a value, mark the containing field. For
+example, Sandbox endpoint hosts can contain credential-bearing URL text, so the
+host field is write-only even when a particular configured host is not sensitive. Removing a callback must not remove its protection.
 
-Bundled Drivers implement the projection beside their validation contract.
-Credential file paths and Kubernetes context names can appear as references;
-their contents cannot. OpenShell operator resource bodies and other opaque
-payloads must be redacted. Package Drivers without a projection report values
-unavailable. An absent projection must never expose raw input as a fallback.
+The shared serializer walks only accepted values that are actually present. It
+preserves JSON types, arrays, nesting, empty values, and ordinary unmarked fields.
+It does not insert defaults or examples, resolve secrets, read files or environment
+variables, or call providers. It follows references and schema branches through the existing resolver and
+walker. An annotation in any alternative at a value path wins, even when another
+branch could expose that value. This deliberate over-redaction avoids selecting
+validation branches or building another schema evaluator. Ordinary paths with no
+write-only annotation remain visible.
 
-Composition computes and copies the projection for the selected Driver identity.
-The registry retains only that inspected JSON object, not the raw startup input.
-Changing the operator's startup file later does not change the reported values
-until the process restarts. Persisted Driver records are not the source of values.
-Invalid projection results or projection failures yield unavailable values without
-returning exception text or input. Inspection failure must not stop an otherwise
-valid Driver from starting.
+Inspection supports properties, pattern and additional properties, item and tuple
+schemas, references, and composition keywords, combining redaction annotations conservatively. Schema-valued
+`unevaluatedProperties` and `unevaluatedItems` require evaluated-location tracking
+and are outside this serializer's initial scope. Such a definition reports values
+unavailable rather than exposing raw input. Boolean forms need no redaction
+traversal. Other inspection errors also fail closed without exception text.
 
-`GET /installation/driver-configurations` keeps its Installation `administer`
-check. Its descriptors add optional `startupConfiguration` for projected values.
-Missing values mean inspection is unavailable; `{}` means the available projection
-is empty. Confidential sections use a redaction marker rather than disappearing. Existing identity, scope, key, schema, and action
-fields retain their meanings. Agent configuration discovery remains unchanged.
-There are no new write operations or grants.
+Composition captures the redacted snapshot after startup validation and before
+passing the accepted input to constructors or package factories. Factory mutation
+cannot change the accepted values shown to an administrator. The constructor's
+own input and lifecycle stay unchanged. The registry receives only the immutable
+redacted snapshot, never the raw configuration. Startup-file edits take effect
+only after restart; persisted Driver records and constructor defaults are not
+inspection sources.
 
-The Console renders the projected object in each existing expandable Driver
-section. It shows a clear unavailable message when values are absent and explains
-that changes require operator-managed startup configuration and a restart.
-
-## Alternatives
-
-Copying raw accepted configuration would expose opaque package and resource
-payloads. Schema validation establishes admissibility, not permission to disclose.
-A core list of implementation-specific secret fields would duplicate Driver
-ownership and miss newly introduced fields. A Driver-owned projection keeps that
-decision with the implementation and fails closed when it is unavailable.
+`GET /installation/driver-configurations` retains its Installation `administer`
+check and optional `startupConfiguration` object. Missing means inspection is
+unavailable, including a fully write-only root; `{}` means an available empty
+object. Package Drivers use the same serializer with no projection callback.
+Identity, scope, key, schemas, and existing actions remain unchanged. Agent
+configuration discovery does not return startup values. There are no new writes,
+grants, persistence, or configuration editing controls.
 
 ## Delivery and verification
 
-Implement the contract, bundled projections, composition registration, response,
-and Console together after submitting this proposal for review. Extend integration
-coverage through the real startup and authorized API paths. Prove configured
-values differ from schemas, missing projections remain unavailable, opaque or
-secret values do not appear, and unauthorized callers cannot inspect values.
-Change matching Storybook scenarios and browser coverage; inspect rebuilt previews
-and record screenshots and an interaction video. Storybook is simulated UI proof.
-Update the owning Driver reference, operator guidance, and execution flow.
+Submit this revision before implementing its changed Driver contract. Remove
+`projectStartupConfiguration`, its bindings and forwarding, `pickConfiguredFields`,
+and handwritten projection trees. Update the owning current reference and flow.
+The approved Console needs no redesign.
 
-The accompanying implementation provides this path through the existing startup
-loader, registry, API, and Console. Startup/API integration passes with in-memory
-persistence; it does not establish live Kubernetes, gateway, or model execution.
-The decision remains Proposed pending human review.
+Extend the real startup and authorized API integration to prove unmarked values,
+package behavior, marked fields and opaque blocks, snapshot isolation from factory
+and file changes, and authorization denials. Shared redactor cases cover nested
+arrays and objects, references and conservative branch handling, true-annotation precedence,
+and failure without raw fallback. Remove obsolete missing-callback and callback
+failure tests. Retain the meaningful Console interaction regression and refresh
+media if its visible result changes. Fixture UI and in-memory API proof do not
+establish live Kubernetes, gateway, or model execution.
 
 ## Manual Notes
 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29: Replace per-Driver projections with shared opt-out serialization using schema `writeOnly` annotations.
 
 - 2026-10-29: Renumber the provisional RFC-0024 to preserve the ID assigned on main.
 
