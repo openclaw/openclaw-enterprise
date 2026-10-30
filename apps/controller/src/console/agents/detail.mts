@@ -54,6 +54,7 @@ import {
   DEPLOY_SANDBOX_POLICY_READ_DENIED,
   deployAcceptedVersionUnreadable,
   deployUnreadableSecretsReason,
+  FORMER_CURRENT_VERSION_UNREADABLE,
   MODEL_CREDENTIAL_REJECTED_REPLACED,
   modelCredentialRejectedReadOnly,
   NEW_VERSIONS_READ,
@@ -1165,6 +1166,9 @@ export async function renderAgentDetail(
   }
   const deployedHere = (revisionId: string) =>
     deployedVersions.has(failedVersionKey(path, revisionId));
+  // Versions this page showed as selected for service. Each exists, so a viewed one the reader
+  // cannot read is named in words once a stop or another version takes its place (finding 3000).
+  const formerCurrent = new Set<string>();
   // The newest version this tab deployed for this Agent that the caller cannot read and that is
   // newer than every version listed, whichever entry is viewed: the draft too (finding D751).
   // Being newer than the first page, it cannot sit on an older one, so the list need not be
@@ -2231,6 +2235,9 @@ export async function renderAgentDetail(
     }
     agentUpdates += 1;
     agentRereadFailed = false;
+    if (currentRevisionId) {
+      formerCurrent.add(currentRevisionId);
+    }
     const revisionChanged = freshAgent.activeRevisionId !== currentRevisionId;
     const workspaceAvailabilityChanged =
       Boolean(freshAgent.activeRevisionId) !== Boolean(currentRevisionId);
@@ -2457,7 +2464,9 @@ export async function renderAgentDetail(
             ? deployAcceptedVersionUnreadable(shortId(hidden))
             : hidden === currentRevisionId
               ? `You cannot read the current version, so its progress and outcome are not shown here. ${readAccessHint}`
-              : requestedVersionUnavailable(shortId(hidden)),
+              : formerCurrent.has(hidden)
+                ? FORMER_CURRENT_VERSION_UNREADABLE
+                : requestedVersionUnavailable(shortId(hidden)),
       );
       setLiveServing(false);
       // This viewer reads no deployment, so Stop keeps its row and says it may cancel one or
@@ -2562,7 +2571,9 @@ export async function renderAgentDetail(
           requestedHidden && selected !== acceptedId
             ? deployedHere(selected)
               ? deployAcceptedVersionUnreadable(shortId(selected))
-              : requestedVersionUnavailable(shortId(selected))
+              : formerCurrent.has(selected)
+                ? FORMER_CURRENT_VERSION_UNREADABLE
+                : requestedVersionUnavailable(shortId(selected))
             : null,
           newerHidden && !currentIsAccepted
             ? `The current version is one you cannot read; v${latest.revision} is an older version.`

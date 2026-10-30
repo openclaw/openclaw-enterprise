@@ -2149,17 +2149,32 @@ async function openUnreadableCurrent(
       unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, hidden.id),
     ),
   );
-  return { agentPath, grantVersion, hidden, page, requests, shows, versionContext };
+  // The viewed version was selected for service, so it exists: once it is no longer selected the
+  // page names it in words, not by its ID as a version that may not exist.
+  const namesFormerVersion = async () => {
+    await page
+      .getByText("You cannot read the version that was selected for service, so", { exact: false })
+      .waitFor();
+    const shown = await page.locator("main").innerText();
+    assert.doesNotMatch(shown, /does not exist/);
+    assert.ok(!shown.includes(hidden.id.slice(0, 12)), shown);
+  };
+  return {
+    agentPath,
+    grantVersion,
+    hidden,
+    namesFormerVersion,
+    page,
+    requests,
+    shows,
+    versionContext,
+  };
 }
 
 test("a refocus shows a stop made elsewhere while a version the caller cannot read was selected", async (t) => {
   const logs = await logsFixture(t);
-  const { agentPath, page, shows, versionContext } = await openUnreadableCurrent(
-    t,
-    logs,
-    "hidden-current-refocus",
-    "configuration",
-  );
+  const { agentPath, namesFormerVersion, page, shows, versionContext } =
+    await openUnreadableCurrent(t, logs, "hidden-current-refocus", "configuration");
   const agentReads = await settledFetches(page, agentPath);
   await refocus(page);
   await page.locator(settledView).waitFor();
@@ -2167,17 +2182,14 @@ test("a refocus shows a stop made elsewhere while a version the caller cannot re
   // The page applies the Agent's state in place, as a reload would show it.
   await shows(/Selected for service\s+None/);
   await versionContext.getByText(/^No version is selected for service\./).waitFor();
+  await namesFormerVersion();
 });
 
 test("Logs of a version the caller cannot read show a stop and a redeploy made elsewhere", async (t) => {
   const logs = await logsFixture(t);
   const { fixture, namespace, agent } = logs;
-  const { agentPath, grantVersion, hidden, page, requests, shows } = await openUnreadableCurrent(
-    t,
-    logs,
-    "hidden-current-poll",
-    "logs",
-  );
+  const { agentPath, grantVersion, hidden, namesFormerVersion, page, requests, shows } =
+    await openUnreadableCurrent(t, logs, "hidden-current-poll", "logs");
   await page.getByText(RUNTIME_STATUS_VERSION_UNREADABLE, { exact: true }).waitFor();
   const denied = authorizationDenials(fixture.auditSink).length;
   const poll = async () => {
@@ -2190,6 +2202,7 @@ test("Logs of a version the caller cannot read show a stop and a redeploy made e
   // The poll rereads the Agent alone, so the stop shows without a reload.
   await poll();
   await shows(/Selected for service\s+None/);
+  await namesFormerVersion();
 
   // Another session deploys v3, which this caller may read: the view names it and links to it.
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id, undefined);
