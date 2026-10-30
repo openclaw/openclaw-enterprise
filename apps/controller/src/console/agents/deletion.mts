@@ -1,5 +1,5 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
-import { GENERIC_DENIAL, namedDenial, requestFailure, responseFields } from "../api-client.mjs";
+import { requestFailure, responseFields } from "../api-client.mjs";
 import {
   button,
   element,
@@ -14,6 +14,7 @@ import {
   type AgentLifecycleContext,
   DELETE_CONFIRMATION,
   type LifecycleError,
+  grantRefusal,
   keptResources,
 } from "./lifecycle-confirmation.mjs";
 import { AGENT_DELETE_DENIED, deleteRefused } from "./access-reasons.mjs";
@@ -51,8 +52,7 @@ export function createAgentDeletion(
     needsRefresh: boolean;
     accessEnded: boolean;
     notice: string;
-    // `refused`: the API refused this viewer's Delete (403) on permission grounds.
-    error: (LifecycleError & { refused?: boolean }) | null;
+    error: LifecycleError | null;
     used: boolean;
   } = {
     deleting: agent.status === "deleting",
@@ -351,21 +351,15 @@ export function createAgentDeletion(
       dialog.close();
       let text;
       let refused = false;
-      if (
-        error.status === 403 &&
-        state.deleting &&
-        namedDenial(cause) === undefined &&
-        error.serverMessage !== undefined &&
-        error.serverMessage !== GENERIC_DENIAL
-      ) {
-        // A retry refusal that is not about grants, such as another actor's deletion.
-        text = error.serverMessage;
-      } else if (error.status === 403) {
+      if (error.status === 403) {
         // The API's named denial (finding 2534) names the grant by Agent ID; the console's
         // sentence names the same grant and who gives it, with the Agent's name, as Stop and the
-        // Agents list do (finding 2951). The request ID stays below it.
-        text = deleteRefused(agent.name);
-        refused = true;
+        // Agents list do (finding 2951). Another refusal shows as written. The request ID stays
+        // below either. A refused repeat that is not about grants, such as another actor's
+        // deletion, can change without this viewer's access changing, so only it stays available.
+        const grant = grantRefusal(cause);
+        text = (!grant && error.serverMessage) || deleteRefused(agent.name);
+        refused = grant || !state.deleting;
       } else if (error.status === 404) {
         state.needsRefresh = true;
         text =

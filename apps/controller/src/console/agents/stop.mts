@@ -14,6 +14,7 @@ import {
   type AgentLifecycleContext,
   type LifecycleError,
   cancelsFirstDeployment,
+  grantRefusal,
   stopConfirmation,
 } from "./lifecycle-confirmation.mjs";
 import { AGENT_STOP_DENIED, stopRefused } from "./access-reasons.mjs";
@@ -33,7 +34,6 @@ export function createAgentStop(
     "aria-labelledby": "agent-stop-title",
   });
   const permissionNotice = AGENT_STOP_DENIED;
-  const STOP_REFUSED = stopRefused("this Agent");
   let restrictConfirmation: (() => void) | undefined;
   const feedback = element("div", { className: "danger-zone-feedback" });
   const actions = element("div", { className: "danger-zone-actions" });
@@ -101,6 +101,14 @@ export function createAgentStop(
         : "Stops the running version. The Agent stays and can be deployed again.",
     );
     const forbiddenNote = state.forbidden ? statusBlock("info", null, permissionNotice) : null;
+    const errorNote = state.error
+      ? element(
+          "div",
+          { className: "status", "data-tone": "danger", role: "alert", id: "agent-stop-error" },
+          element("p", { className: "status-body" }, state.error.text),
+          state.error.requestId ? requestIdLine(state.error.requestId) : null,
+        )
+      : null;
     // A running Agent's row is the title, its sentence and Stop; the overview already shows the
     // current version. After a stop request the row reports what Refresh reads back.
     feedback.replaceChildren(
@@ -144,29 +152,22 @@ export function createAgentStop(
         : []),
       ...(forbiddenNote ? [forbiddenNote] : []),
       ...(state.notice ? [statusBlock("info", null, state.notice)] : []),
-      ...(state.error
-        ? [
-            element(
-              "div",
-              { className: "status", "data-tone": "danger", role: "alert" },
-              element("p", { className: "status-body" }, state.error.text),
-              state.error.requestId ? requestIdLine(state.error.requestId) : null,
-            ),
-          ]
-        : []),
+      ...(errorNote ? [errorNote] : []),
     );
-    // A refused Stop or Request Stop again stays in the Tab order, described by the note that
-    // says why (finding 2935). A pending one stays natively disabled. After an uncertain outcome
-    // (needsRefresh) neither is shown: the row offers only Refresh.
+    // A refused Stop or Request Stop again stays in the Tab order, described by the note or the
+    // API refusal that says why (findings 2935, 2955). A pending one stays natively disabled.
+    // After an uncertain outcome (needsRefresh) neither is shown: the row offers only Refresh.
+    const refused = state.error?.refused === true;
+    const refusal = forbiddenNote ?? (refused ? errorNote : null);
     const stopUnavailable =
-      requested || state.pending || state.needsRefresh || state.forbidden || idle;
-    const stopReason = requested || state.pending || state.needsRefresh ? null : forbiddenNote;
+      requested || state.pending || state.needsRefresh || state.forbidden || idle || refused;
+    const stopReason = requested || state.pending || state.needsRefresh ? null : refusal;
     setUnavailable(stop, stopUnavailable && stopReason !== null, stopReason);
     if (stopUnavailable && stopReason === null) {
       stop.disabled = true;
     }
-    const repeatUnavailable = state.pending || state.needsRefresh || state.forbidden;
-    const repeatReason = state.pending || state.needsRefresh ? null : forbiddenNote;
+    const repeatUnavailable = state.pending || state.needsRefresh || state.forbidden || refused;
+    const repeatReason = state.pending || state.needsRefresh ? null : refusal;
     setUnavailable(repeat, repeatUnavailable && repeatReason !== null, repeatReason);
     if (repeatUnavailable && repeatReason === null) {
       repeat.disabled = true;
@@ -349,8 +350,13 @@ export function createAgentStop(
       }
       dialog.close();
       let text;
+      let refused = false;
       if (error.status === 403) {
-        text = STOP_REFUSED;
+        // As for Delete: a refusal about grants names the Agent, the grant and who gives it;
+        // another shows as written (findings 2534, 2955). Stop stays unavailable, described by
+        // it, until a newer permission answer allows operate.
+        text = (!grantRefusal(cause) && error.serverMessage) || stopRefused(state.agent.name);
+        refused = true;
       } else if (error.status === 404) {
         state.needsRefresh = true;
         text =
@@ -368,7 +374,7 @@ export function createAgentStop(
         text =
           "Outcome unknown. Stop may have been accepted. Refresh stop status before trying again.";
       }
-      state.error = { text, requestId: error.requestId };
+      state.error = { text, requestId: error.requestId, refused };
     } finally {
       if (context.isCurrent()) {
         state.pending = false;
@@ -460,17 +466,22 @@ export function createAgentStop(
 
   // The page passes each newer Agent operate answer it reads, so a grant or revocation seen by
   // Logs applies without a reload (finding 2328). Only a denial hides the row; a missing answer
-  // keeps it, and the API still decides.
+  // keeps it, and the API still decides. A refused Stop stays unavailable until a newer answer
+  // allows Agent operate (finding 2955).
   function applyOperate(permitted: boolean | undefined) {
+    if (!context.isCurrent()) {
+      return;
+    }
+    const regranted = permitted === true && state.error?.refused === true;
     const forbidden = permitted === false;
-    if (forbidden === state.forbidden || !context.isCurrent()) {
+    if (forbidden === state.forbidden && !regranted) {
       return;
     }
     state.forbidden = forbidden;
     if (forbidden) {
       restrictConfirmation?.();
-    } else if (state.error?.text === STOP_REFUSED) {
-      // An earlier refusal no longer describes this viewer's access.
+    } else if (regranted) {
+      // The refusal no longer describes this viewer's access.
       state.error = null;
     }
     render();
@@ -480,7 +491,8 @@ export function createAgentStop(
 
   render();
   void allowed?.then((permitted) => {
-    if (!operateAnswered) {
+    // The first answer was requested before any Stop, so it never lifts a refusal.
+    if (!operateAnswered && permitted === false) {
       applyOperate(permitted);
     }
   });

@@ -76,9 +76,12 @@ follows `:focus-visible`. No part of any ring may be cut off.
    confirmation is open**, **Components / Deletion / Permission arrives while
    confirmation is open**). Delete Agent after an unknown outcome
    (**Components / Deletion / Outcome unknown**) or a refusal (**Components /
-   Deletion / Permission denied**, finding 2951) is described by its alert. So
-   are the header's Namespace selector with no readable Namespace (**Pages /
-   Agents / No readable Namespaces**, finding 2936) and **Start with default
+   Deletion / Permission denied**, finding 2951) is described by its alert, as
+   is a refused Stop Agent (**Components / Stop Agent / Permission denied**)
+   and a refused list row icon, whose row note names the grant (**Pages /
+   Agents / Stop from the list denied**, finding 2955). So are the header's
+   Namespace selector with no readable Namespace (**Pages / Agents / No
+   readable Namespaces**, finding 2936) and **Start with default
    Preset** without a default Preset (**Pages / Create Agent / No Presets**,
    finding 2937), whose hint says why. With other Presets (**Pages / Create
    Agent / Other Presets, no default**), the chooser's status says only

@@ -1,5 +1,10 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
-import type { createApiClient } from "../api-client.mjs";
+import {
+  type createApiClient,
+  GENERIC_DENIAL,
+  namedDenial,
+  requestFailure,
+} from "../api-client.mjs";
 import { button, element } from "../dom.mjs";
 import type { AgentNavigation } from "./list.mjs";
 
@@ -13,6 +18,23 @@ export interface AgentLifecycleContext extends Pick<AgentNavigation, "navigate">
 export interface LifecycleError {
   text: string;
   requestId: string | undefined;
+  /** The API refused this viewer's Stop or Delete (403): it stays unavailable (finding 2955). */
+  refused?: boolean;
+}
+
+/**
+ * Whether a 403 is about the caller's grants: the API's named denial (finding 2534), an older
+ * API's generic one, or none. The console words those with the Agent's name. Any other 403, such
+ * as one about the caller's own account or another actor's deletion, is written for the caller
+ * and shows as written.
+ */
+export function grantRefusal(cause: unknown) {
+  const { serverMessage } = requestFailure(cause);
+  return (
+    namedDenial(cause) !== undefined ||
+    serverMessage === undefined ||
+    serverMessage === GENERIC_DENIAL
+  );
 }
 
 // Agent list and detail use the same confirmation and explain which resources deletion keeps.

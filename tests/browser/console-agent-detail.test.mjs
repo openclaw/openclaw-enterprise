@@ -4005,9 +4005,13 @@ test("Agent stop denial keeps the Agent running with permission feedback", async
     .click();
   assert.equal((await denied).status(), 403);
 
-  await page.getByText(stopRefused("this Agent")).waitFor();
+  await page.getByText(stopRefused("Denied Stop Candidate")).waitFor();
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
-  await waitForEnabled(page.getByRole("button", { name: "Stop Agent" }));
+  // Stop stays reachable but unavailable: the API would refuse it again (finding 2955).
+  assert.equal(
+    await page.getByRole("button", { name: "Stop Agent" }).getAttribute("aria-disabled"),
+    "true",
+  );
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(current.data.desiredRuntimeState, "running");
   assert.equal(current.data.activeRevisionId, active.revision.id);

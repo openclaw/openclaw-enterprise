@@ -1245,7 +1245,7 @@ export const scenarios = {
       { selector: ".agent-stop-dialog button.danger", click: true },
     ],
     description:
-      "Permission advice allowed Stop, but the controller refuses the confirmed write, as after a removed grant. The alert names the missing Agent operate access; the row stays running, and its Stop icon, which takes focus back, is described by the alert.",
+      "Permission advice allowed Stop, but the controller refuses the confirmed write, as after a removed grant. The alert names the missing Agent operate access; the row stays running. Its Stop icon takes focus back and looks unavailable, described by the alert, and the row's note under the icons says Needs Agent operate.",
   },
   agentsRowDeleteDenied: {
     group: "Pages/Agents",
@@ -1263,7 +1263,7 @@ export const scenarios = {
       { selector: ".agent-delete-dialog button.danger", click: true },
     ],
     description:
-      "Permission advice allowed Delete, but the controller refuses the confirmed write. The alert names the missing Agent delete access; the Agent stays in the list, and its Delete icon, which takes focus back, is described by the alert.",
+      "Permission advice allowed Delete, but the controller refuses the confirmed write. The alert names the missing Agent delete access; the Agent stays in the list. Its Delete icon takes focus back and looks unavailable, described by the alert, and the row's note under the icons says Needs Agent delete.",
   },
   agentsRowRestricted: {
     group: "Pages/Agents",
@@ -9774,11 +9774,18 @@ export const scenarios = {
     deployed: true,
     rules: [
       { suffix: "/permissions", status: 503 },
-      { suffix: "/stop", method: "POST", status: 403 },
+      {
+        suffix: "/stop",
+        method: "POST",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Not authorized: this needs Agent operate on Agent agt_00000000-0000-4000-8000-000000000001. Ask an Installation administrator to grant it.",
+      },
     ],
     actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
     description:
-      "Permission advice is unavailable. The attempted stop is denied and the Console explains the required access.",
+      "Permission advice is unavailable. The attempted stop is denied; the Console names the Agent, the missing grant and who grants it, keeps the Request ID, and leaves Stop Agent unavailable, described by the refusal.",
   },
   stopUnknown: {
     group: "Components/Stop Agent",

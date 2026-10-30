@@ -218,6 +218,11 @@ export function renderAgentList(context: AgentListContext) {
   // The row action whose last write the API refused (403). Its icon is described by the alert
   // above the table, which can sit far from the row on a narrow screen (finding 2952).
   let refusal: { id: string; kind: RowAction } | null = null;
+  // Every refused row action ("<id> <kind>"), with the count of permission reads started before
+  // it. Each stays unavailable, and the row's note under its icons names the grant, until a read
+  // started after it allows that action (finding 2955), as on the Agent page.
+  const refusedActions = new Map<string, number>();
+  let permissionReadsStarted = 0;
   // Keep the latest readable outcome for the Stop confirmation copy. It cannot establish
   // whether newer work exists: a queued deployment may be hidden by revision read permissions.
   const latestDeployments = new Map<string, string>();
@@ -583,6 +588,7 @@ export function renderAgentList(context: AgentListContext) {
     }
     const row = rowReads();
     permissionReads.set(item.id, row);
+    const started = ++permissionReadsStarted;
     const read = context
       .request(`${agentRequestPath(item.id)}/permissions`, { ...rowRead, signal: row.signal })
       .then((result) => result as AgentPermissions);
@@ -598,7 +604,18 @@ export function renderAgentList(context: AgentListContext) {
         }
         const previous = permissions.get(item.id);
         permissions.set(item.id, answer);
-        if (restricts(answer) || restricts(previous)) {
+        let lifted = false;
+        for (const [kind, permission] of [
+          ["stop", "operate"],
+          ["delete", "delete"],
+        ] as const) {
+          const key = `${item.id} ${kind}`;
+          if (answer[permission] === true && (refusedActions.get(key) ?? started) < started) {
+            refusedActions.delete(key);
+            lifted = true;
+          }
+        }
+        if (restricts(answer) || restricts(previous) || lifted) {
           restrictOpenDialog?.(item.id, answer);
           updateRowActions(item.id);
         }
@@ -630,6 +647,7 @@ export function renderAgentList(context: AgentListContext) {
     if (error.status === 403) {
       text = kind === "stop" ? stopRefused(item.name) : deleteRefused(item.name);
       refused = { id: item.id, kind };
+      refusedActions.set(`${item.id} ${kind}`, permissionReadsStarted);
     } else if (error.status === 400 || error.status === 429) {
       text = `Could not ${kind === "stop" ? "stop" : "delete"} ${item.name}. ${describeFailure(cause, { mutation: true })}`;
     } else {
@@ -802,8 +820,9 @@ export function renderAgentList(context: AgentListContext) {
     // to stop that work, even with no selected version.
     const neverStarted = stopped && !item.activeRevisionId;
     const allowed = permissions.get(item.id);
-    const canStop = neverStarted || allowed?.operate !== false;
-    const canDelete = allowed?.delete !== false;
+    const refusedHere = (kind: RowAction) => refusedActions.has(`${item.id} ${kind}`);
+    const canStop = neverStarted || (allowed?.operate !== false && !refusedHere("stop"));
+    const canDelete = allowed?.delete !== false && !refusedHere("delete");
     const noteId = `agent-row-note-${item.id}`;
     // The icons are described by the reason alone, not by the line that repeats its grant.
     const reasonId = `agent-row-reason-${item.id}`;
@@ -828,9 +847,12 @@ export function renderAgentList(context: AgentListContext) {
       restriction = AGENT_DELETE_DENIED;
       grant = "Needs Agent delete";
     }
+    // A blocked icon whose refusal is the alert above the table is described by that alert,
+    // which names the Agent and keeps the Request ID; any other by the row's reason.
+    const reasonOf = (blocked: boolean, kind: RowAction) =>
+      !blocked ? null : refusal?.id === item.id && refusal.kind === kind ? REFUSAL_ID : reasonId;
     const describedBy = (blocked: boolean, badge: string | null, kind: RowAction) => {
-      const refused = refusal?.id === item.id && refusal.kind === kind;
-      const ids = [blocked ? reasonId : null, badge, refused ? REFUSAL_ID : null].filter(Boolean);
+      const ids = [reasonOf(blocked, kind), badge].filter(Boolean);
       return ids.length ? { "aria-describedby": ids.join(" ") } : {};
     };
     // The row's Deleting or Stop requested badge (render).
@@ -840,8 +862,8 @@ export function renderAgentList(context: AgentListContext) {
     // An icon unavailable for a reason the row shows, the note or the badge, stays in the Tab
     // order with it (finding 2899); one waiting on Refresh after an uncertain write has only the
     // alert above the table, and is natively disabled.
-    const reasonFor = (blocked: boolean, badge: boolean) =>
-      blocked ? reasonId : badge && badgeShown ? badgeId : null;
+    const reasonFor = (blocked: boolean, badge: boolean, kind: RowAction) =>
+      reasonOf(blocked, kind) ?? (badge && badgeShown ? badgeId : null);
     const stop = neverStarted
       ? null
       : button(
@@ -859,7 +881,7 @@ export function renderAgentList(context: AgentListContext) {
       setUnavailable(
         stop,
         !available || stopped || !canStop,
-        unsettled.has(item.id) ? null : reasonFor(!canStop, stopped),
+        unsettled.has(item.id) ? null : reasonFor(!canStop, stopped, "stop"),
       );
     }
     const remove = button(
@@ -875,7 +897,7 @@ export function renderAgentList(context: AgentListContext) {
     setUnavailable(
       remove,
       !available || !canDelete,
-      unsettled.has(item.id) ? null : reasonFor(!canDelete, item.status === "deleting"),
+      unsettled.has(item.id) ? null : reasonFor(!canDelete, item.status === "deleting", "delete"),
     );
     // The note's line is reserved from the first paint, so advice that lands later only fills it.
     const note = element(
