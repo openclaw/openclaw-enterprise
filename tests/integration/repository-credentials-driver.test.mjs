@@ -17,15 +17,15 @@ import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
 
-function driverFor(registry, socket, sessionDurationSeconds = 3600, publicCa) {
+function driverFor(backendId, registry, socket, sessionDurationSeconds = 3600, publicCa) {
   const backend = {
-    id: registry.backendId,
+    id: backendId,
     client: new UnixRepositoryCredentialControlClient({ controlSocket: socket }),
     drivers: { repo: "repository-credentials" },
   };
   return {
     policy: new GitHubRepositoryPolicy(
-      { id: backend.id, drivers: { repo: backend.drivers.repo } },
+      { driverId: backend.drivers.repo, backendId: backend.id },
       registry,
       { sessionDurationSeconds },
     ),
@@ -86,7 +86,11 @@ test(
       gateway: { listen: "127.0.0.1:0" },
     });
     const signal = new AbortController().signal;
-    const local = driverFor(fixture.registry, "/nonexistent/repository-control.sock");
+    const local = driverFor(
+      fixture.backendId,
+      fixture.registry,
+      "/nonexistent/repository-control.sock",
+    );
     const selection = {
       namespaceId: fixture.namespaceId,
       bindings: [
@@ -250,6 +254,7 @@ test(
 
     // A changed local Backend registry must not obstruct restrictive cleanup of the old admission.
     const changedProvider = driverFor(
+      "replacement-provider",
       { ...fixture.registry, backendId: "replacement-provider" },
       fixture.config.gateway.controlSocket,
     );
@@ -294,6 +299,7 @@ test("Unix control rejects malformed status and preserves authoritative absence 
   const socket = join(directory, "control.sock");
   const id = randomUUID();
   const driver = driverFor(
+    "github-test",
     {
       version: 1,
       backendId: "github-test",

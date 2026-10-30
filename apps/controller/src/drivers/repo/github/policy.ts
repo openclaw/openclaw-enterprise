@@ -1,6 +1,5 @@
 import { hasControlCharacter } from "../credentials/client-contracts.ts";
 import type {
-  Backend,
   ErrorDetail,
   JSONSchema,
   RepositoryPolicyDriver,
@@ -61,16 +60,19 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
   readonly #registry: GitHubRepositoryRegistry;
   readonly #duration: number;
   constructor(
-    backend: Pick<Backend, "id" | "drivers">,
+    owner: { readonly driverId: string; readonly backendId: string },
     registry: GitHubRepositoryRegistry,
     options: { readonly sessionDurationSeconds: number },
   ) {
-    const id = backend.drivers.repo;
+    const { driverId: id, backendId } = owner;
     if (typeof id !== "string" || !id || Buffer.byteLength(id) > 512 || hasControlCharacter(id)) {
       throw new Error("The GitHub Backend must declare its repository policy Driver.");
     }
     this.id = id;
-    this.#registry = validateGitHubRepositoryRegistry(registry, backend.id);
+    if (typeof backendId !== "string") {
+      throw new Error("The GitHub repository policy must declare its owning Backend.");
+    }
+    this.#registry = validateGitHubRepositoryRegistry(registry, backendId);
     if (
       !Number.isSafeInteger(options.sessionDurationSeconds) ||
       options.sessionDurationSeconds < 1 ||

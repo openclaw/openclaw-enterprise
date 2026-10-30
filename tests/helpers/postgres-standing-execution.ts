@@ -62,8 +62,8 @@ export async function standingExecutionFixture(
     } as const);
   const driver = new GitHubRepositoryPolicy(
     {
-      id: registry.backendId,
-      drivers: { repo: registry.backendId },
+      driverId: external?.backendId ?? "execution-proof",
+      backendId: external?.backendId ?? "execution-proof",
     },
     registry,
     { sessionDurationSeconds: 120 },
