@@ -1088,7 +1088,11 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   await page.getByLabel("Provider", { exact: true }).selectOption("openai");
   // Codex does not need the Sandbox Driver and keeps Dedicated.
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
-  assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
+  // The select is unavailable with Codex (aria-disabled, finding 2945); its option is not refused.
+  assert.equal(
+    await mode.locator('option[value="dedicated"]').evaluate((node) => node.disabled),
+    false,
+  );
   assert.equal(
     await page.locator("#agent-harness-hint").textContent(),
     "This Agent will run Codex with Dedicated execution.",

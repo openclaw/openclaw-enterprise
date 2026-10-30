@@ -2317,7 +2317,14 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
   assert.equal(await embeddedChannelNote.getAttribute("class"), "hint");
   // Codex keeps Dedicated execution; only native OpenClaw depends on the runtime.
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
-  assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
+  // The select itself is unavailable with Codex (aria-disabled, finding 2945), so the option's own
+  // state is read: Dedicated is not refused.
+  assert.equal(
+    await mode
+      .locator('option[value="dedicated"]')
+      .evaluate((node: HTMLOptionElement) => node.disabled),
+    false,
+  );
   const dedicatedHint = await modeHint.textContent();
   assert.ok(dedicatedHint);
   assert.match(
