@@ -192,8 +192,9 @@ export function createDeviceLogin({
             : challenge
               ? "Waiting for you to complete sign-in in the other tab…"
               : (refusal ?? "Sign in to connect your ChatGPT account."));
-    if (active && (focused === start || focused === cancel) && focused.hidden) {
-      const shown = start.hidden ? cancel : start;
+    const left = [start, cancel].find((control) => control === focused && control.hidden);
+    if (active && left) {
+      const shown = left === start ? cancel : start;
       shown.disabled = false;
       shown.focus();
     }
