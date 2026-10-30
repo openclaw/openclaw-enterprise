@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import type { TestContext } from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import type pg from "pg";
 import type {
   Agent,
@@ -18,6 +17,7 @@ import {
   testPool,
   withPool,
 } from "../helpers/postgres-database.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
 const options = { ...requiresPostgres, timeout: 30_000 };
@@ -132,18 +132,17 @@ async function fixture(t: TestContext) {
 
 // Observe a real server lock wait; time alone is not evidence that insertion reached it.
 async function waitForLock(pool: pg.Pool, name: string): Promise<void> {
-  const deadline = Date.now() + 5000;
-  do {
-    const result = await pool.query(
-      "SELECT 1 FROM pg_stat_activity WHERE application_name = $1 AND wait_event_type = 'Lock' AND cardinality(pg_blocking_pids(pid)) > 0",
-      [name],
-    );
-    if (result.rowCount === 1) {
-      return;
-    }
-    await delay(10);
-  } while (Date.now() < deadline);
-  assert.fail("writer did not reach the controlled lock");
+  await waitUntil(
+    "the writer to reach the controlled lock",
+    async () =>
+      (
+        await pool.query(
+          "SELECT 1 FROM pg_stat_activity WHERE application_name = $1 AND wait_event_type = 'Lock' AND cardinality(pg_blocking_pids(pid)) > 0",
+          [name],
+        )
+      ).rowCount === 1,
+    { timeoutMs: 5000, intervalMs: 10 },
+  );
 }
 
 test("revision insertion owns its snapshot before a source lock wait", options, async (t) => {

@@ -39,6 +39,7 @@ import {
   retryModelAtCapacity,
 } from "../helpers/openshell-kubernetes-real.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const execute = promisify(execFile);
 const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mjs", import.meta.url));
@@ -1652,10 +1653,11 @@ test(
         return false;
       }
     };
-    while (pids.some(running)) {
-      assert.ok(Date.now() - begun < 10_000, "the stalled kubectl outlived its deadline");
-      await delay(20);
-    }
+    // Within 10 s of the diagnostic's start.
+    await waitUntil("the stalled kubectl to exit", () => !pids.some(running), {
+      timeoutMs: begun + 10_000 - Date.now(),
+      intervalMs: 20,
+    });
     // Outside a diagnostic nothing has passed a deadline.
     assert.equal(diagnosticDeadlinePassed(), false);
   },
