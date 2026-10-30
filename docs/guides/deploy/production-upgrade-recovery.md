@@ -108,6 +108,8 @@ Before selecting an older controller or runtime image, verify it can read all
 state written by the candidate and restore compatible data if required. Never
 delete Agents, versions, PVCs, or the bootstrap volume to force recovery.
 
+For stalled ReplicaSet creation, check [namespace object capacity](upgrade-checklist.md#check-replicaset-capacity).
+
 ## Correct a refused Agent deployment
 
 The startup preflight refuses some such drafts before any writer stops. When

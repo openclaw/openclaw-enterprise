@@ -43,8 +43,9 @@ before withdrawing access. Selecting Credential Proxy alone does not provide one
 ### Keep schema histories separate
 
 The migrator recognizes the 59-receipt history before Credential Proxy and the
-62-receipt history through `0062_credential_delivery_custody`. Both upgrade to
-63 receipts, ending at `0063_prepared_attempt_settlement`. The
+62-receipt history through `0062_credential_delivery_custody`. The 63-receipt
+history through `0063_prepared_attempt_settlement` is `preGatewayManagedMode`;
+it still needs `0064_gateway_managed_mode`. The
 [migration reference](../../reference/settings/operations.md) lists the supported
 histories. The migrator checks receipt hashes, timestamps, and the database
 catalog; a count alone does not establish compatibility.
@@ -57,7 +58,8 @@ an upgrade.
 For a compatibility-only upgrade, quiesce API, workers and other database writers,
 keep a recoverable database copy and matching release, and check the history
 using the existing migrator connection in `OCC_MIGRATION_DATABASE_URL`. From the
-root of a release checkout, install its dependencies and run:
+root of the release checkout that matches the intended upgrade, install its
+dependencies and run:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -69,9 +71,11 @@ An image-only install runs the release controller image with
 [maintenance Pod](auth-maintenance.md#run-the-command) provides the image, the
 migrator credential and the database CA.
 
-If the check fails, stop. If it reports `completed`, no migration is pending.
-For `preCredentialProxy` (59 receipts), migration applies `0060` through `0063`.
-For `prePreparedAttemptSettlement` (62 receipts), it applies only `0063`.
+If the check fails, stop. Exit 0 and `migration.checked` with
+`history: "completed"` mean no migration is pending for that release.
+From `preCredentialProxy`, the release applies `0060` through `0064`; from
+`prePreparedAttemptSettlement`, it applies `0063` and `0064`. From
+`preGatewayManagedMode`, only `0064` remains in this release.
 Confirm the target and authorization before running the migration and checking again:
 
 ```bash
@@ -81,8 +85,8 @@ pnpm db:migrate:production --check
 
 In the controller image, run `scripts/migrate-production.mjs` without and then with `--check`.
 
-Migration reports its **starting** history; the last check must report
-`completed`. Upgrade the control plane without mixed-version
+Migration reports its **starting** history; the last check must use the same
+release and report `completed`. Upgrade the control plane without mixed-version
 writers. Keep existing Driver selections and admissions, then verify retained
 workflows. **You can stop here without revoking a working source.** Migration
 preserves Gateway ownership and records older revisions as version 2 `unprotected`;

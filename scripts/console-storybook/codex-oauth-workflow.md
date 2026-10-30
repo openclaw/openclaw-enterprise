@@ -36,6 +36,19 @@ provider login, credential-service persistence, refresh rotation, or runtime tok
    authentication is selected. Switching providers also clears the selected model
    credential. A staged login is discarded only through its explicit control.
 
+## Return after an interrupted start
+
+Open **Pages/Create Agent → ChatGPT sign-in interrupted by navigation (Experimental)**.
+Choose **Sign in with OAuth**, then **Secrets** while the start is pending.
+Use browser Back. Confirm that the Console asks an administrator to investigate
+and disables another sign-in. Switch to API key and back: sign-in stays disabled.
+The request log must show one start and no poll or cancellation.
+
+Repeat with **Components/Credentials → ChatGPT replacement interrupted by navigation
+(Experimental)**. The saved authentication stays unchanged. These stories simulate
+an interrupted reply; the browser regression also checks a real OCC commit with
+fixture Gateway and Refresh Drivers.
+
 ## Inspect bootstrap failures
 
 1. Open **Pages/Create Agent → Initial deployment pending**. Choose **Create

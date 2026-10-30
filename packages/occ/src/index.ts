@@ -12229,9 +12229,20 @@ export class OpenClawController {
     if (record.agentId !== undefined && agent === undefined) {
       throw new ScopeViolationError("The provisioning Agent is unavailable.");
     }
-    let auth: HarnessAuthSnapshot;
+    let auth: HarnessAuthSnapshot | undefined;
     let credentialSourceType: CredentialSourceType | undefined;
-    if (isSecretHarnessAuth(binding)) {
+    if (binding.method === "credential_source" && statusRead === "status") {
+      // Source readiness and original Gateway ownership were checked above. Status needs
+      // the Agent's current grant, but not the catalog snapshot used for write admission.
+      if (agent !== undefined) {
+        await this.authorizeAgentPrincipal(principalId, agent, "operate", {
+          kind: "credential_source",
+          namespaceId,
+          id: binding.sourceId,
+        });
+      }
+      this.requireCredentialSourceSandbox(this.sandboxDriver());
+    } else if (isSecretHarnessAuth(binding)) {
       auth = this.secretHarnessAuthSnapshot(binding);
     } else if (agent !== undefined) {
       [auth, credentialSourceType] = await this.admitHarnessAuth(state, principalId, {
@@ -12253,7 +12264,9 @@ export class OpenClawController {
       mode: plan.executionMode,
     };
     const sandbox = this.sandboxDriver();
-    this.requireCredentialSourceDrivers(auth, sandbox);
+    if (auth !== undefined) {
+      this.requireCredentialSourceDrivers(auth, sandbox);
+    }
     // Runtime image native worker support is admission for writes (replay, retry, the worker), like
     // the plugin policy below: a status read still reports the stored work after the image loses it.
     requireDedicatedNativeSupport(harness, sandbox, this.nativeWorkers, {
@@ -12284,6 +12297,9 @@ export class OpenClawController {
     // Compute plan check: a status read reports the stored work, including a failure that
     // names the refused setting, after a Driver change makes the check refuse the plan.
     if (!statusRead) {
+      if (auth === undefined) {
+        throw new DependencyUnavailableError("The Harness authentication snapshot is unavailable.");
+      }
       try {
         compute.validateHarnessAuth(
           harness,
@@ -13565,12 +13581,16 @@ export class OpenClawController {
     sandbox: SandboxDriver | undefined,
   ): void {
     if (auth.method === "credential_source") {
-      if (sandbox === undefined) {
-        throw new ResourceStateConflictError(
-          "Credential-source Harness authentication requires a selected Sandbox Driver.",
-        );
-      }
+      this.requireCredentialSourceSandbox(sandbox);
       this.credentialGatewayDriver(auth.credentialGatewayId);
+    }
+  }
+
+  private requireCredentialSourceSandbox(sandbox: SandboxDriver | undefined): void {
+    if (sandbox === undefined) {
+      throw new ResourceStateConflictError(
+        "Credential-source Harness authentication requires a selected Sandbox Driver.",
+      );
     }
   }
 

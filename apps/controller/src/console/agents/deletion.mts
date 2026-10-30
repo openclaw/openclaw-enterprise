@@ -1,5 +1,5 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
-import { GENERIC_DENIAL, namedDenial, requestFailure, responseFields } from "../api-client.mjs";
+import { requestFailure, responseFields } from "../api-client.mjs";
 import {
   button,
   element,
@@ -14,6 +14,7 @@ import {
   type AgentLifecycleContext,
   DELETE_CONFIRMATION,
   type LifecycleError,
+  grantRefusal,
   keptResources,
 } from "./lifecycle-confirmation.mjs";
 import { AGENT_DELETE_DENIED, deleteRefused } from "./access-reasons.mjs";
@@ -28,6 +29,7 @@ export function createAgentDeletion(
   agent: AgentRead,
   onDeleting: () => void,
   allowed?: Promise<boolean | undefined>,
+  permissionReadsStarted: () => number = () => 0,
 ) {
   // One row of the Agent page's danger zone (UX spec 3.9); the confirmation carries the detail.
   const section = element("section", {
@@ -36,6 +38,9 @@ export function createAgentDeletion(
   });
   const permissionNotice = AGENT_DELETE_DENIED;
   let restrictConfirmation: (() => void) | undefined;
+  // The count of the page's permission reads started before the last refused Delete. Only a read
+  // started after it can lift the refusal (finding 2966).
+  let refusedAfterReads = 0;
   const feedback = element("div", { className: "danger-zone-feedback" });
   const actions = element("div", { className: "danger-zone-actions" });
   const remove = button("Delete Agent", openConfirmation, { className: "danger" });
@@ -51,8 +56,7 @@ export function createAgentDeletion(
     needsRefresh: boolean;
     accessEnded: boolean;
     notice: string;
-    // `refused`: the API refused this viewer's Delete (403) on permission grounds.
-    error: (LifecycleError & { refused?: boolean }) | null;
+    error: LifecycleError | null;
     used: boolean;
   } = {
     deleting: agent.status === "deleting",
@@ -351,21 +355,16 @@ export function createAgentDeletion(
       dialog.close();
       let text;
       let refused = false;
-      if (
-        error.status === 403 &&
-        state.deleting &&
-        namedDenial(cause) === undefined &&
-        error.serverMessage !== undefined &&
-        error.serverMessage !== GENERIC_DENIAL
-      ) {
-        // A retry refusal that is not about grants, such as another actor's deletion.
-        text = error.serverMessage;
-      } else if (error.status === 403) {
+      if (error.status === 403) {
         // The API's named denial (finding 2534) names the grant by Agent ID; the console's
         // sentence names the same grant and who gives it, with the Agent's name, as Stop and the
-        // Agents list do (finding 2951). The request ID stays below it.
-        text = deleteRefused(agent.name);
-        refused = true;
+        // Agents list do (finding 2951). Another refusal shows as written. The request ID stays
+        // below either. A refused repeat that is not about grants, such as another actor's
+        // deletion, can change without this viewer's access changing, so only it stays available.
+        const grant = grantRefusal(cause);
+        text = (!grant && error.serverMessage) || deleteRefused(agent.name);
+        refused = grant || !state.deleting;
+        refusedAfterReads = permissionReadsStarted();
       } else if (error.status === 404) {
         state.needsRefresh = true;
         text =
@@ -490,12 +489,15 @@ export function createAgentDeletion(
 
   // The row follows the newest permission answer: a page that reads it again, such as after its
   // Installation administration ended, hides or restores the row without a reload (finding D795).
-  // A refused Delete stays unavailable until a newer answer allows Agent delete (finding 2951).
-  function applyDelete(permitted: boolean | undefined) {
+  // A refused Delete stays unavailable until an answer read after it allows Agent delete
+  // (findings 2951, 2966): `read` is the page's count of permission reads when this answer's read
+  // started.
+  function applyDelete(permitted: boolean | undefined, read: number) {
     if (!context.isCurrent()) {
       return;
     }
-    const regranted = permitted === true && state.error?.refused === true;
+    const regranted =
+      permitted === true && state.error?.refused === true && read > refusedAfterReads;
     const forbidden = permitted === false;
     if (forbidden === state.forbidden && !regranted) {
       return;
@@ -519,14 +521,14 @@ export function createAgentDeletion(
   void allowed?.then((permitted) => {
     // The first answer was requested before any Delete, so it never lifts a refusal.
     if (!deleteAnswered && permitted === false) {
-      applyDelete(permitted);
+      applyDelete(permitted, 0);
     }
   });
   return {
     section,
-    applyDelete(permitted: boolean | undefined) {
+    applyDelete(permitted: boolean | undefined, read: number) {
       deleteAnswered = true;
-      applyDelete(permitted);
+      applyDelete(permitted, read);
     },
     // The page found the Agent deleting through another read and now shows only this row.
     showOnPage({ focus = false } = {}) {

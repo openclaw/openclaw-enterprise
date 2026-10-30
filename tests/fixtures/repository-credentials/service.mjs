@@ -9,6 +9,7 @@ import { startGitHubFixture } from "./github.mjs";
 import { startGitSmartHttpFixture } from "./git.mjs";
 import { createResourceScope, createTestResourceScope } from "./resources.mjs";
 import { socketDirectory } from "../../helpers/socket-directory.mjs";
+import { waitFor } from "../../helpers/wait-for.mjs";
 import { serviceConfigurationData } from "./builders.mjs";
 import { startStaticTokenService, writeSessionClientConfiguration } from "./service-resources.mjs";
 
@@ -195,17 +196,10 @@ export function controlRequest(socketPath, method, path, value, headers = {}) {
   });
 }
 
-export async function eventually(
+// Polls `check` every 10 ms until it returns a truthy value, and returns that value.
+export function eventually(
   check,
-  { timeoutMs = 3000, message = "expected fixture state was not observed" } = {},
+  { timeoutMs = 3000, description = "the expected fixture state" } = {},
 ) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const value = check();
-    if (value) {
-      return value;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(message);
+  return waitFor(description, () => check() || undefined, { timeoutMs, intervalMs: 10 });
 }

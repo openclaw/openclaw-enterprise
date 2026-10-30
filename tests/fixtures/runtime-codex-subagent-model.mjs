@@ -179,9 +179,10 @@ server.on("connection", (socket, request) => {
   });
 });
 
+// The deadline is checked after each read, so the last read happens at or past it.
 async function waitFor(description, read) {
   const deadline = Date.now() + 90_000;
-  while (Date.now() < deadline) {
+  for (;;) {
     assert.equal(
       unsupportedMethod,
       undefined,
@@ -190,6 +191,9 @@ async function waitFor(description, read) {
     const value = await read();
     if (value) {
       return value;
+    }
+    if (Date.now() >= deadline) {
+      break;
     }
     await delay(100);
   }

@@ -25,6 +25,7 @@ import {
   type StoredSendReceipt,
 } from "../../packages/occ/src/egress-send-receipts.ts";
 import { staticEgressFixture, syntheticDispatchFixture } from "../helpers/static-egress.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const admitMetadata = async ({
   app,
@@ -521,23 +522,24 @@ test(
       await bounded(deleted.promise, "supported DELETE did not remove its grant");
       withdrawalStarted = false;
       send = f.authorize(f.permitRequest(captured, ready));
-      const end = Date.now() + 2000;
-      while (!blocked && Date.now() < end) {
-        if (withdrawalPid && senderPid && withdrawalPid !== senderPid) {
-          const observation = await f.pool.query(
-            `SELECT EXISTS (
-              SELECT 1 FROM pg_stat_activity
-              WHERE pid = $1 AND datname = current_database() AND usename = current_user
-                AND wait_event_type = 'Lock' AND $2 = ANY(pg_blocking_pids(pid))
-            ) AS blocked`,
-            [senderPid, withdrawalPid],
-          );
-          blocked = observation.rows[0].blocked;
-        }
-        if (!blocked) {
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
-      }
+      await waitUntil(
+        "the sender to wait on the withdrawing transaction's Namespace lock",
+        async () => {
+          if (withdrawalPid && senderPid && withdrawalPid !== senderPid) {
+            const observation = await f.pool.query(
+              `SELECT EXISTS (
+                SELECT 1 FROM pg_stat_activity
+                WHERE pid = $1 AND datname = current_database() AND usename = current_user
+                  AND wait_event_type = 'Lock' AND $2 = ANY(pg_blocking_pids(pid))
+              ) AS blocked`,
+              [senderPid, withdrawalPid],
+            );
+            blocked = observation.rows[0].blocked;
+          }
+          return blocked;
+        },
+        { timeoutMs: 2000, intervalMs: 10 },
+      );
     } finally {
       release.resolve();
       await Promise.allSettled([withdrawal, ...(send ? [send] : [])]);

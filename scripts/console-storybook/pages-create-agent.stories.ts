@@ -360,3 +360,5 @@ export const PasswordSecretConflict = story("createPasswordSecretConflict");
 export const PasswordSecretConflictPat = story("createPasswordSecretConflictPat");
 
 export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOAuth");
+
+export const CreateOAuthStartNavigation = story("createOAuthStartNavigation");
