@@ -138,7 +138,9 @@ naming the Agent or Namespace but not the session Secret, before replying.
 `start_unconfirmed` before sending a start. Both authentication forms retain it
 across navigation. Agent detail keeps its Credentials tab during a start; its
 draft records a later reply unless a newer tab owns it. Until the page is left,
-a usable reply supplies the challenge; a refusal permits retry.
+a usable reply supplies the challenge; a `403` permits retry. A `501` shows the
+API's reason and keeps Sign in unavailable, as do Installation capabilities
+without a Codex device-login type (`deviceLoginOffered`).
 Unconfirmed attempts cannot start again, poll, or cancel. See
 [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 Compare-and-swap serializes known-session polls. OCC rechecks scope and both
@@ -337,6 +339,8 @@ detached reads. Clearing bytes cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 14:49: Refuse unoffered Console sign-in early. (fix-dogfood-r61 - 2b3b206b63)
 
 - 2026-10-30 12:27: Record late starts. (authoring-run/264fbe79-1af9-492d-aa8b-c020cde317f2 - cd2a58116a69f1a6d68a572a226ef8945408ef54)
 
