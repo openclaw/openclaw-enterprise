@@ -270,13 +270,10 @@ Tabs retain DOM and drafts, but pending/failed reads, passwords, and mutations
 prevent reuse. Tabs ignore responses after unmount.
 [Draft captures](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
 exclude passwords. Secret saves update the shared snapshot.
-`agents/detail.mts:boundSecretsDenied` supplies the Configuration hint
-with Deploy's authorized names, deduplicated by ID and excluding Harness-only
-Secrets. Plugins and Credentials append the same authorized missing names, including
-Harness Secrets that Agent updates check, to the general source-grant explanation.
-Only current-generation reads publish. Late names update hints in place without replacing
-saved plugin views or credential forms.
-Failed metadata reads keep authorized IDs; an empty list keeps the general explanation.
+`agents/detail.mts:boundSecretsDenied` reuses Deploy's authorized names in save hints.
+Configuration excludes Harness-only Secrets; Plugins and Credentials include them.
+Only current-generation reads publish; late names preserve view state and focus.
+Metadata failures keep authorized IDs; unknown grants keep general explanations.
 
 [Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
 owns receipts and draft retirement.
@@ -375,7 +372,7 @@ gateway startup and file availability.
 
 ## Changelog
 
-- 2026-10-30 11:02: Reuse authorized Secret names in Plugins and Credentials save hints without replacing their views. (b03beb3e-57d1-47cf-829f-e31955a47d3c - f5d5dfda697a9e0d41c88a4e570dafcce768ec7b)
+- 2026-10-30 11:02: Name Secrets in Plugins/Credentials hints. (b03beb3e-57d1-47cf-829f-e31955a47d3c - f5d5dfda697a9e0d41c88a4e570dafcce768ec7b)
 
 - 2026-10-30 09:32: Name authorized bound Secrets in the Configuration save permission hint. (b03beb3e-57d1-47cf-829f-e31955a47d3c - 755ff77baa3377441be0938302030386fa985c75)
 
