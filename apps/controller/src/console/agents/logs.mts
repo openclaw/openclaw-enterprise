@@ -906,6 +906,9 @@ export function renderAgentLogs(
                   deniedStatusViews.set(statusKey, answer?.operate === true);
                 }
               });
+            // A fresh refusal is remembered like one taken from the answer: the view rereads
+            // the Agent alone and never asks for status on a timer (finding 3010).
+            pollAgent();
           }
           return;
         }

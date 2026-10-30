@@ -2387,6 +2387,53 @@ test("Logs whose runtime status is denied show a stop and a redeploy made elsewh
   assert.equal(authorizationDenials(fixture.auditSink).length, denied);
 });
 
+// Finding 3010. With no permission answer the page still asks for status (finding 2454), and a
+// reader without operate is refused. That fresh refusal returned with no poll, unlike a remembered
+// one (finding 3005), so a stop made elsewhere showed only after Back or a tab rebuild. The poll
+// rereads the Agent alone and never asks for status again, so the one audited denial stays one.
+test("Logs whose first status read is refused show a stop made elsewhere", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "the refused reader's version serves")];
+  const { account } = await logsMember(fixture, namespace, "status-refused-poll", [
+    "read",
+    "read_logs",
+  ]);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, undefined, "logs"),
+    account.credentials,
+  );
+  // The real Native IAM Driver refuses the status read; log text needs no operate.
+  await page.getByText(RUNTIME_STATUS_DENIED).waitFor();
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("the refused reader's version serves").waitFor();
+  await waitForIdleFetches(page);
+  const statusReads = () => requests.filter(({ path }) => path.endsWith("/runtime")).length;
+  assert.equal(statusReads(), 1);
+  const denied = authorizationDenials(fixture.auditSink).length;
+
+  // Another session stops the Agent; the next poll shows it.
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const stopped = await fixture.request("POST", `${agentPath}/stop`);
+  assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
+  computeDriver.state.podlessRevisions.push(revisionId);
+  const agentReads = await settledFetches(page, agentPath);
+  await page.clock.runFor(10_000);
+  await waitForSettledFetches(page, agentPath, agentReads + 1);
+  await page.getByText("Stop requested", { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+
+  // No second status read was sent, so no second denial was audited.
+  assert.equal(statusReads(), 1);
+  assert.equal(authorizationDenials(fixture.auditSink).length, denied);
+});
+
 // Finding 2993 (dogfood r61, D823). A redeploy from elsewhere failed while Logs stayed open: the
 // recovery card above the tabs named the failure, about 700 px above the Logs view at 390 px wide,
 // and the Logs view said nothing. The view now repeats the card's lead and next step in place,
