@@ -1,6 +1,6 @@
-import type { CredentialSourceAttachment } from "./credential-gateway.ts";
-import type { EgressInstallation, ProxyWiring } from "./credential-proxy.ts";
-import type { Driver } from "./driver.ts";
+import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
+import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
+import type { Driver } from "../index.ts";
 import type {
   AgentRevision,
   CredentialSourceLoginMode,
@@ -10,15 +10,15 @@ import type {
   OpenClawConfigurationDocument,
   RevisionHarnessDescriptor,
   SandboxFacet,
-} from "./index.ts";
-import type { RepositoryExecutionIdentity } from "./repo.ts";
-import type { SandboxLogChunk, SandboxLogContext, SandboxLogRequest } from "./runtime-logs.ts";
+} from "../../index.ts";
+import type { RepositoryExecutionIdentity } from "../repo/index.ts";
+import type { SandboxLogChunk, SandboxLogContext, SandboxLogRequest } from "../../runtime-logs.ts";
 import type {
   SandboxNetworkGrant,
   SandboxPolicyObservation,
   SandboxPolicyRecommendations,
   SandboxPolicySnapshot,
-} from "./sandbox-policy.ts";
+} from "../../sandbox-policy.ts";
 
 export type KubernetesNamespacedResource = Readonly<Record<string, unknown>>;
 

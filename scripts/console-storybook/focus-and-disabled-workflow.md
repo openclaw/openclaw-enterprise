@@ -52,7 +52,12 @@ follows `:focus-visible`. No part of any ring may be cut off.
    diagnostics**, the Logs controls, the plugin dialog's **Load plugins** and
    pager, and the read-only authentication and Slack token fields (finding
    2899): a select or text field fades its text, and ignores arrow keys and
-   typing too.
+   typing too. So do the Secret dialog's **Replace value** and **Delete
+   Secret** (**Pages / Secrets / Read only for this caller**) and the issued
+   account select (**Components / Credentials / Issued service accounts
+   unavailable**) (finding 2925). On **Pages / Agents / Stop from the list**,
+   confirm Stop: the Stop icon becomes unavailable and keeps focus, described
+   by its Stop requested badge (finding 2926).
 10. Open **Components / Stop Agent / Stop pending**. Stopping… sets
     `aria-busy="true"` and shows the `progress` pointer, as Deleting… and a
     saving Save Configuration do (finding 1927).

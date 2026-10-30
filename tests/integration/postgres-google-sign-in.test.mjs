@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   assertConsoleSignIn,
@@ -23,6 +22,7 @@ import {
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { providerInstanceId } from "../helpers/human-login-transport.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
@@ -43,9 +43,10 @@ const secrets = {
 // otherwise.
 const slowLane = { floorMs: 250, maxFloorMs: 500 };
 
-const digest = (value) => createHash("sha256").update(value).digest("hex");
-const googleProviderId = `google:${digest(googleClientId)}`;
-const githubProviderId = `github:${digest("google-suite-github-client-id")}`;
+const googleProviderId = providerInstanceId("google", { clientId: googleClientId });
+const githubProviderId = providerInstanceId("github", {
+  clientId: "google-suite-github-client-id",
+});
 const memberSubject = "110000000000000000001";
 const strangerSubject = "110000000000000000002";
 const disabledSubject = "110000000000000000003";

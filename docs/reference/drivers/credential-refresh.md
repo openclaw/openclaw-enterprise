@@ -30,7 +30,7 @@ Without it, the gateway's catalog offers no `refresh` types.
 
 ## Interface
 
-The [shared interface](../../../packages/contracts/src/credential-refresh.ts) requires every
+The [shared interface](../../../packages/contracts/src/drivers/credential-refresh/index.ts) requires every
 method below. Startup rejects a Driver that omits one.
 
 | Operation          | Inputs and preconditions                                                                       | Result or side effects                                                                          | Failure or absence                                                              |

@@ -1,4 +1,4 @@
-import type { Driver } from "./driver.ts";
+import type { Driver } from "../index.ts";
 
 export interface ChannelDirectoryLookupInput {
   readonly token: string;

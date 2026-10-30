@@ -1278,6 +1278,9 @@ export async function expectReachableReason(page, control, reason) {
   if (editable) {
     await page.keyboard.press("ArrowDown");
     await page.keyboard.type("x");
+    // Deleting is an edit too, and typing does not cover it.
+    await page.keyboard.press("Backspace");
+    await page.keyboard.press("Delete");
   }
   // A mouse press too: force skips Playwright's own wait for an enabled control.
   await control.click({ force: true });

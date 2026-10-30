@@ -13,7 +13,6 @@ import { resourceActionIcon } from "../resource-actions.mjs";
 import {
   button,
   element,
-  isUnavailable,
   mayReturnFocus,
   setText,
   setUnavailable,
@@ -542,7 +541,11 @@ export function renderAgentList(context: AgentListContext) {
     const controls = rowControls.get(id);
     if (!controls) {
       search.focus();
-    } else if (controls[kind] && !isUnavailable(controls[kind])) {
+    } else if (controls[kind] && !controls[kind].disabled) {
+      // An unavailable icon whose reason shows is still focusable (aria-disabled, finding 2899),
+      // so focus stays on it and its description says why, as setUnavailable keeps focus on a
+      // control that becomes unavailable (finding 2926). Only a natively disabled icon, with no
+      // reason to read, sends focus to the name.
       controls[kind].focus();
     } else {
       // At a narrow width the name is scrolled out of view; keep the table where it was.
@@ -753,8 +756,9 @@ export function renderAgentList(context: AgentListContext) {
           return;
         }
         // A redraw while the dialog was open (a permission refusal, for example) replaces the
-        // invoking icon, so fall back to the row's current controls.
-        if (!submitted && invoker.isConnected && !isUnavailable(invoker)) {
+        // invoking icon, so fall back to the row's current controls. A refused invoker that is
+        // still focusable takes focus back, as on a cancelled confirmation.
+        if (!submitted && invoker.isConnected && !invoker.disabled) {
           invoker.focus();
         } else {
           focusRow(item.id, kind);

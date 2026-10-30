@@ -1,7 +1,12 @@
-import type { CredentialRefreshStatus } from "./credential-refresh.ts";
-import type { Driver } from "./driver.ts";
-import type { AgentRevision, CredentialSource, CredentialSourceType, Namespace } from "./index.ts";
-import type { SandboxResourceRef } from "./sandbox.ts";
+import type { CredentialRefreshStatus } from "../credential-refresh/index.ts";
+import type { Driver } from "../index.ts";
+import type {
+  AgentRevision,
+  CredentialSource,
+  CredentialSourceType,
+  Namespace,
+} from "../../index.ts";
+import type { SandboxResourceRef } from "../sandbox/index.ts";
 
 export interface CredentialGatewayContext {
   readonly signal: AbortSignal;

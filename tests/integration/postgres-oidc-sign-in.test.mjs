@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, createHmac } from "node:crypto";
+import { createHmac } from "node:crypto";
 import test from "node:test";
 import {
   assertConsoleSignIn,
@@ -25,6 +25,7 @@ import {
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { providerInstanceId } from "../helpers/human-login-transport.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
@@ -41,8 +42,7 @@ const secrets = {
   "occ-github-login/client-id": "oidc-suite-github-client-id",
   "occ-github-login/client-secret": "oidc-suite-github-client-secret",
 };
-const digest = (value) => createHash("sha256").update(value).digest("hex");
-const instance = (issuer) => `oidc:${digest(`${issuer.issuer}\0${clientId}`)}`;
+const instance = (issuer) => providerInstanceId("oidc", { issuer: issuer.issuer, clientId });
 const oidcProviderId = instance(fixtureOidcIssuer);
 // An issuer change on the same host: a new provider instance.
 const movedIssuer = Object.freeze({
