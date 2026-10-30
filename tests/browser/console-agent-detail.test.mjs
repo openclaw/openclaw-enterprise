@@ -5130,22 +5130,32 @@ for (const heldMetadata of [false, true]) {
     );
     assert.notEqual(index, -1);
     fixture.policy.bindings.splice(index, 1);
+    const recheck = held
+      ? await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
+          method: "GET",
+          once: true,
+          afterServer: true,
+        })
+      : null;
     const permission = page.waitForResponse((response) =>
       response.url().endsWith(`${path}/permissions`),
     );
     await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
-    assert.equal((await (await permission).json()).data.agentSourcesOperate, false);
-    const reason = `${AGENT_SOURCES_DENIED} Missing Secret operate on Admin app token.`;
-    await page.getByText(reason, { exact: true }).waitFor();
-    if (held) {
+    if (held && recheck) {
+      await recheck.requested;
       const oldResponse = page.waitForResponse((response) =>
         response.url().endsWith(`/secrets/${botId}`),
       );
       held.release();
       await oldResponse;
       await nextFrames(page);
-      assert.equal(await page.getByText(reason, { exact: true }).count(), 1);
+      // No new metadata read has started: only the permission epoch can fence this completion.
+      assert.equal(await page.getByText(AGENT_SOURCES_DENIED, { exact: true }).count(), 1);
+      recheck.release();
     }
+    assert.equal((await (await permission).json()).data.agentSourcesOperate, false);
+    const reason = `${AGENT_SOURCES_DENIED} Missing Secret operate on Admin app token.`;
+    await page.getByText(reason, { exact: true }).waitFor();
     await page.getByRole("tab", { name: "Credentials", exact: true }).click();
     await page.getByText(reason, { exact: true }).waitFor();
   });
