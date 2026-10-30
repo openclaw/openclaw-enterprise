@@ -20,7 +20,7 @@ routing, and the per-Agent Gateway. Sandbox owns:
   app-server containment policy.
 - `validateWorkspaceSetup` admits initial files for the projected workspace and
   a single main Agent or omitted roster; Compute retains storage/identity checks.
-- `ensureNamespace` saves resource creation intent and immutable identities through
+- `ensureNamespace` saves preparation intent and immutable identities through
   Compute's Namespace journal before reporting ready.
 - `provisionHarness` creates one Workspace Sandbox with its
   [credential attachments and runtime provider](openshell-sandbox/harness-providers.md).
@@ -311,8 +311,9 @@ instead of launching a weakened Harness.
 
 Compute's journal binds the selected Driver/Backend, endpoint/server trust,
 Namespace UID, Workspace ID, and configured resource UIDs. Missing or changed
-bindings refuse cleanup. Preinstalled operator resources require full configuration
-checks and remain retained.
+bindings refuse cleanup. Operator resources use
+[preprovisioned binding authority](compute-namespace-lifecycle.md#driver-owned-data)
+and remain retained.
 
 Cleanup checks ownership/UIDs before removing owned providers/profiles from the
 original Workspace. It confirms fresh `DeleteWorkspace` completion and removal,

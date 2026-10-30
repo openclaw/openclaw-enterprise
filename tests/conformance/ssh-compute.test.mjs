@@ -2226,15 +2226,28 @@ test("SSH Agent operations refuse a copied Namespace tree before host effects", 
   }
 });
 
-test("SSH refuses an actual filesystem identity with epoch birth time", async (t) => {
+test("SSH validates actual filesystem generation after epoch timestamps", async (t) => {
   const f = await fixture(t);
-  // Darwin exposes a genuine zero-birthtime directory through utimes. Other hosts
-  // can run the supported-filesystem path, but cannot claim this refusal proof.
   await utimes(f.root, 0, 0);
-  if ((await stat(f.root, { bigint: true })).birthtimeNs !== 0n) {
-    t.skip("This filesystem does not permit constructing an epoch-birthtime directory.");
+  const rootIdentity = await stat(f.root, { bigint: true });
+  assert.equal(rootIdentity.mtimeNs, 0n);
+  // Darwin exposes genuine zero birthtime through utimes; Linux retains positive
+  // creation evidence. Only the former proves zero-birthtime refusal.
+  if (rootIdentity.birthtimeNs === 0n) {
+    assert.equal((await f.driver.ensureNamespace(tenant, f.lifecycle())).failure, "permanent");
+    await missing(f.nsDir);
     return;
   }
-  assert.equal((await f.driver.ensureNamespace(tenant, f.lifecycle())).failure, "permanent");
-  await missing(f.nsDir);
+  // Epoch mtime must not invalidate genuine positive, stable creation evidence.
+  // The real helper checks stability while changing this directory's metadata.
+  assert.ok(rootIdentity.birthtimeNs > 0n);
+  assert.equal((await f.driver.ensureNamespace(tenant, f.lifecycle())).namespaceReady, true);
+  assert.equal((await stat(f.root, { bigint: true })).birthtimeNs, rootIdentity.birthtimeNs);
+  const namespaceIdentity = await stat(f.nsDir, { bigint: true });
+  assert.equal(namespaceIdentity.isDirectory(), true);
+  assert.deepEqual((await f.lifecycle().read()).data.directoryIdentity, {
+    device: String(namespaceIdentity.dev),
+    inode: String(namespaceIdentity.ino),
+    birthtime: String(namespaceIdentity.birthtimeNs),
+  });
 });

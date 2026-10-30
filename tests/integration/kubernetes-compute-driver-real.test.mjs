@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { namespaceLifecycleFixture } from "../helpers/namespace-lifecycle.mjs";
 import {
   fixtureImage,
   requiresKubernetes,
@@ -143,7 +144,10 @@ test(
 
     assert.notEqual(owned[0], owned[1], "tenant IDs must map to distinct Kubernetes namespaces");
     for (const owner of [first, second, empty]) {
-      const pending = await driver.ensureNamespace(owner);
+      const pending = await driver.ensureNamespace(
+        owner,
+        await namespaceLifecycleFixture(driver, owner),
+      );
       // A Namespace cannot be ready until its exact tenant-scoped RBAC admits backing resources.
       assert.equal(pending.namespaceReady, false);
       assert.equal(
@@ -165,7 +169,10 @@ test(
     await Promise.all(
       [first, second, empty].map((owner) =>
         waitFor(`Namespace ${owner.id} backing infrastructure to become ready`, async () => {
-          const observation = await driver.ensureNamespace(owner);
+          const observation = await driver.ensureNamespace(
+            owner,
+            await namespaceLifecycleFixture(driver, owner),
+          );
           assert.equal(observation.namespaceId, owner.id);
           assert.notEqual(observation.failure, "permanent");
           return observation.namespaceReady ? observation : undefined;
@@ -189,7 +196,7 @@ test(
       assert.deepEqual(policyNames, ["allow-dns", "allow-gateway-ingress", "default-deny"]);
       await resource("resourcequota", "openclaw-quota", name);
       await resource("limitrange", "openclaw-limits", name);
-      await driver.ensureNamespace(owner);
+      await driver.ensureNamespace(owner, await namespaceLifecycleFixture(driver, owner));
       assert.equal(
         (await resources("deployments", name)).length,
         0,
@@ -697,7 +704,10 @@ test(
       false,
       "controller Secret access must not extend to a namespace without an explicit grant",
     );
-    const denied = await driver.ensureNamespace(foreign);
+    const denied = await driver.ensureNamespace(
+      foreign,
+      await namespaceLifecycleFixture(driver, foreign),
+    );
     assert.deepEqual(denied, {
       namespaceId: foreign.id,
       namespaceReady: false,
@@ -778,17 +788,27 @@ test(
     );
     await assertReadyGateway(owned[0], secondaryAgent, first.id);
 
+    const deletingEmpty = { ...empty, status: "deleting" };
     await waitFor(`empty Namespace ${empty.id} to be completely deleted`, async () => {
-      const observation = await driver.deleteNamespace(empty);
+      const observation = await driver.deleteNamespace(
+        deletingEmpty,
+        await namespaceLifecycleFixture(driver, deletingEmpty, "deleted"),
+      );
       assert.equal(observation.namespaceId, empty.id);
       assert.notEqual(observation.failure, "permanent");
       return observation.namespaceDeleted ? observation : undefined;
     });
     assert.equal(await missing("namespace", owned[2]), true);
     assert.equal(await missing("namespace", gatewayTargets[2]), true);
-    assert.deepEqual(await driver.deleteNamespace(empty), {
-      namespaceId: empty.id,
-      namespaceDeleted: true,
-    });
+    assert.deepEqual(
+      await driver.deleteNamespace(
+        deletingEmpty,
+        await namespaceLifecycleFixture(driver, deletingEmpty, "deleted"),
+      ),
+      {
+        namespaceId: empty.id,
+        namespaceDeleted: true,
+      },
+    );
   },
 );

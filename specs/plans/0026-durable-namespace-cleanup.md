@@ -45,7 +45,7 @@ The cleanup-result amendment was submitted in documentation-only commit
 [explicit human-review request](https://github.com/openclaw/openclaw-enterprise/pull/4088#issuecomment-6524582605).
 RFC status remains Proposed; implementation and review proceed in parallel.
 
-Both contract submissions precede implementation. Keep the PR draft and its
+Contract submissions precede their corresponding implementation. Keep the PR draft and its
 security/runtime holds until the amended behavior is proved.
 
 1. Submit RFC-0026 and this plan in an initial documentation-only commit on
@@ -166,10 +166,20 @@ Remaining context gaps include Kubernetes `resolveNamespace`, `getOwned`,
 `reconcile`, and `request`, surrounding Worker dispatch/finalization, and production
 changes absent from individual evidence batches. No clean-review claim is made.
 
+CI at `1b34b872` exposed missing lifecycle context in direct Driver fixtures and
+operator-provisioned policies/Workspaces rejected by new creation-only checks.
+The repair keeps original terminating Namespaces retryable after tenant RBAC loss,
+preserves selected Sandbox progress, and binds declared operator resources before
+readiness. Four memory-State/controlled-SDK controls and the closed Installation
+case pass, including later policy/Workspace replacement refusal. The exact
+PostgreSQL audit and silent-lease cases pass after asserting the binding event and
+using the production pool factory. Live Kubernetes and Docker reruns remain unrun.
+
 ## Delivery record
 
-- Both RFC submissions precede contract code. Implementation and component qualification are in progress; genuine provider proof and independent review remain pending.
+- Each RFC submission precedes its corresponding contract code. Implementation and component qualification are in progress; genuine provider proof and independent review remain pending.
 - RFC submission: documentation-only commit `536e71d95bf39797f2b60048cb3677e879ed046b`; [explicit human-review request](https://github.com/openclaw/openclaw-enterprise/pull/4088#issuecomment-6523250103). Decision status remains Proposed.
+- Operator-owned binding clarification: documentation-only commit `dc724484d59f5446e9cceea41f0b38192372b8dd`; [explicit human-review request](https://github.com/openclaw/openclaw-enterprise/pull/4088#issuecomment-6529363877), submitted before the observed-ID binding repair.
 - Implementation PR: [#4088](https://github.com/openclaw/openclaw-enterprise/pull/4088), draft with existing proof/security holds.
 
 ## Manual Notes

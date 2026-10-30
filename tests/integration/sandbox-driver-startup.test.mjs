@@ -3846,6 +3846,52 @@ test("OpenShell Namespace lifecycle creates, adopts, and deletes its exact opera
   assert.equal(callCount(gatewayClient, "deleteWorkspace"), 1);
 });
 
+test("OpenShell binds an operator-provided Workspace only at initial preparation", async () => {
+  const context = namespaceContext();
+  const original = ownedWorkspace(context.namespace.name, context.namespace.id);
+  const gateway = workspaceGatewayClient([{ ...original, id: undefined }]);
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gateway),
+    operatorOwnedKubernetesResources: true,
+  });
+  await assert.rejects(driver.ensureNamespace(context), /operator Workspace.*immutable identity/);
+  assert.equal(callCount(gateway, "createWorkspace"), 0);
+  gateway.workspaces.set(original.name, original);
+  await driver.ensureNamespace(context);
+  gateway.workspaces.set(original.name, { ...original, id: "replacement-workspace-id" });
+  for (let retry = 0; retry < 2; retry += 1) {
+    await assert.rejects(driver.ensureNamespace(context), /bound OpenShell Workspace.*replaced/);
+  }
+  assert.equal(callCount(gateway, "createWorkspace"), 0);
+  assert.equal(callCount(gateway, "deleteWorkspace"), 0);
+  assert.equal(gateway.workspaces.get(original.name).id, "replacement-workspace-id");
+});
+
+test("OpenShell operator selection cannot adopt an unknown controller Workspace create", async () => {
+  const context = namespaceContext();
+  const gateway = workspaceGatewayClient();
+  const create = gateway.createWorkspace.bind(gateway);
+  gateway.createWorkspace = async (...args) => {
+    await create(...args);
+    throw new Error("Workspace create reply was lost");
+  };
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gateway),
+    operatorOwnedKubernetesResources: true,
+  });
+  await assert.rejects(driver.ensureNamespace(context), /Workspace create reply was lost/);
+  // Provider readback exists, but the earlier controller attempt has no bound
+  // identity. Operator selection cannot turn that uncertainty into adoption.
+  await assert.rejects(driver.ensureNamespace(context), /Workspace creation remains unconfirmed/);
+  assert.equal(callCount(gateway, "createWorkspace"), 1);
+  assert.equal(callCount(gateway, "deleteWorkspace"), 0);
+  assert.equal(gateway.workspaces.size, 1);
+});
+
 test("OpenShell operator mode owns workspace chart resources around the Workspace lifecycle", async () => {
   const events = [];
   const configuration = sandboxInstallation().drivers.sandbox.configuration;

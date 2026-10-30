@@ -6373,11 +6373,32 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (released) {
         throw new OwnershipFailure("The external Namespace has no durable release intent.");
       }
-      if (existing !== undefined && !released) {
-        await this.verifyNamespaceInfrastructure(name, ownership, journal);
+      const terminating =
+        existing !== undefined &&
+        (existing.metadata.deletionTimestamp !== undefined ||
+          existing.status?.phase === "Terminating");
+      if (
+        terminating &&
+        (this.sandboxDriver === undefined || (await journal.read()).data.cleanup !== undefined)
+      ) {
+        // Namespace GC can remove the tenant RoleBinding before the Namespace.
+        // Child completion is already confirmed, or there is no selected child.
+        return result;
       }
-      if (external && existing !== undefined) {
-        await this.captureLateNamespacePolicy(name, ownership, journal);
+      try {
+        if (existing !== undefined && !released) {
+          await this.verifyNamespaceInfrastructure(name, ownership, journal);
+        }
+        if (external && existing !== undefined) {
+          await this.captureLateNamespacePolicy(name, ownership, journal);
+        }
+      } catch (error) {
+        if (terminating && numericErrorStatus(error) === 403) {
+          // Keep an unconfirmed child retryable after loss of tenant access. Its
+          // cleanup must still run if access returns or placement becomes absent.
+          return result;
+        }
+        throw error;
       }
       await this.gatewayNamespaceForCleanup(ownership, journal);
       await this.lifecycle.beforeNamespaceDelete(namespace);
@@ -10626,6 +10647,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // This is the sealed Namespace initialization gate. If later reconciliation sees
     // Agent-specific policies, stop rather than infer their authority from labels.
     const approved = new Map<string, unknown>();
+    const operatorPolicyNames = new Set<string>();
     if (this.preprovisionedNamespace) {
       for (const policy of this.networkPolicies(ownership, namespace)) {
         approved.set(policy.metadata.name, policy.spec);
@@ -10635,6 +10657,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           throw new OwnershipFailure("Operator NetworkPolicy name duplicates an admitted policy.");
         }
         approved.set(policy.name, policy.spec);
+        operatorPolicyNames.add(policy.name);
       }
     }
     for (const item of observed.items) {
@@ -10672,7 +10695,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
             kind: "NetworkPolicy",
             metadata: { ...metadata, name: metadata.name },
           } as ManagedKubernetesObject<"NetworkPolicy">,
-          ownership,
+          // These configured operator policies predate OCC's creation intent.
+          // The selected Namespace UID and exact admitted policy content apply;
+          // generated Compute policies still require their lifecycle marker.
+          operatorPolicyNames.has(metadata.name)
+            ? { namespaceId: ownership.namespaceId }
+            : ownership,
         );
       } catch (error) {
         // A policy left by another tenant is named after that tenant's Agents: omit its name.

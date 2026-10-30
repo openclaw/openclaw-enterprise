@@ -646,6 +646,10 @@
       "path": "tests/conformance/kubernetes-namespace-lifecycle.test.ts",
       "expectedTests": [
         "Kubernetes cancellation before first ensure does not dispatch provider cleanup",
+        "Kubernetes waits for its original terminating Namespace without tenant RBAC",
+        "Kubernetes retries terminating tenant denial and still requires Sandbox cleanup after absence",
+        "Kubernetes progresses unconfirmed Sandbox cleanup while its Namespace terminates",
+        "Kubernetes retains completed Sandbox evidence while tenant RBAC disappears",
         "Kubernetes Namespace cleanup refuses a same-name replacement before deleting it",
         "Kubernetes external claim release survives a lost reply and refuses a later foreign claim",
         "Kubernetes cleanup after an authoritative preparation refusal needs no nonexistent resource UID",

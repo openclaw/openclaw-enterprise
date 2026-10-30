@@ -3524,6 +3524,23 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     let workspace = await client.getWorkspace(name, context.signal);
     if (
+      this.operatorOwnedKubernetesResources &&
+      saved.journal.workspace.state === "neverAttempted" &&
+      workspace !== undefined
+    ) {
+      // The closed Installation selects existing operator resources under its
+      // original Namespace UID. This is initial read authority, not recovery of
+      // a controller creation whose outcome is unknown.
+      verifyActiveWorkspace(workspace, context.namespace);
+      if (!isNonEmptyString(workspace.id)) {
+        lifecycleRefusal("The operator Workspace did not return its immutable identity.");
+      }
+      saved = await this.saveNamespaceJournal(context, saved.revision, {
+        ...saved.journal,
+        workspace: { state: "bound", id: workspace.id! },
+      });
+    }
+    if (
       saved.journal.workspace.state === "neverAttempted" ||
       saved.journal.workspace.state === "createRefused"
     ) {

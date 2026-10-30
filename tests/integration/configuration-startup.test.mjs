@@ -2678,6 +2678,9 @@ test("native repository delivery names a missing or misplaced broker peer in sta
 
 test("closed Installation observes only its operator-bound Namespace, including Secret and Configuration custody", async (t) => {
   const { gatewayRouting, digest } = await import("../helpers/kubernetes-routed-scenarios.mjs");
+  const { namespaceLifecycleFixture, namespaceLifecycleClients } =
+    await import("../helpers/namespace-lifecycle.mjs");
+  const { OpenShellGateway } = await import("../../apps/controller/src/backends/openshell.ts");
   const controllerRequire = createRequire(
     new URL("../../apps/controller/package.json", import.meta.url),
   );
@@ -2713,16 +2716,18 @@ test("closed Installation observes only its operator-bound Namespace, including 
     OCC_CONFIG_PATH: await fixture(t, configuration),
     OCC_PREPROVISIONED_NAMESPACE: JSON.stringify({ namespaceId: id, uid }),
   };
+  let workspaceId = "workspace-closed-binding-original";
   const drivers = await loadInstallationConfiguration({
     mode: "production",
     environment,
     createOpenShellBackend: (definition) => ({
       id: definition.id,
       drivers: definition.drivers,
-      client: {
-        clientForNamespace: () => ({
+      client: new OpenShellGateway(definition.configuration, {
+        gatewayClient: {
           health: async () => {},
           getWorkspace: async () => ({
+            id: workspaceId,
             name,
             phase: 1,
             labels: {
@@ -2730,8 +2735,8 @@ test("closed Installation observes only its operator-bound Namespace, including 
               "openclaw.dev/namespace-id": id,
             },
           }),
-        }),
-      },
+        },
+      }),
     }),
   });
   const { computeDriver: driver, configurationDriver, secretDriver } = drivers;
@@ -2742,6 +2747,7 @@ test("closed Installation observes only its operator-bound Namespace, including 
     metadata: {
       name,
       uid,
+      resourceVersion: "1",
       labels: {
         "app.kubernetes.io/managed-by": "openclaw-enterprise",
         "openshell.ai/openclaw-workspace": "true",
@@ -2771,22 +2777,43 @@ test("closed Installation observes only its operator-bound Namespace, including 
     reads.push(name);
     return observed;
   };
-  const absent = async (q) => {
+  // Controlled SDK writes retain immutable IDs and versions for authoritative readback.
+  const infrastructure = new Map();
+  const read = (kind) => async (q) => {
     assert.equal(q.namespace, name);
+    const current = infrastructure.get(kind + "/" + q.name);
+    if (current !== undefined) {
+      return structuredClone(current);
+    }
     throw Object.assign(new Error("not found"), { code: 404 });
   };
   const write = async (q) => {
     assert.equal(q.namespace, name);
     assert.equal(q.body.metadata.annotations["openclaw.dev/namespace-id"], id);
-    writes.push(q.body.kind + "/" + q.name);
-    return q.body;
+    const key = q.body.kind + "/" + q.name;
+    const previous = infrastructure.get(key);
+    if (previous !== undefined) {
+      assert.equal(q.body.metadata.uid, previous.metadata.uid);
+      assert.equal(q.body.metadata.resourceVersion, previous.metadata.resourceVersion);
+    }
+    const saved = {
+      ...structuredClone(q.body),
+      metadata: {
+        ...q.body.metadata,
+        uid: previous?.metadata.uid ?? `original-${q.body.kind}-${q.name}`,
+        resourceVersion: String(Number(previous?.metadata.resourceVersion ?? "0") + 1),
+      },
+    };
+    infrastructure.set(key, saved);
+    writes.push(key);
+    return structuredClone(saved);
   };
   // Namespace API is GET of this name only. A list, adoption, or delete has no implementation.
   const core = {
     readNamespace,
-    readNamespacedResourceQuota: absent,
+    readNamespacedResourceQuota: read("ResourceQuota"),
     patchNamespacedResourceQuota: write,
-    readNamespacedLimitRange: absent,
+    readNamespacedLimitRange: read("LimitRange"),
     patchNamespacedLimitRange: write,
   };
   const account = {
@@ -2796,6 +2823,8 @@ test("closed Installation observes only its operator-bound Namespace, including 
     metadata: {
       name: "sandbox",
       namespace: name,
+      uid: "account-closed-binding-original",
+      resourceVersion: "1",
       labels: {
         "app.kubernetes.io/managed-by": "openclaw-enterprise",
         "openclaw.dev/namespace": id,
@@ -2805,37 +2834,81 @@ test("closed Installation observes only its operator-bound Namespace, including 
   };
   const workspacePolicy = {
     ...approvedWorkspacePolicy,
-    metadata: { ...account.metadata, name: "workspace-deny" },
+    metadata: {
+      ...account.metadata,
+      name: "workspace-deny",
+      uid: "policy-closed-binding-original",
+    },
   };
   let policies = [workspacePolicy];
   const objects = Object.create(KubernetesObjectApi.prototype);
-  objects.read = async (ref) =>
-    ref.kind === "Namespace" ? observed : ref.kind === "NetworkPolicy" ? workspacePolicy : account;
+  objects.read = async (ref) => {
+    if (ref.kind === "Namespace") {
+      assert.equal(ref.metadata.name, name);
+      return structuredClone(observed);
+    }
+    assert.equal(ref.metadata.namespace, name);
+    if (ref.kind === "ServiceAccount" && ref.metadata.name === "sandbox") {
+      return structuredClone(account);
+    }
+    if (ref.kind === "NetworkPolicy" && ref.metadata.name === "workspace-deny") {
+      return structuredClone(workspacePolicy);
+    }
+    throw Object.assign(new Error("not found"), { code: 404 });
+  };
   objects.patch = async () => {
     throw Error("unexpected OpenShell Kubernetes write");
   };
-  driver.apiClients = Promise.resolve({
-    objects,
-    version: { getCode: async () => ({ gitVersion: "v1.35.0" }) },
-    core,
-    networking: {
-      listNamespacedNetworkPolicy: async (q) => (
-        assert.equal(q.namespace, name),
-        { items: policies }
-      ),
-      readNamespacedNetworkPolicy: absent,
-      patchNamespacedNetworkPolicy: write,
-    },
-  });
+  driver.apiClients = Promise.resolve(
+    namespaceLifecycleClients({
+      objects,
+      version: { getCode: async () => ({ gitVersion: "v1.35.0" }) },
+      core,
+      networking: {
+        listNamespacedNetworkPolicy: async (q) => (
+          assert.equal(q.namespace, name),
+          {
+            items: [
+              ...policies,
+              ...[...infrastructure.values()].filter((item) => item.kind === "NetworkPolicy"),
+            ],
+          }
+        ),
+        readNamespacedNetworkPolicy: read("NetworkPolicy"),
+        patchNamespacedNetworkPolicy: write,
+      },
+    }),
+  );
   await driver.preflight();
   await configurationDriver.controlNamespace(core, id);
   await secretDriver.readyNamespace(core, id);
   assert.equal(reads.length, 3);
 
-  const tenant = { id };
-  assert.equal((await driver.ensureNamespace(tenant)).namespaceReady, true);
+  const tenant = {
+    id,
+    name: "closed-binding",
+    status: "ready",
+    createdAt: new Date().toISOString(),
+  };
+  const lifecycle = await namespaceLifecycleFixture(driver, tenant);
+  const initial = await driver.ensureNamespace(tenant, lifecycle);
+  assert.equal(initial.namespaceReady, true, JSON.stringify(initial));
   assert.ok(writes.includes("ResourceQuota/openclaw-quota"));
   assert.ok(writes.includes("NetworkPolicy/default-deny"));
+
+  // Initial operator read authority must not become permission to rebind a
+  // same-name Workspace or configured policy after its immutable ID is saved.
+  workspaceId = "workspace-closed-binding-replacement";
+  for (let retry = 0; retry < 2; retry += 1) {
+    assert.equal((await driver.ensureNamespace(tenant, lifecycle)).failure, "permanent");
+  }
+  workspaceId = "workspace-closed-binding-original";
+  const policyUid = workspacePolicy.metadata.uid;
+  workspacePolicy.metadata.uid = "policy-closed-binding-replacement";
+  for (let retry = 0; retry < 2; retry += 1) {
+    assert.equal((await driver.ensureNamespace(tenant, lifecycle)).failure, "permanent");
+  }
+  workspacePolicy.metadata.uid = policyUid;
 
   const ownedPolicy = {
     apiVersion: "networking.k8s.io/v1",
@@ -2845,24 +2918,38 @@ test("closed Installation observes only its operator-bound Namespace, including 
   };
   writes.length = 0;
   policies = [ownedPolicy];
-  assert.equal((await driver.ensureNamespace(tenant)).namespaceReady, false);
+  assert.equal((await driver.ensureNamespace(tenant, lifecycle)).namespaceReady, false);
   assert.deepEqual(writes, []);
   policies = [{ ...ownedPolicy, metadata: { ...ownedPolicy.metadata, name: "default-deny" } }];
-  assert.equal((await driver.ensureNamespace(tenant)).namespaceReady, false);
+  assert.equal((await driver.ensureNamespace(tenant, lifecycle)).namespaceReady, false);
   assert.deepEqual(writes, []);
   policies = [workspacePolicy];
 
   account.automountServiceAccountToken = true;
-  assert.equal((await driver.ensureNamespace(tenant)).namespaceReady, false);
+  assert.equal((await driver.ensureNamespace(tenant, lifecycle)).namespaceReady, false);
   account.automountServiceAccountToken = false;
   writes.length = 0;
   const before = reads.length;
-  for (const request of [{ id: id + "_other" }, { id, existingNamespace: name }]) {
-    const result = await driver.ensureNamespace(request);
+  for (const request of [
+    { ...tenant, id: id + "_other" },
+    { ...tenant, existingNamespace: name },
+  ]) {
+    const result = await driver.ensureNamespace(
+      request,
+      await namespaceLifecycleFixture(driver, request),
+    );
     assert.equal(result.failure, "permanent");
     assert.equal(result.namespaceReady, false);
   }
-  assert.equal((await driver.deleteNamespace(tenant)).namespaceDeleted, false);
+  assert.equal(
+    (
+      await driver.deleteNamespace(
+        { ...tenant, status: "deleting" },
+        { ...lifecycle, target: "deleted" },
+      )
+    ).namespaceDeleted,
+    false,
+  );
   assert.equal(reads.length, before);
   for (const corrupt of [
     (x) => (x.metadata.uid = uid + "replaced"),
@@ -2875,7 +2962,7 @@ test("closed Installation observes only its operator-bound Namespace, including 
   ]) {
     observed = structuredClone(ns);
     corrupt(observed);
-    const result = await driver.ensureNamespace(tenant);
+    const result = await driver.ensureNamespace(tenant, lifecycle);
     assert.equal(result.failure, "permanent");
     assert.equal(result.namespaceReady, false);
   }

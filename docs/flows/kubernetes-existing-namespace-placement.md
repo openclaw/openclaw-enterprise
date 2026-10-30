@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: 2026-10-30 11:13
-last_updated_session: authoring-run/80ea08bc-5b26-4327-bd7b-128cc7aaf0fd
+updated: 2026-10-30 13:51
+last_updated_session: authoring-run/20ee5e19-0126-4790-9781-3dfdc17d75f7
 ---
 
 # Existing Kubernetes Namespace Placement Flow
@@ -41,7 +41,11 @@ graph TD
   C -->|unconfirmed or replacement| F["Refuse cleanup authority"]
   D -->|unconfirmed or foreign claim| F
   G --> H["Place workloads and ConfigMaps"]
-  H --> I["Confirm provider cleanup<br/>Commit child and resource result"]
+  H --> T{"Original Namespace terminating<br/>No child or full cleanup saved?"}
+  T -->|yes| W["Stay pending<br/>Await physical removal"]
+  T -->|no| I["Verify tenant scope and provider cleanup<br/>Commit child and resource result"]
+  I -->|terminating tenant 403| W
+  W -->|retry| T
   I --> L["Finish protected Kubernetes cleanup<br/>UID and resourceVersion preconditions"]
   L --> M{"External placement?"}
   M -->|yes| N["Release original claim with witness<br/>Retain physical Namespace"]
@@ -117,6 +121,12 @@ readback. Bound infrastructure updates carry the saved UID and observed resource
 The selected Sandbox receives only its child
 journal and the saved physical Namespace UID, before it can mutate placement.
 
+For a preprovisioned Installation, configured operator policies require exact
+approved content and tenant ownership, not OCC's later creation nonce. The
+selected OpenShell Driver binds observed operator resource and Workspace IDs
+before readiness; repeated preparation refuses replacement. Automatic Namespace
+teardown remains refused. See [binding authority](../reference/drivers/compute-namespace-lifecycle.md#driver-owned-data).
+
 ### 3. Colocate Configuration and workload resources
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.reconcileDnsPorts`
@@ -163,6 +173,13 @@ unknown claim attempts still require confirmation. Only the first authoritative
 PATCH refusal can record no claim effect; post-PATCH read errors do not.
 Current UID and foreign-claim
 checks remain required.
+
+For the original terminating Namespace, Compute waits before tenant reads if
+there is no Sandbox or its full cleanup result is saved. Otherwise cleanup can
+progress while access permits. A tenant-preflight `403` keeps deletion pending:
+Namespace GC can remove its RoleBinding before physical removal. After absence,
+the selected provider must still confirm cleanup. This does not resolve finalizers
+or restore revoked operator/provider grants.
 
 Compute calls Sandbox cleanup with its saved child context, including after the
 tenant Namespace disappears. The Sandbox confirms its original provider resource
@@ -252,6 +269,10 @@ path exists for missing original identity or permanently lost provider evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 13:51: Trace initial operator-owned binding under selected preprovisioned authority and retained immutable IDs in the accompanying repair. (authoring-run/20ee5e19-0126-4790-9781-3dfdc17d75f7 - dc724484d59f5446e9cceea41f0b38192372b8dd)
+
+- 2026-10-30 13:30: Trace pending deletion while Namespace GC removes tenant RBAC, preserving selected Sandbox cleanup and original identity checks in the accompanying repair. (authoring-run/20ee5e19-0126-4790-9781-3dfdc17d75f7 - b5281d09e474f3a44310d3c27c1f45e93c57d7f9)
 
 - 2026-10-30 11:13: Correct the managed/external diagram and trace claim progress, partial binding recovery, late policy custody, and material-list placement checks in the accompanying repair. (authoring-run/80ea08bc-5b26-4327-bd7b-128cc7aaf0fd - 922a031ef91f6dc14329034f50964752757ec29b)
 

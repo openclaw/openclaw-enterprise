@@ -9,6 +9,10 @@ import {
 import { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import {
+  namespaceLifecycleClients,
+  namespaceLifecycleFixture,
+} from "../helpers/namespace-lifecycle.mjs";
 import { SETUP_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { pluginRuntimeSpecForRevision } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
@@ -210,6 +214,13 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     },
   };
   const namespace = kubernetesNamespaceName(revision.namespaceId);
+  const owner = {
+    id: revision.namespaceId,
+    name: "Repository material tenant",
+    status: "ready",
+    createdAt: revision.createdAt,
+    ...(options.externalNamespace ? { existingNamespace: namespace } : {}),
+  };
   if (mode === "dedicated") {
     revision.harness = { id: "codex", version: "1.0.0", mode };
     revision.configuration = {
@@ -253,20 +264,25 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
       key(object.kind, object.metadata.name, object.metadata.namespace),
       structuredClone(object),
     );
-  save({
-    apiVersion: "v1",
-    kind: "Namespace",
-    metadata: {
-      name: namespace,
-      uid: "namespace-uid",
-      labels: {
-        "app.kubernetes.io/managed-by": "openclaw-enterprise",
-        "openclaw.dev/namespace": revision.namespaceId,
+  if (options.externalNamespace) {
+    save({
+      apiVersion: "v1",
+      kind: "Namespace",
+      metadata: {
+        name: namespace,
+        uid: "namespace-uid",
+        resourceVersion: "1",
+        labels: {
+          "app.kubernetes.io/managed-by": "Helm",
+          "pod-security.kubernetes.io/enforce": "restricted",
+          "pod-security.kubernetes.io/audit": "restricted",
+          "pod-security.kubernetes.io/warn": "restricted",
+        },
+        annotations: { "openclaw.dev/namespace-lifecycle": "external" },
       },
-      annotations: { "openclaw.dev/namespace-id": revision.namespaceId },
-    },
-    status: { phase: "Active" },
-  });
+      status: { phase: "Active" },
+    });
+  }
   const clients = { core: {}, apps: {}, networking: {}, discovery: {}, objects: {} };
   clients.objects.read = async ({ kind, metadata }) => {
     const object = objects.get(key(kind, metadata.name));
@@ -319,7 +335,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
   clients.core.createNamespace = async ({ body }) => {
     const observed = {
       ...body,
-      metadata: { ...body.metadata, uid: `${body.metadata.name}-uid` },
+      metadata: { ...body.metadata, uid: `${body.metadata.name}-uid`, resourceVersion: "1" },
       status: { phase: "Active" },
     };
     save(observed);
@@ -346,9 +362,29 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     }
     return {};
   };
-  clients.core.patchNamespace = async ({ body }) => {
-    const previous = objects.get(key("Namespace", body.metadata.name));
-    save({ ...previous, ...body, metadata: { ...previous.metadata, ...body.metadata } });
+  clients.core.patchNamespace = async ({ name, body }) => {
+    const previous = objects.get(key("Namespace", name));
+    assert.equal(body.metadata.uid, previous.metadata.uid);
+    assert.equal(body.metadata.resourceVersion, previous.metadata.resourceVersion);
+    save({
+      ...previous,
+      ...body,
+      metadata: {
+        ...previous.metadata,
+        ...body.metadata,
+        labels: Object.fromEntries(
+          Object.entries({ ...previous.metadata.labels, ...body.metadata.labels }).filter(
+            ([, value]) => value !== null,
+          ),
+        ),
+        annotations: Object.fromEntries(
+          Object.entries({ ...previous.metadata.annotations, ...body.metadata.annotations }).filter(
+            ([, value]) => value !== null,
+          ),
+        ),
+        resourceVersion: String(Number(previous.metadata.resourceVersion) + 1),
+      },
+    });
   };
   clients.core.listNamespacedPod = async ({ labelSelector, namespace: target }) => {
     calls.push({ operation: "listPods" });
@@ -466,13 +502,9 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
       throw failure(403);
     };
   }
-  driver.apiClients = Promise.resolve(clients);
-  const preparedNamespace = await driver.ensureNamespace({
-    id: revision.namespaceId,
-    name: "Repository material tenant",
-    status: "ready",
-    createdAt: revision.createdAt,
-  });
+  driver.apiClients = Promise.resolve(namespaceLifecycleClients(clients));
+  const lifecycle = (target = "ready") => namespaceLifecycleFixture(driver, owner, target);
+  const preparedNamespace = await driver.ensureNamespace(owner, await lifecycle());
   assert.equal(preparedNamespace.namespaceReady, true, JSON.stringify(preparedNamespace));
   if (mode === "dedicated") {
     assert.deepEqual(
@@ -574,6 +606,8 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
   };
   return {
     driver,
+    owner,
+    lifecycle,
     enroll,
     clients,
     revision,
@@ -831,7 +865,11 @@ test("prepared Git admits only the dedicated Harness peer and retires it without
   assert.deepEqual((await read()).ingress, [{ _from: [other], ports }]);
 
   // Namespace retirement prunes the last peer. No peers must mean no rule, not an empty 'from'.
-  await f.driver.deleteNamespace({ id: revision.namespaceId, name: "Repository material tenant" });
+  const deleted = await f.driver.deleteNamespace(
+    { ...f.owner, status: "deleting" },
+    await f.lifecycle("deleted"),
+  );
+  assert.equal(deleted.namespaceDeleted, true, JSON.stringify(deleted));
   assert.deepEqual((await read()).ingress, []);
 });
 
@@ -2983,11 +3021,8 @@ for (const mode of ["embedded", "dedicated"]) {
     await t.test(
       "external namespace cleanup removes owned repository material and preserves unrelated Secrets",
       async () => {
-        const f = await fixture(mode);
+        const f = await fixture(mode, undefined, { externalNamespace: true });
         await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
-        const tenant = f.objects.get(`Namespace::${f.namespace}`);
-        tenant.metadata.annotations["openclaw.dev/namespace-lifecycle"] = "external";
-        f.save(tenant);
         for (const deployment of f.deployments()) {
           f.objects.delete(
             `Deployment:${deployment.metadata.namespace}:${deployment.metadata.name}`,
@@ -2999,13 +3034,10 @@ for (const mode of ["embedded", "dedicated"]) {
           metadata: { name: "external-owner", namespace: f.namespace, uid: "external-owner-uid" },
           data: { value: "cHJlc2VydmU=" },
         });
-        const result = await f.driver.deleteNamespace({
-          id: f.revision.namespaceId,
-          name: "External material tenant",
-          status: "deleting",
-          existingNamespace: f.namespace,
-          createdAt: f.revision.createdAt,
-        });
+        const result = await f.driver.deleteNamespace(
+          { ...f.owner, status: "deleting" },
+          await f.lifecycle("deleted"),
+        );
         assert.equal(result.namespaceDeleted, true, JSON.stringify(result));
         assert.deepEqual(f.secrets(), []);
         assert.ok(f.objects.has(`Secret:${f.namespace}:external-owner`));

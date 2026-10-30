@@ -44,6 +44,13 @@ selection, physical placement, and original resource IDs. Credential rotation or
 unrelated limits do not change a target. Changed selectors, replacement IDs, and
 unknown payload versions require explicit refusal.
 
+A preprovisioned Kubernetes Installation can authorize initial binding to an
+operator-provided OpenShell Workspace and configured resources. Require its
+selected Namespace UID, Backend target, OCC ownership, approved policy content,
+and observed immutable IDs. Operator policies predate the new creation nonce.
+This initial read authority cannot recover a controller creation attempt or
+permit automatic Namespace teardown. Later identity changes refuse.
+
 Save an attempt before creation. Save a binding only after authoritative readback
 or a supported creation response. A later rejected request cannot settle an earlier
 unknown request. An unknown create with absent readback must not be resubmitted:
@@ -106,6 +113,12 @@ a replacement refuses.
 ## Completion and recovery
 
 Managed Namespace deletion requires removal of the original physical UID.
+A terminating original Namespace stays pending when there is no selected Sandbox
+or its full cleanup result is saved. With unconfirmed Sandbox cleanup, permitted
+tenant access still allows progress; a tenant-preflight `403` keeps the operation
+retryable until authority returns or the Namespace disappears. Absence still
+requires exact provider cleanup. Resource finalizers and lost operator/provider
+grants can require operator repair; termination never confirms cleanup.
 Externally supplied Namespaces remain present: remove owned resources, then
 release only the original claim with UID/resourceVersion preconditions and a
 lifecycle release witness. A lost release reply requires the same UID, the witness,

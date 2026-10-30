@@ -268,7 +268,8 @@
       "path": "tests/integration/container-promote.test.mjs"
     },
     {
-      "path": "tests/conformance/ssh-compute.test.mjs"
+      "path": "tests/conformance/ssh-compute.test.mjs",
+      "expectedTests": ["SSH validates actual filesystem generation after epoch timestamps"]
     },
     {
       "path": "tests/integration/ssh-compute-startup.test.mjs"

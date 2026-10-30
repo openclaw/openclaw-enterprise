@@ -14,6 +14,7 @@ import {
   tenant,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
 import type { NamespaceLifecycleContext } from "../../packages/contracts/src/index.ts";
+import { namespaceLifecycleFixture } from "../helpers/namespace-lifecycle.mjs";
 
 // This callback fixture exercises Compute's protocol and effects only. PostgreSQL
 // durability and real-worker claim fencing are covered by postgres-namespace-lifecycle.
@@ -80,6 +81,7 @@ interface FixtureResource {
     namespace?: string;
     uid: string;
     resourceVersion: string;
+    deletionTimestamp?: string;
     labels: Record<string, string>;
     annotations: Record<string, string>;
   };
@@ -576,6 +578,158 @@ function sandboxCleanupFixture(state: "absent" | "retained", external = true) {
   const current = fixture(external, { sandboxDriver });
   return { current, original: () => original, name, sandboxDriver };
 }
+
+function markNamespaceTerminating(current: ReturnType<typeof fixture>, replacement = false) {
+  const [key, original] = [...current.objects.entries()].find(
+    ([, resource]) => resource.kind === "Namespace",
+  )!;
+  current.objects.set(key, {
+    ...original,
+    metadata: {
+      ...original.metadata,
+      ...(replacement ? { uid: "replacement-namespace-uid" } : {}),
+      deletionTimestamp: "2026-10-30T00:00:00.000Z",
+    },
+    status: { phase: "Terminating" },
+  });
+}
+
+test("Kubernetes waits for its original terminating Namespace without tenant RBAC", async () => {
+  for (const replacement of [false, true]) {
+    const current = fixture();
+    const ready = (await namespaceLifecycleFixture(
+      current.driver,
+      current.namespace,
+    )) as NamespaceLifecycleContext;
+    assert.equal(
+      (await current.driver.ensureNamespace(current.namespace, ready)).namespaceReady,
+      true,
+    );
+    markNamespaceTerminating(current, replacement);
+    let tenantReads = 0;
+    current.clients.core.readNamespacedResourceQuota = async () => {
+      tenantReads += 1;
+      throw Object.assign(new Error("Tenant RoleBinding was removed"), { statusCode: 403 });
+    };
+    current.effects.length = 0;
+    const before = await ready.read();
+    const result = await current.driver.deleteNamespace(
+      { ...current.namespace, status: "deleting" },
+      { ...ready, target: "deleted" },
+    );
+    assert.equal(result.namespaceDeleted, false);
+    assert.equal(result.failure, replacement ? "permanent" : undefined);
+    assert.equal(tenantReads, 0, "a replacement must refuse before the terminating fast path");
+    assert.deepEqual(await ready.read(), before);
+    assert.deepEqual(current.effects, []);
+    assert.equal(current.objects.size > 0, true);
+  }
+});
+
+test("Kubernetes retries terminating tenant denial and still requires Sandbox cleanup after absence", async () => {
+  const { current, sandboxDriver } = sandboxCleanupFixture("absent", false);
+  const ready = (await namespaceLifecycleFixture(
+    current.driver,
+    current.namespace,
+  )) as NamespaceLifecycleContext;
+  assert.equal(
+    (await current.driver.ensureNamespace(current.namespace, ready)).namespaceReady,
+    true,
+  );
+  markNamespaceTerminating(current);
+  current.clients.core.readNamespacedResourceQuota = async () => {
+    throw Object.assign(new Error("Tenant RoleBinding was removed"), { statusCode: 403 });
+  };
+  const cleanup = sandboxDriver.cleanup.bind(sandboxDriver);
+  let calls = 0;
+  let refuse = true;
+  sandboxDriver.cleanup = async () => {
+    calls += 1;
+    if (refuse) {
+      throw new Error("Provider removal is unconfirmed");
+    }
+    return cleanup();
+  };
+  const deleted = { ...ready, target: "deleted" as const };
+  const namespace = { ...current.namespace, status: "deleting" as const };
+  const before = await ready.read();
+  assert.deepEqual(await current.driver.deleteNamespace(namespace, deleted), {
+    namespaceId: namespace.id,
+    namespaceDeleted: false,
+  });
+  assert.equal(calls, 0);
+  assert.deepEqual(await ready.read(), before);
+  // Kubernetes GC completes independently; absence alone must not complete the
+  // logical deletion while the selected provider still refuses confirmation.
+  current.objects.clear();
+  const refused = await current.driver.deleteNamespace(namespace, deleted);
+  assert.equal(refused.namespaceDeleted, false);
+  assert.equal(refused.failure, "retryable");
+  assert.equal(calls, 1);
+  refuse = false;
+  assert.equal((await current.driver.deleteNamespace(namespace, deleted)).namespaceDeleted, true);
+  assert.equal(calls, 2);
+});
+
+test("Kubernetes progresses unconfirmed Sandbox cleanup while its Namespace terminates", async () => {
+  const { current, sandboxDriver } = sandboxCleanupFixture("absent", false);
+  const ready = (await namespaceLifecycleFixture(
+    current.driver,
+    current.namespace,
+  )) as NamespaceLifecycleContext;
+  assert.equal(
+    (await current.driver.ensureNamespace(current.namespace, ready)).namespaceReady,
+    true,
+  );
+  markNamespaceTerminating(current);
+  const cleanup = sandboxDriver.cleanup.bind(sandboxDriver);
+  let calls = 0;
+  sandboxDriver.cleanup = async () => {
+    calls += 1;
+    return cleanup();
+  };
+  const result = await current.driver.deleteNamespace(
+    { ...current.namespace, status: "deleting" },
+    { ...ready, target: "deleted" },
+  );
+  assert.equal(result.namespaceDeleted, false);
+  assert.equal(result.failure, undefined);
+  assert.equal(calls, 1, "provider cleanup may be needed to release Namespace finalizers");
+  assert.notEqual((await ready.read()).data.cleanup, undefined);
+});
+
+test("Kubernetes retains completed Sandbox evidence while tenant RBAC disappears", async () => {
+  const { current, sandboxDriver } = sandboxCleanupFixture("absent", false);
+  const ready = (await namespaceLifecycleFixture(
+    current.driver,
+    current.namespace,
+  )) as NamespaceLifecycleContext;
+  assert.equal(
+    (await current.driver.ensureNamespace(current.namespace, ready)).namespaceReady,
+    true,
+  );
+  const cleanup = sandboxDriver.cleanup.bind(sandboxDriver);
+  let calls = 0;
+  sandboxDriver.cleanup = async () => {
+    calls += 1;
+    return cleanup();
+  };
+  current.clients.core.deleteNamespace = async () => markNamespaceTerminating(current);
+  const namespace = { ...current.namespace, status: "deleting" as const };
+  const deleted = { ...ready, target: "deleted" as const };
+  assert.equal((await current.driver.deleteNamespace(namespace, deleted)).namespaceDeleted, false);
+  assert.equal(calls, 1);
+  const confirmed = await ready.read();
+  assert.notEqual(confirmed.data.cleanup, undefined);
+  current.clients.core.readNamespacedResourceQuota = async () => {
+    throw Object.assign(new Error("Tenant RoleBinding was removed"), { statusCode: 403 });
+  };
+  const result = await current.driver.deleteNamespace(namespace, deleted);
+  assert.equal(result.namespaceDeleted, false);
+  assert.equal(result.failure, undefined);
+  assert.equal(calls, 1);
+  assert.deepEqual(await ready.read(), confirmed);
+});
 
 test("Kubernetes parent sweep refuses a resource that reappears after Sandbox cleanup", async () => {
   const { current, original } = sandboxCleanupFixture("absent");

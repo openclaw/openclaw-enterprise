@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { namespaceLifecycleFixture } from "../helpers/namespace-lifecycle.mjs";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { withStubbedProviderEndpoint } from "../helpers/harness-configuration.mjs";
 import {
@@ -229,7 +230,10 @@ function revision(driver, owner, agentId, number, harnessAuth) {
 
 async function prepareNamespace(driver, owner) {
   await waitFor(`Namespace ${owner.id} to become ready`, async () => {
-    const observation = await driver.ensureNamespace(owner);
+    const observation = await driver.ensureNamespace(
+      owner,
+      await namespaceLifecycleFixture(driver, owner),
+    );
     assert.notEqual(observation.failure, "permanent");
     return observation.namespaceReady ? observation : undefined;
   });
