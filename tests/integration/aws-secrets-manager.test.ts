@@ -7,7 +7,7 @@ import {
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { withComputeOperationDeadline } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import type { Secret } from "../../packages/contracts/src/index.ts";
@@ -21,6 +21,14 @@ import {
   registerAndSelectDrivers,
 } from "../helpers/development.mjs";
 import { grantRole, principalIAMState } from "../helpers/iam-grants.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { assertApiError } from "../helpers/api-error.mjs";
+import {
+  accessToken,
+  catalogEntry,
+  setUpPluginDiscovery,
+  createSavedAgent,
+} from "../helpers/plugin-discovery.ts";
 
 // Resolve the SDK from its owning workspace package, not an undeclared root dependency.
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -42,7 +50,7 @@ type RecordValue = {
 
 // Only the AWS service is simulated: commands, Driver, Installation validation,
 // OCC lifecycle, ownership checks, and IAM decisions use production code.
-function backend() {
+function backend(configuration = options, selection: { id?: string } = {}) {
   const records = new Map<string, RecordValue>();
   const values = new Map<string, string>();
   const calls: string[] = [];
@@ -117,7 +125,7 @@ function backend() {
   const identityClient = { send: async () => ({ Account: options.accountId }) };
   const credentials = { accessKeyId: "synthetic-key", secretAccessKey: "synthetic-signing-key" };
   const injection = { client: client!, identityClient, credentials };
-  const driver = new AwsSecretsManagerSecretDriver(options, injection);
+  const driver = new AwsSecretsManagerSecretDriver(configuration, { ...selection, ...injection });
   return {
     records,
     values,
@@ -129,6 +137,22 @@ function backend() {
       fault = value;
     },
   };
+}
+
+async function installedAwsSecretsManager(t: TestContext) {
+  const configuration = createInstallationDriverConfiguration();
+  const config = {
+    ...configuration,
+    drivers: {
+      ...configuration.drivers,
+      secret: { id: "secret-aws-secrets-manager", configuration: options },
+    },
+  };
+  const runtime = await loadInstallationFile(t, config);
+  assert.ok(runtime?.secretDriver instanceof AwsSecretsManagerSecretDriver);
+  assert.equal(runtime.installation.drivers.secret.definition, AwsSecretsManagerSecretDriver);
+  const { configuration: selectedOptions, id } = runtime.installation.drivers.secret;
+  return { config, ...backend(selectedOptions as unknown as typeof options, { id }) };
 }
 
 async function stored(b: ReturnType<typeof backend>): Promise<Secret> {
@@ -146,23 +170,8 @@ async function stored(b: ReturnType<typeof backend>): Promise<Secret> {
 }
 
 test("production Installation selects the AWS adapter and OCC authorizes its lifecycle", async (t) => {
-  const configuration = createInstallationDriverConfiguration();
-  const config = {
-    ...configuration,
-    drivers: {
-      ...configuration.drivers,
-      secret: { id: "secret-aws-secrets-manager", configuration: options },
-    },
-  };
-  const runtime = await loadInstallationFile(t, config);
-  assert.ok(runtime?.secretDriver instanceof AwsSecretsManagerSecretDriver);
-  assert.equal(runtime.installation.drivers.secret.definition, AwsSecretsManagerSecretDriver);
-  const b = backend();
-  const selection = runtime.installation.drivers.secret;
-  const driver = new AwsSecretsManagerSecretDriver(
-    selection.configuration as unknown as typeof options,
-    { id: selection.id, ...b.injection },
-  );
+  const b = await installedAwsSecretsManager(t);
+  const { config, driver } = b;
   assert.equal("compareAndSwap" in driver, false);
   const iamState = principalIAMState(["owner", "denied"], "aws-secrets");
   grantRole(iamState, "owner", {
@@ -961,3 +970,67 @@ for (const mutation of ["PutSecretValue", "DeleteSecret"] as const) {
     });
   }
 }
+
+test("Saved Agent discovery with installation-selected AWS Secret recovers after Get is denied", async (t) => {
+  const aws = await installedAwsSecretsManager(t);
+  const app = await createConsoleAppFixture(t, { secretDriver: aws.driver });
+  const fixture = await setUpPluginDiscovery(app);
+  const { agent, secret, path } = await createSavedAgent(fixture);
+  const editor = await fixture.createAccountWithPolicy("aws-discovery-editor", (principal) => {
+    grantRole(fixture.policy, principal.id, {
+      id: "aws-discovery-agent-editor",
+      namespaceId: fixture.namespace.id,
+      permissions: { agent: ["read", "update"] },
+      resource: { kind: "agent", id: agent.id },
+    });
+    grantRole(fixture.policy, principal.id, {
+      id: "aws-discovery-secret-operator",
+      namespaceId: fixture.namespace.id,
+      permissions: { secret: ["operate"] },
+      resource: { kind: "secret", id: secret.id },
+    });
+  });
+  const session = await fixture.signIn(editor.credentials);
+  const requestCatalog = () => fixture.request("POST", path, { session, body: { q: "knowledge" } });
+  const expectedCall = { operation: "list", input: { accessToken, q: "knowledge" } };
+  const beforeSuccess = aws.calls.length;
+  const catalog = await requestCatalog();
+  assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
+  assert.deepEqual(catalog.data, { plugins: [catalogEntry], nextCursor: "second-page" });
+  assert.deepEqual(fixture.calls, [expectedCall]);
+  assert.deepEqual(aws.calls.slice(beforeSuccess), [
+    "DescribeSecretCommand",
+    "GetSecretValueCommand",
+    "DescribeSecretCommand",
+  ]);
+
+  // Keep ownership Describe working; only AWS value retrieval is denied.
+  const diagnostic = "synthetic AWS read denial";
+  aws.setFault((kind) => {
+    if (kind === "GetSecretValueCommand") {
+      throw Object.assign(new Error(diagnostic), { name: "AccessDeniedException" });
+    }
+  });
+  const beforeDenial = aws.calls.length;
+  const denied = await requestCatalog();
+  assertApiError(denied, 503, "DEPENDENCY_UNAVAILABLE");
+  assert.deepEqual(aws.calls.slice(beforeDenial), [
+    "DescribeSecretCommand",
+    "GetSecretValueCommand",
+  ]);
+  assert.deepEqual(fixture.calls, [expectedCall]);
+
+  aws.setFault(undefined);
+  const recovered = await requestCatalog();
+  assert.equal(recovered.status, 200, JSON.stringify(recovered.body));
+  assert.deepEqual(recovered.data, catalog.data);
+  assert.deepEqual(fixture.calls, [expectedCall, expectedCall]);
+  const publicEvidence = JSON.stringify([
+    catalog.body,
+    denied.body,
+    recovered.body,
+    fixture.auditSink.events,
+  ]);
+  assert.equal(publicEvidence.includes(accessToken), false);
+  assert.equal(publicEvidence.includes(diagnostic), false);
+});
