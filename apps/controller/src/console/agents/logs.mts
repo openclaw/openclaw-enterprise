@@ -783,13 +783,22 @@ export function renderAgentLogs(
     }
     // Runtime status also checks AgentRevision read on the version, so a version the page could
     // not read would only be refused: an audited denial on each Logs visit, shown with a Request
-    // ID. The strip says why in words, sends nothing and polls nothing; log text, which needs no
+    // ID. The strip says why in words and sends no status read; log text, which needs no
     // version read, still shows (finding D794).
     if ((await versionRead) === false) {
-      if (current() && !superseded()) {
+      if (!current() || superseded()) {
+        return;
+      }
+      if (!statusDenied) {
         showStripStatus(RUNTIME_STATUS_VERSION_UNREADABLE);
         offerLogsWithoutStatus();
+      } else if (!document.hidden) {
+        // The poll still rereads the Agent, which needs no version read: with no poll, a stop
+        // and redeploy made elsewhere left this version named as selected for service until a
+        // reload (finding 3000).
+        void showRunningVersion(true);
       }
+      statusTimer = setTimeout(() => void loadStatus(), STATUS_POLL_MS);
       return;
     }
     if (!document.hidden) {

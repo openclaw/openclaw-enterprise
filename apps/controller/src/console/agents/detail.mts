@@ -2338,13 +2338,25 @@ export async function renderAgentDetail(
       viewedSnapshot,
     );
   }
-  async function runningVersion() {
+  function rereadServingOnce() {
     servingReread ??= rereadServing()
       .catch(() => {})
       .finally(() => {
         servingReread = null;
       });
-    await servingReread;
+    return servingReread;
+  }
+  // A refocus recheck reads the Agent only to check that the page is still readable, and keeps
+  // nothing it read. Where no Logs poll rereads the Agent, as on a current version the reader
+  // cannot read, a stop and redeploy made elsewhere showed only after a reload (finding 3000).
+  // The page now rereads its serving state as a poll does, under the same guards.
+  context.onRechecked?.(() => {
+    if (context.isCurrent() && !deleting) {
+      void rereadServingOnce();
+    }
+  });
+  async function runningVersion() {
+    await rereadServingOnce();
     const serving =
       currentRuntimeState === "running" && currentRevisionId !== selected
         ? visibleRevisions.find(({ id }) => id === currentRevisionId)
