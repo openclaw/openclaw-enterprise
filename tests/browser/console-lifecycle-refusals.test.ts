@@ -788,6 +788,7 @@ test("a refocus that rebuilds a taller refused row keeps its icon and note in vi
   assert.equal(await inViewport(note), true);
 
   // A rebuild (another Agent was added) that leaves the cell in view keeps the page where it is.
+  await placeNote(2);
   const settled = await scrollY();
   await fixture.createAgent(namespace.id, "Row Z", nativeValues("row-z"));
   await refocus({ rebuilt: true });

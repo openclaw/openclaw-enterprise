@@ -1742,7 +1742,7 @@ test("Logs of a stopped version show a redeploy from elsewhere that failed", asy
           agentId: agent.id,
           createdAt: deployed.createdAt,
         },
-        { status: "queued" },
+        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
       ),
     ),
   );
