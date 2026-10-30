@@ -7,7 +7,7 @@ import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import {
   detailUrl,
   fileBrowser,

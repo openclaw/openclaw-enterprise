@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import {
   AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
@@ -265,12 +265,10 @@ test("the Namespace selector with no readable Namespace is reachable and names t
 // reason. The hint beside it says why, describes it, and stays when another Preset is chosen
 // (the chooser's status line changes then).
 test("Start with default Preset names the missing default as its reason", async (t) => {
-  const fixture = await createConsoleAppFixture(t, {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "No default Preset", {
     defaultPresets: [],
     filesystemConfiguration: true,
   });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("No default Preset", { ready: true });
   const other = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: { name: "Team Preset", template: { agent: { name: "Team Agent" } } },
   });
@@ -388,9 +386,7 @@ const HARNESS_GRANT_MISSING_ASK =
 // Agent update, so Save is unavailable, and the shown warning is reworded in place to name who
 // grants it instead of a Save she cannot use.
 test("a missing harness grant names the administrator once a revoke makes Save unavailable", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Revoked harness grant", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Revoked harness grant");
   const secret = await fixture.createSecret(namespace.id, "Revoked harness Secret", "hidden");
   const agent = await fixture.createAgent(
     namespace.id,
@@ -431,9 +427,7 @@ test("a missing harness grant names the administrator once a revoke makes Save u
 // 2945). A pending Create disables every field natively, this select too: it must not be turned
 // into the reachable Codex lock, which a keyboard could still open while the request runs.
 test("a pending Codex Create keeps Execution mode natively disabled", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Pending Codex mode", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Pending Codex mode");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
