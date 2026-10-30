@@ -266,17 +266,13 @@ without asking again, and **Retry** forgets the path and rereads. Logout clears 
 strip without moving page focus or vertical scroll. A strip ResizeObserver repeats
 this on viewport changes, disconnects for inactive or detached views, and re-arms
 through the retained view's resume hook.
-Completed tabs retain their DOM and draft capture callbacks within the detail view.
-Returning restores loaded controls and expanded disclosures. Pending or failed
-reads, password values, and mutations invalidate tab reuse. Each tab checks it
-is mounted before applying a response; late reads cannot overwrite another tab.
-Password values clear while [draft captures](platform-console/agent-editing.md#4-render-draft-revision-or-channels) retain edits. Channel
-Secret saves update the shared draft snapshot used by other tabs and deployment
-preflight. `agents/detail.mts:boundSecretsDenied` reuses the authorized Secret names
-read for Deploy in the Configuration save permission hint. It includes only
-Configuration bindings, not Harness-only Secrets, and removes duplicate Secret IDs.
-Until names are available, the hint keeps its general Secret operate explanation.
-No additional metadata read or permission grant is needed.
+Completed tabs retain DOM and drafts. Pending reads, failed reads, passwords,
+and mutations prevent reuse. Tabs ignore responses after unmount.
+[Draft captures](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
+exclude passwords. Channel Secret saves update the snapshot shared by tabs and
+Deploy. `agents/detail.mts:boundSecretsDenied` supplies the Configuration hint
+with Deploy's authorized names, deduplicated by ID and excluding Harness-only
+Secrets. No extra reads occur; unavailable names keep the general explanation.
 
 [Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
 owns receipts and draft retirement.
