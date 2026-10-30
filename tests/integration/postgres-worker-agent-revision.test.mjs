@@ -3419,6 +3419,7 @@ revisionTest(
       {
         ...fixture.compute,
         requiresStoppedPredecessors: () => true,
+        maintenanceIntervalMs: 3_600_000,
         async stopRevision(revision) {
           assert.notEqual(
             revision.id,
@@ -3437,6 +3438,15 @@ revisionTest(
     });
     await fixture.work(next, "failed_permanent");
     assert.equal((await fixture.workResult(next)).rows[0].reason_code, "PLUGIN_DRIVER_MISMATCH");
+    const {
+      rows: [nextMaintenance],
+    } = await fixture.advanceMaintenance(previous);
+    const maintenance = { ...previous, idempotencyKey: nextMaintenance.idempotency_key };
+    await fixture.work(maintenance, "succeeded");
+    assert.equal(
+      (await fixture.workResult(maintenance)).rows[0].reason_code,
+      "REVISION_ALREADY_ACTIVE",
+    );
     assert.equal((await fixture.currentAgent(owner)).activeRevisionId, previous.id);
   },
 );

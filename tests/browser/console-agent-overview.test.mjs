@@ -1693,6 +1693,7 @@ test("Every failed deployment code has its own message and next step", async () 
       "INVALID_REVISION_OWNER",
       "INVALID_TARGET",
       "KUBERNETES_SECRET_WRITE_FORBIDDEN",
+      "PLUGIN_DRIVER_MISMATCH",
       "REPOSITORY_BINDING_UNAVAILABLE",
       "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
       "REPOSITORY_GIT_SENDER_UNQUALIFIED",

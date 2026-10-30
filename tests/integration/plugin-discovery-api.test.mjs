@@ -57,6 +57,7 @@ async function createFixture(
   {
     supported = true,
     additionalPluginDriver,
+    onCatalogDetails,
     secretDriver = createTestSecretDriver(),
     logger,
     onSend,
@@ -102,6 +103,7 @@ async function createFixture(
           },
           async getCatalogPlugin(input) {
             calls.push({ operation: "details", input });
+            await onCatalogDetails?.();
             if (failure) {
               throw failure;
             }
@@ -825,6 +827,34 @@ test("Changing a saved Agent's configured Harness during discovery withholds the
   assert.equal(changed?.status, 200, JSON.stringify(changed?.body));
   assert.equal(result.status, 409, JSON.stringify(result.body));
   assert.deepEqual(fixture.calls, []);
+});
+
+test("Saved Agent discovery discards a hosted result after the Agent changes Harness", async (t) => {
+  let changed;
+  const fixture = await createFixture(t, {
+    additionalPluginDriver: new OCCPluginDriver(),
+    onCatalogDetails: async () => {
+      changed = await fixture.request(
+        "PATCH",
+        `/namespaces/${fixture.namespace.id}/configurations/${agent.configurationId}`,
+        { body: { values: createHarnessConfiguration("openclaw", "gpt-5.1") } },
+      );
+    },
+  });
+  const { agent, path } = await createSavedAgent(fixture);
+  const result = await fixture.request("POST", `${path}/details`, {
+    body: { pluginId: catalogEntry.id },
+  });
+  assert.equal(changed?.status, 200, JSON.stringify(changed?.body));
+  assert.deepEqual(
+    fixture.calls.map(({ operation }) => operation),
+    ["details"],
+  );
+  assert.equal(result.status, 409, JSON.stringify(result.body));
+  assert.equal(
+    result.body.error.message,
+    "The Agent's plugin credential or catalog changed. Refresh and retry.",
+  );
 });
 
 test("Saved Agent plugin discovery rechecks the caller's Secret authority after the backend read", async (t) => {

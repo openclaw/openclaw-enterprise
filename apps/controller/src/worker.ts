@@ -4455,6 +4455,7 @@ export class ControllerWorker {
                   candidate !== undefined &&
                   candidate.compute.id === this.compute.id &&
                   candidate.compute.implementation === this.compute.implementation &&
+                  this.revisionPluginDriverAvailable(candidate) &&
                   this.compute.requiresStoppedPredecessors?.(candidate) === true
                 ) {
                   return candidate;
@@ -4545,17 +4546,6 @@ export class ControllerWorker {
       ) {
         await this.recoverPendingCredentialWithdrawals(claim, revision);
       }
-      if (!this.revisionPluginDriverAvailable(revision)) {
-        if (agent.activeRevisionId === revision.id) {
-          await this.finalizeActiveRevision(claim, revision, "PLUGIN_DRIVER_MISMATCH");
-        } else {
-          await this.finalizeRevision(claim, {
-            outcome: "permanent",
-            code: "PLUGIN_DRIVER_MISMATCH",
-          });
-        }
-        return;
-      }
       // Deploy and repair work must never re-attach a withdrawn source.
       const secretContext = await this.resolveRevisionSecretContext(revision);
       if ("result" in secretContext) {
@@ -4580,6 +4570,19 @@ export class ControllerWorker {
         // Verify Git before any preparation or binding can repair the running execution.
         supervisedRevision = revision;
         await this.repositoryCredentials.authorize(claim, revision);
+      }
+      // An incompatible active revision still needs withdrawal and standing execution supervision.
+      // Verify its plugin owner before Compute can bind, prepare or activate anything.
+      if (!this.revisionPluginDriverAvailable(revision)) {
+        if (agent.activeRevisionId === revision.id) {
+          await this.finalizeActiveRevision(claim, revision, "PLUGIN_DRIVER_MISMATCH");
+        } else {
+          await this.finalizeRevision(claim, {
+            outcome: "permanent",
+            code: "PLUGIN_DRIVER_MISMATCH",
+          });
+        }
+        return;
       }
       if (this.compute.bindAgent !== undefined) {
         try {
