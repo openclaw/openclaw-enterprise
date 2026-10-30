@@ -6,7 +6,7 @@ author: mrunalp
 
 # Proposal: Default users sign in through identity provider mappings and own their Namespaces
 
-- **ID:** RFC-0025 (provisional; renumber before merge)
+- **ID:** RFC-0026 (provisional; renumber before merge)
 - **Created:** 2026-10-29
 - **Last updated:** 2026-10-30
 - **RFC PR:** Not opened
