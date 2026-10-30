@@ -131,7 +131,7 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-The CLI creates one k3d cluster with pinned OpenShell `v0.1.5`, Agent
+The CLI creates one k3d cluster with pinned OpenShell `v0.1.6`, Agent
 Sandbox, cert-manager, and Envoy Gateway assets and digest-resolved images.
 PostgreSQL, the central OpenShell Gateway, and OCE run in `oce-system`; the
 Agent Sandbox controller stays in `agent-sandbox-system`. Tenant Workspaces,

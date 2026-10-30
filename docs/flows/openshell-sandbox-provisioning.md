@@ -201,7 +201,7 @@ selects a named provider and HTTPS Responses transport.
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
 Only dedicated Codex or OpenClaw versions pinned to this Driver qualify.
-Kubernetes, filesystem, process and binary-scoped network policy use `v0.1.5`.
+Kubernetes, filesystem, process and binary-scoped network policy use `v0.1.6`.
 Path relocation preserves opaque `OCE_CODEX_CHATGPT_ACCOUNT` JSON.
 Landlock is required. Unsupported enums, inherited keys, `passthrough` TLS,
 missing executable paths and invalid readiness `timeoutMs` prevent Kubernetes
