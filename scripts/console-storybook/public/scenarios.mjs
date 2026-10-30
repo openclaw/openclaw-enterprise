@@ -4061,6 +4061,17 @@ export const scenarios = {
       "Tab to Start with default Preset. It takes focus and looks unavailable, described by the hint under it, “default-codex is not available to you in this Namespace.” Enter, Space or a click does nothing (finding 2937).",
     ],
   },
+  createNoDefaultPreset: {
+    group: "Pages/Create Agent",
+    name: "Other Presets, no default",
+    path: create,
+    noDefaultPreset: true,
+    description:
+      "Another Preset is readable, but default-codex is not. The chooser's status says “Choose a Preset.” and the hint under Start with default Preset says why the shortcut is unavailable, once (finding 2946).",
+    steps: [
+      "Tab to Use Preset. It is described by “Choose a Preset.” Then Tab to Start with default Preset. It is described by the hint, “default-codex is not available to you in this Namespace.”",
+    ],
+  },
   createWithoutPreset: {
     group: "Pages/Create Agent",
     name: "Start without Preset",

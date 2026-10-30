@@ -182,10 +182,10 @@ export function createPresetFields(
   };
   inputs.addEventListener("input", markTouched);
   inputs.addEventListener("change", markTouched);
+  // Without default-codex, the hint under the shortcut already says it is not available, so the
+  // status line does not repeat it (finding 2946).
   const chooseHint = () =>
-    defaultId
-      ? "Choose a Preset or start with the default Preset."
-      : "Choose a Preset. default-codex is not available to you in this Namespace.";
+    defaultId ? "Choose a Preset or start with the default Preset." : "Choose a Preset.";
   const startDefault = button(
     "Start with default Preset",
     () => {

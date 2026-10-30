@@ -275,6 +275,8 @@ domain; native chat or other Agent-host activity does not extend that session.
 Supported pages are `/console/login`, `/console/agents`,
 `/console/agents/new`, `/console/agents/:agentId`, `/console/backends`,
 `/console/namespaces`, `/console/secrets`, and `/console/settings`. `/console/` resolves the session
-and opens Agents. Unknown console paths show a generic not-found page.
+and opens Agents. A page path with trailing slashes opens that page with status `200`, and the
+address bar then shows it without them; the query, tab and hash stay. Unknown console paths
+return `404` and show a generic not-found page.
 See the [request flow](../flows/platform-console.md) and
 [local testing](../testing/local.md) for implementation and verification.

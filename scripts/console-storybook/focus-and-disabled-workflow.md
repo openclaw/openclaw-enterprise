@@ -79,7 +79,10 @@ follows `:focus-visible`. No part of any ring may be cut off.
    are the header's Namespace selector with no readable Namespace (**Pages /
    Agents / No readable Namespaces**, finding 2936) and **Start with default
    Preset** without a default Preset (**Pages / Create Agent / No Presets**,
-   finding 2937), whose hint says why.
+   finding 2937), whose hint says why. With other Presets (**Pages / Create
+   Agent / Other Presets, no default**), the chooser's status says only
+   "Choose a Preset." and describes Use Preset; the hint is not repeated
+   (finding 2946).
    So do Previous instance before a restart (**Pages / Agent
    detail / Runtime status after a healthy first deploy**), described by its
    note (finding 2944), and Execution mode with the Codex harness (**Pages /

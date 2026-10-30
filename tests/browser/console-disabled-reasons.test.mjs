@@ -284,6 +284,15 @@ test("Start with default Preset names the missing default as its reason", async 
   assert.equal(await shortcut.isDisabled(), true);
   await expectReachableReason(page, shortcut, reason);
   assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+  // The chooser's status line does not repeat the hint (finding 2946), and it still describes
+  // the unavailable Use Preset.
+  const choose = "Choose a Preset.";
+  await page
+    .getByRole("status")
+    .filter({ hasText: /^Choose a Preset\.$/ })
+    .waitFor();
+  assert.equal(await page.getByText(reason, { exact: false }).count(), 1);
+  await expectReachableReason(page, page.getByRole("button", { name: "Use Preset" }), choose);
 
   await page.getByLabel("Preset template").selectOption(other.data.id);
   await page

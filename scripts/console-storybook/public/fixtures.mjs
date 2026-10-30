@@ -721,11 +721,15 @@ export function installFixture(scenario, evidence) {
   }
   const presets = [
     preset,
-    {
-      ...structuredClone(defaultCodexPreset),
-      id: "pre_default_codex",
-      namespaceId,
-    },
+    ...(scenario.noDefaultPreset
+      ? []
+      : [
+          {
+            ...structuredClone(defaultCodexPreset),
+            id: "pre_default_codex",
+            namespaceId,
+          },
+        ]),
   ];
   if (scenario.swePreset) {
     for (const [name, definition] of [
