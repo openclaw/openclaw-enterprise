@@ -270,9 +270,9 @@ Tabs retain DOM and drafts, but pending/failed reads, passwords, and mutations
 prevent reuse. Tabs ignore responses after unmount.
 [Draft captures](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
 exclude passwords. Secret saves update the shared snapshot.
-`agents/detail.mts:boundSecretsDenied` reuses Deploy's authorized names in save hints.
-Configuration excludes Harness-only Secrets; Plugins and Credentials include them.
-Only current-generation reads publish; late names preserve view state and focus.
+`agents/detail.mts:boundSecretsDenied` reuses Deploy's authorized names.
+Configuration excludes Harness-only Secrets; Plugins/Credentials include them.
+Current-generation reads publish; late names preserve state and focus.
 Metadata failures keep authorized IDs; unknown grants keep general explanations.
 
 [Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
