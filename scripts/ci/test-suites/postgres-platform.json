@@ -16,6 +16,7 @@
     "tests/integration/postgres-restart-recovery.test.mjs",
     "tests/integration/postgres-agent-deletion-audit.test.mjs",
     "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
+    "tests/integration/postgres-default-users.test.ts",
     "tests/integration/postgres-agent-runtime-logs.test.mjs",
     "tests/integration/postgres-repository-broker-receipts.test.mjs",
     "tests/integration/postgres-worker-stale-claim.test.mjs",
@@ -211,6 +212,12 @@
       "path": "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
       "expectedTests": [
         "an Installation admin controls Gateway managed mode and a deployer applies the saved setting"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-default-users.test.ts",
+      "expectedTests": [
+        "a Default user owns the Namespaces it creates up to the limit and its deploys grant the Agent its sources"
       ]
     },
     {

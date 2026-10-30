@@ -179,6 +179,10 @@
                         "label": "Authorization"
                       },
                       {
+                        "page": "reference/authorization/default-users",
+                        "label": "Default Users"
+                      },
+                      {
                         "page": "reference/service-accounts",
                         "label": "Service Accounts"
                       },

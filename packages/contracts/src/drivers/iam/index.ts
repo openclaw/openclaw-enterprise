@@ -74,6 +74,23 @@ export interface IAMDriver extends Driver {
     context: IAMPolicyManagementContext,
     input: IAMManagedServicePrincipalInput,
   ): Promise<Readonly<ServicePrincipal>>;
+  /** Principal ids in one Installation-level Group, such as Default users. */
+  listGroupMembers?(context: IAMPolicyReadContext, groupId: string): Promise<readonly string[]>;
+  /** False when the Principal is already a member. */
+  addGroupMember?(
+    context: IAMPolicyManagementContext,
+    input: IAMGroupMemberInput,
+  ): Promise<boolean>;
+  /** False when the Principal was not a member. */
+  removeGroupMember?(
+    context: IAMPolicyManagementContext,
+    input: IAMGroupMemberInput,
+  ): Promise<boolean>;
+  /** Binds a Namespace's creator to the built-in Namespace owner Role, Namespace-wide. */
+  createNamespaceOwnerBinding?(
+    context: IAMPolicyManagementContext,
+    input: IAMNamespaceOwnerBindingInput,
+  ): Promise<Readonly<AccessBinding>>;
 }
 
 export interface IAMPolicyReadRepository {
@@ -100,10 +117,16 @@ export interface IAMPolicyReadRepository {
     namespaceId: string,
     servicePrincipalId: string,
   ): Promise<Readonly<ServicePrincipal> | undefined>;
+  /** Principal ids in one Installation-level Group. */
+  listGroupMembers(groupId: string): Promise<readonly string[]>;
 }
 
 export interface IAMPolicyRepository extends IAMPolicyReadRepository {
   createRole(role: Role): Promise<Readonly<Role>>;
+  createGroupMembership(groupId: string, principalId: string): Promise<boolean>;
+  deleteGroupMembership(groupId: string, principalId: string): Promise<boolean>;
+  /** A Namespace-wide identity binding to a built-in Namespace Role; no exact resource. */
+  createNamespaceWideBinding(binding: AccessBinding): Promise<Readonly<AccessBinding>>;
   deleteRole(namespaceId: string, roleId: string): Promise<boolean>;
   createAccessBinding(binding: AccessBinding): Promise<Readonly<AccessBinding>>;
   deleteAccessBinding(namespaceId: string, bindingId: string): Promise<boolean>;
@@ -144,6 +167,17 @@ export interface IAMManagedAccessBindingInput {
   readonly roleId: string;
   readonly resourceKind: ManagedIAMResourceKind;
   readonly resourceId: string;
+}
+
+export interface IAMGroupMemberInput {
+  readonly groupId: string;
+  readonly principalId: string;
+}
+
+export interface IAMNamespaceOwnerBindingInput {
+  readonly id: string;
+  readonly namespaceId: string;
+  readonly principalId: string;
 }
 
 /** A non-Agent automation identity fixed to one Namespace; it carries no grant. */

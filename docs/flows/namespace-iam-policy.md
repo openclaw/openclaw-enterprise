@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: 2026-10-15
-last_updated_session: "authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851"
+updated: 2026-10-30
+last_updated_session: "claude/session_01HzmRt1DGB79VEnEWHt7PRy"
 ---
 
 # Namespace IAM Policy Flow
@@ -13,11 +13,16 @@ API or CLI to list, create, read, or delete a Namespace Role or exact
 AccessBinding, or to list, create, or read a Namespace ServicePrincipal. OCC authorizes the administrator, validates that the policy entry
 belongs to the requested Namespace, and delegates the policy mutation to the
 selected IAM Driver. The flow stops after the policy and audit event commit
-together in the platform state transaction.
+together in the platform state transaction. Phase 6 covers the other policy
+writes: Default users membership, the owner binding that Namespace creation
+writes, and the Agent grants that a deploy writes.
 
 ## Entry Points
 
 - Trigger: `GET`, `POST`, or `DELETE` under `/namespaces/:namespaceId/iam/*`
+- Trigger: `GET`, `PUT`, or `DELETE` under `/iam/default-users`, and
+  `POST /namespaces` or `POST /namespaces/:namespaceId/agents/:agentId/deploy`
+  allowed by a built-in Role
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`
 - Source: `apps/controller/src/index.ts:requiredPermissions`
 - Source: `apps/controller/src/http/iam.ts:iamHandlers`
@@ -44,6 +49,10 @@ graph TD
   D --> H["API returns policy metadata"]
   G -->|COMMIT validates held session| H
   G -->|held session expired| X
+  M["Administrator calls /iam/default-users"] --> P["IAM Driver adds or removes the Group membership"]
+  N["Default user creates Namespace, or built-in Namespace Role allows deploy"] --> O["OCC writes owner binding or missing Agent operate grants"]
+  P --> Q["Policy and audit commit in the same transaction"]
+  O --> Q
 ```
 
 ## Execution Trace
@@ -191,11 +200,50 @@ for an original transaction. Its SQL supplier is unregistered, and the
 Namespace routes above do not use it. It does not protect these routes until the
 selected account, session, and policy writers join the same protocol.
 
+### 6. Default users, Namespace owners, and deploy-time grants
+
+`packages/occ/src/index.ts:OpenClawController.createNamespace`
+
+[Default users](../reference/authorization/default-users.md) defines the
+behavior; this phase traces the writes.
+
+- **Membership.** `apps/controller/src/index.ts:createFastifyApp` handles
+  `addDefaultUser` and `removeDefaultUser` inside `controller.transact`.
+  `setDefaultUser` holds the acting account, authorizes Installation
+  `administer`, and calls the Driver's `addGroupMember` or `removeGroupMember`
+  for `group_builtin_default_users`. PostgreSQL State refuses a member that is
+  not an Installation Principal. The route appends the
+  `openclaw.iam.default_users.*` event with `changed` in the same unit. Unlike
+  the Namespace policy writes above, these routes do not hold the human session
+  through COMMIT.
+- **Namespace creation.** `createNamespace` reads the decision evidence for
+  `namespace:create`. When every granting Role is `role_builtin_default_user`,
+  `lockCreatedNamespaceCount` takes a per-creator advisory transaction lock and
+  counts the caller's Namespaces that are not `deleting`. At the
+  `defaultUser.namespaceLimit` value the call raises
+  `ResourceStateConflictError` (`409`). Otherwise OCC stores `createdBy`, and
+  `bindNamespaceOwner` calls `createNamespaceOwnerBinding` and appends the
+  binding event with `reason: "namespace_owner"`. The default Presets follow
+  under that new grant, in the same unit.
+- **Deployment.** `deployAgentWithAuthorization` calls
+  `grantDeployedAgentSources` with the Roles that allowed `agent:deploy`. If
+  `role_builtin_namespace_member` or `role_builtin_namespace_owner` is among
+  them, OCC collects the Agent's Secret and credential source references. For
+  each reference that a built-in Namespace Role lets the caller `operate`, and
+  that the Agent ServicePrincipal cannot `operate`, `ensureAgentOperateGrants`
+  writes the exact binding. OCC appends one event for each with
+  `reason: "agent_deploy"`. Then the ordinary Agent principal checks run, so a
+  later deploy failure rolls back the grants.
+
 ## Debugging and Verification
 
 - `node --test tests/integration/occ-api.test.mjs` checks the HTTP contract and
   API admission behavior for Namespace IAM policy, including refusal of all five
   writes without declared transaction participation.
+- `node --test tests/integration/postgres-default-users.test.ts` checks, with
+  real PostgreSQL and HTTP admission, membership administration, the concurrent
+  limit, the owner binding, deploy-time grants, a custom-Role deploy that writes
+  nothing, and removal that keeps the owned Namespace.
 - `node --test tests/conformance/occ-api-security.test.mjs` checks that Agent
   responses expose `servicePrincipalId` without accepting caller-supplied values.
 - `node --test tests/integration/postgres-namespace-iam-policy.test.mjs` checks
@@ -221,6 +269,7 @@ selected account, session, and policy writers join the same protocol.
 ## Related docs
 
 - [Identity and access management](../reference/authorization.md)
+- [Default users and built-in Roles](../reference/authorization/default-users.md)
 - [Agents](../reference/agents.md)
 - [API reference](../reference/api.md)
 
@@ -230,6 +279,7 @@ selected account, session, and policy writers join the same protocol.
 
 ## Changelog
 
+- 2026-10-30 09:02: Trace Default users membership, the Namespace owner binding, and deploy-time Agent grants; working tree changes uncommitted. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - a382326dde18057a250e93a222aa8f4000477166)
 - 2026-10-15 13:28: Retain assigning sessions through policy COMMIT, require transactional IAM writes, and preserve caller limits with shared guarded-session holds. (authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851 - a302a3e2061575b64dcc37e212c55075d5c74b9a)
 - 2026-10-14 11:00: Read, validate and index native policy once per State unit of work instead of once per decision. (fix-1322)
 - 2026-10-01 20:30: Refuse AccessBindings whose Role cannot apply to the target. (fix-d93-d100)

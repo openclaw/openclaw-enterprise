@@ -382,6 +382,8 @@ export interface Namespace {
   readonly existingNamespace?: string;
   readonly status: NamespaceStatus;
   readonly createdAt: string;
+  /** The Principal who created it through the built-in Default User Role, and owns it. */
+  readonly createdBy?: string;
 }
 
 export type OpenClawConfigurationValue =
@@ -1236,6 +1238,82 @@ export interface Role extends Scope {
   readonly permissions: readonly Permission[];
 }
 
+/**
+ * The built-in Roles and Group of the Default users design (RFC-0026). They are
+ * Installation-level rows that nobody can change or delete. Only OCC or an Installation
+ * administrator binds them, and the database enforces each Role's binding shape: the Default
+ * User Role is bound only to the Default users Group, Installation-wide; the Namespace Roles
+ * only Namespace-wide, to one identity.
+ */
+export const BUILT_IN_ROLE_IDS = Object.freeze({
+  defaultUser: "role_builtin_default_user",
+  namespaceMember: "role_builtin_namespace_member",
+  namespaceOwner: "role_builtin_namespace_owner",
+} as const);
+
+export const DEFAULT_USERS_GROUP_ID = "group_builtin_default_users";
+
+const NAMESPACE_MEMBER_PERMISSIONS: readonly Permission[] = Object.freeze(
+  [
+    ...(
+      [
+        "create",
+        "read",
+        "update",
+        "delete",
+        "deploy",
+        "operate",
+        "administer",
+        "read_logs",
+        "manage_policy",
+      ] as const
+    ).map((action) => ({ action, resourceKind: "agent" as const })),
+    ...(["read", "update"] as const).map((action) => ({
+      action,
+      resourceKind: "sandbox_policy" as const,
+    })),
+    ...(["configuration", "preset"] as const).flatMap((resourceKind) =>
+      (["create", "read", "update", "delete"] as const).map((action) => ({
+        action,
+        resourceKind,
+      })),
+    ),
+    ...(["secret", "credential_source"] as const).flatMap((resourceKind) =>
+      (["create", "read", "update", "delete", "operate"] as const).map((action) => ({
+        action,
+        resourceKind,
+      })),
+    ),
+    { action: "read" as const, resourceKind: "agent_revision" as const },
+    { action: "read" as const, resourceKind: "namespace" as const },
+  ].map((permission) => Object.freeze(permission)),
+);
+
+export const BUILT_IN_ROLES: readonly Readonly<Role>[] = Object.freeze([
+  Object.freeze({
+    id: BUILT_IN_ROLE_IDS.defaultUser,
+    name: "Default User",
+    permissions: Object.freeze([Object.freeze({ action: "create", resourceKind: "namespace" })]),
+  }),
+  Object.freeze({
+    id: BUILT_IN_ROLE_IDS.namespaceMember,
+    name: "Namespace member",
+    permissions: NAMESPACE_MEMBER_PERMISSIONS,
+  }),
+  Object.freeze({
+    id: BUILT_IN_ROLE_IDS.namespaceOwner,
+    name: "Namespace owner",
+    permissions: Object.freeze([
+      ...NAMESPACE_MEMBER_PERMISSIONS,
+      Object.freeze({ action: "delete", resourceKind: "namespace" }),
+    ]),
+  }),
+]);
+
+export function isBuiltInRoleId(roleId: string): boolean {
+  return Object.values(BUILT_IN_ROLE_IDS).some((id) => id === roleId);
+}
+
 export interface Group extends Scope {
   readonly id: string;
   readonly namespaceId?: string;
@@ -1357,6 +1435,8 @@ export type {
   IAMManagedRoleInput,
   IAMManagedAccessBindingInput,
   IAMManagedServicePrincipalInput,
+  IAMGroupMemberInput,
+  IAMNamespaceOwnerBindingInput,
 } from "./drivers/iam/index.ts";
 export type { ServiceAccountDriver } from "./drivers/service-account/index.ts";
 export type { SecretDriver } from "./drivers/secret/index.ts";

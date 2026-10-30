@@ -33,7 +33,8 @@ administrators create human accounts through the
 [HTTP API](../../reference/authentication.md#account-provisioning) only, and
 manage Namespace Roles and AccessBindings through the
 [HTTP API or CLI](../../reference/authorization.md#manage-namespace-policy).
-Groups and Restrictions remain managed by the selected IAM authority. See
+Apart from [Default users](#let-people-create-their-own-namespaces), Groups
+and Restrictions remain managed by the selected IAM authority. See
 [Authorization](../../reference/authorization.md) for available actions, scope,
 and how denials work.
 
@@ -151,10 +152,48 @@ appointed account holds only `installation:administer` and `installation:read`:
   there to a Role with `namespace:read`, as in step 4 of
   [Add a person](#add-a-person). Namespace IAM writes then work in that
   Namespace; Namespace creation stays refused.
+- It can manage [Default users](#let-people-create-their-own-namespaces),
+  including its own account. As a member, it can create and own Namespaces.
 
 Appoint one only for account and service-key administration. The draft
 [RFC in PR #889](https://github.com/openclaw/openclaw-enterprise/pull/889)
 proposes a change to this behavior.
+
+## Let people create their own Namespaces
+
+Add a person to the built-in Default users Group to let them create Namespaces
+without grants in each one. The creator owns each Namespace: they can manage
+its Agents, Configurations, Presets, Secrets, and credential sources. People
+without a grant that covers it cannot see it. See
+[Default users and built-in Roles](../../reference/authorization/default-users.md)
+for the owner's permissions and limits.
+
+Before you start, create the person's account and keep its `PRINCIPAL_ID`
+(steps 1–3 of [Add a person](#add-a-person)). Each member can own one Namespace
+unless `defaultUser.namespaceLimit` in the
+[Installation startup configuration](../../reference/configuration.md#installation-startup-configuration)
+sets another limit. There is no CLI or console support. As a human
+Installation administrator with your session in `OCC_SESSION_COOKIE_JAR`:
+
+```bash
+curl --fail-with-body --silent --show-error -X PUT \
+  --cookie "$OCC_SESSION_COOKIE_JAR" -H "Origin: $OCC_ORIGIN" \
+  "$OCC_URL/iam/default-users/$PRINCIPAL_ID"
+curl --fail-with-body --silent --show-error \
+  --cookie "$OCC_SESSION_COOKIE_JAR" -H "Origin: $OCC_ORIGIN" \
+  "$OCC_URL/iam/default-users" | jq -r '.data[].principalId'
+```
+
+The `PUT` returns `204`, also when the person is already a member, and the list
+shows their `principalId`. A `400` means the ID is not a human account's
+Principal. The person can now `POST /namespaces`. Past their limit, creation
+returns `409`.
+
+To remove the person, send the same request with `-X DELETE`; it also returns
+`204`. They cannot create more Namespaces, but they keep the Namespaces they
+own. To end their access to one, delete it, or delete its owner binding
+`binding_owner_<namespace-id>` with `occ iam access-binding delete` in that
+Namespace.
 
 ## Remove a person
 
@@ -243,8 +282,8 @@ of the Agent, not this set, so use the CLI or HTTP API as in
 
 The person still cannot create Agents, Secrets or Configurations. Codex device
 login on the Agent needs Agent `update` and `read`, plus Secret and
-credential-source `create` in the Namespace, so only an Installation
-administrator can start it; see
+credential-source `create` in the Namespace, which exact-resource grants
+cannot give; see
 [Use a personal Codex login](../deploy/credential-lifecycle.md#use-a-personal-codex-login).
 To message
 the Agent, the person needs a channel its Configuration sets up or
@@ -256,9 +295,11 @@ enabled.
 
 Besides the person who deploys it, the Agent's own ServicePrincipal needs
 `operate` on each Secret and credential source the Agent binds; without it, OCC
-refuses the deployment. Only an Installation administrator can give the Agent
-this grant: bind a Role that holds only Secret `operate` to the Agent's
-ServicePrincipal, once for each exact Secret.
+refuses the deployment. When a Namespace owner deploys, OCC
+[writes these grants](../../reference/authorization/default-users.md#grant-an-agent-its-credentials-at-deployment).
+Otherwise, only an Installation administrator can give the Agent this grant:
+bind a Role that holds only Secret `operate` to the Agent's ServicePrincipal,
+once for each exact Secret.
 
 When the console creates an Agent, it binds the Role
 `role_<namespace-id>_agent_secret_operate`, named `Agent Secret operate`, and

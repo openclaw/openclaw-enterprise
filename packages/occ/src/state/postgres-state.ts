@@ -403,10 +403,12 @@ function namespaceFromRow(row: PostgresRow): Readonly<PersistedNamespace> {
       ? undefined
       : timestamp(row, "deleted_at");
   const existingNamespace = optionalText(row, "existing_namespace");
+  const createdBy = optionalText(row, "created_by");
   return immutableCopy({
     id: text(row, "id"),
     name: text(row, "name"),
     ...(existingNamespace === undefined ? {} : { existingNamespace }),
+    ...(createdBy === undefined ? {} : { createdBy }),
     status: status as Namespace["status"],
     createdAt: timestamp(row, "created_at"),
     ...(deletedAt === undefined ? {} : { deletedAt }),
@@ -2026,7 +2028,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         const found = rows(
           (
             await client.query(
-              `SELECT id, name, existing_namespace, status, created_at, deleted_at
+              `SELECT id, name, existing_namespace, status, created_at, deleted_at, created_by
                FROM occ.namespaces WHERE id = $1 AND deleted_at IS NULL`,
               [namespaceId],
             )
@@ -2038,7 +2040,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         const found = rows(
           (
             await client.query(
-              `SELECT id, name, existing_namespace, status, created_at, deleted_at
+              `SELECT id, name, existing_namespace, status, created_at, deleted_at, created_by
                FROM occ.namespaces WHERE deleted_at IS NULL ORDER BY created_at, id`,
             )
           ).rows,
@@ -2060,23 +2062,44 @@ export class PostgresPlatformState implements PlatformStateStore {
           throw new ResourceStateConflictError(DELETED_NAMESPACE_NAME_CONFLICT);
         }
         await client.query(
-          `INSERT INTO occ.namespaces (id, name, existing_namespace, status, created_at)
-           VALUES ($1, $2, $3, $4, $5)`,
+          `INSERT INTO occ.namespaces (id, name, existing_namespace, status, created_at, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
           [
             namespace.id,
             namespace.name,
             namespace.existingNamespace ?? null,
             namespace.status,
             namespace.createdAt,
+            namespace.createdBy ?? null,
           ],
         );
         return immutableCopy(namespace);
+      },
+      lockCreatedNamespaceCount: async (principalId) => {
+        await client.query(
+          "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1, 0))",
+          [`namespace-creator-v1:${principalId}`],
+        );
+        const found = rows(
+          (
+            await client.query(
+              `SELECT count(*)::integer AS created FROM occ.namespaces
+               WHERE created_by = $1 AND status <> 'deleting'`,
+              [principalId],
+            )
+          ).rows,
+        )[0];
+        const created = found?.created;
+        if (typeof created !== "number" || !Number.isSafeInteger(created) || created < 0) {
+          throw new PersistedStateInvalidError("The created Namespace count is invalid.");
+        }
+        return created;
       },
       lockNamespace: async (namespaceId, options = {}) => {
         const found = rows(
           (
             await client.query(
-              `SELECT id, name, existing_namespace, status, created_at, deleted_at
+              `SELECT id, name, existing_namespace, status, created_at, deleted_at, created_by
                FROM occ.namespaces
                WHERE id = $1${options.includeDeleted === true ? "" : " AND deleted_at IS NULL"}
                FOR UPDATE`,
@@ -2171,7 +2194,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             await client.query(
               `UPDATE occ.namespaces SET status = $3
                WHERE id = $1 AND status = ANY($2::text[]) AND deleted_at IS NULL
-               RETURNING id, name, existing_namespace, status, created_at, deleted_at`,
+               RETURNING id, name, existing_namespace, status, created_at, deleted_at, created_by`,
               [namespaceId, expectedStatuses, next],
             )
           ).rows,
@@ -2185,7 +2208,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             await client.query(
               `UPDATE occ.namespaces SET deleted_at = $2
                WHERE id = $1 AND status = 'deleting' AND deleted_at IS NULL
-               RETURNING id, name, existing_namespace, status, created_at, deleted_at`,
+               RETURNING id, name, existing_namespace, status, created_at, deleted_at, created_by`,
               [namespaceId, deletedAt],
             )
           ).rows,
@@ -2196,7 +2219,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         const existing = rows(
           (
             await client.query(
-              `SELECT id, name, existing_namespace, status, created_at, deleted_at
+              `SELECT id, name, existing_namespace, status, created_at, deleted_at, created_by
                FROM occ.namespaces WHERE id = $1 AND status = 'deleting' FOR UPDATE`,
               [namespaceId],
             )
@@ -4251,6 +4274,74 @@ export class PostgresPlatformState implements PlatformStateStore {
           [namespaceId, bindingId],
         );
         return deleted.rowCount === 1;
+      },
+      listGroupMembers: async (groupId) =>
+        Object.freeze(
+          rows(
+            (
+              await client.query(
+                `SELECT principal_id FROM occ.iam_group_memberships
+                 WHERE group_id = $1 AND namespace_id IS NULL ORDER BY principal_id`,
+                [groupId],
+              )
+            ).rows,
+          ).map((row) => text(row, "principal_id")),
+        ),
+      createGroupMembership: async (groupId, principalId) => {
+        await this.requireInitialized(context);
+        // The membership trigger refuses a non-Principal; an Installation Group admits only
+        // an Installation Principal.
+        const principal = await client.query(
+          `SELECT 1 FROM occ.iam_identities
+           WHERE id = $1 AND kind = 'principal' AND namespace_id IS NULL`,
+          [principalId],
+        );
+        if (principal.rowCount !== 1) {
+          throw new IAMPolicyValidationError(
+            "/principalId",
+            "The Group member must be an Installation Principal.",
+          );
+        }
+        const inserted = await client.query(
+          `INSERT INTO occ.iam_group_memberships (namespace_id, group_id, principal_id)
+           SELECT NULL, id, $2 FROM occ.iam_groups WHERE id = $1 AND namespace_id IS NULL
+           ON CONFLICT (group_id, principal_id) DO NOTHING`,
+          [groupId, principalId],
+        );
+        return inserted.rowCount === 1;
+      },
+      deleteGroupMembership: async (groupId, principalId) => {
+        const deleted = await client.query(
+          `DELETE FROM occ.iam_group_memberships
+           WHERE group_id = $1 AND principal_id = $2 AND namespace_id IS NULL`,
+          [groupId, principalId],
+        );
+        return deleted.rowCount === 1;
+      },
+      createNamespaceWideBinding: async (binding) => {
+        await this.requireInitialized(context);
+        const namespace = await namespaces.lockNamespace(binding.namespaceId ?? "");
+        if (
+          namespace === undefined ||
+          (namespace.status !== "provisioning" && namespace.status !== "ready") ||
+          binding.subjectKind !== "identity" ||
+          binding.resourceKind !== undefined ||
+          binding.resourceId !== undefined
+        ) {
+          throw new ScopeViolationError(
+            "A Namespace-wide AccessBinding must name one identity in an available Namespace.",
+          );
+        }
+        // The IAM Driver names the built-in Role; iam_access_bindings_built_in_role_shape keeps
+        // each built-in Role's binding Namespace-wide.
+        await client.query(
+          `INSERT INTO occ.iam_access_bindings
+           (id, namespace_id, identity_subject_id, group_subject_id, role_id,
+            resource_kind, resource_id)
+           VALUES ($1, $2, $3, NULL, $4, NULL, NULL)`,
+          [binding.id, namespace.id, binding.subjectId, binding.roleId],
+        );
+        return immutableCopy(binding);
       },
       listServicePrincipals: async (namespaceId) =>
         Object.freeze(

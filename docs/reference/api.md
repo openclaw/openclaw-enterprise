@@ -79,6 +79,7 @@ the paths.
 | --- | --- |
 | [Authentication](#authentication) | 27 operations |
 | [Backends](#backends) | 1 operation |
+| [IAM](#iam) | 14 operations |
 | [Installation](#installation) | 5 operations |
 | [Namespaces](#namespaces) | 6 operations |
 | [Agents](#agents) | 48 operations |
@@ -86,7 +87,6 @@ the paths.
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
 | [Credential sources](#credential-sources) | 6 operations |
-| [IAM](#iam) | 11 operations |
 | [Presets](#presets) | 5 operations |
 | [Secrets](#secrets) | 5 operations |
 | [Service accounts](#service-accounts) | 6 operations |
@@ -1702,6 +1702,888 @@ Example response
 }
 ```
 
+<span id="iam"></span>
+
+### IAM
+
+| Operation | Summary |
+| --- | --- |
+| [`GET /iam/default-users`](#get-iamdefaultusers) | List the Principals in the built-in Default users Group |
+| [`DELETE /iam/default-users/{principalId}`](#delete-iamdefaultusersprincipalid) | Remove a Principal from Default users; the Namespaces it owns remain |
+| [`PUT /iam/default-users/{principalId}`](#put-iamdefaultusersprincipalid) | Add an Installation Principal to Default users so it can create Namespaces |
+| [`GET /namespaces/{namespaceId}/iam/access-bindings`](#get-namespacesnamespaceidiamaccessbindings) | List exact Namespace IAM AccessBindings |
+| [`POST /namespaces/{namespaceId}/iam/access-bindings`](#post-namespacesnamespaceidiamaccessbindings) | Create an immutable exact-resource Namespace IAM AccessBinding |
+| [`DELETE /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`](#delete-namespacesnamespaceidiamaccessbindingsbindingid) | Delete one exact Namespace IAM AccessBinding |
+| [`GET /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`](#get-namespacesnamespaceidiamaccessbindingsbindingid) | Get an exact Namespace IAM AccessBinding |
+| [`GET /namespaces/{namespaceId}/iam/roles`](#get-namespacesnamespaceidiamroles) | List exact Namespace IAM Roles |
+| [`POST /namespaces/{namespaceId}/iam/roles`](#post-namespacesnamespaceidiamroles) | Create an immutable Namespace IAM Role |
+| [`DELETE /namespaces/{namespaceId}/iam/roles/{roleId}`](#delete-namespacesnamespaceidiamrolesroleid) | Delete an unreferenced exact Namespace IAM Role |
+| [`GET /namespaces/{namespaceId}/iam/roles/{roleId}`](#get-namespacesnamespaceidiamrolesroleid) | Get an exact Namespace IAM Role |
+| [`GET /namespaces/{namespaceId}/iam/service-principals`](#get-namespacesnamespaceidiamserviceprincipals) | List the Namespace's non-Agent ServicePrincipals |
+| [`POST /namespaces/{namespaceId}/iam/service-principals`](#post-namespacesnamespaceidiamserviceprincipals) | Create a Namespace ServicePrincipal with no grants for automation or CLI keys |
+| [`GET /namespaces/{namespaceId}/iam/service-principals/{servicePrincipalId}`](#get-namespacesnamespaceidiamserviceprincipalsserviceprincipalid) | Get an exact Namespace ServicePrincipal |
+
+#### `GET /iam/default-users`
+
+<span id="get-iamdefaultusers"></span>
+
+List the Principals in the built-in Default users Group
+
+**Operation ID:** `listDefaultUsers`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object>` | Yes | — |
+| `data[].principalId` | `string` | Yes | min length: 1; max length: 200 |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "principalId": "prn_33333333-3333-4333-8333-333333333333"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `DELETE /iam/default-users/{principalId}`
+
+<span id="delete-iamdefaultusersprincipalid"></span>
+
+Remove a Principal from Default users; the Namespaces it owns remain
+
+**Operation ID:** `removeDefaultUser`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `principalId` | path | `string` | Yes | min length: 1; max length: 200 | "prn_33333333-3333-4333-8333-333333333333" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `204` | No Content |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+#### `PUT /iam/default-users/{principalId}`
+
+<span id="put-iamdefaultusersprincipalid"></span>
+
+Add an Installation Principal to Default users so it can create Namespaces
+
+**Operation ID:** `addDefaultUser`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `principalId` | path | `string` | Yes | min length: 1; max length: 200 | "prn_33333333-3333-4333-8333-333333333333" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `204` | No Content |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+#### `GET /namespaces/{namespaceId}/iam/access-bindings`
+
+<span id="get-namespacesnamespaceidiamaccessbindings"></span>
+
+List exact Namespace IAM AccessBindings
+
+**Operation ID:** `listIAMAccessBindings`
+
+**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+| `read` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object or object>` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "id": "binding-agent-secret",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+      "resourceId": "sec_123e4567-e89b-42d3-a456-426614174000",
+      "resourceKind": "secret",
+      "roleId": "role-secret-operator",
+      "subjectId": "principal-docs-agent",
+      "subjectKind": "identity"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/iam/access-bindings`
+
+<span id="post-namespacesnamespaceidiamaccessbindings"></span>
+
+Create an immutable exact-resource Namespace IAM AccessBinding
+
+**Operation ID:** `createIAMAccessBinding`
+
+**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace. Requires read permission on the request body Agent when the AccessBinding targets that resource kind. Requires read permission on the request body Agent revision when the AccessBinding targets that resource kind. Requires read permission on the request body Configuration when the AccessBinding targets that resource kind. Requires read permission on the request body CredentialSource when the AccessBinding targets that resource kind. Requires read permission on the request body Namespace when the AccessBinding targets that resource kind. Requires read permission on the request body Preset when the AccessBinding targets that resource kind. Requires read permission on the request body Secret when the AccessBinding targets that resource kind. Requires read permission on the request body ServiceAccount when the AccessBinding targets that resource kind.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+| `read` | `namespace` | `requested` |
+| `read` | `agent` | `request_body` |
+| `read` | `agent_revision` | `request_body` |
+| `read` | `configuration` | `request_body` |
+| `read` | `credential_source` | `request_body` |
+| `read` | `namespace` | `request_body` |
+| `read` | `preset` | `request_body` |
+| `read` | `secret` | `request_body` |
+| `read` | `service_account` | `request_body` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `resourceId` | `string` | Yes | min length: 1; max length: 200 |
+| `resourceKind` | `"namespace" or "agent" or "agent_revision" or "configuration" or "credential_source" or "sandbox_policy" or "preset" or "secret" or "service_account"` | Yes | — |
+| `roleId` | `string` | Yes | min length: 1; max length: 200 |
+| `subjectId` | `string` | Yes | min length: 1; max length: 200 |
+| `subjectKind` | `"identity"` | Yes | — |
+
+Example request
+```json
+{
+  "resourceId": "sec_123e4567-e89b-42d3-a456-426614174000",
+  "resourceKind": "secret",
+  "roleId": "role-secret-operator",
+  "subjectId": "principal-docs-agent",
+  "subjectKind": "identity"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `201` | Created |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`201` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "binding-agent-secret",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "resourceId": "sec_123e4567-e89b-42d3-a456-426614174000",
+    "resourceKind": "secret",
+    "roleId": "role-secret-operator",
+    "subjectId": "principal-docs-agent",
+    "subjectKind": "identity"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `DELETE /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`
+
+<span id="delete-namespacesnamespaceidiamaccessbindingsbindingid"></span>
+
+Delete one exact Namespace IAM AccessBinding
+
+**Operation ID:** `deleteIAMAccessBinding`
+
+**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+| `read` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `bindingId` | path | `string` | Yes | min length: 1; max length: 200 | "binding-agent-secret" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `204` | No Content |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+#### `GET /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`
+
+<span id="get-namespacesnamespaceidiamaccessbindingsbindingid"></span>
+
+Get an exact Namespace IAM AccessBinding
+
+**Operation ID:** `getIAMAccessBinding`
+
+**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+| `read` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `bindingId` | path | `string` | Yes | min length: 1; max length: 200 | "binding-agent-secret" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "binding-agent-secret",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "resourceId": "sec_123e4567-e89b-42d3-a456-426614174000",
+    "resourceKind": "secret",
+    "roleId": "role-secret-operator",
+    "subjectId": "principal-docs-agent",
+    "subjectKind": "identity"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /namespaces/{namespaceId}/iam/roles`
+
+<span id="get-namespacesnamespaceidiamroles"></span>
+
+List exact Namespace IAM Roles
+
+**Operation ID:** `listIAMRoles`
+
+**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+| `read` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object>` | Yes | — |
+| `data[].id` | `string` | Yes | min length: 1; max length: 200 |
+| `data[].name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
+| `data[].permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy"` | Yes | — |
+| `data[].permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "id": "role-secret-operator",
+      "name": "Secret operator",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+      "permissions": [
+        {
+          "action": "operate",
+          "resourceKind": "secret"
+        }
+      ]
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/iam/roles`
+
+<span id="post-namespacesnamespaceidiamroles"></span>
+
+Create an immutable Namespace IAM Role
+
+**Operation ID:** `createIAMRole`
+
+**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+| `read` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
+| `permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy"` | Yes | — |
+| `permissions[].resourceKind` | `"namespace" or "agent" or "agent_revision" or "configuration" or "credential_source" or "sandbox_policy" or "preset" or "secret" or "service_account"` | Yes | — |
+
+Example request
+```json
+{
+  "name": "Secret operator",
+  "permissions": [
+    {
+      "action": "operate",
+      "resourceKind": "secret"
+    }
+  ]
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `201` | Created |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`201` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.id` | `string` | Yes | min length: 1; max length: 200 |
+| `data.name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
+| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy"` | Yes | — |
+| `data.permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "role-secret-operator",
+    "name": "Secret operator",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "permissions": [
+      {
+        "action": "operate",
+        "resourceKind": "secret"
+      }
+    ]
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `DELETE /namespaces/{namespaceId}/iam/roles/{roleId}`
+
+<span id="delete-namespacesnamespaceidiamrolesroleid"></span>
+
+Delete an unreferenced exact Namespace IAM Role
+
+**Operation ID:** `deleteIAMRole`
+
+**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+| `read` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `roleId` | path | `string` | Yes | min length: 1; max length: 200 | "role-secret-operator" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `204` | No Content |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+#### `GET /namespaces/{namespaceId}/iam/roles/{roleId}`
+
+<span id="get-namespacesnamespaceidiamrolesroleid"></span>
+
+Get an exact Namespace IAM Role
+
+**Operation ID:** `getIAMRole`
+
+**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+| `read` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `roleId` | path | `string` | Yes | min length: 1; max length: 200 | "role-secret-operator" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.id` | `string` | Yes | min length: 1; max length: 200 |
+| `data.name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
+| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy"` | Yes | — |
+| `data.permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "role-secret-operator",
+    "name": "Secret operator",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "permissions": [
+      {
+        "action": "operate",
+        "resourceKind": "secret"
+      }
+    ]
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /namespaces/{namespaceId}/iam/service-principals`
+
+<span id="get-namespacesnamespaceidiamserviceprincipals"></span>
+
+List the Namespace's non-Agent ServicePrincipals
+
+**Operation ID:** `listIAMServicePrincipals`
+
+**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+| `read` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object>` | Yes | — |
+| `data[].id` | `string` | Yes | min length: 1; max length: 200 |
+| `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "id": "principal-docs-agent",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/iam/service-principals`
+
+<span id="post-namespacesnamespaceidiamserviceprincipals"></span>
+
+Create a Namespace ServicePrincipal with no grants for automation or CLI keys
+
+**Operation ID:** `createIAMServicePrincipal`
+
+**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+| `read` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+Schema: `object`.
+
+Example request
+```json
+{}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `201` | Created |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`201` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | A non-Agent automation identity fixed to one Namespace. It holds only the grants of AccessBindings that name it. |
+| `data.id` | `string` | Yes | min length: 1; max length: 200 |
+| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "principal-docs-agent",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /namespaces/{namespaceId}/iam/service-principals/{servicePrincipalId}`
+
+<span id="get-namespacesnamespaceidiamserviceprincipalsserviceprincipalid"></span>
+
+Get an exact Namespace ServicePrincipal
+
+**Operation ID:** `getIAMServicePrincipal`
+
+**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+| `read` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `servicePrincipalId` | path | `string` | Yes | min length: 1; max length: 200 | "principal-docs-agent" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | A non-Agent automation identity fixed to one Namespace. It holds only the grants of AccessBindings that name it. |
+| `data.id` | `string` | Yes | min length: 1; max length: 200 |
+| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "principal-docs-agent",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 <span id="installation"></span>
 
 ### Installation
@@ -2169,6 +3051,7 @@ List authorized Namespaces
 | --- | --- | --- | --- |
 | `data` | `array<object>` | Yes | — |
 | `data[].createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
+| `data[].createdBy` | `string` | No | min length: 1; max length: 200; The Principal who created and owns the Namespace as a Default user. |
 | `data[].existingNamespace` | `string` | No | min length: 1; max length: 63; pattern: `^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$` |
 | `data[].id` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
@@ -2257,6 +3140,7 @@ Example request
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
+| `data.createdBy` | `string` | No | min length: 1; max length: 200; The Principal who created and owns the Namespace as a Default user. |
 | `data.existingNamespace` | `string` | No | min length: 1; max length: 63; pattern: `^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$` |
 | `data.id` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
@@ -2318,6 +3202,7 @@ Begin or retry deletion of an empty Installation-owned Namespace
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
+| `data.createdBy` | `string` | No | min length: 1; max length: 200; The Principal who created and owns the Namespace as a Default user. |
 | `data.existingNamespace` | `string` | No | min length: 1; max length: 63; pattern: `^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$` |
 | `data.id` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
@@ -2378,6 +3263,7 @@ Get an exact Installation-owned Namespace
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
+| `data.createdBy` | `string` | No | min length: 1; max length: 200; The Principal who created and owns the Namespace as a Default user. |
 | `data.existingNamespace` | `string` | No | min length: 1; max length: 63; pattern: `^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$` |
 | `data.id` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
@@ -8762,760 +9648,6 @@ Example response
     },
     "state": "ready",
     "type": "openai"
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-<span id="iam"></span>
-
-### IAM
-
-| Operation | Summary |
-| --- | --- |
-| [`GET /namespaces/{namespaceId}/iam/access-bindings`](#get-namespacesnamespaceidiamaccessbindings) | List exact Namespace IAM AccessBindings |
-| [`POST /namespaces/{namespaceId}/iam/access-bindings`](#post-namespacesnamespaceidiamaccessbindings) | Create an immutable exact-resource Namespace IAM AccessBinding |
-| [`DELETE /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`](#delete-namespacesnamespaceidiamaccessbindingsbindingid) | Delete one exact Namespace IAM AccessBinding |
-| [`GET /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`](#get-namespacesnamespaceidiamaccessbindingsbindingid) | Get an exact Namespace IAM AccessBinding |
-| [`GET /namespaces/{namespaceId}/iam/roles`](#get-namespacesnamespaceidiamroles) | List exact Namespace IAM Roles |
-| [`POST /namespaces/{namespaceId}/iam/roles`](#post-namespacesnamespaceidiamroles) | Create an immutable Namespace IAM Role |
-| [`DELETE /namespaces/{namespaceId}/iam/roles/{roleId}`](#delete-namespacesnamespaceidiamrolesroleid) | Delete an unreferenced exact Namespace IAM Role |
-| [`GET /namespaces/{namespaceId}/iam/roles/{roleId}`](#get-namespacesnamespaceidiamrolesroleid) | Get an exact Namespace IAM Role |
-| [`GET /namespaces/{namespaceId}/iam/service-principals`](#get-namespacesnamespaceidiamserviceprincipals) | List the Namespace's non-Agent ServicePrincipals |
-| [`POST /namespaces/{namespaceId}/iam/service-principals`](#post-namespacesnamespaceidiamserviceprincipals) | Create a Namespace ServicePrincipal with no grants for automation or CLI keys |
-| [`GET /namespaces/{namespaceId}/iam/service-principals/{servicePrincipalId}`](#get-namespacesnamespaceidiamserviceprincipalsserviceprincipalid) | Get an exact Namespace ServicePrincipal |
-
-#### `GET /namespaces/{namespaceId}/iam/access-bindings`
-
-<span id="get-namespacesnamespaceidiamaccessbindings"></span>
-
-List exact Namespace IAM AccessBindings
-
-**Operation ID:** `listIAMAccessBindings`
-
-**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-| `read` | `namespace` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `array<object or object>` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-No readable resources
-```json
-{
-  "data": [],
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-Example response
-```json
-{
-  "data": [
-    {
-      "id": "binding-agent-secret",
-      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-      "resourceId": "sec_123e4567-e89b-42d3-a456-426614174000",
-      "resourceKind": "secret",
-      "roleId": "role-secret-operator",
-      "subjectId": "principal-docs-agent",
-      "subjectKind": "identity"
-    }
-  ],
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `POST /namespaces/{namespaceId}/iam/access-bindings`
-
-<span id="post-namespacesnamespaceidiamaccessbindings"></span>
-
-Create an immutable exact-resource Namespace IAM AccessBinding
-
-**Operation ID:** `createIAMAccessBinding`
-
-**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace. Requires read permission on the request body Agent when the AccessBinding targets that resource kind. Requires read permission on the request body Agent revision when the AccessBinding targets that resource kind. Requires read permission on the request body Configuration when the AccessBinding targets that resource kind. Requires read permission on the request body CredentialSource when the AccessBinding targets that resource kind. Requires read permission on the request body Namespace when the AccessBinding targets that resource kind. Requires read permission on the request body Preset when the AccessBinding targets that resource kind. Requires read permission on the request body Secret when the AccessBinding targets that resource kind. Requires read permission on the request body ServiceAccount when the AccessBinding targets that resource kind.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-| `read` | `namespace` | `requested` |
-| `read` | `agent` | `request_body` |
-| `read` | `agent_revision` | `request_body` |
-| `read` | `configuration` | `request_body` |
-| `read` | `credential_source` | `request_body` |
-| `read` | `namespace` | `request_body` |
-| `read` | `preset` | `request_body` |
-| `read` | `secret` | `request_body` |
-| `read` | `service_account` | `request_body` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Request body
-
-**Required:** Yes
-
-**Content type:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `resourceId` | `string` | Yes | min length: 1; max length: 200 |
-| `resourceKind` | `"namespace" or "agent" or "agent_revision" or "configuration" or "credential_source" or "sandbox_policy" or "preset" or "secret" or "service_account"` | Yes | — |
-| `roleId` | `string` | Yes | min length: 1; max length: 200 |
-| `subjectId` | `string` | Yes | min length: 1; max length: 200 |
-| `subjectKind` | `"identity"` | Yes | — |
-
-Example request
-```json
-{
-  "resourceId": "sec_123e4567-e89b-42d3-a456-426614174000",
-  "resourceKind": "secret",
-  "roleId": "role-secret-operator",
-  "subjectId": "principal-docs-agent",
-  "subjectKind": "identity"
-}
-```
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `201` | Created |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `413` | The request body exceeds the permitted size. |
-| `415` | The request content type is not supported. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`201` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object or object` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "id": "binding-agent-secret",
-    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "resourceId": "sec_123e4567-e89b-42d3-a456-426614174000",
-    "resourceKind": "secret",
-    "roleId": "role-secret-operator",
-    "subjectId": "principal-docs-agent",
-    "subjectKind": "identity"
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `DELETE /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`
-
-<span id="delete-namespacesnamespaceidiamaccessbindingsbindingid"></span>
-
-Delete one exact Namespace IAM AccessBinding
-
-**Operation ID:** `deleteIAMAccessBinding`
-
-**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-| `read` | `namespace` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `bindingId` | path | `string` | Yes | min length: 1; max length: 200 | "binding-agent-secret" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `204` | No Content |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-#### `GET /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`
-
-<span id="get-namespacesnamespaceidiamaccessbindingsbindingid"></span>
-
-Get an exact Namespace IAM AccessBinding
-
-**Operation ID:** `getIAMAccessBinding`
-
-**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-| `read` | `namespace` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `bindingId` | path | `string` | Yes | min length: 1; max length: 200 | "binding-agent-secret" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object or object` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "id": "binding-agent-secret",
-    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "resourceId": "sec_123e4567-e89b-42d3-a456-426614174000",
-    "resourceKind": "secret",
-    "roleId": "role-secret-operator",
-    "subjectId": "principal-docs-agent",
-    "subjectKind": "identity"
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `GET /namespaces/{namespaceId}/iam/roles`
-
-<span id="get-namespacesnamespaceidiamroles"></span>
-
-List exact Namespace IAM Roles
-
-**Operation ID:** `listIAMRoles`
-
-**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-| `read` | `namespace` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `array<object>` | Yes | — |
-| `data[].id` | `string` | Yes | min length: 1; max length: 200 |
-| `data[].name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data[].permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy"` | Yes | — |
-| `data[].permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-No readable resources
-```json
-{
-  "data": [],
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-Example response
-```json
-{
-  "data": [
-    {
-      "id": "role-secret-operator",
-      "name": "Secret operator",
-      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-      "permissions": [
-        {
-          "action": "operate",
-          "resourceKind": "secret"
-        }
-      ]
-    }
-  ],
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `POST /namespaces/{namespaceId}/iam/roles`
-
-<span id="post-namespacesnamespaceidiamroles"></span>
-
-Create an immutable Namespace IAM Role
-
-**Operation ID:** `createIAMRole`
-
-**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-| `read` | `namespace` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Request body
-
-**Required:** Yes
-
-**Content type:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy"` | Yes | — |
-| `permissions[].resourceKind` | `"namespace" or "agent" or "agent_revision" or "configuration" or "credential_source" or "sandbox_policy" or "preset" or "secret" or "service_account"` | Yes | — |
-
-Example request
-```json
-{
-  "name": "Secret operator",
-  "permissions": [
-    {
-      "action": "operate",
-      "resourceKind": "secret"
-    }
-  ]
-}
-```
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `201` | Created |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `413` | The request body exceeds the permitted size. |
-| `415` | The request content type is not supported. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`201` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.id` | `string` | Yes | min length: 1; max length: 200 |
-| `data.name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy"` | Yes | — |
-| `data.permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "id": "role-secret-operator",
-    "name": "Secret operator",
-    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "permissions": [
-      {
-        "action": "operate",
-        "resourceKind": "secret"
-      }
-    ]
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `DELETE /namespaces/{namespaceId}/iam/roles/{roleId}`
-
-<span id="delete-namespacesnamespaceidiamrolesroleid"></span>
-
-Delete an unreferenced exact Namespace IAM Role
-
-**Operation ID:** `deleteIAMRole`
-
-**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-| `read` | `namespace` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `roleId` | path | `string` | Yes | min length: 1; max length: 200 | "role-secret-operator" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `204` | No Content |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-#### `GET /namespaces/{namespaceId}/iam/roles/{roleId}`
-
-<span id="get-namespacesnamespaceidiamrolesroleid"></span>
-
-Get an exact Namespace IAM Role
-
-**Operation ID:** `getIAMRole`
-
-**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-| `read` | `namespace` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `roleId` | path | `string` | Yes | min length: 1; max length: 200 | "role-secret-operator" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.id` | `string` | Yes | min length: 1; max length: 200 |
-| `data.name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy"` | Yes | — |
-| `data.permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "id": "role-secret-operator",
-    "name": "Secret operator",
-    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "permissions": [
-      {
-        "action": "operate",
-        "resourceKind": "secret"
-      }
-    ]
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `GET /namespaces/{namespaceId}/iam/service-principals`
-
-<span id="get-namespacesnamespaceidiamserviceprincipals"></span>
-
-List the Namespace's non-Agent ServicePrincipals
-
-**Operation ID:** `listIAMServicePrincipals`
-
-**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-| `read` | `namespace` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `array<object>` | Yes | — |
-| `data[].id` | `string` | Yes | min length: 1; max length: 200 |
-| `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-No readable resources
-```json
-{
-  "data": [],
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-Example response
-```json
-{
-  "data": [
-    {
-      "id": "principal-docs-agent",
-      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-    }
-  ],
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `POST /namespaces/{namespaceId}/iam/service-principals`
-
-<span id="post-namespacesnamespaceidiamserviceprincipals"></span>
-
-Create a Namespace ServicePrincipal with no grants for automation or CLI keys
-
-**Operation ID:** `createIAMServicePrincipal`
-
-**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-| `read` | `namespace` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Request body
-
-**Required:** Yes
-
-**Content type:** `application/json`
-
-Schema: `object`.
-
-Example request
-```json
-{}
-```
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `201` | Created |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `413` | The request body exceeds the permitted size. |
-| `415` | The request content type is not supported. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`201` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | A non-Agent automation identity fixed to one Namespace. It holds only the grants of AccessBindings that name it. |
-| `data.id` | `string` | Yes | min length: 1; max length: 200 |
-| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "id": "principal-docs-agent",
-    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `GET /namespaces/{namespaceId}/iam/service-principals/{servicePrincipalId}`
-
-<span id="get-namespacesnamespaceidiamserviceprincipalsserviceprincipalid"></span>
-
-Get an exact Namespace ServicePrincipal
-
-**Operation ID:** `getIAMServicePrincipal`
-
-**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-| `read` | `namespace` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `servicePrincipalId` | path | `string` | Yes | min length: 1; max length: 200 | "principal-docs-agent" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | A non-Agent automation identity fixed to one Namespace. It holds only the grants of AccessBindings that name it. |
-| `data.id` | `string` | Yes | min length: 1; max length: 200 |
-| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "id": "principal-docs-agent",
-    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
