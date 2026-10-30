@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
 updated: 2026-10-30
-last_updated_session: authoring-run/6d054d8d-36a8-473d-a19e-d677d01685d1
+last_updated_session: authoring-run/3c09c85b-a796-4bb6-ba0c-b1a7b496d3d7
 ---
 
 # Credential source refresh Flow
@@ -9,15 +9,13 @@ last_updated_session: authoring-run/6d054d8d-36a8-473d-a19e-d677d01685d1
 ## Overview
 
 OCC registers an empty OAuth2 provider. The Refresh Driver requests a token;
-the gateway renews it before expiry. See the
-[credential source lifecycle](credential-source-lifecycle.md) for binding and withdrawal.
+the gateway renews it before expiry.
 
 In the [Codex device flow](#device-authorization-and-configuration), OpenShell keeps
 the refresh grant. The Harness receives a placeholder and account metadata. An
 operator connection can retrieve an access token for authorized discovery.
 These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
 
-For [GitHub access](#6-issue-and-renew-a-github-installation-token), the OCE worker owns issuance.
 [Git and draft pull requests](../reference/repository-credentials/prepared-native-git.md)
 can use committed tokens but cannot trigger issuance.
 
@@ -137,10 +135,11 @@ unknown outcomes skip compensation. Session events identify Agent or Namespace
 and source ID. Audit excludes handles, credentials, and user codes.
 
 `apps/controller/src/console/agents/device-login.mts:createDeviceLogin` records
-`start_unconfirmed` before sending a start. Both authentication forms retain it
-across navigation. Agent detail keeps its Credentials tab during a start; its
-draft records a later reply unless a newer tab owns it. Until the page is left,
-a usable reply supplies the challenge; a refusal permits retry.
+`start_unconfirmed` before a start; both authentication forms retain it across
+navigation. Agent detail keeps its Credentials tab during a start; its draft
+records a later reply unless a newer tab owns it. Before the page is left, a
+usable reply supplies the challenge; a `501`, or no Codex device-login type
+(`deviceLoginOffered`), disables Sign in; other refusals permit retry.
 Unconfirmed attempts cannot start again, poll, or cancel. See
 [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 Compare-and-swap serializes known-session polls. OCC rechecks scope and both
@@ -169,10 +168,10 @@ Ready confirms a usable token. Later versions attach the existing provider
 without reseeding credentials; account metadata changes require a new login and
 version.
 
-For plugin configuration, the Gateway reads ownership/account metadata using its
-ordinary Backend identity, then calls `GetProviderCredentials` through the
-separate operator-TLS channel. OpenShell may refresh to satisfy its five-minute
-remaining-lifetime requirement. Only access credentials enter the callback; it
+For plugin configuration, the Gateway reads ownership/account metadata with its
+Backend identity, then calls `GetProviderCredentials` through the
+operator-TLS channel. OpenShell may refresh to keep five minutes of lifetime.
+Only access credentials enter the callback; it
 rechecks the caller's authority and saved-Agent binding/grant before provider I/O.
 Closing or expiring the login session leaves source-based discovery enabled.
 Cancellation or a failed recheck cannot undo a started gateway refresh.
@@ -337,6 +336,8 @@ detached reads. Clearing bytes cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 13:13: Reconcile recovery. (authoring-run/3c09c85b-a796-4bb6-ba0c-b1a7b496d3d7 - 8d689e31869b067327c13e69c104d29cc3414e4d)
 
 - 2026-10-30 11:48: Reconcile recovery. (authoring-run/6d054d8d-36a8-473d-a19e-d677d01685d1 - 72ac4681002676b346792a56cfc42dd45a4a4588)
 

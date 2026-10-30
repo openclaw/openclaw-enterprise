@@ -18,7 +18,6 @@ import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-pr
 import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { reconcileSandboxPolicy } from "../../apps/controller/src/worker/sandbox-policy.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
   validateGitHubRepositoryRegistry,
@@ -233,14 +232,11 @@ function registryFor(namespaceId, extraRepositories = [], installationAccess = f
 }
 
 function repositoryDriver(registry, Driver = GitHubRepositoryPolicy) {
+  // Admission must complete without contacting the service or obtaining credentials.
   return new Driver(
     {
-      id: backendId,
-      // Admission must complete without contacting the service or obtaining credentials.
-      client: new UnixRepositoryCredentialControlClient({
-        controlSocket: "/unused/repository-admission/control.sock",
-      }),
-      drivers: { repo: driverId },
+      driverId,
+      backendId,
     },
     validateGitHubRepositoryRegistry(registry, backendId),
     { sessionDurationSeconds: 600 },

@@ -56,7 +56,8 @@
     "tests/integration/credential-proxy-withdrawal.test.ts",
     "tests/integration/credential-proxy-revision-currentness.test.ts",
     "tests/integration/postgres-egress-policy-transaction.test.ts",
-    "tests/integration/postgres-credential-source-revision-owner.test.ts"
+    "tests/integration/postgres-credential-source-revision-owner.test.ts",
+    "tests/integration/postgres-worker-process-shutdown.test.ts"
   ],
   "files": [
     {
@@ -551,6 +552,12 @@
         "reversed source lists commit in their original order",
         "direct insertion respects OCC Namespace Agent source lock order",
         "deleting source refuses waiting insertion and preserves archived bytes"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-process-shutdown.test.ts",
+      "expectedTests": [
+        "worker.mjs exits cleanly on SIGTERM after stopping the worker and its metrics listener"
       ]
     }
   ]

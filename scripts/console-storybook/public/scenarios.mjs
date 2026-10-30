@@ -62,6 +62,19 @@ const modelCredentialSourceTypes = [
     harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
   },
 ];
+// A Credential Gateway that also offers ChatGPT device login. Without that source type Sign in
+// with OAuth is unavailable before the click (finding 2991).
+const deviceLoginSourceTypes = [
+  ...modelCredentialSourceTypes,
+  {
+    type: "codex-oauth",
+    config: [],
+    secrets: [],
+    rotation: "refresh",
+    deviceAuthorization: { harnessId: "codex" },
+    harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" },
+  },
+];
 const dedicatedOpenclawForm = [
   ...readyForm,
   { selector: "#agent-harness", value: "openclaw" },
@@ -4186,6 +4199,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT OAuth before sign-in (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     pluginDiscovery,
     pluginCapabilities,
     actions: oauthForm,
@@ -4196,6 +4210,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT device login pending (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     oauthPending: true,
     actions: startOAuthLogin,
     description:
@@ -4205,6 +4220,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT sign-in interrupted by navigation (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
     actions: oauthForm,
     description:
@@ -4214,6 +4230,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login ready for plugin discovery (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     pluginDiscovery,
     pluginCapabilities,
     actions: startOAuthLogin,
@@ -4228,6 +4245,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login permission denied (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/device-authorizations", method: "POST", status: 403 }],
     actions: startOAuthLogin,
     description:
@@ -4237,15 +4255,35 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login unavailable (Experimental)",
     path: create,
-    rules: [{ suffix: "/device-authorizations", method: "POST", status: 501 }],
+    credentialSourceTypes: deviceLoginSourceTypes,
+    rules: [
+      {
+        suffix: "/device-authorizations",
+        method: "POST",
+        status: 501,
+        code: "NOT_IMPLEMENTED",
+        message:
+          "Device login needs a Credential Gateway and a Credential Refresh Driver, and this Installation does not select both. Ask an Installation administrator to select them; see the credential lifecycle guide.",
+      },
+    ],
     actions: startOAuthLogin,
     description:
-      "An Installation whose selected Drivers do not support device login reports it as unavailable. Choose another authentication method; no device code or sign-in link appears.",
+      "The Credential Gateway offers device login, but the Installation selects no Credential Refresh Driver. The refused start names the API's reason, and Sign in with OAuth stays unavailable, described by it. No device code or sign-in link appears.",
+  },
+  createOAuthNotOffered: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT login not offered by the Drivers (Experimental)",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: oauthForm,
+    description:
+      "The Installation's Credential Gateway offers no ChatGPT device login. Sign in with OAuth is unavailable before any request: Tab reaches it, it is described by the reason, and Enter sends nothing.",
   },
   createOAuthStartUnconfirmed: {
     group: "Pages/Create Agent",
     name: "ChatGPT sign-in start unconfirmed (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/device-authorizations", method: "POST", bodyError: true }],
     actions: oauthForm,
     description:
@@ -4255,6 +4293,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login exchange failed (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/poll", method: "POST", status: 503 }],
     actions: startOAuthLogin,
     description:
@@ -4264,6 +4303,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT device login expired (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     oauthExpired: true,
     actions: startOAuthLogin,
     description:
@@ -4288,6 +4328,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "ChatGPT replacement interrupted by navigation (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
@@ -4298,6 +4339,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "ChatGPT sign-in answered on another tab (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     oauthPending: true,
@@ -4309,6 +4351,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "ChatGPT sign-in refused on another tab (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     rules: [
@@ -4321,6 +4364,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "ChatGPT sign-in restarted on another tab (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     oauthPending: true,
@@ -4334,6 +4378,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "Explicit ChatGPT credential replacement (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     credentialSources: [

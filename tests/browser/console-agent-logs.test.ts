@@ -47,6 +47,7 @@ import {
   routeFailedDeployment,
   settledFetches,
   settlePageRequests,
+  settledView,
   trackSettledFetches,
   waitForCondition,
   waitForEnabled,
@@ -54,6 +55,7 @@ import {
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
+import { refocus } from "./console-refocus-helpers.mjs";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type LogLine = AgentRuntimeLogChunk["lines"][number];
@@ -1944,6 +1946,28 @@ test("Logs show a second redeploy from elsewhere after a failed one, then its ow
   const shown = await attention.innerText();
   assert.match(shown, /v3 did not deploy successfully \(DEPENDENCY_UNAVAILABLE\)/);
   assert.doesNotMatch(shown, /v2|RUNTIME_MODEL_PROBE_TIMEOUT/);
+
+  // Within the minute after v3 was listed, another session stops the Agent and deploys v4. Only
+  // an unchanged Agent waits for the minute: the poll that sees it running again lists v4 at once.
+  const stopped = await fixture.request("POST", `${agentPath}/stop`);
+  assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
+  const beforeFourth = await poll();
+  const fourth = await fixture.deployAgent(namespace.id, agent.id);
+  await page.route(`${fixture.origin}${agentPath}/deployments/${fourth.id}`, (route) =>
+    route.fulfill(
+      deploymentStatusResponse(
+        {
+          id: fourth.id,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          createdAt: fourth.createdAt,
+        },
+        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
+      ),
+    ),
+  );
+  assert.equal(await poll(), beforeFourth + 1, "the poll after the redeploy lists the versions");
+  await shows(/Latest visible deployment\s+v4\s+·\s+Queued/);
 });
 
 // Finding 2988. A caller with read on some versions only is never listed a newer one it cannot
@@ -2045,6 +2069,30 @@ for (const viewport of [
     assert.equal(await filter.evaluate((node) => node === globalThis.document.activeElement), true);
     const box = await notice.boundingBox();
     assert.ok(box && box.y >= 0 && box.y + box.height <= viewport.height, JSON.stringify(box));
+    // The line is a status, so a screen reader announces it where the reader is.
+    assert.equal(
+      await view
+        .getByRole("status")
+        .filter({ hasText: "v2 failed its startup model check." })
+        .count(),
+      1,
+    );
+
+    // A refocus recheck rereads the permission answer, which redraws the card with the same
+    // failure. The line is left as it is, so a keyboard reader on its link keeps focus.
+    await link.focus();
+    await refocus(page);
+    await page.locator(settledView).waitFor();
+    await waitForIdleFetches(page);
+    await waitForCondition(
+      () => link.evaluate((node) => node === globalThis.document.activeElement),
+      "the refocus took focus from the line's link",
+    );
+    // A Logs view built after the failure was found shows the line from its first view.
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true, selected: true }).waitFor();
+    await page.getByRole("tab", { name: "Logs", exact: true }).click();
+    await notice.getByText("v2 failed its startup model check.", { exact: false }).waitFor();
 
     // A later deployment from elsewhere succeeds: the failure no longer applies.
     const before = (await fixture.request("GET", agentPath)).data;

@@ -1,16 +1,17 @@
 import type {
   CredentialSourceReference,
   HarnessAuthBinding,
+  InstallationCapabilities,
   SecretMetadata,
   SecretReference,
   ServiceAccount,
 } from "@openclaw-enterprise/contracts";
-import { requestFailure, responseFields } from "../api-client.mjs";
+import { INSTALLATION_ADMINISTRATION, requestFailure, responseFields } from "../api-client.mjs";
 import { element, setUnavailable } from "../dom.mjs";
 import { message, namespaceListNeed, namespacePath } from "./list.mjs";
 import { createSecretReferenceField, renderSecretReference } from "./secret-picker.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
-import { createDeviceLogin, type DeviceLogin } from "./device-login.mjs";
+import { createDeviceLogin, deviceLoginOffered, type DeviceLogin } from "./device-login.mjs";
 
 // Display native model policy; deployment admission owns full Configuration validation.
 export function configuredHarnessId(values: unknown): "codex" | "openclaw" | undefined {
@@ -54,7 +55,10 @@ export function configuredHarnessId(values: unknown): "codex" | "openclaw" | und
 }
 
 type AuthBinding = HarnessAuthBinding | null | undefined;
-type HarnessAuthContext = AgentAccessContext & { agentId?: string | undefined };
+type HarnessAuthContext = AgentAccessContext & {
+  agentId?: string | undefined;
+  installationAdmin?: boolean | null;
+};
 
 export function harnessAuthDescription(binding: AuthBinding) {
   if (!binding) {
@@ -216,6 +220,29 @@ export function createHarnessAuthFields(
     },
     onStartSettled: () => options.onStartSettled?.(),
   });
+  // Only an Installation administrator reads the Installation, which says whether its Drivers
+  // offer a device login at all (finding 2991). Read once, when ChatGPT OAuth is first chosen; a
+  // failed read leaves Sign in offered.
+  let offerRead = false;
+  function readOffer() {
+    if (offerRead || context.installationAdmin !== true) {
+      return;
+    }
+    offerRead = true;
+    context.request("/installation", INSTALLATION_ADMINISTRATION).then(
+      (installation) => {
+        if (context.isCurrent()) {
+          const { capabilities } = responseFields(installation);
+          oauthLogin.setOffered(deviceLoginOffered(capabilities as InstallationCapabilities));
+        }
+      },
+      (error: unknown) => {
+        if (context.isCurrent() && requestFailure(error).status === 401) {
+          context.onExpired();
+        }
+      },
+    );
+  }
   const currentOAuth = element(
     "p",
     { className: "hint" },
@@ -263,6 +290,9 @@ export function createHarnessAuthFields(
     validationHint.hidden = usesOAuth;
     oauthLogin.setActive(usesOAuth);
     oauthLogin.setDisabled(disabled);
+    if (usesOAuth) {
+      readOffer();
+    }
     currentOAuth.hidden =
       method.value !== "credential_source" || binding?.method !== "credential_source";
     secretField.hidden = !directSecret;

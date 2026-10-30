@@ -119,9 +119,13 @@ test(
       const sender = new GitHubNativeRepositorySender(repositoryBackend, {
         publicCa: credentials.tls.ca,
       });
-      const driver = new GitHubRepositoryPolicy(repositoryBackend, credentials.registry, {
-        sessionDurationSeconds: 60,
-      });
+      const driver = new GitHubRepositoryPolicy(
+        { driverId: repositoryBackend.drivers.repo, backendId: repositoryBackend.id },
+        credentials.registry,
+        {
+          sessionDurationSeconds: 60,
+        },
+      );
       // The real resolver admits selection fields and returns the richer frozen
       // binding. Worker revalidation must project that snapshot back to selections;
       // the strict registry parser rejects backendId/grant as caller input.
