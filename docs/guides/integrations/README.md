@@ -13,6 +13,9 @@ authentication.
 | Let people send messages to an Agent in Slack                | [Slack](slack.md)                                                                  |
 | Give an Agent access to GitHub repositories                  | [Repository access](../repository-credentials.md)                                  |
 
+For a local OpenShell Agent with native Git and a repository-scoped GitHub token,
+follow [Push a Git branch from an OpenShell Agent](../repository-credentials/openshell-git-push.md).
+
 [Backends (experimental)](../../reference/backends.md) lists what an Installation can
 configure. A ChatGPT Backend manages service accounts; it does not route
 inference. To give an Agent an existing OpenAI API key, use the

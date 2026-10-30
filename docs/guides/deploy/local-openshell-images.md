@@ -127,3 +127,55 @@ For invalid or missing candidates, correct the selectors or prepare the missing
 local images and retry. Follow any printed cleanup instruction if startup
 retains state. To return to released defaults on the next fresh start, **unset**
 all four candidate selectors; assigning empty values is an error.
+
+## Trust an upstream CA on local k3d
+
+On a network that intercepts HTTPS, OpenShell's separate supervisor needs the approved upstream CA to connect to GitHub and the model provider. On the Docker-backed Linux k3d profile, apply this change after installation and before deploying the first Agent. Keep the published OCE controller and runtime. Only the supervisor image changes.
+
+Set `CA_BUNDLE` to a PEM file containing the usual public roots and the network's approved public root, without private keys. Use the generated kubeconfig, context, and release for this installation. For the pinned OpenShell 0.1.5 profile:
+
+```bash
+set -euo pipefail
+umask 077
+state=${OCC_DEVELOPMENT_STATE_DIRECTORY:?}
+cluster=$(jq -er .cluster "$state/state.json")
+context="k3d-$cluster"
+ns=$(jq -er .platformNamespace "$state/state.json")
+export KUBECONFIG="$state/kubeconfig"
+test "$(kubectl config current-context)" = "$context"
+dir=$(mktemp -d)
+cp "${CA_BUNDLE:?Supply the approved public CA bundle}" "$dir/ca-certificates.crt"
+cat > "$dir/Dockerfile" <<'DOCKERFILE'
+FROM ghcr.io/nvidia/openshell/supervisor:0.1.5@sha256:fabcd01f656e9d23df4386f82e80b4f48b90f3452d7d5c58889007643a069161
+COPY --chmod=0644 ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+DOCKERFILE
+repo=docker.io/openclaw-development/openshell-supervisor
+tag="$repo:local-ca-$(date +%s)"
+docker build -t "$tag" "$dir"
+node="k3d-$cluster-server-0"
+docker save "$tag" | docker exec -i "$node" ctr -n k8s.io images import -
+digest=$(docker exec "$node" ctr -n k8s.io images ls | awk -v tag="$tag" '$1==tag {print $3}')
+[[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+docker exec "$node" ctr -n k8s.io images tag "$tag" "$repo@$digest"
+helm --kube-context "$context" -n "$ns" get values openshell-gateway -o json > "$dir/values.json"
+helm --kube-context "$context" -n "$ns" upgrade openshell-gateway \
+  "$state/openshell/chart/helm-chart-0.1.5.tgz" -f "$dir/values.json" \
+  --set-string supervisor.image.registry=docker.io \
+  --set-string supervisor.image.repository=openclaw-development/openshell-supervisor \
+  --set-string supervisor.image.digest="$digest" --wait
+```
+
+Check the supervisor Pod's image ID against the imported manifest. Keep the Sandbox's injected Git CA and TLS verification enabled.
+
+If installation stalls while pulling the Agent Sandbox controller, check the `agent-sandbox-system` Pod events with the new cluster's kubeconfig. When the host can pull the required image but the node cannot, import that exact image from another terminal while the launcher waits:
+
+```bash
+state=${OCC_DEVELOPMENT_STATE_DIRECTORY:?}
+cluster=$(jq -er .cluster "$state/state.json")
+node="k3d-$cluster-server-0"
+image=$(kubectl --kubeconfig "$state/kubeconfig" --context "k3d-$cluster" \
+  -n agent-sandbox-system get deployment agent-sandbox-controller \
+  -o jsonpath='{.spec.template.spec.containers[0].image}')
+docker pull "$image"
+docker save "$image" | docker exec -i "$node" ctr -n k8s.io images import -
+```

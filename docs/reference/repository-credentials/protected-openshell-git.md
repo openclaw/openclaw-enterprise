@@ -9,7 +9,7 @@ and [Driver delivery profiles](../drivers/credential-proxy.md#delivery-profiles)
 OCC's v7 support is for a capable exact-dispatch Driver with verified reduction;
 it does not qualify this stock adapter or upgrade its v5/v6 guarantees.
 
-The bundled OpenShell Driver therefore refuses `git-write` delivery: deploy returns
+With this protected Credential Proxy sender, the bundled OpenShell Driver refuses `git-write` delivery: deploy returns
 `409 REPOSITORY_GIT_SENDER_UNQUALIFIED` and creates no revision, and a revision
 admitted before this check fails with the same code instead of waiting for the
 convergence deadline. Remove the binding, select a separately installed sender qualified

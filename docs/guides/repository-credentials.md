@@ -6,6 +6,9 @@ The worker Token Service owns GitHub App credentials. Choose an
 the [team runbook](repository-credentials/team-runbook.md) covers App registration,
 configuration, a first draft PR and cleanup.
 
+For an OpenShell Sandbox with static Credential Gateway credentials, follow
+[Push a Git branch from an OpenShell Agent](repository-credentials/openshell-git-push.md).
+
 Keep the gateway private to approved clients, with enforced NetworkPolicies and
 HTTPS on port 443. A `.svc` hostname or ClusterIP alone does not establish isolation;
 check forwarding, Ingress, load balancers and effective policy enforcement.

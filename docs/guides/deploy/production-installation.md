@@ -17,8 +17,7 @@ and chart selection. Retain this shell and protected files for
 
 ## Use published images
 
-Use `ghcr.io/openclaw/openclaw-enterprise-controller:latest` and
-`ghcr.io/openclaw/openclaw-enterprise-runtime:latest` through the
+Select the `stable` or `latest` controller and runtime pair through the
 [published-image procedure](published-images.md), which checks the image source commits and sets
 `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` and selects the matching checkout and
 chart. Complete it before generating configuration; then skip the build section.

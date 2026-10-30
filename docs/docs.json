@@ -435,6 +435,10 @@
                         "label": "Team Runbook"
                       },
                       {
+                        "page": "guides/repository-credentials/openshell-git-push",
+                        "label": "OpenShell Git Push"
+                      },
+                      {
                         "page": "reference/repository-credentials",
                         "label": "Credential Lifecycle"
                       },

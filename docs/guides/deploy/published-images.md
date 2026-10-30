@@ -1,30 +1,36 @@
-# Use the latest published images
+# Use published controller and runtime images
 
-Select the controller and runtime with their `latest` tags, then use the source
+Select the controller and runtime with matching `stable` or `latest` tags, then use the source
 checkout and chart that match those images. This procedure works for
 [local setup](../quickstart.md#optional-use-matching-published-images) and
 [production installation](production-installation.md#use-published-images).
 Run it before generating Installation configuration.
 
-You need Bash, Docker, Git, and an existing repository checkout. The published
+You need Bash, Docker, Git, jq, and an existing repository checkout. The published
 GHCR packages are public. The deployment tools use immutable image references
 internally; the commands below resolve the selected tags so you do not need to
 find or copy a SHA manually.
 
-## Pull the latest pair
+<a id="pull-the-latest-pair"></a>
+
+## Pull a matching pair
 
 From a Bash shell in the repository root, select and pull both images
-anonymously. Run the
+anonymously. Set `export OCE_IMAGE_CHANNEL=stable` for the stable publication. The
+default selects `latest`. Run the
 whole block; it clears earlier selections and exports them only after both pulls
 and source commit checks succeed:
 
 ```bash
 unset CONTROLLER_IMAGE RUNTIME_IMAGE OCE_IMAGE_REVISION
-CONTROLLER_TAG='ghcr.io/openclaw/openclaw-enterprise-controller:latest'
-RUNTIME_TAG='ghcr.io/openclaw/openclaw-enterprise-runtime:latest'
+CHANNEL="${OCE_IMAGE_CHANNEL:-latest}"
+CONTROLLER_TAG="ghcr.io/openclaw/openclaw-enterprise-controller:$CHANNEL"
+RUNTIME_TAG="ghcr.io/openclaw/openclaw-enterprise-runtime:$CHANNEL"
 if docker pull "$CONTROLLER_TAG" && docker pull "$RUNTIME_TAG" &&
-   controller_image="$(docker image inspect "$CONTROLLER_TAG" --format '{{index .RepoDigests 0}}')" &&
-   runtime_image="$(docker image inspect "$RUNTIME_TAG" --format '{{index .RepoDigests 0}}')" &&
+   controller_image="$(docker image inspect "$CONTROLLER_TAG" --format '{{json .RepoDigests}}' |
+     jq -er --arg repo "${CONTROLLER_TAG%:*}@" 'map(select(startswith($repo))) | unique | select(length == 1) | first')" &&
+   runtime_image="$(docker image inspect "$RUNTIME_TAG" --format '{{json .RepoDigests}}' |
+     jq -er --arg repo "${RUNTIME_TAG%:*}@" 'map(select(startswith($repo))) | unique | select(length == 1) | first')" &&
    controller_revision="$(docker image inspect "$controller_image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" &&
    runtime_revision="$(docker image inspect "$runtime_image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" &&
    [[ "$controller_image" =~ @sha256:[a-f0-9]{64}$ ]] &&
@@ -49,8 +55,7 @@ instead, or [start the local stack](../quickstart.md#start-the-local-stack)
 without image selections, which builds this checkout. The two aliases are not
 updated atomically; retry both pulls after publication completes if they refer
 to different source commits.
-`latest` identifies the last publication to that alias, not necessarily the
-newest source commit: custom-tag publications leave it unchanged.
+Each alias identifies the last publication to that channel. The two channels can point to different commits.
 
 ## Check publication and source
 
@@ -65,7 +70,7 @@ Compare the source commit with your checkout:
 
 ```bash
 git rev-parse HEAD
-printf '%s\n' "${OCE_IMAGE_REVISION:?Select the latest images first}"
+printf '%s\n' "${OCE_IMAGE_REVISION:?Select the published images first}"
 ```
 
 If they differ, keep the existing checkout and create a separate release
@@ -82,7 +87,7 @@ Continue in this shell so the image selections remain exported. Use the chart,
 CLI, configuration renderer, and installation instructions from this matching
 checkout. If you need a feature introduced after the published commit,
 [build images from that newer checkout](production-installation.md#build-and-publish-production-images)
-instead of combining its configuration with older `latest` images.
+instead of combining its configuration with images from a different revision.
 
 For production, public GHCR pulls need no pull Secret. See
 [private-registry delivery](private-registry-images.md) only when copying images
@@ -95,4 +100,4 @@ The publication's startup checks do not establish a working Agent on your
 cluster. Finish [local first-Agent verification](../first-agent.md) or
 [production Agent verification](production-agents.md#verify-production-workloads).
 Keep the resolved image references with your deployment record so a later move
-of `latest` does not change which images were selected for this installation.
+of the selected alias does not change which images were selected for this installation.

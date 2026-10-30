@@ -35,7 +35,7 @@ key available when you continue to [deploy your first Agent](first-agent.md).
 ## Start the local stack
 
 By default, startup builds this checkout. To use published images, first
-[select the `latest` pair](#optional-use-matching-published-images).
+[select the published pair](#optional-use-matching-published-images).
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
@@ -127,13 +127,13 @@ if you used a custom state directory or service-key location.
 
 ## Optional: use matching published images
 
-Follow [Use the latest published images](deploy/published-images.md) to pull both
-`latest` tags and select their matching source checkout. Keep its resolved image
+Follow [Use published controller and runtime images](deploy/published-images.md) to pull
+the `latest` or `stable` pair and select its matching source checkout. Keep its resolved image
 variables in the shell used for startup:
 
 ```bash
-export OCC_DEVELOPMENT_CONTROLLER_IMAGE="${CONTROLLER_IMAGE:?Select the latest controller image first}"
-export OCC_KUBERNETES_RUNTIME_IMAGE="${RUNTIME_IMAGE:?Select the latest runtime image first}"
+export OCC_DEVELOPMENT_CONTROLLER_IMAGE="${CONTROLLER_IMAGE:?Select the published controller image first}"
+export OCC_KUBERNETES_RUNTIME_IMAGE="${RUNTIME_IMAGE:?Select the published runtime image first}"
 ```
 
 Return to [Start the local stack](#start-the-local-stack) in that checkout.
