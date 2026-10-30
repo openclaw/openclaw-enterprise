@@ -529,6 +529,7 @@ function operationTarget(
   }
   if (
     operation.operationId === "listConnectionTemplates" ||
+    operation.operationId === "discoverMcpConnection" ||
     operation.operationId === "createConnectionTemplate"
   ) {
     return { kind: "connection_template", id: installationId };

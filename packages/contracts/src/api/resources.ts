@@ -13,6 +13,7 @@ import {
   ConfigurationValues,
   CredentialSourceConfig,
   CredentialSourceId,
+  CredentialSourceProfileSchema,
   CredentialSourceReference,
   CredentialSourceSecrets,
   CredentialSourceType,
@@ -616,6 +617,7 @@ export const CredentialSourceSchema = Type.Object(
     type: CredentialSourceType,
     config: CredentialSourceConfig,
     secrets: CredentialSourceSecrets,
+    profile: Type.Optional(CredentialSourceProfileSchema),
     state: Type.Union([
       Type.Literal("registering"),
       Type.Literal("ready"),

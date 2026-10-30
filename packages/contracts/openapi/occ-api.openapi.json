@@ -501,6 +501,16 @@
                 "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                 "type": "string"
               },
+              "profile": {
+                "additionalProperties": false,
+                "description": "External account details returned on credential source reads and Agent connection lists.",
+                "properties": {
+                  "email": { "type": "string" },
+                  "externalUserId": { "type": "string" },
+                  "name": { "type": "string" }
+                },
+                "type": "object"
+              },
               "ref": {
                 "additionalProperties": false,
                 "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
@@ -10868,6 +10878,31 @@
                               },
                               "envVar": { "type": "string" },
                               "issuer": { "type": "string" },
+                              "mcp": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "resource": {
+                                    "maxLength": 2048,
+                                    "minLength": 9,
+                                    "pattern": "^https://",
+                                    "type": "string"
+                                  },
+                                  "serverUrl": {
+                                    "maxLength": 2048,
+                                    "minLength": 9,
+                                    "pattern": "^https://",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["serverUrl", "resource"],
+                                "type": "object"
+                              },
+                              "revocationUrl": {
+                                "maxLength": 2048,
+                                "minLength": 9,
+                                "pattern": "^https://",
+                                "type": "string"
+                              },
                               "scopes": { "items": { "type": "string" }, "type": "array" },
                               "tokenUrl": { "type": "string" },
                               "version": { "minimum": 1, "type": "integer" }
@@ -10890,6 +10925,10 @@
                           "displayName": { "type": "string" },
                           "id": {
                             "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "namespaceId": {
+                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
                           "redirectUri": { "type": "string" }
@@ -10969,6 +11008,9 @@
             "application/json": {
               "schema": {
                 "additionalProperties": false,
+                "description": "Supply a registered client ID or request dynamic registration at the reviewed MCP registration URL.",
+                "else": { "required": ["clientId"] },
+                "if": { "required": ["registrationUrl"] },
                 "properties": {
                   "authorizationParameters": {
                     "additionalProperties": { "maxLength": 512, "type": "string" },
@@ -10983,7 +11025,12 @@
                   },
                   "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
                   "clientSecret": { "maxLength": 4096, "minLength": 1, "type": "string" },
-                  "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "displayName": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                    "type": "string"
+                  },
                   "endpoint": {
                     "additionalProperties": false,
                     "properties": {
@@ -11001,6 +11048,41 @@
                   },
                   "envVar": { "pattern": "^[A-Z_][A-Z0-9_]{0,63}$", "type": "string" },
                   "issuer": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
+                  "mcp": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "resource": {
+                        "maxLength": 2048,
+                        "minLength": 9,
+                        "pattern": "^https://",
+                        "type": "string"
+                      },
+                      "serverUrl": {
+                        "maxLength": 2048,
+                        "minLength": 9,
+                        "pattern": "^https://",
+                        "type": "string"
+                      }
+                    },
+                    "required": ["serverUrl", "resource"],
+                    "type": "object"
+                  },
+                  "namespaceId": {
+                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "registrationUrl": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
+                  "revocationUrl": {
                     "maxLength": 2048,
                     "minLength": 9,
                     "pattern": "^https://",
@@ -11029,15 +11111,19 @@
                   "issuer",
                   "authorizationUrl",
                   "tokenUrl",
-                  "clientId",
                   "scopes",
                   "endpoint",
                   "envVar"
                 ],
+                "then": {
+                  "properties": { "clientId": false, "clientSecret": false },
+                  "required": ["mcp"]
+                },
                 "type": "object"
               }
             }
           },
+          "description": "Supply a registered client ID or request dynamic registration at the reviewed MCP registration URL.",
           "required": true
         },
         "responses": {
@@ -11074,6 +11160,31 @@
                             },
                             "envVar": { "type": "string" },
                             "issuer": { "type": "string" },
+                            "mcp": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "resource": {
+                                  "maxLength": 2048,
+                                  "minLength": 9,
+                                  "pattern": "^https://",
+                                  "type": "string"
+                                },
+                                "serverUrl": {
+                                  "maxLength": 2048,
+                                  "minLength": 9,
+                                  "pattern": "^https://",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["serverUrl", "resource"],
+                              "type": "object"
+                            },
+                            "revocationUrl": {
+                              "maxLength": 2048,
+                              "minLength": 9,
+                              "pattern": "^https://",
+                              "type": "string"
+                            },
                             "scopes": { "items": { "type": "string" }, "type": "array" },
                             "tokenUrl": { "type": "string" },
                             "version": { "minimum": 1, "type": "integer" }
@@ -11096,6 +11207,10 @@
                         "displayName": { "type": "string" },
                         "id": {
                           "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "namespaceId": {
+                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "redirectUri": { "type": "string" }
@@ -11170,6 +11285,12 @@
             },
             "description": "Default Response"
           },
+          "501": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
           "503": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
@@ -11178,6 +11299,190 @@
           }
         },
         "summary": "Create an Installation connection template",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "connection_template", "scope": "requested" }
+        ]
+      }
+    },
+    "/connection-templates/discover-mcp": {
+      "post": {
+        "description": "Requires create permission on the requested ConnectionTemplate.",
+        "operationId": "discoverMcpConnection",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "serverUrl": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  }
+                },
+                "required": ["serverUrl"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "authorizationUrl": {
+                          "maxLength": 2048,
+                          "minLength": 9,
+                          "pattern": "^https://",
+                          "type": "string"
+                        },
+                        "issuer": {
+                          "maxLength": 2048,
+                          "minLength": 9,
+                          "pattern": "^https://",
+                          "type": "string"
+                        },
+                        "redirectUri": { "type": "string" },
+                        "registrationUrl": {
+                          "maxLength": 2048,
+                          "minLength": 9,
+                          "pattern": "^https://",
+                          "type": "string"
+                        },
+                        "resource": {
+                          "maxLength": 2048,
+                          "minLength": 9,
+                          "pattern": "^https://",
+                          "type": "string"
+                        },
+                        "revocationUrl": {
+                          "maxLength": 2048,
+                          "minLength": 9,
+                          "pattern": "^https://",
+                          "type": "string"
+                        },
+                        "scopes": {
+                          "items": {
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "pattern": "^[!#-\\[\\]-~]+$",
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "serverUrl": {
+                          "maxLength": 2048,
+                          "minLength": 9,
+                          "pattern": "^https://",
+                          "type": "string"
+                        },
+                        "tokenUrl": {
+                          "maxLength": 2048,
+                          "minLength": 9,
+                          "pattern": "^https://",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "serverUrl",
+                        "resource",
+                        "issuer",
+                        "authorizationUrl",
+                        "tokenUrl",
+                        "scopes"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "501": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Discover OAuth settings for an MCP connection template",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "connection_template", "scope": "requested" }
@@ -11298,6 +11603,31 @@
                             },
                             "envVar": { "type": "string" },
                             "issuer": { "type": "string" },
+                            "mcp": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "resource": {
+                                  "maxLength": 2048,
+                                  "minLength": 9,
+                                  "pattern": "^https://",
+                                  "type": "string"
+                                },
+                                "serverUrl": {
+                                  "maxLength": 2048,
+                                  "minLength": 9,
+                                  "pattern": "^https://",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["serverUrl", "resource"],
+                              "type": "object"
+                            },
+                            "revocationUrl": {
+                              "maxLength": 2048,
+                              "minLength": 9,
+                              "pattern": "^https://",
+                              "type": "string"
+                            },
                             "scopes": { "items": { "type": "string" }, "type": "array" },
                             "tokenUrl": { "type": "string" },
                             "version": { "minimum": 1, "type": "integer" }
@@ -11320,6 +11650,10 @@
                         "displayName": { "type": "string" },
                         "id": {
                           "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "namespaceId": {
+                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "redirectUri": { "type": "string" }
@@ -11423,7 +11757,12 @@
                   },
                   "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
                   "clientSecret": { "maxLength": 4096, "minLength": 1, "type": "string" },
-                  "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "displayName": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                    "type": "string"
+                  },
                   "endpoint": {
                     "additionalProperties": false,
                     "properties": {
@@ -11445,6 +11784,36 @@
                     "minLength": 9,
                     "pattern": "^https://",
                     "type": "string"
+                  },
+                  "mcp": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "resource": {
+                        "maxLength": 2048,
+                        "minLength": 9,
+                        "pattern": "^https://",
+                        "type": "string"
+                      },
+                      "serverUrl": {
+                        "maxLength": 2048,
+                        "minLength": 9,
+                        "pattern": "^https://",
+                        "type": "string"
+                      }
+                    },
+                    "required": ["serverUrl", "resource"],
+                    "type": "object"
+                  },
+                  "revocationUrl": {
+                    "anyOf": [
+                      {
+                        "maxLength": 2048,
+                        "minLength": 9,
+                        "pattern": "^https://",
+                        "type": "string"
+                      },
+                      { "type": "null" }
+                    ]
                   },
                   "scopes": {
                     "items": {
@@ -11504,6 +11873,31 @@
                             },
                             "envVar": { "type": "string" },
                             "issuer": { "type": "string" },
+                            "mcp": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "resource": {
+                                  "maxLength": 2048,
+                                  "minLength": 9,
+                                  "pattern": "^https://",
+                                  "type": "string"
+                                },
+                                "serverUrl": {
+                                  "maxLength": 2048,
+                                  "minLength": 9,
+                                  "pattern": "^https://",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["serverUrl", "resource"],
+                              "type": "object"
+                            },
+                            "revocationUrl": {
+                              "maxLength": 2048,
+                              "minLength": 9,
+                              "pattern": "^https://",
+                              "type": "string"
+                            },
                             "scopes": { "items": { "type": "string" }, "type": "array" },
                             "tokenUrl": { "type": "string" },
                             "version": { "minimum": 1, "type": "integer" }
@@ -11526,6 +11920,10 @@
                         "displayName": { "type": "string" },
                         "id": {
                           "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "namespaceId": {
+                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "redirectUri": { "type": "string" }
@@ -11577,6 +11975,18 @@
             "description": "Default Response"
           },
           "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
             },
@@ -11666,6 +12076,31 @@
                             },
                             "envVar": { "type": "string" },
                             "issuer": { "type": "string" },
+                            "mcp": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "resource": {
+                                  "maxLength": 2048,
+                                  "minLength": 9,
+                                  "pattern": "^https://",
+                                  "type": "string"
+                                },
+                                "serverUrl": {
+                                  "maxLength": 2048,
+                                  "minLength": 9,
+                                  "pattern": "^https://",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["serverUrl", "resource"],
+                              "type": "object"
+                            },
+                            "revocationUrl": {
+                              "maxLength": 2048,
+                              "minLength": 9,
+                              "pattern": "^https://",
+                              "type": "string"
+                            },
                             "scopes": { "items": { "type": "string" }, "type": "array" },
                             "tokenUrl": { "type": "string" },
                             "version": { "minimum": 1, "type": "integer" }
@@ -11688,6 +12123,10 @@
                         "displayName": { "type": "string" },
                         "id": {
                           "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "namespaceId": {
+                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
                         "redirectUri": { "type": "string" }
@@ -11739,6 +12178,18 @@
             "description": "Default Response"
           },
           "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
             },
@@ -18558,7 +19009,17 @@
                             "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
-                          "ownerPrincipalId": { "type": "string" }
+                          "ownerPrincipalId": { "type": "string" },
+                          "profile": {
+                            "additionalProperties": false,
+                            "description": "External account details returned on credential source reads and Agent connection lists.",
+                            "properties": {
+                              "email": { "type": "string" },
+                              "externalUserId": { "type": "string" },
+                              "name": { "type": "string" }
+                            },
+                            "type": "object"
+                          }
                         },
                         "required": [
                           "namespaceId",
@@ -27176,6 +27637,31 @@
                               },
                               "envVar": { "type": "string" },
                               "issuer": { "type": "string" },
+                              "mcp": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "resource": {
+                                    "maxLength": 2048,
+                                    "minLength": 9,
+                                    "pattern": "^https://",
+                                    "type": "string"
+                                  },
+                                  "serverUrl": {
+                                    "maxLength": 2048,
+                                    "minLength": 9,
+                                    "pattern": "^https://",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["serverUrl", "resource"],
+                                "type": "object"
+                              },
+                              "revocationUrl": {
+                                "maxLength": 2048,
+                                "minLength": 9,
+                                "pattern": "^https://",
+                                "type": "string"
+                              },
                               "scopes": { "items": { "type": "string" }, "type": "array" },
                               "tokenUrl": { "type": "string" },
                               "version": { "minimum": 1, "type": "integer" }
@@ -27198,6 +27684,10 @@
                           "displayName": { "type": "string" },
                           "id": {
                             "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "namespaceId": {
+                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
                           "redirectUri": { "type": "string" }
@@ -27319,6 +27809,16 @@
                           "namespaceId": {
                             "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
+                          },
+                          "profile": {
+                            "additionalProperties": false,
+                            "description": "External account details returned on credential source reads and Agent connection lists.",
+                            "properties": {
+                              "email": { "type": "string" },
+                              "externalUserId": { "type": "string" },
+                              "name": { "type": "string" }
+                            },
+                            "type": "object"
                           },
                           "ref": {
                             "additionalProperties": false,

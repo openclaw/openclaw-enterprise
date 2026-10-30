@@ -57,6 +57,7 @@ import {
   normalizeSecretBindings,
   PERMISSION_ACTIONS as PLATFORM_PERMISSION_ACTIONS,
   INSTALLATION_RESOURCE_KINDS,
+  isCredentialSourceProfile,
   RESOURCE_KINDS as PLATFORM_RESOURCE_KINDS,
   validPluginRevisionState,
   validPluginApprovers,
@@ -560,7 +561,7 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 }
 
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
-  cs.driver_id, cs.state, cs.created_at,
+  cs.driver_id, cs.state, cs.created_at, cs.profile,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
@@ -601,7 +602,9 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
   }
   const config = jsonObject(row.config);
   const secretIds = jsonObject(row.secret_ids);
+  const profile = row.profile;
   if (
+    (profile !== null && !isCredentialSourceProfile(profile)) ||
     Object.values(config).some((value) => typeof value !== "string") ||
     Object.values(secretIds).some((value) => typeof value !== "string")
   ) {
@@ -613,6 +616,7 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
     name: text(row, "name"),
     type: text(row, "type"),
     config: config as Record<string, string>,
+    ...(profile === null ? {} : { profile }),
     secrets: Object.fromEntries(
       Object.entries(secretIds as Record<string, string>).map(([field, id]) => [
         field,
@@ -1269,10 +1273,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         COALESCE((SELECT jsonb_agg(v ORDER BY group_id, principal_id) FROM
           (SELECT namespace_id, group_id, principal_id FROM occ.iam_group_memberships) v),
           '[]'::jsonb) AS memberships,
-        COALESCE((SELECT jsonb_agg(v ORDER BY id) FROM
-          (SELECT id, namespace_id, identity_subject_id, group_subject_id,
-            namespace_subject_id, role_id, resource_kind, resource_id
-            FROM occ.iam_access_bindings) v),
+        COALESCE((SELECT jsonb_agg(v ORDER BY v.id) FROM occ.iam_access_bindings v),
           '[]'::jsonb) AS bindings,
         COALESCE((SELECT jsonb_agg(v ORDER BY id) FROM
           (SELECT id, namespace_id, action, resource_kind, resource_id, effect
@@ -2817,8 +2818,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         await client.query(
           `INSERT INTO occ.credential_sources
-           (id, namespace_id, name, type, config, driver_id, state, created_at)
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)`,
+           (id, namespace_id, name, type, config, driver_id, state, created_at, profile)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb)`,
           [
             source.id,
             source.namespaceId,
@@ -2828,6 +2829,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             source.driverId,
             source.state,
             source.createdAt,
+            source.profile === undefined ? null : JSON.stringify(source.profile),
           ],
         );
         if (secretInputs.length > 0) {

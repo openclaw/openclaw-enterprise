@@ -16,3 +16,7 @@ export const SettingsConnectionTemplateCreate = {
   ...story("settingsConnectionTemplateCreate"),
   name: "New connection template",
 };
+export const SettingsMcpConnectionTemplate = {
+  ...story("settingsMcpConnectionTemplate"),
+  name: "Discover an MCP connection template",
+};

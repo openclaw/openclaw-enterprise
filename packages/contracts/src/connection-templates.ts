@@ -1,3 +1,5 @@
+import type { CredentialSourceProfile } from "./api/common.ts";
+
 /** Where a connected credential may be sent; the Credential Gateway releases it nowhere else. */
 export interface ConnectionEndpoint {
   readonly host: string;
@@ -5,11 +7,26 @@ export interface ConnectionEndpoint {
   readonly path: string;
 }
 
-/** The values a person approves when they connect; any change creates a new version. */
-export interface ConnectionTemplateValues {
+/** Public OAuth metadata used to configure an MCP Connection Template. */
+export interface McpAuthorizationMetadata {
+  readonly serverUrl: string;
+  readonly resource: string;
   readonly issuer: string;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
+  readonly registrationUrl?: string;
+  readonly revocationUrl?: string;
+  readonly scopes: readonly string[];
+}
+
+/** The values a person approves when they connect; any change creates a new version. */
+export interface ConnectionTemplateValues {
+  /** MCP transport and OAuth resource identifiers approved with this version. */
+  readonly mcp?: { readonly serverUrl: string; readonly resource: string };
+  readonly issuer: string;
+  readonly authorizationUrl: string;
+  readonly tokenUrl: string;
+  readonly revocationUrl?: string;
   readonly clientId: string;
   readonly scopes: readonly string[];
   readonly authorizationParameters: Readonly<Record<string, string>>;
@@ -25,9 +42,11 @@ export interface ConnectionTemplateVersion extends ConnectionTemplateValues {
   readonly createdAt: string;
 }
 
-/** An Installation resource; credential sources created from it live in Agent Namespaces. */
+/** Administrators may limit where a template can be used. Credentials live in the Agent's Namespace. */
 export interface ConnectionTemplate {
   readonly id: string;
+  /** Absent for an Installation-wide template. Set at creation. */
+  readonly namespaceId?: string;
   readonly displayName: string;
   readonly current: Readonly<ConnectionTemplateVersion>;
   readonly createdAt: string;
@@ -39,6 +58,7 @@ export interface ConnectionTemplate {
  */
 export interface ConnectionClientRegistration {
   readonly id: string;
+  readonly namespaceId?: string;
   readonly issuer: string;
   readonly clientId: string;
   readonly credentialRefreshDriverId: string;
@@ -51,9 +71,12 @@ export function connectionValuesChanged(
   next: Readonly<ConnectionTemplateValues>,
 ): boolean {
   return (
+    current.mcp?.serverUrl !== next.mcp?.serverUrl ||
+    current.mcp?.resource !== next.mcp?.resource ||
     current.issuer !== next.issuer ||
     current.authorizationUrl !== next.authorizationUrl ||
     current.tokenUrl !== next.tokenUrl ||
+    current.revocationUrl !== next.revocationUrl ||
     current.clientId !== next.clientId ||
     current.envVar !== next.envVar ||
     current.endpoint.host !== next.endpoint.host ||
@@ -85,6 +108,8 @@ export interface AgentConnection {
   readonly ownerPrincipalId: string;
   readonly connectionTemplateId: string;
   readonly connectionTemplateVersion: number;
+  /** The bound credential source's external account profile. */
+  readonly profile?: CredentialSourceProfile;
   readonly createdAt: string;
 }
 

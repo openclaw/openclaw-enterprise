@@ -38,3 +38,11 @@ refresh need the real backend.
    Namespace that may connect. Grant use to a person, then remove it. Choose
    **Edit**, change a scope, and save: the template shows **Version 2**.
    **New connection template** opens the form filled from the Gmail example.
+   **Template scope** defaults to **Installation-wide**. Choose a Namespace to
+   limit which Agents may use the template. After saving, its scope appears in Settings.
+10. Open **Pages / Settings / Discover an MCP connection template**. Inspect the
+    Engineering template scope, protected resource, issuer, revocation URL and redirect URI. Narrow the OAuth scopes
+    and enter a name and worker variable. Under **OAuth client**, choose **Register a
+    new client with the issuer** and save. The template shows the client ID returned
+    by the simulated issuer. **Use a preregistered client** accepts a client ID
+    and secret supplied by the administrator.

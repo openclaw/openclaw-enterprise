@@ -26,6 +26,7 @@ import {
 } from "../auth/index.ts";
 import { createDockerDevelopmentComputeDriverFromEnv } from "../drivers/compute/docker/index.ts";
 import { createFilesystemDevelopmentConfigurationDriverFromEnv } from "../drivers/configuration/filesystem/index.ts";
+import { discoverMcpAuthorization, registerMcpOAuthClient } from "../connections/mcp-discovery.ts";
 import { createFastifyApp } from "../index.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import type {
@@ -233,6 +234,8 @@ export async function composePostgresDevelopment(
 
     const loggingLevel = config.logging?.level ?? drivers?.installation.logging.level;
     const controller = new OpenClawController(persistedInstallation, {
+      discoverMcpAuthorization,
+      registerMcpOAuthClient,
       sandboxNetworkPolicyCeiling: drivers?.installation.sandboxNetworkPolicyCeiling ?? [],
       state,
       recordOperations: true,

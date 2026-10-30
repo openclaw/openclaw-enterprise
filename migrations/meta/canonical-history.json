@@ -497,6 +497,62 @@
       "tag": "0062_agent_connections",
       "breakpoints": true,
       "sha256": "3b48190956b8ce17e6df4b86f6125fcc112681df9aebeb533b64356bfc483575"
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1787000000063,
+      "tag": "0063_mcp_connection_templates",
+      "breakpoints": true,
+      "sha256": "1cba7532d88dd46829620ea6ddaba5f63ecc0d6a37bc4a4699e55c85cacb7969"
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1787000000064,
+      "tag": "0064_agent_connection_profiles",
+      "breakpoints": true,
+      "sha256": "f420498528e06e8d9885354aad1bac6c6c9200c448b73d2f71312af7e00aa80f"
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1787000000065,
+      "tag": "0065_credential_source_profiles",
+      "breakpoints": true,
+      "sha256": "3294d9184987a9d841fa4336cf611a81ca5c1f1a1f6ffe61d00a419bc0813c9e"
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1787000000066,
+      "tag": "0066_oauth_revocation_url",
+      "breakpoints": true,
+      "sha256": "6f7e7b10f30e5f635a3825022e879bed76eb659f79193aedf9ae14f71f830df1"
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1787000000067,
+      "tag": "0067_namespace_connection_templates",
+      "breakpoints": true,
+      "sha256": "ec8aaa5042fe0bb0a56c8122f697d1240d908df373be40c29144c40b7a2a074f"
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1787000000068,
+      "tag": "0068_template_binding_search_path",
+      "breakpoints": true,
+      "sha256": "93a90056a2c3ad23fcc68f5dfb99b109af0830b10748f6734a82b7bb358b1425"
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1787000000069,
+      "tag": "0069_oauth_token_endpoint_query",
+      "breakpoints": true,
+      "sha256": "5d7495af4a42427b1c942b3b249a5020789181e0b25e010be59d06aeeee24faa"
     }
   ],
   "initialSchemaStates": {
@@ -524,7 +580,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "84a84426bcbd5c0d7197a64db94eb94400a36460236a240574f6f12ef7180ec9",
+    "completed": "4dfecd19c424ca2d1417e500bb211852ed4a8f08211927e0bbd58294bfbd36a3",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -558,7 +614,14 @@
     "preSandboxPolicyAdministrator": "34374bccb6342bc15262d9d8e77abf1c3a0e317a2623b2bda541d1d06202a3ff",
     "preInstallationAccessBindings": "34374bccb6342bc15262d9d8e77abf1c3a0e317a2623b2bda541d1d06202a3ff",
     "preConnectionTemplates": "6ffbcf625bb9e8a9bc6b034f076ebc55d25d21df69df5ed2ba4e46be421ad112",
-    "preAgentConnections": "d7b2923db779f9ada4d080d6d5e5c11bc2cbc08161f08bae45f258c82106e31f"
+    "preAgentConnections": "d7b2923db779f9ada4d080d6d5e5c11bc2cbc08161f08bae45f258c82106e31f",
+    "preMcpConnectionTemplates": "84a84426bcbd5c0d7197a64db94eb94400a36460236a240574f6f12ef7180ec9",
+    "preAgentConnectionProfiles": "60136dbd3b8ba1a0f999df3f31fbdabb583c55cdb9fb021d66c91e8479f5a5bb",
+    "preCredentialSourceProfiles": "d2ca6c8efb0559a8808c5f09706a04968b75fe147a828ed05cf2c071dcd28e38",
+    "preOAuthRevocationUrl": "e97463e4bff306ae0e8f6c6d8cd902315dc88e4eca554c4e3f32122be3ac658a",
+    "preNamespaceConnectionTemplates": "3bfff85d09330c08b3c2e6e6d075915a7bef04eee248d569a8e94d4f14f23393",
+    "preTemplateBindingSearchPath": "6f65e0843810fceca58956a78461b5162608cd6edc478f0bb0b2f97594193727",
+    "preOAuthTokenEndpointQuery": "9a83733dd00d9f031c7fc76038c9e3236673aa808ab292f79c4a44a4b978fb68"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

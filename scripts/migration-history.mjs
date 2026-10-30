@@ -175,6 +175,27 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 51) {
         return "preProvisioningDeploymentOutcome";
       }
+      if (receipts.length === 68) {
+        return "preOAuthTokenEndpointQuery";
+      }
+      if (receipts.length === 67) {
+        return "preTemplateBindingSearchPath";
+      }
+      if (receipts.length === 66) {
+        return "preNamespaceConnectionTemplates";
+      }
+      if (receipts.length === 65) {
+        return "preOAuthRevocationUrl";
+      }
+      if (receipts.length === 64) {
+        return "preCredentialSourceProfiles";
+      }
+      if (receipts.length === 63) {
+        return "preAgentConnectionProfiles";
+      }
+      if (receipts.length === 62) {
+        return "preMcpConnectionTemplates";
+      }
       if (receipts.length === 61) {
         return "preAgentConnections";
       }
@@ -212,6 +233,27 @@ function classifyReceipts(receipts, manifest) {
     }
   } else {
     requireReceiptsMatchEntries(receipts, manifest.entries);
+  }
+  if (receipts.length === 68) {
+    return "preOAuthTokenEndpointQuery";
+  }
+  if (receipts.length === 67) {
+    return "preTemplateBindingSearchPath";
+  }
+  if (receipts.length === 66) {
+    return "preNamespaceConnectionTemplates";
+  }
+  if (receipts.length === 65) {
+    return "preOAuthRevocationUrl";
+  }
+  if (receipts.length === 64) {
+    return "preCredentialSourceProfiles";
+  }
+  if (receipts.length === 63) {
+    return "preAgentConnectionProfiles";
+  }
+  if (receipts.length === 62) {
+    return "preMcpConnectionTemplates";
   }
   if (receipts.length === 61) {
     return "preAgentConnections";

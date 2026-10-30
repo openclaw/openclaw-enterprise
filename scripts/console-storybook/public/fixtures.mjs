@@ -905,20 +905,34 @@ export function installFixture(scenario, evidence) {
       ...template,
       redirectUri: "https://console.example.test/oauth/callback",
     });
+    if (path === "/connection-templates/discover-mcp" && method === "POST") {
+      return scenario.mcpDiscovery && body.serverUrl === scenario.mcpDiscovery.serverUrl
+        ? response(templateResponse(scenario.mcpDiscovery))
+        : error(400);
+    }
     if (path === "/connection-templates") {
       if (method === "GET") {
         return response(connectionTemplates.map(templateResponse));
       }
       if (method === "POST") {
-        const { displayName, clientSecret: _secret, endpoint, ...rest } = body;
+        const {
+          displayName,
+          namespaceId,
+          clientSecret: _secret,
+          registrationUrl,
+          endpoint,
+          ...rest
+        } = body;
         const created = {
           id: nextId("ctp"),
           displayName,
+          ...(namespaceId ? { namespaceId } : {}),
           current: {
             version: 1,
             clientRegistrationId: "ccr_storybook",
             authorizationParameters: {},
             ...rest,
+            ...(registrationUrl ? { clientId: "client-issued-by-storybook" } : {}),
             endpoint: { port: 443, path: "/**", ...endpoint },
             createdAt,
           },
@@ -1189,7 +1203,11 @@ export function installFixture(scenario, evidence) {
       if (resource === "connection-templates" && method === "GET") {
         return scenario.connectionTemplatesDenied
           ? error(403)
-          : response(connectionTemplates.map((template) => ({ ...template })));
+          : response(
+              connectionTemplates.filter(
+                (template) => !template.namespaceId || template.namespaceId === ns,
+              ),
+            );
       }
       if (resource === "credential-sources") {
         if (method === "GET") {

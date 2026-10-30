@@ -1,7 +1,7 @@
 ---
 created: "2026-10-20"
-updated: "2026-10-22"
-last_updated_session: "claude-code/0aaa76e4-8457-4cdb-b732-780b69e59679"
+updated: "2026-10-30"
+last_updated_session: "authoring-run/8a02f39b-ba03-418f-9b9a-2eb55712ab2c"
 ---
 
 # Agent OAuth connection lifecycle Flow
@@ -17,6 +17,20 @@ source is deleted. This flow stops when the source is bound, or when disconnect
 removes it. Deployment and attachment continue in the
 [credential source lifecycle](credential-source-lifecycle.md).
 
+Administrators can prepare an MCP connection template in Settings. The OCE API
+uses the MCP SDK to read the server's public OAuth metadata, then repeats discovery
+when the administrator saves. If the administrator selects dynamic registration,
+`OpenClawController.createConnectionTemplate` verifies the registration endpoint
+and approved scopes against the new discovery result. The MCP SDK sends the
+configured OCE callback URI and those scopes to the issuer. OCC stores the
+returned client through the same registration path as a manually supplied
+client. The saved version pins the server URL, OAuth resource, and any approved
+revocation URL. OCC preserves a provider's token endpoint query for token requests.
+The issuer identifier must be query-free, and neither URL may include a fragment.
+Connecting an Agent returns `501` before creating a credential source. That step
+requires the Token Service to accept the OAuth grant for refresh.
+[Connection template setup](../reference/connection-templates.md#discover-an-mcp-connection-template)
+
 ## Entry Points
 
 - Trigger: `POST /namespaces/:namespaceId/agents/:agentId/connections`, the
@@ -25,8 +39,7 @@ removes it. Deployment and attachment continue in the
 - Source: `packages/occ/src/index.ts:startAgentConnection`
 - Source: `packages/occ/src/index.ts:completeAgentConnection`
 - Source: `apps/controller/src/http/connections.ts:createConnectionCallback`
-- Console caller: `apps/controller/src/console/agents/connections.mjs:renderAgentConnections`
-  and `apps/controller/src/console/connection-outcome.mjs:receiveConnectionOutcome`
+- Console entry point: **Connect** on the Agent details page.
 - Assumptions: a `ready` Namespace and active Agent; a connection template with a
   registered client; selected OpenShell Credential Gateway (with `toolBinaries`)
   and Credential Refresh Driver (with `clientWorkspace`); Backend `operatorTls`; a
@@ -69,7 +82,9 @@ graph TD
 The dispatcher refuses a service key with `403` and answers `503` when no
 callback URI is configured. The controller checks exact Agent `read` and
 `update`, then `use` on the template through `authorizationDecision` with the
-Agent's Namespace as `namespaceContext`. These checks and the personal-Agent
+Agent's Namespace as `namespaceContext`. At both consent start and callback,
+OCC checks that the template is Installation-wide or belongs to that Namespace.
+These checks and the personal-Agent
 rules also authorize the source and Secret the connection creates, so the person
 needs no Namespace `credential_source` or `secret` grant (`CONNECTION_AUTHORIZED`).
 It requires a `ready` Namespace and active Agent. `assertPersonalAgentOwner` refuses
@@ -159,6 +174,11 @@ rereads connections and offers **Deploy new version**. A reconnect then
 disconnects the replaced source. Returning focus to the starting tab also rereads,
 so a missed message still shows the new connection.
 
+`packages/occ/src/index.ts:listAgentConnections` checks Agent read access.
+The connection list reads the external account profile from the bound credential
+source when one exists. Reading the source directly returns the same profile
+under the source's own read permission.
+
 ### 7. Disconnect
 
 `packages/occ/src/index.ts:disconnectAgentConnection`
@@ -204,6 +224,14 @@ deletion.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 06:56: Trace dynamic client registration during template setup. (authoring-run/8a02f39b-ba03-418f-9b9a-2eb55712ab2c - e1ce2f4a)
+
+- 2026-10-30 01:16: Trace account profile reads to the bound credential source. (authoring-run/736dede9-441f-4c48-8be0-afb1c1921afa - b4be38e2)
+
+- 2026-10-29 20:34: Identify the OCE API as the owner of MCP discovery. (authoring-run/ef89923d-dc3b-4533-8dec-acb1460ffdb4 - 1cd6b9b7)
+
+- 2026-10-28 15:12: Document MCP discovery and Agent admission. (authoring-run/6d878668-6673-4fd1-8383-71f47974a66c - 11c02a29)
 
 - 2026-10-22 03:30: Add the console's popup, same-tab redirect, and outcome hand-off (claude-code/0aaa76e4-8457-4cdb-b732-780b69e59679 - 4bde49d9d)
 - 2026-10-20 21:44: Document the RFC-0023 connection lifecycle (claude-code/session_01HzmRt1DGB79VEnEWHt7PRy - 0400c9f6729f6ce5efd91040f2802a21dfc1d90e)

@@ -40,6 +40,7 @@ owns their deployment, workspace resource rendering, and image import.
 | `apps/controller/src/admission/`                          | Request admission and resource validation at the API boundary.                                               |
 | `apps/controller/src/http/`                               | Resource HTTP handlers and response projection, grouped by platform primitive.                               |
 | `apps/controller/src/auth/`                               | Authentication integrations.                                                                                 |
+| `apps/controller/src/connections/`                        | MCP metadata discovery for Connection Template setup.                                                        |
 | `apps/controller/src/composition/`                        | Runtime assembly and wiring of selected implementations.                                                     |
 | `apps/controller/src/drivers/`                            | Bundled infrastructure Driver implementations, organized by capability.                                      |
 | `apps/controller/src/backends/`                           | Backend implementations.                                                                                     |

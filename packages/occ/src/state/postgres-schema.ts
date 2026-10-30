@@ -1,4 +1,5 @@
 import type {
+  CredentialSourceProfile,
   InitialWorkspaceFiles,
   AgentDesiredRuntimeState,
   AgentStatus,
@@ -476,6 +477,7 @@ export const credentialSources = occSchema.table(
     config: jsonb("config").$type<Readonly<Record<string, string>>>().notNull(),
     driverId: text("driver_id").notNull(),
     state: text("state").$type<CredentialSourceState>().notNull(),
+    profile: jsonb("profile").$type<CredentialSourceProfile>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table): PgTableExtraConfigValue[] => [
@@ -484,6 +486,14 @@ export const credentialSources = occSchema.table(
     check(
       "credential_sources_id_format",
       sql`${table.id} ~ ${identifierPatterns.credentialSource}`,
+    ),
+    check(
+      "credential_sources_profile_valid",
+      sql`${table.profile} IS NULL OR (
+        jsonb_typeof(${table.profile}) = 'object'
+        AND (${table.profile} - ARRAY['externalUserId', 'email', 'name']) = '{}'::jsonb
+        AND NOT jsonb_path_exists(${table.profile}, 'strict $.* ? (@.type() != "string")')
+      )`,
     ),
     check("credential_sources_name_length", sql`char_length(${table.name}) BETWEEN 1 AND 200`),
     check(
@@ -1634,13 +1644,19 @@ export const connectionClientRegistrations = occSchema.table(
   "connection_client_registrations",
   {
     id: text("id").primaryKey(),
+    namespaceId: text("namespace_id").references(() => namespaces.id, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
     issuer: collatedText("issuer").notNull(),
     clientId: collatedText("client_id").notNull(),
     credentialRefreshDriverId: collatedText("credential_refresh_driver_id").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [
-    unique("connection_client_registrations_pair_unique").on(table.issuer, table.clientId),
+    unique("connection_client_registrations_pair_unique")
+      .on(table.namespaceId, table.issuer, table.clientId)
+      .nullsNotDistinct(),
     unique("connection_client_registrations_identity").on(table.id, table.issuer, table.clientId),
   ],
 );
@@ -1649,6 +1665,10 @@ export const connectionTemplates = occSchema.table(
   "connection_templates",
   {
     id: text("id").primaryKey(),
+    namespaceId: text("namespace_id").references(() => namespaces.id, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
     displayName: collatedText("display_name").notNull(),
     currentVersion: integer("current_version").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
@@ -1670,6 +1690,7 @@ export const connectionTemplateVersions = occSchema.table(
     clientId: collatedText("client_id").notNull(),
     authorizationUrl: collatedText("authorization_url").notNull(),
     tokenUrl: collatedText("token_url").notNull(),
+    revocationUrl: collatedText("revocation_url"),
     scopes: text("scopes").array().notNull(),
     authorizationParameters: jsonb("authorization_parameters")
       .$type<Record<string, string>>()
@@ -1678,10 +1699,16 @@ export const connectionTemplateVersions = occSchema.table(
     endpointPort: integer("endpoint_port").notNull(),
     endpointPath: collatedText("endpoint_path").notNull(),
     envVar: collatedText("env_var").notNull(),
+    mcpServerUrl: collatedText("mcp_server_url"),
+    mcpResource: collatedText("mcp_resource"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [
     primaryKey({ columns: [table.templateId, table.version] }),
+    check(
+      "connection_template_versions_revocation_url_https",
+      sql`${table.revocationUrl} ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$' AND length(${table.revocationUrl}) <= 2048`,
+    ),
     foreignKey({
       name: "connection_template_versions_registration_pair",
       columns: [table.clientRegistrationId, table.issuer, table.clientId],

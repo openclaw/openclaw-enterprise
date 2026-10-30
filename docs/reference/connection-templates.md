@@ -27,7 +27,9 @@ To set up Gmail, follow
 - A configured public origin. The callback URI is `<public origin>/oauth/callback`;
   OCC answers `503` to a connect request without one.
 
-Without the Drivers, template and connect operations return `501`.
+MCP metadata discovery runs in the OCE API. Administrators can preview it before
+selecting credential Drivers. Saving a template or starting a configured OAuth
+connection returns `501` if the required Drivers are missing.
 
 ### Token endpoint egress
 
@@ -35,28 +37,35 @@ The production chart's default-deny NetworkPolicy blocks the API's token
 request. Set `agentConnections.tokenEgress.enabled: true` to add the API-only
 policy `openclaw-enterprise-api-connection-token-egress`. Empty `egressCidrs`
 allows each TCP port in `ports` (default `[443]`) to any IPv4 address except
-link-local `169.254.0.0/16`. List the token hosts' IPv4 CIDRs to narrow it, and
-add a port only when a `tokenUrl` names one. The gateway Pod needs its own egress.
+link-local `169.254.0.0/16`. When restricting CIDRs and ports, allow the OAuth
+destinations the API contacts. For MCP discovery these include the server, the
+protected-resource metadata URL in its challenge, and the issuer's metadata
+endpoint. For dynamic client registration, also allow the issuer's registration
+endpoint. Include their HTTPS ports. The gateway Pod needs its own egress.
 
 ## Connection templates
 
-A connection template is an Installation resource of IAM kind
-`connection_template`, managed through the
-[HTTP API](api.md#get-connectiontemplates). Credential sources created from it
-belong to the Agent's Namespace.
+Installation administrators manage templates in **Settings → Connection templates**
+or through the [HTTP API](api.md#get-connectiontemplates). At creation they choose
+**Installation-wide** or a ready Namespace. A Namespace template can be used only
+by Agents in that Namespace, including when the person connecting is an
+Installation administrator. Every resulting credential belongs to the Agent's
+Namespace.
 
-| Field                     | Meaning                                                                                         |
-| ------------------------- | ----------------------------------------------------------------------------------------------- |
-| `displayName`             | The label people see.                                                                           |
-| `issuer`                  | The authorization server identifier, an `https` URL. It scopes the client ID.                   |
-| `authorizationUrl`        | The provider consent page.                                                                      |
-| `tokenUrl`                | The token endpoint the Refresh Driver and gateway call.                                         |
-| `clientId`                | The administrator's OAuth client at `issuer`.                                                   |
-| `clientSecret`            | Write-only. Required only when this `issuer` and `clientId` pair is not registered yet.         |
-| `scopes`                  | The fixed scopes the person approves.                                                           |
-| `authorizationParameters` | Extra consent-URL parameters, such as Google's `access_type=offline`. Reserved names fail.      |
-| `endpoint`                | The API `host`, `port` (default `443`), and `path` (default `/**`) that receive the credential. |
-| `envVar`                  | The placeholder variable in the Sandbox.                                                        |
+| Field                     | Meaning                                                                                             |
+| ------------------------- | --------------------------------------------------------------------------------------------------- |
+| `displayName`             | The label people see.                                                                               |
+| `namespaceId`             | Optional, immutable Namespace in which Agents can use the template. Omit for Installation-wide use. |
+| `issuer`                  | The HTTPS issuer identifier scopes the client ID. It must have no query or fragment.                |
+| `authorizationUrl`        | The provider consent page.                                                                          |
+| `tokenUrl`                | The HTTPS token endpoint. Code exchange and refresh preserve the query. Fragments are invalid.      |
+| `revocationUrl`           | Optional HTTPS token revocation endpoint, pinned to the template version.                           |
+| `clientId`                | The administrator's OAuth client at `issuer`.                                                       |
+| `clientSecret`            | Write-only. Required only when this `issuer` and `clientId` pair is not registered yet.             |
+| `scopes`                  | The fixed scopes the person approves.                                                               |
+| `authorizationParameters` | Extra consent-URL parameters, such as Google's `access_type=offline`. Reserved names fail.          |
+| `endpoint`                | The API `host`, `port` (default `443`), and `path` (default `/**`) that receive the credential.     |
+| `envVar`                  | The placeholder variable in the Sandbox.                                                            |
 
 PostgreSQL enforces value formats: `https` URLs, RFC 6749 scope tokens, a DNS
 endpoint host (not an IP address), and the variable rules of
@@ -67,9 +76,32 @@ refuses an IP address or `localhost` token host, because it refreshes from its
 own network position (`400`). Responses include `redirectUri`, the exact URI to
 register with the provider.
 
+### Discover an MCP connection template
+
+In **Settings → Connection templates**, select **New MCP connection template** and
+enter the MCP server URL. The OCE API uses the TypeScript MCP client to discover
+the resource, issuer, OAuth endpoints, and proposed scopes. Discovery supports
+publicly routable HTTPS servers with one authorization server. It runs without
+the client secret.
+
+Review the endpoints and scopes. To supply an existing client, enter its ID and
+any required secret. If the issuer advertises a registration endpoint and supports
+`client_secret_post`, you can instead ask OCE to register a client. On **Create
+template**, OCE checks the reviewed metadata again and sends the selected scopes
+and its configured callback URI to that endpoint. OCE saves the returned client
+with the template. If the issuer refuses registration, you can supply an existing
+client. Renaming a template reuses the saved client.
+
+For manual OAuth setup, choose **New connection template** and enter the
+issuer, endpoints, scopes, and client details directly. Both setup paths save
+the same versioned resource. Connecting an MCP account requires
+OCE to hand the grant to the Token Service for refresh and deliver a prepared
+access token to OpenShell for worker requests.
+
 ### Versions and consent
 
-Changing any field except `displayName` creates a new immutable version. A
+The template's scope is fixed at creation. Changing any approved OAuth setting
+creates a new immutable version. A
 connection keeps the version its owner approved, and its credential source keeps
 that version's endpoint and issuer, so an edit never redirects an existing
 connection. A concurrent edit returns `409`. Deletion returns `409` while any
@@ -77,8 +109,9 @@ connection uses one of the template's versions; disconnect those first.
 
 ### Client registrations
 
-OCC records one client registration per `issuer` and `clientId` pair. Templates
-with the same pair share it; the same client ID at another issuer is separate. The
+OCC records one client registration per `issuer` and `clientId` pair within
+each template scope. If two Namespaces use the same client, an administrator
+supplies a secret for each scope and can rotate them independently. The
 Credential Refresh Driver keeps the secret, and OCC stores no copy. The OpenShell
 Driver stores it in a Driver-owned `oce-cr-*` provider in `clientWorkspace` that no
 Sandbox attaches, and reads it back over operator TLS. Sending
@@ -101,8 +134,9 @@ need `use`, granted through an
 [Installation access binding](api.md#post-iamaccessbindings) of the built-in
 Installation Role `role_connection_template_user`:
 
-- `subjectKind: identity` grants one person.
-- `subjectKind: namespace` grants anyone acting for an Agent in that Namespace.
+- `subjectKind: identity` grants one person access within the template's scope.
+- `subjectKind: namespace` grants people acting for Agents in that Namespace.
+  For a Namespace template, the grant must name its owning Namespace.
 
 OCC checks `use` with the Agent's Namespace as context, so a Namespace grant does
 not apply to Agents elsewhere. Service keys and Namespace-bound identities cannot
@@ -143,8 +177,10 @@ completed connection on the Agent, and a refused or failed callback with its
 reason code and the person who sent it.
 
 [List connections](api.md#get-namespacesnamespaceidagentsagentidconnections)
-returns each source, its owner, and the approved template version. Deploy the
-Agent to use the connection.
+returns the bound source ID, the connection owner, and the approved template
+version. When the source has an external account `profile`, the list includes
+the same profile returned by a credential source read. The current OAuth flow
+leaves it unset. Deploy the Agent to use the connection.
 
 ### Disconnect
 

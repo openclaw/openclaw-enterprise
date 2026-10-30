@@ -2,6 +2,7 @@ import { Type } from "typebox";
 import {
   AgentId,
   CredentialSourceId,
+  CredentialSourceProfileSchema,
   NamespaceId,
   Meta,
   Name,
@@ -16,6 +17,34 @@ export const ConnectionTemplateId = Type.String({
 const HttpsUrl = Type.String({ minLength: 9, maxLength: 2048, pattern: "^https://" });
 const Scope = Type.String({ minLength: 1, maxLength: 512, pattern: "^[!#-\\[\\]-~]+$" });
 
+const McpResourceFields = { serverUrl: HttpsUrl, resource: HttpsUrl };
+const McpResource = Type.Object(McpResourceFields, { additionalProperties: false });
+
+export const DiscoverMcpConnectionRequest = Type.Object(
+  { serverUrl: HttpsUrl },
+  { additionalProperties: false },
+);
+
+export const DiscoverMcpConnectionResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        ...McpResourceFields,
+        issuer: HttpsUrl,
+        authorizationUrl: HttpsUrl,
+        tokenUrl: HttpsUrl,
+        revocationUrl: Type.Optional(HttpsUrl),
+        registrationUrl: Type.Optional(HttpsUrl),
+        redirectUri: Type.Optional(Type.String()),
+        scopes: Type.Array(Scope),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
 const ConnectionEndpointSchema = Type.Object(
   {
     host: Type.String({ minLength: 1, maxLength: 253 }),
@@ -26,11 +55,12 @@ const ConnectionEndpointSchema = Type.Object(
 );
 
 const ConnectionTemplateFields = {
-  displayName: Type.String({ minLength: 1, maxLength: 200 }),
+  mcp: Type.Optional(McpResource),
+  displayName: Name,
   issuer: HttpsUrl,
   authorizationUrl: HttpsUrl,
   tokenUrl: HttpsUrl,
-  clientId: Type.String({ minLength: 1, maxLength: 256 }),
+  revocationUrl: Type.Optional(HttpsUrl),
   scopes: Type.Array(Scope, { minItems: 1, maxItems: 32 }),
   authorizationParameters: Type.Optional(
     Type.Record(Type.String({ minLength: 1, maxLength: 128 }), Type.String({ maxLength: 512 }), {
@@ -41,6 +71,7 @@ const ConnectionTemplateFields = {
   envVar: Type.String({ pattern: "^[A-Z_][A-Z0-9_]{0,63}$" }),
 };
 
+const ClientId = Type.String({ minLength: 1, maxLength: 256 });
 /** Write-only; never returned. Required only for an OAuth client that is not registered yet. */
 const ClientSecret = Type.String({ minLength: 1, maxLength: 4096 });
 
@@ -50,17 +81,32 @@ export const ConnectionTemplateParams = Type.Object(
 );
 
 export const CreateConnectionTemplateBody = Type.Object(
-  { ...ConnectionTemplateFields, clientSecret: Type.Optional(ClientSecret) },
-  { additionalProperties: false },
+  {
+    ...ConnectionTemplateFields,
+    namespaceId: Type.Optional(NamespaceId),
+    clientId: Type.Optional(ClientId),
+    clientSecret: Type.Optional(ClientSecret),
+    registrationUrl: Type.Optional(HttpsUrl),
+  },
+  {
+    additionalProperties: false,
+    if: { required: ["registrationUrl"] },
+    then: { required: ["mcp"], properties: { clientId: false, clientSecret: false } },
+    else: { required: ["clientId"] },
+    description:
+      "Supply a registered client ID or request dynamic registration at the reviewed MCP registration URL.",
+  },
 );
 
 export const UpdateConnectionTemplateBody = Type.Object(
   {
+    mcp: ConnectionTemplateFields.mcp,
     displayName: Type.Optional(ConnectionTemplateFields.displayName),
     issuer: Type.Optional(ConnectionTemplateFields.issuer),
     authorizationUrl: Type.Optional(ConnectionTemplateFields.authorizationUrl),
     tokenUrl: Type.Optional(ConnectionTemplateFields.tokenUrl),
-    clientId: Type.Optional(ConnectionTemplateFields.clientId),
+    revocationUrl: Type.Optional(Type.Union([HttpsUrl, Type.Null()])),
+    clientId: Type.Optional(ClientId),
     scopes: Type.Optional(ConnectionTemplateFields.scopes),
     authorizationParameters: ConnectionTemplateFields.authorizationParameters,
     endpoint: Type.Optional(ConnectionEndpointSchema),
@@ -78,9 +124,11 @@ export const RotateConnectionClientSecretBody = Type.Object(
 const ConnectionTemplateVersionSchema = Type.Object(
   {
     version: Type.Integer({ minimum: 1 }),
+    mcp: ConnectionTemplateFields.mcp,
     issuer: Type.String(),
     authorizationUrl: Type.String(),
     tokenUrl: Type.String(),
+    revocationUrl: Type.Optional(HttpsUrl),
     clientId: Type.String(),
     clientRegistrationId: Type.String(),
     scopes: Type.Array(Type.String()),
@@ -98,6 +146,7 @@ const ConnectionTemplateVersionSchema = Type.Object(
 export const ConnectionTemplateSchema = Type.Object(
   {
     id: ConnectionTemplateId,
+    namespaceId: Type.Optional(NamespaceId),
     displayName: Type.String(),
     current: ConnectionTemplateVersionSchema,
     /** The exact URI administrators register with the provider. */
@@ -212,6 +261,7 @@ const AgentConnectionSchema = Type.Object(
     ownerPrincipalId: Type.String(),
     connectionTemplateId: ConnectionTemplateId,
     connectionTemplateVersion: Type.Integer({ minimum: 1 }),
+    profile: Type.Optional(CredentialSourceProfileSchema),
     createdAt: Type.String(),
   },
   { additionalProperties: false },

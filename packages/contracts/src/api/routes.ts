@@ -17,6 +17,8 @@ import {
   ConnectionTemplateParams,
   ConnectionTemplateResponse,
   CreateConnectionTemplateBody,
+  DiscoverMcpConnectionRequest,
+  DiscoverMcpConnectionResponse,
   CreateInstallationAccessBindingBody,
   InstallationAccessBindingListResponse,
   InstallationAccessBindingParams,
@@ -437,6 +439,22 @@ export const occApiRoutes = [
     },
   },
   {
+    operationId: "discoverMcpConnection",
+    method: "POST",
+    path: "/connection-templates/discover-mcp",
+    action: "openclaw.connection_templates.discover_mcp",
+    iamAction: "create",
+    resourceKind: "connection_template",
+    authorizationTarget: "installation_collection",
+    summary: "Discover OAuth settings for an MCP connection template",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      body: DiscoverMcpConnectionRequest,
+      response: { 200: DiscoverMcpConnectionResponse, 501: ErrorResponseRef, ...createErrors },
+    },
+  },
+  {
     operationId: "createConnectionTemplate",
     method: "POST",
     path: "/connection-templates",
@@ -449,7 +467,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       body: CreateConnectionTemplateBody,
-      response: { 201: ConnectionTemplateResponse, ...createErrors },
+      response: { 201: ConnectionTemplateResponse, 501: ErrorResponseRef, ...createErrors },
     },
   },
   {
@@ -482,7 +500,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: ConnectionTemplateParams,
       body: UpdateConnectionTemplateBody,
-      response: { 200: ConnectionTemplateResponse, ...mutationErrors },
+      response: { 200: ConnectionTemplateResponse, ...createErrors },
     },
   },
   {
@@ -515,7 +533,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: ConnectionTemplateParams,
       body: RotateConnectionClientSecretBody,
-      response: { 200: ConnectionTemplateResponse, ...mutationErrors },
+      response: { 200: ConnectionTemplateResponse, ...createErrors },
     },
   },
   {

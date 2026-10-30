@@ -65,7 +65,7 @@ the paths.
 | --- | --- |
 | [Authentication](#authentication) | 27 operations |
 | [Backends](#backends) | 1 operation |
-| [Connections](#connections) | 11 operations |
+| [Connections](#connections) | 12 operations |
 | [IAM](#iam) | 15 operations |
 | [Installation](#installation) | 4 operations |
 | [Namespaces](#namespaces) | 5 operations |
@@ -1260,6 +1260,7 @@ List configured Backends (experimental)
 | --- | --- |
 | [`GET /connection-templates`](#get-connectiontemplates) | List Installation connection templates |
 | [`POST /connection-templates`](#post-connectiontemplates) | Create an Installation connection template |
+| [`POST /connection-templates/discover-mcp`](#post-connectiontemplatesdiscovermcp) | Discover OAuth settings for an MCP connection template |
 | [`DELETE /connection-templates/{connectionTemplateId}`](#delete-connectiontemplatesconnectiontemplateid) | Delete a connection template that no connection uses |
 | [`GET /connection-templates/{connectionTemplateId}`](#get-connectiontemplatesconnectiontemplateid) | Get one connection template |
 | [`PATCH /connection-templates/{connectionTemplateId}`](#patch-connectiontemplatesconnectiontemplateid) | Rename a connection template, or create a version with new approved values |
@@ -1314,11 +1315,16 @@ List Installation connection templates
 | `data[].current.endpoint.port` | `integer` | Yes | — |
 | `data[].current.envVar` | `string` | Yes | — |
 | `data[].current.issuer` | `string` | Yes | — |
+| `data[].current.mcp` | `object` | No | — |
+| `data[].current.mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data[].current.mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data[].current.revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `data[].current.scopes` | `array<string>` | Yes | — |
 | `data[].current.tokenUrl` | `string` | Yes | — |
 | `data[].current.version` | `integer` | Yes | minimum: 1 |
 | `data[].displayName` | `string` | Yes | — |
 | `data[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].redirectUri` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -1347,15 +1353,21 @@ Create an Installation connection template
 | --- | --- | --- | --- |
 | `authorizationParameters` | `object<string, string>` | No | — |
 | `authorizationUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
-| `clientId` | `string` | Yes | min length: 1; max length: 256 |
+| `clientId` | `string` | No | min length: 1; max length: 256 |
 | `clientSecret` | `string` | No | min length: 1; max length: 4096 |
-| `displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `displayName` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `endpoint` | `object` | Yes | — |
 | `endpoint.host` | `string` | Yes | min length: 1; max length: 253 |
 | `endpoint.path` | `string` | No | min length: 1; max length: 512; pattern: `^/` |
 | `endpoint.port` | `integer` | No | minimum: 1; maximum: 65535 |
 | `envVar` | `string` | Yes | pattern: `^[A-Z_][A-Z0-9_]{0,63}$` |
 | `issuer` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `mcp` | `object` | No | — |
+| `mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `registrationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
+| `revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `scopes` | `array<string>` | Yes | min items: 1; max items: 32 |
 | `tokenUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
 
@@ -1372,6 +1384,7 @@ Create an Installation connection template
 | `413` | Payload Too Large |
 | `415` | Unsupported Media Type |
 | `500` | Internal Server Error |
+| `501` | Not Implemented |
 | `503` | Service Unavailable |
 
 **`201` response body:** `application/json`
@@ -1392,12 +1405,74 @@ Create an Installation connection template
 | `data.current.endpoint.port` | `integer` | Yes | — |
 | `data.current.envVar` | `string` | Yes | — |
 | `data.current.issuer` | `string` | Yes | — |
+| `data.current.mcp` | `object` | No | — |
+| `data.current.mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.current.mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.current.revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `data.current.scopes` | `array<string>` | Yes | — |
 | `data.current.tokenUrl` | `string` | Yes | — |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
 | `data.displayName` | `string` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.redirectUri` | `string` | No | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+#### `POST /connection-templates/discover-mcp`
+
+<span id="post-connectiontemplatesdiscovermcp"></span>
+
+Discover OAuth settings for an MCP connection template
+
+**Operation ID:** `discoverMcpConnection`
+
+**Permissions:** Requires create permission on the requested ConnectionTemplate.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `create` | `connection_template` | `requested` |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `500` | Internal Server Error |
+| `501` | Not Implemented |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.authorizationUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.issuer` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.redirectUri` | `string` | No | — |
+| `data.registrationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.scopes` | `array<string>` | Yes | — |
+| `data.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.tokenUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -1484,11 +1559,16 @@ Get one connection template
 | `data.current.endpoint.port` | `integer` | Yes | — |
 | `data.current.envVar` | `string` | Yes | — |
 | `data.current.issuer` | `string` | Yes | — |
+| `data.current.mcp` | `object` | No | — |
+| `data.current.mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.current.mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.current.revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `data.current.scopes` | `array<string>` | Yes | — |
 | `data.current.tokenUrl` | `string` | Yes | — |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
 | `data.displayName` | `string` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.redirectUri` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -1525,13 +1605,17 @@ Rename a connection template, or create a version with new approved values
 | `authorizationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `clientId` | `string` | No | min length: 1; max length: 256 |
 | `clientSecret` | `string` | No | min length: 1; max length: 4096 |
-| `displayName` | `string` | No | min length: 1; max length: 200 |
+| `displayName` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `endpoint` | `object` | No | — |
 | `endpoint.host` | `string` | Yes | min length: 1; max length: 253 |
 | `endpoint.path` | `string` | No | min length: 1; max length: 512; pattern: `^/` |
 | `endpoint.port` | `integer` | No | minimum: 1; maximum: 65535 |
 | `envVar` | `string` | No | pattern: `^[A-Z_][A-Z0-9_]{0,63}$` |
 | `issuer` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
+| `mcp` | `object` | No | — |
+| `mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `revocationUrl` | `string or null` | No | — |
 | `scopes` | `array<string>` | No | min items: 1; max items: 32 |
 | `tokenUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 
@@ -1545,6 +1629,8 @@ Rename a connection template, or create a version with new approved values
 | `403` | Forbidden |
 | `404` | Not Found |
 | `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
 | `500` | Internal Server Error |
 | `503` | Service Unavailable |
 
@@ -1566,11 +1652,16 @@ Rename a connection template, or create a version with new approved values
 | `data.current.endpoint.port` | `integer` | Yes | — |
 | `data.current.envVar` | `string` | Yes | — |
 | `data.current.issuer` | `string` | Yes | — |
+| `data.current.mcp` | `object` | No | — |
+| `data.current.mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.current.mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.current.revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `data.current.scopes` | `array<string>` | Yes | — |
 | `data.current.tokenUrl` | `string` | Yes | — |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
 | `data.displayName` | `string` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.redirectUri` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -1615,6 +1706,8 @@ Replace the OAuth client secret used by new connections
 | `403` | Forbidden |
 | `404` | Not Found |
 | `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
 | `500` | Internal Server Error |
 | `503` | Service Unavailable |
 
@@ -1636,11 +1729,16 @@ Replace the OAuth client secret used by new connections
 | `data.current.endpoint.port` | `integer` | Yes | — |
 | `data.current.envVar` | `string` | Yes | — |
 | `data.current.issuer` | `string` | Yes | — |
+| `data.current.mcp` | `object` | No | — |
+| `data.current.mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.current.mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.current.revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `data.current.scopes` | `array<string>` | Yes | — |
 | `data.current.tokenUrl` | `string` | Yes | — |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
 | `data.displayName` | `string` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.redirectUri` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -1690,6 +1788,10 @@ List an Agent's connected accounts
 | `data[].credentialSourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].ownerPrincipalId` | `string` | Yes | — |
+| `data[].profile` | `object` | No | External account details returned on credential source reads and Agent connection lists. |
+| `data[].profile.email` | `string` | No | — |
+| `data[].profile.externalUserId` | `string` | No | — |
+| `data[].profile.name` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -1846,11 +1948,16 @@ List connection templates the caller may connect in this Namespace
 | `data[].current.endpoint.port` | `integer` | Yes | — |
 | `data[].current.envVar` | `string` | Yes | — |
 | `data[].current.issuer` | `string` | Yes | — |
+| `data[].current.mcp` | `object` | No | — |
+| `data[].current.mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data[].current.mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data[].current.revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `data[].current.scopes` | `array<string>` | Yes | — |
 | `data[].current.tokenUrl` | `string` | Yes | — |
 | `data[].current.version` | `integer` | Yes | minimum: 1 |
 | `data[].displayName` | `string` | Yes | — |
 | `data[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].redirectUri` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -6417,6 +6524,10 @@ List readable credential sources without revealing credential values
 | `data[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].profile` | `object` | No | External account details returned on credential source reads and Agent connection lists. |
+| `data[].profile.email` | `string` | No | — |
+| `data[].profile.externalUserId` | `string` | No | — |
+| `data[].profile.name` | `string` | No | — |
 | `data[].ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
 | `data[].ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].ref.kind` | `"credential_source"` | Yes | — |
@@ -6495,6 +6606,10 @@ Register a credential source with the selected Credential Gateway
 | `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.profile` | `object` | No | External account details returned on credential source reads and Agent connection lists. |
+| `data.profile.email` | `string` | No | — |
+| `data.profile.externalUserId` | `string` | No | — |
+| `data.profile.name` | `string` | No | — |
 | `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
 | `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.ref.kind` | `"credential_source"` | Yes | — |
@@ -6591,6 +6706,10 @@ Get one credential source and its live Credential Gateway status
 | `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.profile` | `object` | No | External account details returned on credential source reads and Agent connection lists. |
+| `data.profile.email` | `string` | No | — |
+| `data.profile.externalUserId` | `string` | No | — |
+| `data.profile.name` | `string` | No | — |
 | `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
 | `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.ref.kind` | `"credential_source"` | Yes | — |
@@ -6667,6 +6786,10 @@ Push current or replacement Secret values to the Credential Gateway copy
 | `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.profile` | `object` | No | External account details returned on credential source reads and Agent connection lists. |
+| `data.profile.email` | `string` | No | — |
+| `data.profile.externalUserId` | `string` | No | — |
+| `data.profile.name` | `string` | No | — |
 | `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
 | `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.ref.kind` | `"credential_source"` | Yes | — |
@@ -6730,6 +6853,10 @@ Force the Credential Refresh Driver to mint a new token for a refresh-type sourc
 | `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.profile` | `object` | No | External account details returned on credential source reads and Agent connection lists. |
+| `data.profile.email` | `string` | No | — |
+| `data.profile.externalUserId` | `string` | No | — |
+| `data.profile.name` | `string` | No | — |
 | `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
 | `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.ref.kind` | `"credential_source"` | Yes | — |

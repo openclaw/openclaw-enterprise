@@ -92,6 +92,10 @@ succeeds. For a `refresh` type, `status.refresh` adds the token's `state`,
 and returns only sources on which the caller has exact `read`. Lists
 do not call the gateway and omit `status`.
 
+Both reads include the source's external account `profile` when present.
+Its `externalUserId`, `email`, and `name` fields are optional strings.
+The source's own `name` remains its Namespace-unique label.
+
 The record's `state` is `registering`, `ready`, or `deleting`. A source left
 `registering` by an interrupted request never becomes usable; delete it to
 remove any gateway copy. A `registering` or `deleting` source cannot be

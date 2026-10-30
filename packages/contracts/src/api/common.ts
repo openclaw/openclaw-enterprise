@@ -343,6 +343,20 @@ export const CredentialSourceReference = Type.Object(
   },
 );
 
+export const CredentialSourceProfileSchema = Type.Object(
+  {
+    externalUserId: Type.Optional(Type.String()),
+    email: Type.Optional(Type.String()),
+    name: Type.Optional(Type.String()),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "External account details returned on credential source reads and Agent connection lists.",
+  },
+);
+export type CredentialSourceProfile = Readonly<Type.Static<typeof CredentialSourceProfileSchema>>;
+
 const CredentialSourceFieldName = Type.String({
   minLength: 1,
   maxLength: 64,

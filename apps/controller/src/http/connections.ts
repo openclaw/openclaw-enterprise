@@ -23,6 +23,7 @@ function templateResponse(
   const { templateId: _templateId, ...current } = template.current;
   return {
     id: template.id,
+    ...(template.namespaceId === undefined ? {} : { namespaceId: template.namespaceId }),
     displayName: template.displayName,
     current,
     ...(redirectUri === undefined ? {} : { redirectUri }),
@@ -66,10 +67,17 @@ export async function performInstallationConnectionOperation(
         ),
       );
       return true;
+    case "discoverMcpConnection":
+      send({
+        ...(await controller.discoverMcpConnection(context.actorId, body?.serverUrl as string)),
+        ...(redirectUri === undefined ? {} : { redirectUri }),
+      });
+      return true;
     case "createConnectionTemplate": {
       const created = await controller.createConnectionTemplate(
         context.actorId,
         body as unknown as CreateConnectionTemplateInput,
+        redirectUri,
       );
       await audit(templateRef(created.id));
       send(templateResponse(created, redirectUri), 201);

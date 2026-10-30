@@ -20,6 +20,7 @@ import {
   type PasswordSlowLaneFloors,
   type PreparedAuthAccount,
 } from "../auth/index.ts";
+import { discoverMcpAuthorization, registerMcpOAuthClient } from "../connections/mcp-discovery.ts";
 import { createFastifyApp } from "../index.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import type {
@@ -250,6 +251,8 @@ export async function composeProduction(config: ProductionConfig) {
 
     phaseCompleted("computePreflight");
     const controller = new OpenClawController(persistedInstallation, {
+      discoverMcpAuthorization,
+      registerMcpOAuthClient,
       sandboxNetworkPolicyCeiling: config.drivers.installation.sandboxNetworkPolicyCeiling ?? [],
       state,
       recordOperations: true,

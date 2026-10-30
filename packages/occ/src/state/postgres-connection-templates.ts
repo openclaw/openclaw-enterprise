@@ -11,8 +11,9 @@ import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 type Row = Record<string, unknown>;
 
 const versionColumns = `v.template_id, v.version, v.client_registration_id, v.issuer, v.client_id,
-  v.authorization_url, v.token_url, v.scopes, v.authorization_parameters, v.endpoint_host,
-  v.endpoint_port, v.endpoint_path, v.env_var, v.created_at AS version_created_at`;
+  v.authorization_url, v.token_url, v.revocation_url, v.scopes, v.authorization_parameters, v.endpoint_host,
+  v.endpoint_port, v.endpoint_path, v.env_var, v.mcp_server_url, v.mcp_resource,
+  v.created_at AS version_created_at`;
 
 function invalid(): never {
   throw new DependencyUnavailableError("Persisted connection template state is invalid.");
@@ -47,6 +48,9 @@ function versionFromRow(row: Row): ConnectionTemplateVersion {
     invalid();
   }
   return {
+    ...(row.mcp_server_url === null && row.mcp_resource === null
+      ? {}
+      : { mcp: { serverUrl: text(row, "mcp_server_url"), resource: text(row, "mcp_resource") } }),
     templateId: text(row, "template_id"),
     version: integer(row, "version"),
     clientRegistrationId: text(row, "client_registration_id"),
@@ -54,6 +58,7 @@ function versionFromRow(row: Row): ConnectionTemplateVersion {
     clientId: text(row, "client_id"),
     authorizationUrl: text(row, "authorization_url"),
     tokenUrl: text(row, "token_url"),
+    ...(row.revocation_url === null ? {} : { revocationUrl: text(row, "revocation_url") }),
     scopes,
     authorizationParameters: parameters as Record<string, string>,
     endpoint: {
@@ -69,6 +74,7 @@ function versionFromRow(row: Row): ConnectionTemplateVersion {
 function templateFromRow(row: Row): Readonly<ConnectionTemplate> {
   return immutableCopy({
     id: text(row, "id"),
+    ...(row.namespace_id === null ? {} : { namespaceId: text(row, "namespace_id") }),
     displayName: text(row, "display_name"),
     current: versionFromRow(row),
     createdAt: timestamp(row, "created_at"),
@@ -78,6 +84,7 @@ function templateFromRow(row: Row): Readonly<ConnectionTemplate> {
 function registrationFromRow(row: Row): Readonly<ConnectionClientRegistration> {
   return immutableCopy({
     id: text(row, "id"),
+    ...(row.namespace_id === null ? {} : { namespaceId: text(row, "namespace_id") }),
     issuer: text(row, "issuer"),
     clientId: text(row, "client_id"),
     credentialRefreshDriverId: text(row, "credential_refresh_driver_id"),
@@ -93,8 +100,8 @@ async function insertVersion(
     `INSERT INTO occ.connection_template_versions
      (template_id, version, client_registration_id, issuer, client_id, authorization_url,
       token_url, scopes, authorization_parameters, endpoint_host, endpoint_port, endpoint_path,
-      env_var, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9::jsonb, $10, $11, $12, $13, $14)`,
+      env_var, created_at, mcp_server_url, mcp_resource, revocation_url)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17)`,
     [
       version.templateId,
       version.version,
@@ -110,6 +117,9 @@ async function insertVersion(
       version.endpoint.path,
       version.envVar,
       version.createdAt,
+      version.mcp?.serverUrl ?? null,
+      version.mcp?.resource ?? null,
+      version.revocationUrl ?? null,
     ],
   );
 }
@@ -122,7 +132,7 @@ export function postgresConnectionTemplates(
   const selectTemplates = async (where: string, values: unknown[], lock = "") =>
     (
       await client.query(
-        `SELECT t.id, t.display_name, t.created_at, ${versionColumns}
+        `SELECT t.id, t.namespace_id, t.display_name, t.created_at, ${versionColumns}
          FROM occ.connection_templates t
          JOIN occ.connection_template_versions v
            ON v.template_id = t.id AND v.version = t.current_version
@@ -134,7 +144,15 @@ export function postgresConnectionTemplates(
   return {
     findConnectionTemplate: async (templateId) =>
       (await selectTemplates("WHERE t.id = $1", [templateId]))[0],
-    listConnectionTemplates: async () => Object.freeze(await selectTemplates("", [])),
+    listConnectionTemplates: async (filter) =>
+      Object.freeze(
+        filter === undefined
+          ? await selectTemplates("", [])
+          : await selectTemplates("WHERE t.namespace_id = $1 OR ($2 AND t.namespace_id IS NULL)", [
+              filter.namespaceId,
+              filter.includeInstallationWide,
+            ]),
+      ),
     findConnectionTemplateVersion: async (templateId, version) => {
       const [row] = (
         await client.query(
@@ -145,11 +163,12 @@ export function postgresConnectionTemplates(
       ).rows;
       return row === undefined ? undefined : immutableCopy(versionFromRow(row as Row));
     },
-    findClientRegistration: async (issuer, clientId) => {
+    findClientRegistration: async (issuer, clientId, namespaceId) => {
       const [row] = (
         await client.query(
-          `SELECT * FROM occ.connection_client_registrations WHERE issuer = $1 AND client_id = $2`,
-          [issuer, clientId],
+          `SELECT * FROM occ.connection_client_registrations WHERE issuer = $1 AND client_id = $2
+           AND namespace_id IS NOT DISTINCT FROM $3`,
+          [issuer, clientId, namespaceId ?? null],
         )
       ).rows;
       return row === undefined ? undefined : registrationFromRow(row as Row);
@@ -168,14 +187,15 @@ export function postgresConnectionTemplates(
       await requireInitialized();
       await client.query(
         `INSERT INTO occ.connection_client_registrations
-         (id, issuer, client_id, credential_refresh_driver_id, created_at)
-         VALUES ($1, $2, $3, $4, $5)`,
+         (id, issuer, client_id, credential_refresh_driver_id, created_at, namespace_id)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         [
           registration.id,
           registration.issuer,
           registration.clientId,
           registration.credentialRefreshDriverId,
           registration.createdAt,
+          registration.namespaceId ?? null,
         ],
       );
       return immutableCopy(registration);
@@ -195,9 +215,15 @@ export function postgresConnectionTemplates(
       await requireInitialized();
       // The current-version foreign key is deferred, so the template row goes in first.
       await client.query(
-        `INSERT INTO occ.connection_templates (id, display_name, current_version, created_at)
-         VALUES ($1, $2, $3, $4)`,
-        [template.id, template.displayName, template.current.version, template.createdAt],
+        `INSERT INTO occ.connection_templates (id, display_name, current_version, created_at, namespace_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          template.id,
+          template.displayName,
+          template.current.version,
+          template.createdAt,
+          template.namespaceId ?? null,
+        ],
       );
       await insertVersion(client, template.current);
       return immutableCopy(template);

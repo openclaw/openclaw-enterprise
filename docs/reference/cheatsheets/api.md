@@ -184,6 +184,7 @@
 - [`getConnectionTemplate`](../api.md#get-connectiontemplatesconnectiontemplateid): Get one connection template.
 - [`createConnectionTemplate`](../api.md#post-connectiontemplates): Create an Installation connection template.
 - [`updateConnectionTemplate`](../api.md#patch-connectiontemplatesconnectiontemplateid): Rename a connection template, or create a version with new approved values.
+- [`discoverMcpConnection`](../api.md#post-connectiontemplatesdiscovermcp): Discover OAuth settings for an MCP connection template.
 - [`rotateConnectionClientSecret`](../api.md#post-connectiontemplatesconnectiontemplateidrotateclientsecret): Replace the OAuth client secret used by new connections.
 - [`startAgentConnection`](../api.md#post-namespacesnamespaceidagentsagentidconnections): Start connecting the signed-in person's account to their personal Agent.
 - [`deleteConnectionTemplate`](../api.md#delete-connectiontemplatesconnectiontemplateid): Delete a connection template that no connection uses.
