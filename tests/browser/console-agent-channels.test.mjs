@@ -1216,6 +1216,14 @@ describe("Agent channels", { concurrency: 3 }, () => {
       slug: "revoked-slack-grant",
       secretBindings: await slackTokenBindings(fixture, namespace, "Revoked grant"),
     });
+    // The Namespace's IAM policy lists no grant of the bound Slack Secrets to the Agent.
+    for (const { id } of await fixture.addedAccessBindings(namespace.id)) {
+      const removed = await fixture.request(
+        "DELETE",
+        `/namespaces/${namespace.id}/iam/access-bindings/${id}`,
+      );
+      assert.equal(removed.status, 204);
+    }
     const account = await fixture.createNamespaceMember("revoked-grant", namespace.id, AGENT_READ);
     const revoke = grantInstallationAdministration(fixture, account.principal);
     const { page } = await newPage(t, fixture, { browser });

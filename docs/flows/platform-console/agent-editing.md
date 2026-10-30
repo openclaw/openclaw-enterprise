@@ -238,7 +238,9 @@ grant leaves Configuration saved; a 403 names the Installation administrator, wh
 **Retry Secret access**; a timeout or 5xx stays unknown. A member's session sends no grant and
 says access was not verified until **Reload draft**. An administrator's console checks every
 bound Secret's grant, as deployment does; Deploy waits for those reads and rechecks before its
-POST, and a save or Retry during one reads again before naming Deploy.
+POST, and a save or Retry during one reads again before naming Deploy. When a later permission
+answer makes the bindings read-only, Retry is gone and the warning names the Installation
+administrator instead.
 `agents/credentials.mjs:missingChannelCredentialGroups` reads token keys as the Slack Channel
 Driver does; pickers appear only for standard keys. A 400 that
 `agents/list.mjs:channelBindingRefusal` matches shows the API's message. An uncertain PATCH

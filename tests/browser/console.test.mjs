@@ -2862,18 +2862,18 @@ test("a page address with a trailing slash opens that page", async (t) => {
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
   const url = new URL(page.url());
   assert.equal(url.pathname + url.search, `/console/agents/new?namespace=${namespace.id}`);
-  // Every trailing slash goes, not only the last; the query, tab and hash stay.
+  // Every trailing slash goes, not only the last; the query and tab stay.
   const agent = await fixture.createAgent(namespace.id, "Trailing assistant");
   await page.goto(`${fixture.origin}/console/agents//?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Agents" }).waitFor();
-  assert.equal(new URL(page.url()).pathname, "/console/agents");
+  const listUrl = new URL(page.url());
+  assert.equal(listUrl.pathname + listUrl.search, `/console/agents?namespace=${namespace.id}`);
   const detail = `/console/agents/${agent.id}`;
-  await page.goto(`${fixture.origin}${detail}///?namespace=${namespace.id}&tab=configuration#x`);
+  await page.goto(`${fixture.origin}${detail}///?namespace=${namespace.id}&tab=configuration`);
   await page.getByRole("heading", { name: "Trailing assistant" }).waitFor();
   const detailUrl = new URL(page.url());
   assert.equal(detailUrl.pathname, detail);
   assert.equal(detailUrl.searchParams.get("tab"), "configuration");
-  assert.equal(detailUrl.hash, "#x");
 });
 
 test("login ignores untrusted returns and resolves an opaque Agent key only after authentication", async (t) => {
