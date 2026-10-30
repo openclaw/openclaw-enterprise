@@ -93,6 +93,7 @@
     "tests/conformance/repository-credentials-registry.test.mjs",
     "tests/integration/ci-openshell.test.mjs",
     "tests/conformance/repository-credentials-sessions.test.mjs",
+    "tests/conformance/repository-credentials-admission.test.ts",
     "tests/integration/dev-codex-seccomp-failure.test.mjs",
     "tests/conformance/runtime-probe-cpu-counter.test.mjs",
     "tests/conformance/runtime-gateway-state-migration.test.mjs",
@@ -370,6 +371,9 @@
     },
     {
       "path": "tests/conformance/repository-credentials-sessions.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-admission.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-custody.test.ts"
