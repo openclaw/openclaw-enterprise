@@ -1634,6 +1634,21 @@ test("custom Codex standalone search is opt-in and preserves provider identity a
   }
 });
 
+test("custom endpoint search declarations do not change Codex account-login providers", async () => {
+  const fixture = dedicatedFirstDeployFixture({
+    modelEndpoint: "https://models.example.test/v1",
+    standaloneWebSearch: true,
+    revision: { harnessAuth: { ...apiKeyAuth, method: "codex_pat" } },
+  });
+  await fixture.prepare();
+  const runtime = [...fixture.objects.values()].find(
+    (object) => object.kind === "ConfigMap" && object.data?.["runtime.json"] !== undefined,
+  );
+  assert.equal(JSON.parse(runtime.data["runtime.json"]).modelEndpoint, undefined);
+  assert.equal(runtime.data["config.toml"].includes("supports_standalone_web_search"), false);
+  assert.equal(runtime.data["config.toml"].includes("model_provider"), false);
+});
+
 test("standalone Codex search requires an explicit model endpoint and a boolean declaration", () => {
   const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
   for (const value of [undefined, false]) {

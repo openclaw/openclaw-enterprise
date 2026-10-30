@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: Patrick-Erichsen
 ---
 
@@ -9,6 +9,7 @@ author: Patrick-Erichsen
 - **ID:** RFC-0026
 - **Created:** 2026-10-29
 - **Last updated:** 2026-10-29
+- **RFC PR:** https://github.com/openclaw/openclaw-enterprise/pull/4142
 
 ## Summary
 
@@ -57,6 +58,11 @@ startup. Cover omitted and false values, true without an endpoint, and unrelated
 authentication paths. Preserve provider identity, protected provider tools,
 sandbox, and approval settings. Source and fixture checks do not establish that
 a live provider completes search; report that separate proof explicitly.
+
+Driver validation and generated configuration are implemented on this branch.
+Focused conformance proves the opt-in and refusal behavior. Real installed Agent
+lifecycle verification and independent review remain pending; this is not live
+search qualification.
 
 ## Rationale and alternatives
 
