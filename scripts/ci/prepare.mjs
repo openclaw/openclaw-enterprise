@@ -1402,7 +1402,7 @@ async function ensureK3dCluster(statePath, state) {
     return existing;
   }
   await commandAvailable(process.env.OPENCLAW_CI_K3D_BIN ?? "k3d", ["version"]);
-  const openShell = state.lane === "openshell";
+  const openShell = state.lane === "openshell" || state.lane === "k3d-bound-login";
   const crossNodePluginStatus = fixtureLanes.has(state.lane);
   if (!openShell) {
     await commandAvailable(process.env.OCC_KUBECTL_BIN ?? "kubectl", ["version", "--client=true"]);
@@ -3058,6 +3058,36 @@ async function prepareLane({ lane, statePath, file }) {
       await ensurePostgresServer(resolvedStatePath, state);
       await prepareK3dModelLane(resolvedStatePath, state, env, { buildRuntime: true });
       break;
+    case "k3d-bound-login": {
+      await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
+      const cluster = await prepareK3dModelLane(resolvedStatePath, state, env, {
+        buildController: true,
+        buildRuntime: true,
+      });
+      const inputs = effectiveLaneEnv(name, env);
+      for (const [variable, image] of Object.entries({
+        OCC_TEST_PRODUCTION_NODE_IMAGE: inputs.NODE_BASE_IMAGE,
+        OCC_TEST_PRODUCTION_POSTGRES_IMAGE: inputs.OCC_TEST_PRODUCTION_POSTGRES_IMAGE,
+      })) {
+        env[variable] = (
+          await registerImageInK3d(resolvedStatePath, state, cluster, image, variable)
+        ).reference;
+      }
+      Object.assign(env, (await prepareGatewayRouting({ cluster, execFile })).env);
+      Object.assign(
+        env,
+        await prepareOpenShell({
+          cluster,
+          execFile,
+          env: { ...process.env, ...env },
+          registerImage: (image, variable) =>
+            registerImageInK3d(resolvedStatePath, state, cluster, image, variable).then(
+              (entry) => entry.reference,
+            ),
+        }),
+      );
+      break;
+    }
     case "openshell": {
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
       await ensurePostgresServer(resolvedStatePath, state);

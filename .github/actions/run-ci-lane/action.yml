@@ -84,7 +84,7 @@ runs:
         sudo apt-get -o Acquire::Retries=3 install --no-install-recommends -y skopeo
         skopeo --version | grep -Fx 'skopeo version 1.13.3'
     - name: Enable Kubernetes bridge packet filtering
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || inputs.lane == 'openshell' || startsWith(inputs.lane, 'k3d-fixture-') || startsWith(inputs.lane, 'k3d-observability')
+      if: inputs.lane == 'k3d-bound-login' || inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || inputs.lane == 'openshell' || startsWith(inputs.lane, 'k3d-fixture-') || startsWith(inputs.lane, 'k3d-observability')
       shell: bash
       run: |
         # k3d nodes share the runner kernel; K3s cannot load absent host modules.
@@ -105,7 +105,7 @@ runs:
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell'
+      if: inputs.lane == 'k3d-bound-login' || inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
@@ -184,6 +184,7 @@ runs:
       env:
         # Image builds keep a few minutes of it for the lane's tests (prepare.mjs).
         CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
+        OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS: ${{ inputs.lane == 'k3d-bound-login' && '2400000' || '' }}
         OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
         ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
@@ -198,6 +199,7 @@ runs:
         # Each file's timeout is CI_RUNNER_TEST_TIMEOUT_MS (60 minutes when unset), cut to what
         # is left before the lane deadline.
         CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
+        OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS: ${{ inputs.lane == 'k3d-bound-login' && '2400000' || '' }}
         CI_RUNNER_TEST_TIMEOUT_MS: ${{ (startsWith(inputs.lane, 'checks-baseline-') || startsWith(inputs.lane, 'checks-browser')) && '300000' || inputs.lane == 'dev-up-k3d' && '9000000' || inputs.lane == 'qa-matrix' && '14400000' || (inputs.lane == 'k3d-model' || inputs.lane == 'openshell') && '5400000' || '' }}
         # Browser tests write screenshots and failure.json (console, network
         # and navigation log) here only when a test fails. Limited to the

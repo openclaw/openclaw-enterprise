@@ -1548,8 +1548,8 @@ const hasIssue = (result, code, lane) =>
   );
 
 test("workflow selection flows through the gate and full-mode source-bound aggregate", async (t) => {
-  // A declared lane must actually have a runner in both full-coverage paths.
-  // This catches a manifest/gate update that accidentally omits a new matrix job.
+  // CI lanes must have a runner; the bound-login qualification is CI-only.
+  // The manual full-integration workflow keeps its existing coverage.
   const matrixLanes = (source) =>
     [...source.matchAll(/- lane: ([a-z0-9-]+)/g)].map((match) => match[1]);
   const suiteIndex = JSON.parse(read("scripts/ci/test-suites.json"));
@@ -1564,7 +1564,10 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
       "runtime-image-fixture",
       ...matrixLanes(read(".github/workflows/full-integration.yml")),
     ].sort(),
-    [...expectedFullLanes, "k3d-observability-demo"].sort(),
+    [
+      ...expectedFullLanes.filter((lane) => lane !== "k3d-bound-login"),
+      "k3d-observability-demo",
+    ].sort(),
   );
   await all(["docs", "full"], async (expected) => {
     const [f, bootstrap] = await policyFixture(t, ({ put }) => {

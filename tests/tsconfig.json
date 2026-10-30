@@ -12,6 +12,7 @@
   },
   "include": [
     "**/*.test.ts",
+    "fixtures/bound-login/*.ts",
     "../deploy/runtime/google/install-gog.mts",
     "../scripts/console-storybook/*.stories.ts",
     "../scripts/console/record-walkthrough.ts",

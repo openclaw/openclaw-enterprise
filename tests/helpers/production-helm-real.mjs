@@ -10,6 +10,7 @@ import {
 } from "./kubernetes-real.mjs";
 
 // The caller owns the disposable namespace and registers its cleanup before installation.
+// Optional prepareLocal wraps file I/O only; native commands remain owned by run.
 export async function installProductionHelmControlPlane({
   selection,
   images,
@@ -27,10 +28,13 @@ export async function installProductionHelmControlPlane({
   executionCluster,
   metrics,
   databaseName = "openclaw_enterprise",
+  chart = "deploy/helm/openclaw-enterprise",
+  diagnoseFailure = true,
   run,
   kubernetes,
   createSecretValue,
   record,
+  prepareLocal = (operation) => operation(),
 }) {
   // The values this installation creates, so a failure diagnostic can redact them.
   const secretValues = [];
@@ -227,14 +231,16 @@ export async function installProductionHelmControlPlane({
   if (metrics !== undefined) {
     values.metrics = metrics;
   }
-  await writeFile(join(directory, "values.json"), JSON.stringify(values), { mode: 0o600 });
+  await prepareLocal(() =>
+    writeFile(join(directory, "values.json"), JSON.stringify(values), { mode: 0o600 }),
+  );
   await run(
     "helm",
     [
       "upgrade",
       "--install",
       release,
-      "deploy/helm/openclaw-enterprise",
+      chart,
       "-n",
       system,
       "--kubeconfig",
@@ -249,6 +255,9 @@ export async function installProductionHelmControlPlane({
     ],
     { timeout: 330_000 },
   ).catch(async (error) => {
+    if (!diagnoseFailure) {
+      throw error;
+    }
     throw await withHelmInstallDiagnostic(error, {
       selection,
       namespace: system,

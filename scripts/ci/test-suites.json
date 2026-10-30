@@ -45,7 +45,8 @@
     "keycloak-oidc": "./test-suites/keycloak-oidc.json",
     "egress-connected": "./test-suites/egress-connected.json",
     "skipper-prepared-git-installed": "./test-suites/skipper-prepared-git-installed.json",
-    "egress-custody-installed": "./test-suites/egress-custody-installed.json"
+    "egress-custody-installed": "./test-suites/egress-custody-installed.json",
+    "k3d-bound-login": "./test-suites/k3d-bound-login.json"
   },
   "groups": {
     "ci": [
@@ -68,7 +69,8 @@
       "logging-collector",
       "repository-credentials-container",
       "k3d-observability",
-      "keycloak-oidc"
+      "keycloak-oidc",
+      "k3d-bound-login"
     ],
     "full": [
       "checks-baseline-1",

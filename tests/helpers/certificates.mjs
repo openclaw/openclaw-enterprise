@@ -3,12 +3,13 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
+/** @type {(command: string, args: string[]) => Promise<unknown>} */
 const execute = promisify(execFile);
 
 // Returns the openssl key arguments: `-key keyPath` after writing `keyPem` there, or
 // arguments that generate a fresh P-256 key at `keyPath` (much faster than RSA). Shared
 // fixture keys (shared-keys.mjs) save the generation entirely where a test needs RSA.
-async function keyArguments(keyPath, keyPem) {
+async function keyArguments(keyPath, keyPem, prepareLocal = (operation) => operation()) {
   if (keyPem === undefined) {
     return [
       "-newkey",
@@ -20,7 +21,7 @@ async function keyArguments(keyPath, keyPem) {
       keyPath,
     ];
   }
-  await writeFile(keyPath, keyPem, { mode: 0o600 });
+  await prepareLocal(() => writeFile(keyPath, keyPem, { mode: 0o600 }));
   return ["-key", keyPath];
 }
 
@@ -91,26 +92,28 @@ export async function certificateAuthority(
 async function issueLeaf(
   paths,
   { caPath, caKeyPath },
-  { subject, subjectAltName, usage, keyPem, days, run },
+  { subject, subjectAltName, usage, keyPem, days, run, prepareLocal = (operation) => operation() },
 ) {
   await run("openssl", [
     "req",
     "-new",
-    ...(await keyArguments(paths.key, keyPem)),
+    ...(await keyArguments(paths.key, keyPem, prepareLocal)),
     "-subj",
     subject,
     "-out",
     paths.csr,
   ]);
-  await writeFile(
-    paths.ext,
-    [
-      ...(subjectAltName === undefined ? [] : [`subjectAltName=${subjectAltName}`]),
-      "basicConstraints=critical,CA:FALSE",
-      `extendedKeyUsage=${usage}`,
-      "keyUsage=critical,digitalSignature,keyEncipherment",
-      "",
-    ].join("\n"),
+  await prepareLocal(() =>
+    writeFile(
+      paths.ext,
+      [
+        ...(subjectAltName === undefined ? [] : [`subjectAltName=${subjectAltName}`]),
+        "basicConstraints=critical,CA:FALSE",
+        `extendedKeyUsage=${usage}`,
+        "keyUsage=critical,digitalSignature,keyEncipherment",
+        "",
+      ].join("\n"),
+    ),
   );
   await run("openssl", [
     "x509",
@@ -134,6 +137,7 @@ async function issueLeaf(
 // A leaf signed by `ca` (from certificateAuthority), in `directory` as <name>.key and
 // <name>.crt. `subject` defaults to `/CN=<commonName>`; `usage` is serverAuth or
 // clientAuth. Returns the PEM texts and their paths.
+// Optional prepareLocal wraps the file I/O, never the native commands.
 export async function signedLeaf(
   directory,
   ca,
@@ -146,14 +150,15 @@ export async function signedLeaf(
     keyPem,
     days = 2,
     run = execute,
+    prepareLocal = (operation) => operation(),
   },
 ) {
   const file = (suffix) => join(directory, `${name}.${suffix}`);
   const paths = { key: file("key"), csr: file("csr"), ext: file("ext"), cert: file("crt") };
-  await issueLeaf(paths, ca, { subject, subjectAltName, usage, keyPem, days, run });
+  await issueLeaf(paths, ca, { subject, subjectAltName, usage, keyPem, days, run, prepareLocal });
   return {
-    key: await readFile(paths.key, "utf8"),
-    cert: await readFile(paths.cert, "utf8"),
+    key: await prepareLocal(() => readFile(paths.key, "utf8")),
+    cert: await prepareLocal(() => readFile(paths.cert, "utf8")),
     keyPath: paths.key,
     certPath: paths.cert,
   };

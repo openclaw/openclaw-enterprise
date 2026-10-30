@@ -31,7 +31,11 @@ export function diagnosticDeadlinePassed() {
 
 async function kubectlFor(selection, args, options) {
   // Inside a failure diagnostic, kubectl stops at its deadline (finding 1557).
-  const signal = diagnosticDeadline.getStore();
+  const diagnosticSignal = diagnosticDeadline.getStore();
+  const signal =
+    diagnosticSignal && options?.signal
+      ? AbortSignal.any([diagnosticSignal, options.signal])
+      : (diagnosticSignal ?? options?.signal);
   signal?.throwIfAborted();
   const answered = await kubectlGetJson(selection, args, { signal });
   if (answered !== undefined) {
@@ -636,6 +640,7 @@ export function createKubernetesClient({
   kubectl = (...args) => kubectlFor(selection, args),
   waitTimeoutMs = 240_000,
   waitIntervalMs = 750,
+  onWaitTimeout,
 }) {
   const kubectlArgumentsForSelection = (args) => kubectlArguments(selection, args);
   const resource = async (kind, name, namespace) => {
@@ -650,7 +655,10 @@ export function createKubernetesClient({
   // `operation` may also return false for "not yet".
   const waitFor = (description, operation, timeoutMs = waitTimeoutMs) =>
     pollFor(
-      description,
+      () => {
+        onWaitTimeout?.();
+        return typeof description === "function" ? description() : description;
+      },
       async () => {
         const result = await operation();
         return result === false ? undefined : result;
@@ -686,31 +694,87 @@ function redact(value, redactions) {
     .reduce((current, secret) => current.split(secret).join("<redacted>"), value);
 }
 
-export async function validateExplicitK3dLoopbackContext(selection) {
-  const { kubeconfigPath, kubernetesContext } = selection;
-  assert.ok(
-    kubeconfigPath,
-    "OCC_TEST_KUBERNETES_KUBECONFIG must explicitly select disposable k3d.",
-  );
-  assert.match(kubernetesContext ?? "", /^k3d-/, "a dedicated k3d-* context is required");
-  // Flattening reads local files, where kubectl's API request timeout does not apply.
-  const configuration = JSON.parse(
-    await kubectlFor(selection, ["config", "view", "--minify", "--flatten", "-o", "json"], {
-      timeout: 30_000,
-      killSignal: "SIGKILL",
-    }),
-  );
-  assert.equal(configuration.contexts?.length, 1);
-  assert.equal(configuration.contexts[0].name, kubernetesContext);
-  assert.equal(configuration.clusters?.length, 1);
-  const endpoint = new URL(configuration.clusters[0].cluster.server);
-  assert.equal(endpoint.protocol, "https:");
-  assert.ok(
-    ["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname),
-    "refusing to run destructive integration against a non-loopback Kubernetes API",
-  );
-  assert.notEqual(endpoint.port, "", "the disposable Kubernetes API requires an explicit port");
-  return configuration;
+export async function validateExplicitK3dLoopbackContext(selection, { onFailure, onCommand } = {}) {
+  let failureClass = "context-refusal";
+  let deadline;
+  try {
+    const { kubeconfigPath, kubernetesContext } = selection;
+    assert.ok(
+      kubeconfigPath,
+      "OCC_TEST_KUBERNETES_KUBECONFIG must explicitly select disposable k3d.",
+    );
+    assert.match(kubernetesContext ?? "", /^k3d-/, "a dedicated k3d-* context is required");
+    // Flattening reads local files, where kubectl's API request timeout does not apply.
+    // Opt-in observation uses a distinct deadline signal: a killed process alone
+    // does not establish whether a native timeout or another signal ended it.
+    deadline = onFailure ? AbortSignal.timeout(30_000) : undefined;
+    failureClass = "unknown-reply";
+    onCommand?.();
+    const text = await kubectlFor(
+      selection,
+      ["config", "view", "--minify", "--flatten", "-o", "json"],
+      {
+        ...(deadline ? { signal: deadline } : { timeout: 30_000 }),
+        killSignal: "SIGKILL",
+      },
+    );
+    failureClass = "malformed-config";
+    const configuration = JSON.parse(text);
+    if (onFailure) {
+      // The qualification observer requires JSON structure before selection policy.
+      // Keep the shared validator's default caller behavior unchanged.
+      const object = (value) =>
+        value !== null && typeof value === "object" && !Array.isArray(value);
+      assert.ok(object(configuration));
+      assert.ok(Array.isArray(configuration.contexts) && Array.isArray(configuration.clusters));
+      for (const context of configuration.contexts) {
+        assert.ok(object(context) && typeof context.name === "string" && context.name.length > 0);
+      }
+      for (const cluster of configuration.clusters) {
+        assert.ok(
+          object(cluster) &&
+            object(cluster.cluster) &&
+            typeof cluster.cluster.server === "string" &&
+            cluster.cluster.server.length > 0,
+        );
+      }
+    }
+    failureClass =
+      Array.isArray(configuration?.contexts) && Array.isArray(configuration?.clusters)
+        ? "context-refusal"
+        : "malformed-config";
+    assert.equal(configuration.contexts?.length, 1);
+    assert.equal(configuration.contexts[0].name, kubernetesContext);
+    assert.equal(configuration.clusters?.length, 1);
+    failureClass = "malformed-config";
+    const endpoint = new URL(configuration.clusters[0].cluster.server);
+    failureClass = "context-refusal";
+    assert.equal(endpoint.protocol, "https:");
+    assert.ok(
+      ["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname),
+      "refusing to run destructive integration against a non-loopback Kubernetes API",
+    );
+    assert.notEqual(endpoint.port, "", "the disposable Kubernetes API requires an explicit port");
+    return configuration;
+  } catch (error) {
+    if (onFailure) {
+      let exitCode;
+      if (failureClass === "unknown-reply") {
+        if (error?.name === "AbortError" && deadline?.aborted) {
+          failureClass = "timeout";
+        } else if (Number.isSafeInteger(error?.code)) {
+          failureClass = "exit";
+          exitCode = error.code;
+        } else if (error?.signal) {
+          failureClass = "signal";
+        } else if (error?.code === "ENOENT" || error?.code === "EACCES") {
+          failureClass = "spawn";
+        }
+      }
+      onFailure({ failureClass, ...(exitCode === undefined ? {} : { exitCode }) });
+    }
+    throw error;
+  }
 }
 
 export function kubernetesHash(value, length = 12) {
