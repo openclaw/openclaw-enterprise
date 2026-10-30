@@ -135,7 +135,8 @@ After a `403` about grants, the refused icon stays unavailable and the row's not
 under it, until a permission answer read later allows that action. Any other `403`, such as
 retry ownership on a stale row, shows the API's text, the row's note points to it, and the row's
 actions stay unavailable, described by it, until **Refresh**. A window refocus that rebuilds the
-list shows that refusal again while the Agent is listed, and keeps focus on the same row control.
+list shows that refusal again while the Agent is listed, and keeps focus on the same row control,
+scrolling only as far as needed to keep its cell and note in view.
 If that control is gone or disabled, focus goes to the row's name, or to the page heading when
 the row is gone.
 

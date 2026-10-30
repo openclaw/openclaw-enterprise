@@ -1592,6 +1592,52 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
   }
 });
 
+// A refocus recheck reads the caller's permission answer again, so the controls that follow it
+// pick up a Secret operate grant: Disable Slack on the Channels tab did. The Deploy note above
+// kept naming the Secret until header Refresh, so the page gave two answers about the same
+// Secrets (finding 2977). The note now reads the Secret operate answer again on the same recheck.
+test("a refocus after a Secret operate grant updates the Deploy note", async (t) => {
+  const { fixture, namespace, agent, path } = await deployableRepositoryAgent(
+    t,
+    "Regranted Secret Agent",
+  );
+  const operator = await fixture.createNamespaceMember("regranted-operator", namespace.id, [
+    ...AGENT_READ,
+    ["read_logs", "agent"],
+    ["deploy", "agent"],
+    ["operate", "agent"],
+    ["read", "secret"],
+  ]);
+  const reason =
+    "Deploying needs Secret operate on Demo model credential, which your access does not include. Ask an Installation administrator to grant it.";
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "channels"),
+    operator.credentials,
+  );
+  await page.getByRole("heading", { name: "Regranted Secret Agent" }).waitFor();
+  const note = page.getByText(reason, { exact: true });
+  await note.waitFor();
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  assert.equal(await deploy.isDisabled(), true);
+  await settlePageRequests(page);
+
+  grantSecretOperate(fixture, namespace.id, operator.principal, [agent.harnessAuth.source.id]);
+  const answered = page.waitForResponse(
+    (reply) =>
+      reply.url() === `${fixture.origin}${path}/permissions/secrets` &&
+      reply.request().method() === "GET" &&
+      reply.status() === 200,
+  );
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await answered;
+  // Without Refresh, the note drops the Secret the operator may now operate, and Deploy follows.
+  await note.waitFor({ state: "detached" });
+  await waitForEnabled(deploy);
+});
+
 // Finding D756. A bound Secret the operator may not read is not in the Secret operate answer's
 // list, which names only Secrets she may read. Deploying still needs Secret operate on it, so the
 // answer counts the bound Secrets she may neither read nor operate, and Deploy is disabled beside

@@ -1159,6 +1159,13 @@ function focusInShownView() {
                 (item) => item.dataset.returnFocusHref === href,
               );
       target?.focus({ preventScroll: true });
+      // A rebuilt row can be taller than the one it replaces: a reread that finds the Agent
+      // deleting adds its badge above the row's icons. The restored icon then sat cut off at the
+      // viewport's bottom with its row note below the fold (finding 2976). Keep the control's
+      // area (the cell with its note) in view, moving the page only as far as that needs.
+      if (rebuilt && target?.dataset?.refocusKey !== undefined) {
+        (target.closest("[data-refocus-area]") ?? target).scrollIntoView({ block: "nearest" });
+      }
     },
   };
 }
