@@ -6,10 +6,12 @@ import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   accessBindingPostRequests,
+  AGENT_READ,
   apiRequests,
   detailUrl,
   expectNoText,
   fileBrowser,
+  grantInstallationAdministration,
   holdRequests,
   login,
   MEMBER_WRITE,
@@ -24,7 +26,9 @@ import {
   setSlackSelection,
   slackSelectionValue,
   statusTone,
+  trackSettledFetches,
   waitForEnabled,
+  waitForIdleFetches,
   waitForInputValue,
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
@@ -41,6 +45,9 @@ const GRANT_REFUSED =
   "Configuration saved, but this Agent cannot use the saved Slack Secret until it is granted access. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Retry Secret access.";
 const GRANT_MISSING =
   "This Agent has no access to a bound Slack Secret, so deploying it would be refused. Select Retry Secret access to grant it.";
+// The same missing grant, read by a session that is offered no Retry.
+const GRANT_MISSING_ASK =
+  "This Agent has no access to a bound Slack Secret, so deploying it would be refused. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Retry Secret access.";
 // A session known not to administer the Installation sent no grant (finding 2263).
 const GRANT_UNVERIFIED =
   "Configuration saved, but this session did not verify that this Agent can use the saved Slack Secret. Granting access needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Retry Secret access.";
@@ -1197,6 +1204,43 @@ describe("Agent channels", { concurrency: 3 }, () => {
       );
     });
   }
+
+  // An Installation administrator's page reads the IAM policy when it loads and finds a bound Slack
+  // Secret the Agent has no grant for. Her administration ends before she opens Channels: the
+  // permission answer now refuses her Configuration update, so neither tab offers Retry Secret
+  // access, and the warning names who grants it instead of the Retry she no longer has.
+  test("A missing Slack Secret grant names the administrator once a revoke removes Retry", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "Revoked Slack grant");
+    const { agent } = await createSlackAgent(fixture, namespace, {
+      name: "Revoked Slack Grant Agent",
+      slug: "revoked-slack-grant",
+      secretBindings: await slackTokenBindings(fixture, namespace, "Revoked grant"),
+    });
+    const account = await fixture.createNamespaceMember("revoked-grant", namespace.id, AGENT_READ);
+    const revoke = grantInstallationAdministration(fixture, account.principal);
+    const { page } = await newPage(t, fixture, { browser });
+    await trackSettledFetches(page);
+    const requests = apiRequests(page, fixture.origin);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      account.credentials,
+    );
+    await page.getByRole("heading", { name: "Revoked Slack Grant Agent" }).waitFor();
+    await waitForIdleFetches(page);
+    // The page load read the policy as an administrator.
+    assert.ok(requests.some(({ path }) => path.endsWith("/iam/access-bindings")));
+
+    revoke();
+    await page.getByRole("tab", { name: "Channels", exact: true }).click();
+    await page.getByText(GRANT_MISSING_ASK, { exact: true }).waitFor();
+    await expectNoText(page, GRANT_MISSING);
+    await page.getByRole("link", { name: "Open Credentials" }).click();
+    await page.locator(".channel-secrets").getByText(GRANT_MISSING_ASK, { exact: true }).waitFor();
+    await expectNoText(page, GRANT_MISSING);
+    assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).count(), 0);
+  });
 
   // Finding 2623. A member's channel card names bound Secrets from the view's readable Secret
   // list, read once per view (finding 2619): a Secret the list leaves out shows as unlisted. A
