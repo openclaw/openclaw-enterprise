@@ -14,7 +14,9 @@ test("prepared startup accepts TLS without an App key or provider calls and reje
     await import("../../apps/controller/src/composition/repository-credentials/check-config.ts");
   const directory = await temporaryDirectory(t, "repository-configuration-");
   const tls = await createTlsMaterial(t);
-  const controlDirectory = await socketDirectory(t, "rcs-config-");
+  const controlDirectory = await socketDirectory(t, "rcs-config-", {
+    longest: "prepared-git-use.sock",
+  });
   const key = join(directory, "app.pem");
   const tlsKey = join(directory, "tls.key");
   const cert = join(directory, "tls.crt");
