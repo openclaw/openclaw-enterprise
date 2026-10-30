@@ -2,9 +2,7 @@
 
 Select approved repositories, deploy an Agent, then use ordinary `git` and the `oce-github` draft helper.
 The worker Token Service owns GitHub App credentials. Choose an
-[access level](../reference/repository-credentials/access-levels.md) for the task;
-the [team runbook](repository-credentials/team-runbook.md) covers App registration,
-configuration, a first draft PR and cleanup.
+[access level](../reference/repository-credentials/access-levels.md) for the task.
 
 For an OpenShell Sandbox with static Credential Gateway credentials, follow
 [Push a Git branch from an OpenShell Agent](repository-credentials/openshell-git-push.md).

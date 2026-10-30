@@ -105,6 +105,7 @@ for (const file of walk(docs)) {
     text,
     title,
     route: route(source),
+    searchable: frontmatter?.searchable !== false,
     ids,
     githubAliases,
     parsed,
@@ -458,6 +459,7 @@ for (const page of pages.values()) {
     .join("");
   const html =
     '<!doctype html><html lang="en" data-theme="dark" data-oc-theme="product"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+    (page.searchable ? "" : '<meta name="robots" content="noindex">') +
     themeBootstrap +
     (page.source === "reference/api-explorer.md"
       ? '<script src="/assets/scalar.js" defer></script><script type="module" src="/assets/api-explorer.mjs"></script>'
@@ -479,7 +481,9 @@ for (const page of pages.values()) {
     ' pages">' +
     sidebar +
     "</nav>" +
-    '<main id="content" class="doc" data-pagefind-body>' +
+    (page.searchable
+      ? '<main id="content" class="doc" data-pagefind-body>'
+      : '<main id="content" class="doc">') +
     renderBreadcrumb(page) +
     page.html +
     '<footer data-pagefind-ignore><a href="' +

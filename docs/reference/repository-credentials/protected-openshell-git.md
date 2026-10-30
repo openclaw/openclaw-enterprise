@@ -170,7 +170,7 @@ Retain HTTPS, hostname verification and authenticated Gateway JWTs; do not enabl
 
 ## Grant access to a GitHub App installation
 
-Use the [GitHub App setup](../../guides/repository-credentials/team-runbook.md#register-and-install-the-github-app)
+Use the [GitHub App installation guide](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app)
 for membership and permissions, and the
 [registry reference](../repository-credentials.md#canonical-platform-registry)
 for policy fields. Keep repository scope when it is sufficient. To expose an

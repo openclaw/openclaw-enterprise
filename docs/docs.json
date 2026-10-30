@@ -431,10 +431,6 @@
                         "label": "Installation"
                       },
                       {
-                        "page": "guides/repository-credentials/team-runbook",
-                        "label": "Team Runbook"
-                      },
-                      {
                         "page": "guides/repository-credentials/openshell-git-push",
                         "label": "OpenShell Git Push"
                       },
@@ -490,6 +486,7 @@
               }
             ],
             "hidden": [
+              "guides/repository-credentials/team-runbook",
               "guides/repository-credentials/standalone-service",
               "guides/repository-credentials/development-token",
               "reference/repository-credentials/development-token",

@@ -54,7 +54,8 @@ the sidebar and breadcrumb without changing the article or its search title.
 The first visible page is the tab landing page; give it an overview when the tab
 covers multiple subjects. A tab can also declare `hidden`, an array of slugs or
 labeled pages. These pages keep their URLs and appear in search, but not in the
-sidebar. Mark a repository-only archive `published: false` in Markdown frontmatter
+sidebar. To keep a page at its URL but omit it from site search, set
+`searchable: false` in its frontmatter. Mark a repository-only archive `published: false` in Markdown frontmatter
 and omit it from navigation; it has no site route or search entry, and local links
 from published pages to it fail validation. A GitHub source link can cite the
 record. List every other Markdown page exactly once, visible or hidden. The local
