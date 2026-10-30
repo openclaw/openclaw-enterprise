@@ -88,14 +88,13 @@ same Driver ID and its `configuration` to `{}`. Configure the package once,
 under `drivers.sandbox.configuration`. The API and worker each load one
 registration and compare its identity with the admitted revision.
 
-For protected repository Git, set `repository.id`,
-`repository.configuration.sessionDurationSeconds`, and `repository.preparedGitHub`.
-The ID must match the GitHub Backend's `drivers.repo` policy member. Omit the
-Installation's `drivers.repo` and `repository.nativeSender`. A separately installed
-sender also omits `repository.openShell`. No native control socket or broker CA is needed. The Driver must implement
-both Sandbox repository access and the Credential Proxy's `bindRepositoryGit`.
-At release, Compute checks the installed recipient. Select the guarantee that
-the actual sender can enforce:
+For protected Git, match `repository.id` to the GitHub Backend's `drivers.repo`
+policy member. Set `repository.configuration.sessionDurationSeconds` and
+`repository.preparedGitHub`. Omit `drivers.repo` and `repository.nativeSender`
+from the Installation. External senders also omit `repository.openShell`.
+No native control socket or broker CA is required. The Driver supplies Sandbox
+repository access and `bindRepositoryGit`. Compute verifies the installed
+recipient before release.
 
 | Admission | Required behavior                                                                                                                                                                                                                             |
 | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -105,18 +104,15 @@ the actual sender can enforce:
 | v6        | Bundled OpenShell preview: observe the request hook per start; this does not prove the hook cannot later be disabled.                                                                                                                         |
 | v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.                                                                                                        |
 
-A lost authorization reply leaves possible use recorded; do not retry that
-exchange. v7 support in OCC is available to a capable Driver, not evidence that
-stock OpenShell enforces it. Selection establishes neither isolation nor release
-qualification. See the [contract](credential-proxy.md#delivery-profiles) and
-[OpenShell qualification boundary](../repository-credentials/protected-openshell-git.md).
+A lost authorization reply records possible use. Do not retry the exchange.
+Stock OpenShell lacks v7 qualification. For isolation and release requirements,
+see the [Driver contract](credential-proxy.md#delivery-profiles) and
+[OpenShell qualification guide](../repository-credentials/protected-openshell-git.md).
 
 ### Supply protected Git credentials with Helm
 
-After selecting your installed sender in the Installation, add these values to the
-[production chart](../../../deploy/helm/openclaw-enterprise/values.yaml). Use your own
-resource names. Replace the example IP address with an approved issuer destination.
-Keep Secret contents out of Helm values.
+Configure the [production chart](../../../deploy/helm/openclaw-enterprise/values.yaml)
+with your resource names and approved issuer address. Keep Secret contents out of Helm values.
 
 ```yaml
 repositoryCredentials:
