@@ -1377,6 +1377,29 @@ export const AgentRevisionSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const FirstDeploymentReceiptSchema = Type.Object(
+  {
+    revisionId: RevisionId,
+    namespaceId: NamespaceId,
+    agentId: AgentId,
+    configurationId: ConfigurationId,
+    configurationGeneration: ConfigurationGeneration,
+    createdAt: Timestamp,
+  },
+  { additionalProperties: false },
+);
+export const FirstDeploymentReceiptResponse = Type.Object(
+  { data: FirstDeploymentReceiptSchema, meta: Meta },
+  { additionalProperties: false },
+);
+export const FirstDeploymentRecoveryResponse = Type.Object(
+  {
+    data: Type.Union([FirstDeploymentReceiptSchema, Type.Null()]),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
 export const AgentRevisionResponse = Type.Object(
   { data: AgentRevisionSchema, meta: Meta },
   { additionalProperties: false },

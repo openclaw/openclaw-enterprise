@@ -2623,3 +2623,230 @@ test(
     ]);
   },
 );
+
+test(
+  "PostgreSQL guarded first deployment persists one private receipt and one reconcile work",
+  requiresPostgres,
+  async (context) => {
+    const [
+      { Pool },
+      { AuditEventFactory },
+      { PostgresPlatformState },
+      { OpenClawController },
+      { NativeIAMDriver, createAuthPrincipalSeed },
+      { createTestConfigurationDriver },
+      { createTestSecretDriver },
+      { createReadyComputeDriver },
+      { SlackChannelDriver },
+      { resolveApprovedHarness },
+      { grantAgentSecretOperate },
+    ] = await Promise.all([
+      import("pg"),
+      import("../../packages/audit/src/index.ts"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+      import("../../packages/occ/src/index.ts"),
+      import("../../packages/iam/src/index.ts"),
+      import("../helpers/configuration-driver.mjs"),
+      import("../helpers/secret-driver.mjs"),
+      import("../helpers/development.mjs"),
+      import("../../apps/controller/src/drivers/channel/slack.ts"),
+      import("../../apps/controller/src/composition/production-harness.ts"),
+      import("../helpers/postgres-harness-auth.mjs"),
+    ]);
+    const pool = new Pool({ connectionString: databaseUrl });
+    context.after(() => pool.end());
+    const state = new PostgresPlatformState(pool);
+    const installation = await ensureInstallation(state, "guarded-first-deployment");
+    const seed = createAuthPrincipalSeed(
+      installation.id,
+      "guarded-deployment-test",
+      { id: randomUUID() },
+      { grant: "administrator" },
+    );
+    await state.seedNativeIAM({
+      identities: [seed.principal],
+      roles: seed.roles,
+      bindings: seed.bindings,
+      groups: [],
+      memberships: [],
+      restrictions: [],
+    });
+    const principalId = seed.principal.id;
+    const configurationDriver = createTestConfigurationDriver();
+    const secretDriver = createTestSecretDriver();
+    const compute = createReadyComputeDriver("guarded-test-compute", { validateHarnessAuth() {} });
+    let senderCalls = 0;
+    const channel = new SlackChannelDriver(async (url, options) => {
+      senderCalls++;
+      assert.equal(new URL(url).href, "https://slack.com/api/auth.test");
+      assert.equal(options.headers.authorization, "Bearer xoxb-synthetic-bot");
+      return Response.json({ ok: true, bot_id: "B123", team_id: "T123" });
+    });
+    const createController = (store) => {
+      const controller = new OpenClawController(installation, {
+        state: store,
+        recordOperations: true,
+      });
+      for (const driver of [
+        new NativeIAMDriver(store),
+        compute,
+        configurationDriver,
+        secretDriver,
+        channel,
+      ]) {
+        controller.registerDriver(driver);
+        controller.selectDriver(driver.capability, driver.id);
+      }
+      return controller;
+    };
+    const controller = createController(state);
+    const namespace = await controller.createNamespace(principalId, {
+      name: `guarded-${randomUUID()}`,
+    });
+    await controller.handleNamespaceLifecycle(principalId, namespace.id, "ready");
+    const bot = await controller.createSecret(principalId, {
+      namespaceId: namespace.id,
+      name: "synthetic-slack",
+      value: "xoxb-synthetic-bot",
+    });
+    const configuration = await controller.createConfiguration(principalId, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values: {
+        channels: { slack: { enabled: true, mode: "http", botToken: "${SLACK_BOT_TOKEN}" } },
+      },
+      secretBindings: {
+        SLACK_BOT_TOKEN: { source: { kind: "secret", namespaceId: namespace.id, id: bot.id } },
+      },
+    });
+    const secret = await controller.createSecret(principalId, {
+      namespaceId: namespace.id,
+      name: "synthetic-harness",
+      value: "synthetic-test-key",
+    });
+    const agent = await controller.createAgent(principalId, {
+      namespaceId: namespace.id,
+      name: "guarded-agent",
+      configurationId: configuration.id,
+      harnessAuth: {
+        method: "api_key",
+        source: { kind: "secret", namespaceId: namespace.id, id: secret.id },
+      },
+    });
+    await grantAgentSecretOperate(pool, agent, secret.id);
+    await grantAgentSecretOperate(pool, agent, bot.id);
+    const auditFactory = new AuditEventFactory();
+    const mutationEvent = ({ revision, authorization }) =>
+      auditFactory.create({
+        installationId: installation.id,
+        namespaceId: namespace.id,
+        actorId: principalId,
+        action: "openclaw.agents.deploy",
+        source: "occ",
+        kind: "mutation",
+        outcome: "success",
+        resource: { kind: "agent_revision", id: revision.id, namespaceId: namespace.id },
+        authorization: authorization.request,
+        details: { iamEvidence: authorization.decision.evidence },
+        iamDriverId: authorization.decision.driverId,
+      });
+    const input = { namespaceId: namespace.id, agentId: agent.id };
+    const intent = {
+      key: "reviewed-first",
+      expectedConfigurationId: configuration.id,
+      expectedGeneration: 1,
+    };
+    const count = async () =>
+      (
+        await pool.query(
+          `SELECT (SELECT count(*)::int FROM occ.agent_revisions WHERE namespace_id = $1 AND agent_id = $2) AS revisions,
+            (SELECT count(*)::int FROM occ.controller_work WHERE namespace_id = $1 AND agent_id = $2 AND revision_id IS NOT NULL) AS work,
+            (SELECT count(DISTINCT a.id)::int FROM occ.audit_events a
+             JOIN occ.agent_revisions r ON r.id = a.resource_id
+             WHERE r.namespace_id = $1 AND r.agent_id = $2 AND r.revision_number = 1
+               AND a.kind = 'mutation' AND a.action = 'openclaw.agents.deploy'
+               AND a.outcome = 'success') AS audit`,
+          [namespace.id, agent.id],
+        )
+      ).rows[0];
+    secretDriver.calls.length = 0;
+    assert.equal(await controller.recoverAgentFirstDeployment(principalId, input, intent), null);
+    assert.deepEqual(await count(), { revisions: 0, work: 0, audit: 0 });
+    assert.equal(secretDriver.calls.length, 0);
+    const competing = { ...intent, key: "competing-first" };
+    const outcomes = await Promise.allSettled(
+      [intent, competing].map((requested) =>
+        controller.deployAgentFirst(
+          principalId,
+          input,
+          requested,
+          resolveApprovedHarness,
+          mutationEvent,
+        ),
+      ),
+    );
+    assert.equal(outcomes.filter((result) => result.status === "fulfilled").length, 1);
+    const winner = outcomes.findIndex((result) => result.status === "fulfilled");
+    const receipt = outcomes[winner].value;
+    const winnerIntent = winner === 0 ? intent : competing;
+    assert.deepEqual(await count(), { revisions: 1, work: 1, audit: 1 });
+    assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 2);
+    assert.ok(senderCalls >= 1 && senderCalls <= 2, "only the two fresh contenders can validate");
+    assert.equal(
+      secretDriver.calls.filter((call) => call.operation === "withValue").length,
+      senderCalls,
+    );
+    const preparedSenderCalls = senderCalls;
+    context.diagnostic(JSON.stringify({ senderCalls, resolve: 2, ...(await count()) }));
+    const reopened = createController(new PostgresPlatformState(pool));
+    secretDriver.calls.length = 0;
+    assert.deepEqual(
+      await reopened.recoverAgentFirstDeployment(principalId, input, winnerIntent),
+      receipt,
+    );
+    assert.deepEqual(
+      await reopened.deployAgentFirst(
+        principalId,
+        input,
+        winnerIntent,
+        resolveApprovedHarness,
+        mutationEvent,
+      ),
+      receipt,
+    );
+    assert.equal(
+      await reopened.recoverAgentFirstDeployment(principalId, input, {
+        ...winnerIntent,
+        key: "unused",
+      }),
+      null,
+    );
+    assert.equal(secretDriver.calls.length, 0);
+    assert.equal(senderCalls, preparedSenderCalls);
+    assert.deepEqual(await count(), { revisions: 1, work: 1, audit: 1 });
+    const stored = await pool.query(
+      "SELECT first_deployment_digest, admitted_spec FROM occ.agent_revisions WHERE id = $1",
+      [receipt.revisionId],
+    );
+    assert.match(stored.rows[0].first_deployment_digest, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.stringify(stored.rows[0].admitted_spec).includes(winnerIntent.key), false);
+    assert.equal(JSON.stringify(stored.rows[0].admitted_spec).includes(principalId), false);
+    const next = await reopened.deployAgent(principalId, input, resolveApprovedHarness);
+    assert.equal(next.revision, 2);
+    await reopened.updateConfiguration(principalId, {
+      namespaceId: namespace.id,
+      configurationId: configuration.id,
+      values: { temperature: "1" },
+    });
+    assert.deepEqual(
+      await reopened.recoverAgentFirstDeployment(principalId, input, winnerIntent),
+      receipt,
+    );
+    assert.deepEqual(await count(), { revisions: 2, work: 2, audit: 1 });
+    const publicRevision = await state.read((unit) =>
+      unit.revisions.findRevision(namespace.id, agent.id, receipt.revisionId),
+    );
+    assert.equal(Object.hasOwn(publicRevision, "firstDeploymentDigest"), false);
+    assert.equal(Object.hasOwn(publicRevision, "first_deployment_digest"), false);
+  },
+);

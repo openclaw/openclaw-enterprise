@@ -179,6 +179,9 @@ const authAccount = {
 const sessionKey = "example-session-binding-not-a-credential";
 
 export const parameterExamples = {
+  key: "review-1",
+  expectedConfigurationId: configurationId,
+  expectedGeneration: "1",
   namespaceId,
   agentId,
   configurationId,
@@ -217,6 +220,11 @@ export const parameterExamples = {
 };
 
 export const requestExamples = {
+  deployAgentFirst: {
+    key: "review-1",
+    expectedConfigurationId: configurationId,
+    expectedGeneration: 1,
+  },
   bootstrapInstallation: { name: "Engineering" },
   createNamespace: { name: namespace.name },
   createConfiguration: { kind: "agent", values: configuration },
@@ -349,6 +357,22 @@ export const responseExamples = {
   createConfiguration: config,
   getConfiguration: config,
   updateConfiguration: { ...config, generation: 2 },
+  deployAgentFirst: {
+    revisionId,
+    namespaceId,
+    agentId,
+    configurationId,
+    configurationGeneration: 1,
+    createdAt: time,
+  },
+  recoverAgentFirstDeployment: {
+    revisionId,
+    namespaceId,
+    agentId,
+    configurationId,
+    configurationGeneration: 1,
+    createdAt: time,
+  },
   deployAgent: revision,
   getAgentRevision: revision,
   listAgentRevisions: [

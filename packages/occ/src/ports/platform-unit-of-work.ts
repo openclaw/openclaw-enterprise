@@ -123,6 +123,7 @@ export function bindPlatformUnitOfWork(
       "transitionAgentStatus",
     ]),
     revisions: bindRepository(repositories.revisions, lifetime, [
+      "findFirstDeploymentReceipt",
       "findRevisionForBrowsing",
       "listRevisionsForBrowsing",
       "findRevision",

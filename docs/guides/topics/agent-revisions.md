@@ -70,6 +70,59 @@ The commands below also use `jq`.
    A succeeded deployment does not prove that the model responds; use the
    [runtime verification guide](../deploy/production-agents.md#verify-production-workloads).
 
+## Guarded first deployment and receipt recovery
+
+To deploy a saved Agent only at its reviewed Configuration ID and generation, use:
+
+```sh
+occ --namespace NAMESPACE_ID agent deploy-first AGENT_ID \
+  --configuration CONFIGURATION_ID --generation 1 --key review-1
+```
+
+This calls `POST /namespaces/:namespaceId/agents/:agentId/deploy-first` with
+`expectedConfigurationId`, `expectedGeneration`, and `key`. Fresh admission requires
+no revision history, stopped desired state, and the exact saved Configuration binding
+and generation. Other deployment requirements still apply. A conflict creates no
+revision. Ordinary bodyless `deploy` continues to admit later versions.
+
+The key is nonsecret, has 1–128 ASCII characters, starts with a letter or digit, and
+otherwise permits letters, digits, `.`, `_`, `~`, and `-`. Keep it with the reviewed
+Configuration ID and generation. It belongs to this Installation, caller, Namespace,
+Agent, and operation. Older servers reject the named route; clients do not fall back.
+
+If the reply is lost, run:
+
+```sh
+occ --namespace NAMESPACE_ID agent recover-first-deployment AGENT_ID \
+  --configuration CONFIGURATION_ID --generation 1 --key review-1
+```
+
+Recovery uses the bodyless
+`GET /namespaces/:namespaceId/agents/:agentId/deploy-first/:key/:expectedConfigurationId/:expectedGeneration`.
+It requires current exact Agent `deploy` and reviewed Configuration `read` authority.
+It returns only the original revision ID, owning IDs, Configuration generation, and
+admission time. It does not queue work, create credentials, or grant access. Recovery
+still works after an intentional redeploy or a change to the Agent's Configuration.
+Responses use `Cache-Control: no-store`, including a missing receipt (`null`).
+A miss cannot prove an in-flight request failed and does not authorize a resend.
+GET generations and the CLI `--generation` flag use decimal digits from `1` through
+`9007199254740991`, without leading zeros or hexadecimal notation. A larger value is invalid.
+
+Enabled Slack uses the same credential validation as ordinary deployment. After an
+authorized receipt miss, fresh preparation can read bound Secrets and contact the
+provider. Genuinely concurrent fresh requests can repeat this preparation, even
+though only one revision can commit. An early miss requires only the receipt
+permissions; it does not prove that fresh admission is authorized or will succeed.
+A matching committed receipt needs only current Agent `deploy` and reviewed
+Configuration `read`, with no Secret, provider, model, or work calls. An initially
+fresh contender may already have prepared credentials before a matching winner
+commits. Once it observes the matching receipt under the Agent lock, it performs
+no additional fresh work.
+
+Registered Drivers are trusted application code. Custom Channel Drivers use the
+same authorized credential reader; there is no separate first-deployment allowlist.
+See the [admission flow](../../flows/agent-deployment-diagnostics.md#guarded-first-admission).
+
 <span id="inspect-an-earlier-revision" class="anchor-alias"></span>
 
 ## Inspect an earlier version
