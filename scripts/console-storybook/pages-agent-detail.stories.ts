@@ -210,6 +210,7 @@ export const SharingHoldsAfterDelete = { ...story("agentSharingHoldsAfterDelete"
 export const SharingRemoved = { ...story("agentSharingRemoved") };
 export const SharingDenied = { ...story("agentSharingDenied") };
 export const SharingRefusedOnReturn = { ...story("agentSharingRefusedOnReturn") };
+export const SharingRegranted = { ...story("agentSharingRegranted") };
 export const SharingUnknown = { ...story("agentSharingUnknown") };
 export const CurrentVersionHidden = story("agentCurrentVersionHidden");
 export const CurrentVersionHiddenLogs = story("agentCurrentVersionHiddenLogs");

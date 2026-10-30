@@ -29,7 +29,8 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
 4. Select **Follow** to poll for new lines every 2 seconds. Following pauses while
    the browser tab is hidden or you scroll up, and stops after a permission denial.
 5. Select **Previous instance** after a restart to read the exited container's
-   output. Following is off for it.
+   output. Following is off for it. Until the container restarts, the option is
+   unavailable and a note under the toolbar says why.
 
 ### Filter the loaded output
 

@@ -2371,11 +2371,14 @@ export function installFixture(scenario, evidence) {
                 kind: "container",
                 pods: pods
                   .filter(({ role }) => role === "gateway")
-                  .map(({ name, uid }) => ({
+                  .map(({ name, uid, containers }) => ({
                     name,
                     uid,
                     container: "gateway",
-                    restartCount: 1,
+                    // The Gateway container's own count: a Pod that never restarted has no
+                    // previous instance to read (finding 2944).
+                    restartCount:
+                      containers?.find((item) => item.name === "gateway")?.restartCount ?? 1,
                   })),
                 available: pods.length > 0,
                 ...(pods.length > 0 ? {} : { unavailableCode: "NO_POD" }),

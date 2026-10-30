@@ -1993,6 +1993,7 @@ export const scenarios = {
       'In Configuration JSON, edit plugins.entries.codex.config.appServer: set sandbox to "workspace-write", approvalPolicy to "never", and remoteWorkspaceRoot to "/workspace/custom".',
       "Change the model, then replace the dummy credential. Confirm the selected model remains. Confirm all three edited appServer settings remain in Configuration JSON.",
       "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
+      "Open Runtime details and Tab to Execution mode. With Codex it takes focus and looks unavailable, described by its hint; keys and clicks do not change it. OpenClaw makes it selectable (finding 2945).",
     ],
   },
   createSecretCreateNotPermitted: {
@@ -4719,6 +4720,41 @@ export const scenarios = {
     ],
     gap: "Simulated UI proof: the refused reread stands in for administration revoked while the page is open.",
   },
+  agentSharingRegranted: {
+    group: "Pages/Agent detail",
+    name: "Refresh sharing after administration is granted again",
+    path: `${draft}&tab=access`,
+    rules: [
+      // The page load reads the policy; the share's reread is refused, as after a revoke.
+      { suffix: "/iam/roles", status: 403, skip: 1, once: true },
+      // The permission answer that settles the refusal says "not an administrator"; the one
+      // Refresh sharing asks reports administration granted again.
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/permissions",
+        skip: 1,
+        once: true,
+        data: {
+          delete: true,
+          agents: { create: true },
+          secrets: { create: true },
+          installation: { administer: false },
+        },
+      },
+    ],
+    actions: [
+      { text: "Current policy loaded." },
+      ...shareExistingPerson,
+      { text: "Sharing policy requires Installation administration." },
+      click("Refresh sharing"),
+    ],
+    description:
+      "A share is refused after a revoke, and administration is granted again. Refresh sharing rereads the Agent's and the Namespace's permission answers, then the policy, one list at a time: the Access tab stays and shows the current policy without a page reload (finding 2943).",
+    steps: [
+      "The panel shows “Current policy loaded.” and the Share form is usable again; the Access tab is still selected.",
+      "The request log shows the Agent and Namespace /permissions reads after Refresh sharing, then one /iam/roles and one /iam/access-bindings read.",
+    ],
+    gap: "Simulated UI proof: the refused reread and the permission answers stand in for administration revoked and granted again while the page is open.",
+  },
   agentSharingUnknown: {
     group: "Pages/Agent detail",
     name: "Sharing outcome uncertain",
@@ -6585,7 +6621,10 @@ export const scenarios = {
     candidateDeploymentStatus: "succeeded",
     runtimePod: "startupWarnings",
     description:
-      "The Gateway Pod is Ready with no restarts; its startup readiness-probe Event is listed in muted text as an earlier warning instead of in the warning color.",
+      "The Gateway Pod is Ready with no restarts; its startup readiness-probe Event is listed in muted text as an earlier warning instead of in the warning color. With no restart there is no previous instance, and a note under the log toolbar says so.",
+    steps: [
+      "Tab through the log controls. Previous instance takes focus and looks unavailable, described by “This container has not restarted, so there is no previous instance.” Space or a click does not check it (finding 2944).",
+    ],
   },
   runtimeLogsDedicatedPods: {
     ...runtimeLogsPage,

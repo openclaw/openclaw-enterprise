@@ -58,7 +58,12 @@ A policy `403` hides the
 panel and the tab, opens Configuration, and leaves the other panels usable; a current `401` retains global
 session expiry. The panel is built once per page. A return to the tab reads the
 policy again, with the controls disabled, so a `403` after
-administration ends takes the same path.
+administration ends takes the same path. **Refresh sharing** first rereads the
+Agent's and the Namespace's permission answers, which are not audited. Agent
+detail follows the Agent answer. When the console already settled that the
+person lacks Installation administration, the policy is read again only if the
+Namespace answer reports it, so administration granted again applies without a
+page reload; otherwise the tab gives way to Configuration with no audited read.
 
 ### 2. Serialize Role and binding writes
 
