@@ -671,10 +671,18 @@ export async function renderAgentDetail(
   const configurationReadOnly = () =>
     callerPermissions?.configurationUpdate === false ||
     callerPermissions?.configurationSecretsOperate === false;
-  const configurationReadOnlyReason = () =>
-    callerPermissions?.configurationUpdate === false
-      ? CONFIGURATION_READ_ONLY
+  let configurationDeniedSecretNames: readonly string[] = [];
+  const configurationReadOnlyReason = () => {
+    if (callerPermissions?.configurationUpdate === false) {
+      return CONFIGURATION_READ_ONLY;
+    }
+    const names = configurationDeniedSecretNames;
+    const listed =
+      names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+    return names.length
+      ? `Saving this Configuration needs Secret operate on ${listed}, which your access does not include. ${askAdministratorTo("grant it")}`
       : CONFIGURATION_SECRETS_READ_ONLY;
+  };
   // Channel saves submit the Secret bindings, and a save is checked only on the Secrets it
   // submits. Lacking operate only on Secrets bound to the Slack token names, which channel saves
   // replace, leaves Channels and channel Secrets editable: a save must replace each of them
@@ -3090,7 +3098,9 @@ export async function renderAgentDetail(
     // may operate but not read holds nothing: the deployment checks only operate.
     let deploySecretsDenied: DeploySecretsDenied = { names: [], unreadable: 0 };
     let deploySecretsRead = 0;
-    async function boundSecretsDenied({ fresh = false } = {}): Promise<DeploySecretsDenied> {
+    async function boundSecretsDenied({ fresh = false } = {}): Promise<
+      DeploySecretsDenied & { configurationNames: readonly string[] }
+    > {
       const bound = new Map<string, unknown>();
       for (const binding of Object.values(snapshot.secretBindings ?? {})) {
         const source = secretSourceForBinding(binding);
@@ -3098,31 +3108,40 @@ export async function renderAgentDetail(
           bound.set(source.id, source);
         }
       }
+      const configurationIds = new Set(bound.keys());
       const harness = harnessCredential(agent.harnessAuth, namespaceId);
       if (harness?.kind === "secret") {
         bound.set(harness.id, harness);
       }
       if (bound.size === 0) {
-        return { names: [], unreadable: 0 };
+        return { names: [], unreadable: 0, configurationNames: [] };
       }
       const denied = await secretsOperateDenied({ fresh });
       const unreadable = secretsOperateAnswer.unreadable();
       // The answer lists only Secrets this caller may read, so each one's name reads too.
+      // Reuse these authorized reads for the Configuration hint, excluding Harness-only Secrets.
+      const configurationNames: string[] = [];
       const names = await Promise.all(
         [...bound]
           .filter(([id]) => denied?.has(id))
           .map(async ([id, source]) => {
             const href = sameNamespaceSecretHref(source, namespaceId);
+            let name = id;
             try {
-              return href ? (secretMetadata(await request(href), namespaceId)?.name ?? id) : id;
+              name = href ? (secretMetadata(await request(href), namespaceId)?.name ?? id) : id;
             } catch {
-              return id;
+              // Keep the same authorized identifier fallback as the Deploy note.
             }
+            if (configurationIds.has(id)) {
+              configurationNames.push(name);
+            }
+            return name;
           }),
       );
       return {
         names: names.sort((left, right) => left.localeCompare(right)),
         unreadable: unreadable ?? 0,
+        configurationNames: configurationNames.sort((left, right) => left.localeCompare(right)),
       };
     }
     function readDeploySecretsDenied(options?: { fresh?: boolean }) {
@@ -3131,6 +3150,8 @@ export async function renderAgentDetail(
         (denied) => {
           if (read === deploySecretsRead && context.isCurrent()) {
             deploySecretsDenied = denied;
+            configurationDeniedSecretNames = denied.configurationNames;
+            redrawConfigurationAccessViews();
             updateDeployControls();
           }
           return denied;
@@ -5883,13 +5904,15 @@ export async function renderAgentDetail(
     }
 
     let shownReadOnly = false;
+    let shownReadOnlyReason = "";
     function render() {
       shownReadOnly = !editing && configurationReadOnly();
+      shownReadOnlyReason = configurationReadOnlyReason();
       syncSafety();
       if (shownReadOnly) {
         // A reader views the saved JSON; no editor whose Save would answer 403 (finding 2421).
         body.replaceChildren(
-          element("p", { className: "hint" }, configurationReadOnlyReason()),
+          element("p", { className: "hint" }, shownReadOnlyReason),
           nativeDocument(values, "View native Configuration"),
           ...(feedback.textContent ? [feedback] : []),
         );
@@ -5945,7 +5968,12 @@ export async function renderAgentDetail(
     render();
     // An answer that lands after this view changes whether it is read-only (finding 2421).
     followConfigurationAccess(() => {
-      if (context.isCurrent() && !editing && configurationReadOnly() !== shownReadOnly) {
+      if (
+        context.isCurrent() &&
+        !editing &&
+        (configurationReadOnly() !== shownReadOnly ||
+          (shownReadOnly && configurationReadOnlyReason() !== shownReadOnlyReason))
+      ) {
         render();
       }
     });

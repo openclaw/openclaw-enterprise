@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-29
-last_updated_session: authoring-run/6f6ebb4a-7c4c-4bd7-a11c-8381c411c816
+updated: 2026-10-30
+last_updated_session: b03beb3e-57d1-47cf-829f-e31955a47d3c
 ---
 
 # Platform console request flow
@@ -272,7 +272,11 @@ reads, password values, and mutations invalidate tab reuse. Each tab checks it
 is mounted before applying a response; late reads cannot overwrite another tab.
 Password values clear while [draft captures](platform-console/agent-editing.md#4-render-draft-revision-or-channels) retain edits. Channel
 Secret saves update the shared draft snapshot used by other tabs and deployment
-preflight.
+preflight. `agents/detail.mts:boundSecretsDenied` reuses the authorized Secret names
+read for Deploy in the Configuration save permission hint. It includes only
+Configuration bindings, not Harness-only Secrets, and removes duplicate Secret IDs.
+Until names are available, the hint keeps its general Secret operate explanation.
+No additional metadata read or permission grant is needed.
 
 [Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
 owns receipts and draft retirement.
@@ -369,6 +373,8 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 09:32: Name authorized bound Secrets in the Configuration save permission hint. (b03beb3e-57d1-47cf-829f-e31955a47d3c - 755ff77baa3377441be0938302030386fa985c75)
 
 - 2026-10-29 22:18: Cancel the unfinished row reads of Agents a search hides. (authoring-run/6f6ebb4a-7c4c-4bd7-a11c-8381c411c816 - 225ce0ebaf1dd14c01c5c50ccf8ac420e13c72a4)
 

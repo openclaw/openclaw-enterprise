@@ -5067,6 +5067,8 @@ export const scenarios = {
     name: "Version draft, editor cannot operate a bound Secret",
     path: `${draft}&tab=configuration`,
     deployed: true,
+    slack: true,
+    secretOperateDenied: ["sec_demo_slack_app_token", "sec_demo_slack_bot_token"],
     agentPermissionSummary: {
       update: true,
       deploy: false,
@@ -5084,6 +5086,7 @@ export const scenarios = {
       "The permission answer allows Agent and Configuration update but not operate on a Secret the Configuration binds, which every save checks. Each editor is disabled, so the draft reads as read-only with this access, as for a viewer.",
     steps: [
       "Read the notice: Version draft · read-only with your access.",
+      "In Configuration, read that saving needs Secret operate on Slack app token (simulated) and Slack bot token (simulated). No Edit Configuration button is offered. View native Configuration still opens the saved JSON.",
       "The Versions entry reads Version draft with Read-only Configuration, and the draft card has no Prepare this version steps.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every save.",

@@ -4509,7 +4509,6 @@ test("a version editor without Agent update can recover a failed deployment from
 // The Agent page's copy for a caller without Configuration update (finding 2421).
 const CONFIGURATION_READ_ONLY = CONFIGURATION_UPDATE_DENIED;
 const CHANNELS_READ_ONLY = `These are the version draft’s channel settings. ${CONFIGURATION_READ_ONLY}`;
-const CONFIGURATION_SECRETS_READ_ONLY = `Saving this Configuration needs Secret operate on each Secret it binds, which your access does not include. ${askForGrant("Secret operate on each of them")}`;
 // A channel save keeps a binding whose Secret the member may not operate (finding 2444).
 const KEPT_SECRET_CHANNEL_SECRETS =
   "Each Configuration save needs Secret operate on every Secret it keeps bound. Your access does not include it for EXTERNAL_API_TOKEN, which channel saves keep.";
@@ -4983,7 +4982,12 @@ test("a Configuration editor without Secret operate on a kept bound Secret reads
 
   // The Configuration editor's Save binds the same Secrets, so it is read-only too.
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-  await page.getByText(CONFIGURATION_SECRETS_READ_ONLY, { exact: true }).waitFor();
+  await page
+    .getByText(
+      "Saving this Configuration needs Secret operate on Bound app token, Bound bot token and External token, which your access does not include. Ask an Installation administrator to grant it.",
+      { exact: true },
+    )
+    .waitFor();
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page
@@ -5077,7 +5081,12 @@ test("a channel Secrets save may replace a bound Secret the member cannot operat
   // The Configuration editor submits no bindings, so its save keeps the administrator's Secret:
   // it stays read-only for this member.
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-  await page.getByText(CONFIGURATION_SECRETS_READ_ONLY, { exact: true }).waitFor();
+  await page
+    .getByText(
+      "Saving this Configuration needs Secret operate on Admin bot token, which your access does not include. Ask an Installation administrator to grant it.",
+      { exact: true },
+    )
+    .waitFor();
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await page.getByText(REPLACE_BOT_TOKEN, { exact: true }).waitFor();
