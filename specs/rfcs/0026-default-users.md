@@ -9,7 +9,7 @@ author: mrunalp
 - **ID:** RFC-0026 (provisional; renumber before merge)
 - **Created:** 2026-10-29
 - **Last updated:** 2026-10-30
-- **RFC PR:** Not opened
+- **RFC PR:** [#4207](https://github.com/openclaw/openclaw-enterprise/pull/4207)
 - **Implementation plan:** None yet
 - **Related:** [Agent Author role (#4045)](https://github.com/openclaw/openclaw-enterprise/pull/4045),
   [Additional Installation administrators (#889)](https://github.com/openclaw/openclaw-enterprise/pull/889),
