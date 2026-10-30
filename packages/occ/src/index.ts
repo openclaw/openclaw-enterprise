@@ -159,6 +159,7 @@ import {
   hasControlCharacter,
   immutableCopy,
   isNonEmptyString,
+  isOAuthEndpointUrl,
 } from "@openclaw-enterprise/utils";
 import { requireFallbackProviders, resolveConfiguredHarnessId } from "./configured-harness.ts";
 import { requireDeployableRoster } from "./openclaw-roster.ts";
@@ -1115,11 +1116,7 @@ function connectionTemplateSettings(
   },
 ): Omit<ConnectionTemplateValues, "clientId"> {
   if (input.revocationUrl != null) {
-    if (
-      !URL.canParse(input.revocationUrl) ||
-      !/^https:\/\/[^/?#@\s]+(?:[/?][^#\s]*)?$/u.test(input.revocationUrl) ||
-      input.revocationUrl.length > 2048
-    ) {
+    if (!isOAuthEndpointUrl(input.revocationUrl) || input.revocationUrl.length > 2048) {
       throw new ScopeViolationError(
         "The revocation URL must be an HTTPS endpoint without user information or a fragment.",
       );

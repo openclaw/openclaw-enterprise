@@ -130,7 +130,7 @@ reads or persistence:
 - `env_var` is the upper-case Sandbox variable holding the placeholder, not
   `OPENAI_API_KEY`, `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, or a name starting
   with `CODEX_`, `OCE_`, `OPENCLAW_`, or `OPENSHELL_`.
-- `token_url` is an `https` URL without credentials, query, or fragment. Its
+- `token_url` is an `https` URL without credentials or a fragment. The provider can include a query string. Its
   host follows the `host` rule, has a dot, and is not a `localhost` or
   `localdomain` name. An explicit port must be 1 to 65535.
 - `client_id` is 1 to 256 visible characters; `scope` is space-separated

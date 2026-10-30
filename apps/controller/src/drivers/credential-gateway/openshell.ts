@@ -20,6 +20,7 @@ import {
 import {
   asRecord,
   isNonEmptyString,
+  isOAuthEndpointUrl,
   numericLastLabel,
   sha256Hex,
 } from "@openclaw-enterprise/utils";
@@ -118,8 +119,6 @@ const ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const RESERVED_ENVIRONMENT = new Set(["HOME", "LANG", "OPENAI_API_KEY", "PATH", "SHELL", "USER"]);
 const RESERVED_ENVIRONMENT_PREFIXES = ["CODEX_", "OCE_", "OPENCLAW_", "OPENSHELL_"];
 
-/** An absolute HTTPS URL without credentials, query, or fragment; OpenShell requires HTTPS. */
-const TOKEN_URL = /^https:\/\/[^\s/?#@]+(?:\/[^\s?#]*)?$/;
 /** RFC 6749 scope tokens separated by single spaces. */
 const SCOPE = /^[\x21\x23-\x5b\x5d-\x7e]+(?: [\x21\x23-\x5b\x5d-\x7e]+)*$/;
 const CLIENT_ID = /^[\x21-\x7e]{1,256}$/;
@@ -289,10 +288,10 @@ function validateOAuth2Config(
   gateway: OpenShellGatewayPlacement | undefined,
 ): Readonly<Record<string, string>> | void {
   validateEndpointConfig(type, config);
-  if (!TOKEN_URL.test(config.token_url ?? "") || !URL.canParse(config.token_url ?? "")) {
+  if (!isOAuthEndpointUrl(config.token_url ?? "")) {
     throw new CredentialSourceConfigError(
       "token_url",
-      `The ${type} token_url must be an HTTPS URL without credentials, query, or fragment.`,
+      `The ${type} token_url must be an HTTPS URL without credentials or a fragment.`,
     );
   }
   if (!tokenUrlHostAllowed(config.token_url ?? "")) {

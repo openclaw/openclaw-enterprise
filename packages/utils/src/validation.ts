@@ -20,3 +20,8 @@ export function numericLastLabel(host: string): boolean {
   }
   return /^(?:0x[0-9a-f]*|[0-9]+)$/i.test(labels.at(-1) ?? "");
 }
+
+/** OAuth token and revocation endpoints may carry a provider's query, but never a fragment. */
+export function isOAuthEndpointUrl(value: string): boolean {
+  return /^https:\/\/[^/?#@\s]+(?:[/?][^#\s]*)?$/u.test(value) && URL.canParse(value);
+}

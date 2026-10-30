@@ -15,7 +15,7 @@ const resource = "https://mcp.example.test";
 const metadataUrl = resource + "/resource-metadata";
 const issuer = "https://issuer.example.test";
 const authorizationUrl = "https://login.example.test/authorize";
-const tokenUrl = "https://login.example.test/token";
+const tokenUrl = "https://login.example.test/token?tenant=acme";
 const scopes = ["channels:read", "chat:write"];
 
 const registrationUrl = issuer + "/clients";
@@ -232,8 +232,9 @@ test("discovery only offers DCR for OAuth URLs the template version can persist"
 
   for (const [issuerUrl, endpoints] of [
     [issuer + "?", {}],
-    [issuer, { token_endpoint: tokenUrl + "?tenant=work" }],
-    [issuer, { token_endpoint: tokenUrl + "?" }],
+    [issuer + "#fragment", {}],
+    [issuer, { token_endpoint: tokenUrl + "#fragment" }],
+    [issuer, { token_endpoint: tokenUrl + "#" }],
     [issuer, { authorization_endpoint: "https://login.example.test?tenant=work" }],
     [issuer, { authorization_endpoint: authorizationUrl + "/".repeat(2048) }],
   ] as const) {

@@ -175,6 +175,9 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 51) {
         return "preProvisioningDeploymentOutcome";
       }
+      if (receipts.length === 68) {
+        return "preOAuthTokenEndpointQuery";
+      }
       if (receipts.length === 67) {
         return "preTemplateBindingSearchPath";
       }
@@ -230,6 +233,9 @@ function classifyReceipts(receipts, manifest) {
     }
   } else {
     requireReceiptsMatchEntries(receipts, manifest.entries);
+  }
+  if (receipts.length === 68) {
+    return "preOAuthTokenEndpointQuery";
   }
   if (receipts.length === 67) {
     return "preTemplateBindingSearchPath";

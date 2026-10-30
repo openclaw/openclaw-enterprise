@@ -17,6 +17,7 @@ import {
   mcpCredentialEndpoint,
   mcpHttpsEndpoint,
 } from "@openclaw-enterprise/occ";
+import { isOAuthEndpointUrl } from "@openclaw-enterprise/utils";
 import ipaddr from "ipaddr.js";
 import { Agent, fetch as undiciFetch } from "undici";
 
@@ -219,7 +220,8 @@ export async function discoverMcpAuthorization(
       !metadata.token_endpoint ||
       metadata.issuer !== issuer ||
       !isTemplateOAuthUrl(metadata.authorization_endpoint, true) ||
-      !isTemplateOAuthUrl(metadata.token_endpoint) ||
+      metadata.token_endpoint.length > 2048 ||
+      !isOAuthEndpointUrl(metadata.token_endpoint) ||
       !metadata.response_types_supported.includes("code") ||
       (metadata.code_challenge_methods_supported &&
         !metadata.code_challenge_methods_supported.includes("S256"))

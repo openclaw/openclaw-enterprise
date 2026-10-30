@@ -25,7 +25,8 @@ and approved scopes against the new discovery result. The MCP SDK sends the
 configured OCE callback URI and those scopes to the issuer. OCC stores the
 returned client through the same registration path as a manually supplied
 client. The saved version pins the server URL, OAuth resource, and any approved
-revocation URL.
+revocation URL. OCC preserves a provider's token endpoint query for token requests.
+The issuer identifier must be query-free, and neither URL may include a fragment.
 Connecting an Agent returns `501` before creating a credential source. That step
 requires the Token Service to accept the OAuth grant for refresh.
 [Connection template setup](../reference/connection-templates.md#discover-an-mcp-connection-template)

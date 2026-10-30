@@ -935,6 +935,7 @@ test("OAuth2 token_url is stored as parsed", async (t) => {
   for (const [written, stored] of [
     ["https://Login.Example.test:443/oauth2/token", "https://login.example.test/oauth2/token"],
     ["https://login.example.test", "https://login.example.test/"],
+    ["https://login.example.test?tenant=acme", "https://login.example.test/?tenant=acme"],
     ["https://login.example.test/a/../token", "https://login.example.test/token"],
     // Already as parsed: the written config is stored.
     ["https://login.example.test/oauth2/token", undefined],
@@ -960,6 +961,7 @@ test("offered OpenShell source values return field-specific HTTP 400 before effe
     ["oauth2-client-credentials", "client_id", "not visible"],
     ["oauth2-client-credentials", "scope", "read\twrite"],
     ["oauth2-refresh-token", "env_var", "OPENAI_API_KEY"],
+    ["oauth2-refresh-token", "token_url", "https://issuer.example.test/token?tenant=acme#"],
   ]) {
     await t.test(type + ": " + field, async () => {
       const response = await f.saveTool(type, { [field]: value }, "invalid-" + field);

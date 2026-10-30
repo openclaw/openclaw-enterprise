@@ -535,7 +535,7 @@ test(
       displayName: `Keycloak ${realm}`,
       issuer: `${new URL(issuer).origin}/realms/${realm}`,
       authorizationUrl: `${new URL(issuer).origin}/realms/${realm}/protocol/openid-connect/auth`,
-      tokenUrl: `${tokenOrigin}/realms/${realm}/protocol/openid-connect/token`,
+      tokenUrl: `${tokenOrigin}/realms/${realm}/protocol/openid-connect/token?tenant=acme`,
       clientId,
       clientSecret,
       scopes: ["openid"],
@@ -679,7 +679,16 @@ test(
       "the refused callback is audited with its reason and the person who sent it",
     );
 
+    const exchange = t.mock.method(globalThis, "fetch");
     const completed = await bob.request("GET", callbackPath);
+    exchange.mock.restore();
+    assert.ok(
+      exchange.mock.calls.some(
+        ({ arguments: [url, init] }) =>
+          String(url) === templateBody("oce").tokenUrl && init?.method === "POST",
+      ),
+      "the code exchange posts to the full token endpoint, including its tenant query",
+    );
     assert.equal(completed.statusCode, 303, completed.body);
     assert.equal(completed.headers["referrer-policy"], "no-referrer");
     assert.match(completed.headers.location, /connection=connected$/);
@@ -697,7 +706,13 @@ test(
     // OpenShell mints into this key and substitutes it for the template's variable; the
     // recording double accepts any key, so the test checks it.
     assert.equal(configured.credentialKey, "CONNECTION_TOKEN");
-    const redeemed = await fetch(templateBody("oce").tokenUrl, {
+    const profile = await openShell.client.getProviderProfile(
+      configured.workspace,
+      configured.provider,
+    );
+    const refreshUrl = profile.credentials[0].refresh.tokenUrl;
+    assert.equal(refreshUrl, templateBody("oce").tokenUrl);
+    const redeemed = await fetch(refreshUrl, {
       method: "POST",
       body: new URLSearchParams({
         grant_type: "refresh_token",
@@ -1037,7 +1052,7 @@ test(
       resource: "https://tools.example.test:8443",
       issuer: "https://login.example.test",
       authorizationUrl: "https://login.example.test/authorize",
-      tokenUrl: "https://login.example.test/token",
+      tokenUrl: "https://login.example.test/token?tenant=acme",
       revocationUrl: "https://login.example.test/revoke",
       registrationUrl: "https://login.example.test/register",
       scopes: ["documents:read", "documents:write"],

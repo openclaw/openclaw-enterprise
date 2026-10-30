@@ -56,9 +56,9 @@ Namespace.
 | ------------------------- | --------------------------------------------------------------------------------------------------- |
 | `displayName`             | The label people see.                                                                               |
 | `namespaceId`             | Optional, immutable Namespace in which Agents can use the template. Omit for Installation-wide use. |
-| `issuer`                  | The authorization server identifier, an `https` URL. It scopes the client ID.                       |
+| `issuer`                  | The HTTPS issuer identifier scopes the client ID. It must have no query or fragment.                |
 | `authorizationUrl`        | The provider consent page.                                                                          |
-| `tokenUrl`                | The token endpoint the Refresh Driver and gateway call.                                             |
+| `tokenUrl`                | The HTTPS token endpoint. Code exchange and refresh preserve the query. Fragments are invalid.      |
 | `revocationUrl`           | Optional HTTPS token revocation endpoint, pinned to the template version.                           |
 | `clientId`                | The administrator's OAuth client at `issuer`.                                                       |
 | `clientSecret`            | Write-only. Required only when this `issuer` and `clientId` pair is not registered yet.             |

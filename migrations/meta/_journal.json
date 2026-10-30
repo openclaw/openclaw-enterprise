@@ -477,6 +477,13 @@
       "when": 1787000000068,
       "tag": "0068_template_binding_search_path",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1787000000069,
+      "tag": "0069_oauth_token_endpoint_query",
+      "breakpoints": true
     }
   ]
 }
