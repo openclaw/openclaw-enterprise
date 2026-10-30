@@ -195,7 +195,9 @@
         "Delete before admission cancels provisioning while a worker holds its claim, and finishes without a deployment",
         "failed provisioning keeps the accepted plan reserved until retry or deletion",
         "a Plugin Driver switch leaves the provisioning status readable; retry still refuses the plan",
-        "provisioning worker reauthorizes an accepted source after only its exact operate grant is revoked"
+        "provisioning worker reauthorizes an accepted source after only its exact operate grant is revoked",
+        "source provisioning status preserves saved work when its Gateway catalog is unavailable",
+        "source provisioning worker rejects a withdrawn type while failed status remains readable"
       ]
     },
     {
