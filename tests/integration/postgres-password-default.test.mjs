@@ -3,6 +3,7 @@ import { scryptSync } from "node:crypto";
 import test from "node:test";
 import { composeProduction } from "../../apps/controller/src/composition/production.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
   bootstrapProductionInstallation,
   composeProductionSignIn,
@@ -204,8 +205,7 @@ test(
         ];
         for (const request of requests) {
           const response = await app.inject({ ...request, headers });
-          assert.equal(response.statusCode, 409, `${request.url}: ${response.body}`);
-          assert.equal(response.json().error.code, "RESOURCE_CONFLICT");
+          assertApiError(response, 409, "RESOURCE_CONFLICT", request.url);
           assert.match(response.json().error.message, /password-only/);
           const untrusted = await app.inject({ ...request, headers: { cookie: headers.cookie } });
           assert.equal(untrusted.statusCode, 403, "the Origin check still precedes the profile");
@@ -294,8 +294,7 @@ test(
         // Better Auth's existing password-only validator rejects this stored spelling.
         // The SQL assertion above proves encoding, not successful account access.
         const unsupported = await signIn(storedEmail, legacyPassword);
-        assert.equal(unsupported.statusCode, 400, unsupported.body);
-        assert.equal(unsupported.json().error.code, "FORBIDDEN");
+        assertApiError(unsupported, 400, "FORBIDDEN");
         assert.equal(unsupported.headers["set-cookie"], undefined);
         const sessions = await pool.query(
           "SELECT count(*)::int AS count FROM occ.session WHERE user_id = $1",
@@ -326,8 +325,7 @@ test(
             session: { cookie, origin },
             body: { email, password: legacyPassword },
           });
-          assert.equal(refused.statusCode, 400, refused.body);
-          assert.equal(refused.json().error.code, "INVALID_REQUEST");
+          assertApiError(refused, 400, "INVALID_REQUEST");
           assert.equal(refused.headers["set-cookie"], undefined);
         }
         assert.equal((await denials()).length, before + 2);

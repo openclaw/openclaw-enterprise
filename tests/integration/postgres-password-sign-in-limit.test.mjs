@@ -4,6 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import pg from "pg";
 import { hashLocalPassword } from "../../apps/controller/src/auth/index.ts";
 import { passwordFailureBudget } from "../../apps/controller/src/auth/admission.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
   consoleOrigin as origin,
   defaultInstallSettings,
@@ -281,8 +282,7 @@ test(
           email: "guess-20@example.test",
           password: wrongPassword,
         });
-        assert.equal(refused.statusCode, 429, refused.body);
-        assert.equal(refused.json().error.code, "RATE_LIMITED");
+        assertApiError(refused, 429, "RATE_LIMITED");
         const retryAfter = Number(refused.headers["retry-after"]);
         assert.ok(retryAfter >= 1 && retryAfter <= 60, `Retry-After ${retryAfter}`);
         // A correct password for an ordinary account does not pass the exhausted client.

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
   assertConsoleSignIn,
   clientAddresses,
@@ -71,8 +72,7 @@ test(
       subject: takeoverSubject,
       expectedVersion: target.version,
     });
-    assert.equal(attached.statusCode, 403, attached.body);
-    assert.equal(attached.json().error.code, "FORBIDDEN");
+    assertApiError(attached, 403, "FORBIDDEN");
     const { callback } = await githubSignIn(app, origin, takeoverSubject, address());
     assert.equal(callback.headers.location, "/console/?authError=github", "no takeover sign-in");
     assert.equal(callback.headers["set-cookie"], undefined);
@@ -130,8 +130,7 @@ test(
     // Attaching GitHub revoked the earlier password session.
     let limitedAgain = await signedInHeaders(app, origin, limited, address());
     const taken = await moveRecovery(limitedAgain, limited.id, admin.id);
-    assert.equal(taken.statusCode, 403, taken.body);
-    assert.equal(taken.json().error.code, "FORBIDDEN");
+    assertApiError(taken, 403, "FORBIDDEN");
     assert.equal(await recoveryHolder(), admin.id);
     // A refused move is audited against the current holder, whose grants were not covered.
     assertCoverageDenials(await coverageDenials(["openclaw.auth.recovery.replace"]), 1);

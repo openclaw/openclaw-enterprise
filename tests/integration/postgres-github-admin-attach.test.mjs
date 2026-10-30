@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
   assertConsoleSignIn,
   clientAddresses,
@@ -238,8 +239,7 @@ test(
           },
         }),
       ]) {
-        assert.equal(refused.statusCode, 409, refused.body);
-        assert.equal(refused.json().error.code, "RESOURCE_CONFLICT");
+        assertApiError(refused, 409, "RESOURCE_CONFLICT");
       }
       assert.deepEqual(await readAccount(app, adminHeaders, second.id), disabledAccount);
       assert.equal(
@@ -349,8 +349,7 @@ test(
         ];
         for (const [method, url, payload] of requests) {
           const refused = await app.inject({ method, url, headers: memberHeaders, payload });
-          assert.equal(refused.statusCode, 403, `${method} ${url}: ${refused.body}`);
-          assert.equal(refused.json().error.code, "FORBIDDEN", `${method} ${url}`);
+          assertApiError(refused, 403, "FORBIDDEN", `${method} ${url}`);
         }
         assert.deepEqual(await readAccount(app, adminHeaders, admin.id), adminAccount);
         assert.deepEqual(await readAccount(app, adminHeaders, member.id), memberAccount);

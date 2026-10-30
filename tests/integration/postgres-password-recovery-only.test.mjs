@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
   assertConsoleSignIn,
   assertProviderAttached,
@@ -303,8 +304,7 @@ test(
           const unsupportedSession = await injectLocalhost(app, "GET", "/api/auth/session", {
             headers: { cookie },
           });
-          assert.equal(unsupportedSession.statusCode, 500, unsupportedSession.body);
-          assert.equal(unsupportedSession.json().error.code, "INTERNAL_ERROR");
+          assertApiError(unsupportedSession, 500, "INTERNAL_ERROR");
           assert.equal(unsupportedSession.json().data, undefined);
           const before = await denials();
           for (const email of [legacyEmail, "recovery-nul\u0000@example.test"]) {
@@ -313,8 +313,7 @@ test(
               session: { cookie, origin },
               body: { email, password: legacyPassword },
             });
-            assert.equal(refused.statusCode, 400, refused.body);
-            assert.equal(refused.json().error.code, "INVALID_REQUEST");
+            assertApiError(refused, 400, "INVALID_REQUEST");
             assert.equal(refused.headers["set-cookie"], undefined);
           }
           assert.equal(await denials(), before + 2);

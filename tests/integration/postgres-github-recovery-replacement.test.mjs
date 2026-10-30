@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
   assertProviderAttached,
   assertReservedLane,
@@ -93,8 +94,7 @@ test(
         };
         assert.equal((await replace({ cookie: secondHeaders.cookie }, body)).statusCode, 403);
         const taken = await replace(secondHeaders, body);
-        assert.equal(taken.statusCode, 403, "a narrower administrator cannot take it");
-        assert.equal(taken.json().error.code, "FORBIDDEN");
+        assertApiError(taken, 403, "FORBIDDEN", "a narrower administrator cannot take it");
         assert.equal(
           (await replace(secondHeaders, { ...body, expectedCurrentUserId: second.id })).statusCode,
           409,
