@@ -57,7 +57,8 @@
     "tests/integration/credential-proxy-revision-currentness.test.ts",
     "tests/integration/postgres-egress-policy-transaction.test.ts",
     "tests/integration/postgres-credential-source-revision-owner.test.ts",
-    "tests/integration/postgres-namespace-lifecycle.test.ts"
+    "tests/integration/postgres-namespace-lifecycle.test.ts",
+    "tests/integration/postgres-worker-process-shutdown.test.ts"
   ],
   "files": [
     {
@@ -563,6 +564,12 @@
         "Namespace checkpoint and worker finalization share work-before-Namespace lock order",
         "Namespace checkpoint audit failure rolls back the journal and permits an exact retry",
         "Namespace checkpoint with a lost real COMMIT reply is recovered from durable state"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-process-shutdown.test.ts",
+      "expectedTests": [
+        "worker.mjs exits cleanly on SIGTERM after stopping the worker and its metrics listener"
       ]
     }
   ]

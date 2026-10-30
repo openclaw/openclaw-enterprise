@@ -135,10 +135,11 @@ The HTTP handler in `apps/controller/src/index.ts` audits the successful start,
 naming the Agent or Namespace but not the session Secret, before replying.
 
 `apps/controller/src/console/agents/device-login.mts:createDeviceLogin` records
-`start_unconfirmed` before sending a start. Both authentication forms retain it
-across navigation. Agent detail keeps its Credentials tab during a start; its
-draft records a later reply unless a newer tab owns it. Until the page is left,
-a usable reply supplies the challenge; a refusal permits retry.
+`start_unconfirmed` before a start; both authentication forms retain it across
+navigation. Agent detail keeps its Credentials tab during a start; its draft
+records a later reply unless a newer tab owns it. Before the page is left, a
+usable reply supplies the challenge; a `501`, or no Codex device-login type
+(`deviceLoginOffered`), disables Sign in; other refusals permit retry.
 Unconfirmed attempts cannot start again, poll, or cancel. See
 [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 Compare-and-swap serializes known-session polls. OCC rechecks scope and both
@@ -147,11 +148,10 @@ keep the source.
 
 `apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
 starts the issuer request from the API Pods. Start, poll, and token-exchange
-requests use fixed `auth.openai.com` endpoints and refuse redirects, so login
-material never reaches a redirect target. It keeps the
-`DeviceAuthorizationStartError` distinction: connection failure or timeout is
-`unreachable`; HTTP rejection, malformed replies, and `AbortError` are
-`unavailable`. The HTTP handler returns `503 DEPENDENCY_UNAVAILABLE`, naming
+requests use fixed `auth.openai.com` endpoints and refuse redirects. Its
+`DeviceAuthorizationStartError` is `unreachable` for a connection failure or
+timeout and `unavailable` for an HTTP rejection, malformed reply, or
+`AbortError`. The HTTP handler returns `503 DEPENDENCY_UNAVAILABLE`, naming
 `auth.openai.com` and API Pod egress only for `unreachable`. The
 `device_authorization.start_failed` warning keeps the Refresh boundary and allowed
 failure class, never provider messages, response bodies, or nested causes.
@@ -169,10 +169,10 @@ Ready confirms a usable token. Later versions attach the existing provider
 without reseeding credentials; account metadata changes require a new login and
 version.
 
-For plugin configuration, the Gateway reads ownership/account metadata using its
-ordinary Backend identity, then calls `GetProviderCredentials` through the
-separate operator-TLS channel. OpenShell may refresh to satisfy its five-minute
-remaining-lifetime requirement. Only access credentials enter the callback; it
+For plugin configuration, the Gateway reads ownership/account metadata with its
+Backend identity, then calls `GetProviderCredentials` through the
+operator-TLS channel. OpenShell may refresh to keep five minutes of lifetime.
+Only access credentials enter the callback; it
 rechecks the caller's authority and saved-Agent binding/grant before provider I/O.
 Closing or expiring the login session leaves source-based discovery enabled.
 Cancellation or a failed recheck cannot undo a started gateway refresh.

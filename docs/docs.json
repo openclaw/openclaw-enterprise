@@ -326,6 +326,10 @@
                             "label": "Networking and Isolation"
                           },
                           {
+                            "page": "reference/drivers/kubernetes-compute/gateway-authentication",
+                            "label": "Gateway Authentication"
+                          },
+                          {
                             "page": "reference/drivers/kubernetes-compute/storage-and-credentials",
                             "label": "Storage and Credentials"
                           },

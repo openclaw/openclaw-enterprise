@@ -37,7 +37,7 @@ import {
 } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
-import { type DeviceLogin, createDeviceLogin } from "./device-login.mjs";
+import { type DeviceLogin, createDeviceLogin, deviceLoginOffered } from "./device-login.mjs";
 import {
   agentCreateDenied,
   askAdministratorTo,
@@ -3073,6 +3073,8 @@ function renderAgentForm(
       dedicatedSettingRefusal =
         typeof settingRefusal === "string" && settingRefusal ? settingRefusal : undefined;
       credentialSourceTypes = installation.capabilities?.credentialSources?.types;
+      // Drivers that offer no device login refuse every start (finding 2991).
+      oauthLogin.setOffered(deviceLoginOffered(installation.capabilities));
       provisionableExecutionModes.clear();
       for (const executionMode of installation.capabilities?.agentProvisioning?.executionModes ??
         []) {

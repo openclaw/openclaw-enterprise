@@ -96,7 +96,7 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
 chmod 600 "$VALUES" "$INSTALLATION"
 ```
 
-Record the Installation ID, Agent inventory, PVC names and volume identities:
+Record the Installation ID, Agent inventory, PVC UIDs and bound volume names:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" get --raw=/readyz
@@ -104,7 +104,9 @@ helm --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
   --namespace "$NAMESPACE" status "$RELEASE"
 occ --output json installation get > /secure/occ/installation-before.json
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  get pvc --all-namespaces -o wide > /secure/occ/pvcs-before.txt
+  get pvc --all-namespaces \
+  -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid,VOLUME:.spec.volumeName' \
+  > /secure/occ/pvcs-before.txt
 ```
 
 The first command returns `ok`, Helm reports the release, and OCC authenticates.
@@ -314,7 +316,9 @@ for component in api worker; do
 done
 occ --output json installation get > /secure/occ/installation-after.json
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  get pvc --all-namespaces -o wide > /secure/occ/pvcs-after.txt
+  get pvc --all-namespaces \
+  -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid,VOLUME:.spec.volumeName' \
+  > /secure/occ/pvcs-after.txt
 ```
 
 Helm must be deployed, initialization successful, both rollouts complete, and
@@ -323,9 +327,11 @@ for runtime-only). To inspect the live runtime selection after a runtime change,
 recover the Installation Secret with the commands above into a separate private
 file and check `drivers.compute.configuration.images.gateway` and `.agent` with
 `yq`; both must equal `RUNTIME_IMAGE`. Compare the before and after Installation ID, Namespace and
-Agent inventory, PVC names and bound volumes; verify representative PostgreSQL records, Secrets,
-workspace and gateway data, and a fresh model response. Pod image IDs may show
-a platform-specific digest rather than the published multi-platform index.
+Agent inventory, and each PVC's UID and bound volume name. A different UID for
+the same namespace and claim name identifies a replacement claim. Verify
+representative PostgreSQL records, Secrets, workspace and gateway data, and a
+fresh model response. Pod image IDs may show a platform-specific digest rather
+than the published multi-platform index.
 Use [workload verification](production-agents.md#verify-production-workloads)
 and the [upgrade verification](production-upgrade.md#verify-the-release) for
 application checks. An empty fleet cannot prove a runtime starts.
