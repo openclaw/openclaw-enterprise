@@ -25,6 +25,7 @@ import {
   newPage,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
+import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.mjs";
 import { enterManualModel } from "./console-agents-test-support.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 
@@ -32,18 +33,6 @@ import { restrict } from "../helpers/iam-grants.mjs";
 const DEFAULT_CODEX_PRESET = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
 );
-
-// Socket Mode Slack reading its two tokens from SLACK_APP_TOKEN and SLACK_BOT_TOKEN.
-const SLACK_CHANNEL = {
-  enabled: true,
-  mode: "socket",
-  appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-  botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-  dmPolicy: "allowlist",
-  groupPolicy: "allowlist",
-  allowFrom: ["U123"],
-  channels: { C123: { requireMention: true } },
-};
 
 // A disabled control whose reason sits nearby but is not linked to it leaves a screen reader
 // user with a dead control and no why (finding D749). Each disabled control below is described
@@ -148,18 +137,14 @@ test("a reader reaches the list, Secret and Slack token controls they cannot use
     await fixture.createSecret(namespace.id, "Reachable Slack app token", "xapp-reachable"),
     await fixture.createSecret(namespace.id, "Reachable Slack bot token", "xoxb-reachable"),
   ];
-  const bound = (secret) => ({ source: secret.ref, delivery: { type: "env" } });
   // A running Agent for the row's Stop and Delete, and a Slack draft for the token fields.
   const running = await fixture.createAgent(namespace.id, "Reachable Agent", nativeValues("run"));
   await fixture.seedActiveAgentRevision(namespace.id, running.id);
   const agent = await fixture.createAgent(
     namespace.id,
     "Reachable Slack Agent",
-    nativeValues("reach", { harnessId: "codex", channels: { slack: SLACK_CHANNEL } }),
-    {
-      executionMode: "dedicated",
-      secretBindings: { SLACK_APP_TOKEN: bound(tokens[0]), SLACK_BOT_TOKEN: bound(tokens[1]) },
-    },
+    slackAgentValues("reach"),
+    slackTokenBindings(...tokens),
   );
   const reader = await fixture.createNamespaceMember("reachable-reader", namespace.id, [
     ...AGENT_READ,
@@ -308,15 +293,11 @@ test("a draft's disabled Save and Discard name their reasons", async (t) => {
     await fixture.createSecret(namespace.id, "Described Slack app token", "xapp-described"),
     await fixture.createSecret(namespace.id, "Described Slack bot token", "xoxb-described"),
   ];
-  const bound = (secret) => ({ source: secret.ref, delivery: { type: "env" } });
   const agent = await fixture.createAgent(
     namespace.id,
     "Described Slack Agent",
-    nativeValues("slack", { harnessId: "codex", channels: { slack: SLACK_CHANNEL } }),
-    {
-      executionMode: "dedicated",
-      secretBindings: { SLACK_APP_TOKEN: bound(tokens[0]), SLACK_BOT_TOKEN: bound(tokens[1]) },
-    },
+    slackAgentValues("slack"),
+    slackTokenBindings(...tokens),
   );
   const { page } = await newPage(t, fixture);
   const describedBy = async (control, reason) => {
@@ -360,7 +341,7 @@ test("Save channel Secrets names an unbound Slack token as its reason", async (t
   const agent = await fixture.createAgent(
     namespace.id,
     "Unbound Slack Agent",
-    nativeValues("unbound", { harnessId: "codex", channels: { slack: SLACK_CHANNEL } }),
+    slackAgentValues("unbound"),
     { executionMode: "dedicated" },
   );
   const { page } = await newPage(t, fixture);

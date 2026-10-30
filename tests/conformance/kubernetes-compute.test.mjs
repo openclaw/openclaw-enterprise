@@ -5803,6 +5803,364 @@ test("gateway routing caps the Gateway name at a label value's 63 characters", (
   );
 });
 
+test("Kubernetes preserves explicit human proxy identities alongside workspace access", () => {
+  const auth = {
+    mode: "trusted-proxy",
+    trustedProxy: {
+      userHeader: "x-occ-identity",
+      allowUsers: ["occ-workspace-files", "oidc:member-01", "oidc:maintainer-02"],
+    },
+    identityScopes: {
+      "occ-workspace-files": ["operator.admin"],
+      "oidc:member-01": ["operator.read", "operator.write"],
+      "oidc:maintainer-02": ["operator.admin"],
+    },
+  };
+  for (const configure of [options, routedOptions]) {
+    const driver = createKubernetesComputeDriver(configure());
+    const revision = routedRevision(driver);
+    revision.configuration.gateway.auth = structuredClone(auth);
+    const original = structuredClone(revision.configuration);
+
+    // Provisioning and rendering must preserve individual identities without
+    // replacing the platform's independently privileged workspace connection.
+    driver.validateAgentProvisioning({
+      executionMode: "dedicated",
+      configuration: revision.configuration,
+    });
+    const rendered = driver.kubernetesGatewayConfigurationDocument(revision.configuration);
+    // Native HTTP APIs ignore identityScopes and give a header-less trusted-proxy request
+    // OpenClaw's default operator scopes, operator.admin included (finding 2183). Admitting
+    // a human therefore makes the Gateway require x-openclaw-scopes on every request.
+    assert.deepEqual(rendered.gateway.auth, {
+      ...auth,
+      trustedProxy: { ...auth.trustedProxy, requiredHeaders: ["x-openclaw-scopes"] },
+    });
+    assert.deepEqual(revision.configuration, original);
+    const renderedRequiredHeaders = (trustedProxy, identityScopes = auth.identityScopes) =>
+      driver.kubernetesGatewayConfigurationDocument({
+        gateway: {
+          auth: {
+            ...auth,
+            trustedProxy: { ...auth.trustedProxy, ...trustedProxy },
+            identityScopes,
+          },
+        },
+      }).gateway.auth.trustedProxy.requiredHeaders;
+    // Operator-supplied required headers are kept, the Gateway matches names case-insensitively,
+    // and a machine-only allowlist keeps the existing route contract (no header required).
+    assert.deepEqual(renderedRequiredHeaders({ requiredHeaders: ["x-real-ip"] }), [
+      "x-real-ip",
+      "x-openclaw-scopes",
+    ]);
+    assert.deepEqual(
+      renderedRequiredHeaders({ requiredHeaders: ["X-OpenClaw-Scopes", "x-real-ip"] }),
+      ["X-OpenClaw-Scopes", "x-real-ip"],
+    );
+    assert.deepEqual(renderedRequiredHeaders({ requiredHeaders: [] }), ["x-openclaw-scopes"]);
+    assert.equal(
+      renderedRequiredHeaders(
+        { allowUsers: ["occ-workspace-files"] },
+        { "occ-workspace-files": ["operator.admin"] },
+      ),
+      undefined,
+    );
+    assert.deepEqual(
+      renderedRequiredHeaders(
+        { allowUsers: ["occ-workspace-files"], requiredHeaders: ["x-real-ip"] },
+        { "occ-workspace-files": ["operator.admin"] },
+      ),
+      ["x-real-ip"],
+    );
+    // Header names the Gateway could never match would refuse every request; non-arrays
+    // fail its schema at startup. Both are refused before rollout.
+    for (const requiredHeaders of [
+      "x-openclaw-scopes",
+      null,
+      {},
+      [""],
+      [" x-openclaw-scopes"],
+      ["x-openclaw-scopes "],
+      ["x-real-ip", 42],
+    ]) {
+      assert.throws(
+        () =>
+          driver.validateAgentProvisioning({
+            executionMode: "dedicated",
+            configuration: {
+              gateway: {
+                auth: { ...auth, trustedProxy: { ...auth.trustedProxy, requiredHeaders } },
+              },
+            },
+          }),
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.setting === "gateway.auth.trustedProxy.requiredHeaders",
+      );
+    }
+    // The operator HTTPRoute strips these headers, so requiring one on a routed Agent
+    // would refuse OCC's own access for good; without routing the operator's proxy decides.
+    for (const header of ["authorization", "Cookie", "forwarded", "x-forwarded-for"]) {
+      const validate = () =>
+        driver.validateAgentProvisioning({
+          executionMode: "dedicated",
+          configuration: {
+            gateway: {
+              auth: {
+                ...auth,
+                trustedProxy: { ...auth.trustedProxy, requiredHeaders: [header, "x-real-ip"] },
+              },
+            },
+          },
+        });
+      if (configure === routedOptions) {
+        assert.throws(
+          validate,
+          (error) =>
+            error instanceof ComputeGatewaySettingError &&
+            error.setting === "gateway.auth.trustedProxy.requiredHeaders" &&
+            error.message.includes("route removes"),
+        );
+      } else {
+        assert.doesNotThrow(validate);
+      }
+    }
+
+    // Legacy auto-approval grants are unioned into every human's identity scopes upstream.
+    // A human allowlist must not silently inherit the pilot's admin device grant.
+    for (const adminScope of [
+      "operator.admin",
+      " operator.admin",
+      "operator.admin ",
+      "\toperator.admin\n",
+    ]) {
+      assert.throws(
+        () =>
+          driver.validateAgentProvisioning({
+            executionMode: "dedicated",
+            configuration: {
+              gateway: {
+                auth: {
+                  ...auth,
+                  trustedProxy: {
+                    ...auth.trustedProxy,
+                    deviceAutoApprove: { enabled: true, scopes: [adminScope] },
+                  },
+                },
+              },
+            },
+          }),
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.setting === "gateway.auth.trustedProxy.deviceAutoApprove.scopes",
+      );
+    }
+    for (const scopes of [
+      "operator.read",
+      null,
+      {},
+      ["operator.read", 42],
+      ["operator.reed"],
+      [" operator.read"],
+      ["operator.read "],
+    ]) {
+      assert.throws(
+        () =>
+          driver.validateAgentProvisioning({
+            executionMode: "dedicated",
+            configuration: {
+              gateway: {
+                auth: {
+                  ...auth,
+                  identityScopes: {
+                    ...auth.identityScopes,
+                    "oidc:member-01": scopes,
+                  },
+                },
+              },
+            },
+          }),
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.setting === "gateway.auth.identityScopes",
+      );
+    }
+    // Removing login admission must not leave channel-linked authority behind.
+    // Empty/padded keys also make a native Gateway configuration invalid or ambiguous.
+    for (const identity of ["", " oidc:member-01", "oidc:member-01 ", "oidc:removed-03"]) {
+      assert.throws(
+        () =>
+          driver.validateAgentProvisioning({
+            executionMode: "dedicated",
+            configuration: {
+              gateway: {
+                auth: {
+                  ...auth,
+                  identityScopes: { ...auth.identityScopes, [identity]: ["operator.admin"] },
+                },
+              },
+            },
+          }),
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.setting === "gateway.auth.identityScopes",
+      );
+    }
+    assert.throws(
+      () =>
+        driver.validateAgentProvisioning({
+          executionMode: "dedicated",
+          configuration: {
+            gateway: {
+              auth: {
+                ...auth,
+                trustedProxy: { ...auth.trustedProxy, allowUsers: ["occ-workspace-files"] },
+              },
+            },
+          },
+        }),
+      (error) =>
+        error instanceof ComputeGatewaySettingError &&
+        error.setting === "gateway.auth.identityScopes",
+    );
+    // Each native operator scope accepted by the pinned runtime remains usable.
+    assert.doesNotThrow(() =>
+      driver.validateAgentProvisioning({
+        executionMode: "dedicated",
+        configuration: {
+          gateway: {
+            auth: {
+              ...auth,
+              identityScopes: {
+                ...auth.identityScopes,
+                "oidc:member-01": [
+                  "operator.admin",
+                  "operator.read",
+                  "operator.write",
+                  "operator.sessions.read",
+                  "operator.sessions.write",
+                  "operator.approvals",
+                  "operator.questions",
+                  "operator.pairing",
+                  "operator.talk",
+                  "operator.talk.secrets",
+                ],
+              },
+            },
+          },
+        },
+      }),
+    );
+    // Machine-only pilot Agents retain their existing admin auto-approval contract.
+    assert.doesNotThrow(() =>
+      driver.validateAgentProvisioning({
+        executionMode: "dedicated",
+        configuration: {
+          gateway: {
+            auth: {
+              ...auth,
+              trustedProxy: {
+                ...auth.trustedProxy,
+                allowUsers: ["occ-workspace-files"],
+                deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+              },
+              identityScopes: { "occ-workspace-files": ["operator.admin"] },
+            },
+          },
+        },
+      }),
+    );
+
+    // Human grants must not change the machine identity's exact administration.
+    for (const machineScopes of [
+      [],
+      ["operator.read", "operator.write"],
+      ["operator.admin", "operator.read"],
+      "operator.admin",
+    ]) {
+      assert.throws(
+        () =>
+          driver.validateAgentProvisioning({
+            executionMode: "dedicated",
+            configuration: {
+              gateway: {
+                auth: {
+                  ...auth,
+                  identityScopes: { ...auth.identityScopes, "occ-workspace-files": machineScopes },
+                },
+              },
+            },
+          }),
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.setting === "gateway.auth.identityScopes" &&
+          error.message.includes("exactly operator.admin"),
+      );
+    }
+    // Upstream matches allowUsers exactly, but resolves identityScopes for "@" identities
+    // case-insensitively; only exact-case, non-email identities may differ by case.
+    assert.doesNotThrow(() =>
+      driver.kubernetesGatewayConfigurationDocument({
+        gateway: {
+          auth: {
+            ...auth,
+            trustedProxy: {
+              ...auth.trustedProxy,
+              allowUsers: [...auth.trustedProxy.allowUsers, "oidc:Member-01"],
+            },
+          },
+        },
+      }),
+    );
+
+    // An empty list means "allow every proxy user" upstream. Additional humans
+    // must not turn explicit admission into a wildcard or remove machine access.
+    // Duplicates, case variants that share a grant or spoof the machine identity, and
+    // identities a proxy header cannot carry exactly are refused as well.
+    for (const allowUsers of [
+      [],
+      ["oidc:member-01"],
+      ["occ-workspace-files", " "],
+      null,
+      ["occ-workspace-files", "oidc:member-01", "oidc:member-01"],
+      ["occ-workspace-files", "occ-workspace-files"],
+      ["occ-workspace-files", "OCC-Workspace-Files"],
+      ["occ-workspace-files", "member@example.com", "Member@Example.com"],
+      ["occ-workspace-files", "oidc:m\u00e9mber-01"],
+      ["occ-workspace-files", "oidc:member\u200b-01"],
+      ["occ-workspace-files", "oidc:member\u0000-01"],
+      ["occ-workspace-files", "oidc:member\t01"],
+      ["occ-workspace-files", 42],
+      ["occ-workspace-files", "constructor"],
+      ["occ-workspace-files", "__proto__"],
+    ]) {
+      // Machine-only grants keep the identityScopes checks from refusing first.
+      assert.throws(
+        () =>
+          driver.kubernetesGatewayConfigurationDocument({
+            gateway: {
+              auth: {
+                ...auth,
+                trustedProxy: { ...auth.trustedProxy, allowUsers },
+                identityScopes: { "occ-workspace-files": ["operator.admin"] },
+              },
+            },
+          }),
+        /native trustedProxy\.allowUsers must contain/,
+      );
+    }
+    assert.throws(
+      () =>
+        driver.kubernetesGatewayConfigurationDocument({
+          gateway: {
+            auth: { ...auth, identityScopes: { "oidc:maintainer-02": ["operator.admin"] } },
+          },
+        }),
+      /identityScopes/,
+    );
+  }
+});
+
 test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", async () => {
   const driver = createKubernetesComputeDriver(routedOptions());
   const revision = routedRevision(driver);
@@ -5950,9 +6308,12 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       requestHeaderModifier: {
         set: [
           { name: "x-occ-identity", value: "occ-workspace-files" },
+          // The machine identity's exact grant: required by the Gateway once humans are
+          // admitted, and never left to a client header (finding 2183).
+          { name: "x-openclaw-scopes", value: "operator.admin" },
           { name: "x-real-ip", value: "%DOWNSTREAM_DIRECT_REMOTE_ADDRESS_WITHOUT_PORT%" },
         ],
-        remove: ["authorization", "cookie", "forwarded", "x-forwarded-for", "x-openclaw-scopes"],
+        remove: ["authorization", "cookie", "forwarded", "x-forwarded-for"],
       },
     },
   ]);
@@ -6202,7 +6563,7 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
           ...runtimeRevision.configuration.gateway.auth,
           trustedProxy: {
             ...runtimeRevision.configuration.gateway.auth.trustedProxy,
-            deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+            deviceAutoApprove: { enabled: true, scopes: ["operator.read", "operator.write"] },
           },
         },
       },
@@ -6873,7 +7234,7 @@ test("agent provisioning validation reuses native trusted-proxy admission before
         },
       },
       "gateway.auth.identityScopes",
-      "must grant only occ-workspace-files operator.admin when set",
+      "must grant occ-workspace-files exactly operator.admin when set",
     ],
     [
       { gateway: { trustedProxies: ["10.99.0.0/16"] } },

@@ -9,7 +9,10 @@ import {
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import {
+  createDevelopmentComputeDriver,
+  registerAndSelectDrivers,
+} from "../helpers/development.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   createAccessTokenServiceAccount,
@@ -35,7 +38,7 @@ test(
       backends: [backendDefinition()],
     });
     const deletedAccounts = [];
-    for (const driver of [
+    registerAndSelectDrivers(controller, [
       new NativeIAMDriver(state, { id: "service-account-deletion-iam" }),
       createDevelopmentComputeDriver(),
       createTestConfigurationDriver(),
@@ -54,10 +57,7 @@ test(
           deletedAccounts.push(account.id);
         },
       },
-    ]) {
-      controller.registerDriver(driver);
-      controller.selectDriver(driver.capability, driver.id);
-    }
+    ]);
     const namespace = fixture.track(
       await state.transact((unit) =>
         unit.namespaces.createNamespace({
@@ -249,7 +249,7 @@ test(
     // This API process selects no ServiceAccount Driver: the ChatGPT Backend is gone.
     const controller = new OpenClawController(fixture.installation, { state });
     const deletedSecrets = [];
-    for (const driver of [
+    registerAndSelectDrivers(controller, [
       new NativeIAMDriver(state, { id: "service-account-force-iam" }),
       {
         ...createDevelopmentComputeDriver(),
@@ -258,10 +258,7 @@ test(
         },
       },
       createTestConfigurationDriver(),
-    ]) {
-      controller.registerDriver(driver);
-      controller.selectDriver(driver.capability, driver.id);
-    }
+    ]);
     const namespace = fixture.track(
       await state.transact((unit) =>
         unit.namespaces.createNamespace({

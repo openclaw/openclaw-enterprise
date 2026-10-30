@@ -1223,6 +1223,32 @@ const APP_TOKEN_SHA = "APP_TOKEN_SHA";
 const GATEWAY_PASSWORD_KEY = "gateway-password";
 const TRUSTED_PROXY_IDENTITY = "occ-workspace-files";
 const TRUSTED_PROXY_HEADER = "x-occ-identity";
+// The proxy header that caps a trusted-proxy request's operator scopes. Native HTTP
+// APIs ignore identityScopes: without it, OpenClaw grants its default operator scopes,
+// operator.admin included (finding 2183).
+const TRUSTED_PROXY_SCOPES_HEADER = "x-openclaw-scopes";
+// Request headers every Gateway HTTPRoute removes before the Gateway sees a request.
+const ROUTE_REMOVED_REQUEST_HEADERS: ReadonlySet<string> = new Set([
+  "authorization",
+  "cookie",
+  "forwarded",
+  "x-forwarded-for",
+]);
+// Native Gateway scope enum at the supported OpenClaw runtime pin.
+const NATIVE_OPERATOR_SCOPES: ReadonlySet<string> = new Set([
+  "operator.admin",
+  "operator.read",
+  "operator.write",
+  "operator.sessions.read",
+  "operator.sessions.write",
+  "operator.approvals",
+  "operator.questions",
+  "operator.pairing",
+  "operator.talk",
+  "operator.talk.secrets",
+]);
+// Gateways decode proxy headers as Latin-1, so only printable ASCII is unambiguous.
+const PRINTABLE_ASCII_IDENTITY = /^[\x20-\x7e]+$/u;
 const MODEL_API_KEY = "OPENAI_API_KEY";
 const CUSTOM_MODEL_API_KEY = "OCE_MODEL_API_KEY";
 const SERVICE_ACCOUNT_TOKEN_KEY = "token";
@@ -1962,6 +1988,15 @@ function scopedCidr(value: unknown, description: string, index: number, path?: s
     throw configurationConstraintFailure(`${description}s cannot cover every address.`, path);
   }
   return parsed;
+}
+
+/**
+ * The Gateway resolves identityScopes for "@" identities case-insensitively, so case
+ * variants of one would share a grant; a case variant of the machine identity is a spoof.
+ */
+function proxyIdentityMatchKey(identity: string): string {
+  const folded = identity.toLowerCase();
+  return identity.includes("@") || folded === TRUSTED_PROXY_IDENTITY ? folded : identity;
 }
 
 function trustedProxyCidrSet(
@@ -4523,7 +4558,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (error instanceof ComputeGatewaySettingError) {
         throw error;
       }
-      // Other refusals (trustedProxy.allowUsers until open #906) stay with preparation.
+      // Invalid proxy allowlists and other preparation-only refusals stay with preparation.
     }
   }
 
@@ -13275,12 +13310,24 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         `must be ${TRUSTED_PROXY_HEADER} when set`,
       );
     }
+    const allowUsers = trustedProxy.allowUsers;
     if (
-      trustedProxy.allowUsers !== undefined &&
-      !isDeepStrictEqual(trustedProxy.allowUsers, [TRUSTED_PROXY_IDENTITY])
+      allowUsers !== undefined &&
+      (!Array.isArray(allowUsers) ||
+        !allowUsers.includes(TRUSTED_PROXY_IDENTITY) ||
+        allowUsers.some(
+          (user) =>
+            typeof user !== "string" ||
+            user.trim() !== user ||
+            !PRINTABLE_ASCII_IDENTITY.test(user) ||
+            // The Gateway looks grants up by plain property access.
+            Object.hasOwn(Object.prototype, user),
+        ) ||
+        new Set(allowUsers.map((user) => proxyIdentityMatchKey(user as string))).size !==
+          allowUsers.length)
     ) {
       throw new ConfigurationFailure(
-        `Kubernetes native trustedProxy.allowUsers must contain only ${TRUSTED_PROXY_IDENTITY}.`,
+        `Kubernetes native trustedProxy.allowUsers must contain distinct, nonblank, trimmed, printable ASCII identities including ${TRUSTED_PROXY_IDENTITY}.`,
       );
     }
     if (trustedProxy.allowLoopback !== undefined && trustedProxy.allowLoopback !== false) {
@@ -13291,14 +13338,89 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     if (
       identityScopes !== undefined &&
-      (!isDeepStrictEqual(Object.keys(identityScopes).sort(), [TRUSTED_PROXY_IDENTITY]) ||
-        !isDeepStrictEqual(identityScopes[TRUSTED_PROXY_IDENTITY], ["operator.admin"]))
+      !isDeepStrictEqual(identityScopes[TRUSTED_PROXY_IDENTITY], ["operator.admin"])
     ) {
       throw new GatewaySettingFailure(
         "gateway.auth.identityScopes",
-        `must grant only ${TRUSTED_PROXY_IDENTITY} operator.admin when set`,
+        `must grant ${TRUSTED_PROXY_IDENTITY} exactly operator.admin when set`,
       );
     }
+    const admittedIdentities = new Set(
+      Array.isArray(allowUsers) ? allowUsers : [TRUSTED_PROXY_IDENTITY],
+    );
+    if (
+      identityScopes !== undefined &&
+      Object.entries(identityScopes).some(
+        ([identity, scopes]) =>
+          identity === "" ||
+          identity.trim() !== identity ||
+          !admittedIdentities.has(identity) ||
+          !Array.isArray(scopes) ||
+          scopes.some((scope) => typeof scope !== "string" || !NATIVE_OPERATOR_SCOPES.has(scope)),
+      )
+    ) {
+      throw new GatewaySettingFailure(
+        "gateway.auth.identityScopes",
+        "must map nonblank, trimmed identities in trustedProxy.allowUsers to arrays of supported operator scopes",
+      );
+    }
+    const deviceAutoApprove = asRecord(trustedProxy.deviceAutoApprove);
+    if (
+      Array.isArray(allowUsers) &&
+      allowUsers.some((user) => user !== TRUSTED_PROXY_IDENTITY) &&
+      Array.isArray(deviceAutoApprove?.scopes) &&
+      deviceAutoApprove.scopes.some(
+        (scope) => typeof scope === "string" && scope.trim() === "operator.admin",
+      )
+    ) {
+      // Upstream unions device and identity grants; an admin device grant would
+      // silently elevate every admitted human, regardless of identityScopes.
+      throw new GatewaySettingFailure(
+        "gateway.auth.trustedProxy.deviceAutoApprove.scopes",
+        "must exclude operator.admin when allowUsers includes human identities; grant administrators through identityScopes instead",
+      );
+    }
+    const requiredHeaders = trustedProxy.requiredHeaders;
+    if (
+      requiredHeaders !== undefined &&
+      (!Array.isArray(requiredHeaders) ||
+        requiredHeaders.some(
+          (header) => typeof header !== "string" || header === "" || header.trim() !== header,
+        ))
+    ) {
+      throw new GatewaySettingFailure(
+        "gateway.auth.trustedProxy.requiredHeaders",
+        "must be an array of nonblank, trimmed header names when set",
+      );
+    }
+    if (
+      this.options.gatewayRouting !== undefined &&
+      Array.isArray(requiredHeaders) &&
+      requiredHeaders.some((header) =>
+        ROUTE_REMOVED_REQUEST_HEADERS.has((header as string).toLowerCase()),
+      )
+    ) {
+      // The operator HTTPRoute strips these, so requiring one would refuse OCC's own access.
+      throw new GatewaySettingFailure(
+        "gateway.auth.trustedProxy.requiredHeaders",
+        `must not require a header the Gateway route removes (${[...ROUTE_REMOVED_REQUEST_HEADERS].join(", ")})`,
+      );
+    }
+    // Native HTTP APIs such as /tools/invoke and /sessions/<key>/kill ignore identityScopes:
+    // a trusted-proxy request without x-openclaw-scopes receives OpenClaw's default operator
+    // scopes, operator.admin included. Once a human is admitted, the Gateway must refuse
+    // requests that do not carry the header; the operator HTTPRoute sends the machine
+    // identity's exact grant, so OCC's own access keeps working.
+    const admitsHumans =
+      Array.isArray(allowUsers) && allowUsers.some((user) => user !== TRUSTED_PROXY_IDENTITY);
+    const requiredHeadersWithScopes = (requiredHeaders as readonly string[] | undefined)?.some(
+      (header) => header.toLowerCase() === TRUSTED_PROXY_SCOPES_HEADER,
+    )
+      ? requiredHeaders
+      : [
+          ...((requiredHeaders as readonly string[] | undefined) ?? []),
+          TRUSTED_PROXY_SCOPES_HEADER,
+        ];
     // OpenClaw binds its MCP Apps sandbox listener on mcp.apps.sandboxPort, else
     // gatewayPort + 1: at startup when MCP Apps are enabled, lazily otherwise. The private
     // status listener binds first, so the Gateway would fail with EADDRINUSE on 18791.
@@ -13333,10 +13455,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           mode: "trusted-proxy",
           trustedProxy: {
             ...trustedProxy,
+            ...(admitsHumans ? { requiredHeaders: requiredHeadersWithScopes } : {}),
             userHeader: TRUSTED_PROXY_HEADER,
-            allowUsers: [TRUSTED_PROXY_IDENTITY],
+            allowUsers: allowUsers ?? [TRUSTED_PROXY_IDENTITY],
           },
-          identityScopes: { [TRUSTED_PROXY_IDENTITY]: ["operator.admin"] },
+          identityScopes: identityScopes ?? { [TRUSTED_PROXY_IDENTITY]: ["operator.admin"] },
         },
       },
     };
@@ -13357,8 +13480,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       Array.isArray(identityScopes) &&
       identityScopes.includes("operator.admin") &&
       deviceAutoApprove?.enabled === true &&
-      Array.isArray(deviceAutoApprove.scopes) &&
-      deviceAutoApprove.scopes.includes("operator.admin") &&
       controlUi?.enabled === true &&
       Array.isArray(controlUi.allowedOrigins) &&
       controlUi.allowedOrigins.some(
@@ -13488,7 +13609,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       requestHeaderModifier: {
         set: [
           ...(access === "operator"
-            ? [{ name: "x-occ-identity", value: "occ-workspace-files" }]
+            ? [
+                { name: TRUSTED_PROXY_HEADER, value: TRUSTED_PROXY_IDENTITY },
+                // The machine identity's exact grant. The Gateway requires this header
+                // once humans are admitted, and a client value must never cap or widen it.
+                { name: TRUSTED_PROXY_SCOPES_HEADER, value: "operator.admin" },
+              ]
             : []),
           {
             name: "x-real-ip",
@@ -13500,9 +13626,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           "cookie",
           "forwarded",
           "x-forwarded-for",
-          "x-openclaw-scopes",
           ...(access === "node" || access === "node-transfer"
             ? [
+                TRUSTED_PROXY_SCOPES_HEADER,
                 "x-occ-identity",
                 "x-api-key",
                 "tailscale-user-login",

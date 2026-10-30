@@ -11,6 +11,7 @@ import { admittedConfiguration } from "./admitted-configuration.mjs";
 import { verifyPlatformStateStoreContract } from "../conformance/platform-state-store.contract.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
+import { jsonRequestInit } from "./inject-json.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import {
   createKubernetesInstallationConfiguration,
@@ -556,14 +557,13 @@ async function pollUntil(description, operation, { worker, timeoutMs = 15_000 } 
 
 async function request(controller, method, path, body, options = {}) {
   const response = await fetch(`${controller.origin}${path}`, {
-    method,
-    headers: {
-      ...(options.authenticated === false
+    ...jsonRequestInit(
+      method,
+      body,
+      options.authenticated === false
         ? {}
-        : authenticatedHeaders(options.session ?? controller.session)),
-      ...(body === undefined ? {} : { "content-type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        : authenticatedHeaders(options.session ?? controller.session),
+    ),
     signal: AbortSignal.timeout(5_000),
   });
   const payload = await response.json();
@@ -575,7 +575,7 @@ async function createDurableController(pool) {
     { NativeIAMDriver },
     { OpenClawController },
     { PostgresPlatformState },
-    { createDevelopmentComputeDriver },
+    { createDevelopmentComputeDriver, registerAndSelectDrivers },
     { DEVELOPMENT_HARNESS_DESCRIPTOR, resolveApprovedHarness: resolveApprovedDevelopmentHarness },
   ] = await Promise.all([
     import("../../packages/iam/src/index.ts"),
@@ -594,10 +594,7 @@ async function createDurableController(pool) {
   });
   const compute = createDevelopmentComputeDriver();
   const controller = new OpenClawController(installation, { state, recordOperations: true });
-  for (const driver of [iam, compute]) {
-    controller.registerDriver(driver);
-    controller.selectDriver(driver.capability, driver.id);
-  }
+  registerAndSelectDrivers(controller, [iam, compute]);
 
   return {
     controller,

@@ -117,8 +117,8 @@ test(
       });
       const driver = new GitHubRepositoryPolicy(
         {
-          id: backendId,
-          drivers: { repo: "standing-repo-driver" },
+          driverId: "standing-repo-driver",
+          backendId,
         },
         validateGitHubRepositoryRegistry(input),
         { sessionDurationSeconds: 3600 },

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
 updated: 2026-10-30
-last_updated_session: authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008
+last_updated_session: authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f
 ---
 
 # Compose development flow
@@ -192,7 +192,8 @@ publishes only an admitted API proxy on host loopback. The source archive and al
 OpenShell images select 0.1.6 together, including the paired sandbox/supervisor
 control protocol and compromised-key rejection. The observed-hook repository
 credential preview admits 0.1.6 through its existing opt-in, held-launcher and
-recipient checks. This does not qualify the public repository-scoped Git profile.
+recipient checks. Repository-scoped access uses the separate
+[protected Git enrollment](../guides/repository-credentials/openshell-enrollment.md).
 
 By default, the Kubernetes lifecycle starts PostgreSQL, migration, bootstrap,
 the API, and the worker in Compose. It installs the central Gateway in
@@ -304,6 +305,8 @@ distinguishes local proof from pending connected runtime qualification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 16:09: Reconcile patched OpenShell documentation with capability-based repository admission. (authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f - 87d52638bda95e06820328e244ba2ad9960df1c4)
 
 - 2026-10-30 10:12: Select paired OpenShell 0.1.6 and preserve guarded preview admission. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
 

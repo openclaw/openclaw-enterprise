@@ -12,6 +12,7 @@ import {
   detailUrl,
   denyRevisionRead,
   expireSessions,
+  hasFocus,
   revokeMemberGrant,
   login,
   nativeValues,
@@ -228,7 +229,7 @@ for (const source of ["selected", "automatic", "overlapping refresh", "regrant"]
       assert.match(await activity.innerText(), /Recorded status: Completed/);
       assert.equal(page.url(), route);
       if (source !== "automatic") {
-        assert.equal(await refresh.evaluate((node) => node === document.activeElement), true);
+        assert.equal(await hasFocus(refresh), true);
       }
       assert.deepEqual(counts, {
         record: source === "overlapping refresh" ? 2 : 1,
@@ -437,16 +438,12 @@ for (const viewport of [
         if ((await isOpen()) === folded) {
           await page.keyboard.press("Enter");
         }
-        for (
-          let i = 0;
-          i < 40 && !(await run.evaluate((node) => node === document.activeElement));
-          i++
-        ) {
+        for (let i = 0; i < 40 && !(await hasFocus(run)); i++) {
           await page.keyboard.press("Tab");
         }
         const focused = await run.elementHandle();
         assert.ok(focused);
-        assert.equal(await focused.evaluate((node) => node === document.activeElement), true);
+        assert.equal(await hasFocus(focused), true);
         return focused;
       }
       // An idle reader has no focused control: layout itself must remain stable.
@@ -609,7 +606,7 @@ for (const viewport of [
           await upstreamReady;
           assert.equal(await refresh.getAttribute("aria-disabled"), "true");
           assert.equal(await fill(), before, "busy must preserve the hovered fill");
-          assert.equal(await refresh.evaluate((node) => node === document.activeElement), true);
+          assert.equal(await hasFocus(refresh), true);
           await page.keyboard.press("Enter");
           assert.equal(requests, 1);
         } finally {
@@ -702,11 +699,7 @@ test("a pending cleanup after a final outcome keeps the reader's fold until it e
   assert.ok(before);
   async function readerStays(stage: string) {
     assert.equal(await isOpen(), false, `${stage}: preserve the fold`);
-    assert.equal(
-      await run.evaluate((node) => node === document.activeElement),
-      true,
-      `${stage}: the record's Refresh keeps focus`,
-    );
+    assert.equal(await hasFocus(run), true, `${stage}: the record's Refresh keeps focus`);
     const after = await run.boundingBox();
     assert.ok(after);
     assert.ok(Math.abs(after.y - before!.y) <= 1, `${stage}: moved ${after.y - before!.y}px`);
@@ -916,7 +909,7 @@ for (const refusal of [403, 404] as const) {
           /Recorded status:|Waiting for a worker claim/,
         );
         assert.deepEqual(responses, [refusal]);
-        assert.equal(await refresh.evaluate((el) => el === document.activeElement), true);
+        assert.equal(await hasFocus(refresh), true);
         if (refusal === 403) {
           fixture.policy.restrictions.pop();
         }
@@ -1068,7 +1061,7 @@ for (const refusal of [403, 404] as const) {
     assert.deepEqual(replies, [200, refusal]);
     assert.doesNotMatch(await card.innerText(), /Recorded outcome:/);
     assert.doesNotMatch(await activity.innerText(), /Recorded status:/);
-    assert.equal(await refresh.evaluate((node) => node === document.activeElement), true);
+    assert.equal(await hasFocus(refresh), true);
     if (refusal === 403) {
       fixture.policy.restrictions.pop();
     }
@@ -1163,7 +1156,7 @@ for (const delayed of [200, 403] as const) {
     }
     await card.getByText("Recorded outcome: In progress", { exact: true }).waitFor();
     await activity.getByText("Recorded status: In progress", { exact: true }).waitFor();
-    assert.equal(await refresh.evaluate((node) => node === document.activeElement), true);
+    assert.equal(await hasFocus(refresh), true);
   });
 }
 
@@ -1326,16 +1319,13 @@ for (const scenario of ["selected first", "overview first", "newer cleanup"] as 
         assert.match(await activity.innerText(), /Revision cleanup completed for this version\./);
         assert.doesNotMatch(await activity.innerText(), /Revision cleanup pending/);
         assert.equal(await refresh.getAttribute("aria-disabled"), "true");
-        assert.equal(
-          await selectedRefresh.evaluate((node) => node === document.activeElement),
-          true,
-        );
+        assert.equal(await hasFocus(selectedRefresh), true);
       }
       release.resolve();
     }
     await waitForIdleFetches(page);
     assert.equal(page.url(), location);
-    assert.equal(await selectedRefresh.evaluate((node) => node === document.activeElement), true);
+    assert.equal(await hasFocus(selectedRefresh), true);
     assert.equal(await refresh.getAttribute("aria-disabled"), "false");
     if (next) {
       assert.match(await page.locator("main").innerText(), /v2/);

@@ -40,8 +40,9 @@ startup hook cannot establish that every request takes this path. See the
 
 Stock OpenShell 0.1.5 and 0.1.6 offer a separately approved installation-wide GitHub
 preview. GitHub installation membership, permissions and branch rules bound
-that access. OpenClaw Enterprise adds no Git ref allowlist. The bundled Driver refuses
-repository-scoped `git-write`. See [OpenShell Git profiles](../repository-credentials/protected-openshell-git.md).
+that access. OpenClaw Enterprise adds no Git ref allowlist for the installation
+preview. Repository-scoped access has separate grant and request-binding checks.
+See [OpenShell Git profiles](../repository-credentials/protected-openshell-git.md).
 
 ## What happens when access changes?
 

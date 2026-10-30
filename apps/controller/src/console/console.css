@@ -4558,6 +4558,7 @@ html:has(#create-agent-form) {
 /* Held back until the Logs view's first reads settle (finding 1413). */
 .agent-logs-pending > .runtime-strip,
 .agent-logs-pending > .log-running-version,
+.agent-logs-pending > .log-deployment-failure,
 .agent-logs-pending > .log-viewer {
   display: none;
 }
@@ -4573,11 +4574,14 @@ html:has(#create-agent-form) {
   gap: var(--space-3);
   margin: var(--space-2) 0 var(--space-5);
 }
-/* Names the version selected for service when the viewed one has no running Pod (finding 2975). */
-.log-running-version {
+/* Names the version selected for service when the viewed one has no running Pod (finding 2975),
+   and the latest deployment's failure (finding 2993). */
+.log-running-version,
+.log-deployment-failure {
   margin: 0 0 var(--space-5);
 }
-.log-running-version:empty {
+.log-running-version:empty,
+.log-deployment-failure:empty {
   display: none;
 }
 .runtime-pod {

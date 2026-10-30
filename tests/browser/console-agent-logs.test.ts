@@ -47,6 +47,7 @@ import {
   routeFailedDeployment,
   settledFetches,
   settlePageRequests,
+  settledView,
   trackSettledFetches,
   waitForCondition,
   waitForEnabled,
@@ -54,6 +55,7 @@ import {
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
+import { refocus } from "./console-refocus-helpers.mjs";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type LogLine = AgentRuntimeLogChunk["lines"][number];
@@ -1781,11 +1783,12 @@ async function openStoppedLogs(
   t: TestContext,
   { fixture, computeDriver, namespace, agent, revisionId }: Awaited<ReturnType<typeof logsFixture>>,
   credentials = fixture.credentials,
+  pageOptions = {},
 ) {
   computeDriver.state.lines = [line(1, "the first version serves")];
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const revisionsPath = `${agentPath}/revisions`;
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, pageOptions);
   // The first version's deployment completed, as the worker records it.
   await page.route(`${fixture.origin}${agentPath}/deployments/${revisionId}`, (route) =>
     route.fulfill(succeededDeployment(namespace, agent, revisionId)),
@@ -1943,6 +1946,99 @@ test("Logs show a second redeploy from elsewhere after a failed one, then its ow
   const shown = await attention.innerText();
   assert.match(shown, /v3 did not deploy successfully \(DEPENDENCY_UNAVAILABLE\)/);
   assert.doesNotMatch(shown, /v2|RUNTIME_MODEL_PROBE_TIMEOUT/);
+
+  // Within the minute after v3 was listed, another session stops the Agent and deploys v4. Only
+  // an unchanged Agent waits for the minute: the poll that sees it running again lists v4 at once.
+  const stopped = await fixture.request("POST", `${agentPath}/stop`);
+  assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
+  const beforeFourth = await poll();
+  const fourth = await fixture.deployAgent(namespace.id, agent.id);
+  await page.route(`${fixture.origin}${agentPath}/deployments/${fourth.id}`, (route) =>
+    route.fulfill(
+      deploymentStatusResponse(
+        {
+          id: fourth.id,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          createdAt: fourth.createdAt,
+        },
+        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
+      ),
+    ),
+  );
+  assert.equal(await poll(), beforeFourth + 1, "the poll after the redeploy lists the versions");
+  await shows(/Latest visible deployment\s+v4\s+·\s+Queued/);
+});
+
+// Finding 2998. Each Logs status poll rereads the Agent while the viewed version has no running
+// Pod. A reread sent before this page's own Stop and answered after it carried the running state
+// from before the Stop: the page showed "Not running" and offered Stop Agent again over "Stop
+// requested" until the next poll. An answer that a newer Agent state overtook is now dropped.
+test("a Logs reread answered after this page's Stop keeps the Stop", async (t) => {
+  const logs = await logsFixture(t);
+  const { fixture, namespace, agent } = logs;
+  const { agentPath, page, shows, poll } = await openStoppedLogs(t, logs);
+  // Another session deploys v2, which stays queued: the Agent runs with no version selected.
+  const deployed = await fixture.deployAgent(namespace.id, agent.id);
+  await page.route(`${fixture.origin}${agentPath}/deployments/${deployed.id}`, (route) =>
+    route.fulfill(
+      deploymentStatusResponse(
+        {
+          id: deployed.id,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          createdAt: deployed.createdAt,
+        },
+        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
+      ),
+    ),
+  );
+  await poll();
+  await shows(/Latest visible deployment\s+v2\s+·\s+Queued/);
+  const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
+  const stop = stopRow.getByRole("button", { name: "Stop Agent", exact: true });
+  await stop.waitFor();
+
+  // The next poll's Agent read takes the server's answer now, while the Agent still runs, and
+  // is answered only after this page's Stop.
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  let markHeld!: () => void;
+  const held = new Promise<void>((resolve) => (markHeld = resolve));
+  let holding = true;
+  await page.route(`${fixture.origin}${agentPath}`, async (route) => {
+    if (!holding || route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    holding = false;
+    const response = await route.fetch();
+    markHeld();
+    await released;
+    await route.fulfill({ response });
+  });
+  const agentReads = await settledFetches(page, agentPath);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await page.clock.runFor(10_000);
+  await held;
+
+  await stop.click();
+  await page
+    .getByRole("dialog", { name: "Stop this Agent?" })
+    .getByRole("button", { name: "Stop Agent", exact: true })
+    .click();
+  const requested = stopRow.getByText(/^Stop requested\./);
+  await requested.waitFor();
+  assert.equal((await fixture.request("GET", agentPath)).data.desiredRuntimeState, "stopped");
+
+  // The pre-Stop answer lands: the page keeps the Stop it accepted.
+  release();
+  await waitForSettledFetches(page, agentPath, agentReads + 1);
+  await waitForIdleFetches(page);
+  await shows(/Runtime\s+Stop requested/);
+  assert.equal(await requested.count(), 1);
+  assert.equal(await stop.count(), 0);
+  assert.equal(await stopRow.getByRole("button", { name: "Request Stop again" }).count(), 1);
 });
 
 // Finding 2988. A caller with read on some versions only is never listed a newer one it cannot
@@ -1997,6 +2093,436 @@ test("Logs of a redeploy the caller cannot read list the versions once a minute 
   }
   assert.equal(await settledFetches(page, revisionsPath), listed + 1);
 });
+
+// Finding 3000 (dogfood r62, D824). A caller with read on v1 alone opened the Agent while v2, which
+// she cannot read, was selected for service. Logs of that version read no runtime status (finding
+// D794), so they polled nothing, and a refocus recheck read the Agent without applying it: a stop
+// and a redeploy made elsewhere left "A version you cannot read" selected until a reload.
+async function openUnreadableCurrent(
+  t: TestContext,
+  logs: Awaited<ReturnType<typeof logsFixture>>,
+  name: string,
+  tab: string,
+  actions: PermissionAction[] = ["read", "operate", "read_logs"],
+) {
+  const { fixture, computeDriver, namespace, agent, revisionId } = logs;
+  computeDriver.state.lines = [line(1, "the hidden version serves")];
+  const { account } = await logsMember(fixture, namespace, name, actions, {
+    versionRead: false,
+  });
+  // Read on v1 alone, through the real Native IAM Driver.
+  const grantVersion = (id: string) =>
+    grantRole(fixture.policy, account.principal.id, {
+      id: `role-${name}-${id}`,
+      namespaceId: namespace.id,
+      permissions: { agent_revision: ["read"] },
+      resource: { kind: "agent_revision", id },
+    });
+  grantVersion(revisionId);
+  const { revision: hidden } = await fixture.seedActiveAgentRevision(
+    namespace.id,
+    agent.id,
+    revisionId,
+  );
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, undefined, tab),
+    account.credentials,
+  );
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  const shows = (pattern: RegExp) =>
+    waitForCondition(async () => pattern.test(await summary.innerText()), String(pattern));
+  await shows(/Selected for service\s+A (newer )?version you cannot read/);
+  const versionContext = page.locator(".agent-version-context");
+  await versionContext.getByText(/version you cannot read remains selected/).waitFor();
+
+  // Another session stops the Agent; the stop clears its selected version.
+  const stopElsewhere = async () => {
+    const stopped = await fixture.request("POST", `${agentPath}/stop`);
+    assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
+    assert.ok(
+      await logsState.state?.transact((unit) =>
+        unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, hidden.id),
+      ),
+    );
+  };
+  // The viewed version was selected for service, so it exists: once it is no longer selected the
+  // page names it in words, not by its ID as a version that may not exist.
+  const namesFormerVersion = async () => {
+    await page
+      .getByText("You cannot read the version that was selected for service, so", { exact: false })
+      .waitFor();
+    const shown = await page.locator("main").innerText();
+    assert.doesNotMatch(shown, /does not exist/);
+    assert.ok(!shown.includes(hidden.id.slice(0, 12)), shown);
+  };
+  return {
+    agentPath,
+    grantVersion,
+    hidden,
+    namesFormerVersion,
+    page,
+    requests,
+    shows,
+    stopElsewhere,
+    versionContext,
+  };
+}
+
+test("a refocus shows a stop made elsewhere while a version the caller cannot read was selected", async (t) => {
+  const logs = await logsFixture(t);
+  const { agentPath, namesFormerVersion, page, shows, stopElsewhere, versionContext } =
+    await openUnreadableCurrent(t, logs, "hidden-current-refocus", "configuration");
+  await stopElsewhere();
+  const agentReads = await settledFetches(page, agentPath);
+  await refocus(page);
+  await page.locator(settledView).waitFor();
+  await waitForSettledFetches(page, agentPath, agentReads + 1);
+  // The page applies the Agent's state in place, as a reload would show it.
+  await shows(/Selected for service\s+None/);
+  await versionContext.getByText(/^No version is selected for service\./).waitFor();
+  await namesFormerVersion();
+
+  // Finding 3004: a tab built after the stop named the version as one that may not exist ("Version
+  // not found or not shared"), below the line that says it was selected for service.
+  const panelHeading = page.getByRole("heading", {
+    name: /^(You cannot read this version|Version not found or not shared)$/,
+  });
+  for (const name of ["Deployment", "Configuration"]) {
+    const tab = page.getByRole("tab", { name, exact: true });
+    await tab.click();
+    await waitForCondition(
+      async () => (await tab.getAttribute("aria-selected")) === "true",
+      `${name} selected`,
+    );
+    await waitForIdleFetches(page);
+    await waitForCondition(async () => (await panelHeading.count()) === 1, `${name} panel`);
+    assert.equal(await panelHeading.innerText(), "You cannot read this version", name);
+    await namesFormerVersion();
+  }
+});
+
+test("Logs of a version the caller cannot read show a stop and a redeploy made elsewhere", async (t) => {
+  const logs = await logsFixture(t);
+  const { fixture, namespace, agent } = logs;
+  const {
+    agentPath,
+    grantVersion,
+    hidden,
+    namesFormerVersion,
+    page,
+    requests,
+    shows,
+    stopElsewhere,
+  } = await openUnreadableCurrent(t, logs, "hidden-current-poll", "logs");
+  await page.getByText(RUNTIME_STATUS_VERSION_UNREADABLE, { exact: true }).waitFor();
+  const denied = authorizationDenials(fixture.auditSink).length;
+  const poll = async () => {
+    const agentReads = await settledFetches(page, agentPath);
+    await page.clock.runFor(10_000);
+    await waitForSettledFetches(page, agentPath, agentReads + 1);
+    await waitForIdleFetches(page);
+  };
+
+  // The poll rereads the Agent alone, so the stop shows without a reload.
+  await stopElsewhere();
+  await poll();
+  await shows(/Selected for service\s+None/);
+  await namesFormerVersion();
+
+  // Another session deploys v3, which this caller may read: the view names it and links to it.
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id, undefined);
+  grantVersion(revision.id);
+  await poll();
+  await shows(/Selected for service\s+v3/);
+  const notice = page.locator(".log-running-version");
+  await notice.getByText("v3 is selected for service.").waitFor();
+  await notice.getByRole("link", { name: "Open v3 Logs" }).waitFor();
+
+  // Nothing read the hidden version's runtime status, and no read was refused or audited.
+  assert.equal(
+    requests.some(({ path }) => path.endsWith(`/deployments/${hidden.id}/runtime`)),
+    false,
+  );
+  assert.equal(authorizationDenials(fixture.auditSink).length, denied);
+});
+
+// A refocus recheck reads the Agent before the page applies it. A poll that lands meanwhile carries
+// a newer state, so the recheck's older answer is dropped, as a poll's own reread is (finding
+// 2998). Applied, it showed the stopped version as selected for service again.
+test("a refocus recheck's older Agent answer leaves a newer poll's state", async (t) => {
+  const logs = await logsFixture(t);
+  const { agentPath, page, shows, stopElsewhere } = await openUnreadableCurrent(
+    t,
+    logs,
+    "hidden-current-race",
+    "logs",
+  );
+  await page.getByText(RUNTIME_STATUS_VERSION_UNREADABLE, { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  // The recheck's Agent read takes the server's answer now, while v2 is still selected, and is
+  // answered only after the poll below.
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  let markHeld!: () => void;
+  const held = new Promise<void>((resolve) => (markHeld = resolve));
+  let holding = true;
+  await page.route(`${logs.fixture.origin}${agentPath}`, async (route) => {
+    if (!holding || route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    holding = false;
+    const response = await route.fetch();
+    markHeld();
+    await released;
+    await route.fulfill({ response });
+  });
+  await refocus(page);
+  await held;
+
+  // Another session stops the Agent, and the next poll shows it.
+  await stopElsewhere();
+  await page.clock.runFor(10_000);
+  await shows(/Selected for service\s+None/);
+
+  // The recheck's answer from before the stop lands: the page keeps the newer state.
+  release();
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+  await shows(/Selected for service\s+None/);
+  assert.doesNotMatch(
+    await page.getByRole("region", { name: "Agent state at a glance" }).innerText(),
+    /version you cannot read/,
+  );
+});
+
+// Finding 3005. A reader without Agent operate is never sent a status read, and her remembered
+// denial returned before the poll above, so her Logs polled nothing: a stop made elsewhere showed
+// only after a refocus. The poll rereads the Agent alone, which needs neither operate nor a
+// version read, and still sends no status read, so no denial is audited on a timer.
+test("Logs of a version a reader without operate cannot read show a stop made elsewhere", async (t) => {
+  const logs = await logsFixture(t);
+  const { fixture } = logs;
+  const { agentPath, namesFormerVersion, page, requests, shows, stopElsewhere } =
+    await openUnreadableCurrent(t, logs, "hidden-current-reader", "logs", ["read", "read_logs"]);
+  await page.getByText(RUNTIME_STATUS_DENIED, { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  const denied = authorizationDenials(fixture.auditSink).length;
+
+  await stopElsewhere();
+  const agentReads = await settledFetches(page, agentPath);
+  await page.clock.runFor(10_000);
+  await waitForSettledFetches(page, agentPath, agentReads + 1);
+  await shows(/Selected for service\s+None/);
+  await namesFormerVersion();
+  await waitForIdleFetches(page);
+  assert.equal(
+    requests.some(({ path }) => path.endsWith("/runtime")),
+    false,
+  );
+  assert.equal(authorizationDenials(fixture.auditSink).length, denied);
+});
+
+// The same reader on a version she can read: her status denial is remembered too, so a stop and
+// a redeploy made elsewhere showed only after a refocus (finding 3005). The Agent poll names the
+// new version and links to its Logs (finding 2975) without a status read.
+test("Logs whose runtime status is denied show a stop and a redeploy made elsewhere", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "the first version serves")];
+  const { account } = await logsMember(fixture, namespace, "status-denied-poll", [
+    "read",
+    "read_logs",
+  ]);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, undefined, "logs"),
+    account.credentials,
+  );
+  await page.getByText(RUNTIME_STATUS_OPERATE_DENIED, { exact: true }).waitFor();
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("the first version serves").waitFor();
+  await waitForIdleFetches(page);
+  const denied = authorizationDenials(fixture.auditSink).length;
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const poll = async () => {
+    const agentReads = await settledFetches(page, agentPath);
+    await page.clock.runFor(10_000);
+    await waitForSettledFetches(page, agentPath, agentReads + 1);
+    await waitForIdleFetches(page);
+  };
+
+  // Another session stops the Agent; the next poll shows it.
+  const stopped = await fixture.request("POST", `${agentPath}/stop`);
+  assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
+  computeDriver.state.podlessRevisions.push(revisionId);
+  await poll();
+  await page.getByText("Stop requested", { exact: true }).waitFor();
+
+  // Another session deploys v2; the next poll names it and links to its Logs.
+  const before = (await fixture.request("GET", agentPath)).data;
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id, before.activeRevisionId);
+  await poll();
+  const notice = page.locator(".log-running-version");
+  await notice.getByText("v2 is selected for service.").waitFor();
+  await notice.getByRole("link", { name: "Open v2 Logs" }).waitFor();
+  assert.match(await page.locator("main").innerText(), /Selected for service\s+v2/);
+
+  // No status read was sent, so no denial was audited.
+  assert.equal(
+    requests.some(({ path }) => path.endsWith("/runtime")),
+    false,
+  );
+  assert.equal(authorizationDenials(fixture.auditSink).length, denied);
+});
+
+// Finding 3010. With no permission answer the page still asks for status (finding 2454), and a
+// reader without operate is refused. That fresh refusal returned with no poll, unlike a remembered
+// one (finding 3005), so a stop made elsewhere showed only after Back or a tab rebuild. The poll
+// rereads the Agent alone and never asks for status again, so the one audited denial stays one.
+test("Logs whose first status read is refused show a stop made elsewhere", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "the refused reader's version serves")];
+  const { account } = await logsMember(fixture, namespace, "status-refused-poll", [
+    "read",
+    "read_logs",
+  ]);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, undefined, "logs"),
+    account.credentials,
+  );
+  // The real Native IAM Driver refuses the status read; log text needs no operate.
+  await page.getByText(RUNTIME_STATUS_DENIED).waitFor();
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("the refused reader's version serves").waitFor();
+  await waitForIdleFetches(page);
+  const statusReads = () => requests.filter(({ path }) => path.endsWith("/runtime")).length;
+  assert.equal(statusReads(), 1);
+  const denied = authorizationDenials(fixture.auditSink).length;
+
+  // Another session stops the Agent; the next poll shows it.
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const stopped = await fixture.request("POST", `${agentPath}/stop`);
+  assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
+  computeDriver.state.podlessRevisions.push(revisionId);
+  const agentReads = await settledFetches(page, agentPath);
+  await page.clock.runFor(10_000);
+  await waitForSettledFetches(page, agentPath, agentReads + 1);
+  await page.getByText("Stop requested", { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+
+  // No second status read was sent, so no second denial was audited.
+  assert.equal(statusReads(), 1);
+  assert.equal(authorizationDenials(fixture.auditSink).length, denied);
+});
+
+// Finding 2993 (dogfood r61, D823). A redeploy from elsewhere failed while Logs stayed open: the
+// recovery card above the tabs named the failure, about 700 px above the Logs view at 390 px wide,
+// and the Logs view said nothing. The view now repeats the card's lead and next step in place,
+// without the raw code, links to the failed version's deployment, and clears once a later
+// deployment succeeds. It is drawn in place: nothing scrolls to it or takes focus.
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`Logs say in place that a redeploy from elsewhere failed at ${viewport.width}x${viewport.height}`, async (t) => {
+    const logs = await logsFixture(t);
+    const { fixture, namespace, agent } = logs;
+    const { agentPath, page, shows, poll } = await openStoppedLogs(t, logs, fixture.credentials, {
+      context: { viewport },
+    });
+    const view = page.locator("section.agent-logs");
+    const notice = view.locator(".log-deployment-failure");
+    assert.equal(await notice.filter({ hasText: /\S/ }).count(), 0);
+    const filter = page.locator("#runtime-log-filter");
+    await filter.focus();
+
+    const deployed = await fixture.deployAgent(namespace.id, agent.id);
+    const error = await routeFailedDeployment(page, fixture, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      deploymentId: deployed.id,
+      code: "RUNTIME_MODEL_PROBE_FAILED",
+    });
+    assert.ok(error);
+    await poll();
+    await shows(/Latest visible deployment\s+v2\s+·\s+Failed/);
+    await notice.getByText("v2 failed its startup model check.", { exact: false }).waitFor();
+    // The card's words without its code, which the card itself still shows.
+    assert.equal(
+      await notice.locator(".status-body").innerText(),
+      `v2 failed its startup model check. ${error.message}`,
+    );
+    assert.doesNotMatch(await notice.innerText(), /RUNTIME_MODEL_PROBE_FAILED/);
+    const link = notice.getByRole("link", { name: "View v2 deployment" });
+    const href = new URL((await link.getAttribute("href")) ?? "", page.url());
+    assert.equal(href.searchParams.get("revision"), deployed.id);
+    assert.equal(href.searchParams.get("tab"), "deployment");
+    // It appears in view where the reader is, without taking focus from them.
+    assert.equal(await filter.evaluate((node) => node === globalThis.document.activeElement), true);
+    const box = await notice.boundingBox();
+    assert.ok(box && box.y >= 0 && box.y + box.height <= viewport.height, JSON.stringify(box));
+    // The line is a status, so a screen reader announces it where the reader is.
+    assert.equal(
+      await view
+        .getByRole("status")
+        .filter({ hasText: "v2 failed its startup model check." })
+        .count(),
+      1,
+    );
+
+    // A refocus recheck rereads the permission answer, which redraws the card with the same
+    // failure. The line is left as it is, so a keyboard reader on its link keeps focus.
+    await link.focus();
+    await refocus(page);
+    await page.locator(settledView).waitFor();
+    await waitForIdleFetches(page);
+    await waitForCondition(
+      () => link.evaluate((node) => node === globalThis.document.activeElement),
+      "the refocus took focus from the line's link",
+    );
+    // A Logs view built after the failure was found shows the line from its first view.
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true, selected: true }).waitFor();
+    await page.getByRole("tab", { name: "Logs", exact: true }).click();
+    await notice.getByText("v2 failed its startup model check.", { exact: false }).waitFor();
+
+    // A later deployment from elsewhere succeeds: the failure no longer applies.
+    const before = (await fixture.request("GET", agentPath)).data;
+    const { revision } = await fixture.seedActiveAgentRevision(
+      namespace.id,
+      agent.id,
+      before.activeRevisionId,
+    );
+    await page.route(`${fixture.origin}${agentPath}/deployments/${revision.id}`, (route) =>
+      route.fulfill(succeededDeployment(namespace, agent, revision.id)),
+    );
+    await poll();
+    await shows(/Latest visible deployment\s+v3\s+·\s+Completed/);
+    await waitForCondition(
+      async () => (await notice.innerText()) === "",
+      "the failure stays after a later deployment succeeded",
+    );
+  });
+}
 
 // Finding 2944. A running container that has never restarted has no previous instance, so
 // Previous instance is unavailable. It was natively disabled with no reason: Tab skipped it and

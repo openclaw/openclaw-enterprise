@@ -62,6 +62,19 @@ const modelCredentialSourceTypes = [
     harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
   },
 ];
+// A Credential Gateway that also offers ChatGPT device login. Without that source type Sign in
+// with OAuth is unavailable before the click (finding 2991).
+const deviceLoginSourceTypes = [
+  ...modelCredentialSourceTypes,
+  {
+    type: "codex-oauth",
+    config: [],
+    secrets: [],
+    rotation: "refresh",
+    deviceAuthorization: { harnessId: "codex" },
+    harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" },
+  },
+];
 const dedicatedOpenclawForm = [
   ...readyForm,
   { selector: "#agent-harness", value: "openclaw" },
@@ -4186,6 +4199,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT OAuth before sign-in (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     pluginDiscovery,
     pluginCapabilities,
     actions: oauthForm,
@@ -4196,6 +4210,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT device login pending (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     oauthPending: true,
     actions: startOAuthLogin,
     description:
@@ -4205,6 +4220,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT sign-in interrupted by navigation (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
     actions: oauthForm,
     description:
@@ -4214,6 +4230,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login ready for plugin discovery (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     pluginDiscovery,
     pluginCapabilities,
     actions: startOAuthLogin,
@@ -4228,6 +4245,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login permission denied (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/device-authorizations", method: "POST", status: 403 }],
     actions: startOAuthLogin,
     description:
@@ -4237,15 +4255,35 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login unavailable (Experimental)",
     path: create,
-    rules: [{ suffix: "/device-authorizations", method: "POST", status: 501 }],
+    credentialSourceTypes: deviceLoginSourceTypes,
+    rules: [
+      {
+        suffix: "/device-authorizations",
+        method: "POST",
+        status: 501,
+        code: "NOT_IMPLEMENTED",
+        message:
+          "Device login needs a Credential Gateway and a Credential Refresh Driver, and this Installation does not select both. Ask an Installation administrator to select them; see the credential lifecycle guide.",
+      },
+    ],
     actions: startOAuthLogin,
     description:
-      "An Installation whose selected Drivers do not support device login reports it as unavailable. Choose another authentication method; no device code or sign-in link appears.",
+      "The Credential Gateway offers device login, but the Installation selects no Credential Refresh Driver. The refused start names the API's reason, and Sign in with OAuth stays unavailable, described by it. No device code or sign-in link appears.",
+  },
+  createOAuthNotOffered: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT login not offered by the Drivers (Experimental)",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: oauthForm,
+    description:
+      "The Installation's Credential Gateway offers no ChatGPT device login. Sign in with OAuth is unavailable before any request: Tab reaches it, it is described by the reason, and Enter sends nothing.",
   },
   createOAuthStartUnconfirmed: {
     group: "Pages/Create Agent",
     name: "ChatGPT sign-in start unconfirmed (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/device-authorizations", method: "POST", bodyError: true }],
     actions: oauthForm,
     description:
@@ -4255,6 +4293,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login exchange failed (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/poll", method: "POST", status: 503 }],
     actions: startOAuthLogin,
     description:
@@ -4264,6 +4303,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT device login expired (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     oauthExpired: true,
     actions: startOAuthLogin,
     description:
@@ -4288,6 +4328,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "ChatGPT replacement interrupted by navigation (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
@@ -4298,6 +4339,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "ChatGPT sign-in answered on another tab (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     oauthPending: true,
@@ -4309,6 +4351,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "ChatGPT sign-in refused on another tab (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     rules: [
@@ -4321,6 +4364,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "ChatGPT sign-in restarted on another tab (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     oauthPending: true,
@@ -4334,6 +4378,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "Explicit ChatGPT credential replacement (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     credentialSources: [
@@ -6847,10 +6892,11 @@ export const scenarios = {
     runtimePod: "none",
     failedRedeployOnReread: true,
     description:
-      "v7 was stopped, so no version is selected and its Pods are gone. While its Logs are open, another person deploys v8, and v8's startup model check times out: the Agent runs again with no version selected. The Logs status poll rereads the Agent and, finding it running with no version selected, lists the versions again: the page shows v8's failed deployment (finding 2978).",
+      "v7 was stopped, so no version is selected and its Pods are gone. While its Logs are open, another person deploys v8, and v8's startup model check times out: the Agent runs again with no version selected. The Logs status poll rereads the Agent and, finding it running with no version selected, lists the versions again: the page shows v8's failed deployment (finding 2978), and the Logs view says so in place under its runtime status (finding 2993).",
     steps: [
       "Wait for the Logs view to say “This version has no running Pod for this source.” The summary reads Latest visible deployment v7 · Completed and Selected for service None.",
       "Wait for the next status poll (10 seconds). The summary then reads Latest visible deployment v8 · Failed, and Deployment needs attention leads with v8's timed-out model check.",
+      "Check the Logs view under the runtime status: “v8 failed its startup model check.” with the same next step and no error code, and View v8 deployment. Focus and the scroll position stay where they were; at 390 px wide the line is in view under the Runtime heading.",
       "Open the version picker: v8 is listed above v7.",
     ],
     gap: "Simulated UI state only; this preview does not prove a live stop, redeploy or deployment failure.",
@@ -10178,6 +10224,71 @@ scenarios.policyDenialsNoSandboxDriver = {
     "The Policy denials tab says once that Agents run without a Sandbox, and offers no policy editor.",
   steps: [
     "Confirm the single status sentence names the missing Sandbox Driver, and that the Policy editing switch and Manage rules are absent.",
+  ],
+};
+
+// Collaborator-only approval exercises the same editor as the legacy default story.
+const collaboratorRepositoryOptions = [
+  {
+    repositoryRef: "application",
+    displayName: "example/application",
+    allowedProfiles: ["github-repository", "github-installation"],
+  },
+  {
+    repositoryRef: "api-only",
+    displayName: "example/api-only",
+    allowedProfiles: ["github-installation"],
+  },
+  {
+    repositoryRef: "handbook",
+    displayName: "example/handbook",
+    allowedProfiles: ["git-read"],
+  },
+];
+scenarios.repositoryCollaborator = {
+  ...scenarios.repositoryEditor,
+  name: "Select repository collaborator from an empty set",
+  repositoryOptions: collaboratorRepositoryOptions,
+  repositoryAccess: { defaultProfile: "git-full", repositories: [] },
+  repositoryBindings: [],
+  description:
+    "An empty selection offers the approved collaborator repository. API-only access is not a Git repository choice; the existing Contributor default stays unchanged.",
+  steps: [
+    "Select example/application. Its access reads Repository collaborator; the Agent default remains Contributor.",
+    "Save repository access. Confirm the saved message, visit Channels, and return to Repositories to inspect the saved selection.",
+    "Confirm example/api-only is absent from repository choices.",
+  ],
+  gap: "Simulated API state only; saving does not prove Controller persistence, authorization, or runtime Git access.",
+};
+scenarios.repositoryCollaboratorSaved = {
+  ...scenarios.repositoryCollaborator,
+  name: "Saved inheritance survives delayed collaborator discovery",
+  repositoryAccess: {
+    defaultProfile: "git-full",
+    repositories: [{ repositoryRef: "application" }],
+  },
+  repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+  rules: [{ suffix: "/repository-options", delayMs: 3000 }],
+  description:
+    "A saved inherited Contributor selection meets a changed collaborator-only approval after a three-second discovery delay. Discovery must not migrate the saved intent or mark it dirty.",
+  steps: [
+    "During discovery, inspect Access awaiting verification. After discovery, inspect Choose approved access; Save stays disabled and Channels stays enabled.",
+    "Expand Access for example/application, clear Use Agent default, and choose Repository collaborator. Save the explicit change and confirm the saved message.",
+  ],
+};
+scenarios.repositoryCollaboratorReadOnly = {
+  ...scenarios.repositoryCollaborator,
+  name: "Explicit Read-only refuses implicit collaborator access",
+  actions: [
+    { selector: "#repository-default-git-read", click: true },
+    { selector: 'input[data-repository-ref="application"]', click: true },
+  ],
+  description:
+    "Choosing Read-only before adding a collaborator-only repository preserves that intent. The editor requires an explicit per-repository choice before saving.",
+  steps: [
+    "Confirm Read-only stays selected, the repository needs approved access, and Save is disabled.",
+    "Expand Access for example/application, clear Use Agent default, and choose Repository collaborator. The Agent default stays Read-only; Save now succeeds.",
+    "Reset, remove example/application, and select example/handbook. Save succeeds with inherited Read-only access.",
   ],
 };
 

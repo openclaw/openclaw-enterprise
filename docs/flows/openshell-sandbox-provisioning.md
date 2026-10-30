@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-30
-last_updated_session: authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008
+last_updated_session: authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -95,13 +95,15 @@ and require Landlock.
 credentials use the selected Credential Gateway.
 
 `scripts/dev-up` validates Kubernetes/OpenShell and invokes `occ dev up`.
-Compose is default; `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only.
+`OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only.
 Before state creation, Kubernetes-only rejects API-port collisions and records
-engine, cluster, namespace, port and key destination. Both verify archives,
-package charts and import digest-pinned OpenShell images. Kubernetes-only
-builds/selects OCE images, imports PostgreSQL and resolves cluster digests.
+engine, cluster, namespace, port and key path. Both install verified 0.1.6
+charts and digest-pinned Gateway/supervisor/sandbox images.
+Protected preflight (`internal/occdev/egress_openshell_chart.go:checkProtectedOpenShellChart`)
+requires native TOML pre-credentials bindings and read-only CA mounts.
+Kubernetes-only builds/selects OCE images and imports PostgreSQL.
 
-Both import OCE images first, preventing k3s garbage collection of idle OpenShell images.
+Both import OCE images first to prevent k3s garbage collection.
 
 After Agent Sandbox rollout failure, `prepareOpenShell` invokes
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
@@ -200,7 +202,7 @@ selects a named provider and HTTPS Responses transport.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
-This Driver requires pinned, dedicated Codex or OpenClaw versions.
+Use pinned, dedicated Codex or OpenClaw.
 Kubernetes, filesystem, process and binary-scoped network policy use `v0.1.6`.
 Path relocation preserves opaque `OCE_CODEX_CHATGPT_ACCOUNT` JSON.
 Landlock is required. Unsupported enums, inherited keys, `passthrough` TLS,
@@ -224,10 +226,11 @@ to install selections. Clean stdio exit precedes verifier-only WebSocket startup
 in the same home. Failure terminates the process group through TERM/KILL cleanup.
 The provider Gateway skips HMAC plugin status; readiness observes transport.
 
-Providers use `oce-codex-runtime` or `oce-openclaw-runtime`. Both supply read-only setup and Gateway CA files; Codex requires `runtime.json` and `config.toml`, which native OpenClaw refuses. The validated setup Secret's complete expiring envelope, including `bootstrapToken`, becomes `node-setup.json`. WebSocket rewriting is unsupported: OpenClaw signs the literal token in its device proof.
-Renewal requires the same endpoint, TLS fingerprint, runtime, and CA configuration.
-Renewal requires an expired stored envelope and a later live expiry. The Sandbox network policy limits the connection to the exact
-Gateway endpoint and `/usr/local/bin/node`. Foreign ownership or drift prevents Sandbox creation.
+Providers `oce-codex-runtime` and `oce-openclaw-runtime` supply read-only setup and Gateway CA files. Codex requires `runtime.json` and `config.toml`; native OpenClaw refuses them. The complete validated setup envelope, including `bootstrapToken`, becomes `node-setup.json`. WebSocket rewriting is unsupported: OpenClaw signs the literal token in its device proof.
+Renewal requires an expired stored envelope, later live expiry, and unchanged
+endpoint, TLS fingerprint, runtime and CA configuration. Sandbox policy limits
+connections to that Gateway and `/usr/local/bin/node`. Foreign ownership or drift
+prevents creation.
 
 The Driver mounts version state at `/sandbox/.openclaw-runtime` and persistent
 subpaths below `/sandbox/.openclaw-mounts`. Admitted `/home/node` paths move under
@@ -321,11 +324,13 @@ route. Preparation preserves a serving predecessor; activation rechecks the
 candidate. Without `harnessEndpoint`, Codex uses Kubernetes transport and
 `/home/node/workspace`. Native OpenClaw enrolls outbound into its admitted workspace.
 
-Activation requires the Harness Pod and the Secret's enrolled node. Before each
-node retry, the Codex supervisor rereads provider setup, retaining the latest
-valid value during projection outages. It relaunches the workspace node one
-second after each exit, without a retry limit, including after Gateway rollout.
-Shutdown stops retries.
+Activation requires the Harness Pod and enrolled Secret node. Each retry rereads
+provider setup, retaining valid values during projection outages. The Codex
+supervisor restarts workspace-node one second after every exit until shutdown.
+
+`apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts:previewPolicyAndRecipient`
+checks policy, recipient and launcher proof. Strict grants require `PRE_CREDENTIALS`;
+legacy preview accepts absent binding fields.
 
 Compute checks sources through `attachmentStatus`/`GetSandboxProviderStatus`:
 `pending` or missing status retries; `failed`, `withheld`, `revoked` or `absent`
@@ -356,13 +361,12 @@ conditionally detaches Git. It independently verifies the reduced generation, or
 process and network, retained providers and model attachment. Applied detaches are observed,
 never resent; an unapplied intent repeats its request. A replacement cannot settle it.
 
-This supports one Git binding with separately authorized model access. Removing the last Git route
-denies Git while that conversation continues. Multiple independent Git bindings
-remain unsupported. For generic exchange routes, `withdrawBinding` returns
-`retire-runtime`: Compute reports `CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT`
-without deleting the Sandbox or claiming detachment. The worker leaves that source pending
-and attempts other authorized withdrawals in the same batch. Runtime retirement is a
-separate action. The mandatory stock gate stays closed; observed-hook assurance stays separate.
+This supports one Git binding and separately authorized model access; removing its
+last route denies Git without interrupting the conversation. Multiple independent
+Git bindings remain unsupported. For generic exchange routes, `withdrawBinding`
+returns `retire-runtime`. Compute reports `CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT`
+without deleting the Sandbox or claiming detachment. The worker keeps that source
+pending and attempts other authorized withdrawals. Runtime retirement remains separate.
 
 ## Debugging and verification
 
@@ -391,7 +395,13 @@ model execution.
 
 ## Changelog
 
+- 2026-10-30 16:09: Preserve capability-based repository admission while integrating patched runtime provenance. (authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f - 87d52638bda95e06820328e244ba2ad9960df1c4)
+
 - 2026-10-30 10:12: Adopt 0.1.6. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
+
+- 2026-10-29 23:56: Merge both capabilities. (authoring-run/0f5c25dc-b648-4d4a-9ef2-24db4179b122 - fbb3b8065fc907305e4f607208fb419df2ffe17a)
+
+- 2026-10-29 23:25: Qualify Git independently of release labels. (authoring-run/58990420-42d2-463b-911f-914ca3d54611 - 77d84ecbf76ce5c60193ad21c8be33184a304ee6)
 
 - 2026-10-29 04:23: Route OpenShell workspace nodes through Envoy for worker HTTP transfers and client attribution. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - 15440bacfc5a6553190c9580eb0eccf6f301f0ed)
 

@@ -21,7 +21,6 @@ import {
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { ConfigurationConflictError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import {
   assertProvisioningSourceStatus,
@@ -943,11 +942,8 @@ test(
 function provisioningRepositoryPolicy(namespaceId, profiles, installationAccess = false) {
   return new GitHubRepositoryPolicy(
     {
-      id: "provisioning-repositories",
-      client: new UnixRepositoryCredentialControlClient({
-        controlSocket: "/unused/provisioning/control.sock",
-      }),
-      drivers: { repo: "provisioning-repo" },
+      driverId: "provisioning-repo",
+      backendId: "provisioning-repositories",
     },
     {
       ...(installationAccess && {

@@ -203,17 +203,31 @@ Use the [documentation map](docs/README.md) and keep these ownership boundaries:
   relevant RFCs through `rfc` frontmatter. Completed specifications do not
   override current feature reference.
 
-Keep `docs/design.md` and its chapters about system structure, ownership,
-trust boundaries, and major interactions; update them for architectural changes
-or corrections to implementation status.
-Put feature details, configuration, edge cases, and delivery history in their
-owning reference, guide, flow, or spec. Link as needed, without per-PR entries.
-
 Document new components under `docs/` in the same change: purpose, setup,
 boundaries, verification, and troubleshooting. Update navigation and affected
 adjacent pages.
 Do not add migration documentation, migration-specific rollout instructions,
 or per-migration database preparation guidance unless explicitly requested.
+
+### Keep the architecture overview stable
+
+Update `docs/design.md` or its chapters only when a change makes an architectural
+claim materially inaccurate or incomplete: a platform primitive is introduced or
+removed, ownership or a trust boundary changes, major components interact
+differently, or a major architectural capability moves between planned and
+implemented status. Judge architectural impact, not the size of the code diff.
+
+Before editing, identify the affected architectural claim and explain why the
+owning reference, guide, or flow alone cannot describe the change accurately.
+Update the existing claim concisely and link to its detailed owner. Correct stale
+architectural claims; do not turn implementation status into a feature inventory.
+
+Routine fixes, new settings or API operations, validation rules, UI changes, and
+compatibility details belong in their owning references, guides, and flows unless
+they meet that architectural threshold. Keep delivery history in specifications.
+Do not add per-PR entries, feature summaries, or duplicate requirements to the
+design. A requirement to update documentation does not by itself require a design
+update.
 
 ### Keep reference cheat sheets current
 

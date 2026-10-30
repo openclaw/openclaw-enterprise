@@ -326,6 +326,10 @@
                             "label": "Networking and Isolation"
                           },
                           {
+                            "page": "reference/drivers/kubernetes-compute/gateway-authentication",
+                            "label": "Gateway Authentication"
+                          },
+                          {
                             "page": "reference/drivers/kubernetes-compute/storage-and-credentials",
                             "label": "Storage and Credentials"
                           },
@@ -429,6 +433,10 @@
                       {
                         "page": "guides/repository-credentials/installation",
                         "label": "Installation"
+                      },
+                      {
+                        "page": "guides/repository-credentials/openshell-enrollment",
+                        "label": "OpenShell Enrollment"
                       },
                       {
                         "page": "guides/repository-credentials/team-runbook",

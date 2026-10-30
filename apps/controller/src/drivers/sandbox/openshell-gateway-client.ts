@@ -288,6 +288,8 @@ export interface OpenShellProviderReadinessObservation {
 export interface OpenShellSandboxProviderStatus {
   /** An already terminal receipt can be queried without creating or completing an operation. */
   readonly completedOperationId?: string;
+  /** Terminal auxiliary OBSERVE history, never proof of installation or UPDATE completion. */
+  readonly supersededObservationId?: string;
   readonly state: string;
   readonly reason?: string;
   readonly receipt?: {
@@ -2427,6 +2429,14 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       typeof operation.operation_id === "string" &&
       operation.operation_id === receipt?.receipt_id
         ? { completedOperationId: operation.operation_id }
+        : {}),
+      ...(operation?.state === 5 &&
+      operation.outcome === 3 &&
+      timestampText(operation.completed_time) !== null &&
+      receipt?.kind === "PROVIDER_MUTATION_KIND_OBSERVE" &&
+      typeof operation.operation_id === "string" &&
+      operation.operation_id === receipt.receipt_id
+        ? { supersededObservationId: operation.operation_id }
         : {}),
       ...(typeof status.reason === "string" ? { reason: status.reason } : {}),
       ...(receipt

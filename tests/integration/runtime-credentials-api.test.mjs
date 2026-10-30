@@ -17,6 +17,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { jsonRequestInit } from "../helpers/inject-json.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createReadyComputeDriver, registerAndSelectDrivers } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -248,15 +249,13 @@ async function createSharedApp(implementation) {
     { session = adminSession, body, origin: requestOrigin = origin } = {},
   ) {
     const mutation = ["POST", "PATCH", "PUT", "DELETE"].includes(method);
-    const response = await fetch(`${origin}${path}`, {
-      method,
-      headers: {
+    const response = await fetch(
+      `${origin}${path}`,
+      jsonRequestInit(method, body, {
         ...authenticatedHeaders(session),
         ...(mutation ? { origin: requestOrigin } : {}),
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+      }),
+    );
     const text = await response.text();
     const payload = text.length === 0 ? undefined : JSON.parse(text);
     if (payload !== undefined) {

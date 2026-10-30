@@ -1,7 +1,4 @@
-import type {
-  Backend,
-  GitHubRepositoryCredentialBackendDefinition,
-} from "@openclaw-enterprise/contracts";
+import type { GitHubRepositoryCredentialBackendDefinition } from "@openclaw-enterprise/contracts";
 import {
   githubRepositoryAuthorityIdentity,
   type githubRepositoryConfiguration,
@@ -42,12 +39,12 @@ export function composeRepositoryPolicy(
   registry: GitHubRepositoryRegistry,
 ) {
   const { backend: definition, selection } = input;
-  // Copy only identity data: policy must not receive the native transport capability.
-  const backend: Pick<Backend, "id" | "drivers"> = Object.freeze({
-    id: definition.id,
-    drivers: Object.freeze({ repo: selection.id }),
+  const repositoryOwner = Object.freeze({
+    driverId: selection.id,
+    implementation: selection.implementation,
+    backendId: definition.id,
   });
-  const repositoryPolicy = new GitHubRepositoryPolicy(backend, registry, {
+  const repositoryPolicy = new GitHubRepositoryPolicy(repositoryOwner, registry, {
     sessionDurationSeconds: input.policyConfiguration.sessionDurationSeconds,
   });
   return Object.freeze({
@@ -59,11 +56,7 @@ export function composeRepositoryPolicy(
     ),
     repositoryRegistry: registry,
     resolveRepositoryDelivery: createGitHubRepositoryDeliveryResolver(registry),
-    repositoryOwner: Object.freeze({
-      driverId: selection.id,
-      implementation: selection.implementation,
-      backendId: definition.id,
-    }),
+    repositoryOwner,
     repositoryPolicy,
   });
 }

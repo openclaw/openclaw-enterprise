@@ -185,6 +185,9 @@ export const DeployAgentPrincipalDenied = {
 export const DeploySandboxPolicyReadDenied = story("deploySandboxPolicyReadDenied");
 
 export const RepositoryEditor = story("repositoryEditor");
+export const RepositoryCollaborator = story("repositoryCollaborator");
+export const RepositoryCollaboratorSaved = story("repositoryCollaboratorSaved");
+export const RepositoryCollaboratorReadOnly = story("repositoryCollaboratorReadOnly");
 export const RepositoryEditorUpdateDenied = story("repositoryEditorUpdateDenied");
 export const RepositoryEditorNotConfigured = story("repositoryEditorNotConfigured");
 export const RepositoryEditorNotConfiguredMember = story("repositoryEditorNotConfiguredMember");
