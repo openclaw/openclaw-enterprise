@@ -20,7 +20,12 @@ import {
   requestIdLine,
 } from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
-import { DELETE_CONFIRMATION, stopConfirmation, keptResources } from "./lifecycle-confirmation.mjs";
+import {
+  DELETE_CONFIRMATION,
+  grantRefusal,
+  keptResources,
+  stopConfirmation,
+} from "./lifecycle-confirmation.mjs";
 import { credentialRejectedAsk } from "./deployment-recovery.mjs";
 import {
   agentCreateDenied,
@@ -215,8 +220,8 @@ export function renderAgentList(context: AgentListContext) {
   // Agents whose last row action had a conflicting or unconfirmed outcome. Their actions stay
   // disabled until Refresh rereads the list, so the console never repeats an uncertain write.
   const unsettled = new Set<string>();
-  // The row action whose last write the API refused (403). Its icon is described by the alert
-  // above the table, which can sit far from the row on a narrow screen (finding 2952).
+  // The row action whose last write the API refused for grants (403). Its icon is described by
+  // the alert above the table, which can sit far from the row on a narrow screen (finding 2952).
   let refusal: { id: string; kind: RowAction } | null = null;
   // Every refused row action ("<id> <kind>"), with the count of permission reads started before
   // it. Each stays unavailable, and the row's note under its icons names the grant, until a read
@@ -644,7 +649,7 @@ export function renderAgentList(context: AgentListContext) {
     }
     let text;
     let refused;
-    if (error.status === 403) {
+    if (error.status === 403 && grantRefusal(cause)) {
       text = kind === "stop" ? stopRefused(item.name) : deleteRefused(item.name);
       refused = { id: item.id, kind };
       refusedActions.set(`${item.id} ${kind}`, permissionReadsStarted);
@@ -652,7 +657,12 @@ export function renderAgentList(context: AgentListContext) {
       text = `Could not ${kind === "stop" ? "stop" : "delete"} ${item.name}. ${describeFailure(cause, { mutation: true })}`;
     } else {
       unsettled.add(item.id);
-      if (error.status === 404) {
+      if (error.status === 403) {
+        // A refusal that is not about grants, such as another actor's failed deletion on a stale
+        // row or an admission refusal, shows as written, as on the Agent page (finding 2958). The
+        // row names no grant; it waits for Refresh, since a repeat would be refused the same way.
+        text = `Could not ${kind === "stop" ? "stop" : "delete"} ${item.name}. ${error.serverMessage} Select Refresh before trying again.`;
+      } else if (error.status === 404) {
         text = `${item.name} is no longer available. Select Refresh to update the list.`;
       } else if (error.status === 409) {
         // The API's own reason, such as a lifecycle change while the request ran.

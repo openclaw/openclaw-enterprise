@@ -1265,6 +1265,27 @@ export const scenarios = {
     description:
       "Permission advice allowed Delete, but the controller refuses the confirmed write. The alert names the missing Agent delete access; the Agent stays in the list. Its Delete icon takes focus back and looks unavailable, described by the alert, and the row's note under the icons says Needs Agent delete.",
   },
+  agentsRowDeleteRefusedOther: {
+    group: "Pages/Agents",
+    name: "Delete from the list refused for another reason",
+    deployed: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "DELETE",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Only the actor that started this deletion can retry it while that actor still holds delete. Retry as that actor, or remove its delete permission first.",
+      },
+    ],
+    actions: [
+      { selector: '[aria-label="Delete Research assistant"]', click: true },
+      { selector: ".agent-delete-dialog button.danger", click: true },
+    ],
+    description:
+      "The row is stale: another person's deletion of this Agent failed after the list loaded, and the controller refuses this caller's Delete for that reason, not for a missing grant. The alert shows the API's text with the Agent's name; the row's note names no grant, and its actions stay disabled until Refresh.",
+  },
   agentsRowRestricted: {
     group: "Pages/Agents",
     name: "Row actions unavailable for this caller",

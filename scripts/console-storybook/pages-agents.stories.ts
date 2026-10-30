@@ -59,6 +59,7 @@ export const RowStopped = story("agentsRowStopped");
 export const RowDeleteConfirmation = story("agentsRowDeleteConfirm");
 export const RowStopDenied = story("agentsRowStopDenied");
 export const RowDeleteDenied = story("agentsRowDeleteDenied");
+export const RowDeleteRefusedOther = story("agentsRowDeleteRefusedOther");
 export const RowStopUnknown = story("agentsRowStopUnknown");
 export const RowStopPermissionDuringConfirmation = story(
   "agentsRowStopPermissionDuringConfirmation",

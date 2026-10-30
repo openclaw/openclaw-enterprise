@@ -86,7 +86,10 @@ follows `:focus-visible`. No part of any ring may be cut off.
    finding 2937), whose hint says why. With other Presets (**Pages / Create
    Agent / Other Presets, no default**), the chooser's status says only
    "Choose a Preset." and describes Use Preset; the hint is not repeated
-   (finding 2946).
+   (finding 2946). A list row refused for a reason other than grants shows the
+   API's text in its alert, its note names no grant, and its icons wait for
+   Refresh (**Pages / Agents / Delete from the list refused for another
+   reason**, finding 2958).
    So do Previous instance before a restart (**Pages / Agent
    detail / Runtime status after a healthy first deploy**), described by its
    note (finding 2944), and Execution mode with the Codex harness (**Pages /

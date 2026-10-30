@@ -19,8 +19,10 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import {
   AGENT_STOP_AND_DELETE_DENIED,
+  GENERIC_DENIAL,
   SECRET_CREATE_DENIED,
   deleteRefused,
   stopRefused,
@@ -305,6 +307,105 @@ test("an Agents list row refusal describes the row's icon, and an unavailable ic
     .click();
   await page.getByText("Deletion requested for Refused Row.", { exact: false }).waitFor();
   assert.equal(await page.locator("[aria-describedby~='agent-row-refusal']").count(), 0);
+});
+
+// The Agents list worded every refused row Stop or Delete as a missing grant, in the alert and in
+// the row's note under the icon, so a refusal about something else told a person who holds the
+// grant that the row "Needs Agent operate" (finding 2958). As on the Agent page, a refusal that is
+// not about grants now shows the API's text with the Agent's name and names no grant; the row
+// waits for Refresh, since a repeat would be refused the same way. A denial about grants, here the
+// older API's generic one, keeps the console's sentence and the row's grant note. The API's
+// answers are fulfilled: the in-memory app has no disabled identity, no permanently failed
+// deletion work and no older API.
+test("an Agents list row refused for another reason shows the API's text and names no grant", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Other row refusals");
+  const other = await fixture.createAgent(namespace.id, "Other Row", nativeValues("other-row"));
+  await fixture.seedActiveAgentRevision(namespace.id, other.id);
+  const denied = await fixture.createAgent(namespace.id, "Denied Row", nativeValues("denied-row"));
+  await fixture.seedActiveAgentRevision(namespace.id, denied.id);
+  const { page } = await newPage(t, fixture, { browser });
+  let answer: ReturnType<typeof apiErrorResponse> | undefined;
+  for (const agent of [other, denied]) {
+    const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+    await page.route(`${agentUrl}/stop`, (route) =>
+      route.request().method() === "POST" ? route.fulfill(answer) : route.fallback(),
+    );
+    await page.route(agentUrl, (route) =>
+      route.request().method() === "DELETE" ? route.fulfill(answer) : route.fallback(),
+    );
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  // The owner holds every grant, so each row's icons are available and only the API refuses.
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const refresh = page.getByRole("button", { name: "Refresh", exact: true });
+
+  async function refuse(name: string, action: "Stop" | "Delete", message: string, id: string) {
+    const stopping = action === "Stop";
+    const row = page.getByRole("row").filter({ hasText: name });
+    const icon = row.getByRole("button", { name: `${action} ${name}`, exact: true });
+    await waitForEnabled(icon);
+    answer = apiErrorResponse(403, "FORBIDDEN", message, { requestId: id });
+    await icon.click();
+    await page
+      .getByRole("dialog", { name: `${action} ${name}?` })
+      .getByRole("button", { name: stopping ? "Stop Agent" : "Permanently delete Agent" })
+      .click();
+    const alert = page.getByRole("alert").filter({ hasText: `Request ID: ${id}` });
+    await alert.waitFor();
+    return { row, icon, alert: (await alert.locator(".status-body").textContent())?.trim() };
+  }
+
+  for (const [action, message, id] of [
+    // A caller-state denial any authorized request can get.
+    ["Stop", "The acting identity is unavailable.", "req_00000000-0000-4000-8000-000000000b01"],
+    // Another actor's deletion failed after this list loaded: the row is stale.
+    [
+      "Delete",
+      "Only the actor that started this deletion can retry it while that actor still holds delete. Retry as that actor, or remove its delete permission first.",
+      "req_00000000-0000-4000-8000-000000000b02",
+    ],
+  ] as const) {
+    const { row, icon, alert } = await refuse("Other Row", action, message, id);
+    assert.equal(
+      alert,
+      `Could not ${action.toLowerCase()} Other Row. ${message} Select Refresh before trying again.`,
+    );
+    // No grant under the icons: the row's note stays empty, and both icons wait for Refresh,
+    // natively disabled, so focus falls back to the Agent's name.
+    assert.equal((await row.locator(".row-action-note").textContent())?.trim(), "");
+    for (const kind of ["Stop", "Delete"]) {
+      const each = row.getByRole("button", { name: `${kind} Other Row`, exact: true });
+      assert.equal(await each.evaluate((node) => (node as HTMLButtonElement).disabled), true);
+    }
+    await page.waitForFunction(
+      () => globalThis.document.activeElement?.textContent === "Other Row",
+    );
+    // Refresh rereads the row and makes its icons available again.
+    await refresh.click();
+    await waitForEnabled(icon);
+  }
+
+  // A denial about grants keeps the console's sentence, and the refused icon stays unavailable
+  // with the grant in the row's note.
+  for (const [action, text, grant, id] of [
+    [
+      "Stop",
+      stopRefused("Denied Row"),
+      "Needs Agent operate",
+      "req_00000000-0000-4000-8000-000000000b03",
+    ],
+    [
+      "Delete",
+      deleteRefused("Denied Row"),
+      "Needs operate and delete",
+      "req_00000000-0000-4000-8000-000000000b04",
+    ],
+  ] as const) {
+    const { row, icon, alert } = await refuse("Denied Row", action, GENERIC_DENIAL, id);
+    assert.equal(alert, text);
+    assert.equal(await icon.getAttribute("aria-disabled"), "true");
+    await row.getByText(grant, { exact: true }).waitFor();
+  }
 });
 
 // Request deletion again on an Agent already deleting passes a refusal that is not about grants,

@@ -128,8 +128,10 @@ version has no Stop action. A response that confirms the action for the requeste
 updates its row without polling. If the response names a different Agent, the list reports an
 unknown outcome and keeps the last observed state of both Agents. After `404`, `409`, or an
 uncertain outcome, the requested row’s actions stay disabled until **Refresh** rereads it.
-After a `403`, the refused icon stays unavailable and the row's note names the grant under it,
-until a permission answer read later allows that action.
+After a `403` about grants, the refused icon stays unavailable and the row's note names the grant
+under it, until a permission answer read later allows that action. Any other `403`, such as
+retry ownership on a stale row, shows the API's text, and the row's actions stay disabled
+until **Refresh**.
 
 ## Debugging and Verification
 
