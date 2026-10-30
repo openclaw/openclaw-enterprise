@@ -59,7 +59,8 @@ persists the requested stopped state, and queues reconciliation. Success means a
 not that Compute has shut down. Cancel restores focus to the invoking button; submission focuses
 **Refresh stop status**. A `403` about grants shows the Console's refusal with the Agent's name
 and the Request ID; any other `403` shows the API's text. Either way Stop stays unavailable,
-described by it, until a newer permission answer allows operate.
+described by it, until a newer permission answer allows operate, such as the one a window refocus
+rereads.
 
 For a stopped Agent, **Request Stop again** confirms a new stop intent, even with no selected
 version; the Console cannot inspect history or candidate cleanup. Its confirmation says the
