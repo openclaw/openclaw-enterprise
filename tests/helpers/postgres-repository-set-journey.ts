@@ -221,7 +221,7 @@ export async function repositorySetJourney(t: TestContext) {
   t.after(() => bound.close());
   await runtime["running"];
   const driver = new GitHubRepositoryPolicy(
-    { id: peer.registry.backendId, drivers: { repo: peer.registry.backendId } },
+    { driverId: peer.registry.backendId, backendId: peer.registry.backendId },
     peer.registry,
     { sessionDurationSeconds: 600 },
   );

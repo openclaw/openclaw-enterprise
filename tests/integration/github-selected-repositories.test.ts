@@ -110,7 +110,7 @@ test("ordinary fresh selections resolve one or N repositories without broadening
     pull_requests: "write",
   });
   const policy = new GitHubRepositoryPolicy(
-    { id: "github", drivers: { repo: "github" } },
+    { driverId: "github", backendId: "github" },
     registry,
     { sessionDurationSeconds: 600 },
   );
