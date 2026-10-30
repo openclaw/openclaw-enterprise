@@ -5,8 +5,9 @@ export function createDraftStore() {
   const snapshots = new Map<string, unknown>();
   const captures = new Map<string, () => unknown>();
   const unsavedChecks = new Map<string, typeof captured>();
-  // The newest capture tracked under each key, kept after a flush: it owns that key's draft.
-  const owners = new Map<string, () => unknown>();
+  // The newest capture tracked under each key, kept after a flush: it owns that key's draft. Held
+  // weakly, so a view left for good (and its detached nodes) can still be collected.
+  const owners = new Map<string, WeakRef<() => unknown>>();
   const snapshot = (key: string, capture: () => unknown) => {
     const value = capture();
     if (value === undefined) {
@@ -82,13 +83,13 @@ export function createDraftStore() {
         get: (name: string) => snapshots.get(keyFor(name)),
         track(name: string, capture: () => unknown) {
           captures.set(keyFor(name), capture);
-          owners.set(keyFor(name), capture);
+          owners.set(keyFor(name), new WeakRef(capture));
         },
         // Records a view's draft again after it was left, as a reply that lands later changes
         // it, unless a newer view tracks the name or it was forgotten (finding 2981).
         record(name: string, capture: () => unknown) {
           const key = keyFor(name);
-          if (owners.get(key) === capture) {
+          if (owners.get(key)?.deref() === capture) {
             snapshot(key, capture);
           }
         },

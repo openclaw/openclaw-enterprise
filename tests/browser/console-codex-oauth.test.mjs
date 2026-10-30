@@ -679,9 +679,9 @@ for (const refused of [false, true]) {
 }
 
 // A start that is not the tab's first write is kept the same way (findings 2980, 2981): after a
-// refused start, or after Cancel login withdrew an earlier login. The tab shows the outcome of its
-// own start, poll and cancel, so those writes alone do not make it stale. Before the fix, Cancel
-// login did, and the return rebuilt the tab from a draft that said the start was unconfirmed.
+// refused start, or after a poll and Cancel login withdrew an earlier login. The tab shows the
+// outcome of its own start, poll and cancel, so those writes alone do not make it stale. Before the
+// fix, they did, and the return rebuilt the tab from its draft, which cannot name a refusal.
 for (const before of ["a refused start", "Cancel login"]) {
   for (const refused of before === "Cancel login" ? [false, true] : [false]) {
     test(`an OAuth start after ${before} ${refused ? "refused" : "answered"} while another Agent tab shows lands in Credentials`, async (t) => {
@@ -695,6 +695,13 @@ for (const before of ["a refused start", "Cancel login"]) {
         );
         await start.click();
         const { session } = (await (await first).json()).data;
+        await page.getByText(WAITING, { exact: true }).waitFor();
+        // Let the login poll once (the fixture interval is 5 s): the poll is the tab's write too.
+        const polled = await page.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname === `${oauth.beginPath}/${session.id}/poll`,
+        );
+        assert.equal(polled.status(), 200);
         await page.getByText(WAITING, { exact: true }).waitFor();
         await page.getByRole("button", { name: "Cancel login", exact: true }).click();
         await page.getByText("Sign in to connect your ChatGPT account.", { exact: true }).waitFor();
@@ -742,32 +749,43 @@ for (const before of ["a refused start", "Cancel login"]) {
 // A Configuration save on another tab rebuilds the Credentials tab from its draft. A start
 // answered after the reader left the tab records its outcome in that draft, whether the reply
 // lands before the save or after it (finding 2981). Before the fix, the draft still said the
-// start was unconfirmed, so a delivered code was lost.
+// start was unconfirmed, so a delivered code was lost and a refusal blocked a retry.
 for (const replyFirst of [true, false]) {
-  test(`an OAuth start answered ${replyFirst ? "before" : "after"} a Configuration save on another Agent tab lands in Credentials`, async (t) => {
-    const oauth = await openAgentOAuth(t, "OAuth save");
-    const { page } = oauth;
-    const held = await holdNextStart(t, oauth);
-    await waitForIdleFetches(page);
-    await oauth.start.click();
-    const { status, body } = await held.answered;
-    assert.equal(status, 200);
-    await showTab(page, "Configuration");
-    if (replyFirst) {
-      held.release();
-      await waitForSettledFetches(page, oauth.beginPath, 1);
-    }
-    await saveConfiguration(page, "oauth-save-v2");
-    if (!replyFirst) {
-      held.release();
-      await waitForSettledFetches(page, oauth.beginPath, 1);
-    }
+  for (const refused of [false, true]) {
+    test(`an OAuth start ${refused ? "refused" : "answered"} ${replyFirst ? "before" : "after"} a Configuration save on another Agent tab lands in Credentials`, async (t) => {
+      const oauth = await openAgentOAuth(t, "OAuth save");
+      const { page } = oauth;
+      if (refused) {
+        revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+      }
+      const held = await holdNextStart(t, oauth);
+      await waitForIdleFetches(page);
+      await oauth.start.click();
+      const { status, body } = await held.answered;
+      assert.equal(status, refused ? 403 : 200);
+      await showTab(page, "Configuration");
+      if (replyFirst) {
+        held.release();
+        await waitForSettledFetches(page, oauth.beginPath, 1);
+      }
+      await saveConfiguration(page, "oauth-save-v2");
+      if (!replyFirst) {
+        held.release();
+        await waitForSettledFetches(page, oauth.beginPath, 1);
+      }
 
-    await showTab(page, "Credentials");
-    await expectChallenge(page, body.data.userCode);
-    await settlePageRequests(page);
-    assert.equal(oauth.starts(), 1);
-  });
+      await showTab(page, "Credentials");
+      if (refused) {
+        // The draft records the refusal as no login, so sign-in is offered again.
+        await waitForEnabled(oauth.start);
+        await expectNoText(page, /may have started/i);
+      } else {
+        await expectChallenge(page, body.data.userCode);
+      }
+      await settlePageRequests(page);
+      assert.equal(oauth.starts(), 1);
+    });
+  }
 }
 
 // A Credentials tab built before the reply landed owns the draft from then on: the earlier tab

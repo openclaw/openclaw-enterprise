@@ -171,7 +171,7 @@ version.
 
 For plugin configuration, the Gateway reads ownership/account metadata using its
 ordinary Backend identity, then calls `GetProviderCredentials` through the
-operator-TLS channel. OpenShell may refresh to satisfy its five-minute
+separate operator-TLS channel. OpenShell may refresh to satisfy its five-minute
 remaining-lifetime requirement. Only access credentials enter the callback; it
 rechecks the caller's authority and saved-Agent binding/grant before provider I/O.
 Closing or expiring the login session leaves source-based discovery enabled.
