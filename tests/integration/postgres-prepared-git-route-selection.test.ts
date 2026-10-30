@@ -9,7 +9,7 @@ import { RepositoryReceiptStore } from "../../apps/controller/src/backends/repos
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
 import { startListeners } from "../../apps/controller/src/drivers/repo/credentials/server.ts";
-import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
+import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts";
 import {
   resolveGitHubRepositoryBinding,

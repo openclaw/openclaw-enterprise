@@ -14,7 +14,7 @@ import {
   createControlAdmission,
   handleControl,
 } from "../../apps/controller/src/drivers/repo/credentials/control.ts";
-import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
+import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createAgentHandler } from "../../apps/controller/src/drivers/repo/credentials/transport/agent.ts";
 import { createGatewayAuthentication } from "../../apps/controller/src/drivers/repo/github/credentials/gateway-authentication.ts";
 import { planDraftPull } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-draft-pull.ts";
@@ -390,6 +390,35 @@ for (const stage of ["reserved", "authorizing", "dispatch"] as const) {
     const service = createCredentialService({ config, factory, clock });
     const opened = service.open({ durationSeconds: 30, profile: "git-write" });
     resources.after(() => service.close(opened.session.sessionId));
+    if (stage === "dispatch") {
+      // Invalid digest syntax must stop before either owner authorization or sender entry.
+      for (const digest of [undefined, "", "a".repeat(63), "A".repeat(64), "g".repeat(64)]) {
+        const exchange = service.reserve(
+          opened.bearer,
+          {
+            method: "POST",
+            rawTarget: "/repos/a/b/pulls",
+            headers: { "x-oce-operation-id": operationId, "content-type": "application/json" },
+            receivedMonoMs: clock.monotonicNow(),
+            contentEncoding: "identity",
+            framing: { kind: "none", bytes: undefined },
+          },
+          new AbortController().signal,
+        );
+        assert.ok(!("kind" in exchange));
+        const outcome = await service.execute(
+          exchange,
+          async () => {
+            assert.fail("invalid digest reached the sender");
+          },
+          digest,
+        );
+        assert.equal(outcome.kind, "not-dispatched");
+      }
+      assert.equal(authorizations, 0);
+      assert.equal(originRequests, 0);
+      assert.deepEqual(settlements, []);
+    }
     let disposals = 0;
     service.observeDisposal(() => disposals++);
     const admissions = createControlAdmission(service, config, clock, false, true);

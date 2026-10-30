@@ -2,9 +2,17 @@
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
-import { request } from "node:http";
+import { createServer, request } from "node:http";
+import { once } from "node:events";
+import { buffer } from "node:stream/consumers";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
+import { loadGitHubRepositoryRegistry } from "../../apps/controller/src/composition/repository-credentials/registry.ts";
+import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import { callControl } from "../../apps/controller/src/drivers/repo/github/credentials/client/operator.ts";
+import type { OperationReceipt } from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
 import { request as requestHttps } from "node:https";
 import { syncBuiltinESMExports } from "node:module";
 import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
@@ -204,8 +212,8 @@ test(
     await chmod(key, 0o600);
     await chmod(certificate, 0o644);
     // Hold the gateway port across the prepared and development process launches.
-    const serviceReservation: PortReservation = await reservePort();
-    t.after(serviceReservation.release);
+    let serviceReservation: PortReservation = await reservePort();
+    t.after(() => serviceReservation.release());
     const registryFile = join(temporary, "registry.json");
     await writeFile(
       registryFile,
@@ -225,8 +233,9 @@ test(
               {
                 namespaceId: "fixture",
                 profiles: ["git-write"],
-                transport: "git-only",
+                transport: "git-and-draft-pr",
                 pushRefAllowlist: ["refs/heads/agent-work"],
+                pullRequestBase: "main",
               },
             ],
           },
@@ -418,8 +427,96 @@ test(
         args.join(" "),
       );
     }
-    // The prepared entrypoint starts without development authority modules.
-    // A real protocol reply establishes completed startup before SIGTERM.
+    // Keep the guard active through admission, dispatch, settlement and receipt readback.
+    const forbiddenLoads = join(temporary, "forbidden-loads.log");
+    await writeFile(forbiddenLoads, "");
+    const githubOptions = {
+      clock: createControlledClock(),
+      repository: "example/project",
+      repositoryId: "789",
+    };
+    const github = await startGitHubFixture(t, githubOptions);
+    const preparedToken = `ghs_${"p".repeat(36)}`;
+    github.acceptStatic(preparedToken);
+    const registry = await loadGitHubRepositoryRegistry(registryFile, "github-fixture");
+    const selection = { namespaceId: "fixture", repositoryRef: "project", profile: "git-write" };
+    const binding = resolveGitHubRepositoryBinding(registry, selection).grant;
+    const operationId = randomUUID();
+    const admissionId = `${Date.now()}-${randomUUID()}`;
+    const admissionEvents: string[] = [];
+    let sessionId: string;
+    let exchangeId: string;
+    let digest: string;
+    let settlements = 0;
+    let readbacks = 0;
+    let receipt: OperationReceipt | undefined;
+    // Controlled owner protocols; the emitted application still owns every service operation.
+    const owner = createServer(async (incoming, response) => {
+      const use = JSON.parse((await buffer(incoming)).toString());
+      assert.equal(incoming.url, "/v1/prepared-git/use");
+      if (use.operation === "record-draft-pull") {
+        settlements++;
+        assert.equal(use.receiptId, exchangeId);
+        assert.equal(use.outcome.created.draft, true);
+        receipt = { kind: "recorded", status: 201, body: { operationId, outcome: use.outcome } };
+      } else {
+        assert.equal(use.operation, "create-draft-pull");
+        assert.equal(use.sessionId, sessionId);
+        assert.equal(use.grantId, binding.grantId);
+        assert.equal(use.pull.operationId, operationId);
+        assert.match(use.requestDigestSha256, /^[0-9a-f]{64}$/);
+        if (receipt) {
+          readbacks++;
+          assert.equal(use.requestDigestSha256, digest);
+        } else {
+          exchangeId = use.exchangeId;
+          digest = use.requestDigestSha256;
+          response.writeHead(200, { "content-type": "application/json" }).end(
+            JSON.stringify({
+              exchangeId,
+              preparationAttemptId: "fixture-attempt",
+              materialVersion: "fixture-version",
+              sendStartBy: new Date(Date.now() + 5000).toISOString(),
+              value: preparedToken,
+            }),
+          );
+          return;
+        }
+      }
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(receipt));
+    });
+    t.after(() => owner[Symbol.asyncDispose]());
+    owner.listen(join(sockets, "prepared-git-use.sock"));
+    await once(owner, "listening");
+    const journal = createServer(async (incoming, response) => {
+      const event = JSON.parse((await buffer(incoming)).toString());
+      assert.equal(incoming.url, "/v1/receipt");
+      assert.equal(event.admissionId, admissionId);
+      admissionEvents.push(event.kind);
+      if (event.kind === "bind") {
+        assert.deepEqual(event.status.binding, binding);
+      }
+      response.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify({
+          kind: event.kind === "reserve" ? "reserved" : "acknowledged",
+        }),
+      );
+    });
+    t.after(() => journal[Symbol.asyncDispose]());
+    journal.listen(join(sockets, "receipt.sock"));
+    await once(journal, "listening");
+    await writeFile(
+      configuration,
+      JSON.stringify({
+        ...preparedConfiguration,
+        backend: {
+          ...preparedConfiguration.backend,
+          apiOrigin: github.origin,
+          gitCaFile: github.tls.certFile,
+        },
+      }),
+      { mode: 0o600 },
+    );
     const preparedRuntime = join(temporary, "prepared-runtime");
     await cp(runtime, preparedRuntime, { recursive: true });
     for (const module of ["factory.js", "driver.js", "static-token.js"]) {
@@ -437,7 +534,11 @@ test(
       ],
       {
         cwd: preparedRuntime,
-        env: { PATH: process.env.PATH, CREDENTIAL_TEST_DEVELOPMENT: "0" },
+        env: {
+          PATH: process.env.PATH,
+          CREDENTIAL_TEST_DEVELOPMENT: "0",
+          CREDENTIAL_TEST_LOAD_RECEIPT: forbiddenLoads,
+        },
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 15000,
         killSignal: "SIGKILL",
@@ -467,8 +568,87 @@ test(
         },
         { timeoutMs: 5000, intervalMs: 10 },
       );
+      await serviceReservation.release();
+      const opened = await callControl(
+        preparedConfiguration.gateway.controlSocket,
+        {
+          method: "POST",
+          path: "/v1/sessions",
+          body: {
+            ...selection,
+            durationSeconds: 30,
+            deadlineWallMs: Date.now() + 30000,
+            expectedBinding: binding,
+            durableAdmission: true,
+            preparedOnly: true,
+          },
+        },
+        admissionId,
+      );
+      assert.ok("bearer" in opened);
+      assert.deepEqual(opened.session.binding, binding);
+      sessionId = opened.session.sessionId;
+      assert.deepEqual(admissionEvents, ["reserve", "bind"]);
+      const send = () =>
+        new Promise<{ status: number | undefined; body: unknown }>((resolve, reject) => {
+          const outgoing = requestHttps(
+            {
+              hostname: "127.0.0.1",
+              servername: "credentials.example.test",
+              port: serviceReservation.port,
+              path: "/repos/example/project/pulls",
+              method: "POST",
+              ca: readCertificate,
+              agent: false,
+              signal: AbortSignal.timeout(5000),
+              headers: {
+                host: "credentials.example.test",
+                authorization: `Bearer ${opened.bearer}`,
+                "content-type": "application/json",
+                "x-oce-operation-id": operationId,
+              },
+            },
+            (response) => {
+              void buffer(response).then(
+                (bytes) =>
+                  resolve({ status: response.statusCode, body: JSON.parse(bytes.toString()) }),
+                reject,
+              );
+            },
+          );
+          outgoing.on("error", reject);
+          outgoing.end(
+            JSON.stringify({
+              title: "Packaged draft",
+              head: "agent-work",
+              base: "main",
+              draft: true,
+            }),
+          );
+        });
+      const readCertificate = await readFile(certificate);
+      const first = await send();
+      assert.equal(first.status, 201);
+      assert.deepEqual(first.body, receipt?.body);
+      assert.equal(github.trace.length, 1);
+      assert.equal(settlements, 1);
+      assert.deepEqual(await send(), first);
+      assert.equal(readbacks, 1);
+      assert.equal(github.trace.length, 1, "receipt readback must not send again");
+      assert.equal(github.pulls.size, 1);
+      assert.equal(settlements, 1, "receipt readback must not settle again");
+      await callControl(preparedConfiguration.gateway.controlSocket, {
+        method: "POST",
+        path: `/v1/sessions/${sessionId}/close`,
+      });
+      serviceReservation = await reservePort({ port: serviceReservation.port });
       preparedService.kill("SIGTERM");
       assert.deepEqual(await preparedExit, { code: 0, signal: null });
+      assert.equal(
+        await readFile(forbiddenLoads, "utf8"),
+        "guard-active\n",
+        "prepared process attempted forbidden loads",
+      );
       assert.equal(preparedOutput.includes(token), false);
     } finally {
       if (preparedService.exitCode === null && preparedService.signalCode === null) {

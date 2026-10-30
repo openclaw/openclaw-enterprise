@@ -104,7 +104,7 @@ test("prepared startup accepts TLS without an App key or provider calls and reje
     assert.equal(loaded.repositoryDescriptions, undefined);
     assert.equal("resolve" in loaded.factory, false);
     const { createCredentialService } =
-      await import("../../apps/controller/src/drivers/repo/credentials/service.ts");
+      await import("../fixtures/repository-credentials/service.ts");
     const service = createCredentialService({
       config: loaded.config,
       factory: loaded.factory,

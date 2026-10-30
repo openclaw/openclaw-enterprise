@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
 updated: 2026-10-30
-last_updated_session: authoring-run/d49a5c43-d13a-4c18-8850-b9e95cca726c
+last_updated_session: authoring-run/1e62ea7b-b50d-46c8-808e-66f71c8965c7
 ---
 
 # Repository credential service flow
@@ -52,44 +52,39 @@ graph TD
 
 ### 1. Load protected startup inputs
 
-`apps/controller/src/composition/repository-credentials/check-config.ts:checkConfiguration` and
-`apps/controller/src/composition/repository-credentials/service.ts:startCredentialService` load protected configuration through
-`apps/controller/src/composition/repository-credentials/protected-file.ts:readProtectedFile`.
-The [configuration flow](repository-credential-configuration.md) traces its
-root-to-leaf protected-path validation and Kubernetes projection snapshots.
-`apps/controller/src/drivers/repo/credentials/configuration.ts:validateServiceConfig`
-validates gateway, session and capacity settings. The standalone check emits a
-safe summary without session/listener imports. Startup selects the system clock
-and configured backend; `apps/controller/src/composition/repository-credentials/service.ts:runService`
-composes service and listeners without the controller API or worker.
-For the development token backend,
-`apps/controller/src/drivers/repo/github/credentials/factory.ts:createGitHubDriverFactory`
-composes session-bound backends. It delegates grant resolution to
-`apps/controller/src/drivers/repo/github/credentials/grants.ts:createGrantResolver`
-and client authentication to
-`apps/controller/src/drivers/repo/github/credentials/gateway-authentication.ts:createGatewayAuthentication`.
-A registry-selected factory retains the frozen repository identity and access profile.
-The production native sender consumes READY material from the worker Token Service.
-It owns no App signing key, cannot issue installation tokens and does not load the
-development static-token implementation. The development backend requires both
-`developmentOnly: true` and the `--development-authority` process flag.
-`packages/contracts/src/drivers/repo/index.ts` owns public `RepositoryPolicyDriver` and
-`NativeRepositorySender`, grant identity and four-field status. Private contracts under
-`apps/controller/src/drivers/repo/credentials/` separate full status/admission/bearer
-results (`service-contracts.ts`), the dependency-free six-field client DTO
-(`client-contracts.ts`), and backend protocol/custody handles (`backend-contracts.ts`).
-Type-only imports keep service initialization out of Compute and the Git/gh bundle.
-The frozen runtime facade exposes `open`, `status`, `close` and `shutdown`;
-listeners own exchanges. The [Agent flow](agent-repository-credentials.md) owns
-platform session-control and local policy.
+Both `checkConfiguration` and `startCredentialService` use
+[`readProtectedFile`](../../apps/controller/src/composition/repository-credentials/protected-file.ts)
+and [validate](../../apps/controller/src/drivers/repo/credentials/configuration.ts) gateway,
+session and capacity settings. The [configuration flow](repository-credential-configuration.md)
+covers protected paths and Kubernetes projections. The standalone check needs no listeners or sessions.
 
-Registry startup selects
-`apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts:createPreparedGitHubRegistryFactory`
-from the same canonical registry loaded by API and worker. The worker owns the
-App key; only the sender receives its TLS private key. `startListeners` can reclaim only an owned,
-private, refused stale Unix socket after checking that its identity is unchanged;
-a live or ambiguously owned socket fails startup. Neither listener admits requests
-until the control socket has mode `0600` and its identity is recorded.
+[`runService`](../../apps/controller/src/composition/repository-credentials/service.ts) uses the configured
+factory's `createPrepared` capability to select a session constructor before either listener starts.
+Both constructors share admission, capacity and shutdown:
+
+- **Prepared:** [Pass the original authority and selection to `createPrepared`](../../apps/controller/src/drivers/repo/credentials/session-construction.ts)
+  and verify the returned binding. The sender reads READY material from the worker Token Service;
+  it cannot mint installation tokens. It loads neither development custody nor the development lifecycle.
+- **Development:** [Construct custody and lifecycle locally](../../apps/controller/src/drivers/repo/credentials/development-session.ts)
+  and drain failed construction. The [GitHub factory](../../apps/controller/src/drivers/repo/github/credentials/factory.ts)
+  uses the [grant resolver](../../apps/controller/src/drivers/repo/github/credentials/grants.ts) and
+  [client authentication](../../apps/controller/src/drivers/repo/github/credentials/gateway-authentication.ts).
+  It requires both `developmentOnly: true` and `--development-authority`.
+
+The [public contracts](../../packages/contracts/src/drivers/repo/index.ts) define
+`RepositoryPolicyDriver`, `NativeRepositorySender`, grant identity and four-field status.
+Private contracts separate [admission and bearer results](../../apps/controller/src/drivers/repo/credentials/service-contracts.ts),
+the [six-field client DTO](../../apps/controller/src/drivers/repo/credentials/client-contracts.ts) and
+[backend custody handles](../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts).
+Type-only imports keep service startup out of Compute and Git/gh. The frozen facade exposes
+`open`, `status`, `close` and `shutdown`; listeners own exchanges.
+See the [Agent flow](agent-repository-credentials.md) for platform session control and policy.
+
+The [prepared factory](../../apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts)
+uses the API and worker's canonical registry and preserves repository identity and access profile.
+The worker owns the App signing key; the sender holds its TLS private key. Startup reclaims
+only a refused, private, owned Unix socket whose identity is unchanged. Neither listener
+admits requests until the control socket has mode `0600` and its identity is recorded.
 
 ### 2. Admit and publish a client session
 
@@ -132,7 +127,7 @@ reports `RECEIPT_UNAVAILABLE`;
 [`callControl`](../../apps/controller/src/drivers/repo/github/credentials/client/operator.ts)
 retains the admission ID in `control-request-failed` and also closes the request.
 
-Factory failure or an invalid binding closes construction admission before
+Development factory failure or an invalid binding closes construction admission before
 `apps/controller/src/drivers/repo/credentials/custody.ts:disposeAllRenewal`.
 All handles are sealed before awaiting callbacks. Unpublished custody occupies
 the configured session capacity until callbacks settle and bytes are disposed.
@@ -359,6 +354,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 06:43: Select session construction before startup; retain shared admission and shutdown ownership. (authoring-run/1e62ea7b-b50d-46c8-808e-66f71c8965c7 - f6dd82ffef812be1fb3082bd9c416e23c5da866f)
 
 - 2026-10-30 06:21: Reserve admission capacity and drain shutdown work. (authoring-run/d49a5c43-d13a-4c18-8850-b9e95cca726c - 4a27fe5e2ff5fc4b216040bcf1227bfb6a7e0a88)
 
