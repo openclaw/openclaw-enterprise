@@ -686,6 +686,15 @@ function redact(value, redactions) {
     .reduce((current, secret) => current.split(secret).join("<redacted>"), value);
 }
 
+// The disposable k3d cluster that OCC_TEST_KUBERNETES_KUBECONFIG and OCC_TEST_KUBERNETES_CONTEXT
+// select, read at the call. Check it with validateExplicitK3dLoopbackContext before use.
+export function explicitK3dSelection() {
+  return {
+    kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
+    kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
+  };
+}
+
 export async function validateExplicitK3dLoopbackContext(selection) {
   const { kubeconfigPath, kubernetesContext } = selection;
   assert.ok(

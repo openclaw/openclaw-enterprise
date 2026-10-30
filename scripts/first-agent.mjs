@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { accessSync, constants } from "node:fs";
 import { lstat, open, readFile, realpath, rename, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
@@ -117,6 +118,23 @@ async function exists(path) {
     }
     throw error;
   }
+}
+
+function availableInPath(name) {
+  // Match Go's exec.LookPath: a provider exists only when a PATH entry holds
+  // an executable file with that name, not when a non-executable one does.
+  const directories = (process.env.PATH ?? "").split(delimiter);
+  return directories.some((directory) => {
+    if (!directory) {
+      return false;
+    }
+    try {
+      accessSync(join(directory, name), constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function parseJson(value, description) {
@@ -252,8 +270,12 @@ async function loadLocalInstallation(harness, controlUi) {
   delete environment.OPENAI_API_KEY_FILE;
   delete environment.CODEX_ACCESS_TOKEN;
   delete environment.CODEX_ACCESS_TOKEN_FILE;
-  if (state.containerEngine === "podman") {
-    environment.PODMAN_COMPOSE_PROVIDER ||= "podman-compose";
+  if (state.containerEngine === "podman" && !environment.PODMAN_COMPOSE_PROVIDER) {
+    // The Compose command uses --project-directory, which podman-compose does not
+    // support; docker-compose reaches Podman through the recorded DOCKER_HOST.
+    environment.PODMAN_COMPOSE_PROVIDER = availableInPath("docker-compose")
+      ? "docker-compose"
+      : "podman-compose";
   }
   const composeBase = [
     "compose",

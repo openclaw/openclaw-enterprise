@@ -916,6 +916,16 @@ export async function authRowCounts(pool) {
   ).rows[0];
 }
 
+/** The IAM principal of a person's sign-in account, as audit records name the actor. */
+export async function accountPrincipalId(pool, userId) {
+  return (
+    await pool.query(
+      "SELECT principal_id FROM occ.human_authentication_accounts WHERE user_id = $1",
+      [userId],
+    )
+  ).rows[0].principal_id;
+}
+
 /** The guarded account read an administrator uses for expectedVersion. */
 export async function readAccount(app, headers, userId) {
   const response = await app.inject({ url: `/api/auth/accounts/${userId}`, headers });
@@ -966,4 +976,20 @@ export async function assertReservedLane(app, { origin, holder, former, label })
     former: formerResponse.statusCode,
     holder: holderResponse.statusCode,
   };
+}
+
+/**
+ * Posts an account operation (`disable`, `enable`, `revoke` or `methods/<methodId>/detach`) as
+ * an administrator, at `expectedVersion` or else the account's current version; returns the
+ * response.
+ */
+export async function changeAccount(app, headers, userId, operation, expectedVersion) {
+  return app.inject({
+    method: "POST",
+    url: `/api/auth/accounts/${userId}/${operation}`,
+    headers,
+    payload: {
+      expectedVersion: expectedVersion ?? (await readAccount(app, headers, userId)).version,
+    },
+  });
 }

@@ -3,23 +3,23 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import {
-  composeProductionSignIn,
+  changeAccount,
   consoleOrigin as origin,
   createAccount,
   currentSession,
   defaultInstallSettings,
   githubUpgradeSettings,
   memoryLogger,
-  onboardPasswordAccounts,
   passwordSignIn,
-  postgresSignInState,
+  readAccount,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "activation-admin@example.test";
 const password = "activation-member-password";
 const authSecret = "activation-default-auth-test-secret-at-least-32-bytes";
 const secrets = {
@@ -36,28 +36,19 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
+    const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app],
+      { email: "activation-admin@example.test", password, secrets, github: false },
+    );
     // Phase 0: the default install, no GitHub configuration.
     const {
       admin,
       roles: { reader: readerRole },
       accounts: { member },
-    } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
-      accounts: { member: { email: "activation-provisioned@example.test" } },
-    });
+    } = await onboard({ accounts: { member: { email: "activation-provisioned@example.test" } } });
     const installation = await state.loadInstallation();
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: defaultInstallSettings,
-      secrets,
-    });
+    app = await composeApp(defaultInstallSettings);
     let adminHeaders = await signedInHeaders(app, origin, admin);
     // Accounts an older controller wrote: one with its Principal, one without.
     const olderController = await createPostgresControllerAuth({
@@ -91,12 +82,7 @@ test(
 
     // Phase 1: helm upgrade with auth.github and the recovery user from GET /api/auth/session.
     const log = memoryLogger();
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: githubUpgradeSettings(admin.id),
-      secrets,
-      logger: log.logger,
-    });
+    app = await composeApp(githubUpgradeSettings(admin.id), { logger: log.logger });
     assert.deepEqual((await app.inject({ url: "/api/auth/providers" })).json().data, {
       github: true,
       google: false,
@@ -169,10 +155,8 @@ test(
 
     await t.test("a skipped account signs in once repaired and enrolled online", async () => {
       const enrol = () =>
-        app.inject({
-          method: "POST",
-          url: `/api/auth/accounts/${unprovisioned.id}/enrol`,
-          headers: adminHeaders,
+        injectLocalhost(app, "POST", `/api/auth/accounts/${unprovisioned.id}/enrol`, {
+          session: adminHeaders,
         });
       assert.equal((await enrol()).statusCode, 404, "no Principal yet");
       await state.appendNativeIAMPrincipal(
@@ -191,24 +175,16 @@ test(
     await t.test("guarded account revocation waits for an authenticated IAM commit", async () => {
       const assigning = await signedInHeaders(app, origin, admin);
       const revoking = await signedInHeaders(app, origin, admin);
-      const account = await app.inject({
-        url: `/api/auth/accounts/${admin.id}`,
-        headers: revoking,
-      });
-      assert.equal(account.statusCode, 200, account.body);
-      const createdNamespace = await app.inject({
-        method: "POST",
-        url: "/namespaces",
-        headers: assigning,
-        payload: { name: "Guarded IAM commit" },
+      const account = await readAccount(app, revoking, admin.id);
+      const createdNamespace = await injectLocalhost(app, "POST", "/namespaces", {
+        session: assigning,
+        body: { name: "Guarded IAM commit" },
       });
       assert.equal(createdNamespace.statusCode, 201, createdNamespace.body);
       const namespaceId = createdNamespace.json().data.id;
-      const independentNamespace = await app.inject({
-        method: "POST",
-        url: "/namespaces",
-        headers: revoking,
-        payload: { name: "Independent guarded IAM commit" },
+      const independentNamespace = await injectLocalhost(app, "POST", "/namespaces", {
+        session: revoking,
+        body: { name: "Independent guarded IAM commit" },
       });
       assert.equal(independentNamespace.statusCode, 201, independentNamespace.body);
       const independentId = independentNamespace.json().data.id;
@@ -223,20 +199,16 @@ test(
           rows: [{ pid }],
         } = await blocker.query("SELECT pg_backend_pid() AS pid");
         await blocker.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [namespaceId]);
-        policy = app
-          .inject({
-            method: "POST",
-            url: `/namespaces/${namespaceId}/iam/roles`,
-            headers: assigning,
-            payload: {
-              name: "Guarded commit",
-              permissions: [{ action: "read", resourceKind: "agent" }],
-            },
-          })
-          .then((response) => {
-            settledPolicy = response;
-            return response;
-          });
+        policy = injectLocalhost(app, "POST", `/namespaces/${namespaceId}/iam/roles`, {
+          session: assigning,
+          body: {
+            name: "Guarded commit",
+            permissions: [{ action: "read", resourceKind: "agent" }],
+          },
+        }).then((response) => {
+          settledPolicy = response;
+          return response;
+        });
         const protectedPid = await waitForLockWaiter(
           pool,
           pid,
@@ -260,12 +232,7 @@ test(
         assert.equal(independent.statusCode, 201, independent.body);
         // The account owner validates method/account versions and locks the same
         // user. Revocation must not invalidate either admitted session mid-commit.
-        revoke = app.inject({
-          method: "POST",
-          url: `/api/auth/accounts/${admin.id}/revoke`,
-          headers: revoking,
-          payload: { expectedVersion: account.json().data.version },
-        });
+        revoke = changeAccount(app, revoking, admin.id, "revoke", account.version);
         await waitForLockWaiter(
           pool,
           protectedPid,

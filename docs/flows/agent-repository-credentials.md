@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-10-25"
-last_updated_session: authoring-run/3ab680f7-bea5-4377-bb8c-14e6b81c49b4
+updated: "2026-10-30"
+last_updated_session: authoring-run/58b286d1-0e1a-4666-b77e-e8da815c7d88
 ---
 
 # Agent repository credential flow
@@ -140,19 +140,20 @@ grants and an absolute deadline unaffected by renewal or recovery.
 `validateRepositoryBrokerNetworkProxy` then refuses a Codex proxy setting that
 blocks the broker, as Agent save does.
 
-`apps/controller/src/composition/repository-credentials/platform.ts:composeRepositoryAccess`
-constructs `GitHubRepositoryPolicy`, with its ID pinned by the GitHub Backend's `repo`
-member. Protected installations select `repository.preparedGitHub` and the installed
-Sandbox/Credential Proxy Driver. OCC creates finite sessions without a native sender,
-control socket, broker CA or session files.
+`apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
+selects `GitHubRepositoryPolicy` from the Backend's `repo`.
+`apps/controller/src/composition/repository-credentials/policy.ts:composeRepositoryPolicy`
+passes the selected owner to policy. Its Driver ID identifies the policy; its Backend ID must match the registry.
+Protected `repository.preparedGitHub` uses the installed Sandbox/Credential Proxy
+Driver. Its finite sessions need no native sender, control socket, broker CA or
+session files.
 
-Explicit `repository.nativeSender` selects `GitHubNativeRepositorySender` and requires
-prepared GitHub custody. It owns session operations and files, receives no App key, and
-cannot coexist with protected delivery. Controller startup rejects `drivers.repo` in
-every mode, before it constructs a worker or allocates an attempt. Operators must
-drain accepted work on the original owner before cutover.
-Cleanup matches recorded owner identity without resolving policy or restoring authority.
-The worker's prepared provider owns issuance and custody.
+`repository.nativeSender` selects `GitHubNativeRepositorySender` for prepared
+GitHub custody. It owns sessions and files, excludes protected delivery, and
+receives no App key. Startup rejects `drivers.repo` in every mode before worker or attempt
+creation. Drain accepted work on its original owner before cutover. Cleanup matches
+recorded identity without policy resolution or authority restoration. The
+worker's prepared provider owns issuance and custody.
 
 ### 3. Record ownership before opening a session
 
@@ -288,22 +289,37 @@ fresh installation tokens under the same grant until the version deadline.
 
 ### 6. Maintain, recover and retire ownership
 
-`apps/controller/src/composition/repository-credentials/transport.ts:bindRepositoryGitTransport`
-calls `RepositoryGitBinding.reconcile` serially with 25-second abort signals and
-one-second delays. Close aborts and joins. Independent readback settles the original
-OCC delivery without reinstalling or restoring withdrawn access. OpenShell is unchanged.
+The [worker](../../apps/controller/src/worker.mjs) passes only the selected `ProtectedRepositoryGitAuthority`
+to the [sender binder](../../apps/controller/src/composition/repository-credentials/transport.ts).
+The worker retains maintenance and shutdown. Missing authority or mismatched Drivers stop
+binding before route-store or sender calls.
+Bundled OpenShell connects its route store before binding; a bare Sandbox runs without Git.
 
-The worker commits activation and next maintenance together, preserving the actor.
-Maintenance uses 30 seconds, the selected native sender interval or a shorter Compute
-interval. A missing known session is invalidated, never reminted after restart.
-Users may deploy another version during cleanup.
+If an external binding provides `reconcile`, the worker calls it serially with a 25-second abort
+signal and a one-second delay between calls.
+Close aborts and joins. Independent readback settles the original OCC delivery without
+reinstalling or restoring withdrawn access.
 
-[Preview, save and deploy](../../packages/occ/src/index.ts) offer or honor standing approval
-only when the selected repository policy explicitly permits it and supplies a current scope.
-The [worker](../../apps/controller/src/worker/repository-credentials.ts) repeats that
-[eligibility check](../../packages/occ/src/repository-approval.ts) after locking the Namespace
-and then the Agent. If permission is withdrawn or the scope fingerprint changes, it refuses
-with `REPOSITORY_STANDING_POLICY_CHANGED` before releasing successor credentials.
+The worker commits activation and next maintenance together, preserving the actor. Maintenance uses
+30 seconds, the native sender interval or a shorter Compute interval. After restart, the worker invalidates missing known sessions without reminting. Users can deploy during cleanup.
+
+[Preview, save and deploy](../../packages/occ/src/index.ts) require explicit repository policy
+permission and current scope for standing approval. The
+[worker](../../apps/controller/src/worker/repository-credentials.ts) rechecks
+[eligibility](../../packages/occ/src/repository-approval.ts) under Namespace then Agent locks.
+Withdrawal or a changed scope fingerprint raises `REPOSITORY_STANDING_POLICY_CHANGED` before successor release.
+
+Prepared native Git issues a version's first token only after activation publishes it. The
+deployment's Work then runs `apps/controller/src/worker.ts:ControllerWorker.assertRepositoryGitMaterial`
+(`PreparedRepositoryGitStore.revisionMaterial`): it waits at `REPOSITORY_GIT_MATERIAL_PENDING`
+until each open session has a committed token and fails with `REPOSITORY_GIT_TOKEN_QUARANTINED`
+when an attempt is quarantined. For an existing Agent (`activatedEarlierRevision`),
+`continueRevisionWithoutGit` fails the deployment with `continuingRevision` and queues maintenance
+in one transaction under Namespace then Agent locks, so the version keeps running. A token still
+pending at the convergence deadline takes the same path with `REPOSITORY_GIT_TOKEN_PENDING`;
+maintenance accepts only these two failure codes. Otherwise the
+version is retired like any failed repository version
+([reference](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
 
 If standing Git evidence is missing, the worker keeps Git closed and observes the existing
 Harness without preparing or activating it. It checks again within five seconds, rechecking
@@ -344,7 +360,7 @@ remains retryable after partial failure; service restart cannot prove remote tok
 Compare `occ agent get AGENT_ID --output json` with the admitted `activeRevisionId`.
 Inspect worker events for
 `REPOSITORY_BINDING_CHANGED`, `REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED`,
-`REPOSITORY_SESSION_RECOVERY_UNSAFE`, `REPOSITORY_CLEANUP_PENDING` or
+`REPOSITORY_SESSION_RECOVERY_UNSAFE`, `REPOSITORY_GIT_TOKEN_QUARANTINED`, `REPOSITORY_GIT_TOKEN_PENDING`, `REPOSITORY_CLEANUP_PENDING` or
 `REPOSITORY_CLEANUP_COMPLETE`. Check registry identity and deadline before retry.
 A cleanup that stays pending logs `worker.repository-cleanup-warning` with its
 `cause` once.
@@ -377,24 +393,10 @@ denied before reaching the provider, and chat continues.
 
 ## Changelog
 
-- 2026-10-25 00:30: Answer repository options without a repository Driver with no options and `meta.notConfigured`. (finding 2387)
+- 2026-10-30 15:01: Reuse validated policy owner identity. (authoring-run/58b286d1-0e1a-4666-b77e-e8da815c7d88 - 5b20ec5b1501bf1c6c2254ec36d9dc1e0e0bd730)
 
-- 2026-10-24 22:30: Name the missing repository Driver. (fix-2361-2362 - 476c1b350)
+- 2026-10-30 03:58: Load the native repository transport only for explicit native delivery. (authoring-run/43b61103-4082-4fc2-b9a0-511a18ebc761 - 87ed6c37e543e5501eae6285450d01d03d8abe7d)
 
-- 2026-10-22 06:30: Preserve independent authority facts and source recovery. (authoring-run/3ab680f7-bea5-4377-bb8c-14e6b81c49b4 - 221dff2ff7985a19cd34dad392d68cf5549e1136)
-
-- 2026-10-22 06:08: Distinguish definite authority loss from unavailable expiry evidence. (authoring-run/0070b799-5882-41af-9b5a-de66c2b5bd4c - 21efaa2ac0a04eb86cc45062522b5ca7551747fd)
-
-- 2026-10-22 05:40: Tighten the flow while preserving lifecycle boundaries. (authoring-run/6a3ac3a3-9ca1-4fe8-a71e-ce0445cc7840 - 6abb03f892181bfe093472a4721b8428659d245b)
-
-- 2026-10-22 05:05: Match reducible protected Git sessions to admission v7 in prepared-material selection. (authoring-run/8df2bc1b-5c23-4628-8351-ed2e23b279bf - 4c2054cd056be2d70b6343babeeea411d6aaf873)
-
-- 2026-10-22 04:11: Trace selected registered delivery reconciliation. (authoring-run/13ded5bb-8707-46f5-8aa3-7a334529d124 - f4a2ca6139625059f1f8c58855f6343864ee7528)
-
-- 2026-10-22 02:32: Require prepared authority at native OPEN, durable receipt and release; reject legacy controller selection. (authoring-run/b8149a96-d1dc-4681-8930-7d5434fbf1e3 - 2fca4e18d905f7bf760d0da70cb916f20186169e)
-
-- 2026-10-21 22:49: Separate repository policy, protected composition and explicit native session ownership. (authoring-run/fb0df3aa-3a65-40ec-9da0-20de1db91b2f - 41137910011b9c4fc1a713b234a92c87a6717e3f)
-
-- 2026-10-21 22:10: Document standing Git supervision with the accompanying uncommitted worker change. (authoring-run/5f4d0dab-1a03-4fa9-a469-a8778c8ad3d4 - 390a3627b97535f4d21107001efda8af6152355d)
+- 2026-10-29 21:00: Keep an existing Agent's new version running when its first GitHub token is still pending at the convergence deadline (`REPOSITORY_GIT_TOKEN_PENDING`). (finding 2894)
 
 [Agent repository credential documentation history](agent-repository-credentials/history.md) preserves the older dated entries.

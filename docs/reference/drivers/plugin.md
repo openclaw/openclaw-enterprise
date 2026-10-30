@@ -22,7 +22,7 @@ are not selectable. See [Driver selection](selection.md) and the
 
 ### Selection and catalogs
 
-The [shared interface](../../../packages/contracts/src/index.ts) exposes:
+The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) exposes:
 
 - `policyCapabilities`: supported default/tool enablement, approval modes, and
   reviewer arrays per scope, plus the JSON Schema for `driverPolicy` fields.
@@ -31,9 +31,22 @@ The [shared interface](../../../packages/contracts/src/index.ts) exposes:
   sets `enabled: true`. The next deployment applies that selection.
 - `validatePolicies(selections)`: validate requested policy without installation
   or authenticated discovery. OCC calls this before save and deployment admission.
-- `validatePlacement(selections, harness, computeImplementation)` (optional): check
-  whether the selected packages can run on this Harness and Compute Driver. OCC
-  checks placement before saving selections and again when it admits deployment.
+- `validatePlacement(selections, harness, computeImplementation, credentialRuntime)`
+  (optional): check whether the selected packages can run on this Harness and
+  Compute Driver. `credentialRuntime` gives the implementations of the selected
+  Sandbox Driver and Credential Gateway as `{sandbox, gateway}`; either can be
+  undefined. A plugin that needs a bound credential can refuse an Installation
+  that cannot deliver it. OCC checks placement before saving selections and
+  again when it admits deployment.
+- `credentials` (optional): credential slots for plugins that use an Agent's
+  [credential sources](../credential-sources.md). The Driver receives only source
+  metadata that OCC authorized, never credential values.
+  `choices(sources)` returns each slot with the attached ready sources that
+  match it. OCC returns them as `credentialSlots` in a dedicated Agent's plugin
+  capabilities. `validate(selections, sources, modelSourceId)` refuses a
+  binding that names no matching attached source, or the source that
+  authenticates the model. OCC calls it at Agent create, update, provisioning,
+  and deployment.
 - `validateAgentConfiguration(selections, configuration)` (optional): check
   selections against the Agent's Configuration values at Agent create and
   update, provisioning, and deployment, which checks again because a

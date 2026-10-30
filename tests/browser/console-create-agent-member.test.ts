@@ -11,7 +11,8 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { authorizationDenials, createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 import {
   deniedCreateSecretOption,
   grantMember,
@@ -24,10 +25,15 @@ import {
   operateDeniedSecretOption,
   revokeMemberGrant,
   selectSecret,
+  settledView,
   waitForCondition,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
-import { waitForCreateFormReads } from "./console-agents-test-support.mjs";
+import {
+  expectCreateAccess,
+  expectCreateRefused,
+  waitForCreateFormReads,
+} from "./console-agents-test-support.mjs";
 import {
   ADMINISTRATOR_ACCESS_DENIED,
   AGENT_CREATE_DENIED,
@@ -37,7 +43,7 @@ import {
   NEW_SECRET_OPERATE_DENIED,
   NEW_SECRET_OPERATE_REMEDY,
   SECRET_OPERATE_DENIED,
-  AGENT_CREATE_INSTALLATION_DENIED,
+  AGENT_CREATE_PERMISSIONS_UNREAD,
 } from "../helpers/refusal-text.mjs";
 
 // Create Agent for a Namespace member (UX plan A2, spec 3.11; findings 1901, 493). The real
@@ -54,7 +60,6 @@ const MEMBER_CREDENTIAL_ACCESS =
   "An Installation administrator then gives the new Agent access to its Secrets.";
 const MEMBER_GRANT_REFUSED =
   "The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration. Ask an Installation administrator to open the saved Agent and grant it.";
-const INSTALLATION_REFUSAL = AGENT_CREATE_INSTALLATION_DENIED;
 
 // Every console API answer, as "METHOD path status".
 function apiResponses(page: Page, origin: string) {
@@ -67,6 +72,10 @@ function apiResponses(page: Page, origin: string) {
   });
   return answers;
 }
+
+// The new-Agent repository choices reads among them.
+const repositoryReads = (answers: string[]) =>
+  answers.filter((answer) => answer.includes("/repository-options "));
 
 const standardCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
@@ -122,17 +131,15 @@ test("a member with Agent create completes the default Preset path without Insta
     answers.filter((answer) => answer.startsWith("GET /installation ")),
     ["GET /installation 403"],
   );
-  const access = page.locator("#create-agent-access");
-  assert.equal(await access.getAttribute("role"), "status");
-  assert.equal(await access.getAttribute("data-tone"), "info");
-  assert.equal(await access.locator(".status-label").textContent(), "Your access");
-  assert.deepEqual(await access.locator(".status-body").allTextContents(), [
-    `${ACCESS_FROM_PRESET} ${MEMBER_CREDENTIAL_ACCESS}`,
+  // A known grant reads the repository choices once; the refused Installation read adds none.
+  assert.deepEqual(repositoryReads(answers), [
+    `GET /namespaces/${namespace.id}/agents/repository-options 200`,
   ]);
-  assert.equal(await access.isVisible(), true);
   // Above the form, not mid-form.
-  assert.equal(await access.evaluate((node) => node.nextElementSibling?.id), "create-agent-form");
-  assert.equal(await page.getByText(INSTALLATION_REFUSAL).count(), 0);
+  await expectCreateAccess(page, {
+    tone: "info",
+    body: `${ACCESS_FROM_PRESET} ${MEMBER_CREDENTIAL_ACCESS}`,
+  });
   // Without the Installation's capabilities the line under the fields claims no deploy outcome.
   assert.equal(
     await page.locator("#create-agent-capability-status").textContent(),
@@ -216,13 +223,9 @@ test("a member without Agent create never sees the form, and Create Agent names 
   assert.equal(await open.isDisabled(), true);
 
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
   // Namespace Roles cannot grant Agent create, so the note sends the member to whoever can
   // create the Agent rather than promising access (finding 2496).
-  await page.getByRole("status").getByText(AGENT_CREATE_DENIED, { exact: true }).waitFor();
-  assert.equal(await page.locator("#create-agent-form").count(), 0);
-  assert.equal(await page.locator("#create-agent-access").count(), 0);
-  assert.equal(await page.getByRole("button", { name: "Start with default Preset" }).count(), 0);
+  await expectCreateRefused(page, AGENT_CREATE_DENIED);
   assert.deepEqual(
     answers.filter((answer) => answer.startsWith("GET /installation ")),
     [],
@@ -252,8 +255,9 @@ test("an administrator's form reads the Installation and shows no access note", 
 
 const ACCESS_WITHOUT_PRESET =
   "You can create Agents in Member team. Installation-wide capabilities are not readable with your access, so Create Agent checks the Configuration with the server before saving it.";
-const PERMISSIONS_UNREAD =
-  "Your permissions in this Namespace could not be checked, and Installation-wide capabilities are not readable with your access. Retry the permission check before creating an Agent.";
+const PERMISSIONS_UNREAD = AGENT_CREATE_PERMISSIONS_UNREAD;
+const REPOSITORY_CHOICES_HELD = "Repository choices load after your permission check.";
+const CHECKING_PERMISSIONS = "Checking your permissions in this Namespace…";
 const CREDENTIAL_ACCESS_UNCONFIRMED =
   "The Agent was created, but credential access is not confirmed.";
 
@@ -274,11 +278,16 @@ test("a member whose permission check failed is told so and retries only that ch
   await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
 
   // The refused Installation read and the failed permission check do not add up to "your account
-  // lacks Installation access": the form says which check failed and offers it again (finding 2110).
+  // lacks Installation access": the form says which check failed and offers it again (finding 2110),
+  // in a warning above the form rather than the hint under its fields (finding 2092).
   const status = page.locator("#create-agent-capability-status");
-  await page.getByText(PERMISSIONS_UNREAD, { exact: true }).waitFor();
-  assert.equal(await page.getByText(INSTALLATION_REFUSAL).count(), 0);
-  assert.equal(await page.locator("#create-agent-access").isHidden(), true);
+  await expectCreateAccess(page, { tone: "warning", body: PERMISSIONS_UNREAD, retry: true });
+  assert.equal(await status.textContent(), "");
+  // New-Agent repository choices authorize Agent create: they wait for the answer (finding 2909).
+  await page
+    .locator("section.repository-selection")
+    .getByText(REPOSITORY_CHOICES_HELD, { exact: true })
+    .waitFor();
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   assert.equal(await submit.isDisabled(), true);
   const retry = page.getByRole("button", { name: "Retry permission check", exact: true });
@@ -294,30 +303,31 @@ test("a member whose permission check failed is told so and retries only that ch
   });
   await retry.click();
   await failing.requested;
-  assert.equal(await status.textContent(), "Checking your permissions in this Namespace…");
+  await expectCreateAccess(page, { tone: "info", body: CHECKING_PERMISSIONS, retry: true });
   assert.equal(await retry.isDisabled(), true);
   failing.release();
-  await page.getByText(PERMISSIONS_UNREAD, { exact: true }).waitFor();
+  await expectCreateAccess(page, { tone: "warning", body: PERMISSIONS_UNREAD, retry: true });
   await waitForEnabled(retry);
+  // The retry takes focus back, so the reader can try again.
+  assert.equal(await retry.evaluate((node) => node === globalThis.document.activeElement), true);
   assert.equal(await submit.isDisabled(), true);
 
   // The retry rereads the permission answer only: the Installation read stays refused.
   const reread = await holdRequests(t, page, permissionsPath, { once: true });
   await retry.click();
   await reread.requested;
-  assert.equal(await status.textContent(), "Checking your permissions in this Namespace…");
+  await expectCreateAccess(page, { tone: "info", body: CHECKING_PERMISSIONS, retry: true });
   assert.equal(await retry.isDisabled(), true);
   reread.release();
-  const access = page.locator("#create-agent-access");
-  await access.waitFor();
+  await expectCreateAccess(page, {
+    tone: "info",
+    body: `${ACCESS_WITHOUT_PRESET} ${MEMBER_CREDENTIAL_ACCESS}`,
+  });
   // The hidden retry hands focus to the answer, not the page.
   assert.equal(
     await page.evaluate(() => globalThis.document.activeElement?.id),
     "create-agent-access",
   );
-  assert.deepEqual(await access.locator(".status-body").allTextContents(), [
-    `${ACCESS_WITHOUT_PRESET} ${MEMBER_CREDENTIAL_ACCESS}`,
-  ]);
   assert.equal(
     await status.textContent(),
     "Agents you create here are saved as drafts for later deployment.",
@@ -331,6 +341,11 @@ test("a member whose permission check failed is told so and retries only that ch
     `GET /namespaces/${namespace.id}/permissions 503`,
     `GET /namespaces/${namespace.id}/permissions 200`,
   ]);
+  // The granting answer starts the repository read the form held.
+  await waitForCreateFormReads(page);
+  assert.deepEqual(repositoryReads(answers), [
+    `GET /namespaces/${namespace.id}/agents/repository-options 200`,
+  ]);
 
   // Start over keeps the answer: the new form goes straight to the member path.
   await page.getByRole("button", { name: "Start over", exact: true }).click();
@@ -338,6 +353,116 @@ test("a member whose permission check failed is told so and retries only that ch
   await page.locator("#create-agent-access").waitFor();
   assert.equal(await page.getByText(PERMISSIONS_UNREAD).count(), 0);
   assert.equal(permissionReads().length, failedReads + 2);
+});
+
+test("a permission retry that refuses Agent create shows the fresh-load refusal and reads no repository choices", async (t) => {
+  const { fixture, namespace } = await setup(t);
+  const limited = await fixture.createNamespaceMember(
+    "member-no-create",
+    namespace.id,
+    memberWriteWithout(["create", "agent"]),
+  );
+  const { page } = await newPage(t, fixture);
+  const answers = apiResponses(page, fixture.origin);
+  const createPath = `/console/agents/new?namespace=${namespace.id}`;
+  const permissionsPath = `${fixture.origin}/namespaces/${namespace.id}/permissions`;
+  // The page's permission read fails, so the form opens without the answer.
+  await page.route(permissionsPath, unavailable);
+  await login(page, fixture, createPath, limited.credentials);
+  await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+  await expectCreateAccess(page, { tone: "warning", body: PERMISSIONS_UNREAD, retry: true });
+  await waitForCreateFormReads(page);
+  // New-Agent repository choices authorize Agent create, so the API would refuse and audit their
+  // read. Until the answer allows create, the section only follows the check above it: no read,
+  // no refusal of its own and no retry that cannot help (finding 2909).
+  await page
+    .locator("section.repository-selection")
+    .getByText(REPOSITORY_CHOICES_HELD, { exact: true })
+    .waitFor();
+  assert.equal(await page.getByText(AGENT_CREATE_DENIED).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
+  assert.deepEqual(repositoryReads(answers), []);
+
+  // The retry answers "no Agent create": the page becomes what a fresh load with that answer
+  // shows, and the answer takes focus, as the access block's answer does (finding 2908).
+  await page.unroute(permissionsPath, unavailable);
+  const retry = page.getByRole("button", { name: "Retry permission check", exact: true });
+  await waitForEnabled(retry);
+  await retry.click();
+  const refusal = await expectCreateRefused(page, AGENT_CREATE_DENIED);
+  assert.equal(
+    await refusal.evaluate((node: Element) => node === globalThis.document.activeElement),
+    true,
+  );
+  await page.goto(`${fixture.origin}${createPath}`);
+  await expectCreateRefused(page, AGENT_CREATE_DENIED);
+  assert.deepEqual(repositoryReads(answers), []);
+  assert.equal(
+    authorizationDenials(fixture.auditSink, "openclaw.agents.repository_options.list").length,
+    0,
+  );
+});
+
+test("a draft that saved its Configuration keeps it when a permission retry refuses Agent create", async (t) => {
+  const { fixture, namespace, secret } = await setup(t);
+  const writer = await fixture.createNamespaceMember("member-write", namespace.id, MEMBER_WRITE);
+  const { page } = await newPage(t, fixture);
+  const answers = apiResponses(page, fixture.origin);
+  // A Restriction lands right after the create preflight: the Configuration saves and the API
+  // refuses the Agent, so the form keeps a draft that names the saved Configuration.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/validate`,
+    async (route: Route) => {
+      const response = await route.fetch();
+      restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
+      await route.fulfill({ response });
+    },
+  );
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, writer.credentials);
+  await fillDefaultPreset(page, secret, "Kept member Agent");
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const saved = page.getByText(/^Configuration saved: \S+\. Retries reuse/);
+  await saved.waitFor();
+
+  // The member returns to the kept draft while the permission read fails.
+  const permissionsPath = `${fixture.origin}/namespaces/${namespace.id}/permissions`;
+  await page.route(permissionsPath, unavailable);
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("link", { name: "Agents", exact: true })
+    .click();
+  await page.locator(settledView).waitFor();
+  const readsBefore = repositoryReads(answers).length;
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await expectCreateAccess(page, { tone: "warning", body: PERMISSIONS_UNREAD, retry: true });
+  await saved.waitFor();
+
+  // The retry refuses Agent create: the saved Configuration stays in view under the refusal,
+  // and the held repository section settles without a read, a denial of its own or a retry.
+  await page.unroute(permissionsPath, unavailable);
+  const retry = page.getByRole("button", { name: "Retry permission check", exact: true });
+  await waitForEnabled(retry);
+  await retry.click();
+  await expectCreateAccess(page, { tone: "danger", body: AGENT_CREATE_DENIED });
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement?.id),
+    "create-agent-access",
+  );
+  await saved.waitFor();
+  await page
+    .locator("section.repository-selection")
+    .getByText("Repository choices are not shown.", { exact: true })
+    .waitFor();
+  assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
+  assert.equal(
+    await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+    true,
+  );
+  assert.deepEqual(repositoryReads(answers).slice(readsBefore), []);
+  assert.equal(
+    authorizationDenials(fixture.auditSink, "openclaw.agents.repository_options.list").length,
+    0,
+  );
 });
 
 test("a temporary Installation read failure keeps an administrator off the member path", async (t) => {

@@ -1,10 +1,8 @@
 import test from "node:test";
+import { explicitK3dSelection } from "../helpers/kubernetes-real.mjs";
 import { createProductionNetworkAccess } from "../helpers/production-network-access.mjs";
 
-const selection = {
-  kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
-  kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
-};
+const selection = explicitK3dSelection();
 const image = process.env.OCC_TEST_KUBERNETES_IMAGE;
 const requested = [...Object.values(selection), image].some(Boolean);
 

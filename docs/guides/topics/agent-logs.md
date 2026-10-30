@@ -10,13 +10,13 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
 
 ## Open the Logs tab
 
-1. Open the Agent and select a deployed version. The editable draft is not a
-   version and has no runtime; a version without a running Pod shows no Pod.
+1. Select a deployed version of the Agent; the draft has no runtime. A version
+   without a running Pod shows none and links to another running version's Logs.
+   A newer failed deployment shows on the Agent's page.
 2. Select **Logs**. The runtime strip refreshes every 10 seconds. Each Pod card
-   lists every main and init container's state and recent warning Events, prefixed
-   with their container. Last termination
+   lists each container's state and recent warning Events. Last termination
    shows the current exit for a terminated container, otherwise its prior exit.
-   If a refresh fails, the cards stay and the strip says when they were last observed.
+   A failed refresh keeps the cards and says when they were last observed.
 3. Choose a **Source**: **Gateway** (the OpenClaw Gateway container),
    **Agent (Harness)** (the dedicated Codex or OpenClaw Harness container, only
    for dedicated execution) or **Sandbox (policy decisions)** (see
@@ -29,7 +29,8 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
 4. Select **Follow** to poll for new lines every 2 seconds. Following pauses while
    the browser tab is hidden or you scroll up, and stops after a permission denial.
 5. Select **Previous instance** after a restart to read the exited container's
-   output. Following is off for it.
+   output. Following is off for it. Before a restart, the option is
+   unavailable and a note says why.
 
 ### Filter the loaded output
 
@@ -70,7 +71,7 @@ container; omission selects the first main container. Changing containers starts
 a new audited view. Container cursors count the lines delivered at their newest
 timestamp, so a later line at that timestamp is returned once, even with identical
 text. After a tail or Driver byte cut, or with an older cursor, such a line can
-stay hidden until a later timestamp.
+stay hidden; the page that reaches a later timestamp then shows **Lines skipped**.
 `download=true` answers `text/plain` as an attachment and cannot be combined
 with `cursor` (`400`). See the
 [API reference](../../reference/api.md).
@@ -104,12 +105,13 @@ log text in the [native admin UI](../../reference/agent-native-admin.md). To
 delegate log reading, bind a Namespace Role with Agent `read_logs` and `read` to
 the exact Agent; it covers every version. Opening the Agent in the console also
 needs Namespace `read` (otherwise it shows "Namespace unavailable"). Runtime
-status needs `read` bound to each Agent revision by ID. A `read_logs`
-Restriction blocks log text even for administrators. Without `operate`, the Logs
-tab has no runtime strip or Pod picker; it reads each source's current Pod and
-says when one is missing. When the console knows which status grant is missing,
-the refusal names only that grant. Service principals use the same grants. Every
-request and poll is authorized again, so revoking a grant stops the next poll.
+status needs `read` bound to each Agent revision by ID; without it, the console
+does not read status. A `read_logs` Restriction blocks log text even for
+administrators. Without `operate`, the Logs tab has no runtime strip or Pod
+picker; it reads each source's current Pod and says when one is missing. A status
+refusal names only the grant the console knows is missing. Service principals use
+the same grants. Every request and poll is authorized again, so revoking a grant
+stops the next poll.
 See [authorization](../../reference/authorization.md).
 
 ## What the output contains

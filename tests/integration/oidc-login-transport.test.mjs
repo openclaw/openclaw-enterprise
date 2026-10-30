@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
 import { humanLoginConfiguration } from "../../apps/controller/src/auth/index.ts";
 import { oidcLoginConfiguration, oidcNonce } from "../../apps/controller/src/auth/oidc.ts";
@@ -11,6 +10,8 @@ import {
   expectProviderUnavailable,
   loginOrigin as origin,
   loginSecret as secret,
+  providerAttemptId,
+  providerInstanceId,
   redirectProviderFetch,
   startProviderServer,
   testOversizedProviderBodies,
@@ -29,10 +30,7 @@ const environment = {
 const oidc = oidcLoginConfiguration(environment);
 const pinned = new Set([oidc.tokenUrl, oidc.jwksUrl]);
 
-function digest(value) {
-  return createHash("sha256").update(value).digest("hex");
-}
-const providerId = `oidc:${digest(`${oidc.issuer}\0${oidc.clientId}`)}`;
+const providerId = providerInstanceId("oidc", { issuer: oidc.issuer, clientId: oidc.clientId });
 
 const signer = createIdTokenSigner();
 function idToken(state = callbackState, overrides = {}) {
@@ -109,7 +107,7 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
     assert.equal(parameters.get("nonce"), oidcNonce(secret, parameters.get("state")));
     const [attempt] = fixture.attempts;
     // Rotating the client secret voids pending attempts but keeps enrollment.
-    assert.equal(attempt.providerId, `${providerId}:${digest(oidc.clientSecret)}`);
+    assert.equal(attempt.providerId, providerAttemptId(providerId, oidc.clientSecret));
     assert.equal(fixture.login.oidcProviderId, providerId);
     assert.deepEqual(fixture.login.oidcSignIn, {
       label: "single sign-on",

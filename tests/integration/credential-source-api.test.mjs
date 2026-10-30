@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -380,6 +381,7 @@ test("the saved Agent picker and binding use the granted source and the same rev
   const sandbox = {
     id: "openshell-placement",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     implementation: "openshell",
     facets: ["networking", "filesystem", "process"],
     async cleanup() {},
@@ -559,6 +561,7 @@ test("OpenShell custom and default credential profiles keep independent ownershi
   const nativeRevision = {
     harness: { id: "openclaw", mode: "dedicated" },
     configuration: {
+      agents: { defaults: { model: "openai/model" } },
       models: {
         providers: {
           openai: { baseUrl: custom.data.config.base_url, models: [{ id: "model" }] },
@@ -566,20 +569,109 @@ test("OpenShell custom and default credential profiles keep independent ownershi
       },
     },
   };
+  const attachNative = (change) => {
+    const revision = structuredClone(nativeRevision);
+    change(revision.configuration);
+    return f.driver.attachForRevision({ ...context, sources: [source], revision });
+  };
+  assert.deepEqual(await attachNative(() => {}), [
+    { sourceId: custom.data.id, ref: provider.name },
+  ]);
+  // The written endpoint is compared after normalization, as Compute renders it.
   assert.deepEqual(
-    await f.driver.attachForRevision({ ...context, sources: [source], revision: nativeRevision }),
+    await attachNative((configuration) => {
+      configuration.models.providers.openai.baseUrl = "https://MODELS.example.test:8443/api/v1/";
+    }),
     [{ sourceId: custom.data.id, ref: provider.name }],
   );
-  for (const model of [{ id: "model", baseUrl: "https://other.example.test/v1" }, {}]) {
-    const revision = structuredClone(nativeRevision);
-    revision.configuration.models.providers.openai.models = [model];
-    if (!model.baseUrl) {
-      delete revision.configuration.models.providers.openai.baseUrl;
-    }
-    await assert.rejects(
-      f.driver.attachForRevision({ ...context, sources: [source], revision }),
-      /must match the bound credential source endpoint/,
-    );
+  // Compute renders only the selected models into the native worker's catalog, so an
+  // unselected entry for another endpoint gets no traffic and does not block the deployment
+  // (finding 1686).
+  assert.deepEqual(
+    await attachNative((configuration) => {
+      configuration.models.providers.openai.models.push({
+        id: "unselected",
+        baseUrl: "https://other.example.test/v1",
+      });
+    }),
+    [{ sourceId: custom.data.id, ref: provider.name }],
+  );
+  // A selected model on another endpoint, its own or the provider's, is refused by setting
+  // and both hosts, never the source ID or key. Fallbacks and roster entries are selected too.
+  const sourceHost = "source host models.example.test:8443";
+  for (const [change, refusal] of [
+    [
+      (configuration) => {
+        configuration.models.providers.openai.models[0].baseUrl = "https://other.example.test/v1";
+      },
+      `Configuration setting models.providers.openai.models.0.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host other.example.test).`,
+    ],
+    [
+      (configuration) => {
+        configuration.models.providers.openai.baseUrl = "https://models.example.test:8443/v1";
+      },
+      `Configuration setting models.providers.openai.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host models.example.test:8443).`,
+    ],
+    // A port mismatch shows in the hosts.
+    [
+      (configuration) => {
+        configuration.models.providers.openai.baseUrl = "https://models.example.test/api/v1";
+      },
+      `Configuration setting models.providers.openai.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host models.example.test).`,
+    ],
+    [
+      (configuration) => {
+        delete configuration.models.providers.openai.baseUrl;
+      },
+      `Configuration setting models.providers.openai.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host none).`,
+    ],
+    [
+      (configuration) => {
+        configuration.agents.defaults.model = {
+          primary: "openai/model",
+          fallbacks: ["openai/fallback"],
+        };
+        configuration.models.providers.openai.models.push({
+          id: "fallback",
+          baseUrl: "https://api.openai.com/v1",
+        });
+      },
+      `Configuration setting models.providers.openai.models.1.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host api.openai.com).`,
+    ],
+    [
+      (configuration) => {
+        configuration.agents.entries = { helper: { model: "openai/helper" } };
+        configuration.models.providers.openai.models.push({
+          id: "helper",
+          baseUrl: "https://other.example.test/v1",
+        });
+      },
+      `Configuration setting models.providers.openai.models.1.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host other.example.test).`,
+    ],
+  ]) {
+    await assert.rejects(attachNative(change), { name: "ScopeViolationError", message: refusal });
+  }
+  // A shape Compute refuses before deployment stays refused here, without naming a setting.
+  for (const change of [
+    (configuration) => {
+      delete configuration.agents;
+    },
+    (configuration) => {
+      configuration.models.providers.openai.models = [{ id: "another" }];
+    },
+    // OpenClaw merges rows whose ids match after trimming, so this unselected row would give
+    // the selected model its endpoint.
+    (configuration) => {
+      configuration.models.providers.openai.models.push({
+        id: " model",
+        baseUrl: "https://other.example.test/v1",
+      });
+    },
+  ]) {
+    await assert.rejects(attachNative(change), {
+      message:
+        "Dedicated native OpenClaw model endpoints must match the bound credential source endpoint.",
+    });
   }
   assert.deepEqual(
     await f.driver.attachForRevision({

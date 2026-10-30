@@ -5,6 +5,7 @@ import {
   describeDisabled,
   dismissOnBackdrop,
   element,
+  mayReturnFocus,
   replaceChildrenIfChanged,
   requestIdLine,
   statusBlock,
@@ -12,7 +13,7 @@ import {
 import type { NamespacePageContext } from "./namespaces.mjs";
 import { resourceActionIcon } from "./resource-actions.mjs";
 import { describeFailure } from "./agents/list.mjs";
-import { NAMESPACE_DELETE_DENIED } from "./agents/access-reasons.mjs";
+import { NAMESPACE_DELETE_DENIED, namespaceDeleteDenied } from "./agents/access-reasons.mjs";
 
 interface DeletionContext extends NamespacePageContext {
   onRemoved(namespace: Namespace): void;
@@ -43,6 +44,9 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
   // Set when a requested check disables the focused Refresh status, so focus returns to the row.
   let refocus = false;
   let denied = false;
+  // Why delete is refused, from the last permission answer: an Installation administrator is
+  // refused only by a Restriction (finding 2861).
+  let deniedReason = NAMESPACE_DELETE_DENIED;
   let accessEnded = false;
   let removed = false;
   let poll: ReturnType<typeof setTimeout> | undefined;
@@ -88,7 +92,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
     refresh.disabled = pending || checking;
     let text = message;
     if (!text && denied) {
-      text = NAMESPACE_DELETE_DENIED;
+      text = deniedReason;
     } else if (!text && deleting) {
       text =
         "Deletion started. Cleanup runs in the background. If it does not finish, ask an operator to check teardown before requesting deletion again.";
@@ -117,6 +121,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         return;
       }
       denied = answer.delete === false;
+      deniedReason = namespaceDeleteDenied(answer as { installation?: { administer?: boolean } });
       if (denied && confirmation?.open && !pending) {
         confirmation.close();
       }
@@ -254,16 +259,19 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         heading,
         ...resource.ids.map((id) => element("code", { className: "resource-id" }, id)),
       );
-      if (resource.count > resource.ids.length) {
+      const unlisted = resource.count - resource.ids.length;
+      if (unlisted > 0) {
+        // The API names at most 20 IDs per kind, and only those the caller can read (finding 2724).
+        const lead = resource.ids.length ? `And ${unlisted} more not listed.` : "None listed.";
         item.append(
           element(
             "p",
             { className: "muted" },
-            `And ${resource.count - resource.ids.length} more. Retry after cleanup to see remaining IDs.`,
+            `${lead} The list shows up to 20 IDs that you can read; retry after cleanup to see more.`,
           ),
         );
       }
-      if (resource.kind === "Configurations") {
+      if (resource.kind === "Configurations" && resource.ids.length) {
         item.append(
           element(
             "details",
@@ -380,7 +388,13 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       () => {
         confirmation = undefined;
         dialog.remove();
-        if (current() && !pending && opener instanceof HTMLElement && opener.isConnected) {
+        if (
+          current() &&
+          !pending &&
+          opener instanceof HTMLElement &&
+          opener.isConnected &&
+          mayReturnFocus(dialog)
+        ) {
           opener.focus();
         }
       },
@@ -450,7 +464,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         requestId = error.requestId;
         if (error.status === 403) {
           denied = true;
-          message = error.serverMessage ?? NAMESPACE_DELETE_DENIED;
+          message = error.serverMessage ?? deniedReason;
         } else if (error.status === 400 || error.status === 409 || error.status === 429) {
           message = describeFailure(cause, { mutation: true });
         } else {

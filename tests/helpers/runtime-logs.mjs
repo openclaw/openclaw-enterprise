@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "./sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
@@ -52,6 +53,10 @@ export function createRuntimeLogComputeDriver(options = {}) {
     readError: undefined,
     /** Pods named by the Driver; tests may add a Pod that does not belong to the revision. */
     extraPods: [],
+    /** `false` reports no Gateway Pod, as for a version whose Pods are gone. */
+    gatewayPod: true,
+    /** Revisions that report no Gateway Pod, as a version stopped and replaced since. */
+    podlessRevisions: [],
     /**
      * `{ ready }` adds a dedicated Harness Pod and the Agent (Harness) source;
      * `{ created: false }` lists the source with no Pod; `{ ready, stale: true }`
@@ -90,7 +95,9 @@ export function createRuntimeLogComputeDriver(options = {}) {
             }
             const name = podName(binding.revision);
             const pods = [
-              { name, uid: state.podUid },
+              ...(state.gatewayPod === false || state.podlessRevisions.includes(binding.revision.id)
+                ? []
+                : [{ name, uid: state.podUid }]),
               ...state.extraPods.map((pod) => ({ name: pod.name, uid: pod.uid })),
             ];
             const harnessPods =
@@ -153,7 +160,8 @@ export function createRuntimeLogComputeDriver(options = {}) {
                     container: "gateway",
                     restartCount: state.restartCount,
                   })),
-                  available: true,
+                  available: pods.length > 0,
+                  ...(pods.length > 0 ? {} : { unavailableCode: "NO_POD" }),
                   retention: "Kubernetes keeps the current and the previous instance.",
                 },
               ],
@@ -258,6 +266,7 @@ export function createProviderSandboxDriver({ id = "console-sandbox" } = {}) {
     id,
     capability: "sandbox",
     implementation: "openshell",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async provisionHarness(context) {
       return {

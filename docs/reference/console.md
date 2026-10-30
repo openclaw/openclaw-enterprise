@@ -79,12 +79,18 @@ Slack searches, focus, and the Namespace selector; at phone width, focus in the 
 **Open navigation**. Views belong to one account, session, route,
 and Namespace. Sign-out, session changes, exit, or Backend denial clear them.
 
+A previously shown Configuration denial can leave Agent metadata visible after
+reload and refocus. Refocus still checks current access. If the read before a
+channel Secret save is denied, the Console clears the binding controls and keeps
+the failed attempt's message. No save is sent. After access is restored, use
+**Refresh** to read saved state before retrying.
+
 **Namespace** switches readable scopes; Namespaces omits this selector. The account menu offers
 **Settings** (the signed-in account, with **Sign out**) and **Sign out**.
 
 The URL keeps `?namespace=<id>` across navigation, reload, and Back. An unreadable
-ID shows **Namespace unavailable**; on Namespaces, **Choose a valid namespace**
-updates the URL in place.
+ID shows **Namespace unavailable**: the Namespace is missing or your access does not
+include it. On Namespaces, **Choose a valid Namespace** updates the URL in place.
 
 During session and Namespace checks, the selector is disabled and hides its choices.
 Once the list is known, it names the destination's Namespace. On returns to the same page,
@@ -269,6 +275,8 @@ domain; native chat or other Agent-host activity does not extend that session.
 Supported pages are `/console/login`, `/console/agents`,
 `/console/agents/new`, `/console/agents/:agentId`, `/console/backends`,
 `/console/namespaces`, `/console/secrets`, and `/console/settings`. `/console/` resolves the session
-and opens Agents. Unknown console paths show a generic not-found page.
+and opens Agents. A page path with trailing slashes opens that page with status `200`, and the
+address bar then shows it without them; the query, tab and hash stay. Unknown console paths
+return `404` and show a generic not-found page.
 See the [request flow](../flows/platform-console.md) and
 [local testing](../testing/local.md) for implementation and verification.

@@ -9,7 +9,14 @@ import type {
 import { requestFailure, responseFields } from "../api-client.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
-import { element, button, field as formField, statusBlock, validateFields } from "../dom.mjs";
+import {
+  element,
+  button,
+  field as formField,
+  setUnavailable,
+  statusBlock,
+  validateFields,
+} from "../dom.mjs";
 import {
   renderPresetTemplate,
   requiredPresetVariables,
@@ -175,10 +182,10 @@ export function createPresetFields(
   };
   inputs.addEventListener("input", markTouched);
   inputs.addEventListener("change", markTouched);
+  // Without default-codex, the hint under the shortcut already says it is not available, so the
+  // status line does not repeat it (finding 2946).
   const chooseHint = () =>
-    defaultId
-      ? "Choose a Preset or start with the default Preset."
-      : "Choose a Preset. default-codex is not available to you in this Namespace.";
+    defaultId ? "Choose a Preset or start with the default Preset." : "Choose a Preset.";
   const startDefault = button(
     "Start with default Preset",
     () => {
@@ -417,7 +424,14 @@ export function createPresetFields(
     applyButton,
     feedback,
   );
-  applyButton.disabled = true;
+  let applyUnavailable = true;
+  // An unavailable Use Preset is described by the line that says why (finding D793): the
+  // Preset's load failure, else the status line ("Choose a Preset or start with the default
+  // Preset."), and stays in the Tab order while it shows (finding 2878). Called wherever either
+  // line or the button changes.
+  const describeApply = () =>
+    setUnavailable(applyButton, applyUnavailable, feedback.textContent?.trim() ? feedback : status);
+  describeApply();
   selector.addEventListener("change", async () => {
     const version = ++loadVersion;
     const selectedId = selector.value;
@@ -432,12 +446,14 @@ export function createPresetFields(
     fields = [];
     inputs.replaceChildren();
     feedback.textContent = "";
-    applyButton.disabled = true;
+    applyUnavailable = true;
     if (!selectedId) {
       status.textContent = chooseHint();
+      describeApply();
       return;
     }
     status.textContent = "Loading Preset…";
+    describeApply();
     try {
       const value = await context.request(
         `${namespacePath(context.namespaceId)}/presets/${encodeURIComponent(selectedId)}`,
@@ -581,7 +597,8 @@ export function createPresetFields(
       });
       status.textContent =
         "Fill in the variables, then use this Preset to create an editable draft.";
-      applyButton.disabled = false;
+      applyUnavailable = false;
+      describeApply();
       if (applyDefault && fields.length === 0) {
         applyButton.click();
       }
@@ -597,6 +614,7 @@ export function createPresetFields(
         context.onExpired();
       } else {
         feedback.textContent = `This Preset could not be loaded. ${describeFailure(error)}`;
+        describeApply();
         // Use Preset stays disabled, so the filled style goes back to the shortcut.
         emphasize(false);
       }
@@ -631,10 +649,15 @@ export function createPresetFields(
       );
       selector.disabled = false;
       defaultId = presets.find((preset) => preset.name === "default-codex")?.id;
-      startDefault.disabled = !defaultId;
+      // The hint beside the shortcut names the default Preset, or says that it is not
+      // available, and then describes the unavailable shortcut, which stays in the Tab order
+      // (finding 2937).
+      defaultHint.textContent = defaultId
+        ? "The default Preset is default-codex."
+        : "default-codex is not available to you in this Namespace.";
+      defaultHint.hidden = false;
+      setUnavailable(startDefault, !defaultId, defaultHint);
       if (defaultId) {
-        defaultHint.textContent = "The default Preset is default-codex.";
-        defaultHint.hidden = false;
         startDefault.setAttribute("aria-describedby", defaultHint.id);
       }
       if (retained && presets.some((preset) => preset.id === retained?.id)) {
@@ -648,6 +671,7 @@ export function createPresetFields(
       } else {
         status.textContent = chooseHint();
       }
+      describeApply();
     })
     .catch((error) => {
       if (!context.isCurrent() || !section.isConnected) {
@@ -657,6 +681,9 @@ export function createPresetFields(
         context.onExpired();
       } else {
         status.textContent = `Presets unavailable. ${message(error, false, namespaceListNeed("Presets"))}`;
+        describeApply();
+        // The chooser stays unavailable, so its status says why the shortcut is too.
+        setUnavailable(startDefault, true, status);
       }
     });
   return { section, startDefault, defaultHint };

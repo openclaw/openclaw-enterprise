@@ -2,37 +2,36 @@ import type {
   CredentialProxyBinding,
   CredentialProxyExchange,
   EgressExchangeOwner,
-} from "./credential-proxy-exchange.ts";
-import { repositoryGitDeliveryProfile } from "./repo.ts";
+} from "../../credential-proxy-exchange.ts";
+import { repositoryGitDeliveryProfile } from "../repo/index.ts";
 
-export { repositoryGitDeliveryProfile } from "./repo.ts";
+export { repositoryGitDeliveryProfile } from "../repo/index.ts";
 import type {
   ProtectedRepositoryGitAuthority,
   RepositoryGitBinding,
-} from "./protected-repository-git.ts";
+} from "../../protected-repository-git.ts";
 import type {
   CredentialFreeEgressSource,
   CredentialFreeMetadataGrant,
   NoMaterialSelection,
-} from "./credential-free-metadata.ts";
-import type { GitHubMetadataGrant } from "./prepared-github-egress.ts";
+} from "../../credential-free-metadata.ts";
+import type { GitHubMetadataGrant } from "../../prepared-github-egress.ts";
 import type {
   PreparedTokenGrant,
   PreparedTokenSource,
   PreparedTokenEvidence,
-} from "./prepared-token.ts";
+} from "../../prepared-token.ts";
+import type { Driver, DriverRegistrationRef } from "../index.ts";
 import type {
   AgentRevision,
   CredentialSource,
   CredentialSourceType,
-  Driver,
-  DriverRegistrationRef,
   HarnessAuthSnapshot,
   Namespace,
   RepositoryRevisionState,
   Secret,
   SecretReference,
-} from "./index.ts";
+} from "../../index.ts";
 
 /** Configuration generations never advance merely because Secret material rotates. */
 export interface EgressRef {

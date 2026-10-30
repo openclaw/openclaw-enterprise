@@ -1611,6 +1611,41 @@ test("a timed-out workspace binding probe releases the poll and can recover", as
   assert.deepEqual(workspaceNodeState(sandbox), { nodeId: "enrolled-node", failure: undefined });
 });
 
+// `openclaw config validate --json` output for a configuration read OpenClaw refused,
+// as the pinned OpenClaw prints it (exit status 1).
+function configReadRefusal(error) {
+  const path = "/home/node/.openclaw/openclaw.json";
+  return {
+    status: 1,
+    stdout: JSON.stringify({
+      ok: false,
+      error: {
+        type: "cli_error",
+        message: "OpenClaw config is invalid: ~/.openclaw/openclaw.json",
+      },
+      repairHint: "Resolve the read error shown above, then retry.",
+      valid: false,
+      path,
+      issues: [{ path: "<root>", message: `read failed at ${path}: ${error}` }],
+    }),
+    stderr: "",
+  };
+}
+const configReadPermissionDenied =
+  "EACCES: permission denied, open '/home/node/.openclaw/openclaw.json'";
+// Captured from a dedicated Gateway container started again after its native Gateway was
+// killed (SIGKILL): the new PID namespace cannot verify the recorded holder (finding 2864).
+const gatewayLockNamespaceRefusal =
+  "GatewayLockNamespaceError: cannot verify Gateway ownership from this process; heartbeat age" +
+  " does not prove that the holder stopped. holder 608 at 54b9b0fe1247/pid-ns 4026536051, last" +
+  " renewed 14 s ago. Run this command inside the Gateway container or with a shared PID" +
+  " namespace; if the holder has stopped, run `openclaw gateway recover-lock` to inspect and" +
+  " explicitly recover the unchanged owner.";
+const heldStatusEnvironment = {
+  OPENCLAW_RUNTIME_STATUS_PORT: "18791",
+  OPENCLAW_RUNTIME_STATUS_CONTAINER: "gateway",
+};
+
 const dedicatedGatewayLaunchers = [
   {
     name: "Kubernetes dedicated OpenClaw",
@@ -1728,7 +1763,7 @@ for (const launcher of dedicatedGatewayLaunchers) {
     );
   });
 
-  for (const [failure, options] of [
+  for (const [failure, options, held = "gateway-tool-policy"] of [
     [
       "unknown runtime source",
       {
@@ -1753,13 +1788,26 @@ for (const launcher of dedicatedGatewayLaunchers) {
         },
       },
     ],
+    // Another refused read of the configuration is not a lock: it keeps the tool policy hold.
+    [
+      "unreadable configuration",
+      { configValidationResponse: configReadRefusal(`Error: ${configReadPermissionDenied}`) },
+    ],
+    [
+      "Gateway state lock refusal",
+      { configValidationResponse: configReadRefusal(gatewayLockNamespaceRefusal) },
+      "gateway-state-lock",
+    ],
   ]) {
     test(`${launcher.name} holds ${failure} unready without starting model work`, async () => {
       const messages = [];
       const intervals = [];
-      const { calls } = await runOpenClawRuntimeHelper(undefined, [], {
+      const { calls, sandbox } = await runOpenClawRuntimeHelper(undefined, [], {
         ...launcher,
         ...options,
+        // The Docker launcher serves no status itself, so its published hold can be read here;
+        // runtime-image-gateway-peer reads the Kubernetes Gateway's over its status port.
+        env: { ...launcher.env, ...(launcher.launcher === "docker" ? heldStatusEnvironment : {}) },
         baseConfig: codexGatewayConfig(),
         intervals,
         console: { error: (message) => messages.push(message) },
@@ -1768,7 +1816,33 @@ for (const launcher of dedicatedGatewayLaunchers) {
         calls.some(({ args }) => args?.[1] === "gateway"),
         false,
       );
-      assert.ok(messages.some((message) => message.includes("required tool policy")));
+      const lock = held === "gateway-state-lock";
+      assert.equal(
+        messages.some((message) => message.includes("required tool policy")),
+        !lock,
+        messages.join("\n"),
+      );
+      if (lock) {
+        // The operator reads the cause and OpenClaw's holder description, not a policy hint.
+        assert.ok(
+          messages.some(
+            (message) =>
+              message.includes("still holds the Gateway state lock") &&
+              message.includes("unverifiable state owner") &&
+              message.includes("holder 608 at 54b9b0fe1247/pid-ns 4026536051"),
+          ),
+          messages.join("\n"),
+        );
+      }
+      if (launcher.launcher === "docker") {
+        const published = vm.runInContext("runtimeStartupFailure", sandbox);
+        assert.deepEqual(
+          { check: published?.check, code: published?.code },
+          lock
+            ? { check: "gateway-state-lock", code: "UNAVAILABLE" }
+            : { check: "gateway-tool-policy", code: "INCOMPATIBLE_RESPONSE" },
+        );
+      }
       assert.ok(
         intervals.some(({ ms }) => ms === 3_600_000),
         "keep the failed workload available for diagnosis",

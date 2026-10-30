@@ -101,6 +101,7 @@ export const CredentialsSlackGrantMissing = {
   ...story("credentialsSlackGrantMissing"),
   name: "Slack Secret bound without an Agent grant",
 };
+export const CredentialsBindingReadDenied = story("credentialsBindingReadDenied");
 export const CredentialsSlackLeftoverGrantMissing = {
   ...story("credentialsSlackLeftoverGrantMissing"),
   name: "Slack key left bound without an Agent grant",
@@ -170,3 +171,16 @@ export const AuthSaveHoldsNavigation = {
 };
 export const AuthSaveUnknown = { ...story("authSaveUnknown"), name: "Authentication save unknown" };
 export const AuthenticationNavigation = story("authenticationNavigation");
+
+export const CredentialsSavedRetryReadDenied = {
+  ...story("credentialsSavedRetryReadDenied"),
+  name: "Saved channel bindings, retry read denied",
+};
+
+export const AuthOAuthStartNavigation = story("authOAuthStartNavigation");
+
+export const AuthOAuthStartTabSwitch = story("authOAuthStartTabSwitch");
+
+export const AuthOAuthStartTabSwitchRefused = story("authOAuthStartTabSwitchRefused");
+
+export const AuthOAuthRestartTabSwitch = story("authOAuthRestartTabSwitch");

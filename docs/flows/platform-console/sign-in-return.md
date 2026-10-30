@@ -107,6 +107,10 @@ readable Namespaces before rendering the requested page. The Agent and Namespace
 reads use their usual authorization; an inaccessible resource remains unavailable.
 When the Namespace read fails after the session resolved, the page offers **Sign
 out** beside **Retry**, so an account refused with `403` is not stranded.
+A session or Namespace read that does not reach the API (the browser is offline,
+or the read times out) tells nothing about the session. A signed-in tab keeps its
+shell, says that it could not reach OpenClaw Enterprise, and moves focus to
+**Retry**. The page and Namespace data are cleared, as for other failures.
 See the [parent flow](../platform-console.md#3-authorize-the-selected-page-resource).
 
 ## Debugging and Verification

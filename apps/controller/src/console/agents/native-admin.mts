@@ -1,5 +1,5 @@
 import { requestFailure, responseFields } from "../api-client.mjs";
-import { button, element } from "../dom.mjs";
+import { button, element, setText } from "../dom.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
 import { message } from "./list.mjs";
 
@@ -61,9 +61,12 @@ export function renderNativeAdminAccess(
   );
   const error = element("p", { id: "native-admin-error", className: "error", role: "alert" });
   const target = element("p", { id: "native-admin-target", className: "native-admin-target" });
+  // aria-disabled, not disabled: the control stays in the Tab order, so a keyboard user reaches
+  // the reason it describes (finding 2714). It has no action.
   const unavailable = button("Open Agent UI", () => {}, {
     tone: "primary",
-    disabled: true,
+    className: "agent-ui-unavailable",
+    "aria-disabled": "true",
     hidden: true,
     "aria-describedby": `${status.id} ${error.id}`,
   });
@@ -110,6 +113,9 @@ export function renderNativeAdminAccess(
     // aria-disabled, not disabled: disabling the focused button drops keyboard focus to the page.
     // load() already ignores activation while a read is pending.
     reload.setAttribute("aria-disabled", String(pending));
+    // The launch link and the unavailable button take turns in one place. A swap would hide the
+    // one with focus and drop focus to the page, so the other takes it (finding 2880).
+    const focused = [launch, unavailable].find((control) => control === document.activeElement);
     const url = !pending && current?.status === "available" ? current.url : undefined;
     launch.hidden = url === undefined;
     if (url === undefined) {
@@ -124,6 +130,10 @@ export function renderNativeAdminAccess(
       !failed &&
       (current === undefined || current.status === "disabled" || current.status === "denied");
     unavailable.hidden = section.hidden || !launch.hidden;
+    const replacement = focused === launch ? unavailable : launch;
+    if (focused?.hidden && !replacement.hidden) {
+      replacement.focus({ preventScroll: true });
+    }
     target.hidden = launch.hidden;
     updateTarget();
     const nextRecovery = current && launch.hidden ? options?.recovery(current.status) : null;
@@ -134,7 +144,11 @@ export function renderNativeAdminAccess(
     }
   }
   function updateTarget() {
-    target.textContent = `Opens selected version · ${options?.versionLabel() ?? "current version"} in a new tab.`;
+    // Deployment polls call this too; an unchanged line is left untouched.
+    setText(
+      target,
+      `Opens selected version · ${options?.versionLabel() ?? "current version"} in a new tab.`,
+    );
   }
 
   async function load() {

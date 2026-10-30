@@ -26,15 +26,19 @@ export function forwardWork(signal) {
     },
     async eventually(checkState, timeout = 10000) {
       const deadline = Date.now() + timeout;
-      do {
+      // The deadline is checked after each read, so the last read happens at or past it.
+      for (;;) {
         check();
         const value = await checkState();
         check();
         if (value) {
           return value;
         }
+        if (Date.now() >= deadline) {
+          break;
+        }
         await delay(100, undefined, { signal: controller.signal });
-      } while (Date.now() < deadline);
+      }
       throw new Error("isolation fixture did not reach expected state");
     },
     async stop() {

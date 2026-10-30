@@ -757,14 +757,14 @@ function harnessRuntimeFiles(
         "Protected Harness startup must match the admitted egress plan.",
       );
     }
-    const selections = configurationObject(manifest.selections, "Codex plugin-runtime selections");
+    configurationObject(manifest.selections, "Codex plugin-runtime selections");
     if (manifest.repositoryBrokerNetworkPolicy !== undefined) {
       throw new SandboxRepositoryRecipientUnverifiedError();
     }
-    if (manifest.kind !== "codex" || Object.keys(selections).length !== 0) {
+    if (manifest.kind !== "codex") {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_HARNESS_UNSUPPORTED",
-        "OpenShell dedicated Codex does not yet support selected plugins.",
+        "OpenShell dedicated Codex requires a Codex plugin-runtime manifest.",
       );
     }
   }
@@ -2465,16 +2465,16 @@ export const configurationSchema = Object.freeze({
       properties: {
         workspaceMode: { type: "string", enum: ["managed", "operator"] },
         managedPluginMiddleware: { type: "string", pattern: "^https://" },
-        operatorNamespaceLabels: { type: "object" },
-        operatorWorkspaceResources: { type: "array" },
-        networkPolicyResources: { type: "array" },
+        operatorNamespaceLabels: { type: "object", writeOnly: true },
+        operatorWorkspaceResources: { type: "array", writeOnly: true },
+        networkPolicyResources: { type: "array", writeOnly: true },
         readiness: {
           type: "object",
           required: ["serviceName", "podSelector", "timeoutMs"],
           additionalProperties: false,
           properties: {
             serviceName: { type: "string" },
-            podSelector: { type: "object" },
+            podSelector: { type: "object", writeOnly: true },
             timeoutMs: { type: "integer", minimum: 1 },
             // A Node.js timer fires a longer delay after 1 ms.
             pollIntervalMs: { type: "integer", minimum: 1, maximum: MAX_TIMER_DELAY_MS },
@@ -2561,7 +2561,7 @@ export const configurationSchema = Object.freeze({
                   additionalProperties: false,
                   required: ["host", "ports"],
                   properties: {
-                    host: { type: "string" },
+                    host: { type: "string", writeOnly: true },
                     // The Gateway refuses an endpoint without ports at CreateSandbox.
                     ports: { type: "array", minItems: 1, items: { type: "integer" } },
                     protocol: { type: "string" },
@@ -2580,7 +2580,7 @@ export const configurationSchema = Object.freeze({
     startupDelayMs: { type: "integer", minimum: 1, maximum: MAX_SANDBOX_STARTUP_DELAY_MS },
     logLevel: { type: "string" },
     providers: { type: "array", items: { type: "string" } },
-    egress: { type: "object" },
+    egress: { type: "object", writeOnly: true },
   },
 });
 
@@ -2900,6 +2900,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   readonly capability = "sandbox" as const;
   readonly implementation: string;
   readonly facets = Object.freeze(["networking", "filesystem", "process"] as const);
+  readonly supportsHarnessExecutionMode;
   // environment() sets HOME to this for every Sandbox it creates.
   readonly harnessHome = OPENSHELL_HOME;
   static readonly configurationContributions = configurationContributions;
@@ -2934,6 +2935,24 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     this.options = options;
+    let reason: string | undefined;
+    if (options.kubernetes.userNamespaces !== false) {
+      reason =
+        "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
+    } else if (sandboxServiceAccounts(options).length > 1) {
+      reason =
+        "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to remove the others.";
+    }
+    this.supportsHarnessExecutionMode = Object.freeze({
+      openclaw: Object.freeze({
+        embedded: Object.freeze({ supported: false }),
+        dedicated: Object.freeze(
+          reason === undefined
+            ? { supported: true as const }
+            : { supported: false as const, reason },
+        ),
+      }),
+    });
     const git = selection.openShellGit;
     this.openShellGit = git;
     if (git) {
@@ -2971,16 +2990,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell SandboxDriver does not support the selected Harness runtime.",
       );
     }
-    // prepareNativeWorkspace refuses these only after a deploy has stopped its predecessors.
-    if (harness.id === "openclaw" && this.options.kubernetes.userNamespaces !== false) {
-      throw new ConfigurationHarnessError(
-        "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
-      );
-    }
-    if (harness.id === "openclaw" && sandboxServiceAccounts(this.options).length > 1) {
-      throw new ConfigurationHarnessError(
-        "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to remove the others.",
-      );
+    const support = this.supportsHarnessExecutionMode.openclaw.dedicated;
+    if (harness.id === "openclaw" && !support.supported) {
+      throw new ConfigurationHarnessError(support.reason);
     }
     const agents = optionalAgentConfiguration(
       configuration.agents,

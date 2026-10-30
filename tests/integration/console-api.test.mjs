@@ -1389,6 +1389,13 @@ test("console static routes expose only public assets and preserve API JSON fail
     "/console/agents/new",
     "/console/agents/agt_00000000-0000-4000-8000-000000000000",
     "/console/settings",
+    // A page path with trailing slashes is that page; the console drops them (finding 1906).
+    "/console//",
+    "/console/agents/",
+    "/console/agents//?namespace=ns",
+    "/console/agents/new/",
+    "/console/agents/agt_00000000-0000-4000-8000-000000000000//?tab=channels",
+    "/console/settings/",
   ]) {
     const result = await fixture.rawRequest("GET", path);
     assert.equal(result.response.status, 200, path);
@@ -1425,6 +1432,10 @@ test("console static routes expose only public assets and preserve API JSON fail
     "/console/index.ts",
     "/console/%2e%2e/index.ts",
     "/console/missing.css",
+    // An asset, or no page, with a trailing slash is still not a page.
+    "/console/console.css/",
+    "/console/missing/",
+    "/console/agents/x/",
   ]) {
     const result = await fixture.rawRequest("GET", path);
     assert.equal(result.response.status, 404, path);

@@ -13,8 +13,10 @@ import type {
 import type { PostgresPool } from "@openclaw-enterprise/occ";
 import type { Clock } from "../../drivers/repo/credentials/backend-contracts.ts";
 import { createSystemClock } from "../../drivers/repo/credentials/clock.ts";
-import { githubProviderOrigin } from "../../drivers/repo/github/credentials/origin.ts";
-import { preparationIssuerAuthority } from "../../drivers/repo/github/credentials/grants.ts";
+import {
+  githubProviderOrigin,
+  preparationIssuerAuthority,
+} from "../../drivers/repo/github/credentials/origin.ts";
 import { createGitHubKeyOwner } from "../../drivers/repo/github/credentials/material.ts";
 import { createGitHubPreparationOwner } from "../../drivers/repo/github/credentials/prepared-owner.ts";
 import { retirePreparedGitHubToken } from "../../drivers/repo/github/credentials/prepared-retirement.ts";
@@ -376,6 +378,10 @@ export async function startPreparedGitHubGitOwner(
     // Recovery-only observation for the worker, never part of its use socket.
     inspectTokenAttempt: (familyId: string, attemptId: string) =>
       store.inspectTokenAttempt(familyId, attemptId),
+    // Deployment-only observation for the native broker; protected delivery observes its install.
+    ...(options.protectedGitDriver === undefined && options.controlSocket !== undefined
+      ? { revisionMaterial: (revisionId: string) => store.revisionMaterial(revisionId) }
+      : {}),
     // Worker-only custody transfer to the verified OpenShell provider; never a control RPC.
     readOpenShellMaterial(
       revisionId: string,

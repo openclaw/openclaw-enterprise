@@ -228,12 +228,8 @@ OCC checks admission and session retention, but does not authorize or audit each
 native command. Operators share the selected gateway's exposed conversations
 and credentials; this grants no access to another Agent or platform IAM.
 
-Separately, Kubernetes Compute preserves explicit native human identities and
-grants for an operator-managed authenticated ingress. Those humans need no OCE
-account; OpenClaw owns their profiles and native access controls. This path
-shares the Agent's tools, credentials and workspace and does not grant OCC access.
-The operator owns ingress authentication and exact-Gateway network access;
-see the [ingress contract](reference/drivers/kubernetes-compute/gateway-authentication.md).
+Operators can provide a separate [human access path](reference/drivers/kubernetes-compute/gateway-authentication.md)
+to the shared Agent. This path does not grant OCC access.
 
 Configuration and AgentRevision records remain authoritative for
 managed deployments. Native edits may diverge; OCC neither imports them nor

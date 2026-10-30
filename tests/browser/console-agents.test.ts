@@ -15,6 +15,9 @@ import type {
 } from "../../packages/contracts/src/api/common.ts";
 import type {
   AgentWire,
+  AgentDeploymentStatusWire,
+  AgentProvisioningResponse,
+  AgentProvisioningStatusResponse,
   IAMAccessBindingWire,
   IAMRoleWire,
   SecretWire,
@@ -35,6 +38,7 @@ import {
   accessBindingPostRequests,
   apiRequests,
   detailUrl,
+  expectReachableReason,
   holdRequests,
   login,
   setSlackSelection,
@@ -72,6 +76,8 @@ import {
   waitForCreateFormReads,
   submitCreateAgent,
   createAgentThroughForm,
+  expectCreateAccess,
+  expectCreateRefused,
 } from "./console-agents-test-support.mjs";
 import {
   expectDeploymentOutcome,
@@ -79,11 +85,12 @@ import {
 } from "./console-deployment-activity-helpers.mjs";
 import {
   ADMINISTRATOR_ACCESS_DENIED,
+  AGENT_CREATE_DENIED,
   AGENT_SAVE_DENIED,
   createDenied,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
-  AGENT_CREATE_INSTALLATION_DENIED,
+  AGENT_CREATE_PERMISSIONS_UNREAD,
   CHANNELS_NEED_DEDICATED,
   REPOSITORY_ACCESS_NOT_CONFIGURED,
   REPOSITORY_CHOICES_CREATE_DENIED,
@@ -1306,7 +1313,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
   const revisionId = "rev_00000000-0000-4000-8000-00000000feed";
   let allowProvisioningSuccess = false;
   let provisioningReads = 0;
-  let deploymentStatus = "queued";
+  let deploymentStatus: AgentDeploymentStatusWire["status"] = "queued";
   let provisionBody: ProvisionAgentBody | undefined;
   const savedSecrets = new Map<string, SecretWire>();
   await routeInstallationProvisioning(page, fixture);
@@ -1414,7 +1421,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
             updatedAt: agent.createdAt,
             url: `/namespaces/${namespace.id}/agents/provision/work_create`,
           },
-        },
+        } satisfies AgentProvisioningResponse["data"],
         202,
       ),
     );
@@ -1431,19 +1438,17 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     assert.ok(provisionBody, "the provisioning request was submitted before polling");
     await route.fulfill(
       json({
-        provisioning: {
-          requestId: provisionBody.requestId,
-          workId: "work_create",
-          status: allowProvisioningSuccess ? "succeeded" : "running",
-          phase: allowProvisioningSuccess ? "handoff" : "configuration",
-          attemptCount: 1,
-          updatedAt: agent.createdAt,
-          url: `/namespaces/${namespace.id}/agents/provision/work_create`,
-          ...(allowProvisioningSuccess
-            ? { configurationId: agent.configurationId, agentId, revisionId }
-            : {}),
-        },
-      }),
+        requestId: provisionBody.requestId,
+        workId: "work_create",
+        status: allowProvisioningSuccess ? "succeeded" : "running",
+        phase: allowProvisioningSuccess ? "handoff" : "configuration",
+        attemptCount: 1,
+        updatedAt: agent.createdAt,
+        url: `/namespaces/${namespace.id}/agents/provision/work_create`,
+        ...(allowProvisioningSuccess
+          ? { configurationId: agent.configurationId, agentId, revisionId }
+          : {}),
+      } satisfies AgentProvisioningStatusResponse["data"]),
     );
   });
   await page.route(
@@ -1451,14 +1456,21 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     async (route) => {
       await route.fulfill(
         json({
-          deploymentId: `dep_${revisionId}`,
-          revisionId,
+          deploymentId: revisionId,
+          namespaceId: namespace.id,
+          agentId,
           status: deploymentStatus,
+          cleanup: null,
+          progress:
+            deploymentStatus === "queued"
+              ? { lastAttempt: null, nextAttemptAt: revision.createdAt }
+              : null,
+          warnings: [],
           error:
             deploymentStatus === "failed"
               ? { code: "DEPENDENCY_UNAVAILABLE", message: "Deployment reconciliation failed." }
               : null,
-        }),
+        } satisfies AgentDeploymentStatusWire),
       );
     },
   );
@@ -1552,7 +1564,11 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     page,
     async () => {
       await page.getByRole("button", { name: "Create Agent" }).click();
-      assert.equal((await provisionResponse).status(), 202);
+      const accepted = await provisionResponse;
+      assert.equal(accepted.status(), 202);
+      const admission: AgentProvisioningResponse = await accepted.json();
+      assert.equal(admission.data.provisioning.requestId, provisionBody?.requestId);
+      assert.notEqual(admission.data.provisioning.requestId, admission.meta.requestId);
       assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
       allowProvisioningSuccess = true;
     },
@@ -2009,7 +2025,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
             revisionId,
             url: `/namespaces/${namespace.id}/agents/provision/work_retry`,
           },
-        },
+        } satisfies AgentProvisioningResponse["data"],
         202,
       ),
     );
@@ -2018,7 +2034,16 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
     `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
     async (route) => {
       await route.fulfill(
-        json({ deploymentId: `dep_${revisionId}`, revisionId, status: "succeeded" }),
+        json({
+          deploymentId: revisionId,
+          namespaceId: namespace.id,
+          agentId,
+          status: "succeeded",
+          cleanup: null,
+          progress: null,
+          warnings: [],
+          error: null,
+        } satisfies AgentDeploymentStatusWire),
       );
     },
   );
@@ -2096,7 +2121,17 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
   assert.equal(await page.getByLabel("Configuration JSON").isDisabled(), true);
   assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "codex");
   assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
+  const retryResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/provision` &&
+      response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "Retry provisioning request" }).click();
+  const accepted = await retryResponse;
+  assert.equal(accepted.status(), 202);
+  const admission: AgentProvisioningResponse = await accepted.json();
+  assert.equal(admission.data.provisioning.requestId, bodies[0]?.requestId);
+  assert.notEqual(admission.data.provisioning.requestId, admission.meta.requestId);
 
   await page.waitForURL((url) => {
     return (
@@ -2167,21 +2202,25 @@ test("Agent creation explains a denied capability check instead of offering a re
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  // A failed permission read is not a denial: the form says so and offers that check again
-  // (finding 2110); a known denial then keeps the refusal, with no retry.
-  await page.getByText(/^Your permissions in this Namespace could not be checked/).waitFor();
-  permissions = { agents: { create: false } };
-  await page.getByRole("button", { name: "Retry permission check" }).click();
-  await page.getByText(AGENT_CREATE_INSTALLATION_DENIED).waitFor();
-  assert.equal(await page.getByRole("button", { name: "Retry permission check" }).count(), 0);
+  // A failed permission read is not a denial: the form says so above the form, not in the hint
+  // under its fields, and offers that check again (findings 2092, 2110).
+  await expectCreateAccess(page, {
+    tone: "warning",
+    body: AGENT_CREATE_PERMISSIONS_UNREAD,
+    retry: true,
+  });
   const retry = page.getByRole("button", { name: "Retry capability check" });
-  assert.equal(
-    await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
-    true,
-  );
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  assert.equal(await create.isDisabled(), true);
+  // Create Agent names the check it waits on.
+  assert.equal(await create.getAttribute("aria-describedby"), "create-agent-access");
   // Without capabilities the harness hint states the requirement, not an outcome.
   const harnessHint = page.locator("#agent-harness-hint");
   assert.equal(await harnessHint.textContent(), "Codex requires OpenAI and Dedicated execution.");
+  // A known denial replaces the form with the refusal a fresh load shows (finding 2908).
+  permissions = { agents: { create: false } };
+  await page.getByRole("button", { name: "Retry permission check" }).click();
+  await expectCreateRefused(page, AGENT_CREATE_DENIED);
 
   // A transient failure still offers the retry.
   status = 503;
@@ -2191,6 +2230,35 @@ test("Agent creation explains a denied capability check instead of offering a re
   await page.getByText(/^Installation capabilities unavailable\. /).waitFor();
   await retry.waitFor();
   assert.equal(await harnessHint.textContent(), "Codex requires OpenAI and Dedicated execution.");
+});
+
+// Finding 2945. Codex uses Dedicated execution, so the Execution mode select is unavailable with
+// the Codex harness. It was natively disabled, so Tab skipped it and the hint that says why. It
+// stays in the Tab order now, described by that hint, and changes nothing; OpenClaw enables it.
+test("Execution mode locked by the Codex harness stays reachable with its hint", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Codex mode lock", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Create Agent" }).waitFor();
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
+  const harness = page.getByLabel("Harness", { exact: true });
+  await harness.selectOption("codex");
+  await page.locator(".launch-runtime > summary").click();
+  const mode = page.getByLabel("Execution mode");
+  assert.equal(await mode.inputValue(), "dedicated");
+  assert.equal(await mode.isDisabled(), true);
+  const hint = (await page.locator("#execution-mode-hint").textContent())?.trim() ?? "";
+  assert.match(hint, /^Codex uses Dedicated execution\./);
+  await expectReachableReason(page, mode, hint);
+  assert.equal(await mode.inputValue(), "dedicated");
+
+  // OpenClaw lets the reader choose the mode again.
+  await harness.selectOption("openclaw");
+  await waitForEnabled(mode);
+  assert.equal(await mode.getAttribute("aria-disabled"), null);
 });
 
 test("Agent creation withholds Dedicated OpenClaw unless the Installation reports native worker support", async (t) => {
@@ -2249,7 +2317,14 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
   assert.equal(await embeddedChannelNote.getAttribute("class"), "hint");
   // Codex keeps Dedicated execution; only native OpenClaw depends on the runtime.
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
-  assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
+  // The select itself is unavailable with Codex (aria-disabled, finding 2945), so the option's own
+  // state is read: Dedicated is not refused.
+  assert.equal(
+    await mode
+      .locator('option[value="dedicated"]')
+      .evaluate((node: HTMLOptionElement) => node.disabled),
+    false,
+  );
   const dedicatedHint = await modeHint.textContent();
   assert.ok(dedicatedHint);
   assert.match(

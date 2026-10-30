@@ -764,13 +764,21 @@
                     "label": "Quickstart"
                   },
                   {
-                    "page": "reference/api",
+                    "page": "reference/api-explorer",
                     "label": "API Reference"
+                  },
+                  {
+                    "page": "guides/http-api-agent",
+                    "label": "Create an Agent"
                   }
                 ]
               }
             ],
-            "hidden": ["reference/postgres-auth-binding", "reference/cli/local-development"]
+            "hidden": [
+              "reference/api",
+              "reference/postgres-auth-binding",
+              "reference/cli/local-development"
+            ]
           },
           {
             "tab": "Contribute",

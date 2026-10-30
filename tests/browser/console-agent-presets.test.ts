@@ -42,6 +42,8 @@ import {
   apiRequests,
   consoleViewports,
   detailUrl,
+  expectReachableReason,
+  focusKeptOverClose,
   holdRequests,
   inViewport,
   login,
@@ -3074,23 +3076,14 @@ test("codex_pat Secret recovery restores authenticated plugin discovery", async 
   // Done closes the dialog, and its close event fires a task later. Focus that moves to the
   // Secret field in between must stay there: taking it back closed the field's list while
   // selectSecret typed (finding 2862).
-  const secretField = await page
-    .getByLabel("Service account token Secret", { exact: true })
-    .elementHandle();
-  const focusKept = await dialog.getByRole("button", { name: "Done", exact: true }).evaluate(
-    (done, field) =>
-      new Promise<boolean>((resolve) => {
-        done
-          .closest("dialog")
-          ?.addEventListener("close", () => resolve(document.activeElement === field), {
-            once: true,
-          });
-        (done as HTMLButtonElement).click();
-        (field as HTMLInputElement).focus();
-      }),
-    secretField,
+  assert.equal(
+    await focusKeptOverClose(
+      dialog.getByRole("button", { name: "Done", exact: true }),
+      page.getByLabel("Service account token Secret", { exact: true }),
+    ),
+    true,
+    "closing the dialog keeps focus on the Secret field",
   );
-  assert.equal(focusKept, true, "closing the dialog keeps focus on the Secret field");
   await selectSecret(page, "Service account token Secret", existing);
   const created = await createAgentThroughForm(page, fixture, namespace.id);
   assert.deepEqual(created.harnessAuth, { method: "codex_pat", source: existing.ref });
@@ -3579,6 +3572,12 @@ test("Preset list and Preset Secret field name the Namespace read a Restriction 
   await page
     .getByText(`Presets unavailable. ${namespaceListDenied("Presets")}`, { exact: true })
     .waitFor();
+  // The shortcut stays in the Tab order, described by the chooser's status (finding 2937).
+  await expectReachableReason(
+    page,
+    page.getByRole("button", { name: "Start with default Preset", exact: true }),
+    `Presets unavailable. ${namespaceListDenied("Presets")}`,
+  );
 
   // With the list readable again, the chosen Preset's Secret field lists the Namespace's Secrets.
   await page.reload();
@@ -4253,9 +4252,11 @@ test("The console requires a readable installed default for quick-start and stil
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page
-    .getByText("Choose a Preset. default-codex is not available to you in this Namespace.", {
-      exact: true,
-    })
+    .getByRole("status")
+    .filter({ hasText: /^Choose a Preset\.$/ })
+    .waitFor();
+  await page
+    .getByText("default-codex is not available to you in this Namespace.", { exact: true })
     .waitFor();
   assert.equal(
     await page.getByRole("button", { name: "Start with default Preset" }).isDisabled(),

@@ -15,6 +15,7 @@ import {
   element,
   focusSaveOutcome,
   revealStatus,
+  setUnavailable,
   statusBlock,
   validateFields,
 } from "../dom.mjs";
@@ -72,6 +73,8 @@ interface PluginEditorOptions {
   savedNotice?: string;
   /** Why the permission answer refuses a save (Agent update, or its source grants). */
   saveDenied?: Promise<string | undefined> | null;
+  /** Updates only the explanation while the save remains refused. */
+  followSaveReason?(apply: (reason: string | undefined) => void): void;
 }
 
 // A caller who may not update the Agent reads its plugin selections (finding 2436).
@@ -151,6 +154,7 @@ export function renderAgentPlugins(
     onReload,
     savedNotice = "",
     saveDenied = null,
+    followSaveReason,
   }: PluginEditorOptions,
 ) {
   if (!draft) {
@@ -347,13 +351,15 @@ export function renderAgentPlugins(
       : undefined;
   });
 
+  let saveUnavailable = true;
+  let discardUnavailable = true;
   function updateState() {
     const dirty =
       input.value !== initialText ||
       JSON.stringify(pluginApprovers) !== JSON.stringify(initialApprovers);
     onState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
-    save.disabled = updateDenied || !dirty || pending || outcomeUnknown || reloadRequired;
-    discard.disabled = !dirty || pending || outcomeUnknown || reloadRequired;
+    saveUnavailable = updateDenied || !dirty || pending || outcomeUnknown || reloadRequired;
+    discardUnavailable = !dirty || pending || outcomeUnknown || reloadRequired;
     reload.hidden = !outcomeUnknown && !reloadRequired;
     // Edits that cannot be saved would only block leaving the tab (finding 1539).
     discovery.fields.setDisabled(updateDenied || pending || outcomeUnknown || reloadRequired);
@@ -366,6 +372,15 @@ export function renderAgentPlugins(
       // A caller who may not save reads the selections; nothing addresses an editor.
       feedback.textContent = updateDenied ? "" : "No plugin changes to save.";
     }
+    describeControls();
+  }
+
+  // Unavailable Save and Discard are described by the feedback line that says why, such as "No
+  // plugin changes to save." (finding D793), and stay in the Tab order while it shows (finding
+  // 2878). Called wherever that line or the controls change.
+  function describeControls() {
+    setUnavailable(save, saveUnavailable, feedback);
+    setUnavailable(discard, discardUnavailable, feedback);
   }
 
   input.addEventListener("input", () => {
@@ -458,6 +473,7 @@ export function renderAgentPlugins(
       if (context.isCurrent()) {
         // The controls stay disabled until the owner rebuilds this tab from the saved Agent.
         feedback.textContent = "Plugin selections saved.";
+        describeControls();
         context.drafts.forget("plugins");
         void onSaved(savedAgent);
       }
@@ -511,6 +527,7 @@ export function renderAgentPlugins(
   updateState();
   if (savedNotice) {
     feedback.textContent = savedNotice;
+    describeControls();
   }
   function readCapabilities() {
     void context.request(`${path}/plugins/capabilities`).then(
@@ -554,6 +571,12 @@ export function renderAgentPlugins(
   // and is not sent a read that answers 403. An unknown answer still reads them (finding 2436).
   // A caller missing only the source grants a save checks is not sent it either: no save could
   // keep a policy edit (finding 2441).
+  const saveReason = element("p", { className: "muted", role: "status" });
+  followSaveReason?.((reason) => {
+    if (updateDenied && reason !== undefined) {
+      saveReason.textContent = reason;
+    }
+  });
   void Promise.resolve(saveDenied).then((reason) => {
     if (!context.isCurrent()) {
       return;
@@ -577,6 +600,7 @@ export function renderAgentPlugins(
     // an editor this caller is not (findings 2447, 2455). The approver field waits for the
     // capabilities read, which this caller is not sent, so the approvers show as text too.
     const selections = Object.keys(agent.plugins ?? {});
+    saveReason.textContent = reason;
     section.replaceChildren(
       element("h2", {}, "Plugin selections"),
       element("p", { className: "muted" }, PLUGINS_READ_ONLY),
@@ -592,7 +616,7 @@ export function renderAgentPlugins(
           listed: "The next deployment uses these Agent default approvers.",
         }),
       ),
-      element("p", { className: "muted", role: "status" }, reason),
+      saveReason,
     );
   });
   return section;

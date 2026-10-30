@@ -11,6 +11,7 @@ import {
   SECRET_NAME_CONFLICT,
 } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import {
   apiRequests,
   consoleViewports,
@@ -43,8 +44,10 @@ const defaultCodexPreset = JSON.parse(
 const standardCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
 );
+// The app options of every test here: the default Codex Preset.
+const presets = { defaultPresets: [defaultCodexPreset] };
 const createConsoleAppFixture = (t: TestContext, options = {}) =>
-  createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
+  createBaseConsoleAppFixture(t, { ...presets, ...options });
 
 function presetId(preset: unknown) {
   assert.ok(
@@ -374,9 +377,7 @@ test("Share Agent checks its fields without the browser bubble", async (t) => {
 // required" error; without that, the stale error and aria-invalid stayed under the field after a
 // refused Create (finding 1983).
 test("choosing a model credential Secret by click clears its required error", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Picker fields", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Picker fields", presets);
   await fixture.createSecret(namespace.id, "Picked model key", "synthetic-picked-key");
   const { page } = await newPage(t, fixture, { browser });
   const invalidEvents = await countInvalidEvents(page);
@@ -507,9 +508,7 @@ const closedPicker = { expanded: "false", listboxHidden: true, errorOnTop: true,
 
 for (const viewport of consoleViewports) {
   test(`Create Agent's required Secret error names its field and stays in sight at ${viewport.width}px`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Picker label", { ready: true });
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Picker label", presets);
     await fixture.createSecret(namespace.id, "Label model key", "synthetic-label-key");
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     const invalidEvents = await countInvalidEvents(page);
@@ -576,9 +575,7 @@ for (const viewport of consoleViewports) {
 // 1989).
 for (const viewport of consoleViewports) {
   test(`a refused Create Secret keeps focus in the dialog, on the refusal, at ${viewport.width}px`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Secret refusals", { ready: true });
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Secret refusals", presets);
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     await routeInstallationWithoutProvisioning(page, fixture);
     let refusal = apiErrorResponse(409, "NAMESPACE_NOT_READY", "refused");

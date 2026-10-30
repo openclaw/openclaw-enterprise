@@ -8,6 +8,7 @@ import type { PermissionAction } from "../../packages/contracts/src/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import {
   consoleViewports,
   detailUrl,
@@ -677,9 +678,7 @@ test("Repository access save refusals", async (t) => {
 });
 
 test("Configuration save outcomes", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Status configuration", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Status configuration");
   const reader = await createReader(fixture, namespace, "status-config-reader");
   let agents = 0;
   const newAgent = () => {
@@ -941,9 +940,7 @@ async function answerDiagnostics(page: Page, revisionId: string) {
 const DIAGNOSTICS_REASON = DIAGNOSTICS_DENIED;
 
 test("Run diagnostics access and outcomes", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Status diagnostics", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Status diagnostics");
   const reader = await createReader(fixture, namespace, "status-diagnostics-reader");
   let agents = 0;
   // An Agent with an active version, and that version's diagnostics section and Run button.

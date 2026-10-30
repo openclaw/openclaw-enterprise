@@ -1,5 +1,5 @@
 import { TokenService } from "../../../../backends/token-service/service.ts";
-import { githubProviderOrigin } from "./origin.ts";
+import { githubProviderOrigin, preparationIssuerAuthority } from "./origin.ts";
 import { createHash, createPrivateKey, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
@@ -22,7 +22,6 @@ import {
 } from "@openclaw-enterprise/occ";
 import { createSystemClock } from "../../credentials/clock.ts";
 import { createGitHubKeyOwner } from "./material.ts";
-import { preparationIssuerAuthority } from "./grants.ts";
 import { PreparedGitHubPostgres } from "./prepared-postgres.ts";
 import { createGitHubPreparationOwner } from "./prepared-owner.ts";
 import { createGitHubWarmReader } from "./prepared-reader.ts";

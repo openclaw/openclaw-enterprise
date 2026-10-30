@@ -311,7 +311,7 @@ jobs:
       - name: Run OpenAPI check
         run: pnpm openapi:check
       - name: Check and build documentation
-        run: pnpm docs:install && pnpm docs:check && pnpm docs:build
+        run: pnpm docs:install && pnpm openapi:lint && pnpm docs:check && pnpm docs:build
       # Seed the cache only after Static Checks passes on a push to main.
       - name: Save Prettier's content cache
         if: steps.prettier-cache.outcome == 'success' && steps.prettier-cache.outputs.cache-hit != 'true'

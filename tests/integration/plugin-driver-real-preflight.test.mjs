@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Run in a child so selection is set before the real fixture module is loaded,
 // without changing the caller's environment or touching a cluster or database.
@@ -60,13 +61,10 @@ test("the full real plugin proof rejects shared or missing scenario databases be
 // only the turn object. Its failure now lists every marker-bearing user message. The stub runs
 // the evidence script against a local transcript instead of the gateway Pod's.
 test("a Codex turn without its prompt mirror names the marker-bearing user messages", async (t) => {
-  const { mkdtemp, rm } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { DatabaseSync } = await import("node:sqlite");
   const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
-  const directory = await mkdtemp(join(tmpdir(), "codex-prompt-evidence-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "codex-prompt-evidence-");
   const marker = "calendar-marker-2019";
   const user = (seq, mirrorIdentity) => ({
     role: "user",
@@ -182,13 +180,10 @@ test("a Codex turn without its prompt mirror names the marker-bearing user messa
 // newest ten marker-bearing user messages, as the allowed turn's check does. The stub runs the
 // evidence script against a local transcript instead of the gateway Pod's.
 test("the session evidence tolerates malformed rows and lists the newest marker messages on denial", async (t) => {
-  const { mkdtemp, rm } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { DatabaseSync } = await import("node:sqlite");
   const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
-  const directory = await mkdtemp(join(tmpdir(), "codex-session-evidence-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "codex-session-evidence-");
   const marker = "calendar-marker-2030";
   const user = (seq, extra = {}) => ({
     role: "user",

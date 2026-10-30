@@ -14,7 +14,7 @@ the dedicated Harness while Compute retains the gateway and routing.
 
 ## Interface
 
-The [exported TypeScript interface](../../../packages/contracts/src/index.ts)
+The [exported TypeScript interface](../../../packages/contracts/src/drivers/compute/index.ts)
 defines each member.
 
 ### Properties

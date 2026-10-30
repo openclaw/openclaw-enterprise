@@ -895,12 +895,18 @@ export class AgentDeletingError extends ResourceConflictError {
 export class NamespaceNotEmptyError extends ResourceConflictError {
   /** Public resource kinds that still occupy the Namespace, such as "Presets". */
   readonly contents: readonly string[];
-  /** IDs of the remaining resources of each kind, so an operator can delete them. */
+  /**
+   * IDs of remaining resources of each kind that the caller may read, so an operator can
+   * delete them. Unreadable resources are only counted (finding 2724).
+   */
   readonly ids: Readonly<Record<string, readonly string[]>>;
+  /** How many resources of each kind remain, named or not; defaults to the named IDs. */
+  readonly counts: Readonly<Record<string, number>>;
 
   constructor(
     contents: readonly string[] = [],
     ids: Readonly<Record<string, readonly string[]>> = {},
+    counts: Readonly<Record<string, number>> = {},
   ) {
     super("The Namespace must be empty before deletion.");
     this.name = "NamespaceNotEmptyError";
@@ -908,6 +914,14 @@ export class NamespaceNotEmptyError extends ResourceConflictError {
     this.ids = Object.freeze(
       Object.fromEntries(
         Object.entries(ids).map(([kind, list]) => [kind, Object.freeze([...list])]),
+      ),
+    );
+    this.counts = Object.freeze(
+      Object.fromEntries(
+        this.contents.map((kind) => [
+          kind,
+          Math.max(counts[kind] ?? 0, this.ids[kind]?.length ?? 0),
+        ]),
       ),
     );
   }
@@ -1382,16 +1396,16 @@ export class StoredCredentialSourceConfigError extends ResourceStateConflictErro
 }
 
 /**
- * The selected Credential Gateway's catalog lacks a source type: registration names one it does
- * not offer, or a configuration change dropped an existing source's type (OpenShell offers
- * `bearer-token` only with `toolBinaries`). An Installation property, raised only after the
- * caller's grant and the source lookup, so it reveals nothing a 403 or 404 hides. The fixed
- * message names the fix.
+ * The selected credential owner does not offer the source type. This Installation property
+ * is reported only after the caller's grant and source lookup, so it reveals nothing a 403
+ * or 404 hides. The message identifies the configuration to check.
  */
 export class CredentialSourceTypeNotOfferedError extends ResourceStateConflictError {
-  constructor() {
+  constructor(owner: "gateway" | "proxy" = "gateway") {
     super(
-      "The Credential Gateway does not offer this credential source type. An Installation administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
+      owner === "proxy"
+        ? "The Credential Proxy does not offer this credential source type. An Installation administrator must check the selected Credential Proxy's provider configuration and any required token issuer."
+        : "The Credential Gateway does not offer this credential source type. An Installation administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
     );
     this.name = "CredentialSourceTypeNotOfferedError";
   }

@@ -1,3 +1,5 @@
+import { checkComputeCredentialCatalog } from "../helpers/compute-credential-catalog.ts";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import {
@@ -1606,6 +1608,7 @@ test("dedicated OpenClaw delivers the selected Google release digest without a S
       id: "native-sandbox",
       implementation: "openshell",
       capability: "sandbox",
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
       facets: ["networking", "filesystem", "process"],
       async workspaceNodePeerLabels() {
         return undefined;
@@ -1668,6 +1671,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels({ revision: target }) {
       return provisions.some(({ revision: { id } }) => id === target.id)
@@ -1700,6 +1704,39 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   nativeConfiguration.models.providers.openai.models[0].baseUrl =
     "https://models.example.test:443/inference/v1/";
   nativeConfiguration.models.providers.openai.api = "openai-completions";
+  const [selectedEntry] = nativeConfiguration.models.providers.openai.models;
+  // The primary row names its own API; the worker and the startup probe use it, not the
+  // provider's.
+  selectedEntry.api = "openai-responses";
+  // OpenClaw also names a catalog entry by the full reference; the worker and the startup probe
+  // get the split model ID (finding 2903).
+  selectedEntry.id = "openai/team/model";
+  // Model metadata may sit on the provider, with provider request options the worker never gets.
+  for (const setting of ["contextWindow", "maxTokens", "cost"]) {
+    nativeConfiguration.models.providers.openai[setting] = selectedEntry[setting];
+    delete selectedEntry[setting];
+  }
+  nativeConfiguration.models.providers.openai.request = { allowPrivateNetwork: true };
+  // The worker gets every selected model; the startup probe checks only the primary.
+  nativeConfiguration.agents.defaults.model = {
+    primary: "openai/team/model",
+    fallbacks: ["openai/team/fallback"],
+  };
+  // The fallback row comes first in the catalog, with its own endpoint and the provider's API;
+  // it reaches only the worker. An unselected entry for another endpoint reaches neither the
+  // worker nor the startup probe.
+  const fallbackEntry = {
+    ...selectedEntry,
+    id: "team/fallback",
+    name: "team/fallback",
+    baseUrl: "https://fallback.example.test/v1",
+  };
+  delete fallbackEntry.api;
+  nativeConfiguration.models.providers.openai.models.unshift(fallbackEntry);
+  nativeConfiguration.models.providers.openai.models.push({
+    id: "unselected",
+    baseUrl: "https://other.example.test/v1",
+  });
   const sourceType = {
     type: "openai",
     config: [],
@@ -1819,20 +1856,47 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     nativeConfig.models.providers.openai.baseUrl,
     "https://models.example.test/inference/v1",
   );
-  assert.equal(
-    nativeConfig.models.providers.openai.models[0].baseUrl,
-    "https://models.example.test/inference/v1",
-  );
-  assert.equal(nativeConfig.models.providers.openai.models[0].api, "openai-completions");
   assert.deepEqual(nativeConfig.models.providers.openai.apiKey, {
     source: "env",
     provider: "model",
     id: "OPENAI_API_KEY",
   });
+  // The worker gets the selected rows in selection order, each with its own endpoint and API.
   assert.deepEqual(
-    nativeConfig.models.providers.openai.models.map(({ id }) => id),
-    ["team/model"],
+    nativeConfig.models.providers.openai.models.map(({ id, api, baseUrl }) => [id, api, baseUrl]),
+    [
+      ["team/model", "openai-responses", "https://models.example.test/inference/v1"],
+      ["team/fallback", "openai-completions", "https://fallback.example.test/v1"],
+    ],
   );
+  // The startup probe gets only the primary model's entry (OpenClaw merges entries whose ids
+  // match after trimming; findings 2882, 2883), as the worker gets it: the split model ID, and
+  // the checked endpoint as the provider default. OpenClaw refuses to probe a known model under
+  // the authored prefix when its endpoint differs from the provider's (finding 2903), and the
+  // unchecked provider baseUrl never reaches the probe. The row carries no baseUrl of its own:
+  // the runtime's upfront credential check skips rows that do (finding 2904).
+  const probeConfig = JSON.parse(
+    provisions[0].requirements.environment.find(
+      ({ name }) => name === "OPENCLAW_HARNESS_PROBE_CONFIG",
+    ).value,
+  );
+  const { baseUrl: workerEndpoint, ...workerPrimary } =
+    nativeConfig.models.providers.openai.models[0];
+  assert.equal(workerEndpoint, "https://models.example.test/inference/v1");
+  assert.deepEqual(
+    [workerPrimary.contextWindow, workerPrimary.maxTokens],
+    [128000, 8192],
+    "the worker gets the provider's model metadata on the row",
+  );
+  // No other authored provider setting reaches the probe: OpenClaw refuses provider-level model
+  // metadata there (finding 2905), and any provider key besides baseUrl, api, models and request
+  // turns off the runtime's upfront credential check (finding 2907). The provider API is the
+  // row's, which that check also compares.
+  assert.deepEqual(probeConfig.models, {
+    providers: {
+      openai: { baseUrl: workerEndpoint, api: workerPrimary.api, models: [workerPrimary] },
+    },
+  });
   // The provider's observed Pod readiness and enrolled node are independent of provisioning.
   // Until the provider's Pod is Ready, the wait has no named reason.
   const podPending = await prepare();
@@ -1937,6 +2001,7 @@ test("Kubernetes native Sandbox provisioning fails a revision on the worker's he
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels({ revision: target }) {
       return provisions.some(({ revision: { id } }) => id === target.id)
@@ -2111,6 +2176,7 @@ test("Kubernetes Sandbox provisioning fails a revision at once when the provider
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels() {
       return undefined;
@@ -2186,6 +2252,7 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels({ revision: target }) {
       return provisions.some(({ revision: { id } }) => id === target.id)
@@ -2342,6 +2409,7 @@ test("Kubernetes Compute withdraws a native Harness exposure outside a preparati
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async provisionHarness() {
       assert.fail("no preparation pass runs here");
@@ -3087,6 +3155,7 @@ test("activation waits for the first repository Git credential install and the n
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels({ revision: target }) {
       return provisions.some(({ revision: { id } }) => id === target.id)
@@ -3606,6 +3675,7 @@ test("the Pod quota check reads only the revision's own workload Deployments", a
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels() {
       return undefined;
@@ -4535,6 +4605,7 @@ test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async 
     id: "sandbox-namespace-cleanup",
     implementation: "test/namespace-cleanup",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     async cleanup(context) {
       assert.equal(context.revision, undefined);
@@ -8852,6 +8923,7 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
   const sandboxDriver = {
     id: "sandbox-openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     harnessResource({ namespace, revision }) {
       return {
@@ -9233,6 +9305,7 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   const sandboxDriver = {
     id: "sandbox-openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     provisionHarness() {},
   };
@@ -9386,6 +9459,7 @@ test("credential-source authentication renders no model Secret and requires the 
   const sandboxDriver = {
     id: "sandbox-openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     provisionHarness() {},
   };
@@ -9601,6 +9675,7 @@ test("non-model credential sources resolved at dispatch must match the revision'
   const sandboxDriver = {
     id: "sandbox-openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     provisionHarness() {},
   };
@@ -9755,6 +9830,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     id: "sandbox-native-worker",
     implementation: "test/native-worker",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async provisionHarness() {},
     async cleanup() {},
@@ -13638,6 +13714,7 @@ test("containment-only Sandbox cleanup retries after its Compute-owned workload 
     id: "sandbox-containment-only",
     implementation: "test/containment-only",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     async cleanup(context) {
       assert.equal(deploymentPresent, false);
@@ -14677,6 +14754,7 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
         id: "sandbox-native-worker",
         implementation: "test/native-worker",
         capability: "sandbox",
+        supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
         facets: ["networking", "filesystem", "process"],
         async provisionHarness() {},
         async cleanup() {},
@@ -14761,6 +14839,19 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
     ],
     [
       withOpenAI({ ...openaiRow, models: [openaiRow.models[0], openaiRow.models[0]] }),
+      "models.providers.openai.models",
+      "must hold exactly one entry for each selected openai model on Dedicated OpenClaw",
+    ],
+    // OpenClaw merges entries whose ids match after trimming, so an unselected entry with a
+    // padded id and its own endpoint would still give the Secret-backed key that endpoint.
+    [
+      withOpenAI({
+        ...openaiRow,
+        models: [
+          openaiRow.models[0],
+          { id: ` ${openaiRow.models[0].id}`, baseUrl: "https://other.example.test/v1" },
+        ],
+      }),
       "models.providers.openai.models",
       "must hold exactly one entry for each selected openai model on Dedicated OpenClaw",
     ],
@@ -16300,6 +16391,7 @@ test("stopping a containment-only Kubernetes revision removes its workload befor
     id: "sandbox-containment-only-stop",
     implementation: "test/containment-only",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     async cleanup(context) {
       assert.equal(deploymentPresent, false);
@@ -16708,6 +16800,7 @@ test("stopping a provider-owned Kubernetes revision waits for Sandbox workload t
     id: "sandbox-provider-stop",
     implementation: "test/provider-owned",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["execution"],
     async provisionHarness() {
       assert.fail("stop must not provision a Harness workload");
@@ -16847,6 +16940,7 @@ test("stop and retirement end credential-source access through Sandbox cleanup",
     id: "sandbox-credential-stop",
     implementation: "test/provider-owned",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async provisionHarness() {
       assert.fail("stop and retirement must not provision a Harness workload");
@@ -18712,6 +18806,24 @@ test("external ChatGPT source preparation delivers the exact placeholder and acc
       (entry) => entry.kind === "Secret" && entry.metadata.name.startsWith("harness-secrets-"),
     ),
     false,
+  );
+
+  await checkComputeCredentialCatalog(
+    t,
+    driver,
+    revision,
+    context,
+    credentialGatewayDriver,
+    objects,
+    driver.manifest(
+      "v1",
+      "Secret",
+      driver.workspaceNodeName(revision),
+      driver.workspaceNodeOwnership(revision),
+      { name: namespace, plane: "execution" },
+    ),
+    (await driver.apiClients).core,
+    requirements.labels,
   );
 
   await t.test("selects Harness authentication by source ID among multiple attachments", () => {

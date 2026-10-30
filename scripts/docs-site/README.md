@@ -103,3 +103,28 @@ source for the generated [HTTP API reference](../../docs/reference/api.md) or
 The docs package is intentionally outside the active application workspace. Its
 independent lockfile lets docs-only contributors install the renderer without
 installing controller dependencies. Do not add it to the TypeScript solution.
+
+## Generated API documentation
+
+`pnpm openapi:generate` exports the registered Fastify routes and adds the
+explicit examples in `scripts/api-examples.mjs`. That catalog reuses synthetic
+resource values and never imports test fixtures or live credentials. New
+operations, parameters and body-bearing responses must have examples; generation
+fails on missing coverage. Keep examples consistent with the owning route schemas
+and handlers. Empty collections are intentional empty states, not evidence that
+a provider integration ran.
+
+After generation, run `pnpm openapi:check` and `pnpm openapi:lint`. The first
+checks reproducibility; Redocly checks OpenAPI structure, operation descriptions,
+IDs, references and example schema validity. These checks do not prove lifecycle
+or provider behavior. CI runs both checks before publishing the docs.
+
+The API explorer ships a pinned Scalar browser bundle from the isolated docs
+package. The build copies it and the generated OpenAPI JSON into site assets;
+there is no CDN or request proxy. Credentials are not persisted. Scalar retains
+the generated human-readable IAM description beside each operation. The
+Markdown reference remains available for GitHub and the site search index.
+
+For UI changes, build the docs and inspect the explorer, examples, navigation,
+and mobile layout in a browser. No runtime flow changed when only this
+export/render pipeline changes.

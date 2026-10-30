@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import type {
   ComputeDriver,
   ConfigurationDriver,
@@ -118,11 +117,8 @@ test(
       });
       const driver = new GitHubRepositoryPolicy(
         {
-          id: backendId,
-          drivers: { repo: "standing-repo-driver" },
-          client: new UnixRepositoryCredentialControlClient({
-            controlSocket: "/unused/standing/control.sock",
-          }),
+          driverId: "standing-repo-driver",
+          backendId,
         },
         validateGitHubRepositoryRegistry(input),
         { sessionDurationSeconds: 3600 },

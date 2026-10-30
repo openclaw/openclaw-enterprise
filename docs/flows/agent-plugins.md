@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-28
-last_updated_session: authoring-run/b0d7dda7-f5c2-4314-a2ae-bd0c8cdfbd6f
+updated: 2026-10-29
+last_updated_session: 01a184cd-7ec2-7fa2-8547-9629c51ad0ba
 ---
 
 # Agent Plugin Deployment Flow
@@ -92,6 +92,7 @@ identity, searches `q`, and pages GLOBAL entries with opaque cursors.
 [Console discovery](../../apps/controller/src/console/agents/plugin-discovery.mjs)
 prefetches catalogs on create or edit. Closing the picker or changing views cancels reads.
 Changing credentials clears results and preserves selections.
+A hidden tab cancels deferred prefetch before sending; reopening its picker can load again.
 See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
 for search, paging and tool loading.
 
@@ -204,7 +205,8 @@ describe the generated bridge.
 <!-- Internal preparation threads one explicit RPC caller through these reads,
 writes, reviewer checks, and no-account disablement; ordinary transport is unchanged. -->
 
-After `plugin/list`, `runtime-entrypoints.ts:readCodexPluginDetails` reads up to four
+After `plugin/search` resolves each selected ID,
+`runtime-entrypoints.ts:readCodexPluginDetails` reads up to four
 selections concurrently before and after installs. Batches preserve order and drain
 before retries and final verification; writes stay sequential.
 `codexRuntimeArtifact` uses `detail.apps`, excluding `appTemplates`.
@@ -368,8 +370,6 @@ establish starvation.
 
 ## Changelog
 
-- 2026-10-28 22:10: Move Google request checks to the shared execution-cluster guard. (authoring-run/c087e31e-0fa9-4e3c-b838-1d07f0e65106 - ce4688a9)
-
-- 2026-10-28 20:30: Trace independent credential attachment, Google request authorization and recovery after withdrawal. (authoring-run/eb0c7e7c-b271-4619-851b-f117782bdded - dbe0d78a)
+- 2026-10-29 22:19: Release deferred catalog loading when its tab is no longer current. (authoring-run/7a2bb516-4223-4156-b1a8-1d89f60a54d4)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

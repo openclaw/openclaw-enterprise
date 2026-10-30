@@ -29,7 +29,7 @@ there is no fallback to environment delivery.
 
 ### Core interface
 
-The [shared interface](../../../packages/contracts/src/index.ts) requires every
+The [shared interface](../../../packages/contracts/src/drivers/credential-gateway/index.ts) requires every
 method below. Startup rejects a Driver that omits one.
 
 | Operation              | Inputs and preconditions                                                                         | Result or side effects                                                                                                                                         | Failure or absence                                                                     |
