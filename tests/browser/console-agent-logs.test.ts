@@ -1667,6 +1667,112 @@ test("Logs of an older version picked on purpose stay on it and link to the serv
   );
 });
 
+// A redeploy from elsewhere usually replaces the version while the Agent keeps running: only the
+// selected version changes. The poll's Agent reread must see that change alone (finding 2975).
+// The notice is redrawn only when the version it names changes, so a keyboard reader on its link
+// keeps focus through later polls.
+test("Logs of a version replaced while the Agent runs name the new version and keep focus on its link", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "the first version serves")];
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, undefined, "logs"));
+  await page
+    .getByRole("log", { name: "Runtime log output" })
+    .getByText("the first version serves")
+    .waitFor();
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const notice = page.locator(".log-running-version");
+
+  // Another operator's deployment selects v2 and v1's Pod goes; the Agent stays running.
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id, revisionId);
+  computeDriver.state.podlessRevisions.push(revisionId);
+  assert.equal((await fixture.request("GET", agentPath)).data.desiredRuntimeState, "running");
+  await page.clock.runFor(10_000);
+  await notice.getByText("v2 is selected for service.").waitFor();
+  const open = notice.getByRole("link", { name: "Open v2 Logs" });
+  const href = new URL((await open.getAttribute("href")) ?? "", page.url());
+  assert.equal(href.searchParams.get("revision"), revision.id);
+
+  await open.focus();
+  for (let poll = 0; poll < 2; poll += 1) {
+    const agentReads = await settledFetches(page, agentPath);
+    await page.clock.runFor(10_000);
+    await waitForSettledFetches(page, agentPath, agentReads + 1);
+    await waitForIdleFetches(page);
+    assert.equal(
+      await open.evaluate((node) => node === globalThis.document.activeElement),
+      true,
+      `poll ${poll + 1} keeps focus on the link`,
+    );
+  }
+});
+
+// The same poll shows a deletion from elsewhere. A stopped Agent being deleted keeps its version
+// and requested runtime state, so the deleting status alone must update the page, which then
+// shows only its deletion row.
+test("Logs of a stopped version show a deletion from elsewhere", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const stopped = await fixture.request("POST", `${agentPath}/stop`);
+  assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
+  computeDriver.state.podlessRevisions.push(revisionId);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  await page
+    .getByRole("status")
+    .filter({ hasText: "This version has no running Pod for this source." })
+    .waitFor();
+  const before = (await fixture.request("GET", agentPath)).data;
+  assert.equal((await fixture.request("DELETE", agentPath)).status, 202);
+  const after = (await fixture.request("GET", agentPath)).data;
+  assert.equal(after.status, "deleting");
+  assert.equal(after.activeRevisionId, before.activeRevisionId);
+  assert.equal(after.desiredRuntimeState, before.desiredRuntimeState);
+  const agentReads = await settledFetches(page, agentPath);
+  await page.clock.runFor(10_000);
+  await waitForSettledFetches(page, agentPath, agentReads + 1);
+  await page.locator(".badge").filter({ hasText: "Deleting" }).waitFor();
+  assert.equal(await page.getByRole("log", { name: "Runtime log output" }).count(), 0);
+});
+
+// The notice rests on runtime status: without a Pod answer the view cannot say this version has
+// none. A status poll refused after operate is revoked clears it, and none follows to redraw it.
+test("a refused status poll clears the notice naming the version selected for service", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id, revisionId);
+  computeDriver.state.podlessRevisions.push(revisionId);
+  const { account, role } = await logsMember(fixture, namespace, "notice-revoke", [
+    "read",
+    "operate",
+    "read_logs",
+  ]);
+  const { page } = await newPage(t, fixture);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"),
+    account.credentials,
+  );
+  const notice = page.locator(".log-running-version");
+  await notice.getByText("v2 is selected for service.").waitFor();
+
+  changeGrant(role, "operate", false);
+  const refused = page.waitForResponse(
+    (response) => response.url().endsWith("/runtime") && response.status() === 403,
+  );
+  await page.clock.runFor(10_000);
+  await refused;
+  await waitForCondition(
+    async () => (await notice.innerText()) === "",
+    "the notice stays after the status refusal",
+  );
+});
+
 // Finding 2978 (dogfood r60, D818). The Agent was stopped and redeployed from elsewhere while its
 // Logs stayed open, and the new version's deployment failed. A failed deployment selects no
 // version, so the Agent read each poll makes showed only that the Agent runs again: the page kept

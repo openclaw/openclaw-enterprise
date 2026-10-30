@@ -79,6 +79,7 @@ import {
   AGENT_DEPLOY_NOT_INCLUDED,
   AGENT_SAVE_DENIED,
   AGENT_SOURCES_DENIED,
+  AGENT_UPDATE_DENIED,
   CONFIGURATION_EDITS_PENDING,
   CONFIGURATION_UPDATE_DENIED,
   CONSOLE_NAMESPACE_NOT_READY,
@@ -5312,6 +5313,64 @@ test("a superseded draft Secret metadata read cannot replace the current Configu
   );
   assert.equal(await page.getByText(reason, { exact: true }).count(), 1);
 });
+
+// Save hints list the bound Secrets a member lacks operate on in name order, joined as a sentence,
+// whatever order their metadata reads finish in. Plugins, drawn after the names arrive, shows them
+// at once. Only the Secret-operate gap lists them: a member without Agent update gets that reason
+// alone, since Secret grants would not let them save.
+for (const agentUpdate of [false, true]) {
+  test(`save hints name two denied Secrets in order${agentUpdate ? "" : " and not beside an Agent update denial"}`, async (t) => {
+    const { fixture, namespace, agent, member, app, configurationPath } =
+      await replaceSecretFixture(t, `Two names ${agentUpdate}`, { agentUpdate });
+    // The member loses operate on the app token Secret too.
+    const index = fixture.policy.bindings.findIndex(
+      (binding) => binding.resourceId === app.id && binding.subjectId === member.principal.id,
+    );
+    assert.notEqual(index, -1);
+    fixture.policy.bindings.splice(index, 1);
+    const configuration = await fixture.request("GET", configurationPath);
+    const botId = configuration.data.secretBindings.SLACK_BOT_TOKEN.source.id;
+    const { page } = await newPage(t, fixture);
+    // The app token's metadata read finishes after the bot token's.
+    const held = await holdRequests(
+      t,
+      page,
+      `${fixture.origin}/namespaces/${namespace.id}/secrets/${app.id}`,
+      {
+        method: "GET",
+        once: true,
+        afterServer: true,
+      },
+    );
+    const botRead = page.waitForResponse((response) =>
+      response.url().endsWith(`/secrets/${botId}`),
+    );
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      member.credentials,
+    );
+    await held.requested;
+    await botRead;
+    await nextFrames(page);
+    held.release();
+    const names = "Admin app token and Admin bot token";
+    await page
+      .getByText(
+        `Saving this Configuration needs Secret operate on ${names}, which your access does not include. Ask an Installation administrator to grant it.`,
+        { exact: true },
+      )
+      .waitFor();
+    await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+    await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
+    const reason = agentUpdate
+      ? `${AGENT_SOURCES_DENIED} Missing Secret operate on ${names}.`
+      : AGENT_UPDATE_DENIED;
+    await page.getByRole("status").filter({ hasText: reason }).waitFor();
+    assert.equal(await page.getByText(reason, { exact: true }).count(), 1);
+  });
+}
 
 // A save is checked on the Secrets it submits, not on the ones it replaces. A member who may not
 // operate the administrator's bot token Secret, but may operate the app token Secret and their
