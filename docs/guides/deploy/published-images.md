@@ -15,15 +15,14 @@ find or copy a SHA manually.
 
 ## Pull a matching pair
 
-From a Bash shell in the repository root, select and pull both images
-anonymously. Set `export OCE_IMAGE_CHANNEL=stable` for the stable publication. The
-default selects `latest`. Run the
-whole block; it clears earlier selections and exports them only after both pulls
-and source commit checks succeed:
+Run the following block in Bash from the repository root. It pulls the `stable`
+controller and runtime by default. To pull the `latest` pair, set
+`export OCE_IMAGE_CHANNEL=latest` first. The block exports the image references
+only after both pulls succeed and the source commits match.
 
 ```bash
 unset CONTROLLER_IMAGE RUNTIME_IMAGE OCE_IMAGE_REVISION
-CHANNEL="${OCE_IMAGE_CHANNEL:-latest}"
+CHANNEL="${OCE_IMAGE_CHANNEL:-stable}"
 CONTROLLER_TAG="ghcr.io/openclaw/openclaw-enterprise-controller:$CHANNEL"
 RUNTIME_TAG="ghcr.io/openclaw/openclaw-enterprise-runtime:$CHANNEL"
 if docker pull "$CONTROLLER_TAG" && docker pull "$RUNTIME_TAG" &&
