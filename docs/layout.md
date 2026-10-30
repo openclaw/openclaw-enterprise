@@ -71,10 +71,11 @@ owning Driver or Backend and wire it through composition. See
 status, and remaining design requirements.
 
 Within `packages/contracts/src/`, `runtime-logs.ts` owns runtime inspection and
-container/Sandbox log types. `drivers/driver.ts` owns the base `Driver` and registry
-types. Each Driver capability has one interface file under `drivers/`, such as
-`compute.ts` or `iam.ts`, with the request, context, and result types of that Driver.
-Shared resource models remain in `index.ts`, which is the public export entrypoint.
+container/Sandbox log types. `drivers/index.ts` owns the shared base `Driver` and
+registry types. Each Driver capability has its own directory with an `index.ts`,
+such as `drivers/compute/index.ts` or `drivers/iam/index.ts`, containing that
+Driver's interface, request, context, and result types. The root `index.ts` retains
+shared resource definitions and the public package exports.
 
 Within controller composition, `installation-presets.ts` owns Preset file loading
 and bundled-version assembly; `installation-config.ts` owns Driver composition.
@@ -86,7 +87,7 @@ from verbose validation errors after their details are built.
 
 The [repository capability](reference/repository-credentials.md#repo-driver-contract)
 uses `RepositoryPolicyDriver` and `NativeRepositorySender` in
-`packages/contracts/src/drivers/repo.ts`, implemented by `drivers/repo/github/policy.ts`
+`packages/contracts/src/drivers/repo/index.ts`, implemented by `drivers/repo/github/policy.ts`
 and `drivers/repo/github/driver.ts`, respectively. Under `apps/controller/src/`, its owners are:
 
 - `drivers/repo/credentials/`: private common sessions, custody, lifecycle,

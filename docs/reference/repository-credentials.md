@@ -51,7 +51,7 @@ and [anonymous public reads](public-github-reads.md).
 ## Repo Driver contract
 
 The GitHub Backend selects [GitHub repository policy](../../apps/controller/src/drivers/repo/github/policy.ts)
-by ID in `drivers.repo`. Its [contract](../../packages/contracts/src/drivers/repo.ts) is separate from
+by ID in `drivers.repo`. Its [contract](../../packages/contracts/src/drivers/repo/index.ts) is separate from
 `NativeRepositorySender`. For protected Git, [composition](../../apps/controller/src/composition/repository-credentials/platform.ts)
 supplies the resolver that checks the admitted grant and selects its destination.
 

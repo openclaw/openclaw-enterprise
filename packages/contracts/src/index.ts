@@ -1,10 +1,10 @@
-import type { ComputeAgentProvisioningCapabilities } from "./drivers/compute.ts";
-import type { DriverCapability } from "./drivers/driver.ts";
+import type { ComputeAgentProvisioningCapabilities } from "./drivers/compute/index.ts";
+import type { DriverCapability } from "./drivers/index.ts";
 import type {
   ExecutionAdmission,
   ProtectedEgressSource,
   ProxyPlan,
-} from "./drivers/credential-proxy.ts";
+} from "./drivers/credential-proxy/index.ts";
 
 export type {
   CredentialPolicyReduction,
@@ -40,7 +40,7 @@ export type {
   CredentialProviderDefinition,
   CredentialSourceControl,
   CredentialProxyDriver,
-} from "./drivers/credential-proxy.ts";
+} from "./drivers/credential-proxy/index.ts";
 export type {
   CredentialProxyBinding,
   CredentialProxyExchange,
@@ -98,7 +98,7 @@ export {
   repositoryGitAuthorization,
   repositoryGitProfileAvailable,
   protectedRepositoryGitAdmission,
-} from "./drivers/credential-proxy.ts";
+} from "./drivers/credential-proxy/index.ts";
 
 export type {
   ConfigurationDefinition,
@@ -152,7 +152,7 @@ import type {
   RepositoryAccess,
   RepositoryBindingSelection,
   RepositoryRevisionState,
-} from "./drivers/repo.ts";
+} from "./drivers/repo/index.ts";
 
 export type {
   RuntimeLogContentClass,
@@ -209,12 +209,12 @@ export type {
   RepositoryCredentialSessionFiles,
   RepositoryCredentialSessionStatus,
   RepositoryRevisionState,
-} from "./drivers/repo.ts";
+} from "./drivers/repo/index.ts";
 export {
   githubInstallationProfile,
   isInstallationRepositoryProfile,
   repositoryGitDeliveryProfile,
-} from "./drivers/repo.ts";
+} from "./drivers/repo/index.ts";
 
 /** Experimental Installation backend composition; separate from native model providers. */
 export type BackendType = BackendDefinition["type"];
@@ -1336,7 +1336,7 @@ export interface AuditEvent extends Scope {
   readonly details?: Readonly<Record<string, unknown>>;
 }
 
-export { DRIVER_CAPABILITIES, isDriverCapability } from "./drivers/driver.ts";
+export { DRIVER_CAPABILITIES, isDriverCapability } from "./drivers/index.ts";
 export type {
   DriverCapability,
   Driver,
@@ -1345,7 +1345,7 @@ export type {
   DriverRegistrationRef,
   SelectedDriverRegistration,
   DriverImplementation,
-} from "./drivers/driver.ts";
+} from "./drivers/index.ts";
 export type {
   IAMDriver,
   IAMPolicyReadRepository,
@@ -1356,9 +1356,9 @@ export type {
   IAMManagedRoleInput,
   IAMManagedAccessBindingInput,
   IAMManagedServicePrincipalInput,
-} from "./drivers/iam.ts";
-export type { ServiceAccountDriver } from "./drivers/service-account.ts";
-export type { SecretDriver } from "./drivers/secret.ts";
+} from "./drivers/iam/index.ts";
+export type { ServiceAccountDriver } from "./drivers/service-account/index.ts";
+export type { SecretDriver } from "./drivers/secret/index.ts";
 export type {
   CredentialGatewayDriver,
   CredentialGatewayContext,
@@ -1371,14 +1371,14 @@ export type {
   CredentialSourceAttachment,
   CredentialAttachmentStatus,
   CredentialSourceToken,
-} from "./drivers/credential-gateway.ts";
+} from "./drivers/credential-gateway/index.ts";
 export type {
   CredentialRefreshDriver,
   CredentialRefreshInput,
   CredentialRefreshStatus,
   CredentialSourceDeviceAuthorization,
   CredentialSourceDeviceAuthorizationResult,
-} from "./drivers/credential-refresh.ts";
+} from "./drivers/credential-refresh/index.ts";
 export type {
   HarnessExecutionModeSupport,
   SandboxDriver,
@@ -1399,18 +1399,18 @@ export type {
   SandboxHarnessLostCode,
   SandboxHarnessRestart,
   SandboxHarnessObservation,
-} from "./drivers/sandbox.ts";
+} from "./drivers/sandbox/index.ts";
 export type {
   PluginDriver,
   PluginDriverContext,
   PluginDiscoveryAuthentication,
-} from "./drivers/plugin.ts";
+} from "./drivers/plugin/index.ts";
 export type {
   ChannelDriver,
   ChannelDirectoryLookupInput,
   ChannelDirectoryResult,
   ChannelCredentialReader,
-} from "./drivers/channel.ts";
+} from "./drivers/channel/index.ts";
 export type {
   ComputeDriver,
   ComputeRevisionContext,
@@ -1437,11 +1437,11 @@ export type {
   RuntimeImage,
   ComputePreflightWarning,
   ComputePreflightResult,
-} from "./drivers/compute.ts";
+} from "./drivers/compute/index.ts";
 export type {
   ConfigurationDriver,
   ConfigurationValidationOptions,
-} from "./drivers/configuration.ts";
+} from "./drivers/configuration/index.ts";
 
 export type JSONSchema = Readonly<Record<string, unknown>>;
 

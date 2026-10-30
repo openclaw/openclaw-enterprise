@@ -1,5 +1,5 @@
 import type { CredentialProxyBinding } from "./credential-proxy-exchange.ts";
-import type { EgressInstallation } from "./drivers/credential-proxy.ts";
+import type { EgressInstallation } from "./drivers/credential-proxy/index.ts";
 import type {
   PreparedGitHubInstallationUseRequest,
   PreparedGitHubUseRequest,
