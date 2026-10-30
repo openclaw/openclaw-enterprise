@@ -451,6 +451,9 @@ const CHANNEL_BINDING_CONSOLE_REMEDY = `This editor does not save Secret binding
 // slow link that read lands over a second after the page, and a failed version's banner then
 // pushed the shown overview down (finding 1489).
 export const FIRST_ACTIVITY_WAIT_MS = 2000;
+// How often a Logs status poll may list the versions while the Agent runs with no version
+// selected and nothing about it changed (finding 2988).
+const NEWER_VERSION_REREAD_MS = 60_000;
 // The badge tone of a recorded deployment outcome in the Agent summary; superseded and stopped
 // records stay neutral.
 const DEPLOYMENT_OUTCOME_TONES: Partial<Record<DeploymentOutcome, string>> = {
@@ -2266,6 +2269,8 @@ export async function renderAgentDetail(
   // service, with no hint (finding 2975). The reread updates the page in place, as a finished
   // deployment does; a new current version also needs the version list for its label.
   let servingReread: Promise<void> | null = null;
+  // When this reread last listed the versions to look for a newer one.
+  let newerVersionListedAt = Number.NEGATIVE_INFINITY;
   async function rereadServing() {
     const fresh = await readAgent();
     if (!context.isCurrent() || deleting) {
@@ -2277,30 +2282,52 @@ export async function renderAgentDetail(
       fresh.desiredRuntimeState !== currentRuntimeState;
     // A deployment requested elsewhere sets the Agent running and selects its version only once
     // it succeeds. Running with no version selected, while the newest listed version's own
-    // deployment is neither in progress nor failed, means a newer version exists: list it, so
-    // its deployment panel reads its outcome. A failed redeploy otherwise left the page on the
-    // stopped version's "Completed" until a reload (finding 2978).
+    // deployment is not in progress, can mean a newer version exists: list it, so its deployment
+    // panel reads its outcome. A failed redeploy otherwise left the page on the stopped version's
+    // "Completed" until a reload (finding 2978). The Agent read does not change when a second
+    // redeploy follows a failed one, and a newer version the caller cannot read is never listed,
+    // so with no change the list is read at most once a minute, not on every 10 s poll (finding
+    // 2988).
     const newerDeployment =
       fresh.status !== "deleting" &&
       fresh.desiredRuntimeState === "running" &&
       !fresh.activeRevisionId &&
       !deploymentPending(latestDeploymentStatus) &&
-      latestDeploymentStatus !== "failed";
+      (changed || Date.now() - newerVersionListedAt >= NEWER_VERSION_REREAD_MS);
     if (!changed && !newerDeployment) {
       return;
     }
     const unknownVersion =
       newerDeployment ||
       (fresh.activeRevisionId !== undefined && !listedRevisions.has(fresh.activeRevisionId));
-    const revisionResult: RevisionResult | null = unknownVersion
-      ? {
-          status: "fulfilled",
-          value: revisionsForPage(await readRevisionPage(request, path)),
-        }
-      : latestRevisionResult;
-    if (context.isCurrent() && !deleting) {
-      updateCurrentAgent(fresh, revisionResult, viewedSnapshot);
+    if (newerDeployment) {
+      newerVersionListedAt = Date.now();
     }
+    const page = unknownVersion ? revisionsForPage(await readRevisionPage(request, path)) : null;
+    if (!context.isCurrent() || deleting) {
+      return;
+    }
+    // A list with no new version or outcome changes nothing: the version chooser is not
+    // rebuilt, so an open dropdown stays open and keeps focus.
+    if (
+      !changed &&
+      page &&
+      latestRevisionResult?.status === "fulfilled" &&
+      page.revisions.every((revision) => {
+        const listed = listedRevisions.get(revision.id);
+        return (
+          listed?.deploymentStatus === revision.deploymentStatus &&
+          listed.deploymentErrorCode === revision.deploymentErrorCode
+        );
+      })
+    ) {
+      return;
+    }
+    updateCurrentAgent(
+      fresh,
+      page ? { status: "fulfilled", value: page } : latestRevisionResult,
+      viewedSnapshot,
+    );
   }
   async function runningVersion() {
     servingReread ??= rereadServing()
@@ -2323,10 +2350,15 @@ export async function renderAgentDetail(
   // The failed version the recovery block leads with, if any. The viewed version's record does
   // not repeat that version's error below it (finding 2368).
   let recoveryRevisionId: string | null = null;
+  // The recovery card's failure in one line, and the open Logs view that repeats it in place
+  // (finding 2993).
+  let recoveryLine: ReturnType<typeof recovery.show> = null;
+  let logsFailure: ((line: typeof recoveryLine) => void) | null = null;
   function showRecovery(failure: Parameters<typeof recovery.show>[0]) {
-    recovery.show(failure);
+    recoveryLine = recovery.show(failure);
     recoveryRevisionId = failure?.latest.id ?? null;
     versionRecord?.setFailureShownAbove(recoveryRevisionId === selected);
+    logsFailure?.(recoveryLine);
   }
 
   function renderLatestDeployment() {
@@ -4421,6 +4453,14 @@ export async function renderAgentDetail(
         },
         runningVersion,
       });
+      logsFailure = (line) =>
+        logs.showDeploymentFailure(
+          line && {
+            ...line,
+            link: versionLink(`View ${line.version} deployment`, line.revisionId, "deployment"),
+          },
+        );
+      logsFailure(recoveryLine);
       content.append(logs.section);
       state.loading = false;
       // The pending view is nearly empty: Stop and Delete sat under it, then the strip and
