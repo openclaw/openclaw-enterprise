@@ -1738,7 +1738,7 @@ export class PluginPolicyValidationError extends Error {
         driverId === undefined ? "" : ` (${driverId})`
       } does not offer${
         pluginId === undefined ? "" : `: ${pluginId}`
-      }. Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.`;
+      }. Check each plugin ID and its Driver prefix against the catalog for the Agent's Harness.`;
     } else if (field === "aliasedPlugin") {
       message =
         'Two plugin selections name the same plugin (a native ID and its driver-prefixed ID, such as "diffs" and "occ-plugin:diffs"). Keep one selection per plugin.';

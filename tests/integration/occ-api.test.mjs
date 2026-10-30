@@ -1875,7 +1875,7 @@ test("Create Agent's preflight refuses what Configuration and Agent create would
   assert.equal(unknown.status, 400, JSON.stringify(unknown.body));
   assert.equal(
     unknown.body.error.message,
-    "A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: occ-plugin:missing. Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.",
+    "A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: occ-plugin:missing. Check each plugin ID and its Driver prefix against the catalog for the Agent's Harness.",
   );
 
   // No route lists Configurations; the Agent and Secret collections stay empty.

@@ -2061,16 +2061,8 @@ export class OpenClawController {
   }
 
   private selectPluginRegistrations(entries: readonly RegisteredDriver[]): void {
-    const selections = new Map(this.selections);
-    selections.delete("plugin");
-    this.applyLifecycleDrivers(selections, entries);
+    this.applyLifecycleDrivers(this.selections, entries);
     this.pluginRegistrations = entries;
-    // Other capabilities have one selected registration. Expose a scalar only for a singleton.
-    if (entries.length === 1) {
-      this.selections.set("plugin", entries[0]!);
-    } else {
-      this.selections.delete("plugin");
-    }
   }
 
   /** Register one configured owner, then select its exact capability views. */
@@ -2148,7 +2140,10 @@ export class OpenClawController {
     if (!capability(selectedCapability)) {
       throw new DriverSelectionError("The requested Driver capability is invalid.");
     }
-    const selected = this.selections.get(selectedCapability);
+    const selected =
+      selectedCapability === "plugin" && this.pluginRegistrations.length === 1
+        ? this.pluginRegistrations[0]
+        : this.selections.get(selectedCapability);
     if (!selected || !this.unchangedDriver(selected)) {
       throw new DriverSelectionError(
         "The selected Driver is unavailable or no longer matches its capability.",
@@ -3260,8 +3255,8 @@ export class OpenClawController {
       }
       // Plugins the Plugin Driver cannot run in this Harness, as Agent save refuses them;
       // authorizeProvisioningRecord repeats this check for the stored record.
-      if (plugins !== undefined && Object.keys(plugins).length > 0) {
-        this.validatePluginPlacement(plugins, {
+      if (driver) {
+        this.validatePluginPlacement(driver, plugins, {
           id: resolveConfiguredHarnessId(configurationInput.values),
           mode: executionMode,
         });
@@ -8154,42 +8149,27 @@ export class OpenClawController {
     },
     signal?: AbortSignal,
   ): Promise<PluginCatalogPage> {
-    await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
-    await this.read((state) => this.exactNamespace(state, namespaceId));
-    const recheck = async (driver: PluginDriver) => {
-      await this.authorizeNamespacePluginDiscovery(principalId, namespaceId, input);
-      if (this.pluginDriver(input.harnessId) !== driver) {
-        throw new ResourceStateConflictError("The plugin catalog changed. Refresh and retry.");
+    return this.withNamespacePluginCredential(principalId, namespaceId, input, (driver) => {
+      if (!driver.discoverCatalog) {
+        throw new NotImplementedError(
+          "agent_plugins.discovery",
+          "Plugin discovery is unavailable.",
+        );
       }
-    };
-    return this.withPluginDiscoveryCredential(
-      principalId,
-      namespaceId,
-      input,
-      () => this.pluginDriver(input.harnessId),
-      (driver) => {
-        if (!driver.discoverCatalog) {
-          throw new NotImplementedError(
-            "agent_plugins.discovery",
-            "Plugin discovery is unavailable.",
-          );
+      return (authentication) => {
+        if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
+          throw new PluginDiscoveryError("credentials_rejected");
         }
-        return (authentication) => {
-          if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
-            throw new PluginDiscoveryError("credentials_rejected");
-          }
-          return driver.discoverCatalog!(
-            {
-              ...authentication,
-              ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
-              ...(input.q === undefined ? {} : { q: input.q }),
-            },
-            signal,
-          );
-        };
-      },
-      recheck,
-    );
+        return driver.discoverCatalog!(
+          {
+            ...authentication,
+            ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+            ...(input.q === undefined ? {} : { q: input.q }),
+          },
+          signal,
+        );
+      };
+    });
   }
 
   async lookupChannelDirectory(
@@ -8383,54 +8363,50 @@ export class OpenClawController {
     input: PluginDiscoveryCredential & { readonly harnessId?: string; readonly pluginId: string },
     signal?: AbortSignal,
   ): Promise<PluginCatalogEntry> {
-    await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
-    await this.read((state) => this.exactNamespace(state, namespaceId));
-    const recheck = async (driver: PluginDriver) => {
-      await this.authorizeNamespacePluginDiscovery(principalId, namespaceId, input);
-      if (this.pluginDriver(input.harnessId) !== driver) {
-        throw new ResourceStateConflictError("The plugin catalog changed. Refresh and retry.");
+    return this.withNamespacePluginCredential(principalId, namespaceId, input, (driver) => {
+      if (!driver.getCatalogPlugin) {
+        throw new NotImplementedError(
+          "agent_plugins.discovery",
+          "Plugin tool discovery is unavailable.",
+        );
       }
-    };
+      return (authentication) => {
+        if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
+          throw new PluginDiscoveryError("credentials_rejected");
+        }
+        return driver.getCatalogPlugin!({ ...authentication, pluginId: input.pluginId }, signal);
+      };
+    });
+  }
+
+  private async withNamespacePluginCredential<T>(
+    principalId: string,
+    namespaceId: string,
+    input: PluginDiscoveryCredential & { readonly harnessId?: string },
+    prepareDiscovery: (
+      driver: PluginDriver,
+    ) => (authentication: PluginDiscoveryAuthentication) => Promise<T>,
+  ): Promise<T> {
+    const agentScope = { kind: "agent" as const, id: namespaceId, namespaceId };
+    await this.authorize(principalId, "create", agentScope);
+    await this.read((state) => this.exactNamespace(state, namespaceId));
+    const getDriver = () => this.pluginDriver(input.harnessId);
     return this.withPluginDiscoveryCredential(
       principalId,
       namespaceId,
       input,
-      () => this.pluginDriver(input.harnessId),
-      (driver) => {
-        if (!driver.getCatalogPlugin) {
-          throw new NotImplementedError(
-            "agent_plugins.discovery",
-            "Plugin tool discovery is unavailable.",
-          );
+      getDriver,
+      prepareDiscovery,
+      async (driver, source) => {
+        // A stored credential's backend read can outlive its grants or the selected catalog.
+        await this.authorize(principalId, "create", agentScope);
+        await this.authorize(principalId, "operate", source);
+        await this.read((state) => this.exactNamespace(state, namespaceId));
+        if (getDriver() !== driver) {
+          throw new ResourceStateConflictError("The plugin catalog changed. Refresh and retry.");
         }
-        return (authentication) => {
-          if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
-            throw new PluginDiscoveryError("credentials_rejected");
-          }
-          return driver.getCatalogPlugin!({ ...authentication, pluginId: input.pluginId }, signal);
-        };
       },
-      recheck,
     );
-  }
-
-  /**
-   * Rechecks Namespace plugin discovery grants after a stored credential's backend read and
-   * immediately before it is sent to the external catalog, as saved-Agent discovery does.
-   * Request-supplied or absent credentials have no read to race, so they skip the recheck.
-   */
-  private async authorizeNamespacePluginDiscovery(
-    principalId: string,
-    namespaceId: string,
-    credential: PluginDiscoveryCredential,
-  ): Promise<void> {
-    const source = credential.secretRef ?? credential.credentialSource;
-    if (source === undefined) {
-      return;
-    }
-    await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
-    await this.authorize(principalId, "operate", source);
-    await this.read((state) => this.exactNamespace(state, namespaceId));
   }
 
   private async withPluginDiscoveryCredential<T>(
@@ -8441,7 +8417,10 @@ export class OpenClawController {
     prepareDiscovery: (
       driver: PluginDriver,
     ) => (authentication: PluginDiscoveryAuthentication) => Promise<T>,
-    validateCurrent: (driver: PluginDriver) => Promise<void>,
+    validateCurrent: (
+      driver: PluginDriver,
+      source: SecretReference | CredentialSourceReference,
+    ) => Promise<void>,
   ): Promise<T> {
     const source = credential.secretRef ?? credential.credentialSource;
     if (source !== undefined) {
@@ -8479,7 +8458,9 @@ export class OpenClawController {
             credential.credentialSource.id,
           );
         }
-        await validateCurrent(driver);
+        if (source !== undefined) {
+          await validateCurrent(driver, source);
+        }
       } catch (error) {
         // Preserve exact authorization/binding errors across the Driver's sanitized callback.
         return { validationError: error };
@@ -8616,7 +8597,11 @@ export class OpenClawController {
     },
     signal?: AbortSignal,
   ): Promise<PluginCatalogPage> {
-    const { value: page, harness } = await this.withSavedAgentPluginCredential(
+    const {
+      value: page,
+      driver,
+      harness,
+    } = await this.withSavedAgentPluginCredential(
       principalId,
       namespaceId,
       agentId,
@@ -8646,7 +8631,7 @@ export class OpenClawController {
       ...page,
       plugins: page.plugins.filter((entry) => {
         try {
-          this.validatePluginPlacement({ [entry.id]: { enabled: true } }, harness);
+          this.validatePluginPlacement(driver, { [entry.id]: { enabled: true } }, harness);
           return true;
         } catch (error) {
           if (error instanceof ConfigurationHarnessError) {
@@ -8665,7 +8650,11 @@ export class OpenClawController {
     input: { readonly pluginId: string; readonly credentialSource?: CredentialSourceReference },
     signal?: AbortSignal,
   ): Promise<PluginCatalogEntry> {
-    const { value: entry, harness } = await this.withSavedAgentPluginCredential(
+    const {
+      value: entry,
+      driver,
+      harness,
+    } = await this.withSavedAgentPluginCredential(
       principalId,
       namespaceId,
       agentId,
@@ -8681,7 +8670,7 @@ export class OpenClawController {
       },
       input.credentialSource,
     );
-    this.validatePluginPlacement({ [entry.id]: { enabled: true } }, harness);
+    this.validatePluginPlacement(driver, { [entry.id]: { enabled: true } }, harness);
     return entry;
   }
 
@@ -8737,7 +8726,7 @@ export class OpenClawController {
     );
     // A hosted read can outlive the Agent's selection, even after a valid credential handoff.
     await validateCurrent();
-    return { value, harness };
+    return { value, driver, harness };
   }
 
   private async savedDiscoveryTarget(
@@ -8778,7 +8767,7 @@ export class OpenClawController {
         };
       }
       const binding = this.harnessAuthBinding(agent.harnessAuth);
-      if (agent.executionMode === "dedicated" && binding?.method === "credential_source") {
+      if (binding?.method === "credential_source") {
         const reference = { kind: "credential_source" as const, namespaceId, id: binding.sourceId };
         await this.authorize(principalId, "operate", reference);
         await this.authorize(agent.servicePrincipalId, "operate", reference);
@@ -8791,11 +8780,7 @@ export class OpenClawController {
         }
         return { ...target, source, credential: { credentialSource: reference } };
       }
-      if (
-        agent.executionMode !== "dedicated" ||
-        binding?.method !== "codex_pat" ||
-        !isSecretHarnessAuth(binding)
-      ) {
+      if (binding?.method !== "codex_pat" || !isSecretHarnessAuth(binding)) {
         throw new NotImplementedError(
           "agent_plugins.saved_discovery",
           "Stored plugin discovery requires a dedicated Agent with a Service Accounts Secret.",
@@ -9638,6 +9623,7 @@ export class OpenClawController {
           repositoryBindings,
           workspaceSetup: initialWorkspaceFiles !== undefined,
           plugins,
+          pluginDriver: driver,
         },
         savedConfiguration,
       );
@@ -9750,7 +9736,7 @@ export class OpenClawController {
       // createConfiguration's order.
       await this.configurationDriver().validateSize?.(values);
       this.validateConfigurationContent(values, undefined, secretBindings);
-      await this.validateAgentPlugins(plugins, pluginApprovers, () => values);
+      const driver = await this.validateAgentPlugins(plugins, pluginApprovers, () => values);
       // Shaped like the saved Configuration createAgent reads; only its values are checked.
       const configuration: () => Promise<Readonly<Configuration>> = async () =>
         Object.freeze({
@@ -9775,6 +9761,7 @@ export class OpenClawController {
           repositoryBindings: undefined,
           workspaceSetup: initialWorkspaceFiles !== undefined,
           plugins,
+          pluginDriver: driver,
         },
         configuration,
       );
@@ -10091,7 +10078,8 @@ export class OpenClawController {
           repositoryBindings: repositoryBindings ?? agent.repositoryBindings,
           workspaceSetup:
             workspaceSetup !== undefined && (!workspaceSetup.completed || topologyChanged),
-          plugins: plugins ?? agent.plugins,
+          plugins: selections,
+          pluginDriver: driver,
         },
         savedConfiguration,
       );
@@ -10523,16 +10511,19 @@ export class OpenClawController {
         );
       }
       // Configuration saves can change the native settings independently of their Agents.
-      if (pluginState) {
-        await this.validateAgentPlugins(
+      if (driver && pluginState) {
+        if (!this.enabledPluginDrivers().includes(driver)) {
+          throw new ResourceStateConflictError("The plugin catalog changed. Refresh and retry.");
+        }
+        this.validatePluginSettings(
+          driver,
           pluginState.plugins,
           lockedAgent.pluginApprovers,
-          () => admittedConfiguration,
-          lockedAgent,
+          admittedConfiguration,
           "stored",
         );
+        this.validatePluginPlacement(driver, pluginState.plugins, revisionHarness);
       }
-      this.validatePluginPlacement(pluginState?.plugins, revisionHarness);
       // Decode every earlier revision: one that is unreadable refuses the deploy here (503,
       // nothing created), because the worker must decode them all to stop or retire them.
       const previous = await state.revisions.listRevisions(namespace.id, lockedAgent.id);
@@ -12428,7 +12419,7 @@ export class OpenClawController {
     // the stored work, so an Installation Plugin Driver switch does not turn it into a 400.
     if (!statusRead) {
       const plugins = normalizeAgentPlugins(record.plan.plugins as PluginDesiredState | undefined);
-      await this.validateAgentPlugins(
+      const driver = await this.validateAgentPlugins(
         plugins,
         normalizeAgentPluginApprovers(record.plan.pluginApprovers as PluginApprovers | undefined),
         () => configuration,
@@ -12440,7 +12431,9 @@ export class OpenClawController {
         },
         "stored",
       );
-      this.validatePluginPlacement(plugins, harness);
+      if (driver) {
+        this.validatePluginPlacement(driver, plugins, harness);
+      }
       const repositoryBindings = asRecord(record.plan)?.repositoryBindings;
       if (Array.isArray(repositoryBindings) && repositoryBindings.length > 0) {
         this.validateRepositoryBrokerNetworkProxy(harness, configuration, sandbox);
@@ -14478,6 +14471,17 @@ export class OpenClawController {
     if (hasSelections) {
       this.pluginOwner(driver, previous);
     }
+    this.validatePluginSettings(driver, plugins, approvers, values, source);
+    return driver;
+  }
+
+  private validatePluginSettings(
+    driver: PluginDriver,
+    plugins: PluginDesiredState | undefined,
+    approvers: PluginApprovers | undefined,
+    values: Readonly<OpenClawConfigurationDocument>,
+    source: "request" | "stored",
+  ): void {
     try {
       driver.validatePolicies(plugins ?? {}, approvers);
     } catch (error) {
@@ -14486,7 +14490,7 @@ export class OpenClawController {
       }
       throw error;
     }
-    if (hasSelections) {
+    if (plugins && Object.keys(plugins).length > 0) {
       try {
         driver.validateAgentConfiguration?.(plugins, values);
       } catch (error) {
@@ -14498,20 +14502,19 @@ export class OpenClawController {
         );
       }
     }
-    return driver;
   }
 
   // Compute runs a bundled Plugin Driver's runtime only in the Harness it supports, and its
   // preparation refuses any other pair after a dedicated deployment stopped the running
   // revision. Agent save, provisioning and deployment refuse the pair first (finding 2348).
   private validatePluginPlacement(
+    driver: PluginDriver,
     plugins: PluginDesiredState | undefined,
     harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
   ): void {
     if (plugins === undefined || Object.keys(plugins).length === 0) {
       return;
     }
-    const driver = this.pluginDriver(harness.id);
     driver.validatePlacement?.(plugins, harness, this.selectedDriver("compute").implementation, {
       sandbox: this.selections.get("sandbox")?.implementation,
       gateway: this.selections.get("credential_gateway")?.implementation,
@@ -14584,6 +14587,7 @@ export class OpenClawController {
       readonly repositoryBindings: readonly RepositoryBindingSelection[] | undefined;
       readonly workspaceSetup: boolean;
       readonly plugins: PluginDesiredState | undefined;
+      readonly pluginDriver: PluginDriver | undefined;
     },
     readConfiguration: () => Promise<Readonly<Configuration>>,
   ): Promise<void> {
@@ -14616,7 +14620,9 @@ export class OpenClawController {
       return;
     }
     const harness = Object.freeze({ ...approved, mode: agent.executionMode });
-    this.validatePluginPlacement(agent.plugins, harness);
+    if (agent.pluginDriver) {
+      this.validatePluginPlacement(agent.pluginDriver, agent.plugins, harness);
+    }
     const values = this.agentRuntimeConfiguration(configuration.values, harness, compute, sandbox);
     // A Configuration that selects no model yet is a draft: the binding has nothing to deliver
     // to, so deployment refuses that pair and save does not.
