@@ -153,6 +153,15 @@ original. Bound infrastructure updates carry original UID/resourceVersion.
 Focused regressions exercise the real Driver/Store and controlled transports;
 they do not replace the pending owned-stack proof or complete independent review.
 
+The follow-up P2 review of `bb90801` against main `7db24e009` returned all
+32 passes with **incomplete** coverage. It found one invalid real-test fixture:
+the external physical Namespace name exceeded OpenShell's 19-character limit.
+The corrected name has 17 characters; the actual Backend validator rejects the
+old name and accepts the replacement. This input check is not a live-stack result.
+Remaining context gaps include Kubernetes `resolveNamespace`, `getOwned`,
+`reconcile`, and `request`, surrounding Worker dispatch/finalization, and production
+changes absent from individual evidence batches. No clean-review claim is made.
+
 ## Delivery record
 
 - Both RFC submissions precede contract code. Implementation and component qualification are in progress; genuine provider proof and independent review remain pending.

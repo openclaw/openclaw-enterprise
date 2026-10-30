@@ -906,7 +906,7 @@ test(
     await t.test(
       "saved provider cleanup does not authorize a replacement configured ServiceAccount",
       async () => {
-        const name = `resource-replacement-${suffix}`;
+        const name = `resource-${suffix}`;
         const external = await createExternalNamespace(name);
         const { logical, backing, boundWorkspace } = await readyNamespace(
           `resource-replacement-${suffix}`,
