@@ -1,6 +1,14 @@
 #!/bin/sh
 set -eu
 : "${OCC_SSH_FIXTURE_STATE:?fixture state required}"
+if [ -f "$OCC_SSH_FIXTURE_STATE/id.fail" ]; then
+  rm -f "$OCC_SSH_FIXTURE_STATE/id.fail"
+  exit 99
+fi
+if [ -f "$OCC_SSH_FIXTURE_STATE/id.absent" ]; then
+  rm -f "$OCC_SSH_FIXTURE_STATE/id.absent"
+  exit 1
+fi
 accounts="$OCC_SSH_FIXTURE_STATE/accounts"
 flag=${1:-}
 name=${2:-}
