@@ -381,11 +381,12 @@ export async function runWritableGatewayRestart(t) {
   assert.equal(fresh.prefix, undefined, "a fresh Pod-local copy restores the admitted snapshot");
   assert.equal(fresh.bridge.plugins.linear.enabled, false);
   // Polls the wrapper's own status port until it publishes a held failure; a hold keeps
-  // the container running.
+  // the container running. The deadline is checked after each poll, so the last poll
+  // happens at or past it.
   async function waitHeld(name, label) {
     const heldDeadline = Date.now() + 60_000;
     let observedHold;
-    while (Date.now() < heldDeadline) {
+    for (;;) {
       const observed = JSON.parse((await runDocker(["inspect", name])).stdout)[0];
       assert.equal(observed.State.Running, true, `${label} holds instead of exiting`);
       try {
@@ -403,12 +404,11 @@ export async function runWritableGatewayRestart(t) {
       } catch {
         observedHold = undefined;
       }
-      if (observedHold?.failure !== undefined) {
+      if (observedHold?.failure !== undefined || Date.now() >= heldDeadline) {
         return observedHold;
       }
       await delay(250);
     }
-    return observedHold;
   }
   async function killContainer(name) {
     await runDocker(["kill", name]);

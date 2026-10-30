@@ -1211,6 +1211,9 @@ export async function renderAgentDetail(
     showDeleting,
     (next) => updateCurrentAgent(next, latestRevisionResult, viewedSnapshot),
     callerPermissionsRead.then((permissions) => permissions?.operate),
+    // A refusal records how many rereads had started, so an answer read before it, such as a
+    // refocus reread still in flight, cannot lift it (finding 2966), as on the Agents list.
+    () => permissionsRereads,
   );
   const deletion = createAgentDeletion(
     context,
@@ -1218,6 +1221,7 @@ export async function renderAgentDetail(
     agent,
     showDeleting,
     callerPermissionsRead.then((permissions) => permissions?.delete),
+    () => permissionsRereads,
   );
   // Stop and Delete are the rows of one danger zone at the end of the page (UX spec 3.9). A row
   // hides itself when the caller's permission answer denies it, and the zone hides with no row.
@@ -1818,6 +1822,17 @@ export async function renderAgentDetail(
   // the Agent's permission answer again, as Refresh would, and its controls follow that answer
   // without a reload. Views built meanwhile wait for it, so Plugins sends no read it denies.
   context.onAdministrationEnded?.(() => {
+    if (!context.isCurrent() || deleting) {
+      return;
+    }
+    agentSaveDenied = rereadPermissions().then((permissions) =>
+      agentSaveDenial(permissions, agent),
+    );
+  });
+  // A refocus recheck reads the permission answer again too, so a re-granted Stop, Delete or
+  // draft edit applies once the reader comes back to the window, as on the Agents list; only
+  // header Refresh did (r54 row 11).
+  context.onRechecked?.(() => {
     if (!context.isCurrent() || deleting) {
       return;
     }
@@ -3824,8 +3839,8 @@ export async function renderAgentDetail(
 
   // Every operate-gated control follows the newest answer read, without a reload: the Stop row,
   // the shown version's Run diagnostics, and Workspace editors, shown or parked (finding 2328).
-  function applyOperateAnswer(allowed: boolean | undefined) {
-    stopPanel.applyOperate(allowed);
+  function applyOperateAnswer(allowed: boolean | undefined, read: number) {
+    stopPanel.applyOperate(allowed, read);
     versionRecord?.applyOperate(allowed);
     mountedTab?.applyOperate?.(allowed);
     for (const tab of retainedTabs.values()) {
@@ -3885,8 +3900,8 @@ export async function renderAgentDetail(
           }
           // A grant or revocation since the last answer relabels the draft (finding 2421).
           applyDraftAccess();
-          deletion.applyDelete(permissions?.delete);
-          applyOperateAnswer(permissions?.operate);
+          deletion.applyDelete(permissions?.delete, reread);
+          applyOperateAnswer(permissions?.operate, reread);
         }
         return permissions;
       },

@@ -188,6 +188,8 @@ export const STOP_CONFIRMATION = `This interrupts the current runtime gateway an
 export const STOP_FIRST_DEPLOYMENT_CONFIRMATION = `No version is serving yet, so this cancels the deployment in progress. ${STOP_KEEPS}`;
 // No version is selected and the page could not read the latest deployment's outcome.
 export const STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION = `This cancels a deployment in progress or, if a version already started, interrupts its runtime gateway and ends any reply in progress. ${STOP_KEEPS}`;
+// The Agent is already requested to stop: Request Stop again only repeats the request (D815).
+export const STOP_REPEAT_CONFIRMATION = `This Agent is already requested to stop. This sends the stop request again; use it if an earlier stop did not finish. ${STOP_KEEPS}`;
 // The Agent page's Stop row, by whether Stop would cancel a first deployment in progress.
 export const STOP_CANCELS_FIRST_DEPLOYMENT =
   "Cancels the deployment in progress. The Agent stays and can be deployed again.";

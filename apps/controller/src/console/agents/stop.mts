@@ -27,6 +27,7 @@ export function createAgentStop(
   onDeleting: (options: { focus: boolean }) => void,
   onAgentChanged: (next: AgentRead) => void,
   allowed?: Promise<boolean | undefined>,
+  permissionReadsStarted: () => number = () => 0,
 ) {
   // One row of the Agent page's danger zone (UX spec 3.9); the confirmation carries the detail.
   const section = element("section", {
@@ -35,6 +36,9 @@ export function createAgentStop(
   });
   const permissionNotice = AGENT_STOP_DENIED;
   let restrictConfirmation: (() => void) | undefined;
+  // The count of the page's permission reads started before the last refused Stop. Only a read
+  // started after it can lift the refusal (finding 2966).
+  let refusedAfterReads = 0;
   const feedback = element("div", { className: "danger-zone-feedback" });
   const actions = element("div", { className: "danger-zone-actions" });
   const stop = button("Stop Agent", openConfirmation, { className: "danger" });
@@ -191,13 +195,22 @@ export function createAgentStop(
     // After a request, a disabled Stop beside Request Stop again only adds noise, and an
     // uncertain outcome offers only Refresh (finding 1899).
     if (neverStarted || (idle && !state.used)) {
-      actions.replaceChildren();
+      showActions();
     } else if (state.needsRefresh) {
-      actions.replaceChildren(refresh);
+      showActions(refresh);
     } else if (requested) {
-      actions.replaceChildren(repeat, refresh);
+      showActions(repeat, refresh);
     } else {
-      actions.replaceChildren(stop);
+      showActions(stop);
+    }
+  }
+
+  // Replacing the same controls would detach the focused one: a re-grant that lifts a refused
+  // Stop dropped keyboard focus to the page (r54 row 11).
+  function showActions(...controls: HTMLButtonElement[]) {
+    const shown = actions.children;
+    if (shown.length !== controls.length || controls.some((control, i) => shown[i] !== control)) {
+      actions.replaceChildren(...controls);
     }
   }
 
@@ -354,9 +367,10 @@ export function createAgentStop(
       if (error.status === 403) {
         // As for Delete: a refusal about grants names the Agent, the grant and who gives it;
         // another shows as written (findings 2534, 2955). Stop stays unavailable, described by
-        // it, until a newer permission answer allows operate.
+        // it, until a permission answer read after it allows operate (finding 2966).
         text = (!grantRefusal(cause) && error.serverMessage) || stopRefused(state.agent.name);
         refused = true;
+        refusedAfterReads = permissionReadsStarted();
       } else if (error.status === 404) {
         state.needsRefresh = true;
         text =
@@ -466,13 +480,15 @@ export function createAgentStop(
 
   // The page passes each newer Agent operate answer it reads, so a grant or revocation seen by
   // Logs applies without a reload (finding 2328). Only a denial hides the row; a missing answer
-  // keeps it, and the API still decides. A refused Stop stays unavailable until a newer answer
-  // allows Agent operate (finding 2955).
-  function applyOperate(permitted: boolean | undefined) {
+  // keeps it, and the API still decides. A refused Stop stays unavailable until an answer read
+  // after it allows Agent operate (findings 2955, 2966): `read` is the page's count of
+  // permission reads when this answer's read started.
+  function applyOperate(permitted: boolean | undefined, read: number) {
     if (!context.isCurrent()) {
       return;
     }
-    const regranted = permitted === true && state.error?.refused === true;
+    const regranted =
+      permitted === true && state.error?.refused === true && read > refusedAfterReads;
     const forbidden = permitted === false;
     if (forbidden === state.forbidden && !regranted) {
       return;
@@ -493,14 +509,14 @@ export function createAgentStop(
   void allowed?.then((permitted) => {
     // The first answer was requested before any Stop, so it never lifts a refusal.
     if (!operateAnswered && permitted === false) {
-      applyOperate(permitted);
+      applyOperate(permitted, 0);
     }
   });
   return {
     section,
-    applyOperate(permitted: boolean | undefined) {
+    applyOperate(permitted: boolean | undefined, read: number) {
       operateAnswered = true;
-      applyOperate(permitted);
+      applyOperate(permitted, read);
     },
     // The detail page reports whether its version list loaded empty (true), loaded with
     // versions (false), or failed (null).

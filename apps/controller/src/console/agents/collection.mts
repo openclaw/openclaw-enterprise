@@ -55,6 +55,14 @@ import {
 
 type AgentPermissions = Static<typeof AgentCallerPermissionsResponse>["data"];
 type RowAction = "stop" | "delete";
+// A refused row action. `text` is set for a refusal that is not about grants: the alert's text,
+// which the row's note repeats (finding D812).
+interface RowRefusal {
+  id: string;
+  kind: RowAction;
+  text?: string;
+  requestId?: string | undefined;
+}
 
 interface AgentListContext extends AgentNavigation {
   view: HTMLElement;
@@ -67,6 +75,8 @@ interface AgentListContext extends AgentNavigation {
   isCurrent(): boolean;
   onExpired(): void;
   onResume?(resume: () => void): void;
+  /** A refocus recheck rebuilds this list (not Refresh or a navigation). */
+  resumed?: boolean;
   request(
     path: string,
     options: RequestOptions & {
@@ -103,6 +113,10 @@ async function latestReadableRevision(
 // A current version the caller cannot read, and whether it is newer than every version they can.
 // The alert above the table that reports a refused row action (showOutcome).
 const REFUSAL_ID = "agent-row-refusal";
+// A refusal not about grants waits for Refresh. A refocus that rebuilds the list, because a
+// recheck read changed or a write made the list one it does not reuse, shows it again; any
+// other load drops it (finding D812).
+let keptRefusal: (RowRefusal & { text: string; namespaceId: string }) | null = null;
 const UNREADABLE = "unreadable";
 const NEWER_UNREADABLE = "newer-unreadable";
 type CurrentVersion = AgentRevisionMetadata | typeof UNREADABLE | typeof NEWER_UNREADABLE | null;
@@ -220,9 +234,9 @@ export function renderAgentList(context: AgentListContext) {
   // Agents whose last row action had a conflicting or unconfirmed outcome. Their actions stay
   // disabled until Refresh rereads the list, so the console never repeats an uncertain write.
   const unsettled = new Set<string>();
-  // The row action whose last write the API refused for grants (403). Its icon is described by
-  // the alert above the table, which can sit far from the row on a narrow screen (finding 2952).
-  let refusal: { id: string; kind: RowAction } | null = null;
+  // The row action whose last write the API refused (403). Its icon is described by the alert
+  // above the table, which can sit far from the row on a narrow screen (finding 2952).
+  let refusal: RowRefusal | null = null;
   // Every refused row action ("<id> <kind>"), with the count of permission reads started before
   // it. Each stays unavailable, and the row's note under its icons names the grant, until a read
   // started after it allows that action (finding 2955), as on the Agent page.
@@ -524,10 +538,13 @@ export function renderAgentList(context: AgentListContext) {
     notice?: string;
     error?: string;
     requestId?: string | undefined;
-    refused?: { id: string; kind: RowAction } | undefined;
+    refused?: RowRefusal | undefined;
   }) {
     const previous = refusal;
     refusal = refused ?? null;
+    keptRefusal = refused?.text
+      ? { ...refused, text: refused.text, requestId, namespaceId: context.namespaceId }
+      : null;
     feedback.replaceChildren(
       ...(notice ? [statusBlock("info", null, notice)] : []),
       ...(error
@@ -660,8 +677,10 @@ export function renderAgentList(context: AgentListContext) {
       if (error.status === 403) {
         // A refusal that is not about grants, such as another actor's failed deletion on a stale
         // row or an admission refusal, shows as written, as on the Agent page (finding 2958). The
-        // row names no grant; it waits for Refresh, since a repeat would be refused the same way.
+        // row names no grant; its note points to this alert, and it waits for Refresh, since a
+        // repeat would be refused the same way (finding D812).
         text = `Could not ${kind === "stop" ? "stop" : "delete"} ${item.name}. ${error.serverMessage} Select Refresh before trying again.`;
+        refused = { id: item.id, kind, text };
       } else if (error.status === 404) {
         text = `${item.name} is no longer available. Select Refresh to update the list.`;
       } else if (error.status === 409) {
@@ -833,6 +852,17 @@ export function renderAgentList(context: AgentListContext) {
     const refusedHere = (kind: RowAction) => refusedActions.has(`${item.id} ${kind}`);
     const canStop = neverStarted || (allowed?.operate !== false && !refusedHere("stop"));
     const canDelete = allowed?.delete !== false && !refusedHere("delete");
+    // A refusal not about grants leaves the row waiting for Refresh. The alert above the table
+    // can be far above the row on a narrow screen, so the row's note points to it and repeats it
+    // for assistive technology, and both icons stay reachable, described by it (finding D812).
+    const held =
+      unsettled.has(item.id) && refusal?.id === item.id && refusal.text !== undefined
+        ? refusal
+        : null;
+    // Other unsettled rows wait for Refresh with only the alert, natively disabled.
+    const waiting = unsettled.has(item.id) && !held;
+    const stopBlocked = !canStop || held !== null;
+    const deleteBlocked = !canDelete || held !== null;
     const noteId = `agent-row-note-${item.id}`;
     // The icons are described by the reason alone, not by the line that repeats its grant.
     const reasonId = `agent-row-reason-${item.id}`;
@@ -842,7 +872,10 @@ export function renderAgentList(context: AgentListContext) {
     // assistive technology reads.
     let restriction = null;
     let grant = null;
-    if (!canStop && !canDelete) {
+    if (held) {
+      restriction = held.text ?? null;
+      grant = held.kind === "stop" ? "Not stopped: see above" : "Not deleted: see above";
+    } else if (!canStop && !canDelete) {
       restriction = notIncluded(
         "stopping or deleting this Agent",
         "Agent operate and Agent delete on it",
@@ -883,15 +916,18 @@ export function renderAgentList(context: AgentListContext) {
             className: "icon-button",
             "aria-label": `Stop ${item.name}`,
             title: "Stop Agent",
+            "data-refocus-key": `${item.id} stop`,
+            // A rebuilt row whose Stop is gone or disabled gives focus to its name (finding 2967).
+            "data-refocus-fallback": `${item.id} name`,
             // A deleting or Stop requested badge explains a stopped Agent's disabled icon.
-            ...describedBy(!canStop, stopped ? badgeId : null, "stop"),
+            ...describedBy(stopBlocked, stopped ? badgeId : null, "stop"),
           },
         );
     if (stop) {
       setUnavailable(
         stop,
         !available || stopped || !canStop,
-        unsettled.has(item.id) ? null : reasonFor(!canStop, stopped, "stop"),
+        waiting ? null : reasonFor(stopBlocked, stopped, "stop"),
       );
     }
     const remove = button(
@@ -901,13 +937,15 @@ export function renderAgentList(context: AgentListContext) {
         className: "icon-button",
         "aria-label": `Delete ${item.name}`,
         title: "Delete Agent",
-        ...describedBy(!canDelete, item.status === "deleting" ? badgeId : null, "delete"),
+        "data-refocus-key": `${item.id} delete`,
+        "data-refocus-fallback": `${item.id} name`,
+        ...describedBy(deleteBlocked, item.status === "deleting" ? badgeId : null, "delete"),
       },
     );
     setUnavailable(
       remove,
       !available || !canDelete,
-      unsettled.has(item.id) ? null : reasonFor(!canDelete, item.status === "deleting", "delete"),
+      waiting ? null : reasonFor(deleteBlocked, item.status === "deleting", "delete"),
     );
     // The note's line is reserved from the first paint, so advice that lands later only fills it.
     const note = element(
@@ -1031,6 +1069,8 @@ export function renderAgentList(context: AgentListContext) {
     for (const item of matches) {
       readPermissions(item);
       const name = agentNameLink(item, context);
+      // A refocus that rebuilds the list returns focus to the same row's control (finding D814).
+      name.dataset.refocusKey = `${item.id} name`;
       const actions = rowActions(item);
       const cell = element(
         "td",
@@ -1163,6 +1203,17 @@ export function renderAgentList(context: AgentListContext) {
     }
   });
   search.addEventListener("input", render);
+  const carried =
+    context.resumed &&
+    keptRefusal?.namespaceId === context.namespaceId &&
+    items.some((item) => item.id === keptRefusal?.id)
+      ? keptRefusal
+      : null;
+  keptRefusal = null;
+  if (carried) {
+    unsettled.add(carried.id);
+    showOutcome({ error: carried.text, requestId: carried.requestId, refused: carried });
+  }
   render();
   // A provisioning Namespace becomes ready on its own. A refocus, return or Refresh rebuilds the
   // list, but a reader who stayed on it kept seeing "Provisioning" (finding 2058). While the note

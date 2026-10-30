@@ -71,6 +71,7 @@ import {
   RESOURCE_CONFLICT,
   RESOURCE_NOT_FOUND,
   SANDBOX_POLICY_READ_DENIED,
+  STOP_REPEAT_CONFIRMATION,
   STOP_REQUESTED,
   STOPPED_NO_VERSION,
   WORKSPACE_API_UNREACHABLE,
@@ -5023,6 +5024,9 @@ test("Console can repeat Stop without treating the selected version as cleanup c
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 0);
   await repeat.click();
   dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
+  // The selected version is kept, but the Agent is already requested to stop: the confirmation
+  // repeats the request and does not describe interrupting a running gateway (finding D815).
+  await dialog.getByText(STOP_REPEAT_CONFIRMATION, { exact: true }).waitFor();
   const result = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" && new URL(response.url()).pathname === `${path}/stop`,

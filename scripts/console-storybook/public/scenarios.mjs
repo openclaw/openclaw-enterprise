@@ -1284,7 +1284,18 @@ export const scenarios = {
       { selector: ".agent-delete-dialog button.danger", click: true },
     ],
     description:
-      "The row is stale: another person's deletion of this Agent failed after the list loaded, and the controller refuses this caller's Delete for that reason, not for a missing grant. The alert shows the API's text with the Agent's name; the row's note names no grant, and its actions stay disabled until Refresh.",
+      "The row is stale: another person's deletion of this Agent failed after the list loaded, and the controller refuses this caller's Delete for that reason, not for a missing grant. The alert shows the API's text with the Agent's name. The row's note names no grant; it reads Not deleted: see above, so a narrow screen that scrolled the alert away still says why. Both icons stay in the Tab order, unavailable and described by the refusal, until Refresh; focus stays on Delete.",
+  },
+  agentsRowRefocusStopped: {
+    group: "Pages/Agents",
+    name: "Refocus after another person's stop",
+    deployed: true,
+    stoppedOnListReread: true,
+    description:
+      "Another person's stop completes after the list loads, so the Agent has no selected version. A window refocus rechecks the list and rebuilds it; the row has no Stop icon now, so focus on it moves to the same row's name, not to the page (finding 2967). Simulated API; no backend proof.",
+    steps: [
+      "Press Tab until Stop Research assistant has focus. Switch to another window, then return. The row has no Stop icon, and focus is on the Research assistant link.",
+    ],
   },
   agentsRowRestricted: {
     group: "Pages/Agents",
@@ -9735,7 +9746,7 @@ export const scenarios = {
     stopped: true,
     actions: [click("Request Stop again")],
     description:
-      "An explicit repeated Stop uses the same confirmation and preserves the selected version. Cancel or Escape returns keyboard focus to Request Stop again.",
+      "An explicit repeated Stop preserves the selected version. Its confirmation says the Agent is already requested to stop and that this sends the request again, not that it interrupts a running gateway (finding D815). Cancel or Escape returns keyboard focus to Request Stop again.",
   },
   stopNoSelection: {
     group: "Components/Stop Agent",

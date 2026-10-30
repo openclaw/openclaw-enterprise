@@ -406,6 +406,7 @@ export function installFixture(scenario, evidence) {
     selectedRevisionId = "rev_00000000-0000-4000-8000-000000000001";
   }
   let agentReadCount = 0;
+  let agentListReadCount = 0;
   const agent = {
     id: scenario.agentId ?? "agt_00000000-0000-4000-8000-000000000001",
     namespaceId,
@@ -1506,6 +1507,13 @@ export function installFixture(scenario, evidence) {
       }
       if (resource === "agents") {
         if (method === "GET") {
+          // Another person's stop completes after the list's first read: no version is selected.
+          if (scenario.stoppedOnListReread && ++agentListReadCount > 1) {
+            for (const listed of agents.values()) {
+              listed.desiredRuntimeState = "stopped";
+              listed.activeRevisionId = null;
+            }
+          }
           return response([...agents.values()]);
         }
         if (method === "POST") {
