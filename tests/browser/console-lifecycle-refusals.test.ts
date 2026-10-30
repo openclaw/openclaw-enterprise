@@ -383,11 +383,11 @@ test("an Agents list row refusal lifts only for a permission answer read after i
   );
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`, member.credentials);
   const rows = names.map((name) => page.getByRole("row").filter({ hasText: name }));
-  const [earlyDelete, freshDelete] = names.map((name, index) =>
+  const deletes = names.map((name, index) =>
     rows[index]!.getByRole("button", { name: `Delete ${name}`, exact: true }),
   );
   for (const [index, name] of names.entries()) {
-    const remove = [earlyDelete, freshDelete][index]!;
+    const remove = deletes[index]!;
     await waitForEnabled(remove);
     await remove.click();
     await page
@@ -400,7 +400,7 @@ test("an Agents list row refusal lifts only for a permission answer read after i
       .waitFor();
     assert.equal(await remove.getAttribute("aria-disabled"), "true");
   }
-  assert.equal(fresh.wasRequested(), true);
+  assert.equal(fresh!.wasRequested(), true);
   grantMember(fixture, MEMBER, [
     ["operate", "agent"],
     ["delete", "agent"],
@@ -410,7 +410,7 @@ test("an Agents list row refusal lifts only for a permission answer read after i
   const earlyAnswered = page.waitForResponse(
     (reply) => reply.url() === urls[0] && reply.status() === 200,
   );
-  early.release();
+  early!.release();
   assert.equal((await (await earlyAnswered).json()).data.delete, true);
   // A search that hides the fresh row retires its held read; showing it again reads anew, and
   // that answer, which restricts nothing, makes its Delete available.
@@ -418,8 +418,8 @@ test("an Agents list row refusal lifts only for a permission answer read after i
   await search.fill("Early");
   await rows[1]!.waitFor({ state: "detached" });
   await search.fill("");
-  await waitForEnabled(freshDelete);
-  assert.equal(await earlyDelete.getAttribute("aria-disabled"), "true");
+  await waitForEnabled(deletes[1]!);
+  assert.equal(await deletes[0]!.getAttribute("aria-disabled"), "true");
 });
 
 // The Agents list worded every refused row Stop or Delete as a missing grant, in the alert and in
