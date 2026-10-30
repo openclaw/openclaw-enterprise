@@ -1577,6 +1577,7 @@ test("Logs of a stopped version name the redeployed version and link to its Logs
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   computeDriver.state.lines = [line(1, "the first version serves")];
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
   // The Agent's own address, as the dogfood reader opened it: no version chosen.
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, undefined, "logs"));
@@ -1614,7 +1615,15 @@ test("Logs of a stopped version name the redeployed version and link to its Logs
   await page.waitForURL((url) => url.searchParams.get("revision") === revision.id);
   await page.getByText(computeDriver.podName(revision)).first().waitFor();
   await waitForEnabled(page.getByRole("button", { name: "Refresh logs" }));
-  assert.equal(await page.locator(".log-running-version").innerText(), "");
+  assert.equal(await notice.innerText(), "");
+
+  // The version selected for service names no other version when its own Pod is gone.
+  computeDriver.state.podlessRevisions.push(revision.id);
+  const agentReads = await settledFetches(page, agentPath);
+  await page.clock.runFor(10_000);
+  await page.getByRole("status").filter({ hasText: noPod }).waitFor();
+  await waitForSettledFetches(page, agentPath, agentReads + 1);
+  assert.equal(await notice.innerText(), "");
 });
 
 // A version picked on purpose stays selected: its view still says it has no running Pod and
