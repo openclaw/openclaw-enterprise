@@ -5,15 +5,13 @@ import test from "node:test";
 import { promisify } from "node:util";
 import {
   createKubernetesClient,
+  explicitK3dSelection,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
 import { parseProductionChart, productionValues } from "../helpers/production-chart.mjs";
 
 const execute = promisify(execFile);
-const selection = {
-  kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
-  kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
-};
+const selection = explicitK3dSelection();
 const skip =
   selection.kubeconfigPath || selection.kubernetesContext
     ? false
