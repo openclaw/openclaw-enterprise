@@ -2350,10 +2350,15 @@ export async function renderAgentDetail(
   // The failed version the recovery block leads with, if any. The viewed version's record does
   // not repeat that version's error below it (finding 2368).
   let recoveryRevisionId: string | null = null;
+  // The recovery card's failure in one line, and the open Logs view that repeats it in place
+  // (finding 2993).
+  let recoveryLine: ReturnType<typeof recovery.show> = null;
+  let logsFailure: ((line: typeof recoveryLine) => void) | null = null;
   function showRecovery(failure: Parameters<typeof recovery.show>[0]) {
-    recovery.show(failure);
+    recoveryLine = recovery.show(failure);
     recoveryRevisionId = failure?.latest.id ?? null;
     versionRecord?.setFailureShownAbove(recoveryRevisionId === selected);
+    logsFailure?.(recoveryLine);
   }
 
   function renderLatestDeployment() {
@@ -4448,6 +4453,14 @@ export async function renderAgentDetail(
         },
         runningVersion,
       });
+      logsFailure = (line) =>
+        logs.showDeploymentFailure(
+          line && {
+            ...line,
+            link: versionLink(`View ${line.version} deployment`, line.revisionId, "deployment"),
+          },
+        );
+      logsFailure(recoveryLine);
       content.append(logs.section);
       state.loading = false;
       // The pending view is nearly empty: Stop and Delete sat under it, then the strip and

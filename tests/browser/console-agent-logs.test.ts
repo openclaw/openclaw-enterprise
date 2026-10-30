@@ -1781,11 +1781,12 @@ async function openStoppedLogs(
   t: TestContext,
   { fixture, computeDriver, namespace, agent, revisionId }: Awaited<ReturnType<typeof logsFixture>>,
   credentials = fixture.credentials,
+  pageOptions = {},
 ) {
   computeDriver.state.lines = [line(1, "the first version serves")];
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const revisionsPath = `${agentPath}/revisions`;
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, pageOptions);
   // The first version's deployment completed, as the worker records it.
   await page.route(`${fixture.origin}${agentPath}/deployments/${revisionId}`, (route) =>
     route.fulfill(succeededDeployment(namespace, agent, revisionId)),
@@ -1997,6 +1998,72 @@ test("Logs of a redeploy the caller cannot read list the versions once a minute 
   }
   assert.equal(await settledFetches(page, revisionsPath), listed + 1);
 });
+
+// Finding 2993 (dogfood r61, D823). A redeploy from elsewhere failed while Logs stayed open: the
+// recovery card above the tabs named the failure, about 700 px above the Logs view at 390 px wide,
+// and the Logs view said nothing. The view now repeats the card's lead and next step in place,
+// without the raw code, links to the failed version's deployment, and clears once a later
+// deployment succeeds. It is drawn in place: nothing scrolls to it or takes focus.
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`Logs say in place that a redeploy from elsewhere failed at ${viewport.width}x${viewport.height}`, async (t) => {
+    const logs = await logsFixture(t);
+    const { fixture, namespace, agent } = logs;
+    const { agentPath, page, shows, poll } = await openStoppedLogs(t, logs, fixture.credentials, {
+      context: { viewport },
+    });
+    const view = page.locator("section.agent-logs");
+    const notice = view.locator(".log-deployment-failure");
+    assert.equal(await notice.filter({ hasText: /\S/ }).count(), 0);
+    const filter = page.locator("#runtime-log-filter");
+    await filter.focus();
+
+    const deployed = await fixture.deployAgent(namespace.id, agent.id);
+    const error = await routeFailedDeployment(page, fixture, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      deploymentId: deployed.id,
+      code: "RUNTIME_MODEL_PROBE_FAILED",
+    });
+    assert.ok(error);
+    await poll();
+    await shows(/Latest visible deployment\s+v2\s+·\s+Failed/);
+    await notice.getByText("v2 failed its startup model check.", { exact: false }).waitFor();
+    // The card's words without its code, which the card itself still shows.
+    assert.equal(
+      await notice.locator(".status-body").innerText(),
+      `v2 failed its startup model check. ${error.message}`,
+    );
+    assert.doesNotMatch(await notice.innerText(), /RUNTIME_MODEL_PROBE_FAILED/);
+    const link = notice.getByRole("link", { name: "View v2 deployment" });
+    const href = new URL((await link.getAttribute("href")) ?? "", page.url());
+    assert.equal(href.searchParams.get("revision"), deployed.id);
+    assert.equal(href.searchParams.get("tab"), "deployment");
+    // It appears in view where the reader is, without taking focus from them.
+    assert.equal(await filter.evaluate((node) => node === globalThis.document.activeElement), true);
+    const box = await notice.boundingBox();
+    assert.ok(box && box.y >= 0 && box.y + box.height <= viewport.height, JSON.stringify(box));
+
+    // A later deployment from elsewhere succeeds: the failure no longer applies.
+    const before = (await fixture.request("GET", agentPath)).data;
+    const { revision } = await fixture.seedActiveAgentRevision(
+      namespace.id,
+      agent.id,
+      before.activeRevisionId,
+    );
+    await page.route(`${fixture.origin}${agentPath}/deployments/${revision.id}`, (route) =>
+      route.fulfill(succeededDeployment(namespace, agent, revision.id)),
+    );
+    await poll();
+    await shows(/Latest visible deployment\s+v3\s+·\s+Completed/);
+    await waitForCondition(
+      async () => (await notice.innerText()) === "",
+      "the failure stays after a later deployment succeeded",
+    );
+  });
+}
 
 // Finding 2944. A running container that has never restarted has no previous instance, so
 // Previous instance is unavailable. It was natively disabled with no reason: Tab skipped it and
