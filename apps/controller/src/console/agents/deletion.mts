@@ -51,7 +51,8 @@ export function createAgentDeletion(
     needsRefresh: boolean;
     accessEnded: boolean;
     notice: string;
-    error: LifecycleError | null;
+    // `refused`: the API refused this viewer's Delete (403) on permission grounds.
+    error: (LifecycleError & { refused?: boolean }) | null;
     used: boolean;
   } = {
     deleting: agent.status === "deleting",
@@ -128,7 +129,10 @@ export function createAgentDeletion(
     // A refused Delete, or one that waits for Refresh after a failure, stays in the Tab order,
     // described by the note or alert that says why (finding 2935). The shown nodes are read back:
     // an unchanged render keeps the earlier ones. While checking it stays natively disabled.
-    const removeUnavailable = checking || state.needsRefresh || state.forbidden;
+    // A permission refusal keeps it unavailable, described by its alert, until a newer
+    // permission answer allows delete (finding 2951).
+    const removeUnavailable =
+      checking || state.needsRefresh || state.forbidden || state.error?.refused === true;
     const removeReason = checking
       ? null
       : feedback.querySelector<HTMLElement>(
@@ -346,16 +350,22 @@ export function createAgentDeletion(
       }
       dialog.close();
       let text;
-      if (error.status === 403) {
-        // The API's named denial (finding 2534), or a retry refusal such as another actor's
-        // deletion; an older API's generic denial gets the console's text.
-        text =
-          namedDenial(cause) ??
-          (state.deleting &&
-          error.serverMessage !== undefined &&
-          error.serverMessage !== GENERIC_DENIAL
-            ? error.serverMessage
-            : deleteRefused("this Agent"));
+      let refused = false;
+      if (
+        error.status === 403 &&
+        state.deleting &&
+        namedDenial(cause) === undefined &&
+        error.serverMessage !== undefined &&
+        error.serverMessage !== GENERIC_DENIAL
+      ) {
+        // A retry refusal that is not about grants, such as another actor's deletion.
+        text = error.serverMessage;
+      } else if (error.status === 403) {
+        // The API's named denial (finding 2534) names the grant by Agent ID; the console's
+        // sentence names the same grant and who gives it, with the Agent's name, as Stop and the
+        // Agents list do (finding 2951). The request ID stays below it.
+        text = deleteRefused(agent.name);
+        refused = true;
       } else if (error.status === 404) {
         state.needsRefresh = true;
         text =
@@ -373,7 +383,7 @@ export function createAgentDeletion(
         text =
           "Outcome unknown. Deletion may have started. Refresh deletion status before trying again.";
       }
-      state.error = { text, requestId: error.requestId };
+      state.error = { text, requestId: error.requestId, refused };
     } finally {
       if (context.isCurrent()) {
         state.pending = false;
@@ -387,6 +397,7 @@ export function createAgentDeletion(
     if (
       state.accessEnded ||
       state.forbidden ||
+      state.error?.refused ||
       (state.pending && !state.polling) ||
       state.needsRefresh
     ) {
@@ -480,14 +491,22 @@ export function createAgentDeletion(
 
   // The row follows the newest permission answer: a page that reads it again, such as after its
   // Installation administration ended, hides or restores the row without a reload (finding D795).
+  // A refused Delete stays unavailable until a newer answer allows Agent delete (finding 2951).
   function applyDelete(permitted: boolean | undefined) {
+    if (!context.isCurrent()) {
+      return;
+    }
+    const regranted = permitted === true && state.error?.refused === true;
     const forbidden = permitted === false;
-    if (forbidden === state.forbidden || !context.isCurrent()) {
+    if (forbidden === state.forbidden && !regranted) {
       return;
     }
     state.forbidden = forbidden;
     if (forbidden) {
       restrictConfirmation?.();
+    } else if (regranted) {
+      // The refusal no longer describes this viewer's access.
+      state.error = null;
     }
     render();
   }
@@ -499,6 +518,7 @@ export function createAgentDeletion(
     schedulePoll();
   }
   void allowed?.then((permitted) => {
+    // The first answer was requested before any Delete, so it never lifts a refusal.
     if (!deleteAnswered && permitted === false) {
       applyDelete(permitted);
     }

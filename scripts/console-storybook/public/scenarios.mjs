@@ -541,7 +541,8 @@ export const scenarios = {
     description:
       "The permission answer allowed creation, but the API refuses it (for example, a grant removed after the page loaded). The form clears the value, disables editing, and focuses Close.",
     steps: [
-      "Tab to Secret name, Value and Create Secret. Each takes focus and looks unavailable, described by the refusal; typing, Enter, Space or a click sends nothing (finding 2935).",
+      "Tab to Secret name, Show value, Value and Create Secret. Each takes focus and looks unavailable, described by the refusal; typing, Enter, Space or a click sends nothing and the value stays masked (finding 2935).",
+      "Close the dialog. The page's Create Secret looks unavailable, described by the note under the toolbar that asks to select Refresh after access changes.",
     ],
   },
   secretsUnknownSave: {
@@ -1244,7 +1245,7 @@ export const scenarios = {
       { selector: ".agent-stop-dialog button.danger", click: true },
     ],
     description:
-      "Permission advice allowed Stop, but the controller refuses the confirmed write, as after a removed grant. The alert names the missing Agent operate access; the row stays running.",
+      "Permission advice allowed Stop, but the controller refuses the confirmed write, as after a removed grant. The alert names the missing Agent operate access; the row stays running, and its Stop icon, which takes focus back, is described by the alert.",
   },
   agentsRowDeleteDenied: {
     group: "Pages/Agents",
@@ -1262,7 +1263,7 @@ export const scenarios = {
       { selector: ".agent-delete-dialog button.danger", click: true },
     ],
     description:
-      "Permission advice allowed Delete, but the controller refuses the confirmed write. The alert names the missing Agent delete access; the Agent stays in the list.",
+      "Permission advice allowed Delete, but the controller refuses the confirmed write. The alert names the missing Agent delete access; the Agent stays in the list, and its Delete icon, which takes focus back, is described by the alert.",
   },
   agentsRowRestricted: {
     group: "Pages/Agents",
@@ -1272,7 +1273,7 @@ export const scenarios = {
     description:
       "The permission summary says this caller can neither stop nor delete these Agents. Each row disables its icons and says why before any confirmation.",
     steps: [
-      "Tab to a row's Stop and Delete icons. Each takes focus and looks unavailable, its description is the row's note, and Enter, Space or a click opens no confirmation.",
+      "Tab to a row's Stop and Delete icons. Each takes focus and looks unavailable, its description is the row's whole reason without the short grant line, and Enter, Space or a click opens no confirmation.",
       "Find Needs operate and delete under each row's icons. Hover it for the whole reason, which names an Installation administrator as who grants them. The icons do not open a confirmation.",
       "Open an Agent: its detail page explains the same restrictions.",
     ],
@@ -9309,7 +9310,7 @@ export const scenarios = {
     ],
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     description:
-      "Permission advice is unavailable. The attempted deletion is denied; the Console shows the API's sentence naming the missing grant and who grants it.",
+      "Permission advice is unavailable. The attempted deletion is denied; the Console names the Agent, the missing grant and who grants it, keeps the Request ID, and leaves Delete Agent unavailable, described by the refusal.",
   },
   deletionConflict: {
     group: "Components/Deletion",

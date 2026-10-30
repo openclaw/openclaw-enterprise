@@ -86,8 +86,9 @@ reference covers worker shutdown and preservation of versions, credentials, and 
 `apps/controller/src/console/agents/deletion.mjs:createAgentDeletion`
 
 **Delete Agent** requests confirmation before sending a bodyless `DELETE` to the
-exact Agent URL. The controller requires Agent `delete`; a `403` stays visible on
-the detail page. Acceptance starts asynchronous cleanup and marks the Agent deleting. The page
+exact Agent URL. The controller requires Agent `delete`. A `403` shows the Console's
+refusal with the Agent's name and the Request ID, and Delete Agent stays unavailable,
+described by it, until a newer permission answer allows delete. Acceptance starts asynchronous cleanup and marks the Agent deleting. The page
 rereads the exact Agent every few seconds; **Refresh deletion status** reads it
 on demand. A read error stops polling. Only a not-found read after
 an accepted or uncertain request, or when an already-deleting Agent is opened,

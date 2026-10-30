@@ -4318,7 +4318,7 @@ test("Agents list row actions explain missing access and still report a refused 
     await stop.evaluate(
       (node) =>
         globalThis.document.getElementById(node.getAttribute("aria-describedby").split(" ")[0])
-          ?.title,
+          ?.textContent,
     ),
     bothDenied,
   );

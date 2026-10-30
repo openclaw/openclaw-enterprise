@@ -96,6 +96,8 @@ async function latestReadableRevision(
 }
 
 // A current version the caller cannot read, and whether it is newer than every version they can.
+// The alert above the table that reports a refused row action (showOutcome).
+const REFUSAL_ID = "agent-row-refusal";
 const UNREADABLE = "unreadable";
 const NEWER_UNREADABLE = "newer-unreadable";
 type CurrentVersion = AgentRevisionMetadata | typeof UNREADABLE | typeof NEWER_UNREADABLE | null;
@@ -213,6 +215,9 @@ export function renderAgentList(context: AgentListContext) {
   // Agents whose last row action had a conflicting or unconfirmed outcome. Their actions stay
   // disabled until Refresh rereads the list, so the console never repeats an uncertain write.
   const unsettled = new Set<string>();
+  // The row action whose last write the API refused (403). Its icon is described by the alert
+  // above the table, which can sit far from the row on a narrow screen (finding 2952).
+  let refusal: { id: string; kind: RowAction } | null = null;
   // Keep the latest readable outcome for the Stop confirmation copy. It cannot establish
   // whether newer work exists: a queued deployment may be hidden by revision read permissions.
   const latestDeployments = new Map<string, string>();
@@ -504,24 +509,38 @@ export function renderAgentList(context: AgentListContext) {
     notice,
     error,
     requestId,
+    refused,
   }: {
     notice?: string;
     error?: string;
     requestId?: string | undefined;
+    refused?: { id: string; kind: RowAction };
   }) {
+    const previous = refusal;
+    refusal = refused ?? null;
     feedback.replaceChildren(
       ...(notice ? [statusBlock("info", null, notice)] : []),
       ...(error
         ? [
             element(
               "div",
-              { className: "status", "data-tone": "danger", role: "alert" },
+              {
+                className: "status",
+                "data-tone": "danger",
+                role: "alert",
+                ...(refused ? { id: REFUSAL_ID } : {}),
+              },
               element("p", { className: "status-body" }, error),
               requestId ? requestIdLine(requestId) : null,
             ),
           ]
         : []),
     );
+    for (const id of new Set([previous?.id, refusal?.id])) {
+      if (id) {
+        updateRowActions(id);
+      }
+    }
   }
 
   function replaceItem(expectedId: string, next: AgentRead) {
@@ -607,8 +626,10 @@ export function renderAgentList(context: AgentListContext) {
       return;
     }
     let text;
+    let refused;
     if (error.status === 403) {
       text = kind === "stop" ? stopRefused(item.name) : deleteRefused(item.name);
+      refused = { id: item.id, kind };
     } else if (error.status === 400 || error.status === 429) {
       text = `Could not ${kind === "stop" ? "stop" : "delete"} ${item.name}. ${describeFailure(cause, { mutation: true })}`;
     } else {
@@ -622,7 +643,7 @@ export function renderAgentList(context: AgentListContext) {
         text = `Outcome unknown. ${kind === "stop" ? "Stop" : "Deletion"} may have been accepted for ${item.name}. Select Refresh before trying again.`;
       }
     }
-    showOutcome({ error: text, requestId: error.requestId });
+    showOutcome({ error: text, requestId: error.requestId, refused });
     render();
   }
 
@@ -784,6 +805,8 @@ export function renderAgentList(context: AgentListContext) {
     const canStop = neverStarted || allowed?.operate !== false;
     const canDelete = allowed?.delete !== false;
     const noteId = `agent-row-note-${item.id}`;
+    // The icons are described by the reason alone, not by the line that repeats its grant.
+    const reasonId = `agent-row-reason-${item.id}`;
     const badgeId = `agent-row-badge-${item.id}`;
     // The note names the grant and who gives it (findings 2539, 2548). Its reserved line fits
     // only the grant, so the line shows that and the whole reason is its tooltip and what
@@ -805,8 +828,9 @@ export function renderAgentList(context: AgentListContext) {
       restriction = AGENT_DELETE_DENIED;
       grant = "Needs Agent delete";
     }
-    const describedBy = (blocked: boolean, badge: string | null) => {
-      const ids = [blocked ? noteId : null, badge].filter(Boolean);
+    const describedBy = (blocked: boolean, badge: string | null, kind: RowAction) => {
+      const refused = refusal?.id === item.id && refusal.kind === kind;
+      const ids = [blocked ? reasonId : null, badge, refused ? REFUSAL_ID : null].filter(Boolean);
       return ids.length ? { "aria-describedby": ids.join(" ") } : {};
     };
     // The row's Deleting or Stop requested badge (render).
@@ -817,7 +841,7 @@ export function renderAgentList(context: AgentListContext) {
     // order with it (finding 2899); one waiting on Refresh after an uncertain write has only the
     // alert above the table, and is natively disabled.
     const reasonFor = (blocked: boolean, badge: boolean) =>
-      blocked ? noteId : badge && badgeShown ? badgeId : null;
+      blocked ? reasonId : badge && badgeShown ? badgeId : null;
     const stop = neverStarted
       ? null
       : button(
@@ -828,7 +852,7 @@ export function renderAgentList(context: AgentListContext) {
             "aria-label": `Stop ${item.name}`,
             title: "Stop Agent",
             // A deleting or Stop requested badge explains a stopped Agent's disabled icon.
-            ...describedBy(!canStop, stopped ? badgeId : null),
+            ...describedBy(!canStop, stopped ? badgeId : null, "stop"),
           },
         );
     if (stop) {
@@ -845,7 +869,7 @@ export function renderAgentList(context: AgentListContext) {
         className: "icon-button",
         "aria-label": `Delete ${item.name}`,
         title: "Delete Agent",
-        ...describedBy(!canDelete, item.status === "deleting" ? badgeId : null),
+        ...describedBy(!canDelete, item.status === "deleting" ? badgeId : null, "delete"),
       },
     );
     setUnavailable(
@@ -860,7 +884,7 @@ export function renderAgentList(context: AgentListContext) {
       ...(restriction
         ? [
             element("span", { "aria-hidden": "true" }, grant ?? ""),
-            element("span", { className: "visually-hidden" }, restriction),
+            element("span", { className: "visually-hidden", id: reasonId }, restriction),
           ]
         : []),
     );
@@ -1142,6 +1166,7 @@ export function renderAgentList(context: AgentListContext) {
           dismissOpenDialog !== null;
         items.length = 0;
         feedback.replaceChildren();
+        refusal = null;
         render();
         // Dismiss stale confirmation without aborting or replaying an already submitted write.
         dismissOpenDialog?.();

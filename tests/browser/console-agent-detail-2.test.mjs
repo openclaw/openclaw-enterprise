@@ -524,10 +524,16 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
   assert.equal(writes, 1);
   serverMessage = GENERIC_DENIAL;
   await confirm();
-  await page.getByRole("alert").getByText(deleteRefused("this Agent"), { exact: false }).waitFor();
+  await page
+    .getByRole("alert")
+    .getByText(deleteRefused("Owned cleanup"), { exact: false })
+    .waitFor();
   assert.equal(writes, 2);
   await page.clock.fastForward(DELETION_POLL_MS * 2);
-  await page.getByRole("alert").getByText(deleteRefused("this Agent"), { exact: false }).waitFor();
+  await page
+    .getByRole("alert")
+    .getByText(deleteRefused("Owned cleanup"), { exact: false })
+    .waitFor();
   await page.getByRole("button", { name: "Refresh deletion status", exact: true }).click();
   await page.getByRole("alert").waitFor({ state: "hidden" });
   assert.equal(writes, 2);
