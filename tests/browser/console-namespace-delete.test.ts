@@ -107,6 +107,8 @@ test("Namespace trash action confirms, keeps pending cleanup visible, and repair
   await page
     .getByText("Retired team was deleted. Its name remains reserved.", { exact: true })
     .waitFor();
+  // Refresh, disabled while it read, left with its row; the outcome takes focus, not the page.
+  assert.equal(await hasFocus(page.locator(".namespace-deletion-outcome")), true);
   assert.equal(new URL(page.url()).searchParams.get("namespace"), remaining.id);
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page

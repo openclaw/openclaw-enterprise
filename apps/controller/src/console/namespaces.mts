@@ -163,8 +163,12 @@ export function renderNamespaces(
         {
           ...context,
           statusChanged: setStatus,
-          onRemoved(namespace) {
-            const focused = row.contains(document.activeElement);
+          onRemoved(namespace, refocus) {
+            // The check Refresh requested disabled it while it read, which dropped focus to the
+            // page; focus left there goes to the outcome too.
+            const active = document.activeElement;
+            const focused =
+              row.contains(active) || (refocus && (!active || active === document.body));
             row.remove();
             context.onRemoved(namespace);
             outcome.replaceChildren(
