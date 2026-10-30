@@ -2187,6 +2187,24 @@ test("a refocus shows a stop made elsewhere while a version the caller cannot re
   await shows(/Selected for service\s+None/);
   await versionContext.getByText(/^No version is selected for service\./).waitFor();
   await namesFormerVersion();
+
+  // Finding 3004: a tab built after the stop named the version as one that may not exist ("Version
+  // not found or not shared"), below the line that says it was selected for service.
+  const panelHeading = page.getByRole("heading", {
+    name: /^(You cannot read this version|Version not found or not shared)$/,
+  });
+  for (const name of ["Deployment", "Configuration"]) {
+    const tab = page.getByRole("tab", { name, exact: true });
+    await tab.click();
+    await waitForCondition(
+      async () => (await tab.getAttribute("aria-selected")) === "true",
+      `${name} selected`,
+    );
+    await waitForIdleFetches(page);
+    await waitForCondition(async () => (await panelHeading.count()) === 1, `${name} panel`);
+    assert.equal(await panelHeading.innerText(), "You cannot read this version", name);
+    await namesFormerVersion();
+  }
 });
 
 test("Logs of a version the caller cannot read show a stop and a redeploy made elsewhere", async (t) => {
