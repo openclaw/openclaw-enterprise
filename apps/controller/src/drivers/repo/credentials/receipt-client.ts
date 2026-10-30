@@ -1,10 +1,7 @@
 import { request } from "node:http";
 import { dirname, join } from "node:path";
-import {
-  sameBinding,
-  type RepositoryCredentialBoundSessionInput,
-  type SessionStatus,
-} from "./service-contracts.ts";
+import type { RepositoryCredentialBoundSessionInput, SessionStatus } from "./service-contracts.ts";
+import { sameBinding } from "./sessions.ts";
 
 /** The broker sends only admission identities and already-observed terminal evidence. */
 export class RepositoryReceiptClient {

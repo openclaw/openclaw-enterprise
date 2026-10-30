@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-10-30"
-last_updated_session: authoring-run/87ae5cf6-e8fb-487c-92b1-8552bfbcdcec
+last_updated_session: authoring-run/58b286d1-0e1a-4666-b77e-e8da815c7d88
 ---
 
 # Agent repository credential flow
@@ -158,44 +158,46 @@ worker's prepared provider owns issuance and custody.
 ### 3. Record ownership before opening a session
 
 `apps/controller/src/worker/repository-credentials.ts:RepositoryCredentialLifecycle.prepare`
-rechecks actor, Namespace, Agent, revision, Driver, grant and deadline. Under the live claim and
-Namespace/Agent locks, State rejects stopped or deleting owners, recording immutable cleanup identifiers
-and phases before Driver calls; no bearers or files.
-`GitHubNativeRepositorySender.checkAdmissionReady` checks broker capability within two seconds; failure
-blocks only fresh admission. Fresh OPEN carries `preparedOnly: true`: old parsers reject it after socket
-replacement; current control requires a prepared backend.
-
-`apps/controller/src/drivers/repo/github/driver.ts:GitHubNativeRepositorySender.open` refuses
-installation profiles before broker contact and shares the three-ID
-`apps/controller/src/drivers/repo/credentials/service-contracts.ts:sameBinding` comparison without
-loading registry or session creation.
+rechecks actor, Namespace, Agent, revision, Driver, grant and deadline.
+`GitHubNativeRepositorySender.checkAdmissionReady` checks broker capability with a
+two-second timeout. Failure blocks fresh admission, not recovery or cleanup. Each fresh
+OPEN carries `preparedOnly: true`: an old parser rejects it after socket replacement,
+and current control requires a prepared backend.
+Under the live claim and Namespace/Agent locks, State records immutable cleanup
+context before calling the Driver. Stopped or deleting owners are rejected.
+State stores identifiers and phases, never bearers or files.
 
 `apps/controller/src/backends/repository-credentials/control-client.ts:UnixRepositoryCredentialControlClient`
-sends the bound request over the private socket;
+sends the bound request over the private socket.
 `apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts:createPreparedGitHubRegistryFactory`
-resolves and compares its grant. Valid `DISPOSED` permits historical revoked/expired counts,
-never outstanding obligations. Only created responses contain bearers.
+resolves and compares its grant. The client validates status: `DISPOSED` permits historical
+revoked/expired counts, but no outstanding obligations. Only a created response contains a bearer.
 `apps/controller/src/drivers/repo/github/credentials/client/config.ts:encodeRepositoryCredentialSessionFiles`
 encodes files; the worker records the session ID before passing them to Compute.
 
-Confirmed open sessions yield fileless `retained` bindings. `recoverOnly` finds or fences unfinished
-admissions and closes recovered sessions. Fresh material requires confirmed disposal or a missing opening
-without a recorded session ID; invalidated known sessions block replacement.
-Closing raises `REPOSITORY_CLEANUP_PENDING` within Work bounds and the revision deadline. Cleanup
-uses the configured interval while any session closes; otherwise unsettled obligations retain their
-code and retry at `age / 40`, bounded by that interval and ten minutes.
-`apps/controller/src/worker.ts:processRepositoryCleanup` logs `worker.repository-cleanup-warning`
-with `cause` once per worker.
+Confirmed open sessions yield `retained` bindings without files. `recoverOnly` finds or
+fences unfinished admissions and closes recovered sessions. Fresh material requires
+confirmed disposal or a missing opening without a recorded session ID. Invalidated known
+sessions block replacement. Closing raises `REPOSITORY_CLEANUP_PENDING`, subject to Work
+bounds and the revision deadline. Cleanup uses the configured interval while any session
+closes. Otherwise, an unsettled obligation retains its code and retries at `age / 40`,
+bounded by the configured interval and ten minutes.
+`apps/controller/src/worker.ts:processRepositoryCleanup` logs
+`worker.repository-cleanup-warning` with `cause` once per worker.
 
-`apps/controller/src/drivers/repo/credentials/control.ts:createControlAdmission` reserves before release.
-`apps/controller/src/backends/repository-credentials/receipt-store.ts:RepositoryReceiptStore` retains
-fences and original-broker disposal evidence across service pruning; transport failure cannot establish
-absence. It matches `preparedOnly` to protocol 3 throughout receipt operations. Unmarked v1 requests can
-recover and close on original IDs but cannot reserve. `RepositoryCredentialLifecycle.verifyRelease` and
-`apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts:sessionQuery` require
-protocol 3 for native release and prepared-material selection; protected sessions retain protocol 2.
-The query matches policy-reduction version 2 with execution admission v7, preserving exact installed-plan,
-recipient, standing-approval and session-lifetime checks.
+`apps/controller/src/drivers/repo/credentials/control.ts:createControlAdmission`
+reserves before releasing material.
+`apps/controller/src/backends/repository-credentials/receipt-store.ts:RepositoryReceiptStore`
+retains fences and original-broker disposal evidence across service pruning.
+Transport failure cannot establish absence. The receipt store matches
+`preparedOnly` to protocol 3 throughout receipt operations. Unmarked v1 requests
+can recover and close on their original IDs but cannot reserve.
+`RepositoryCredentialLifecycle.verifyRelease` and
+`apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts:sessionQuery`
+require protocol 3 for native release and prepared-material selection.
+Protected sessions retain protocol 2. The query matches policy-reduction version 2
+with execution admission v7. It retains the exact installed-plan, recipient,
+standing-approval and session-lifetime checks before selecting prepared material.
 
 ### 4. Deliver and retain one complete runtime generation
 
@@ -390,8 +392,6 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
-
-- 2026-10-30 17:06: Isolate native sender identity checks from registry and session creation. (authoring-run/87ae5cf6-e8fb-487c-92b1-8552bfbcdcec - 93acaf8ac6844a435847142e98521afa874568fc)
 
 - 2026-10-30 15:01: Reuse validated policy owner identity. (authoring-run/58b286d1-0e1a-4666-b77e-e8da815c7d88 - 5b20ec5b1501bf1c6c2254ec36d9dc1e0e0bd730)
 

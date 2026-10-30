@@ -1,17 +1,6 @@
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "./client-contracts.ts";
 
-export function sameBinding(
-  left: RepositoryCredentialGrantIdentity,
-  right: RepositoryCredentialGrantIdentity,
-): boolean {
-  return (
-    left.providerInstanceId === right.providerInstanceId &&
-    left.repositoryId === right.repositoryId &&
-    left.grantId === right.grantId
-  );
-}
-
 /** Full private service observation, validated before projection at the Driver boundary. */
 export interface SessionStatus {
   readonly sessionId: string;

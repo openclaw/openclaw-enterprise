@@ -1,12 +1,11 @@
-import {
-  isInstallationRepositoryProfile,
-  type ErrorDetail,
-  type JSONSchema,
-  type OpenRepositorySessionInput,
-  type OpenRepositorySessionResult,
-  type Backend,
-  type NativeRepositorySender,
-  type RepositoryCredentialSessionStatus,
+import type { ErrorDetail } from "@openclaw-enterprise/contracts";
+import type {
+  JSONSchema,
+  OpenRepositorySessionInput,
+  OpenRepositorySessionResult,
+  Backend,
+  NativeRepositorySender,
+  RepositoryCredentialSessionStatus,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ScopeViolationError } from "@openclaw-enterprise/occ";
 import { isAbsolute, resolve } from "node:path";
@@ -14,8 +13,10 @@ import {
   RepositoryCredentialControlError,
   type RepositoryCredentialControlClient,
 } from "../../../backends/repository-credentials/control-client.ts";
+import { isInstallationRepositoryProfile } from "@openclaw-enterprise/contracts";
 import { encodeRepositoryCredentialSessionFiles } from "./credentials/client/config.ts";
-import { sameBinding, type SessionStatus } from "../credentials/service-contracts.ts";
+import type { SessionStatus } from "../credentials/service-contracts.ts";
+import { sameBinding } from "../credentials/sessions.ts";
 import { hasControlCharacter } from "../credentials/client-contracts.ts";
 
 function publicStatus(status: SessionStatus): RepositoryCredentialSessionStatus {
