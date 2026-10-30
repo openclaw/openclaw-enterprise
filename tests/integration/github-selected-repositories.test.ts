@@ -109,11 +109,9 @@ test("ordinary fresh selections resolve one or N repositories without broadening
     contents: "write",
     pull_requests: "write",
   });
-  const policy = new GitHubRepositoryPolicy(
-    { driverId: "github", backendId: "github" },
-    registry,
-    { sessionDurationSeconds: 600 },
-  );
+  const policy = new GitHubRepositoryPolicy({ driverId: "github", backendId: "github" }, registry, {
+    sessionDurationSeconds: 600,
+  });
   for (const refs of [["a"], ["b", "a"]]) {
     const resolved = policy.resolve({
       namespaceId: "team",
