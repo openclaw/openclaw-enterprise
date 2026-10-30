@@ -6,21 +6,17 @@ import { connect } from "node:net";
 import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
-import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import {
   cleanEnvironment,
-  createTlsMaterial,
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import {
   eventually,
   gatewayRequest,
-  createLoopbackServiceConfiguration,
+  startTokenServiceScope,
 } from "../fixtures/repository-credentials/service.mjs";
 import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
@@ -63,11 +59,7 @@ async function startGatewayProxy(resources, gatewayHost, gatewayPort) {
 }
 
 async function startTokenService(t, limits = {}, configuration = {}) {
-  const resources = createTestResourceScope(t);
-  const clock = createControlledClock();
-  const tls = await createTlsMaterial(resources);
-  const config = await createLoopbackServiceConfiguration(resources, limits);
-  const github = await startGitHubFixture(resources, { clock, tls });
+  const { resources, clock, tls, config, github } = await startTokenServiceScope(t, { limits });
   const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
   // Synthetic host token: the fake GitHub accepts it on git and REST without issuing it.
   const { token, tokenIndex, service, listeners } = await startStaticTokenService(resources, {

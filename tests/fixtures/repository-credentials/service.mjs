@@ -7,7 +7,7 @@ import { createControlledClock } from "./clock.mjs";
 import { createTlsMaterial } from "./process.mjs";
 import { startGitHubFixture } from "./github.mjs";
 import { startGitSmartHttpFixture } from "./git.mjs";
-import { createResourceScope } from "./resources.mjs";
+import { createResourceScope, createTestResourceScope } from "./resources.mjs";
 import { socketDirectory } from "../../helpers/socket-directory.mjs";
 import { serviceConfigurationData } from "./builders.mjs";
 import { startStaticTokenService, writeSessionClientConfiguration } from "./service-resources.mjs";
@@ -47,6 +47,26 @@ export async function createServiceConfiguration(
 export async function createLoopbackServiceConfiguration(owner, limits) {
   const base = await createServiceConfiguration(owner, limits);
   return { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
+}
+
+/**
+ * The shared setup of the token service suites: a resource scope that closes after `t`, a
+ * clock (controlled, or `"system"`, or the caller's), TLS material, a loopback service
+ * configuration with `limits`, and the fake GitHub unless `github` is false. Each step
+ * registers its cleanup on the scope in this order, so teardown runs in reverse.
+ */
+export async function startTokenServiceScope(t, { clock, limits, github = true } = {}) {
+  const resources = createTestResourceScope(t);
+  const selectedClock =
+    clock === "system"
+      ? (await appModule("drivers/repo/credentials/clock")).createSystemClock()
+      : (clock ?? createControlledClock());
+  const tls = await createTlsMaterial(resources);
+  const config = await createLoopbackServiceConfiguration(resources, limits);
+  const fakeGitHub = github
+    ? await startGitHubFixture(resources, { clock: selectedClock, tls })
+    : undefined;
+  return { resources, clock: selectedClock, tls, config, github: fakeGitHub };
 }
 
 export async function startCredentialServiceFixture(t, options = {}) {
