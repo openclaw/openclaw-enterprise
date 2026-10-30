@@ -397,7 +397,6 @@ export function createAgentDeletion(
     if (
       state.accessEnded ||
       state.forbidden ||
-      state.error?.refused ||
       (state.pending && !state.polling) ||
       state.needsRefresh
     ) {

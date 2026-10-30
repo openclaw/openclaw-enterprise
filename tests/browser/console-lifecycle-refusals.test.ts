@@ -75,7 +75,7 @@ test("an Agent page Delete refusal names the Agent and stays until a later answe
   const alert = row.getByRole("alert");
   await alert.getByText(deleteRefused(name), { exact: true }).waitFor();
   await alert.getByText(`Request ID: ${meta.requestId}`, { exact: true }).waitFor();
-  assert.equal(await page.getByText("Not authorized:").count(), 0);
+  assert.equal(await row.getByText("Not authorized:").count(), 0);
   // Focus stays on Delete, which stays in the Tab order, described by the refusal, and sends
   // nothing: the API would refuse it again.
   assert.equal(await hasFocus(remove), true);
@@ -156,6 +156,49 @@ test("an Agents list row refusal describes the row's icon, and an unavailable ic
   }
   // Only the latest refusal describes its icon.
   assert.equal(await stop.getAttribute("aria-describedby"), null);
+  // A later accepted write replaces the refusal, and no icon is described by it any more.
+  grantMember(fixture, MEMBER, [["delete", "agent"]]);
+  await remove.click();
+  await page
+    .getByRole("dialog", { name: "Delete Refused Row?" })
+    .getByRole("button", { name: "Permanently delete Agent", exact: true })
+    .click();
+  await page.getByText("Deletion requested for Refused Row.", { exact: false }).waitFor();
+  assert.equal(await page.locator("[aria-describedby~='agent-row-refusal']").count(), 0);
+});
+
+// Request deletion again on an Agent already deleting passes a refusal that is not about grants,
+// such as another actor's deletion, through as written (finding 2534). A named grant denial is
+// still the console's sentence with the Agent's name.
+test("a refused Request deletion again names the Agent, not the API's denial", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refused repeat delete");
+  const name = "Refused repeat delete";
+  const agent = await fixture.createAgent(namespace.id, name, nativeValues("repeat-delete"));
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  assert.equal((await fixture.request("DELETE", agentPath)).status, 202);
+  const member = await fixture.createNamespaceMember(MEMBER, namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture, { browser });
+  // With no permission answer the page offers the repeat, and the API decides.
+  await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id).href, member.credentials);
+  const row = page.getByRole("region", { name: "Delete Agent", exact: true });
+  const repeat = row.getByRole("button", { name: "Request deletion again", exact: true });
+  await waitForEnabled(repeat);
+  await repeat.click();
+  const refused = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${agentPath}` &&
+      response.request().method() === "DELETE",
+  );
+  await page
+    .getByRole("dialog", { name: `Request deletion again for ${name}?` })
+    .getByRole("button", { name: "Request deletion again", exact: true })
+    .click();
+  const response = await refused;
+  assert.equal(response.status(), 403);
+  assert.ok((await response.json()).error.message.startsWith("Not authorized: "));
+  await row.getByRole("alert").getByText(deleteRefused(name), { exact: true }).waitFor();
+  assert.equal(await row.getByText("Not authorized:").count(), 0);
 });
 
 // After the API refused a Create Secret, the dialog's Show value toggle was natively disabled

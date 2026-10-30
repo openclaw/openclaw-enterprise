@@ -514,7 +514,7 @@ export function renderAgentList(context: AgentListContext) {
     notice?: string;
     error?: string;
     requestId?: string | undefined;
-    refused?: { id: string; kind: RowAction };
+    refused?: { id: string; kind: RowAction } | undefined;
   }) {
     const previous = refusal;
     refusal = refused ?? null;
