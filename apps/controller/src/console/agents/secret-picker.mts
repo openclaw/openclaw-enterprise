@@ -208,6 +208,36 @@ function readableSecretIds(context: SecretContext, request: SecretRequest, admin
   });
   return read;
 }
+// The view's administrator-path Secret reads, one at a time. A page that confirmed
+// Installation administration sends these reads at once, so an administrator revoked before
+// she opened a view with two bound Secrets was refused, and audited, twice (finding 2938). Each
+// read waits for the one before it to settle; a refusal that settles "not an administrator" then
+// refuses the later ones unsent (console.mjs administrationRead), and they take the member path.
+// A read whose view is no longer current is not sent: its answer would show nowhere, and the
+// request would go out under the next page.
+const administratorReadTurns = new WeakMap<SecretRequest, Promise<unknown>>();
+function administratorReadInTurn(
+  context: SecretContext,
+  request: SecretRequest,
+  read: () => Promise<unknown>,
+) {
+  const turn = (administratorReadTurns.get(request) ?? Promise.resolve()).then(() =>
+    context.isCurrent && !context.isCurrent()
+      ? Promise.reject(new Error("The view is no longer shown."))
+      : read(),
+  );
+  const settled = turn.then(
+    () => undefined,
+    () => undefined,
+  );
+  administratorReadTurns.set(request, settled);
+  void settled.then(() => {
+    if (administratorReadTurns.get(request) === settled) {
+      administratorReadTurns.delete(request);
+    }
+  });
+  return turn;
+}
 function readSecretMetadata(
   context: SecretContext,
   request: SecretRequest,
@@ -235,7 +265,10 @@ function readSecretMetadata(
           : request(href, administrator ? ADMINISTRATOR_PATH : undefined),
     );
   const administrator = context.installationAdmin === true;
-  const read = attempt(administrator).catch((cause: unknown) =>
+  const first = administrator
+    ? administratorReadInTurn(context, request, () => attempt(true))
+    : attempt(false);
+  const read = first.catch((cause: unknown) =>
     administrator && refusedAsNonAdministrator(cause)
       ? attempt(false, cause)
       : Promise.reject(cause),

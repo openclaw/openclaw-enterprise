@@ -1513,6 +1513,195 @@ test("A bound Slack Secret grant read after a revoke is refused and audited once
   assert.deepEqual(iamReads(requests), ["GET /iam/roles"]);
 });
 
+// Findings 2938 and 2939. An Installation administrator's Agent page confirms her administration
+// when it loads. Its dedicated Agent binds a harness Secret and two Slack token Secrets, and its
+// Slack channel names a channel and a person. She opens Channels, or Edit Slack, later.
+const SLACK_TARGETS = {
+  enabled: true,
+  mode: "socket",
+  appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+  botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+  dmPolicy: "allowlist",
+  groupPolicy: "allowlist",
+  allowFrom: ["U123"],
+  channels: { C123: { requireMention: true } },
+};
+
+async function slackAdministratorPage(t, name, tab) {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  const harness = await fixture.createSecret(namespace.id, `${name} model key`, "hidden-model");
+  const secretBindings = {};
+  for (const token of ["app", "bot"]) {
+    const secret = await fixture.createSecret(
+      namespace.id,
+      `${name} Slack ${token} token`,
+      `hidden-${token}-token`,
+    );
+    secretBindings[`SLACK_${token.toUpperCase()}_TOKEN`] = {
+      source: secret.ref,
+      delivery: { type: "env" },
+    };
+  }
+  const agent = await fixture.createAgent(
+    namespace.id,
+    `${name} Agent`,
+    nativeValues("slack-reads", { harnessId: "codex", channels: { slack: SLACK_TARGETS } }),
+    {
+      executionMode: "dedicated",
+      secretBindings,
+      harnessAuth: { method: "api_key", source: harness.ref },
+    },
+  );
+  const account = await fixture.createNamespaceMember(
+    name.toLowerCase().replaceAll(" ", "-"),
+    namespace.id,
+    AGENT_READ,
+  );
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  await login(
+    page,
+    fixture,
+    String(detailUrl(fixture, namespace.id, agent.id, "draft", tab)),
+    account.credentials,
+  );
+  await waitForIdleFetches(page);
+  // The page load's probe confirmed administration, so the console sends administrator reads.
+  assert.equal(requests.filter(({ path }) => path === "/observability").length, 1);
+  return { fixture, namespace, page, requests, revoke };
+}
+
+// Bound Secret metadata reads by ID, and Slack name lookups, among `requests`.
+const secretReads = (requests) =>
+  requests.filter(({ method, path }) => method === "GET" && /\/secrets\/[^/?]+$/.test(path));
+const nameLookups = (requests) =>
+  requests.filter(({ path }) => path.endsWith("/channel-directory/lookup"));
+
+// Finding 2938. Revoked before her first Channels open, the Slack card read both bound Slack
+// Secrets by ID at once, and the API refused and audited both reads. They go one at a time: the
+// first refusal settles "not an administrator", the second is refused unsent, and both take the
+// member path, which shows each Secret's name as unavailable.
+test("A first Channels open after a revoke reads one bound Secret, audited once", async (t) => {
+  const { fixture, page, requests, revoke } = await slackAdministratorPage(
+    t,
+    "Revoked channels",
+    "configuration",
+  );
+  revoke();
+  const audited = authorizationDenials(fixture.auditSink).length;
+  const sent = requests.length;
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", selected: true }).waitFor();
+  await page.getByText(BOUND_SECRET_UNLISTED, { exact: true }).nth(1).waitFor();
+  await waitForIdleFetches(page);
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.secrets.read"],
+  );
+  assert.equal(secretReads(requests.slice(sent)).length, 1);
+});
+
+// Finding 2938, an allowed administrator who leaves while the first of the Slack card's Secret
+// reads is in flight: the second read waits for it, and is not sent once the page is gone.
+test("Leaving Channels during its first Secret read sends no later Secret read", async (t) => {
+  const { fixture, namespace, page, requests } = await slackAdministratorPage(
+    t,
+    "Leaving channels",
+    "configuration",
+  );
+  const held = await holdRequests(
+    t,
+    page,
+    (address) => new RegExp(`^/namespaces/${namespace.id}/secrets/[^/]+$`).test(address.pathname),
+    { once: true },
+  );
+  const sent = requests.length;
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  await held.requested;
+  await page.locator("nav").getByRole("link", { name: "Agents", exact: true }).first().click();
+  await page.waitForURL(/\/console\/agents\?/);
+  held.release();
+  await waitForIdleFetches(page);
+  assert.equal(secretReads(requests.slice(sent)).length, 1);
+  assert.equal(authorizationDenials(fixture.auditSink).length, 0);
+});
+
+// Finding 2939. A Slack name lookup needs Secret operate on the bot token Secret, which she held
+// only through administration. Revoked after Channels loaded, Edit Slack's fields looked their
+// names up at once, and the API refused and audited each lookup. They go one at a time: the
+// first refusal answers the other field unsent, and both fields show its reason.
+test("Edit Slack after a revoke looks Slack names up once, audited once", async (t) => {
+  const { fixture, page, requests, revoke } = await slackAdministratorPage(
+    t,
+    "Revoked lookup",
+    "channels",
+  );
+  await page.getByRole("button", { name: "Edit Slack" }).waitFor();
+  await waitForIdleFetches(page);
+  revoke();
+  const audited = authorizationDenials(fixture.auditSink).length;
+  const sent = requests.length;
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  const drawer = page.getByRole("dialog", { name: "Edit Slack" });
+  await drawer.waitFor();
+  // The API names the grant the lookup needs; each field shows that refusal.
+  const refused = drawer.getByText(
+    /^Slack lookup was refused: .* Saved selections are retained\.$/,
+  );
+  await refused.nth(1).waitFor();
+  await waitForIdleFetches(page);
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.channel_directory.lookup"],
+  );
+  assert.equal(nameLookups(requests.slice(sent)).length, 1);
+  const reasons = await refused.allTextContents();
+  assert.equal(reasons.length, 2);
+  assert.equal(reasons[0], reasons[1]);
+});
+
+// Finding 2939, an allowed administrator who leaves while the first of Edit Slack's name lookups
+// is in flight: the second lookup waits for it, and is not sent once the page is gone.
+test("Leaving Edit Slack during its first name lookup sends no later lookup", async (t) => {
+  const { fixture, namespace, page, requests } = await slackAdministratorPage(
+    t,
+    "Leaving lookup",
+    "channels",
+  );
+  await page.getByRole("button", { name: "Edit Slack" }).waitFor();
+  await waitForIdleFetches(page);
+  // In-app navigation, so the page that sent the lookup is left without a reload. The open
+  // drawer blocks the navigation links: Forward leaves it.
+  await page.locator("nav").getByRole("link", { name: "Agents", exact: true }).first().click();
+  await page.waitForURL(/\/console\/agents\?/);
+  await waitForIdleFetches(page);
+  await page.goBack();
+  await page.getByRole("button", { name: "Edit Slack" }).waitFor();
+  await waitForIdleFetches(page);
+  const held = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
+    { once: true },
+  );
+  const sent = requests.length;
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  await held.requested;
+  await page.goForward();
+  await page.waitForURL(/\/console\/agents\?/);
+  held.release();
+  await waitForIdleFetches(page);
+  assert.equal(nameLookups(requests.slice(sent)).length, 1);
+});
+
 // Finding 2637. A Restriction refuses an administrator's bound Secret read, and the permission
 // answer that would confirm her administration fails (here a 503). A failed answer is unknown, not
 // a refusal: she keeps the Observability link and the Access tab, and the next page load asks again.

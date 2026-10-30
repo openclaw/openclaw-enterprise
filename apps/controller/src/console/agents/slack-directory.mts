@@ -60,6 +60,56 @@ function lookup(
   }) as Promise<ChannelDirectoryResult>;
 }
 
+// A view's name lookups, one at a time. The lookup authorizes Secret operate on the bot token
+// Secret, which an Installation administrator may hold only through that administration; revoked
+// before she opened Edit Slack, its fields sent their lookups at once and each refusal was
+// audited (finding 2939). Each lookup waits for the one before it to settle. A refusal answers
+// the lookups already waiting for the same Secret unsent, so each field shows that refusal's
+// reason; once none are waiting, a later lookup asks again. A lookup whose view is no longer
+// current is not sent.
+interface NameLookupTurns {
+  tail: Promise<void>;
+  refusals: Map<string, unknown>;
+}
+const nameLookupTurns = new WeakMap<SlackDirectoryContext, NameLookupTurns>();
+function nameLookupInTurn(
+  context: SlackDirectoryContext,
+  scope: string,
+  send: () => Promise<ChannelDirectoryResult>,
+) {
+  let turns = nameLookupTurns.get(context);
+  if (!turns) {
+    turns = { tail: Promise.resolve(), refusals: new Map() };
+    nameLookupTurns.set(context, turns);
+  }
+  const queue = turns;
+  const turn = queue.tail.then(() => {
+    if (queue.refusals.has(scope)) {
+      return Promise.reject(queue.refusals.get(scope));
+    }
+    if (!context.isCurrent()) {
+      return Promise.reject(new Error("The view is no longer shown."));
+    }
+    return send().catch((cause: unknown) => {
+      if (requestFailure(cause).status === 403) {
+        queue.refusals.set(scope, cause);
+      }
+      throw cause;
+    });
+  });
+  const settled = turn.then(
+    () => undefined,
+    () => undefined,
+  );
+  queue.tail = settled;
+  void settled.then(() => {
+    if (queue.tail === settled) {
+      queue.refusals.clear();
+    }
+  });
+  return turn;
+}
+
 export function isSlackId(value: string, kind: DirectoryKind) {
   return (kind === "users" ? USER_ID : CHANNEL_ID).test(value);
 }
@@ -187,13 +237,18 @@ export function createSlackNameResolver({
         if (cache.size >= 100) {
           cache.delete(cache.keys().next().value!);
         }
-        request = lookup(context, {
-          secretId,
-          kind,
-          ids: requestedIds,
-          ...(agentId ? { agentId } : {}),
-          ...(configurationId ? { configurationId } : {}),
-        });
+        request = nameLookupInTurn(
+          context,
+          JSON.stringify([secretId, agentId ?? null, configurationId ?? null]),
+          () =>
+            lookup(context, {
+              secretId,
+              kind,
+              ids: requestedIds,
+              ...(agentId ? { agentId } : {}),
+              ...(configurationId ? { configurationId } : {}),
+            }),
+        );
         cache.set(key, request);
         // Share simultaneous fields, then reread the Secret for later views of the same ID.
         const clear = () => {
