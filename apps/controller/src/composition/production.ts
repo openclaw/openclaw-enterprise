@@ -282,6 +282,19 @@ export async function composeProduction(
     }
 
     phaseCompleted("computePreflight");
+    const channelDriver = new SlackChannelDriver(
+      globalThis.fetch,
+      config.channelDirectoryProxyUrl,
+      {
+        managedProxyHosts:
+          config.channelDirectoryManagedProxyHost === undefined
+            ? []
+            : [config.channelDirectoryManagedProxyHost],
+        // A closed egress reaches Slack only through a proxy; an open one may reach it
+        // directly, so a timeout there stays a retryable outage (finding 2533).
+        expectProxy: config.apiHttpsEgressOpen !== true,
+      },
+    );
     const controller = new OpenClawController(persistedInstallation, {
       ...installationControllerOptions(config.drivers.installation),
       state,
@@ -299,23 +312,8 @@ export async function composeProduction(
     controller.selectDriver("compute", computeDriver.id);
     controller.registerDriver(secretDriver);
     controller.selectDriver("secret", secretDriver.id);
-    {
-      const channelDriver = new SlackChannelDriver(
-        globalThis.fetch,
-        config.channelDirectoryProxyUrl,
-        {
-          managedProxyHosts:
-            config.channelDirectoryManagedProxyHost === undefined
-              ? []
-              : [config.channelDirectoryManagedProxyHost],
-          // A closed egress reaches Slack only through a proxy; an open one may reach it
-          // directly, so a timeout there stays a retryable outage (finding 2533).
-          expectProxy: config.apiHttpsEgressOpen !== true,
-        },
-      );
-      controller.registerDriver(channelDriver);
-      controller.selectDriver("channel", channelDriver.id);
-    }
+    controller.registerDriver(channelDriver);
+    controller.selectDriver("channel", channelDriver.id);
     if (protectedDriver !== undefined) {
       controller.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
     } else if (sandboxDriver !== undefined) {

@@ -108,9 +108,6 @@
     }
   },
   "tests/integration/occ-api.test.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    },
     "no-useless-escape": {
       "count": 10
     }

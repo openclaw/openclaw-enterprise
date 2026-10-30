@@ -809,6 +809,64 @@ func (app *application) agentCommand() *cobra.Command {
 			return nil
 		},
 	}
+	firstDeploymentCommand := func(recoverOnly bool) *cobra.Command {
+		var intent occclient.FirstDeploymentIntent
+		var generation string
+		name, description := "deploy-first", "Deploy exactly the reviewed Configuration, only if never deployed"
+		if recoverOnly {
+			name, description = "recover-first-deployment", "Read an exact first-deployment receipt without deploying"
+		}
+		cmd := &cobra.Command{
+			Use:   name + " ID",
+			Short: description,
+			Args:  idArgs(agentIDArg),
+			RunE: func(command *cobra.Command, args []string) error {
+				namespace, err := app.requiredNamespace()
+				if err != nil {
+					return err
+				}
+				parsed, err := strconv.ParseInt(generation, 10, 64)
+				if err != nil || strconv.FormatInt(parsed, 10) != generation {
+					return fmt.Errorf("--generation must be a canonical positive decimal integer")
+				}
+				intent.ExpectedGeneration = parsed
+				if err := intent.Validate(); err != nil {
+					return err
+				}
+
+				client, err := app.client()
+				if err != nil {
+					return err
+				}
+				var receipt any
+				if recoverOnly {
+					receipt, err = client.RecoverAgentFirstDeployment(namespace, args[0], intent)
+				} else {
+					receipt, err = client.DeployAgentFirst(namespace, args[0], intent)
+				}
+				if err != nil {
+					return err
+				}
+				if receipt == nil {
+					fmt.Fprintln(command.ErrOrStderr(), "No matching admission found. An in-flight request may still commit; this does not prove failure.")
+					if app.output == "table" {
+						return nil
+					}
+				}
+				return app.printItems(receipt, false, []column{
+					{title: "REVISION", key: "revisionId"}, {title: "AGENT", key: "agentId"},
+					{title: "CONFIGURATION", key: "configurationId"}, {title: "GENERATION", key: "configurationGeneration"},
+				})
+			},
+		}
+		cmd.Flags().StringVar(&intent.Key, "key", "", "Stable nonsecret intent key")
+		cmd.Flags().StringVar(&intent.ExpectedConfigurationID, "configuration", "", "Reviewed Configuration ID")
+		cmd.Flags().StringVar(&generation, "generation", "", "Reviewed Configuration generation (canonical positive decimal)")
+		for _, flag := range []string{"key", "configuration", "generation"} {
+			_ = cmd.MarkFlagRequired(flag)
+		}
+		return cmd
+	}
 	var revisionLimit int
 	var revisionCursor string
 	revisions := &cobra.Command{
@@ -941,6 +999,8 @@ func (app *application) agentCommand() *cobra.Command {
 		get,
 		update,
 		deploy,
+		firstDeploymentCommand(false),
+		firstDeploymentCommand(true),
 		revisions,
 		deploymentStatus,
 		stop,

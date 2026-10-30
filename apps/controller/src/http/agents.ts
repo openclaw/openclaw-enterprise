@@ -5,6 +5,7 @@ import {
   type AgentRead,
   type AgentRevisionRead,
   type AgentRuntimeCredentialsBody,
+  type FirstDeploymentIntent,
 } from "@openclaw-enterprise/contracts";
 import {
   accessBindingsRemovedWithAgent,
@@ -447,6 +448,56 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         return provisioned;
       });
       reply.send({ data: status, meta: { requestId: request.id } });
+    },
+    async deployAgentFirst({
+      controller,
+      context,
+      request,
+      reply,
+      params,
+      namespaceId,
+      mutationEvent,
+    }) {
+      try {
+        const receipt = await controller.deployAgentFirst(
+          context.actorId,
+          { namespaceId, agentId: params.agentId! },
+          request.body as FirstDeploymentIntent,
+          options.resolveHarness,
+          (admitted) =>
+            mutationEvent(
+              { kind: "agent_revision", id: admitted.revision.id, namespaceId },
+              undefined,
+              admitted.authorization,
+            ),
+        );
+        reply.status(202).send({ data: receipt, meta: { requestId: request.id } });
+      } catch (error) {
+        if (error instanceof NamespaceNotReadyError) {
+          await options.rejectDeployment(request, context);
+        }
+        throw error;
+      }
+    },
+    async recoverAgentFirstDeployment({
+      controller,
+      context,
+      request,
+      reply,
+      params,
+      namespaceId,
+    }) {
+      reply.header("cache-control", "no-store");
+      const receipt = await controller.recoverAgentFirstDeployment(
+        context.actorId,
+        { namespaceId, agentId: params.agentId! },
+        {
+          key: params.key!,
+          expectedConfigurationId: params.expectedConfigurationId!,
+          expectedGeneration: Number(params.expectedGeneration),
+        },
+      );
+      reply.status(200).send({ data: receipt, meta: { requestId: request.id } });
     },
     async deployAgent({ controller, context, request, reply, params, namespaceId, mutationEvent }) {
       const agentId = params.agentId!;
