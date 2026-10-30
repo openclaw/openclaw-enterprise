@@ -75,23 +75,23 @@ It separates background refresh from the worker's outbound request.
 - Reducing what the approved scope can read. `gmail.readonly` exposes the whole
   mailbox to the tool.
 - Shared Agents with connections, and per-message user identity inside an Agent.
-- Namespace-owned connection templates. Start with the Installation-wide catalog;
-  add Namespace templates later only if Namespaces need different providers or
-  OAuth clients.
 
 ## Proposal
 
 ### Connection templates
 
-An `OAuthConnectionTemplate` is an Installation-scoped resource with IAM kind
-`connection_template` and actions `create`, `read`, `update`, `delete`, and `use`.
-Installation administrators manage the catalog through the API, CLI, and console.
-They grant `use` on an exact connection template to a person, or to a Namespace so
-that anyone connecting an Agent in that Namespace may use it. IAM gains
-Installation-level access bindings for this ([IAM changes](contracts.md#iam-driver)).
-A user needs `use` to see a connection template under **Connect** and to start a
-connection from it. Credential sources created from it stay in the Agent's
-Namespace.
+Installation administrators manage manual and MCP-discovered `OAuthConnectionTemplate`
+definitions through the API, CLI, and console. At creation, they can set
+`namespaceId` to limit use to Agents in that Namespace. An omitted `namespaceId`
+makes Agents in any Namespace eligible to use it. Existing templates keep this
+Installation-wide scope. Administrators cannot change a template's scope after creation.
+
+Both scopes use the Installation IAM resource kind `connection_template` with
+actions `create`, `read`, `update`, `delete`, and `use`. Administrators grant
+`use` on an exact template to a person or a Namespace. A Namespace grant on a
+Namespace-owned template must name its owner. OCC checks both the Agent's
+Namespace and the caller's `use` permission when listing templates under
+**Connect**, starting consent, and accepting the callback. [IAM changes](contracts.md#iam-driver)
 
 | Field                               | Why it is needed                                                                                                                            |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -130,17 +130,17 @@ the owner can check which account they connected. [OIDC verification](contracts.
 
 ### Connection profile
 
-OCE creates a Namespace-scoped `CredentialSource` for each connection made from
-an `OAuthConnectionTemplate`. Its optional `profile` describes the external account.
-The `externalUserId`, `email`, and `name` fields are each optional strings.
+OCE creates each `CredentialSource` in the Agent's Namespace, whether the
+template is Installation-wide or Namespace-owned. The source's optional
+`profile` describes the external account. The `externalUserId`, `email`, and `name` fields are each optional strings.
 Credential source reads return the profile. An Agent binds the source by ID, and
 its connection list returns the same profile. Each API checks its existing read
 permission. The Secret keeps its own name. How OCE populates the profile is deferred.
 
 ### Versions and consent
 
-An edit never changes what an existing connection does. Changing any field except
-`displayName` creates a new connection template version. The credential source
+An edit never changes what an existing connection does. Changing an editable field
+other than `displayName` creates a new template version. The credential source
 pins the version, issuer and its URLs (including any `revocationUrl`), client
 registration, resource when present, effective scopes, authorization parameters,
 endpoint and access, variable, binary, and OIDC settings. These values govern
@@ -155,10 +155,10 @@ administrators disconnect the affected sources. OCC refuses to delete a connecti
 template while any source references one of its versions.
 
 Rotating the client secret is not a consent change. The secret belongs to a client
-registration for one `issuer` and `clientId` pair, so the same client ID at another
-issuer stays independent. Rotation applies to new connections; existing
-connections keep the secret they were configured with until the provider disables
-it ([client registrations](contracts.md#client-registrations)).
+registration for one `issuer` and `clientId` within the template's scope. Rotating
+one Namespace's client secret affects new connections using that registration.
+Other scopes keep their own registrations. Existing connections keep the secret
+they used until the provider disables it. [Client registrations](contracts.md#client-registrations)
 
 ### Personal Agents
 

@@ -87,14 +87,13 @@ access token only after the write succeeds. [Credential lifecycle](../0023-egres
 
 ### Client registrations
 
-OCE manages client registrations through the Driver. It keys each registration
-by the trusted `issuer` and `clientId` pair because client IDs are unique only
-within an authorization server. [RFC 6749 §2.2](https://www.rfc-editor.org/rfc/rfc6749#section-2.2)
+An OAuth server assigns client IDs within its own issuer. [RFC 6749 §2.2](https://www.rfc-editor.org/rfc/rfc6749#section-2.2)
+OCE shares a registration only across templates with the same scope, `issuer`,
+and `clientId`.
 
-- `registerClient({ issuer, clientId }, clientSecret?)` stores the resolved client
-  and any secret in the Driver's protected store. Public clients can omit the secret.
-  Templates with the same pair share the returned `clientRegistrationId`. The
-  same `clientId` at another issuer gets a separate registration.
+- `registerClient({ registrationId, issuer, clientId }, clientSecret?)` stores the
+  resolved client and any secret under OCE's registration ID. Public clients can
+  omit the secret. The same OAuth client in two Namespaces has two registrations.
 - For clients with a secret, `rotateClientSecret(clientRegistrationId, clientSecret)`
   sets the version for new connections. Each connection pins the version used
   for its exchange. Existing connections continue refreshing
@@ -133,9 +132,8 @@ set once for an unknown key ID, then rejects. It returns only a verified `email`
 
 ## IAM Driver
 
-IAM matches a Namespace-scoped binding only to resources in that Namespace, and has
-no API for Installation-level bindings. Granting `use` on an Installation-wide
-connection template needs these additions:
+Installation administrators manage exact `use` grants for both Installation-wide
+and Namespace-owned templates through the same IAM API.
 
 - **Installation access bindings.** Optional `listInstallationAccessBindings`,
   `createInstallationAccessBinding`, and `deleteInstallationAccessBinding`, with
@@ -147,6 +145,7 @@ connection template needs these additions:
   Installations. No role-creation API is added.
 - **`namespace` subject kind.** `AccessBindingSubjectKind` adds `namespace`, valid
   only on Installation access bindings. Its `subjectId` is a Namespace ID.
+  For a Namespace-owned template it must match the template's `namespaceId`.
 - **Namespace context.** `AuthorizationRequest` gains optional `namespaceContext`.
   A `namespace` binding matches only when the request's `namespaceContext` equals its
   subject. OCC sets it to the Agent's Namespace when it checks `use` at connect time,
