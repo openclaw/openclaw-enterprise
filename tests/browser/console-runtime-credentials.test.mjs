@@ -9,6 +9,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   accessBindingPostRequests,
+  accessibleDescription,
   apiRequests,
   detailUrl,
   expectNoText,
@@ -33,6 +34,7 @@ import {
   DEPLOY_CLUSTER_RBAC_REFUSED,
   READ_UNAVAILABLE,
   namespaceListDenied,
+  secretGrantDeployReason,
   unreadableSlackTokenRefusal,
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction } from "../helpers/iam-grants.mjs";
@@ -718,8 +720,14 @@ async function ungrantedBoundSecret(
       { sideways: 0, outsideCard: [] },
     );
   }
-  await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  // Deploy names the binding whose Secret waits, as the list does, and where to grant it (finding
+  // 3017).
+  const waiting = rows[badges.findIndex((badge) => badge.endsWith("· Agent access not confirmed"))];
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  const reason = secretGrantDeployReason([waiting], { missing: true });
+  await page.getByText(reason, { exact: true }).waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  assert.equal(await accessibleDescription(deploy), reason);
   await page.getByRole("button", { name: "Retry Secret access" }).click();
   await page
     .getByText(
@@ -918,7 +926,9 @@ test("Deploy waits for the Agent's Secret grant read and sends no deploy it woul
     "Checking credential access…",
   );
   releaseReads();
-  await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
+  await page
+    .getByText(secretGrantDeployReason(["Slack app token"], { missing: true }), { exact: true })
+    .waitFor();
   assert.equal(await deploy.isDisabled(), true);
   assert.equal(deployRequests, 0);
   // Positive control: Retry Secret access grants the Secret, and Deploy becomes available.
@@ -1032,7 +1042,7 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
     await heldRead.response();
   }
   await deployStatus
-    .filter({ hasText: /Resolve the saved Secret access grant|Ready to deploy/ })
+    .filter({ hasText: /^This Agent has no access to the Secret bound to |^Ready to deploy\.$/ })
     .waitFor();
   if (appGranted) {
     // Positive control: every bound Secret is granted, so Deploy submits once and the API
@@ -1066,7 +1076,7 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
   }
   assert.equal(
     await deployStatus.textContent(),
-    "Resolve the saved Secret access grant before deploying.",
+    secretGrantDeployReason(["Slack app token"], { missing: true }),
   );
   assert.equal(await deploy.isDisabled(), true);
   const list = page.locator("section.channel-secrets .credential-status-list");
