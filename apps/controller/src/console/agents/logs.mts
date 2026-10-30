@@ -735,6 +735,23 @@ export function renderAgentLogs(
     return runtimeStatusDenied({ operate, versionRead: await versionRead });
   }
 
+  // A remembered status denial is never asked again on a timer: each ask is an audited denial.
+  // Its view still rereads the Agent, which needs neither operate nor a version read: with no
+  // poll, a stop or redeploy made elsewhere showed only after a refocus (finding 3005). Two loads
+  // that both took the denial schedule one poll.
+  function pollAgent() {
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => {
+      if (!current()) {
+        return;
+      }
+      if (!document.hidden) {
+        void showRunningVersion(true);
+      }
+      pollAgent();
+    }, STATUS_POLL_MS);
+  }
+
   async function loadStatus() {
     clearTimeout(statusTimer);
     if (!current()) {
@@ -778,6 +795,7 @@ export function renderAgentLogs(
         deniedStatusViews.set(statusKey, operate);
         showStripStatus(revokedStatusViews.has(statusKey) ? STATUS_ACCESS_CHANGED : denial);
         offerLogsWithoutStatus();
+        pollAgent();
         return;
       }
     }

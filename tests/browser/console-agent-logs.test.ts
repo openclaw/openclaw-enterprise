@@ -2103,10 +2103,11 @@ async function openUnreadableCurrent(
   logs: Awaited<ReturnType<typeof logsFixture>>,
   name: string,
   tab: string,
+  actions: PermissionAction[] = ["read", "operate", "read_logs"],
 ) {
   const { fixture, computeDriver, namespace, agent, revisionId } = logs;
   computeDriver.state.lines = [line(1, "the hidden version serves")];
-  const { account } = await logsMember(fixture, namespace, name, ["read", "operate", "read_logs"], {
+  const { account } = await logsMember(fixture, namespace, name, actions, {
     versionRead: false,
   });
   // Read on v1 alone, through the real Native IAM Driver.
@@ -2282,6 +2283,90 @@ test("a refocus recheck's older Agent answer leaves a newer poll's state", async
     await page.getByRole("region", { name: "Agent state at a glance" }).innerText(),
     /version you cannot read/,
   );
+});
+
+// Finding 3005. A reader without Agent operate is never sent a status read, and her remembered
+// denial returned before the poll above, so her Logs polled nothing: a stop made elsewhere showed
+// only after a refocus. The poll rereads the Agent alone, which needs neither operate nor a
+// version read, and still sends no status read, so no denial is audited on a timer.
+test("Logs of a version a reader without operate cannot read show a stop made elsewhere", async (t) => {
+  const logs = await logsFixture(t);
+  const { fixture } = logs;
+  const { agentPath, namesFormerVersion, page, requests, shows, stopElsewhere } =
+    await openUnreadableCurrent(t, logs, "hidden-current-reader", "logs", ["read", "read_logs"]);
+  await page.getByText(RUNTIME_STATUS_DENIED, { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  const denied = authorizationDenials(fixture.auditSink).length;
+
+  await stopElsewhere();
+  const agentReads = await settledFetches(page, agentPath);
+  await page.clock.runFor(10_000);
+  await waitForSettledFetches(page, agentPath, agentReads + 1);
+  await shows(/Selected for service\s+None/);
+  await namesFormerVersion();
+  await waitForIdleFetches(page);
+  assert.equal(
+    requests.some(({ path }) => path.endsWith("/runtime")),
+    false,
+  );
+  assert.equal(authorizationDenials(fixture.auditSink).length, denied);
+});
+
+// The same reader on a version she can read: her status denial is remembered too, so a stop and
+// a redeploy made elsewhere showed only after a refocus (finding 3005). The Agent poll names the
+// new version and links to its Logs (finding 2975) without a status read.
+test("Logs whose runtime status is denied show a stop and a redeploy made elsewhere", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "the first version serves")];
+  const { account } = await logsMember(fixture, namespace, "status-denied-poll", [
+    "read",
+    "read_logs",
+  ]);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, undefined, "logs"),
+    account.credentials,
+  );
+  await page.getByText(RUNTIME_STATUS_OPERATE_DENIED, { exact: true }).waitFor();
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("the first version serves").waitFor();
+  await waitForIdleFetches(page);
+  const denied = authorizationDenials(fixture.auditSink).length;
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const poll = async () => {
+    const agentReads = await settledFetches(page, agentPath);
+    await page.clock.runFor(10_000);
+    await waitForSettledFetches(page, agentPath, agentReads + 1);
+    await waitForIdleFetches(page);
+  };
+
+  // Another session stops the Agent; the next poll shows it.
+  const stopped = await fixture.request("POST", `${agentPath}/stop`);
+  assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
+  computeDriver.state.podlessRevisions.push(revisionId);
+  await poll();
+  await page.getByText("Stop requested", { exact: true }).waitFor();
+
+  // Another session deploys v2; the next poll names it and links to its Logs.
+  const before = (await fixture.request("GET", agentPath)).data;
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id, before.activeRevisionId);
+  await poll();
+  const notice = page.locator(".log-running-version");
+  await notice.getByText("v2 is selected for service.").waitFor();
+  await notice.getByRole("link", { name: "Open v2 Logs" }).waitFor();
+  assert.match(await page.locator("main").innerText(), /Selected for service\s+v2/);
+
+  // No status read was sent, so no denial was audited.
+  assert.equal(
+    requests.some(({ path }) => path.endsWith("/runtime")),
+    false,
+  );
+  assert.equal(authorizationDenials(fixture.auditSink).length, denied);
 });
 
 // Finding 2993 (dogfood r61, D823). A redeploy from elsewhere failed while Logs stayed open: the
