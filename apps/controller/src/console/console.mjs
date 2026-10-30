@@ -2985,7 +2985,9 @@ async function revalidateMountedAgent(current) {
       return;
     }
     checking = "detail";
-    await request(path);
+    // The page applies this answer once the recheck settles (finding 3000).
+    const readStartedAt = performance.now();
+    const rechecked = { agent: await request(path), readStartedAt };
     if (!isCurrent()) {
       return;
     }
@@ -3038,7 +3040,7 @@ async function revalidateMountedAgent(current) {
       return;
     }
     for (const handler of mountedViewState?.rechecked ?? []) {
-      handler();
+      handler(rechecked);
     }
   } catch (error) {
     if (!isCurrent() || error.name === "AbortError") {

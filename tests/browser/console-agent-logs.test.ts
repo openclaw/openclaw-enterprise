@@ -2142,13 +2142,15 @@ async function openUnreadableCurrent(
   await versionContext.getByText(/version you cannot read remains selected/).waitFor();
 
   // Another session stops the Agent; the stop clears its selected version.
-  const stopped = await fixture.request("POST", `${agentPath}/stop`);
-  assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
-  assert.ok(
-    await logsState.state?.transact((unit) =>
-      unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, hidden.id),
-    ),
-  );
+  const stopElsewhere = async () => {
+    const stopped = await fixture.request("POST", `${agentPath}/stop`);
+    assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
+    assert.ok(
+      await logsState.state?.transact((unit) =>
+        unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, hidden.id),
+      ),
+    );
+  };
   // The viewed version was selected for service, so it exists: once it is no longer selected the
   // page names it in words, not by its ID as a version that may not exist.
   const namesFormerVersion = async () => {
@@ -2167,14 +2169,16 @@ async function openUnreadableCurrent(
     page,
     requests,
     shows,
+    stopElsewhere,
     versionContext,
   };
 }
 
 test("a refocus shows a stop made elsewhere while a version the caller cannot read was selected", async (t) => {
   const logs = await logsFixture(t);
-  const { agentPath, namesFormerVersion, page, shows, versionContext } =
+  const { agentPath, namesFormerVersion, page, shows, stopElsewhere, versionContext } =
     await openUnreadableCurrent(t, logs, "hidden-current-refocus", "configuration");
+  await stopElsewhere();
   const agentReads = await settledFetches(page, agentPath);
   await refocus(page);
   await page.locator(settledView).waitFor();
@@ -2188,8 +2192,16 @@ test("a refocus shows a stop made elsewhere while a version the caller cannot re
 test("Logs of a version the caller cannot read show a stop and a redeploy made elsewhere", async (t) => {
   const logs = await logsFixture(t);
   const { fixture, namespace, agent } = logs;
-  const { agentPath, grantVersion, hidden, namesFormerVersion, page, requests, shows } =
-    await openUnreadableCurrent(t, logs, "hidden-current-poll", "logs");
+  const {
+    agentPath,
+    grantVersion,
+    hidden,
+    namesFormerVersion,
+    page,
+    requests,
+    shows,
+    stopElsewhere,
+  } = await openUnreadableCurrent(t, logs, "hidden-current-poll", "logs");
   await page.getByText(RUNTIME_STATUS_VERSION_UNREADABLE, { exact: true }).waitFor();
   const denied = authorizationDenials(fixture.auditSink).length;
   const poll = async () => {
@@ -2200,6 +2212,7 @@ test("Logs of a version the caller cannot read show a stop and a redeploy made e
   };
 
   // The poll rereads the Agent alone, so the stop shows without a reload.
+  await stopElsewhere();
   await poll();
   await shows(/Selected for service\s+None/);
   await namesFormerVersion();
@@ -2219,6 +2232,56 @@ test("Logs of a version the caller cannot read show a stop and a redeploy made e
     false,
   );
   assert.equal(authorizationDenials(fixture.auditSink).length, denied);
+});
+
+// A refocus recheck reads the Agent before the page applies it. A poll that lands meanwhile carries
+// a newer state, so the recheck's older answer is dropped, as a poll's own reread is (finding
+// 2998). Applied, it showed the stopped version as selected for service again.
+test("a refocus recheck's older Agent answer leaves a newer poll's state", async (t) => {
+  const logs = await logsFixture(t);
+  const { agentPath, page, shows, stopElsewhere } = await openUnreadableCurrent(
+    t,
+    logs,
+    "hidden-current-race",
+    "logs",
+  );
+  await page.getByText(RUNTIME_STATUS_VERSION_UNREADABLE, { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  // The recheck's Agent read takes the server's answer now, while v2 is still selected, and is
+  // answered only after the poll below.
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  let markHeld!: () => void;
+  const held = new Promise<void>((resolve) => (markHeld = resolve));
+  let holding = true;
+  await page.route(`${logs.fixture.origin}${agentPath}`, async (route) => {
+    if (!holding || route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    holding = false;
+    const response = await route.fetch();
+    markHeld();
+    await released;
+    await route.fulfill({ response });
+  });
+  await refocus(page);
+  await held;
+
+  // Another session stops the Agent, and the next poll shows it.
+  await stopElsewhere();
+  await page.clock.runFor(10_000);
+  await shows(/Selected for service\s+None/);
+
+  // The recheck's answer from before the stop lands: the page keeps the newer state.
+  release();
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+  await shows(/Selected for service\s+None/);
+  assert.doesNotMatch(
+    await page.getByRole("region", { name: "Agent state at a glance" }).innerText(),
+    /version you cannot read/,
+  );
 });
 
 // Finding 2993 (dogfood r61, D823). A redeploy from elsewhere failed while Logs stayed open: the

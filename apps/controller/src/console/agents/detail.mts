@@ -13,7 +13,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
-import type { ConsolePageContext } from "../page-context.mjs";
+import type { AgentRecheck, ConsolePageContext } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import { retiredOpenClawSettingMessage } from "../retired-openclaw-settings.mjs";
 import {
@@ -772,6 +772,8 @@ export async function renderAgentDetail(
   // Counts the Agent states applied to the page, so a reread can tell whether a newer one
   // landed while it was in flight (finding 2998).
   let agentUpdates = 0;
+  // When the last Agent state was applied, on the document's performance clock.
+  let agentUpdatedAt = Number.NEGATIVE_INFINITY;
   let visibleRevisions: Revision[] = [];
   // True once the readable version list loaded; until then nothing counts as hidden.
   let visibleRevisionsLoaded = false;
@@ -2234,6 +2236,7 @@ export async function renderAgentDetail(
       return;
     }
     agentUpdates += 1;
+    agentUpdatedAt = performance.now();
     agentRereadFailed = false;
     if (currentRevisionId) {
       formerCurrent.add(currentRevisionId);
@@ -2282,13 +2285,19 @@ export async function renderAgentDetail(
   let servingReread: Promise<void> | null = null;
   // When this reread last listed the versions to look for a newer one.
   let newerVersionListedAt = Number.NEGATIVE_INFINITY;
-  async function rereadServing() {
+  // A refocus recheck passes the Agent it read and when that read started (finding 3000).
+  async function rereadServing(recheck?: AgentRecheck) {
     // A Stop accepted on this page, or a finished deployment's reread, can land while this read
     // is in flight. Its answer is then older than the page: applying it showed "Stop Agent" and
     // "Not running" again over "Stop requested" until the next poll (finding 2998).
     const updates = agentUpdates;
-    const superseded = () => !context.isCurrent() || deleting || agentUpdates !== updates;
-    const fresh = await readAgent();
+    // A recheck's read started before this call: a state applied since it started is newer.
+    const superseded = () =>
+      !context.isCurrent() ||
+      deleting ||
+      agentUpdates !== updates ||
+      (recheck !== undefined && agentUpdatedAt > recheck.readStartedAt);
+    const fresh = recheck ? agentForPage(recheck.agent) : await readAgent();
     if (superseded()) {
       return;
     }
@@ -2345,25 +2354,23 @@ export async function renderAgentDetail(
       viewedSnapshot,
     );
   }
-  function rereadServingOnce() {
+  // A refocus recheck read the Agent to check that the page is still readable, and the page
+  // applied nothing it read. Where no Logs poll rereads the Agent, as on a current version the
+  // reader cannot read, a stop and redeploy made elsewhere showed only after a reload (finding
+  // 3000). The recheck's answer now updates the page as a poll's does, under the same guards,
+  // without a second read.
+  context.onRechecked?.((recheck) => {
+    if (context.isCurrent() && !deleting) {
+      void rereadServing(recheck).catch(() => {});
+    }
+  });
+  async function runningVersion() {
     servingReread ??= rereadServing()
       .catch(() => {})
       .finally(() => {
         servingReread = null;
       });
-    return servingReread;
-  }
-  // A refocus recheck reads the Agent only to check that the page is still readable, and keeps
-  // nothing it read. Where no Logs poll rereads the Agent, as on a current version the reader
-  // cannot read, a stop and redeploy made elsewhere showed only after a reload (finding 3000).
-  // The page now rereads its serving state as a poll does, under the same guards.
-  context.onRechecked?.(() => {
-    if (context.isCurrent() && !deleting) {
-      void rereadServingOnce();
-    }
-  });
-  async function runningVersion() {
-    await rereadServingOnce();
+    await servingReread;
     const serving =
       currentRuntimeState === "running" && currentRevisionId !== selected
         ? visibleRevisions.find(({ id }) => id === currentRevisionId)
