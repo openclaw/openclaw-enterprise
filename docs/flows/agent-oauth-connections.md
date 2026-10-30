@@ -1,7 +1,7 @@
 ---
 created: "2026-10-20"
-updated: "2026-10-29"
-last_updated_session: "authoring-run/ef89923d-dc3b-4533-8dec-acb1460ffdb4"
+updated: "2026-10-30"
+last_updated_session: "authoring-run/736dede9-441f-4c48-8be0-afb1c1921afa"
 ---
 
 # Agent OAuth connection lifecycle Flow
@@ -33,8 +33,7 @@ requires the Token Service to accept the OAuth grant for refresh.
 - Source: `packages/occ/src/index.ts:startAgentConnection`
 - Source: `packages/occ/src/index.ts:completeAgentConnection`
 - Source: `apps/controller/src/http/connections.ts:createConnectionCallback`
-- Console caller: `apps/controller/src/console/agents/connections.mjs:renderAgentConnections`
-  and `apps/controller/src/console/connection-outcome.mjs:receiveConnectionOutcome`
+- Console entry point: **Connect** on the Agent details page.
 - Assumptions: a `ready` Namespace and active Agent; a connection template with a
   registered client; selected OpenShell Credential Gateway (with `toolBinaries`)
   and Credential Refresh Driver (with `clientWorkspace`); Backend `operatorTls`; a
@@ -167,6 +166,11 @@ rereads connections and offers **Deploy new version**. A reconnect then
 disconnects the replaced source. Returning focus to the starting tab also rereads,
 so a missed message still shows the new connection.
 
+`packages/occ/src/index.ts:listAgentConnections` checks Agent read access.
+The connection list reads the external account profile from the bound credential
+source when one exists. Reading the source directly returns the same profile
+under the source's own read permission.
+
 ### 7. Disconnect
 
 `packages/occ/src/index.ts:disconnectAgentConnection`
@@ -212,6 +216,8 @@ deletion.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 01:16: Trace account profile reads to the bound credential source. (authoring-run/736dede9-441f-4c48-8be0-afb1c1921afa - b4be38e2)
 
 - 2026-10-29 20:34: Identify the OCE API as the owner of MCP discovery. (authoring-run/ef89923d-dc3b-4533-8dec-acb1460ffdb4 - 1cd6b9b7)
 

@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import {
   CONNECTION_TEMPLATE_USER_ROLE_ID,
+  isCredentialSourceProfile,
   validateSandboxNetworkGrants,
 } from "@openclaw-enterprise/contracts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
@@ -390,8 +391,11 @@ export interface AgentConnectionReadRepository {
   findConnectionSession(stateHash: string): Promise<Readonly<ConnectionSession> | undefined>;
 }
 
+/** A binding can only project the account profile from its credential source. */
+type AgentConnectionBinding = Omit<AgentConnection, "profile"> & { readonly profile?: never };
+
 export interface AgentConnectionRepository extends AgentConnectionReadRepository {
-  createAgentConnection(connection: AgentConnection): Promise<Readonly<AgentConnection>>;
+  createAgentConnection(connection: AgentConnectionBinding): Promise<Readonly<AgentConnection>>;
   deleteAgentConnection(namespaceId: string, credentialSourceId: string): Promise<boolean>;
   createConnectionSession(session: ConnectionSession): Promise<Readonly<ConnectionSession>>;
   /** Marks the session consumed if it is unconsumed and unexpired at `at`; false otherwise. */
@@ -1051,7 +1055,7 @@ interface PlatformSnapshot {
   /** Every version, keyed by template and version. */
   readonly connectionTemplateVersions: Map<string, Readonly<ConnectionTemplateVersion>>;
   readonly clientRegistrations: Map<string, Readonly<ConnectionClientRegistration>>;
-  readonly agentConnections: Map<string, Readonly<AgentConnection>>;
+  readonly agentConnections: Map<string, Readonly<AgentConnectionBinding>>;
   readonly connectionSessions: Map<string, Readonly<ConnectionSession>>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
@@ -1340,6 +1344,7 @@ function assertCredentialSource(source: CredentialSource): void {
         value.length < 1 ||
         value.length > 2048,
     ) ||
+    (source.profile !== undefined && !isCredentialSourceProfile(source.profile)) ||
     !isPlainRecord(secretInputs) ||
     typeof source.driverId !== "string" ||
     source.driverId.length < 1 ||
@@ -1672,10 +1677,19 @@ function repositories(
     },
   };
 
+  const withSourceProfile = (connection: AgentConnectionBinding): Readonly<AgentConnection> => {
+    const source = snapshot.credentialSources.get(
+      agentKey(connection.namespaceId, connection.credentialSourceId),
+    );
+    return immutableCopy({
+      ...connection,
+      ...(source?.profile === undefined ? {} : { profile: source.profile }),
+    });
+  };
   const agentConnections: AgentConnectionRepository = {
     findAgentConnection: async (namespaceId, credentialSourceId) => {
       const found = snapshot.agentConnections.get(agentKey(namespaceId, credentialSourceId));
-      return found === undefined ? undefined : immutableCopy(found);
+      return found === undefined ? undefined : withSourceProfile(found);
     },
     listAgentConnections: async (namespaceId, agentId) =>
       Object.freeze(
@@ -1685,7 +1699,7 @@ function repositories(
               connection.namespaceId === namespaceId && connection.agentId === agentId,
           )
           .sort((a, b) => a.credentialSourceId.localeCompare(b.credentialSourceId))
-          .map((connection) => immutableCopy(connection)),
+          .map(withSourceProfile),
       ),
     findConnectionSession: async (stateHash) => {
       const found = snapshot.connectionSessions.get(stateHash);
@@ -1697,9 +1711,10 @@ function repositories(
       if (snapshot.agentConnections.has(key)) {
         throw new ResourceConflictError("The credential source is already connected.");
       }
-      const saved = immutableCopy(connection);
+      const { profile: _profile, ...binding } = connection;
+      const saved = immutableCopy(binding);
       snapshot.agentConnections.set(key, saved);
-      return immutableCopy(saved);
+      return withSourceProfile(saved);
     },
     deleteAgentConnection: async (namespaceId, credentialSourceId) =>
       snapshot.agentConnections.delete(agentKey(namespaceId, credentialSourceId)),

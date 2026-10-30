@@ -1590,6 +1590,32 @@ async function canonicalData(db) {
   return result;
 }
 
+async function seedLegacyConnectionTemplate(db) {
+  const store = postgresConnectionTemplates(db.app, async () => {});
+  const registration = await store.createClientRegistration({
+    id: `ccr_${randomUUID()}`,
+    issuer: "https://issuer.example",
+    clientId: "fixture",
+    credentialRefreshDriverId: "fixture-refresh",
+    createdAt: new Date().toISOString(),
+  });
+  const templateId = `ctp_${randomUUID()}`;
+  // This template predates MCP metadata. Its consented version may already have connections.
+  await db.app.query(
+    `WITH inserted AS (
+     INSERT INTO occ.connection_templates(id, display_name, current_version, created_at)
+     VALUES ($1, 'Existing template', 1, now()) RETURNING id
+   )
+   INSERT INTO occ.connection_template_versions(template_id, version, client_registration_id,
+     issuer, client_id, authorization_url, token_url, scopes, authorization_parameters,
+     endpoint_host, endpoint_port, endpoint_path, env_var, created_at)
+   SELECT id, 1, $2, $3, $4, 'https://issuer.example/authorize', 'https://issuer.example/token',
+     ARRAY['tools'], '{}', 'tools.example', 443, '/mcp', 'MCP_TOKEN', now() FROM inserted`,
+    [templateId, registration.id, registration.issuer, registration.clientId],
+  );
+  return templateId;
+}
+
 test(
   "Agent connection profile migration upgrades the previous connection schema",
   requiresHistoryPostgres,
@@ -1597,10 +1623,45 @@ test(
     const db = await historyDatabase(t, await migrationHistoryFixture(), "connection_profile", {
       prefix: 63,
     });
-    assert.deepEqual(await runHistoryMigration(db), {
+    assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
       ok: true,
       history: "preAgentConnectionProfiles",
     });
+    await installCanonicalPrefix(db, 64);
+    const namespaceId = await seedCanonicalData(db);
+    const templateId = await seedLegacyConnectionTemplate(db);
+    const owner = `principal-${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES($1,'principal','fixture',$1)",
+      [owner],
+    );
+    const profiles = [null, { email: "owner@example.test" }];
+    for (const [i, profile] of profiles.entries()) {
+      const sourceId = `cs_${randomUUID()}`;
+      await db.app.query(
+        `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,driver_id,state,created_at)
+         VALUES($1,$2,$3,'oauth2-refresh-token','{}','fixture','ready',now())`,
+        [sourceId, namespaceId, `source-${i}`],
+      );
+      await db.app.query(
+        `INSERT INTO occ.agent_connections(namespace_id,credential_source_id,agent_id,owner_principal_id,
+           connection_template_id,connection_template_version,created_at,profile)
+         SELECT namespace_id,$2,id,$3,$4,1,now(),$5 FROM occ.agents WHERE namespace_id=$1`,
+        [namespaceId, sourceId, owner, templateId, profile],
+      );
+    }
+    assert.deepEqual(await runHistoryMigration(db), {
+      ok: true,
+      history: "preCredentialSourceProfiles",
+    });
+    const sources = await db.app.query(
+      "SELECT profile FROM occ.credential_sources WHERE namespace_id=$1 ORDER BY name",
+      [namespaceId],
+    );
+    assert.deepEqual(
+      sources.rows.map((row) => row.profile),
+      profiles,
+    );
     assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
       ok: true,
       history: "completed",
@@ -1615,28 +1676,8 @@ test(
     const db = await historyDatabase(t, await migrationHistoryFixture(), "mcp_template", {
       prefix: 62,
     });
+    const templateId = await seedLegacyConnectionTemplate(db);
     const store = postgresConnectionTemplates(db.app, async () => {});
-    const registration = await store.createClientRegistration({
-      id: `ccr_${randomUUID()}`,
-      issuer: "https://issuer.example",
-      clientId: "fixture",
-      credentialRefreshDriverId: "fixture-refresh",
-      createdAt: new Date().toISOString(),
-    });
-    const templateId = `ctp_${randomUUID()}`;
-    // This template predates MCP metadata. Its consented version may already have connections.
-    await db.app.query(
-      `WITH inserted AS (
-       INSERT INTO occ.connection_templates(id, display_name, current_version, created_at)
-       VALUES ($1, 'Existing template', 1, now()) RETURNING id
-     )
-     INSERT INTO occ.connection_template_versions(template_id, version, client_registration_id,
-       issuer, client_id, authorization_url, token_url, scopes, authorization_parameters,
-       endpoint_host, endpoint_port, endpoint_path, env_var, created_at)
-     SELECT id, 1, $2, $3, $4, 'https://issuer.example/authorize', 'https://issuer.example/token',
-       ARRAY['tools'], '{}', 'tools.example', 443, '/mcp', 'MCP_TOKEN', now() FROM inserted`,
-      [templateId, registration.id, registration.issuer, registration.clientId],
-    );
     assert.deepEqual(await runHistoryMigration(db), {
       ok: true,
       history: "preMcpConnectionTemplates",

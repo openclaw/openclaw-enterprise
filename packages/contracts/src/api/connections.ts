@@ -1,8 +1,8 @@
 import { Type } from "typebox";
-import { AgentConnectionProfileSchema } from "../connection-templates.ts";
 import {
   AgentId,
   CredentialSourceId,
+  CredentialSourceProfileSchema,
   NamespaceId,
   Meta,
   Name,
@@ -241,7 +241,7 @@ const AgentConnectionSchema = Type.Object(
     ownerPrincipalId: Type.String(),
     connectionTemplateId: ConnectionTemplateId,
     connectionTemplateVersion: Type.Integer({ minimum: 1 }),
-    profile: Type.Optional(AgentConnectionProfileSchema),
+    profile: Type.Optional(CredentialSourceProfileSchema),
     createdAt: Type.String(),
   },
   { additionalProperties: false },

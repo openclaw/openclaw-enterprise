@@ -1,11 +1,15 @@
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import type { AgentConnection, ConnectionSession } from "@openclaw-enterprise/contracts";
-import { isAgentConnectionProfile } from "@openclaw-enterprise/contracts";
+import { isCredentialSourceProfile } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "../errors.ts";
 import type { AgentConnectionRepository } from "./platform-state.ts";
 import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 
 type Row = Record<string, unknown>;
+
+const selectConnection = `SELECT c.*, s.profile FROM occ.agent_connections AS c
+  JOIN occ.credential_sources AS s
+    ON s.namespace_id = c.namespace_id AND s.id = c.credential_source_id`;
 
 function invalid(): never {
   throw new DependencyUnavailableError("Persisted Agent connection state is invalid.");
@@ -28,7 +32,7 @@ function integer(row: Row, key: string): number {
 
 function connectionFromRow(row: Row): Readonly<AgentConnection> {
   const profile = row.profile;
-  if (profile !== null && !isAgentConnectionProfile(profile)) {
+  if (profile !== null && !isCredentialSourceProfile(profile)) {
     return invalid();
   }
   return immutableCopy({
@@ -70,8 +74,7 @@ export function postgresAgentConnections(
     findAgentConnection: async (namespaceId, credentialSourceId) => {
       const [row] = (
         await client.query(
-          `SELECT * FROM occ.agent_connections
-           WHERE namespace_id = $1 AND credential_source_id = $2`,
+          `${selectConnection} WHERE c.namespace_id = $1 AND c.credential_source_id = $2`,
           [namespaceId, credentialSourceId],
         )
       ).rows;
@@ -81,8 +84,8 @@ export function postgresAgentConnections(
       Object.freeze(
         (
           await client.query(
-            `SELECT * FROM occ.agent_connections
-             WHERE namespace_id = $1 AND agent_id = $2 ORDER BY credential_source_id`,
+            `${selectConnection}
+             WHERE c.namespace_id = $1 AND c.agent_id = $2 ORDER BY c.credential_source_id`,
             [namespaceId, agentId],
           )
         ).rows.map((row) => connectionFromRow(row as Row)),
@@ -97,11 +100,13 @@ export function postgresAgentConnections(
     },
     createAgentConnection: async (connection) => {
       await requireInitialized();
-      await client.query(
+      const result = await client.query(
         `INSERT INTO occ.agent_connections
          (namespace_id, credential_source_id, agent_id, owner_principal_id,
-          connection_template_id, connection_template_version, created_at, profile)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+          connection_template_id, connection_template_version, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING *, (SELECT profile FROM occ.credential_sources
+                       WHERE namespace_id = $1 AND id = $2) AS profile`,
         [
           connection.namespaceId,
           connection.credentialSourceId,
@@ -110,10 +115,9 @@ export function postgresAgentConnections(
           connection.connectionTemplateId,
           connection.connectionTemplateVersion,
           connection.createdAt,
-          connection.profile === undefined ? null : JSON.stringify(connection.profile),
         ],
       );
-      return immutableCopy(connection);
+      return connectionFromRow(result.rows[0] as Row);
     },
     deleteAgentConnection: async (namespaceId, credentialSourceId) => {
       const deleted = await client.query(

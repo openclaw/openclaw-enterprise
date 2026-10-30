@@ -381,6 +381,20 @@ test("credential source HTTP deletion uses source ownership even with an invalid
   assert.equal((await f.request("GET", f.path + "/" + unknown.id)).data.state, "deleting");
 });
 
+test("updating a credential source omits its external account profile from the response", async (t) => {
+  const f = await fixture(t);
+  const { stored } = f.seedStored("openai", {});
+  const profile = { email: "account@example.test" };
+  await f.controller.transact((unit) =>
+    unit.credentialSources.createCredentialSource({ ...stored, profile }),
+  );
+  const path = `${f.path}/${stored.id}`;
+  const updated = await f.request("PATCH", path, { body: {} });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.equal(Object.hasOwn(updated.data, "profile"), false);
+  assert.deepEqual((await f.request("GET", path)).data.profile, profile);
+});
+
 test("OpenShell custom and default credential profiles keep independent ownership and lifecycle", async (t) => {
   const f = await fixture(t);
   const standard = await f.create("default");

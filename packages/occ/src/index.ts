@@ -5009,7 +5009,7 @@ export class OpenClawController {
       await this.abandonCredentialRegistration(placed, gateway, source, true, refresh);
       throw new ResourceStateConflictError("The credential source changed during registration.");
     }
-    return this.credentialSourceMetadata(ready, status);
+    return this.credentialSourceMetadata(ready, { status });
   }
 
   /** Configures a new source's refresh material, then forces and returns the first mint. */
@@ -5184,7 +5184,7 @@ export class OpenClawController {
       if (updated === undefined) {
         throw new ResourceStateConflictError("The credential source changed during the update.");
       }
-      return this.credentialSourceMetadata(updated, status);
+      return this.credentialSourceMetadata(updated, { status });
     });
   }
 
@@ -5244,7 +5244,7 @@ export class OpenClawController {
       );
       assertRefreshMinted(minted);
       const status = await this.credentialGatewayOperation(() => gateway.sourceStatus(context()));
-      return this.credentialSourceMetadata(source, { ...status, refresh: minted });
+      return this.credentialSourceMetadata(source, { status: { ...status, refresh: minted } });
     });
   }
 
@@ -5365,7 +5365,7 @@ export class OpenClawController {
             : "The Credential Gateway status is unavailable.",
       };
     }
-    return this.credentialSourceMetadata(source, status);
+    return this.credentialSourceMetadata(source, { status, includeProfile: true });
   }
 
   async listCredentialSources(
@@ -5383,7 +5383,7 @@ export class OpenClawController {
             namespaceId: namespace.id,
           })
         ) {
-          readable.push(this.credentialSourceMetadata(source));
+          readable.push(this.credentialSourceMetadata(source, { includeProfile: true }));
         }
       }
       return Object.freeze(readable);
@@ -12010,7 +12010,7 @@ export class OpenClawController {
 
   private credentialSourceMetadata(
     source: Readonly<CredentialSource>,
-    status?: CredentialSourceStatus,
+    { status, includeProfile }: { status?: CredentialSourceStatus; includeProfile?: boolean } = {},
   ): Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }> {
     return Object.freeze({
       id: source.id,
@@ -12019,6 +12019,8 @@ export class OpenClawController {
       type: source.type,
       config: source.config,
       secrets: source.secrets,
+      // Mutation replies authorize a different action. Only source reads include the account.
+      ...(includeProfile && source.profile !== undefined ? { profile: source.profile } : {}),
       state: source.state,
       ref: Object.freeze({
         kind: "credential_source" as const,

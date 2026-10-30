@@ -1,5 +1,5 @@
 import type {
-  AgentConnectionProfile,
+  CredentialSourceProfile,
   InitialWorkspaceFiles,
   AgentDesiredRuntimeState,
   AgentStatus,
@@ -477,6 +477,7 @@ export const credentialSources = occSchema.table(
     config: jsonb("config").$type<Readonly<Record<string, string>>>().notNull(),
     driverId: text("driver_id").notNull(),
     state: text("state").$type<CredentialSourceState>().notNull(),
+    profile: jsonb("profile").$type<CredentialSourceProfile>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table): PgTableExtraConfigValue[] => [
@@ -485,6 +486,14 @@ export const credentialSources = occSchema.table(
     check(
       "credential_sources_id_format",
       sql`${table.id} ~ ${identifierPatterns.credentialSource}`,
+    ),
+    check(
+      "credential_sources_profile_valid",
+      sql`${table.profile} IS NULL OR (
+        jsonb_typeof(${table.profile}) = 'object'
+        AND (${table.profile} - ARRAY['externalUserId', 'email', 'name']) = '{}'::jsonb
+        AND NOT jsonb_path_exists(${table.profile}, 'strict $.* ? (@.type() != "string")')
+      )`,
     ),
     check("credential_sources_name_length", sql`char_length(${table.name}) BETWEEN 1 AND 200`),
     check(
@@ -1708,19 +1717,10 @@ export const agentConnections = occSchema.table(
       .references(() => iamIdentities.id, { onDelete: "restrict", onUpdate: "restrict" }),
     connectionTemplateId: text("connection_template_id").notNull(),
     connectionTemplateVersion: integer("connection_template_version").notNull(),
-    profile: jsonb("profile").$type<AgentConnectionProfile>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [
     primaryKey({ columns: [table.namespaceId, table.credentialSourceId] }),
-    check(
-      "agent_connections_profile_valid",
-      sql`${table.profile} IS NULL OR (
-        jsonb_typeof(${table.profile}) = 'object'
-        AND (${table.profile} - ARRAY['externalUserId', 'email', 'name']) = '{}'::jsonb
-        AND NOT jsonb_path_exists(${table.profile}, 'strict $.* ? (@.type() != "string")')
-      )`,
-    ),
     foreignKey({
       name: "agent_connections_agent_owner",
       columns: [table.namespaceId, table.agentId],

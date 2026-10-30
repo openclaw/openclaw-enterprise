@@ -16,6 +16,7 @@ function clientCredentialSource(
     type: source.type,
     config: source.config,
     secrets: source.secrets,
+    ...(source.profile === undefined ? {} : { profile: source.profile }),
     state: source.state,
     ref: source.ref,
     ...(source.status === undefined ? {} : { status: source.status }),

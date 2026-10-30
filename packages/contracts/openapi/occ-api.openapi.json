@@ -501,6 +501,16 @@
                 "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                 "type": "string"
               },
+              "profile": {
+                "additionalProperties": false,
+                "description": "External account details returned on credential source reads and Agent connection lists.",
+                "properties": {
+                  "email": { "type": "string" },
+                  "externalUserId": { "type": "string" },
+                  "name": { "type": "string" }
+                },
+                "type": "object"
+              },
               "ref": {
                 "additionalProperties": false,
                 "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
@@ -18865,6 +18875,7 @@
                           "ownerPrincipalId": { "type": "string" },
                           "profile": {
                             "additionalProperties": false,
+                            "description": "External account details returned on credential source reads and Agent connection lists.",
                             "properties": {
                               "email": { "type": "string" },
                               "externalUserId": { "type": "string" },
@@ -27651,6 +27662,16 @@
                           "namespaceId": {
                             "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
+                          },
+                          "profile": {
+                            "additionalProperties": false,
+                            "description": "External account details returned on credential source reads and Agent connection lists.",
+                            "properties": {
+                              "email": { "type": "string" },
+                              "externalUserId": { "type": "string" },
+                              "name": { "type": "string" }
+                            },
+                            "type": "object"
                           },
                           "ref": {
                             "additionalProperties": false,

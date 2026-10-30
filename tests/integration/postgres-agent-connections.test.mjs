@@ -256,39 +256,57 @@ test("the connections API returns each account's optional profile", requiresPost
   assert.equal(created.statusCode, 201, created.body);
   const template = created.json().data;
 
-  // Profile population is deferred, so seed account metadata through the connection repository.
-  const connections = [
+  // Profile population is deferred, so seed the credential sources before binding them.
+  const sources = [
     {},
     { profile: {} },
     { profile: { name: "Work" } },
     { profile: { externalUserId: "user-2", email: "personal@example.test", name: "Personal" } },
-  ].map((fields) => ({
-    namespaceId: namespace.id,
-    agentId: agent.id,
-    credentialSourceId: `cs_${randomUUID()}`,
-    ownerPrincipalId: fixture.principal.id,
-    connectionTemplateId: template.id,
-    connectionTemplateVersion: template.current.version,
-    createdAt: new Date().toISOString(),
-    ...fields,
-  }));
+  ].map((fields) => ({ id: `cs_${randomUUID()}`, ...fields }));
+  const createdAt = new Date().toISOString();
   await fixture.state.transact(async (unit) => {
-    for (const connection of connections) {
+    for (const source of sources) {
       await unit.credentialSources.createCredentialSource({
-        id: connection.credentialSourceId,
+        ...source,
         namespaceId: namespace.id,
-        name: connection.credentialSourceId,
+        name: source.id,
         type: "oauth2-refresh-token",
         config: {},
         secrets: {},
         driverId: "openshell-credentials",
         state: "ready",
-        createdAt: connection.createdAt,
+        createdAt,
       });
-      await unit.agentConnections.createAgentConnection(connection);
     }
   });
 
+  const sourcePath = `/namespaces/${namespace.id}/credential-sources`;
+  const sourceList = await fixture.inject("GET", sourcePath);
+  assert.equal(sourceList.statusCode, 200, sourceList.body);
+  for (const { id, profile } of sources) {
+    const detail = await fixture.inject("GET", `${sourcePath}/${id}`);
+    assert.equal(detail.statusCode, 200, detail.body);
+    for (const metadata of [detail.json().data, sourceList.json().data.find((s) => s.id === id)]) {
+      assert.ok(metadata);
+      assert.deepEqual(metadata.profile, profile);
+    }
+  }
+
+  const connections = sources.map(({ id, ...fields }) => ({
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    credentialSourceId: id,
+    ownerPrincipalId: fixture.principal.id,
+    connectionTemplateId: template.id,
+    connectionTemplateVersion: template.current.version,
+    createdAt,
+    ...fields,
+  }));
+  await fixture.state.transact(async (unit) => {
+    for (const { profile: _profile, ...binding } of connections) {
+      await unit.agentConnections.createAgentConnection(binding);
+    }
+  });
   const listed = await fixture.inject(
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/connections`,

@@ -26,7 +26,6 @@ import type { WorkspaceSetup } from "./workspace-setup.ts";
 
 export type {
   AgentConnection,
-  AgentConnectionProfile,
   ConnectionSession,
   ConnectionClientRegistration,
   ConnectionEndpoint,
@@ -35,7 +34,7 @@ export type {
   ConnectionTemplateVersion,
   McpAuthorizationMetadata,
 } from "./connection-templates.ts";
-export { connectionValuesChanged, isAgentConnectionProfile } from "./connection-templates.ts";
+export { connectionValuesChanged } from "./connection-templates.ts";
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
 export { isComputePreparationFailureEvidence } from "./compute-preparation.ts";
 import type {
@@ -56,7 +55,11 @@ import {
   PluginToolDefaultsSchema,
 } from "./api/resources.ts";
 import { Check } from "typebox/value";
-import { PluginApproversSchema } from "./api/common.ts";
+import {
+  type CredentialSourceProfile,
+  CredentialSourceProfileSchema,
+  PluginApproversSchema,
+} from "./api/common.ts";
 import type {
   RepositoryAccess,
   RepositoryBindingSelection,
@@ -425,6 +428,10 @@ export interface CredentialSourceType {
 /** `registering` is recorded before the gateway write, so an uncertain outcome stays visible. */
 export type CredentialSourceState = "registering" | "ready" | "deleting";
 
+export function isCredentialSourceProfile(value: unknown): value is CredentialSourceProfile {
+  return Check(CredentialSourceProfileSchema, value);
+}
+
 /** OCC record for a credential held by the selected Credential Gateway; never values. */
 export interface CredentialSource {
   readonly id: string;
@@ -433,6 +440,8 @@ export interface CredentialSource {
   readonly type: string;
   readonly config: Readonly<Record<string, string>>;
   readonly secrets: Readonly<Record<string, SecretReference>>;
+  /** Optional identity of the external account behind this source. */
+  readonly profile?: CredentialSourceProfile;
   readonly driverId: string;
   readonly state: CredentialSourceState;
   readonly createdAt: string;
@@ -445,6 +454,7 @@ export interface CredentialSourceMetadata {
   readonly type: string;
   readonly config: Readonly<Record<string, string>>;
   readonly secrets: Readonly<Record<string, SecretReference>>;
+  readonly profile?: CredentialSourceProfile;
   readonly state: CredentialSourceState;
   readonly ref: CredentialSourceReference;
 }
