@@ -9735,7 +9735,7 @@ export const scenarios = {
     stopped: true,
     actions: [click("Request Stop again")],
     description:
-      "An explicit repeated Stop uses the same confirmation and preserves the selected version. Cancel or Escape returns keyboard focus to Request Stop again.",
+      "An explicit repeated Stop preserves the selected version. Its confirmation says the Agent is already requested to stop and that this sends the request again, not that it interrupts a running gateway (finding D815). Cancel or Escape returns keyboard focus to Request Stop again.",
   },
   stopNoSelection: {
     group: "Components/Stop Agent",

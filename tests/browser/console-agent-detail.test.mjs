@@ -95,6 +95,7 @@ import {
   SECRET_NAME_CONFLICT,
   SECRET_OPERATE_DENIED,
   STOP_CONFIRMATION,
+  STOP_REPEAT_CONFIRMATION,
   STOP_REQUESTED,
   STOP_RUNNING_VERSION,
   STOP_STATUS_REFRESH_FAILED,
@@ -3498,10 +3499,12 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
     .waitFor();
   await page.getByText(STOPPED_NO_VERSION).waitFor();
   // A completed stop also clears the selected version, but no deployment is in progress: a new
-  // stop intent must not say it cancels one, nor report one cancelled (finding D691).
+  // stop intent must not say it cancels one, nor report one cancelled (finding D691). No gateway
+  // runs either, so it says it only repeats the stop request (finding D815).
   await page.getByRole("button", { name: "Request Stop again", exact: true }).click();
   dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
-  await dialog.getByText(STOP_CONFIRMATION, { exact: true }).waitFor();
+  await dialog.getByText(STOP_REPEAT_CONFIRMATION, { exact: true }).waitFor();
+  assert.equal(await dialog.getByText(/runtime gateway/).count(), 0);
   assert.equal(await dialog.getByText(/deployment in progress/).count(), 0);
   const repeated = page.waitForResponse(
     (response) =>

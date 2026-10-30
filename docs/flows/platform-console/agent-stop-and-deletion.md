@@ -62,7 +62,8 @@ and the Request ID; any other `403` shows the API's text. Either way Stop stays 
 described by it, until a newer permission answer allows operate.
 
 For a stopped Agent, **Request Stop again** confirms a new stop intent, even with no selected
-version; the Console cannot inspect history or candidate cleanup. With no selected version
+version; the Console cannot inspect history or candidate cleanup. Its confirmation says the
+Agent is already requested to stop and that this sends the request again. With no selected version
 and no readable versions yet (`setNoReadableVersions`), the Stop row is hidden unless the viewer
 just used it. A running Agent with no selected version hides the row only when the latest
 deployment the page read failed (`setLatestDeployment`). A queued or in-progress one keeps Stop,

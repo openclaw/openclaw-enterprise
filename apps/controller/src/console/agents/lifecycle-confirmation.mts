@@ -51,6 +51,11 @@ export const STOP_FIRST_DEPLOYMENT_CONFIRMATION =
 export const STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION =
   "This cancels a deployment in progress or, if a version already started, interrupts its runtime gateway and ends any reply in progress. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
 
+// Request Stop again on an Agent already requested to stop: no gateway runs that this would
+// interrupt, so the confirmation says it only repeats the request (finding D815).
+export const STOP_REPEAT_CONFIRMATION =
+  "This Agent is already requested to stop. This sends the stop request again; use it if an earlier stop did not finish. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
+
 /**
  * Stop cancels a first deployment only when the Agent is requested to run, no version is
  * selected, and the latest deployment this viewer read is queued or in progress. A completed stop
@@ -75,6 +80,9 @@ export function stopConfirmation(
   agent: Pick<AgentRead, "activeRevisionId" | "desiredRuntimeState">,
   latestDeployment: string | null | undefined,
 ) {
+  if (agent.desiredRuntimeState === "stopped") {
+    return STOP_REPEAT_CONFIRMATION;
+  }
   if (cancelsFirstDeployment(agent, latestDeployment)) {
     return STOP_FIRST_DEPLOYMENT_CONFIRMATION;
   }
