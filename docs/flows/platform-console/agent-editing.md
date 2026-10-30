@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-29
-last_updated_session: authoring-run/22e56d10-b3c5-43f9-b088-c060fbfbe64f
+updated: 2026-10-30
+last_updated_session: fix-3016
 ---
 
 # Console Agent editing and runtime requests
@@ -73,6 +73,8 @@ superseded/stopped outcomes.
 
 **Deployment** mounts activity, the selected record, and diagnostics
 (`agents/deployment-evidence.mts`); polling continues across tabs.
+Activity and its label are no scroll anchor (`console.css`), so the record keeps its place as
+activity settles (3016).
 `detail.mts:renderTab` offers **Retry** for transient snapshot errors.
 Completion and reads after `FIRST_ACTIVITY_WAIT_MS` fold unless cleanup, warnings,
 or overview errors need attention. Overview errors preserve outcomes.
@@ -338,6 +340,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-10-30 23:30: Keep the version's record in place when deployment activity settles. (fix-3016)
+
 - 2026-10-29 12:43: Preserve overlapping overview and record reads. (authoring-run/22e56d10-b3c5-43f9-b088-c060fbfbe64f - 4af87e8139aafb7469b60cf38846935c1266baed)
 
 - 2026-10-29 12:23: Retire denied Save views. (authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25 - 5d8c060238a58)
@@ -357,11 +361,5 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 - 2026-10-29 03:49: Clear a completed Secret refresh hint while selection permission is pending. Accompanying uncommitted changes. (authoring-run/84c88245631c4882bd93c2140e0f313b - b81139ddfe086aca0e4da4eb5b9feedc8ac39d67)
 
 - 2026-10-28 13:53: Keep the reader’s fold through routine polls and show failed record checks outside it. (fix-3285 - 14f6d94db)
-
-- 2026-10-28 11:48: Quiet refresh (uncommitted). (authoring-run/4573d808-e28c-4e0f-8c52-faacba26092a - 8b5bee3ef01644cf7731f68794fe87d6b4b1d265)
-
-- 2026-10-28 10:57: Clarify keyboard focus during record refresh. (authoring-run/7832bcaa-29cd-4303-99ce-edf549ad55d6 - e7f7c242158627219f6ce9d398c5cc034d721f7e)
-
-- 2026-10-27: Credentials follows the default Slack account's keys and every bound Secret's grant; Deploy waits for grant reads. (findings 2526, 2529, 2540-2542, 2554, 2558, 2575)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.
