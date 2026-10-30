@@ -106,7 +106,7 @@ if (typeof contracts.isName === "function" && !contracts.isName(storedName)) {
   process.exit(1);
 }
 // Each Agent the upgrade deploys, with its saved Configuration. Deploy admission runs these
-// values-only rules on the stored Configuration (refuseUndeployableConfigurationValues), so a
+// resolver and values-only rules on the stored Configuration, so a
 // draft saved before one of this image's rules would stop the fleet deploy after the controller
 // moved. Every refused Agent is printed. An image without the shared rules skips the check.
 if (process.env.${draftsVariable} !== undefined) {
@@ -128,9 +128,22 @@ if (process.env.${draftsVariable} !== undefined) {
   if (typeof settings.refuseUndeployableConfigurationValues !== "function") {
     process.stdout.write("agent-draft-check-unavailable\\n");
   } else {
+    // The resolver predates the shared settings rules. A missing or broken resolver in an
+    // image with those rules is an incomplete check, not the older-image absence path.
+    let resolveConfiguredHarnessId;
+    try {
+      ({ resolveConfiguredHarnessId } = await import("/app/packages/occ/src/configured-harness.ts"));
+      if (typeof resolveConfiguredHarnessId !== "function") {
+        throw new Error("missing resolver");
+      }
+    } catch {
+      process.stderr.write("Agent draft check could not load the configured Harness resolver.\\n");
+      process.exit(1);
+    }
     let refused = false;
     for (const agent of drafts.agents) {
       try {
+        resolveConfiguredHarnessId(drafts.configurations[agent.configurationId]);
         settings.refuseUndeployableConfigurationValues(
           drafts.configurations[agent.configurationId],
         );

@@ -3692,6 +3692,77 @@ test("preflight-only refuses a draft's model provider setting that deploy refuse
   await assertStoppedBeforeWriters(f);
 });
 
+// Run the generated API program with the real resolver. Catalog rows may use full refs or
+// remainders, but each must name a selected primary or fallback, including entry selections.
+test("the release checks saved model catalogs before stopping writers", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  for (const valid of [false, true]) {
+    await t.test(valid ? "selected rows pass" : "an unselected row refuses", async (t) => {
+      const values = {
+        agents: {
+          defaults: {
+            model: {
+              primary: "openai/synthetic-primary",
+              fallbacks: ["openai/synthetic-fallback"],
+            },
+          },
+          entries: {
+            researcher: {
+              model: {
+                primary: "openai/synthetic-primary",
+                fallbacks: ["openai/synthetic-entry"],
+              },
+            },
+          },
+        },
+        models: {
+          providers: {
+            openai: {
+              agentRuntime: { id: "openclaw" },
+              models: [
+                { id: "synthetic-primary" },
+                { id: "openai/synthetic-fallback" },
+                { id: valid ? "synthetic-entry" : "synthetic-unselected-private-value" },
+              ],
+            },
+          },
+        },
+      };
+      const f = await fixture(t, {
+        agent: true,
+        chart: { installation: (installation) => installation },
+        configurationValues: { cfg_agt_test: values },
+      });
+      if (valid) {
+        await f.run();
+        assert.equal((await f.state()).dispatches, 1);
+        assert.match(
+          await readFile(join(f.evidence, "preflight-api.log"), "utf8"),
+          /^agent-drafts-accepted$/m,
+        );
+      } else {
+        await assert.rejects(f.run(), (error) => {
+          assert.match(
+            error.stderr,
+            /Agent agt_test "Mail triage" in Namespace ns_test: Configuration setting models\.providers\.openai\.models may list only entries whose id names a primary or fallback model set in agents\.defaults\.model or agents\.entries\./,
+          );
+          assert.match(error.stderr, /No OCC writer was stopped; the old release keeps serving\./);
+          assert.doesNotMatch(error.stdout + error.stderr, /synthetic-/);
+          return true;
+        });
+        const state = await assertStoppedBeforeWriters(f);
+        assert.equal(state.dispatches, 0);
+        assert.equal(existsSync(join(f.evidence, "prepared")), false);
+        const log = await readFile(join(f.evidence, "preflight-api.log"), "utf8");
+        assert.doesNotMatch(log, /synthetic-|agent-drafts-accepted/);
+      }
+    });
+  }
+});
+
 // The degraded draft-check paths. Each one either warns and lets OCC check the draft at deploy,
 // as before finding 2809, or stops before any writer stops; none reports drafts as checked
 // when they were not (finding 2815).
