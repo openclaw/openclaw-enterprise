@@ -76,6 +76,7 @@ import {
   submitCreateAgent,
   createAgentThroughForm,
   expectCreateAccess,
+  expectCreateRefused,
 } from "./console-agents-test-support.mjs";
 import {
   expectDeploymentOutcome,
@@ -83,11 +84,11 @@ import {
 } from "./console-deployment-activity-helpers.mjs";
 import {
   ADMINISTRATOR_ACCESS_DENIED,
+  AGENT_CREATE_DENIED,
   AGENT_SAVE_DENIED,
   createDenied,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
-  AGENT_CREATE_INSTALLATION_DENIED,
   AGENT_CREATE_PERMISSIONS_UNREAD,
   CHANNELS_NEED_DEDICATED,
   REPOSITORY_ACCESS_NOT_CONFIGURED,
@@ -2200,26 +2201,25 @@ test("Agent creation explains a denied capability check instead of offering a re
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  // A failed permission read is not a denial: the form says so and offers that check again
-  // (finding 2110); a known denial then keeps the refusal, with no retry. Both are status blocks
-  // above the form, not the hint under its fields (finding 2092).
+  // A failed permission read is not a denial: the form says so above the form, not in the hint
+  // under its fields, and offers that check again (findings 2092, 2110).
   await expectCreateAccess(page, {
     tone: "warning",
     body: AGENT_CREATE_PERMISSIONS_UNREAD,
     retry: true,
   });
-  permissions = { agents: { create: false } };
-  await page.getByRole("button", { name: "Retry permission check" }).click();
-  await expectCreateAccess(page, { tone: "danger", body: AGENT_CREATE_INSTALLATION_DENIED });
-  assert.equal(await page.getByRole("button", { name: "Retry permission check" }).count(), 0);
   const retry = page.getByRole("button", { name: "Retry capability check" });
   const create = page.getByRole("button", { name: "Create Agent", exact: true });
   assert.equal(await create.isDisabled(), true);
-  // Create Agent names the refusal it waits on.
+  // Create Agent names the check it waits on.
   assert.equal(await create.getAttribute("aria-describedby"), "create-agent-access");
   // Without capabilities the harness hint states the requirement, not an outcome.
   const harnessHint = page.locator("#agent-harness-hint");
   assert.equal(await harnessHint.textContent(), "Codex requires OpenAI and Dedicated execution.");
+  // A known denial replaces the form with the refusal a fresh load shows (finding 2908).
+  permissions = { agents: { create: false } };
+  await page.getByRole("button", { name: "Retry permission check" }).click();
+  await expectCreateRefused(page, AGENT_CREATE_DENIED);
 
   // A transient failure still offers the retry.
   status = 503;

@@ -6,19 +6,24 @@ import {
   startFakeGitHub,
 } from "./production-sign-in.mjs";
 
-/** Prepare one sign-in installation. Pass () => [app] so teardown reads the current app. */
+/**
+ * Prepare one sign-in installation. Pass () => [app] so teardown reads the current app.
+ * `github: false` skips the fake GitHub, for suites that start it later or never.
+ * `onboard` passes `passwordHasher` and `passwordSlowLaneFloors` to onboardPasswordAccounts;
+ * `composeApp` passes its options to composeProductionSignIn (they may replace `secrets`).
+ */
 export async function preparePostgresSignInInstallation(
   context,
   closeFirst,
-  { email, password, secrets },
+  { email, password, secrets, github = true },
 ) {
   const { pool, state } = postgresSignInState(context, closeFirst);
-  const github = await startFakeGitHub(context);
+  const fakeGitHub = github ? await startFakeGitHub(context) : undefined;
   return {
     pool,
     state,
-    github,
-    onboard({ accounts, remoteAddress }) {
+    github: fakeGitHub,
+    onboard({ accounts, remoteAddress, passwordHasher, passwordSlowLaneFloors } = {}) {
       return onboardPasswordAccounts(context, {
         databaseUrl,
         state,
@@ -27,18 +32,14 @@ export async function preparePostgresSignInInstallation(
         authSecret: secrets["occ-auth/secret"],
         secrets,
         password,
-        ...(remoteAddress === undefined ? {} : { remoteAddress }),
         accounts,
+        remoteAddress,
+        passwordHasher,
+        passwordSlowLaneFloors,
       });
     },
-    composeApp(settings, { logger, passwordSlowLaneFloors } = {}) {
-      return composeProductionSignIn(context, {
-        databaseUrl,
-        settings,
-        secrets,
-        ...(logger === undefined ? {} : { logger }),
-        ...(passwordSlowLaneFloors === undefined ? {} : { passwordSlowLaneFloors }),
-      });
+    composeApp(settings, options = {}) {
+      return composeProductionSignIn(context, { databaseUrl, settings, secrets, ...options });
     },
   };
 }
