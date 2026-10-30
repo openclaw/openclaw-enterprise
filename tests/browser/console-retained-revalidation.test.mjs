@@ -1191,6 +1191,8 @@ test("Forward during a return's recheck keeps the returning page for the next Ba
   ]);
   const opened = agents[1];
   await tagView(page, "list");
+  // The tag is on the shown list, so its absence below means the list is gone.
+  assert.equal(await taggedView(page, "list").count(), 1);
   // The first read is held, so the destination shows its loading status.
   const firstRead = await holdAgent(t, page, namespace, opened);
   await page.getByRole("link", { name: "Opened Agent" }).click();
@@ -1617,6 +1619,8 @@ test("A chat link's Agent lookup that answers after a manual navigation is ignor
 test("A Namespace revoked during a first visit's admission is not repainted by Back", async (t) => {
   const { fixture, namespace, page } = await openList(t, "Revoked during visit", "Revoked Agent");
   await tagView(page, "list");
+  // The tag is on the shown list, so its absence below means the list is gone.
+  assert.equal(await taggedView(page, "list").count(), 1);
   restrict(fixture.policy, "read", "namespace", { namespaceId: namespace.id });
   // The first visit's admission read drops the Namespace, so its retained list is discarded.
   await page.getByRole("link", NAMESPACES).click();

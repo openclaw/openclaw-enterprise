@@ -7,6 +7,9 @@ import { holdRequests, settledView } from "./console-agents-browser-helpers.mjs"
 // The content view; only one is shown at a time.
 const contentView = '.content [aria-live="polite"]';
 
+// The attribute tagView writes and viewTag and taggedView read.
+const TAG = "data-nav-tag";
+
 // The shown view while a refocus recheck holds it.
 export const heldView = `${contentView}[inert]`;
 
@@ -44,10 +47,10 @@ export async function refocusHeld(t, page, during) {
  */
 export const tagView = (page, tag = "kept") =>
   page.evaluate(
-    ([selector, value]) => {
-      globalThis.document.querySelector(selector).dataset.navTag = value;
+    ([selector, attribute, value]) => {
+      globalThis.document.querySelector(selector).setAttribute(attribute, value);
     },
-    [contentView, tag],
+    [contentView, TAG, tag],
   );
 
 /**
@@ -58,8 +61,9 @@ export const tagView = (page, tag = "kept") =>
  */
 export const viewTag = (page) =>
   page.evaluate(
-    (selector) => globalThis.document.querySelector(selector)?.dataset.navTag ?? null,
-    contentView,
+    ([selector, attribute]) =>
+      globalThis.document.querySelector(selector)?.getAttribute(attribute) ?? null,
+    [contentView, TAG],
   );
 
 /**
@@ -68,7 +72,7 @@ export const viewTag = (page) =>
  * @param {import("playwright").Page} page
  * @param {string} [tag]
  */
-export const taggedView = (page, tag = "kept") => page.locator(`[data-nav-tag="${tag}"]`);
+export const taggedView = (page, tag = "kept") => page.locator(`[${TAG}="${tag}"]`);
 
 /**
  * The focused control's aria-label, read in one step in the page. A locator resolved before a
