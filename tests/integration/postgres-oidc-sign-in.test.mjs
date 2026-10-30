@@ -5,6 +5,7 @@ import {
   assertConsoleSignIn,
   assertExternalSignInRefused,
   attachProvider,
+  changeAccount,
   clientAddresses,
   consoleOrigin as origin,
   currentSession,
@@ -296,12 +297,7 @@ test(
     await t.test("disabling an account ends its session and refuses OIDC", async () => {
       assert.equal((await attach(disabled.id, disabledSubject)).statusCode, 200);
       const { cookie } = await assertSignIn(disabledSubject, disabled.id);
-      const disable = await app.inject({
-        method: "POST",
-        url: `/api/auth/accounts/${disabled.id}/disable`,
-        headers: adminHeaders,
-        payload: { expectedVersion: (await readAccount(app, adminHeaders, disabled.id)).version },
-      });
+      const disable = await changeAccount(app, adminHeaders, disabled.id, "disable");
       assert.equal(disable.statusCode, 200, disable.body);
       assert.equal(await currentSession(app, cookie), null);
       // The IdP proved this identity, and it is attached: the person is told the account is

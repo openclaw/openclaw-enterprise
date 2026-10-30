@@ -3,6 +3,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import {
+  changeAccount,
   consoleOrigin as origin,
   createAccount,
   currentSession,
@@ -231,10 +232,7 @@ test(
         assert.equal(independent.statusCode, 201, independent.body);
         // The account owner validates method/account versions and locks the same
         // user. Revocation must not invalidate either admitted session mid-commit.
-        revoke = injectLocalhost(app, "POST", `/api/auth/accounts/${admin.id}/revoke`, {
-          session: revoking,
-          body: { expectedVersion: account.version },
-        });
+        revoke = changeAccount(app, revoking, admin.id, "revoke", account.version);
         await waitForLockWaiter(
           pool,
           protectedPid,

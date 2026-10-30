@@ -4,6 +4,7 @@ import { assertApiError } from "../helpers/api-error.mjs";
 import {
   assertProviderAttached,
   assertReservedLane,
+  changeAccount,
   clientAddresses,
   consoleOrigin as origin,
   githubSignIn,
@@ -13,7 +14,6 @@ import {
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { injectLocalhost } from "../helpers/inject-json.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
@@ -170,12 +170,7 @@ test(
         // The former holder still administers the Installation, so it stays reserved too.
         assert.deepEqual(lane, { fresh: 429, former: 200, holder: 200 });
         assert.equal(
-          (
-            await injectLocalhost(app, "POST", `/api/auth/accounts/${holder.id}/disable`, {
-              session: adminHeaders,
-              body: { expectedVersion: (await readAccount(app, adminHeaders, holder.id)).version },
-            })
-          ).statusCode,
+          (await changeAccount(app, adminHeaders, holder.id, "disable")).statusCode,
           409,
           "the new holder is protected like the recovery account",
         );

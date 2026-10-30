@@ -5,6 +5,7 @@ import {
   assertConsoleSignIn,
   assertProviderAttached,
   assertSessionUser,
+  changeAccount,
   clientAddresses,
   consoleOrigin as origin,
   createAccount,
@@ -103,13 +104,7 @@ test(
       // The member and the operator get GitHub identities; the disabled account is switched off.
       await attach("github", member, memberSubject);
       await attach("github", operator, operatorSubject);
-      const current = await readAccount(app, adminHeaders, disabled.id);
-      const changed = await app.inject({
-        method: "POST",
-        url: `/api/auth/accounts/${disabled.id}/disable`,
-        headers: adminHeaders,
-        payload: { expectedVersion: current.version },
-      });
+      const changed = await changeAccount(app, adminHeaders, disabled.id, "disable");
       assert.equal(changed.statusCode, 200, changed.body);
       await app.close();
       app = undefined;

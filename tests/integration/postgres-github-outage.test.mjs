@@ -6,12 +6,12 @@ import {
   assertProviderAttached,
   assertSessionUser,
   authRowCounts,
+  changeAccount,
   consoleOrigin as origin,
   currentSession,
   githubSignIn,
   githubUpgradeSettings,
   passwordSignIn,
-  readAccount,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { hashLocalPassword } from "../../apps/controller/src/auth/index.ts";
@@ -390,14 +390,8 @@ test(
       }
       assert.fail("the email key is spent");
     };
-    const changeAccount = async (userId, operation) => {
-      const { version } = await readAccount(app, adminHeaders, userId);
-      const response = await injectLocalhost(
-        app,
-        "POST",
-        `/api/auth/accounts/${userId}/${operation}`,
-        { session: adminHeaders, body: { expectedVersion: version } },
-      );
+    const assertAccountChanged = async (userId, operation) => {
+      const response = await changeAccount(app, adminHeaders, userId, operation);
       assert.equal(response.statusCode, 200, response.body);
     };
 
@@ -436,7 +430,7 @@ test(
       assert.equal(signedIn.statusCode, 200, signedIn.body);
       const device = knownDeviceOf(signedIn);
       assert.ok(device);
-      await changeAccount(disabledMember.id, "disable");
+      await assertAccountChanged(disabledMember.id, "disable");
       // With the email's budget left, the correct password is refused exactly like a wrong
       // one, with or without the cookie.
       const withCookie = await signInWith(device, disabledMember, "192.0.2.80");
@@ -467,7 +461,7 @@ test(
       assert.deepEqual(limitedBodyOf(stale), limitedBodyOf(fresh));
       // Enabling the account again restores entries issued under the unchanged password;
       // resetting the password is what revokes them for good.
-      await changeAccount(disabledMember.id, "enable");
+      await assertAccountChanged(disabledMember.id, "enable");
       const restored = await signInWith(device, disabledMember, "192.0.2.80");
       assert.equal(restored.statusCode, 200, restored.body);
     });

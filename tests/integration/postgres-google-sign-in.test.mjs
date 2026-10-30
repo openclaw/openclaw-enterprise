@@ -6,6 +6,7 @@ import {
   assertProviderAttached,
   assertReservedLane,
   authRowCounts,
+  changeAccount,
   clientAddresses,
   consoleOrigin as origin,
   currentSession,
@@ -410,12 +411,7 @@ test(
     await t.test("a disabled account is refused Google sign-in", async () => {
       await attach(disabled.id, "google", disabledSubject);
       const { cookie } = await assertGoogleSignIn(disabledSubject, disabled.id);
-      const disable = await app.inject({
-        method: "POST",
-        url: `/api/auth/accounts/${disabled.id}/disable`,
-        headers: adminHeaders,
-        payload: { expectedVersion: (await readAccount(app, adminHeaders, disabled.id)).version },
-      });
+      const disable = await changeAccount(app, adminHeaders, disabled.id, "disable");
       assert.equal(disable.statusCode, 200, disable.body);
       assert.equal(await currentSession(app, cookie), null);
       await assertGoogleRefused(

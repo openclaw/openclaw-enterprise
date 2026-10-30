@@ -3,6 +3,7 @@ import test from "node:test";
 import { assertApiError } from "../helpers/api-error.mjs";
 import {
   assertConsoleSignIn,
+  changeAccount,
   clientAddresses,
   consoleOrigin as origin,
   createAccount,
@@ -62,8 +63,8 @@ test(
         headers,
         body: { subject, expectedVersion },
       });
-    const change = (headers, path, expectedVersion) =>
-      app.inject({ method: "POST", url: path, headers, payload: { expectedVersion } });
+    const change = (userId, operation, expectedVersion) =>
+      changeAccount(app, adminHeaders, userId, operation, expectedVersion);
     async function assertGitHubSignIn(subject, userId) {
       const { callback } = await githubSignIn(app, origin, subject, address());
       return assertConsoleSignIn(app, callback, userId);
@@ -133,9 +134,8 @@ test(
         // A GitHub session carries the account's Installation authority.
         assert.equal(
           (
-            await app.inject({
-              url: "/api/auth/recovery",
-              headers: { cookie: secondGitHubCookie, origin },
+            await injectLocalhost(app, "GET", "/api/auth/recovery", {
+              session: { cookie: secondGitHubCookie, origin },
             })
           ).json().data.userId,
           admin.id,
@@ -169,20 +169,19 @@ test(
         const account = await readAccount(app, adminHeaders, second.id);
         const credential = account.methods.find(({ providerId }) => providerId === "credential");
         const external = account.methods.find(({ providerId }) => providerId !== "credential");
-        const detachPath = (methodId) =>
-          `/api/auth/accounts/${second.id}/methods/${methodId}/detach`;
+        const detach = (methodId, version) =>
+          change(second.id, `methods/${methodId}/detach`, version);
         assert.equal(
-          (await change(adminHeaders, detachPath(credential.methodId), account.version)).statusCode,
+          (await detach(credential.methodId, account.version)).statusCode,
           409,
           "the password is not an external identity",
         );
         assert.equal(
-          (await change(adminHeaders, detachPath(external.methodId), account.version - 1))
-            .statusCode,
+          (await detach(external.methodId, account.version - 1)).statusCode,
           409,
           "a stale version is refused",
         );
-        const detached = await change(adminHeaders, detachPath(external.methodId), account.version);
+        const detached = await detach(external.methodId, account.version);
         assert.equal(detached.statusCode, 200, detached.body);
         assert.equal(await currentSession(app, secondGitHubCookie), null, "its sessions end");
         await assertGitHubRefused(secondSubject);
@@ -203,22 +202,12 @@ test(
     await t.test("disable ends every sign-in method; enable restores both", async () => {
       const recoveryAccount = await readAccount(app, adminHeaders, admin.id);
       assert.equal(
-        (
-          await change(
-            adminHeaders,
-            `/api/auth/accounts/${admin.id}/disable`,
-            recoveryAccount.version,
-          )
-        ).statusCode,
+        (await change(admin.id, "disable", recoveryAccount.version)).statusCode,
         409,
         "the recovery account cannot be disabled",
       );
       const account = await readAccount(app, adminHeaders, second.id);
-      const disabled = await change(
-        adminHeaders,
-        `/api/auth/accounts/${second.id}/disable`,
-        account.version,
-      );
+      const disabled = await change(second.id, "disable", account.version);
       assert.equal(disabled.statusCode, 200, disabled.body);
       assert.equal(await currentSession(app, secondGitHubCookie), null);
       assert.equal((await passwordSignIn(app, origin, second, address())).statusCode, 401);
@@ -243,20 +232,10 @@ test(
       }
       assert.deepEqual(await readAccount(app, adminHeaders, second.id), disabledAccount);
       assert.equal(
-        (
-          await change(
-            adminHeaders,
-            `/api/auth/accounts/${second.id}/enable`,
-            disabledAccount.version - 1,
-          )
-        ).statusCode,
+        (await change(second.id, "enable", disabledAccount.version - 1)).statusCode,
         409,
       );
-      const enabled = await change(
-        adminHeaders,
-        `/api/auth/accounts/${second.id}/enable`,
-        disabledAccount.version,
-      );
+      const enabled = await change(second.id, "enable", disabledAccount.version);
       assert.equal(enabled.statusCode, 200, enabled.body);
       assert.equal((await passwordSignIn(app, origin, second, address())).statusCode, 200);
       await assertGitHubSignIn(secondSubject, second.id);
