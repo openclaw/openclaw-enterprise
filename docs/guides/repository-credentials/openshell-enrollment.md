@@ -101,3 +101,29 @@ GitHub App permissions and normal GitHub branch rules still apply. OCE adds no
 branch list for `github-repository`; it does not promise every administrative
 operation. Access is finite by default. Change selections and deploy a new revision
 to change access; do not rewrite a narrow grant into a broader one in place.
+
+### Plan for request limits
+
+Unmodified OpenShell 0.1.6 buffers complete requests. These are byte limits, not
+repository or source-file size allowances:
+
+| Request                                                  | Maximum                 |
+| -------------------------------------------------------- | ----------------------- |
+| Selected-repository REST JSON                            | 1 MiB (1,048,576 bytes) |
+| GraphQL, installation-preview API, ref-scoped draft JSON | 64 KiB (65,536 bytes)   |
+| Git fetch negotiation request                            | 1 MiB                   |
+| Complete Git push request                                | 4 MiB (4,194,304 bytes) |
+
+For Contents API writes, base64 expansion, JSON metadata and whitespace all count.
+Use canonical repository paths: letters, digits, underscores, hyphens and dots in
+resource segments; percent-escaped filenames are currently refused. Other shape,
+permission and current-authority checks still apply, including draft field limits.
+
+Use native Git for larger file payloads where available, but measure the complete
+push: pack bytes, commands and framing must fit 4 MiB. HTTP chunking cannot bypass
+the limit; chunk framing and trailers also consume the supplier's allowance.
+Smaller pushes can help only when each complete request fits; they cannot split
+an arbitrary large new object into admissible requests. Larger objects and uploads
+need an approved separate workflow. Do not bypass the protected route or increase
+its configured maximum beyond stock support. The authority deadline starts after
+buffering; it is not an end-to-end upload deadline.

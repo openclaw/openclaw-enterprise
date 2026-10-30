@@ -347,10 +347,15 @@ function draftScope(
  * The supplier presents a normalized, complete request; hidden headers and original spelling
  * cannot establish credential placement or TLS. Those are prerequisites of release.
  */
-function installationApiOperation(request: OpenShellOnlineHttpRequest, head: RequestHead) {
+function installationApiOperation(
+  request: OpenShellOnlineHttpRequest,
+  head: RequestHead,
+  scope: "github-repository" | "github-installation",
+) {
   const { path, query, method } = request.target;
   const { headers } = head;
   const graph = path === "/graphql";
+  const maximumBody = scope === "github-repository" && !graph ? 1024 * 1024 : 64 * 1024;
   const read = method === "GET" || method === "HEAD";
   if (
     head.contentEncoding !== "identity" ||
@@ -370,7 +375,7 @@ function installationApiOperation(request: OpenShellOnlineHttpRequest, head: Req
     (query !== "" && (!read || !validApiQuery(query))) ||
     (headers["x-github-api-version"] !== undefined &&
       !/^\d{4}-\d\d-\d\d$/.test(headers["x-github-api-version"])) ||
-    request.body.byteLength > 64 * 1024
+    request.body.byteLength > maximumBody
   ) {
     return;
   }
@@ -443,7 +448,7 @@ function operation(
           return { denied: "route_unsupported" };
         }
       }
-      const api = installationApiOperation(request, head);
+      const api = installationApiOperation(request, head, binding.scope);
       return api ? { selected: { operation: api } } : { denied: "route_unsupported" };
     }
     if (!matchesOrigin("https://github.com", request)) {

@@ -571,12 +571,14 @@ test("expired binding lookup cannot begin durable Git approval", { timeout: 1000
 test("repository API credential issuance is refused while ordinary collaboration stays available", async (t) => {
   let approvals = 0;
   let current = true;
+  let lastDigest;
   const repositories = [
     { repositoryId: binding.repositoryId, repository: binding.repository },
     { repositoryId: "43", repository: "openclaw/openclaw-enterprise" },
   ];
   let scope = "github-repository";
   const { client, keys } = await openShellOnlineGitWire(t, {
+    budgetMs: 3000,
     lookupBinding: async () =>
       scope === undefined
         ? binding
@@ -593,6 +595,7 @@ test("repository API credential issuance is refused while ordinary collaboration
           },
     authorizeOnlineRequest: async (q, installed) => {
       approvals++;
+      lastDigest = q.requestDigestSha256;
       if (scope === "github-repository") {
         assert.deepEqual(q.repositories, repositories);
       }
@@ -702,6 +705,74 @@ test("repository API credential issuance is refused while ordinary collaboration
       1,
     );
   }
+
+  await t.test("bounded selected REST bodies retain transport and authority limits", async () => {
+    const KiB = 1024;
+    const MiB = 1024 * KiB;
+    const contents = (bytes) => {
+      const overhead = JSON.stringify({ message: "update", content: "" }).length;
+      const content = Buffer.alloc(Math.floor((bytes - overhead) / 4) * 3).toString("base64");
+      return Buffer.from(JSON.stringify({ message: "update", content }).padEnd(bytes));
+    };
+    const api = (body, path = "/repos/example/project/contents/src/data.json", method = "PUT") => {
+      const input = request(path, method, body, [
+        { name: "content-type", value: "application/json" },
+      ]);
+      input.target.host = "api.github.com";
+      return input;
+    };
+    const check = async (input, allowed) => {
+      const before = approvals;
+      const result = await send(input);
+      assert.deepEqual(
+        [result.decision, approvals - before],
+        allowed ? [1, 1] : [2, 0],
+        `${scope}: ${input.target.path}: ${input.body.length} bytes`,
+      );
+    };
+    scope = "github-repository";
+    await check(api(contents(64 * KiB + 1)), true);
+    await check(api(contents(MiB + 1)), false);
+    const large = api(contents(MiB));
+    await check(large, true);
+    const digest = lastDigest;
+    // Same request identity; only a byte near the end of the JSON string changes.
+    const tail = Buffer.from(large.body);
+    tail[tail.lastIndexOf('"') - 1] = 98;
+    await check({ ...large, body: tail }, true);
+    assert.notEqual(lastDigest, digest, "the digest covers the tail of the complete body");
+    await check(api(large.body, "/repos/example/outside/contents/data.json"), false);
+    current = false;
+    const before = approvals;
+    assert.equal((await send(large)).reason_code, "access_withdrawn");
+    assert.equal(approvals, before + 1, "large valid requests still need current owner authority");
+    current = true;
+
+    for (scope of ["github-repository", "github-installation"]) {
+      for (const bytes of [64 * KiB, 64 * KiB + 1]) {
+        const json = JSON.stringify({ query: "query { viewer { login } }" });
+        await check(api(Buffer.from(json.padEnd(bytes)), "/graphql", "POST"), bytes === 64 * KiB);
+      }
+    }
+    await check(api(contents(64 * KiB)), true);
+    await check(api(contents(64 * KiB + 1)), false);
+    scope = "github-repository";
+
+    // Exact RPC body boundaries, not valid Git packs or proof of upstream writes.
+    for (const [route, limit] of [
+      ["receive-pack", 4 * MiB],
+      ["upload-pack", MiB],
+    ]) {
+      for (const bytes of [limit, limit + 1]) {
+        await check(
+          request(`/example/project.git/git-${route}`, "POST", Buffer.alloc(bytes), [
+            { name: "content-type", value: `application/x-git-${route}-request` },
+          ]),
+          bytes === limit,
+        );
+      }
+    }
+  });
 
   await t.test("shipped gh metadata stays within selected-repository authority", async () => {
     // Exact captured bodies; stock 0.1.6 lowercases visible header names and

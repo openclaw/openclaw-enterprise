@@ -550,7 +550,8 @@
         "signed stock Git RPC admits discovery, fetch and push, then honors live denial",
         "stock Git admits gzip only on the upload-pack negotiation, which it never inspects",
         "protected Git replies to this online decision before its authority deadline",
-        "shipped gh metadata stays within selected-repository authority"
+        "shipped gh metadata stays within selected-repository authority",
+        "bounded selected REST bodies retain transport and authority limits"
       ]
     },
     {
