@@ -73,8 +73,21 @@ git rev-parse HEAD
 printf '%s\n' "${OCE_IMAGE_REVISION:?Select the published images first}"
 ```
 
-If they differ, keep the existing checkout. In the Codex app, use the managed
-worktree action to create or select a release checkout at the exact commit in
+If they differ, you can reuse an existing checkout that is clean and available
+for this installation. Before switching, keep the guide open on GitHub at the
+exact PR commit so its relative links continue to open the same version of the
+documentation. From the checkout you intend to reuse, run:
+
+```bash
+changes=$(git status --porcelain=v1 --untracked-files=all) &&
+  test -z "$changes" &&
+  { git cat-file -e "${OCE_IMAGE_REVISION:?}^{commit}" || git fetch origin "$OCE_IMAGE_REVISION"; } &&
+  git switch --detach --no-overwrite-ignore "$OCE_IMAGE_REVISION"
+```
+
+If the status includes changes, leave that checkout in place. To use a
+separate checkout in the Codex app, use the managed worktree action to create
+or select a release checkout at the exact commit in
 `OCE_IMAGE_REVISION`. If the app requests worktree permission, wait for the
 operator to approve that request before continuing. In the shell that holds the
 image selections, change to the path supplied by the app.
@@ -88,7 +101,7 @@ git fetch origin "$OCE_IMAGE_REVISION" &&
   cd "$OCE_RELEASE_CHECKOUT"
 ```
 
-For either route, confirm the checkout matches before installing:
+For each route, confirm the checkout matches before installing:
 
 ```bash
 test "$(git rev-parse HEAD)" = "${OCE_IMAGE_REVISION:?}"
