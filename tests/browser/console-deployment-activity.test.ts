@@ -6,7 +6,7 @@ import type {
   PlatformReadView,
   PlatformStateStore,
 } from "../../packages/occ/src/state/platform-state.ts";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import {
   AGENT_READ,
   detailUrl,
