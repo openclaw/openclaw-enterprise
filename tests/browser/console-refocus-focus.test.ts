@@ -32,6 +32,7 @@ import {
   tagView,
   viewTag,
 } from "./console-refocus-helpers.mjs";
+import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { deleteRefused } from "../helpers/refusal-text.mjs";
@@ -549,28 +550,8 @@ for (const revoked of ["configuration", "agent"] as const) {
     const agent = await fixture.createAgent(
       namespace.id,
       "Credential refocus Agent",
-      nativeValues("binding-review", {
-        harnessId: "codex",
-        channels: {
-          slack: {
-            enabled: true,
-            mode: "socket",
-            appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-            botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-            dmPolicy: "allowlist",
-            groupPolicy: "allowlist",
-            allowFrom: ["U123"],
-            channels: { C123: { requireMention: true } },
-          },
-        },
-      }),
-      {
-        executionMode: "dedicated",
-        secretBindings: {
-          SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
-          SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
-        },
-      },
+      slackAgentValues("binding-review"),
+      slackTokenBindings(appSecret, botSecret),
     );
     const { page } = await newPage(t, fixture, { browser });
     const requests = apiRequests(page, fixture.origin);

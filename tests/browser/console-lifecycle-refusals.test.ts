@@ -38,6 +38,7 @@ import {
   AGENT_STOP_AND_DELETE_DENIED,
   GENERIC_DENIAL,
   SECRET_CREATE_DENIED,
+  callerDenied,
   deleteRefused,
   stopRefused,
 } from "../helpers/refusal-text.mjs";
@@ -95,9 +96,7 @@ for (const action of ["Stop", "Delete"] as const) {
     assert.equal(response.status(), 403);
     const { error, meta } = await response.json();
     const grant = stopping ? "operate" : "delete";
-    assert.ok(
-      error.message.startsWith(`Not authorized: this needs Agent ${grant} on Agent ${agent.id}`),
-    );
+    assert.equal(error.message, callerDenied(`Agent ${grant}`, `Agent ${agent.id}`));
     const alert = row.getByRole("alert");
     const text = stopping ? stopRefused(name) : deleteRefused(name);
     await alert.getByText(text, { exact: true }).waitFor();
@@ -824,7 +823,10 @@ test("a refused Request deletion again names the Agent, not the API's denial", a
     .click();
   const response = await refused;
   assert.equal(response.status(), 403);
-  assert.ok((await response.json()).error.message.startsWith("Not authorized: "));
+  assert.equal(
+    (await response.json()).error.message,
+    callerDenied("Agent delete", `Agent ${agent.id}`),
+  );
   const alert = row.getByRole("alert");
   await alert.getByText(deleteRefused(name), { exact: true }).waitFor();
   assert.equal(await row.getByText("Not authorized:").count(), 0);

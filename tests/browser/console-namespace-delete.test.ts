@@ -12,6 +12,7 @@ import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.
 import {
   apiRequests,
   fileBrowser,
+  hasFocus,
   holdRequests,
   login,
   newPage,
@@ -70,7 +71,7 @@ test("Namespace trash action confirms, keeps pending cleanup visible, and repair
     .waitFor();
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
-  assert.equal(await remove.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  assert.equal(await hasFocus(remove), true);
   assert.equal(pathRequests(requests, "DELETE", `/namespaces/${target.id}`).length, 0);
 
   // Hold the real accepted response: Escape and navigation cannot abandon or replay the write.
@@ -200,7 +201,7 @@ test("Namespace deletion permission is advisory and a later revocation is enforc
   assert.equal(await remove.isDisabled(), true);
   assert.equal(await remove.getAttribute("aria-disabled"), "true");
   await remove.focus();
-  assert.equal(await remove.evaluate((node) => node === document.activeElement), true);
+  assert.equal(await hasFocus(remove), true);
   // Each is checked on its own: a click on the modal's backdrop would close a dialog Enter opened.
   await page.keyboard.press("Enter");
   assert.equal(await page.locator("dialog[open]").count(), 0);
