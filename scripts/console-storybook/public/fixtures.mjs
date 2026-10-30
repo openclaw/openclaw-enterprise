@@ -2100,7 +2100,8 @@ export function installFixture(scenario, evidence) {
                 warnings: [],
               });
               saved.desiredRuntimeState = "running";
-              saved.activeRevisionId = null;
+              // The API omits the field when no version is selected.
+              delete saved.activeRevisionId;
             }
             if (deleted.has(id)) {
               agents.delete(id);
