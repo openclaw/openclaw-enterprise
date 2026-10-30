@@ -225,7 +225,7 @@ sequenceDiagram
   participant OAuth as OCE browser authorization (Driver)
   participant Issuer as OAuth issuer
   participant Secrets as Secret Driver
-  participant Tokens as OCE Token Service
+  participant Refresh as Durable refresh registration
   User->>API: Connect on the personal Agent
   API->>OAuth: startBrowserAuthorization
   OAuth-->>API: authorizationUrl, privateState
@@ -238,8 +238,8 @@ sequenceDiagram
     Issuer-->>OAuth: Access token and refresh grant
     OAuth->>Secrets: Store validated tokens for this source
     Secrets-->>OAuth: Stored Secret reference
-    OAuth->>Tokens: Register reference and approved OAuth settings for refresh
-    Tokens-->>OAuth: Refresh registered
+    OAuth->>Refresh: Record Secret reference and approved OAuth settings
+    Refresh-->>OAuth: Registration persisted
     OAuth-->>API: ready
     API-->>User: Connected and ready for deployment checks
   else Consent denied, state invalid, or exchange refused
@@ -248,8 +248,9 @@ sequenceDiagram
   end
 ```
 
-_The diagram shows configured OAuth. For MCP, OCE handles the redirect, code
-exchange, and grant handoff through its [MCP authorization flow](contracts.md#mcp-authorization)._
+_The diagram shows configured OAuth. The Token Service checks registrations on
+background ticks. For MCP, OCE handles the redirect and code exchange through
+its [MCP authorization flow](contracts.md#mcp-authorization)._
 
 1. For MCP, the owner selects scopes in Console before starting OAuth.
    `POST /namespaces/:namespaceId/agents/:agentId/connections` takes the template

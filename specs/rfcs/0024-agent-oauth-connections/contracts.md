@@ -11,19 +11,28 @@ templates, consent rules, and personal-Agent boundary.
 ## Token storage and refresh
 
 After either code exchange, OCE stores the validated refresh token, access token, and
-expiry together through the Secret Driver. OCE registers the Secret reference and
-the source's approved OAuth settings with the Token Service for background refresh.
-The source becomes `ready` after both the write and registration are confirmed.
+expiry together through the Secret Driver. It records a durable refresh registration
+for the source containing the Secret reference and approved OAuth settings. OCE
+could submit it through a Token Service API or write it to shared PostgreSQL for
+the Token Service to poll. With a valid initial token, the source can become
+`ready` once token storage and registration are confirmed.
 If either outcome is unknown, the source stays `registering` and OCC never replays
 the authorization code. Deleting a pending source withdraws any refresh
 registration and removes its token Secret. [Secret Driver](../../../docs/reference/drivers/secret.md)
 
-When the source's refresh strategy calls for renewal, the Token Service reads the
-current token set through the Secret Driver and requests a new access token from
-the pinned issuer. It validates the response and writes the new token set back
+On a background tick, the Token Service checks a registered Secret through the Secret
+Driver. If the access token has enough lifetime left, it skips the issuer and leaves
+the Secret unchanged. By default it renews before expiry, allowing time for the
+next tick and the issuer call. The renewal window should account for token lifetime
+so freshly issued short-lived tokens do not trigger renewal on every tick.
+
+When renewal is due, the Token Service invokes the provider's refresh operation
+using the pinned OAuth settings. A sidecar alongside the Token Service could expose
+OpenShell's provider refresh code over RPC. The provider interface and deployment
+are open. The Token Service validates the result and writes the updated tokens
 through the Secret Driver, retaining the current refresh token if the issuer omits
-a replacement. The Token Service serializes refresh attempts that share a rotating
-grant and prevents stale writes. If a write is uncertain, it checks which version
+a replacement. It serializes refresh attempts that share a rotating grant and
+prevents stale writes. If a write is uncertain, it checks which version
 was stored before refreshing again. If the replacement was lost and the old token
 may have been consumed, the owner must reconnect. OpenShell can present the renewed
 access token only after the write succeeds. [Credential lifecycle](../0023-egress-proxy-credential-lifecycle/protocol.md#prepare-and-renew-credentials)
@@ -211,11 +220,13 @@ issue seven-day refresh tokens.
   second sender and a shared reply destination, including while withdrawal is
   delayed or has failed after disconnect. Prove that codes and
   tokens are absent from responses, logs, and audit.
-- **Refresh ownership.** For both configured OAuth and MCP, observe the Token
-  Service read the current Secret when renewal is due and write the refreshed
-  tokens back through the Secret Driver. Have the issuer rotate the refresh token
-  once and omit its replacement on the next renewal. Verify the following refresh
-  uses the rotated token. Fail a Secret write and verify OpenShell never serves
+- **Refresh ownership.** For both configured OAuth and MCP, verify that a source
+  with a valid initial token is ready before its first background tick. Under the
+  default strategy, a tick outside the renewal window makes no issuer call or
+  Secret write. Advance into the window and verify that the Token Service renews
+  the credential and writes the result through the Secret Driver. Have the issuer
+  rotate the refresh token once and omit its replacement on the next renewal.
+  Verify that the following refresh uses the rotated token. Fail a Secret write and verify OpenShell never serves
   the candidate access token. After a successful write, verify OpenShell presents
   the new access token for the same worker placeholder. With no eligible prepared
   token, verify that OpenShell refuses the request without contacting the issuer.
