@@ -116,7 +116,7 @@ const REFUSAL_ID = "agent-row-refusal";
 // A refusal not about grants waits for Refresh. A refocus that rebuilds the list, because a
 // recheck read changed or a write made the list one it does not reuse, shows it again; any
 // other load drops it (finding D812).
-let keptRefusal: (RowRefusal & { namespaceId: string }) | null = null;
+let keptRefusal: (RowRefusal & { text: string; namespaceId: string }) | null = null;
 const UNREADABLE = "unreadable";
 const NEWER_UNREADABLE = "newer-unreadable";
 type CurrentVersion = AgentRevisionMetadata | typeof UNREADABLE | typeof NEWER_UNREADABLE | null;
@@ -543,7 +543,7 @@ export function renderAgentList(context: AgentListContext) {
     const previous = refusal;
     refusal = refused ?? null;
     keptRefusal = refused?.text
-      ? { ...refused, requestId, namespaceId: context.namespaceId }
+      ? { ...refused, text: refused.text, requestId, namespaceId: context.namespaceId }
       : null;
     feedback.replaceChildren(
       ...(notice ? [statusBlock("info", null, notice)] : []),
