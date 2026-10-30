@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: "2026-10-28"
-last_updated_session: agent:roboclaw:dashboard:36631ccf-5c7d-4c18-aa49-9a068875fc88
+updated: "2026-10-27"
+last_updated_session: authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d
 ---
 
 # Protected credential request flow
@@ -117,27 +117,24 @@ fence refuses; legacy observations cannot substitute. The gateway compares unkno
 fields too. The local fingerprint covers both hashes and full policies, but is neither
 a canonical supplier hash nor supervisor attestation.
 
-Compute sends protected Harnesses `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` and a
-verifier, withholding its private status identifiers and raw bearer. The helper
-refuses mismatched enrollment before opening its authenticated listener.
+Compute adds `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` from the immutable admitted
+revision only to protected provider Harness requirements. Before opening its authenticated
+listener on the existing service port, the generated helper requires the literal to equal
+the manifest's enrollment execution revision; missing or mismatched values refuse.
+Compute suppresses its private status revision, port, container name and Pod UID; the
+provider receives the transport verifier, not the raw transport token.
 
-Before inference, Compute commits and rechecks the installation, Sandbox, service
-and challenge, then signs release with its private key. Startup closes the listener;
-replacements need fresh challenges. At 180 seconds it fails closed. Enrollment
-neither resolves credentials nor retries requests. Reconciliation can repeat checks;
-[Harness-only restart recovery remains manual](../reference/credential-sources/protected-inference.md#installation-configuration).
-
-For the v6 preview, `NATIVE_WORKER_ENTRYPOINT`
-(`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`) waits
-for signed release. Sandbox matches enrollment to admission and checks its ID
-after the ACK. `ProtectedExecutionDriver.enroll` verifies policy, recipient and
-Pod identity; Compute requires node enrollment and exposure withdrawal.
-
-The read-only PVC launcher `/usr/local/bin/git` delegates to a `TMPDIR` shim
-with Codex's scoped helper and `NODE_EXTRA_CA_CERTS` (Sandbox egress and Gateway
-CAs). The supervisor retains credentials. Both files are Agent-writable; no other
-principal may execute them. Git inputs are checked before release. Git validation/setup holds `repository-git-route`;
-other released-worker failures hold `native-worker-startup`, both `UNAVAILABLE`.
+Before the first model probe, the Harness waits on this listener. Compute awaits the
+installation commit, requeries current evidence and calls the selected Sandbox Driver,
+which checks the exact Sandbox and service and reads the execution/plan challenge.
+Compute signs its fresh process nonce and current installation with a control-plane-only
+key. The listener closes before Codex starts. Restart creates a new challenge; stale
+release cannot unlock the replacement. After 180 seconds, startup fails closed and remains held.
+Reconciliation may repeat readiness exchanges, but enrollment neither
+resolves material nor retries business requests. The worker's active-revision branch can
+repeat this sequence when work is queued. Default Kubernetes has no periodic maintenance
+interval, so Harness-only restart recovery is not automatic;
+see the [supported recovery boundary](../reference/credential-sources/protected-inference.md#installation-configuration).
 
 ### 2. Capture identity, operation and first authority decision
 
@@ -338,12 +335,6 @@ the origin and caller independently.
 None.
 
 ## Changelog
-
-- 2026-10-28 04:11: Distinguish Git setup from native startup failures. (agent:roboclaw:dashboard:36631ccf-5c7d-4c18-aa49-9a068875fc88 - efc0e4d30)
-
-- 2026-10-28 02:29: Describe native Git preflight, scoped authentication and Agent-owned launcher limits. (agent:roboclaw:dashboard:36631ccf-5c7d-4c18-aa49-9a068875fc88 - 16280371d6e87e2353866ca5070e3a4926616e1f)
-
-- 2026-10-27 18:09: Describe native OpenClaw startup release for the observed-hook Git preview in the accompanying source change. (authoring-run/d77dd1ef-fd4c-48d2-8152-ac22d5f72d18 - 2b40862ddb8c71dcb73034bbacec14966a62f4fb)
 
 - 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
 

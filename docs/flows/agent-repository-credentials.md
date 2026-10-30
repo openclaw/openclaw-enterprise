@@ -123,14 +123,6 @@ selections keep request order. The
 uses local registry policy, defaults omitted legacy profiles to `git-write`, and
 makes no control-socket or GitHub calls.
 
-`apps/controller/src/drivers/compute/kubernetes/index.ts:validateRepositoryCredentials`
-admits dedicated native OpenClaw repository bindings only when the selected
-protected composition's Sandbox has `repositoryAccess`. A Sandbox with Git
-transport but no paired Credential Proxy fails create, update, and deployment
-with `409 RESOURCE_CONFLICT`, before a revision or deployment work is created.
-For protected compositions, the Proxy still checks the profile and preview
-requirements at deployment, not save time.
-
 `apps/controller/src/drivers/repo/github/credentials/registry.ts:resolveGitHubRepositoryBinding`
 requires the exact Namespace/reference/profile combination. Its fingerprint binds provider,
 App, installation, repository, duration policy, complete Namespace profile policy, exact permissions
@@ -406,7 +398,5 @@ denied before reaching the provider, and chat continues.
 - 2026-10-30 03:58: Load the native repository transport only for explicit native delivery. (authoring-run/43b61103-4082-4fc2-b9a0-511a18ebc761 - 87ed6c37e543e5501eae6285450d01d03d8abe7d)
 
 - 2026-10-29 21:00: Keep an existing Agent's new version running when its first GitHub token is still pending at the convergence deadline (`REPOSITORY_GIT_TOKEN_PENDING`). (finding 2894)
-
-- 2026-10-28: Require the existing protected composition for native OpenClaw repository admission. (agent:roboclaw:dashboard:36631ccf-5c7d-4c18-aa49-9a068875fc88)
 
 [Agent repository credential documentation history](agent-repository-credentials/history.md) preserves the older dated entries.

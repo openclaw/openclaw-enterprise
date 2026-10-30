@@ -38,8 +38,6 @@ export const RUNTIME_FAILURE_CHECKS = Object.freeze([
   "egress-enrollment",
   // The worker's prepared Git route for an OpenShell Sandbox is blocked (finding 2136).
   "repository-git-route",
-  // Native worker setup or connection failed after its one-use Git preview release.
-  "native-worker-startup",
   // A dedicated Harness's native workspace setup (`openclaw setup --baseline`) failed (finding 2686).
   "workspace-baseline",
   // A dedicated Gateway cannot verify that an earlier process holding its state lock stopped

@@ -279,13 +279,9 @@ bounds trust. Native exposure ends once a post-enrollment pass confirms its
 delete, by `withdrawHarnessExposure`, adoption or recreation with
 `workspaceNodeEnrolled`.
 
-For Codex, HTTP `400` or `404` requires the release acknowledgment and authenticated
-WebSocket. Other non-`200` responses do not attempt an upgrade. Native OpenClaw has
-no app-server socket: the acknowledgment permits policy and recipient verification
-to continue, and Compute still waits for node enrollment. Its signed release
-precedes model probing, state migration and node connection.
-Enrollment still verifies the Sandbox ID after release, without reading the
-withdrawn native exposure.
+After HTTP `400` or `404`, `observeHeldRepositoryGitPreview` and `enrollHarness`
+require the recorded release acknowledgment and authenticated WebSocket. Other
+non-`200` responses stay pending or refuse enrollment without an upgrade.
 
 The Backend reuses clients, retrying setup. Cancellation is checked after
 setup/credential preparation; stalled initialization/file reads have no cancellation deadline. After dispatch, cancellation stops local gRPC; remote mutations
@@ -404,8 +400,6 @@ model execution.
 - 2026-10-28 15:09: Clarify mode support and Configuration transformation wording. (01a183dc-eb11-7f33-9992-dec02cd989e3 - a06c28fe0e)
 
 - 2026-10-28 12:05: Separate static Harness mode reporting from real Configuration transformation. (01a183dc-eb11-7f33-9992-dec02cd989e3 - 07418d1980)
-
-- 2026-10-28 02:29: Keep Sandbox identity verification after a native preview release. (agent:roboclaw:dashboard:36631ccf-5c7d-4c18-aa49-9a068875fc88 - 16280371d6e87e2353866ca5070e3a4926616e1f)
 
 - 2026-10-28 01:58: Restrict released-preview readiness to HTTP 400/404 in the accompanying Driver change. (authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88 - 19ecdca36)
 

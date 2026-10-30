@@ -4,7 +4,6 @@ const scenarioPresets = {
   "sandbox-policy": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
-  "sandbox-native-github": ["OpenClaw"],
   "model-ui": ["OpenClaw", "Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
   calendar: ["Codex"],
@@ -24,16 +23,12 @@ export function selectQaMatrix(env = process.env) {
   const preset = env.OCC_TEST_QA_PRESET ?? "all";
   assert.ok(["all", "OpenClaw", "Codex"].includes(preset), "invalid QA preset selection");
   const allScenarios = Object.keys(scenarioPresets);
-  const prepared = new Set([
-    "sandbox-policy",
-    "plugin-install",
-    "openshell-linear-read",
-    "sandbox-native-github",
-  ]);
   const input = env.OCC_TEST_QA_SCENARIOS ?? "all";
   const scenarios =
     input === "all"
-      ? allScenarios.filter((name) => !prepared.has(name))
+      ? allScenarios.filter(
+          (name) => !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(name),
+        )
       : input.split(",").map((name) => name.trim());
   assert.ok(
     scenarios.length > 0 && scenarios.every((name) => allScenarios.includes(name)),
@@ -54,16 +49,20 @@ export function selectQaMatrix(env = process.env) {
       installation: value,
       preset: name,
       scenarios: scenarios.filter(
-        (scenario) => !prepared.has(scenario) && scenarioPresets[scenario].includes(name),
+        (scenario) =>
+          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
+          scenarioPresets[scenario].includes(name),
       ),
       unselected: allScenarios.filter(
         (scenario) =>
-          !prepared.has(scenario) &&
+          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
           scenarioPresets[scenario].includes(name) &&
           !scenarios.includes(scenario),
       ),
       notApplicable: allScenarios.filter(
-        (scenario) => !prepared.has(scenario) && !scenarioPresets[scenario].includes(name),
+        (scenario) =>
+          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
+          !scenarioPresets[scenario].includes(name),
       ),
     })),
   );
@@ -96,11 +95,6 @@ export function selectQaMatrix(env = process.env) {
     }
     requiredEnv.push("OCC_TEST_QA_SANDBOX_ENV");
   }
-  const sandboxNativeGitHub = scenarios.includes("sandbox-native-github");
-  if (sandboxNativeGitHub) {
-    assert.notEqual(installation, "compose", "native OpenShell Git requires Kubernetes");
-    requiredEnv.push("OCC_TEST_QA_OPENSHELL_GITHUB_INPUTS", "OCC_TEST_QA_REPOSITORY_AUTHORIZED");
-  }
   if (activeScenarios.includes("calendar")) {
     requiredEnv.push("OCC_TEST_CODEX_CALENDAR_TOOL_NAME", "OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT");
   }
@@ -129,16 +123,13 @@ export function selectQaMatrix(env = process.env) {
     sandboxPolicy,
     pluginInstall,
     linearRead,
-    sandboxNativeGitHub,
     cells,
     scenarios,
     requiredEnv,
     repository,
     browser: activeScenarios.some((name) => ["model-ui", "console-secrets"].includes(name)),
     scope:
-      installation === "all" &&
-      preset === "all" &&
-      scenarios.length === allScenarios.length - prepared.size
+      installation === "all" && preset === "all" && scenarios.length === allScenarios.length - 3
         ? "full"
         : "partial:selected",
   };
@@ -148,7 +139,7 @@ export function validateQaInputs(selection, env = process.env) {
   for (const name of selection.requiredEnv) {
     assert.ok(env[name]?.trim(), `${name} is required for the selected QA scenarios`);
   }
-  if (selection.repository || selection.sandboxNativeGitHub) {
+  if (selection.repository) {
     assert.equal(
       env.OCC_TEST_QA_REPOSITORY_AUTHORIZED,
       "1",

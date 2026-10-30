@@ -226,25 +226,6 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     sandbox.cells.every((cell) => cell.scenarios.length === 0),
     "OpenShell uses its prepared enforcement lane, not Sandbox-free installations",
   );
-  const nativeGit = selectQaMatrix({
-    OCC_TEST_QA_SCENARIOS: "sandbox-native-github",
-    OCC_TEST_QA_PRESET: "OpenClaw",
-    OCC_TEST_QA_INSTALLATION: "kubernetes",
-  });
-  assert.equal(nativeGit.sandboxNativeGitHub, true);
-  assert.deepEqual(nativeGit.requiredEnv, [
-    "OCC_TEST_QA_OPENSHELL_GITHUB_INPUTS",
-    "OCC_TEST_QA_REPOSITORY_AUTHORIZED",
-  ]);
-  assert.ok(nativeGit.cells.every((cell) => cell.scenarios.length === 0));
-  assert.throws(
-    () =>
-      validateQaInputs(nativeGit, {
-        OCC_TEST_QA_OPENSHELL_GITHUB_INPUTS: "/protected/test-inputs.json",
-        OCC_TEST_QA_REPOSITORY_AUTHORIZED: "0",
-      }),
-    /explicit authorization/,
-  );
   const full = selectQaMatrix({});
   assert.equal(full.scope, "full");
   assert.ok(full.repository);

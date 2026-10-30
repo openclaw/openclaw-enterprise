@@ -1957,9 +1957,6 @@ async function nativeOpenShellAgent(t, bindings, options) {
       createdAt: new Date().toISOString(),
     }),
   );
-  // A successful save is deliberately distinct from deployment admission. These
-  // tests identify which exact profile gate refuses, rather than assuming that
-  // the earlier, broader topology check is the deployment boundary.
   const agent = await f.createAgent({
     executionMode: "dedicated",
     repositoryBindings: bindings,
@@ -1981,177 +1978,113 @@ async function nativeOpenShellAgent(t, bindings, options) {
   return { ...f, agent };
 }
 
-test("Unprotected OpenShell refuses native OpenClaw repository bindings on save and deploy", async (t) => {
-  // A Sandbox with repository transport is not a protected composition. Native
-  // Git needs the paired Proxy release; accepting this configuration otherwise
-  // defers a known refusal until worker provisioning. Use real Compute admission
-  // for create, update, and an Agent persisted before this guard was restored.
-  const f = await nativeOpenShellAgent(t, [], { protectedExecution: false });
-  const path = f.collection + "/" + f.agent.id;
-  const before = await f.request("GET", f.collection);
-  const pendingBefore = f.state.pendingOperations();
-  for (const [method, target, input] of [
-    [
-      "POST",
-      f.collection,
-      {
-        name: "Unsupported native Git",
-        configurationId: f.configuration.id,
-        executionMode: "dedicated",
-        harnessAuth: f.agent.harnessAuth,
-        credentialSources: f.agent.credentialSources,
-        repositoryBindings: selection,
-      },
-    ],
-    ["PATCH", path, { configurationId: f.configuration.id, repositoryBindings: selection }],
-  ]) {
-    const response = await f.request(method, target, input);
-    assert.equal(response.status, 409, JSON.stringify(response));
-    assert.equal(response.error.code, "RESOURCE_CONFLICT");
-    assert.equal(response.error.message, COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED);
-  }
-  assert.deepEqual((await f.request("GET", f.collection)).data, before.data);
-  assert.deepEqual(f.state.pendingOperations(), pendingBefore);
-
-  // Simulate the supported persisted state from before this admission repair,
-  // without bypassing the production deployment validator.
-  await f.state.transact((unit) =>
-    unit.agents.updateConfiguration(
-      f.namespace.id,
-      f.agent.id,
-      f.configuration.id,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      selection,
-    ),
-  );
-  const stored = await f.controller.getAgent(f.actorId, f.namespace.id, f.agent.id);
-  const response = await f.request("POST", path + "/deploy");
-  assert.equal(response.status, 409, JSON.stringify(response));
-  assert.equal(response.error.code, "RESOURCE_CONFLICT");
-  assert.equal(response.error.message, COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED);
-  assert.deepEqual((await f.request("GET", path + "/revisions")).data, []);
-  assert.deepEqual(f.state.pendingOperations(), pendingBefore);
-  const after = await f.controller.getAgent(f.actorId, f.namespace.id, f.agent.id);
-  assert.equal(after.desiredRuntimeState, stored.desiredRuntimeState);
-  assert.equal(after.activeRevisionId, stored.activeRevisionId);
-  assert.equal(f.gatewayReads(), 0, "unsupported composition needs no gateway read");
-  const outsider = await f.requestWithoutGrants(f.app);
-  for (const [method, suffix, body] of [
-    ["PATCH", "", { configurationId: f.configuration.id, repositoryBindings: selection }],
-    ["POST", "/deploy", undefined],
-  ]) {
-    await assertSameAnswer(
-      (id) => outsider(method, f.collection + "/" + id + suffix, body),
-      [f.agent.id, "agt_" + randomUUID()],
-    );
-  }
-});
-
-test("Dedicated native OpenClaw applies the OpenShell profile gate before creating deployment work", async (t) => {
+test("Native OpenClaw repository access refuses installation authority before save or deployment", async (t) => {
+  // Native workers must not exercise the GitHub App installation's wider
+  // authority by changing a local remote. Reject every repository binding at
+  // the API, including an Agent persisted before this restriction, before any
+  // revision, deployment work, or gateway request can grant that authority.
   const installation = [{ repositoryRef: "installation", profile: "github-installation" }];
   const cases = [
     {
-      name: "git-write with preview off",
+      name: "unprotected repository Git",
       bindings: selection,
-      options: {},
-      status: 409,
-      code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
-      message: RepositoryGitSenderUnqualifiedError.description,
-      reads: 0,
+      options: { protectedExecution: false },
     },
     {
-      name: "git-write with preview on",
-      bindings: selection,
-      options: { preview: true },
-      status: 409,
-      code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
-      message: RepositoryGitSenderUnqualifiedError.description,
-      reads: 0,
-    },
-    {
-      name: "installation access with preview off",
+      name: "unprotected installation access",
       bindings: installation,
-      options: {},
-      status: 409,
-      code: "RESOURCE_CONFLICT",
-      message: CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
-      reads: 0,
+      options: { protectedExecution: false },
+    },
+    { name: "installation access with preview off", bindings: installation, options: {} },
+    {
+      name: "installation access with preview on",
+      bindings: installation,
+      options: { preview: true },
     },
     {
-      name: "installation preview on an unsupported gateway version",
+      name: "installation preview on another gateway",
       bindings: installation,
       options: { preview: true, gatewayVersion: "0.1.6" },
-      status: 503,
-      code: "DEPENDENCY_UNAVAILABLE",
-      message: PREVIEW_GATEWAY_VERSION,
-      reads: 1,
     },
-    ...["git-read", "git-full"].map((profile) => ({
-      name: profile + " is not a protected delivery profile",
+    ...["git-read", "git-write", "git-full"].map((profile) => ({
+      name: profile + " does not grant native repository access",
       bindings: [{ repositoryRef: "project", profile }],
       options: { preview: true },
-      status: 409,
-      code: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
-      message: RepositoryGitProfileUnsupportedError.description,
-      reads: 0,
     })),
-    {
-      name: "explicit installation preview on stock 0.1.5",
-      bindings: installation,
-      options: { preview: true },
-      status: 202,
-      reads: 1,
-    },
   ];
   for (const scenario of cases) {
     await t.test(scenario.name, async (subtest) => {
-      const f = await nativeOpenShellAgent(subtest, scenario.bindings, scenario.options);
+      // A native Agent without repository credentials is still a valid draft.
+      // Model custody stays with the real Credential Gateway, not a Git helper.
+      const f = await nativeOpenShellAgent(subtest, [], scenario.options);
       const path = f.collection + "/" + f.agent.id;
-      const before = await f.controller.getAgent(f.actorId, f.namespace.id, f.agent.id);
-      const queuedBefore = f.state.pendingOperations();
+      const before = await f.request("GET", f.collection);
+      const pendingBefore = f.state.pendingOperations();
+      for (const [method, target, input] of [
+        [
+          "POST",
+          f.collection,
+          {
+            name: "Refused native repository authority",
+            configurationId: f.configuration.id,
+            executionMode: "dedicated",
+            harnessAuth: f.agent.harnessAuth,
+            credentialSources: f.agent.credentialSources,
+            repositoryBindings: scenario.bindings,
+          },
+        ],
+        [
+          "PATCH",
+          path,
+          { configurationId: f.configuration.id, repositoryBindings: scenario.bindings },
+        ],
+      ]) {
+        const response = await f.request(method, target, input);
+        assert.equal(response.status, 409, JSON.stringify(response));
+        assert.equal(response.error.code, "RESOURCE_CONFLICT");
+        assert.equal(response.error.message, COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED);
+      }
+      assert.deepEqual((await f.request("GET", f.collection)).data, before.data);
+      assert.deepEqual(f.state.pendingOperations(), pendingBefore);
+
+      // An existing saved binding must not bypass the same deployment check.
+      await f.state.transact((unit) =>
+        unit.agents.updateConfiguration(
+          f.namespace.id,
+          f.agent.id,
+          f.configuration.id,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          scenario.bindings,
+        ),
+      );
+      const stored = await f.controller.getAgent(f.actorId, f.namespace.id, f.agent.id);
       const response = await f.request("POST", path + "/deploy");
-      assert.equal(response.status, scenario.status, JSON.stringify(response));
-      assert.equal(f.gatewayReads(), scenario.reads);
-      const revisions = (await f.request("GET", path + "/revisions")).data;
-      if (scenario.status !== 202) {
-        assert.equal(response.error.code, scenario.code);
-        assert.equal(response.error.message, scenario.message);
-        assert.deepEqual(revisions, []);
-        assert.deepEqual(f.state.pendingOperations(), queuedBefore, "refusal queues no work");
-        const after = await f.controller.getAgent(f.actorId, f.namespace.id, f.agent.id);
-        assert.equal(after.desiredRuntimeState, before.desiredRuntimeState);
-        assert.equal(after.activeRevisionId, before.activeRevisionId);
-      } else {
-        // Positive admission proves the refusal cases did not merely disable native
-        // OpenClaw. No worker is run: a queued v6 revision is not runtime readiness.
-        assert.equal(revisions.length, 1);
-        const revision = await f.state.read((view) =>
-          view.revisions.findRevision(f.namespace.id, f.agent.id, response.data.id),
-        );
-        assert.equal(revision.harness.id, "openclaw");
-        assert.equal(revision.harness.mode, "dedicated");
-        assert.deepEqual(revision.executionAdmission, { version: 6, mode: "protected" });
-        assert.equal(revision.egressPlan.repositoryGitAuthorization, "request-hook-observed");
-        assert.equal(revision.repositoryCredentials.bindings[0].profile, "github-installation");
-        assert.ok(
-          f.state
-            .pendingOperations()
-            .some(
-              (operation) =>
-                operation.kind === "agent_revision" && operation.resourceId === revision.id,
-            ),
+      assert.equal(response.status, 409, JSON.stringify(response));
+      assert.equal(response.error.code, "RESOURCE_CONFLICT");
+      assert.equal(response.error.message, COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED);
+      assert.deepEqual((await f.request("GET", path + "/revisions")).data, []);
+      assert.deepEqual(f.state.pendingOperations(), pendingBefore);
+      const after = await f.controller.getAgent(f.actorId, f.namespace.id, f.agent.id);
+      assert.equal(after.desiredRuntimeState, stored.desiredRuntimeState);
+      assert.equal(after.activeRevisionId, stored.activeRevisionId);
+      assert.equal(f.gatewayReads(), 0, "refusal does not consult or authenticate at the gateway");
+      const outsider = await f.requestWithoutGrants(f.app);
+      for (const [method, suffix, body] of [
+        [
+          "PATCH",
+          "",
+          { configurationId: f.configuration.id, repositoryBindings: scenario.bindings },
+        ],
+        ["POST", "/deploy", undefined],
+      ]) {
+        await assertSameAnswer(
+          (id) => outsider(method, f.collection + "/" + id + suffix, body),
+          [f.agent.id, "agt_" + randomUUID()],
         );
       }
-      // Current capability and repository state must remain hidden from callers
-      // without the exact deploy grant, for both refused and admitted configurations.
-      const outsider = await f.requestWithoutGrants(f.app);
-      await assertSameAnswer(
-        (id) => outsider("POST", f.collection + "/" + id + "/deploy"),
-        [f.agent.id, "agt_" + randomUUID()],
-      );
     });
   }
 });

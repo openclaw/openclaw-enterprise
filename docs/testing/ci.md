@@ -182,10 +182,6 @@ The OpenShell advisory job covers the same workflow automatically. The separate
 `plugin-install` selector verifies dedicated Codex installation, native-process
 restart discovery, and selection removal through the Agent workflow; see
 [plugin installation proof](openshell.md#codex-plugin-installation).
-The explicit `sandbox-native-github` selector exercises a native OpenClaw model
-turn and GitHub App clone/fetch/push on a prepared isolated installation. It is
-manual and requires its own [protected input file](openshell-coverage.md#native-github-installation-preview);
-the current hosted advisory environment does not supply that fixture.
 
 The matrix creates disposable Compose and Kubernetes control planes, both with
 Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. It does

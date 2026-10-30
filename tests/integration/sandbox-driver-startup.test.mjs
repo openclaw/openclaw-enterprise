@@ -1,13 +1,9 @@
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
-import {
-  computeReleasePublicKey,
-  harnessEgressEnrollment,
-} from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
@@ -73,7 +69,6 @@ import {
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { labelSelectorLabels } from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
-  availablePort,
   bindReservedPortInProcess,
   reservedPortArgs,
   reservePort,
@@ -1857,23 +1852,6 @@ test("OpenShell exposes a native OpenClaw worker's held-failure port when Comput
     { name: "APP_SERVER_PORT", value: "18790" },
     { name: "APP_TOKEN_SHA", value: "b".repeat(64) },
   ]);
-  // Without an admitted plan, caller-supplied native enrollment must be refused
-  // before provisioning a provider or Sandbox.
-  await assert.rejects(
-    driver.provisionHarness({
-      ...context,
-      revision,
-      requirements: {
-        ...exposed,
-        environment: [
-          ...exposed.environment,
-          { name: "OPENCLAW_NATIVE_EGRESS_ENROLLMENT", value: "{}" },
-        ],
-      },
-    }),
-    /Protected native Harness startup must match the admitted egress plan/,
-  );
-  assert.equal(requests.length, 0);
   // The created exposure's URL is validated on the create pass, as for Codex.
   createdServiceUrl = "ftp://native.example.test/";
   await assert.rejects(
@@ -1894,16 +1872,6 @@ test("OpenShell exposes a native OpenClaw worker's held-failure port when Comput
   assert.equal(requests[0].spec.environment.APP_TOKEN_SHA, "b".repeat(64));
   assert.equal(requests[0].spec.environment.APP_SERVER_TOKEN, undefined);
   assert.equal(requests[0].spec.environment.OPENAI_API_KEY, undefined);
-  const containers =
-    requests[0].spec.template.driver_config.fields.kubernetes.structValue.fields.containers;
-  const mounts = containers.structValue.fields.agent.structValue.fields.volume_mounts;
-  assert.equal(
-    mounts.listValue.values.some(
-      ({ structValue }) => structValue.fields.mount_path.stringValue === "/usr/local/bin/git",
-    ),
-    false,
-    "native workers without the preview receive no Git launcher mount",
-  );
   // Adoption needs the exact exposure: a lost or mismatched service fails closed,
   // like Codex, since the spec match proves the Sandbox was created with it.
   for (const lost of [undefined, { ...service, targetPort: 8081 }]) {
@@ -6008,28 +5976,6 @@ test("observed-hook preview recognizes a released Codex through its authenticate
     }
     assert.equal(upgrades - before, allowed ? 1 : 0, `enrollment upgrades for ${status}`);
   }
-  status = 400;
-  // Native has no app-server and withdraws its exposure after node enrollment.
-  // An ACK permits observation to continue; Compute must still verify the exact
-  // installed policy/recipient and wait for its own node before declaring readiness.
-  revision.harness.id = "openclaw";
-  serving = false;
-  gateway.getService = async () => assert.fail("native release must not use a withdrawn exposure");
-  assert.equal(await driver.observeHeldRepositoryGitPreview(input), "installed");
-  await driver.enrollHarness(input, installation, release);
-  // A receipt does not authorize a same-name Sandbox replacement. Its identity
-  // can be verified without re-opening the withdrawn native exposure.
-  gateway.getSandbox = async () => ({ id: "replacement-sandbox" });
-  await assert.rejects(
-    driver.enrollHarness(input, installation, release),
-    /Harness enrollment must match the installed Sandbox/,
-  );
-  gateway.getSandbox = async () => ({ id: "preview-sandbox" });
-  acknowledged = false;
-  gateway.getService = async (_workspace, sandbox, name) =>
-    harnessService(sandbox, name, "http://preview--codex.openshell.test/");
-  assert.equal(await driver.observeHeldRepositoryGitPreview(input), undefined);
-  await assert.rejects(driver.enrollHarness(input, installation, release), /Cannot verify/);
 });
 
 test("OpenShell refuses repository provision and enrollment before any gateway or release call", async () => {
@@ -7140,7 +7086,7 @@ test(
               ...exact,
               requirements: { ...required, proxyWiring: exactWiring },
             }),
-            /requires one explicitly admitted GitHub binding and its supported dedicated execution/,
+            /requires one explicitly admitted GitHub binding and its dedicated Codex execution/,
           );
           assert.equal(created, undefined, "the online sender cannot take over a v4 execution");
           // The Git worker has bound its authority port since it started.
@@ -7525,208 +7471,5 @@ test(
         }
       },
     );
-  },
-);
-
-async function protectedNativeStartupFixture(t, overrides = {}) {
-  const port = await availablePort();
-  const token = "native-enrollment-fixture";
-  const { privateKey } = generateKeyPairSync("ed25519");
-  const execution = {
-    installationId: "ins_fixture",
-    namespaceId: "ns_fixture",
-    agentId: "agt_fixture",
-    servicePrincipalId: "sp_fixture",
-    revisionId: "rev_fixture",
-    executionId: randomUUID(),
-  };
-  const plan = {
-    id: randomUUID(),
-    generation: 1,
-    execution,
-    routes: [],
-    harnessCredentialSource: {},
-    repositoryGitAuthorization: "request-hook-observed",
-  };
-  const enrollment = harnessEgressEnrollment(plan);
-  const name = "oce-native-enrollment-" + randomUUID();
-  const environment = {
-    HOME: "/tmp/native-proof",
-    TMPDIR: "/tmp/native-proof-tmp",
-    OPENCLAW_NATIVE_INFERENCE_CONFIG: "{}",
-    OPENCLAW_NODE_STATE_DIR: "/tmp/native-proof/state",
-    OPENCLAW_NODE_SETUP_CODE: "fixture-not-used-before-release",
-    OPENCLAW_WORKSPACE_DIR: "/tmp/native-proof/workspace",
-    OPENCLAW_NATIVE_WORKER_CAPACITY: "1",
-    APP_SERVER_PORT: "18888",
-    APP_TOKEN_SHA: createHash("sha256").update(token).digest("hex"),
-    OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID: execution.revisionId,
-    OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY: computeReleasePublicKey(privateKey),
-    OPENCLAW_NATIVE_EGRESS_ENROLLMENT: JSON.stringify(enrollment),
-    NODE_EXTRA_CA_CERTS: "/etc/ssl/certs/ca-certificates.crt",
-    GITHUB_TOKEN: "openshell:resolve:env:s" + "a".repeat(64) + "_GITHUB_TOKEN",
-    GIT_CONFIG_KEY_1: "credential.https://github.com.helper",
-  };
-  Object.assign(environment, overrides);
-  const child = spawn(
-    "docker",
-    [
-      "run",
-      "--rm",
-      "--interactive",
-      "--pull=never",
-      "--name",
-      name,
-      "--cap-drop=ALL",
-      "--security-opt=no-new-privileges",
-      "--read-only",
-      "--tmpfs",
-      "/tmp:rw,mode=1777",
-      "--publish",
-      `127.0.0.1:${port}:18888`,
-      ...Object.entries(environment).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
-      "--entrypoint=node",
-      process.env.OCC_TEST_RUNTIME_IMAGE,
-      "-",
-    ],
-    { stdio: ["pipe", "ignore", "pipe"] },
-  );
-  let diagnostics = "";
-  child.stderr.on("data", (chunk) => {
-    diagnostics += chunk;
-  });
-  t.after(() => {
-    spawnSync("docker", ["rm", "--force", name], { stdio: "ignore" });
-  });
-  child.stdin.end(NATIVE_WORKER_ENTRYPOINT);
-  const url = `http://127.0.0.1:${port}/openclaw/runtime/egress-enrollment`;
-  return { child, url, token, privateKey, enrollment, diagnostics: () => diagnostics };
-}
-
-// Execute the complete generated native startup in the selected real runtime image.
-// No model credential is supplied: the assertion is that startup cannot even enter
-// its model probe before a Compute release that includes a correlated hook observation.
-test(
-  "protected native startup refuses work before an observed-hook Compute release",
-  {
-    skip: process.env.OCC_TEST_RUNTIME_IMAGE
-      ? false
-      : "Set OCC_TEST_RUNTIME_IMAGE to the pinned native runtime.",
-    timeout: 30000,
-  },
-  async (t) => {
-    const { child, url, token, privateKey, enrollment, diagnostics } =
-      await protectedNativeStartupFixture(t);
-    let challenge;
-    const deadline = Date.now() + 15000;
-    while (Date.now() < deadline) {
-      assert.equal(child.exitCode, null, diagnostics());
-      try {
-        const response = await fetch(url, {
-          headers: { authorization: `Bearer ${token}` },
-          signal: AbortSignal.timeout(500),
-        });
-        if (response.status === 200) {
-          challenge = await response.json();
-          break;
-        }
-      } catch {
-        // The container has not published its enrollment listener yet.
-      }
-      await delay(50);
-    }
-    assert.ok(challenge, diagnostics());
-    assert.deepEqual(challenge, {
-      profile: "oce-compute-execution-release-v1",
-      ...enrollment,
-      startupId: challenge.startupId,
-    });
-    assert.doesNotMatch(diagnostics(), /openclaw.model_probe/);
-    const installation = {
-      sandboxId: "fixture-sandbox",
-      instanceId: "fixture-instance",
-      configurationId: "fixture-policy",
-      repositoryGitRecipient: { authorization: "request-hook-observed" },
-    };
-    const expiresAt = Date.now() + 30000;
-    // Sign an intentionally incomplete release independently of Compute's signer,
-    // which also refuses a missing hook. The workload must enforce that boundary too.
-    const release = {
-      challenge,
-      installation,
-      expiresAt,
-      signature: sign(
-        null,
-        Buffer.from(JSON.stringify([challenge, installation, expiresAt])),
-        privateKey,
-      ).toString("base64url"),
-    };
-    const post = (body, bearer = token) =>
-      fetch(url, {
-        method: "POST",
-        signal: AbortSignal.timeout(2000),
-        headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-    assert.equal((await post(release, "wrong-token")).status, 401);
-    assert.equal((await post(challenge)).status, 409, "the Harness bearer cannot release startup");
-    assert.equal(
-      (await post(release)).status,
-      409,
-      "even a signed release needs the correlated request-hook observation",
-    );
-    assert.doesNotMatch(diagnostics(), /openclaw.model_probe/);
-  },
-);
-
-// Configuration errors must be observable before the one-use Compute release,
-// not become an unhandled rejection after it. No model credential is supplied.
-test(
-  "protected native startup holds invalid Git inputs before requesting release",
-  {
-    skip: process.env.OCC_TEST_RUNTIME_IMAGE
-      ? false
-      : "Set OCC_TEST_RUNTIME_IMAGE to the pinned native runtime.",
-    timeout: 45000,
-  },
-  async (t) => {
-    for (const [name, overrides] of [
-      ["alias", { GITHUB_TOKEN: "not-an-openshell-alias" }],
-      ["trust", { NODE_EXTRA_CA_CERTS: "/absent/native-git-ca.pem" }],
-      ["scope", { GIT_CONFIG_KEY_1: "credential.https://other.example.test.helper" }],
-    ]) {
-      await t.test(name, async (subtest) => {
-        const { child, url, token, diagnostics } = await protectedNativeStartupFixture(
-          subtest,
-          overrides,
-        );
-        let status;
-        const deadline = Date.now() + 15000;
-        while (Date.now() < deadline) {
-          assert.equal(child.exitCode, null, diagnostics());
-          try {
-            const response = await fetch(url.replace("egress-enrollment", "status"), {
-              headers: { authorization: "Bearer " + token },
-              signal: AbortSignal.timeout(500),
-            });
-            if (response.status === 200) {
-              status = await response.json();
-              break;
-            }
-          } catch {
-            // Wait for the container's held-failure listener, not model work.
-          }
-          await delay(50);
-        }
-        assert.equal(status?.runtimeFailure?.check, "repository-git-route", diagnostics());
-        assert.equal(status?.runtimeFailure?.code, "UNAVAILABLE");
-        const enrollment = await fetch(url, {
-          headers: { authorization: "Bearer " + token },
-        });
-        assert.equal(enrollment.status, 503, "invalid inputs never expose a release challenge");
-        await enrollment.arrayBuffer();
-        assert.doesNotMatch(diagnostics(), /openclaw.model_probe|UnhandledPromiseRejection/);
-      });
-    }
   },
 );

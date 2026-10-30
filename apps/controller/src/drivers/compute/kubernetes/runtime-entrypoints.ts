@@ -4789,10 +4789,6 @@ ${openClawStateMigrationHelper("Native worker", "deploy the Agent again")}
 // node that never connects.
 ${SUPERVISOR_HELD_FAILURE_HELPER}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
-${HARNESS_EGRESS_ENROLLMENT_HELPER}
-function isPlainObject(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 const inferenceConfig = process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 const state = process.env.OPENCLAW_NODE_STATE_DIR;
@@ -4882,46 +4878,6 @@ if (process.env.OPENCLAW_RUNTIME_STATUS_PORT !== undefined) {
 mkdirSync(temporary, { recursive: true, mode: 0o700 });
 chmodSync(temporary, 0o700);
 initializeRuntimeAssets();
-function nativeGitConfiguration(enrollment) {
-  if (enrollment?.repositoryGitAuthorization !== "request-hook-observed") return;
-  const ca = process.env.NODE_EXTRA_CA_CERTS;
-  if (!ca?.startsWith("/") || readFileSync(ca).length === 0) {
-    throw new Error("Native Git trust is missing.");
-  }
-  const alias = process.env.GITHUB_TOKEN;
-  if (typeof alias !== "string" || !/^openshell:resolve:env:s[a-f0-9]{64}_GITHUB_TOKEN$/.test(alias)) {
-    throw new Error("Native Git requires its OpenShell stable credential alias.");
-  }
-  const key = process.env.GIT_CONFIG_KEY_1;
-  if (typeof key !== "string" ||
-      !/^credential\.https:\/\/github\.com(?:\/[a-z0-9_.-]+\/[a-z0-9_.-]+\.git)?\.helper$/.test(key)) {
-    throw new Error("Native Git requires its admitted credential scope.");
-  }
-  const helper = "!f() { printf '%s\\n' 'username=x-access-token' 'password=" + alias + "'; }; f";
-  const configuration = [
-    "credential.helper=",
-    key + "=" + helper,
-    "http.followRedirects=false",
-    "http.sslVerify=true",
-    "credential.useHttpPath=true",
-  ];
-  return { directory: join(temporary, "oce-native-git"), configuration };
-}
-
-function prepareNativeGit(git) {
-  // This directory belongs to this worker. A previous supervisor may have left
-  // it behind; replace it before starting any new Agent child.
-  rmSync(git.directory, { recursive: true, force: true });
-  mkdirSync(git.directory, { mode: 0o700 });
-  const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
-  const configuration = git.configuration.map((value) => "-c " + quote(value)).join(" ");
-  writeFileSync(join(git.directory, "git"),
-    '#!/bin/sh\nexport GIT_TERMINAL_PROMPT=0\nexec /usr/bin/git ' + configuration +
-      ' -c http.sslCAInfo="$NODE_EXTRA_CA_CERTS" "$@"\n',
-    { mode: 0o700, flag: "wx" });
-}
-
-async function startReleasedNativeWorker(git) {
 const authenticationFailure = probeOpenClawAuthenticationFailure();
 if (authenticationFailure !== undefined) {
   holdFailedAuthentication("model-probe", authenticationFailure.code, authenticationFailure.cause);
@@ -4982,6 +4938,7 @@ const doctorEnv = {
   OPENCLAW_NO_AUTO_UPDATE: "1",
   ...(nodeEnv.NODE_EXTRA_CA_CERTS === undefined ? {} : { NODE_EXTRA_CA_CERTS: nodeEnv.NODE_EXTRA_CA_CERTS }),
 };
+(async () => {
 if (!nodeStateCurrent && !(await migrateOpenClawState(state, outdatedNodeDatabases, doctorEnv))) {
   holdStartupFailure("state-migration", "UNAVAILABLE");
   return;
@@ -5014,57 +4971,11 @@ const stop = (signal) => {
 };
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
-child.on("exit", (code, signal) => {
-  if (git) rmSync(git.directory, { recursive: true, force: true });
-  process.exit(code ?? (signal === "SIGTERM" ? 0 : 1));
-});
-}
-}
-function nativeWorkerStartupFailed(error) {
+child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 0 : 1)));
+})().catch((error) => {
   console.error(error);
   process.exit(1);
-}
-const nativeEnrollment = process.env.OPENCLAW_NATIVE_EGRESS_ENROLLMENT;
-const protectedStartup = nativeEnrollment !== undefined ||
-  process.env.OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID !== undefined ||
-  process.env.OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY !== undefined;
-if (!protectedStartup) {
-  void startReleasedNativeWorker().catch(nativeWorkerStartupFailed);
-} else {
-  let enrollment;
-  try { enrollment = JSON.parse(nativeEnrollment); } catch {}
-  let git;
-  let valid = false;
-  try {
-    git = nativeGitConfiguration(enrollment);
-    valid = true;
-  } catch {
-    holdStartupFailure("repository-git-route", "UNAVAILABLE");
-  }
-  if (valid) {
-    waitForHarnessEgressEnrollment(enrollment).then(() => {
-      delete process.env.OPENCLAW_NATIVE_EGRESS_ENROLLMENT;
-      if (git) {
-        try {
-          // Native drops Git environment settings in its child workers. Carry the
-          // same challenge-based helper and scope as Codex through this private shim.
-          prepareNativeGit(git);
-        } catch {
-          holdStartupFailure("repository-git-route", "UNAVAILABLE");
-          return;
-        }
-      }
-      return startReleasedNativeWorker(git);
-    }, () => holdFailedAuthentication("egress-enrollment", "UNAVAILABLE")).catch((error) => {
-      if (git) {
-        // The one-use Git release is already spent, but this failure belongs to
-        // native worker configuration or connection, not Git shim installation.
-        holdStartupFailure("native-worker-startup", "UNAVAILABLE");
-      } else {
-        nativeWorkerStartupFailed(error);
-      }
-    });
-  }
+});
 }
 `;
 
