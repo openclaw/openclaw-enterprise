@@ -8,6 +8,7 @@ This record preserves the dated changes to the platform console request flow. Se
 
 ## Changelog
 
+- 2026-10-30 16:00: A rebuilt Agents list keeps the refocused row control and its note in view. (fix-dogfood-r60)
 - 2026-10-30 12:30: A permission answer read before a Stop or Delete refusal no longer lifts it; a rebuilt Agents list moves focus from a gone or disabled row control to the row's name or the heading. (fix-4183-followups)
 - 2026-10-30 12:00: Refocus rereads the Agent page's permission answer and keeps focus on a rebuilt Agents list row. (fix-dogfood-r59)
 - 2026-10-29 20:40: Refocus does not read again a version the page proved unreadable. (fix-console-r53)

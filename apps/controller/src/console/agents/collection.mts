@@ -1074,7 +1074,8 @@ export function renderAgentList(context: AgentListContext) {
       const actions = rowActions(item);
       const cell = element(
         "td",
-        { className: "agent-row-actions-cell", "data-label": "Actions" },
+        // A refocus that rebuilds the list keeps this cell, the icon and its note, in view.
+        { className: "agent-row-actions-cell", "data-label": "Actions", "data-refocus-area": "" },
         ...actionCellContent(actions),
       );
       rowControls.set(item.id, { name, cell, ...actions });

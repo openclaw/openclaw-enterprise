@@ -2275,11 +2275,23 @@ export async function renderAgentDetail(
       fresh.status === "deleting" ||
       fresh.activeRevisionId !== currentRevisionId ||
       fresh.desiredRuntimeState !== currentRuntimeState;
-    if (!changed) {
+    // A deployment requested elsewhere sets the Agent running and selects its version only once
+    // it succeeds. Running with no version selected, while the newest listed version's own
+    // deployment is neither in progress nor failed, means a newer version exists: list it, so
+    // its deployment panel reads its outcome. A failed redeploy otherwise left the page on the
+    // stopped version's "Completed" until a reload (finding 2978).
+    const newerDeployment =
+      fresh.status !== "deleting" &&
+      fresh.desiredRuntimeState === "running" &&
+      !fresh.activeRevisionId &&
+      !deploymentPending(latestDeploymentStatus) &&
+      latestDeploymentStatus !== "failed";
+    if (!changed && !newerDeployment) {
       return;
     }
     const unknownVersion =
-      fresh.activeRevisionId !== undefined && !listedRevisions.has(fresh.activeRevisionId);
+      newerDeployment ||
+      (fresh.activeRevisionId !== undefined && !listedRevisions.has(fresh.activeRevisionId));
     const revisionResult: RevisionResult | null = unknownVersion
       ? {
           status: "fulfilled",

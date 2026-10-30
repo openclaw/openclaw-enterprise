@@ -12,11 +12,11 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
 
 1. Select a deployed version of the Agent; the draft has no runtime. A version
    without a running Pod shows none and links to another running version's Logs.
+   A newer failed deployment shows on the Agent's page.
 2. Select **Logs**. The runtime strip refreshes every 10 seconds. Each Pod card
-   lists every main and init container's state and recent warning Events, prefixed
-   with their container. Last termination
+   lists each container's state and recent warning Events. Last termination
    shows the current exit for a terminated container, otherwise its prior exit.
-   If a refresh fails, the cards stay and the strip says when they were last observed.
+   A failed refresh keeps the cards and says when they were last observed.
 3. Choose a **Source**: **Gateway** (the OpenClaw Gateway container),
    **Agent (Harness)** (the dedicated Codex or OpenClaw Harness container, only
    for dedicated execution) or **Sandbox (policy decisions)** (see
@@ -29,8 +29,8 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
 4. Select **Follow** to poll for new lines every 2 seconds. Following pauses while
    the browser tab is hidden or you scroll up, and stops after a permission denial.
 5. Select **Previous instance** after a restart to read the exited container's
-   output. Following is off for it. Until the container restarts, the option is
-   unavailable and a note under the toolbar says why.
+   output. Following is off for it. Before a restart, the option is
+   unavailable and a note says why.
 
 ### Filter the loaded output
 

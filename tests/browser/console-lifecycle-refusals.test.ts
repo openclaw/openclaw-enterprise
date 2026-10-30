@@ -13,6 +13,7 @@ import {
   grantMember,
   hasFocus,
   holdRequests,
+  inViewport,
   login,
   nativeValues,
   newPage,
@@ -710,6 +711,97 @@ test("an Agents list row refused for another reason shows the API's text and nam
     assert.equal(await icon.getAttribute("aria-disabled"), "true");
     await row.getByText(grant, { exact: true }).waitFor();
   }
+});
+
+// At 390 px a refocus that rebuilt the list after a kept row refusal left the refused icon cut off
+// at the viewport's bottom and its row note below the fold: the reread found the Agent deleting
+// (another person's deletion), whose badge made the row taller, and focus came back without
+// moving the page (finding 2976). The icon's cell, with its note, now stays in view. A rebuild
+// that leaves the cell in view, and a refocus that reuses the list, do not move the page.
+test("a refocus that rebuilds a taller refused row keeps its icon and note in view", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Rebuilt row in view");
+  const agents = [];
+  for (const name of ["Row A", "Row B", "Row C", "Row D"]) {
+    const agent = await fixture.createAgent(
+      namespace.id,
+      name,
+      nativeValues(name.toLowerCase().replace(" ", "-")),
+    );
+    await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    agents.push(agent);
+  }
+  const agentPath = `/namespaces/${namespace.id}/agents/${agents[2].id}`;
+  const { page } = await newPage(t, fixture, { browser });
+  // The owner holds delete; this Delete is refused for another reason, as a stale row's was.
+  await page.route(`${fixture.origin}${agentPath}`, (route) =>
+    route.request().method() === "DELETE"
+      ? route.fulfill(
+          apiErrorResponse(403, "FORBIDDEN", "The acting identity is unavailable.", {
+            requestId: "req_00000000-0000-4000-8000-000000000b05",
+          }),
+        )
+      : route.fallback(),
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const row = page.getByRole("row").filter({ hasText: "Row C" });
+  const icon = row.getByRole("button", { name: "Delete Row C", exact: true });
+  await waitForEnabled(icon);
+  await icon.click();
+  await page
+    .getByRole("dialog", { name: "Delete Row C?" })
+    .getByRole("button", { name: "Permanently delete Agent" })
+    .click();
+  const note = row.getByText("Not deleted: see above", { exact: true });
+  await note.waitFor();
+  assert.equal(await hasFocus(icon), true);
+  const view = page.locator('.content [aria-live="polite"]');
+  const scrollY = () => page.evaluate(() => globalThis.scrollY);
+  // Scrolls the page so the note's bottom sits `gap` pixels above the viewport's bottom (below
+  // it when negative).
+  const placeNote = (gap: number) =>
+    note.evaluate((node, by) => {
+      globalThis.scrollBy(0, node.getBoundingClientRect().bottom - globalThis.innerHeight + by);
+    }, gap);
+  const refocus = async ({ rebuilt }: { rebuilt: boolean }) => {
+    await view.evaluate((node) => node.setAttribute("data-before-refocus", ""));
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    if (rebuilt) {
+      await page.locator("[data-before-refocus]").waitFor({ state: "detached" });
+    }
+    await page.locator(settledView).waitFor();
+    await settlePageRequests(page);
+    await nextFrames(page);
+    // A reused list is the same node; a rebuilt one replaced it.
+    assert.equal(await page.locator("[data-before-refocus]").count(), rebuilt ? 0 : 1);
+    assert.equal(await hasFocus(icon), true);
+  };
+
+  // The note sits just inside the viewport's bottom; then another person deletes the Agent.
+  await placeNote(2);
+  assert.equal(await inViewport(note), true);
+  assert.equal((await fixture.request("DELETE", agentPath)).status, 202);
+  await refocus({ rebuilt: true });
+  // The rebuilt row is taller by its Deleting badge, and its icon and note stay in view.
+  await row.getByText("Deleting", { exact: true }).waitFor();
+  assert.equal(await inViewport(icon), true);
+  assert.equal(await inViewport(note), true);
+
+  // A rebuild (another Agent was added) that leaves the cell in view keeps the page where it is.
+  await placeNote(2);
+  const settled = await scrollY();
+  await fixture.createAgent(namespace.id, "Row Z", nativeValues("row-z"));
+  await refocus({ rebuilt: true });
+  await page.getByRole("row").filter({ hasText: "Row Z" }).waitFor();
+  assert.equal(await scrollY(), settled);
+
+  // A refocus that reuses the list keeps the reader's scroll position as it was, even with the
+  // note partly below the fold.
+  await placeNote(-8);
+  const reader = await scrollY();
+  assert.equal(await inViewport(note), false);
+  await refocus({ rebuilt: false });
+  assert.equal(await scrollY(), reader);
 });
 
 // Request deletion again on an Agent already deleting passes a refusal that is not about grants,

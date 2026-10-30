@@ -1286,6 +1286,31 @@ export const scenarios = {
     description:
       "The row is stale: another person's deletion of this Agent failed after the list loaded, and the controller refuses this caller's Delete for that reason, not for a missing grant. The alert shows the API's text with the Agent's name. The row's note names no grant; it reads Not deleted: see above, so a narrow screen that scrolled the alert away still says why. Both icons stay in the Tab order, unavailable and described by the refusal, until Refresh; focus stays on Delete.",
   },
+  agentsRowRefocusDeleting: {
+    group: "Pages/Agents",
+    name: "Refocus after another person's deletion, with a kept refusal",
+    deployed: true,
+    deletingOnListReread: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "DELETE",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Only the actor that started this deletion can retry it while that actor still holds delete. Retry as that actor, or remove its delete permission first.",
+      },
+    ],
+    actions: [
+      { selector: '[aria-label="Delete Research assistant"]', click: true },
+      { selector: ".agent-delete-dialog button.danger", click: true },
+    ],
+    description:
+      "This caller's Delete was refused for a reason that is not a grant, and another person's deletion of the Agent started after the list loaded. A window refocus rebuilds the list: the row gains its Deleting badge, keeps the refusal and its note, and focus returns to Delete. The page scrolls only as far as needed to keep the icon and its note in view (finding 2976). Simulated API; no backend proof.",
+    steps: [
+      "At 390 px, scroll until the note Not deleted: see above sits at the bottom of the window, with Delete Research assistant focused. Switch to another window, then return. The row reads Deleting, and Delete and its note are both in view.",
+    ],
+  },
   agentsRowRefocusStopped: {
     group: "Pages/Agents",
     name: "Refocus after another person's stop",
@@ -6800,6 +6825,22 @@ export const scenarios = {
       "Select Open v7 Logs. The page opens v7's Logs with its running Gateway Pod and no notice.",
     ],
     gap: "Simulated UI state only; this preview does not prove a live stop and redeploy.",
+  },
+  runtimeLogsFailedRedeploy: {
+    ...runtimeLogsPage,
+    name: "Logs of a stopped version after a failed redeploy elsewhere",
+    stopped: true,
+    stopNoSelection: true,
+    runtimePod: "none",
+    failedRedeployOnReread: true,
+    description:
+      "v7 was stopped, so no version is selected and its Pods are gone. While its Logs are open, another person deploys v8, and v8's startup model check times out: the Agent runs again with no version selected. The Logs status poll rereads the Agent and, finding it running with no version selected, lists the versions again: the page shows v8's failed deployment (finding 2978).",
+    steps: [
+      "Wait for the Logs view to say “This version has no running Pod for this source.” The summary reads Latest visible deployment v7 · Completed and Selected for service None.",
+      "Wait for the next status poll (10 seconds). The summary then reads Latest visible deployment v8 · Failed, and Deployment needs attention leads with v8's timed-out model check.",
+      "Open the version picker: v8 is listed above v7.",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live stop, redeploy or deployment failure.",
   },
   runtimeLogsFilteredDownload: {
     group: "Pages/Agent detail",

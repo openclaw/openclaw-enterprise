@@ -8,6 +8,7 @@ import test, { type TestContext } from "node:test";
 import type { Locator, Page, Route } from "playwright";
 
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
+import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import type {
   AgentRuntimeEvent,
   AgentRuntimeLogChunk,
@@ -35,6 +36,7 @@ import {
 } from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
+  deploymentStatusResponse,
   detailUrl,
   expectReachableReason,
   fileBrowser,
@@ -42,6 +44,7 @@ import {
   login,
   nativeValues,
   newPage,
+  routeFailedDeployment,
   settledFetches,
   settlePageRequests,
   trackSettledFetches,
@@ -91,9 +94,12 @@ type LogTestDriver = ReturnType<typeof createRuntimeLogComputeDriver> & {
 // tests change those in place and never replace them.
 const computeDriver = createRuntimeLogComputeDriver() as LogTestDriver;
 const initialDriver = { ...computeDriver, state: structuredClone(computeDriver.state) };
+// The app's own State, so a test can record what the worker records (a completed stop).
+const logsState: { state?: InMemoryPlatformState } = {};
 const logsApp = fileConsoleApp({
   computeDriver,
   agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
+  wrapState: (base: InMemoryPlatformState) => (logsState.state = base),
 });
 let logsNamespaces = 0;
 
@@ -1659,6 +1665,103 @@ test("Logs of an older version picked on purpose stay on it and link to the serv
     async () => (await notice.innerText()) === "",
     "the notice still names a version after the stop",
   );
+});
+
+// Finding 2978 (dogfood r60, D818). The Agent was stopped and redeployed from elsewhere while its
+// Logs stayed open, and the new version's deployment failed. A failed deployment selects no
+// version, so the Agent read each poll makes showed only that the Agent runs again: the page kept
+// the stopped version's "Completed", listed no newer version, and nothing said a deployment had
+// failed. While the Agent runs with no version selected, the poll now lists the versions again,
+// so the page shows the newer version's deployment and its failure. It does not list them while
+// a version is selected, while the newest deployment is in progress, or once it has failed.
+test("Logs of a stopped version show a redeploy from elsewhere that failed", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "the first version serves")];
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const revisionsPath = `${agentPath}/revisions`;
+  const { page } = await newPage(t, fixture);
+  // The first version's deployment completed, as the worker records it.
+  await page.route(`${fixture.origin}${agentPath}/deployments/${revisionId}`, (route) =>
+    route.fulfill(succeededDeployment(namespace, agent, revisionId)),
+  );
+  await trackSettledFetches(page);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, undefined, "logs"));
+  await page
+    .getByRole("log", { name: "Runtime log output" })
+    .getByText("the first version serves")
+    .waitFor();
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  const shows = async (pattern: RegExp) => {
+    try {
+      await waitForCondition(async () => pattern.test(await summary.innerText()), String(pattern));
+    } catch (error) {
+      console.log("SUMMARY", JSON.stringify(await summary.innerText()));
+      throw error;
+    }
+  };
+  await shows(/Latest visible deployment\s+v1\s+·\s+Completed/);
+  // One status poll (10 s), which rereads the Agent; answers the version list reads so far.
+  const poll = async () => {
+    const agentReads = await settledFetches(page, agentPath);
+    await page.clock.runFor(10_000);
+    await waitForSettledFetches(page, agentPath, agentReads + 1);
+    await waitForIdleFetches(page);
+    return settledFetches(page, revisionsPath);
+  };
+
+  // The selected version runs without its Pod: the polls list no versions.
+  computeDriver.state.podlessRevisions.push(revisionId);
+  const running = await poll();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "This version has no running Pod for this source." })
+    .waitFor();
+  assert.equal(await poll(), running);
+
+  // Another session stops the Agent, and the worker's stop clears its selected version.
+  const stopped = await fixture.request("POST", `${agentPath}/stop`);
+  assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
+  assert.ok(
+    await logsState.state?.transact((unit) =>
+      unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, revisionId),
+    ),
+  );
+  await poll();
+  await shows(/Selected for service\s+None/);
+
+  // It deploys a new version, which runs with no version selected while its deployment is queued.
+  // The in-memory app has no worker records, so the record is the API's shape, fulfilled.
+  const deployed = await fixture.deployAgent(namespace.id, agent.id);
+  await page.route(`${fixture.origin}${agentPath}/deployments/${deployed.id}`, (route) =>
+    route.fulfill(
+      deploymentStatusResponse(
+        {
+          id: deployed.id,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          createdAt: deployed.createdAt,
+        },
+        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
+      ),
+    ),
+  );
+  const queued = await poll();
+  await shows(/Latest visible deployment\s+v2\s+·\s+Queued/);
+  assert.equal(await poll(), queued);
+
+  // The deployment fails: the page names it as the latest one and leads with its failure.
+  await routeFailedDeployment(page, fixture, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    deploymentId: deployed.id,
+    code: "RUNTIME_MODEL_PROBE_TIMEOUT",
+  });
+  await poll();
+  await shows(/Latest visible deployment\s+v2\s+·\s+Failed/);
+  await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
+  const failed = await poll();
+  assert.equal(await poll(), failed);
 });
 
 // Finding 2944. A running container that has never restarted has no previous instance, so
