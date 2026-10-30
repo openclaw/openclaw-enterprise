@@ -24,10 +24,13 @@ import {
   type InstallationFieldDetail,
   requireChartListener,
 } from "./installation-fields.ts";
-import { requireConfiguration, validateConfiguration } from "@openclaw-enterprise/contracts";
+import {
+  requireConfiguration,
+  serializeStartupConfiguration,
+} from "@openclaw-enterprise/contracts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import type { SandboxNetworkGrant } from "@openclaw-enterprise/contracts";
-import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
+import { asRecord } from "@openclaw-enterprise/utils";
 import { readFile } from "node:fs/promises";
 import { X509Certificate } from "node:crypto";
 import { isAbsolute } from "node:path";
@@ -129,6 +132,7 @@ export interface SelectedDriverConfiguration<T = ConfigurationRecord> {
   readonly package?: string;
   readonly configuration: T;
   readonly definition: DriverImplementation;
+  readonly startupConfiguration?: Readonly<Record<string, unknown>>;
 }
 
 export interface InstallationStartupConfiguration {
@@ -157,25 +161,6 @@ export interface InstallationStartupConfiguration {
   };
 }
 
-function projectStartupConfiguration(
-  selection: SelectedDriverConfiguration,
-): Readonly<Record<string, unknown>> | undefined {
-  try {
-    if (selection.definition.projectStartupConfiguration === undefined) {
-      return undefined;
-    }
-    // Inspection cannot mutate the configuration retained by a running Driver.
-    const projected = selection.definition.projectStartupConfiguration(
-      immutableCopy(selection.configuration),
-    );
-    const result = validateConfiguration<Record<string, unknown>>({ type: "object" }, projected);
-    return result.success ? immutableCopy(result.data) : undefined;
-  } catch {
-    // Optional inspection must neither stop startup nor reveal Driver exception text or input.
-    return undefined;
-  }
-}
-
 /** Definitions and safe startup projections stay with their selected process identities. */
 export function installationDriverConfigurations(
   installation: InstallationStartupConfiguration | undefined,
@@ -188,7 +173,7 @@ export function installationDriverConfigurations(
     if (!("definition" in selection)) {
       return [];
     }
-    const startupConfiguration = projectStartupConfiguration(selection);
+    const { startupConfiguration } = selection;
     return [
       {
         capability: capability as import("@openclaw-enterprise/contracts").DriverCapability,
@@ -565,6 +550,13 @@ function selected(
     definition: driver,
   });
   const validated = object(requireConfiguration(driver, configuration), `${path}.configuration`);
+  let startupConfiguration: Readonly<Record<string, unknown>> | undefined;
+  try {
+    // Capture accepted values before a factory can mutate its own configuration input.
+    startupConfiguration = serializeStartupConfiguration(schema, validated);
+  } catch {
+    // Unsupported inspection remains unavailable; never fall back to raw values or exception text.
+  }
   return Object.freeze({
     id,
     implementation,
@@ -573,6 +565,7 @@ function selected(
       : {}),
     configuration: validated,
     definition: driver,
+    ...(startupConfiguration === undefined ? {} : { startupConfiguration }),
   });
 }
 
@@ -1027,18 +1020,12 @@ export async function loadInstallationConfiguration(options: {
   if (sandbox?.package !== undefined && packageProxyId !== undefined) {
     // The package owns one startup configuration. Its Sandbox-only agent
     // contributions must not be registered a second time as Credential Proxy.
-    const projectConfiguration = sandbox.definition.projectStartupConfiguration?.bind(
-      sandbox.definition,
-    );
     proxySelection = {
       ...sandbox,
       id: packageProxyId,
       definition: {
         configurationSchema: sandbox.definition.configurationSchema,
         validateConfiguration: (input) => sandbox.definition.validateConfiguration(input),
-        ...(projectConfiguration === undefined
-          ? {}
-          : { projectStartupConfiguration: projectConfiguration }),
       },
     };
   }

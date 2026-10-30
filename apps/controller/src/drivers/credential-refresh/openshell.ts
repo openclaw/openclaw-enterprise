@@ -84,10 +84,6 @@ function credentialRefreshStatus(status: OpenShellRefreshStatus): CredentialRefr
  * before expiry, so both roles must belong to one OpenShell Backend.
  */
 export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver {
-  static projectStartupConfiguration(): Readonly<Record<string, unknown>> {
-    return {};
-  }
-
   static readonly configurationSchema = Object.freeze({
     type: "object",
     additionalProperties: false,

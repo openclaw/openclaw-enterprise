@@ -1,5 +1,4 @@
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
-import { pickConfiguredFields } from "../startup-configuration.ts";
 import {
   CODEX_PLUGIN_DRIVER_IMPLEMENTATION,
   OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION,
@@ -363,10 +362,6 @@ class BundledPluginDriverBase {
 }
 
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
-  static projectStartupConfiguration(): Readonly<Record<string, unknown>> {
-    return {};
-  }
-
   readonly discoveryCredential = "none" as const;
   readonly credentials = managedPluginCredentials;
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
@@ -476,17 +471,6 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
 }
 
 export class CodexPluginDriver extends BundledPluginDriverBase implements PluginDriver {
-  static projectStartupConfiguration(
-    configuration: Readonly<Record<string, unknown>>,
-  ): Readonly<Record<string, unknown>> {
-    return pickConfiguredFields(configuration, [
-      "catalogSource",
-      "codexExecutable",
-      "codexHome",
-      "requestTimeoutMs",
-    ]);
-  }
-
   static readonly configurationSchema = CODEX_CONFIGURATION_SCHEMA;
   // TODO: gate all_actions/write_actions on enforceable session constraints before this draft ships.
   // A permissive native session can bypass app-level review despite translation.

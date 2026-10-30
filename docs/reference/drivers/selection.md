@@ -86,7 +86,7 @@ With bundled Kubernetes Compute, select the trusted package under
 `drivers.sandbox.package`, then set `drivers.credential_proxy.id` to the
 same Driver ID and its `configuration` to `{}`. Configure the package once,
 under `drivers.sandbox.configuration`. The API and worker each load one
-registration and compare its identity with the admitted revision.
+registration and check its identity against the Agent revision.
 
 For protected repository Git, set `repository.id`,
 `repository.configuration.sessionDurationSeconds`, and `repository.preparedGitHub`.
@@ -161,8 +161,8 @@ Each selected implementation supplies a serializable `configurationSchema` and
 synchronous `validateConfiguration(input)` semantic checks. The platform checks
 plain JSON against the schema, then passes an isolated frozen copy to the Driver.
 The callback returns `readonly ErrorDetail[]`: empty means success; malformed
-results or throws fail closed. It cannot replace configuration. The platform
-returns the original input and retains `ConfigurationResult<T>` for previews.
+results or throws fail closed. It cannot replace configuration. Admission returns
+the original input; previews use `ConfigurationResult<T>`.
 Independent constructors perform their own admission.
 
 Use JSON Schema 2020-12, or omit `$schema`. The installed TypeBox evaluator and its
@@ -181,16 +181,15 @@ fail registration. The current runtime binding is Sandbox
 [SandboxPolicy](../sandbox-policies.md). The Configuration Driver still owns
 native configuration rendering. The registry introduces no persistence layer.
 
-Installation administrators inspect accepted values in **Settings → Installation
+Administrators inspect values in **Settings → Installation
 Driver configuration** or `GET /installation/driver-configurations`.
-Optional `startupConfiguration` comes from `projectStartupConfiguration(input)`:
-a pure Driver method receiving an isolated, deeply frozen copy of accepted process
-configuration. Return a JSON object with explicitly selected nonsecret fields and
-redacted opaque payloads. Never resolve secrets or read credential files.
-Missing methods, invalid results, or exceptions leave values unavailable; `{}`
-means an empty projection. Defaults are not added. File references expose no
-contents. Changes require operator-managed startup configuration and restart.
-Descriptors retain schemas, without validators or mutation actions.
+`startupConfiguration` serializes accepted input with `configurationSchema`
+before construction. Unmarked values remain visible.
+Drivers mark confidential fields and blocks `writeOnly: true`; serialization
+replaces each marked subtree with `[redacted]`, including its keys. Across
+references and branches, any true annotation wins, including ambiguous alternatives. Schema-valued `unevaluatedProperties`, `unevaluatedItems`, `contentSchema`, a write-only root, or inspection errors leave values unavailable,
+without raw fallback. `{}` means an empty object. No defaults or credential contents are added. Changes require startup configuration
+and restart. Descriptors retain schemas, without validators or mutation actions.
 Agent discovery uses
 `GET /namespaces/{namespaceId}/agents/{agentId}/driver-configurations`; the exact
 Agent and contribution owner's read permissions determine the returned sections.

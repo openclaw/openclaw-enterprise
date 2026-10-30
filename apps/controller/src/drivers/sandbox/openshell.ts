@@ -4,7 +4,6 @@ import {
   type OpenShellGitRuntime,
 } from "../egress-proxy/openshell-git-runtime.ts";
 import { networkPolicySpecToJson } from "../kubernetes/network-policy.ts";
-import { pickConfiguredFields } from "../startup-configuration.ts";
 import {
   openShellEgressConfiguration,
   type OpenShellProxyOptions,
@@ -2455,84 +2454,6 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
   }
 }
 
-export function projectStartupConfiguration(
-  configuration: Readonly<OpenShellSandboxDriverOptions>,
-): Readonly<Record<string, unknown>> {
-  const gateway: Record<string, unknown> = pickConfiguredFields(configuration.gateway, [
-    "workspaceMode",
-    "managedPluginMiddleware",
-  ]);
-  for (const key of [
-    "operatorNamespaceLabels",
-    "operatorWorkspaceResources",
-    "networkPolicyResources",
-  ] as const) {
-    if (configuration.gateway[key] !== undefined) {
-      // Resource bodies and free-form labels can contain confidential operator data.
-      gateway[key] = "[redacted]";
-    }
-  }
-  if (configuration.gateway.readiness !== undefined) {
-    gateway.readiness = {
-      ...pickConfiguredFields(configuration.gateway.readiness, [
-        "serviceName",
-        "timeoutMs",
-        "pollIntervalMs",
-      ]),
-      podSelector: "[redacted]",
-    };
-  }
-  const kubernetes: Record<string, unknown> = {
-    ...pickConfiguredFields(configuration.kubernetes, ["runtimeClassName", "userNamespaces"]),
-    serviceAccount: pickConfiguredFields(configuration.kubernetes.serviceAccount, ["mode"]),
-    sandboxDataMount: pickConfiguredFields(configuration.kubernetes.sandboxDataMount, [
-      "claimName",
-      "subPath",
-      "mountPath",
-      "readOnly",
-    ]),
-  };
-  if (configuration.kubernetes.agentResources !== undefined) {
-    // These maps contain validated resource quantities; no arbitrary text values are accepted.
-    kubernetes.agentResources = pickConfiguredFields(configuration.kubernetes.agentResources, [
-      "requests",
-      "limits",
-    ]);
-  }
-  const policy: Record<string, unknown> = {
-    ...pickConfiguredFields(configuration.policy, ["landlockCompatibility"]),
-    process: pickConfiguredFields(configuration.policy.process, ["runAsUser", "runAsGroup"]),
-    networkPolicies: configuration.policy.networkPolicies.map((rule) => ({
-      name: rule.name,
-      binaries: rule.binaries.map((binary) => pickConfiguredFields(binary, ["path"])),
-      endpoints: rule.endpoints.map((endpoint) => ({
-        ...pickConfiguredFields(endpoint, ["ports", "protocol", "tls", "enforcement", "access"]),
-        // Startup accepts a string here; never display a URL or userinfo in a hostname slot.
-        host: /[/@?#]/.test(endpoint.host) ? "[redacted]" : endpoint.host,
-      })),
-    })),
-  };
-  if (configuration.policy.filesystem !== undefined) {
-    policy.filesystem = pickConfiguredFields(configuration.policy.filesystem, [
-      "includeWorkdir",
-      "readOnly",
-      "readWrite",
-    ]);
-  }
-  return {
-    ...pickConfiguredFields(configuration, [
-      "sandboxNamePrefix",
-      "startupDelayMs",
-      "logLevel",
-      "providers",
-    ]),
-    gateway,
-    kubernetes,
-    policy,
-    ...(configuration.egress === undefined ? {} : { egress: "[redacted]" }),
-  };
-}
-
 export const configurationSchema = Object.freeze({
   type: "object",
   required: ["gateway", "kubernetes", "policy"],
@@ -2544,16 +2465,16 @@ export const configurationSchema = Object.freeze({
       properties: {
         workspaceMode: { type: "string", enum: ["managed", "operator"] },
         managedPluginMiddleware: { type: "string", pattern: "^https://" },
-        operatorNamespaceLabels: { type: "object" },
-        operatorWorkspaceResources: { type: "array" },
-        networkPolicyResources: { type: "array" },
+        operatorNamespaceLabels: { type: "object", writeOnly: true },
+        operatorWorkspaceResources: { type: "array", writeOnly: true },
+        networkPolicyResources: { type: "array", writeOnly: true },
         readiness: {
           type: "object",
           required: ["serviceName", "podSelector", "timeoutMs"],
           additionalProperties: false,
           properties: {
             serviceName: { type: "string" },
-            podSelector: { type: "object" },
+            podSelector: { type: "object", writeOnly: true },
             timeoutMs: { type: "integer", minimum: 1 },
             // A Node.js timer fires a longer delay after 1 ms.
             pollIntervalMs: { type: "integer", minimum: 1, maximum: MAX_TIMER_DELAY_MS },
@@ -2640,7 +2561,7 @@ export const configurationSchema = Object.freeze({
                   additionalProperties: false,
                   required: ["host", "ports"],
                   properties: {
-                    host: { type: "string" },
+                    host: { type: "string", writeOnly: true },
                     // The Gateway refuses an endpoint without ports at CreateSandbox.
                     ports: { type: "array", minItems: 1, items: { type: "integer" } },
                     protocol: { type: "string" },
@@ -2659,7 +2580,7 @@ export const configurationSchema = Object.freeze({
     startupDelayMs: { type: "integer", minimum: 1, maximum: MAX_SANDBOX_STARTUP_DELAY_MS },
     logLevel: { type: "string" },
     providers: { type: "array", items: { type: "string" } },
-    egress: { type: "object" },
+    egress: { type: "object", writeOnly: true },
   },
 });
 
@@ -2973,8 +2894,6 @@ export function validateConfiguration(
 export const configurationContributions = Object.freeze([SandboxNetworkPolicyConfiguration]);
 
 export class OpenShellSandboxDriver implements SandboxDriver {
-  static readonly projectStartupConfiguration = projectStartupConfiguration;
-
   static readonly configurationSchema = configurationSchema;
 
   readonly id: string;

@@ -288,6 +288,11 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
   const privateAnnotation = `private-resource-metadata-${randomUUID()}`;
   configuration.drivers.compute.configuration.network.gatewayPort = 18080;
   configuration.drivers.compute.configuration.runtime.gatewayStorageClassName = "operator-storage";
+  configuration.drivers.compute.configuration.servicePrincipalCredentials = {
+    mode: "disabled",
+    audience: "configured-audience",
+    expirationSeconds: 900,
+  };
   configuration.drivers.credential_gateway.configuration = {
     binaries: ["/usr/bin/configured-model-client"],
     toolBinaries: ["/usr/bin/configured-tool-client"],
@@ -348,11 +353,20 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
   const compute = descriptors.get("compute").startupConfiguration;
   assert.equal(compute.network.gatewayPort, 18080);
   assert.equal(compute.runtime.gatewayStorageClassName, "operator-storage");
+  // Opt-out inspection retains accepted ordinary fields even when a mode does not use them.
+  assert.deepEqual(compute.servicePrincipalCredentials, {
+    mode: "disabled",
+    audience: "configured-audience",
+    expirationSeconds: 900,
+  });
+  assert.equal(compute.network.dns.podLabels, "[redacted]");
+  assert.equal(compute.runtime.gatewayNodeSelector, "[redacted]");
   const sandbox = descriptors.get("sandbox").startupConfiguration;
   assert.equal(sandbox.gateway.workspaceMode, "operator");
   assert.equal(sandbox.gateway.operatorWorkspaceResources, "[redacted]");
   assert.equal(sandbox.gateway.networkPolicyResources, "[redacted]");
   assert.deepEqual(sandbox.policy.networkPolicies[0].binaries, [{ path: "/usr/bin/model-client" }]);
+  assert.equal(sandbox.policy.networkPolicies[0].endpoints[0].host, "[redacted]");
   assert.equal(
     Object.hasOwn(sandbox, "logLevel"),
     false,
@@ -376,61 +390,101 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
   assert.ok(denial.details.iamEvidence.restrictionIds.includes("restriction-driver-inspection"));
 });
 
-test("startup inspection isolates faulty package projections from accepted configuration", async (t) => {
-  const directory = await temporaryDirectory(t, "occ-driver-inspection-failure-");
-  const drivers = await load(directory, installation(), "development");
-  const selected = drivers.installation.drivers.configuration;
-  const accepted = structuredClone(selected.configuration);
-  const privateFailure = `private-projection-failure-${randomUUID()}`;
-  for (const [description, projectStartupConfiguration] of [
-    [
-      "exception",
-      () => {
-        throw new Error(privateFailure);
-      },
-    ],
-    [
-      "mutation",
-      (input) => {
-        input.authentication.mode = privateFailure;
-        return input;
-      },
-    ],
-    [
-      "cycle",
-      () => {
-        const cycle = {};
-        cycle.self = cycle;
-        return cycle;
-      },
-    ],
-    ["non-JSON number", () => ({ timeout: Number.POSITIVE_INFINITY })],
-  ]) {
-    await t.test(description, () => {
-      // A package callback is an extension boundary; the host must contain a faulty implementation.
-      const registrations = installationDriverConfigurations({
-        ...drivers.installation,
-        drivers: {
-          ...drivers.installation.drivers,
-          configuration: {
-            ...selected,
-            definition: {
-              configurationSchema: selected.definition.configurationSchema,
-              validateConfiguration: (input) => selected.definition.validateConfiguration(input),
-              projectStartupConfiguration,
-            },
-          },
-        },
-      });
-      assert.equal(
-        registrations.find((registration) => registration.capability === "configuration")
-          .startupConfiguration,
-        undefined,
-      );
-      assert.deepEqual(selected.configuration, accepted);
-      assert.ok(!JSON.stringify(registrations).includes(privateFailure));
-    });
-  }
+test("installed Driver inspection retains accepted values before a factory mutates its input", async (t) => {
+  const owner = await onDiskConfigurationPackage(t, "./compiled/index.js");
+  const compiled = join(owner, "node_modules", configurationPackage, "compiled");
+  await cp(join(compiled, "index.js"), join(compiled, "base.js"));
+  await writeFile(
+    join(compiled, "index.js"),
+    `import { createDriver as createBaseDriver } from './base.js';
+     export const configurationSchema = {
+       type: 'object', additionalProperties: false, required: ['endpoint'],
+       properties: {
+         endpoint: { type: 'string' },
+         ordinary: { type: 'object', additionalProperties: true },
+         providerMaterial: { type: 'object', writeOnly: true },
+         defaulted: { type: 'string', default: 'schema-default' }
+       }
+     };
+     export function validateConfiguration() { return []; }
+     export function createDriver(options) {
+       options.configuration.endpoint = 'memory:factory-adjusted';
+       options.configuration.ordinary.enabled = true;
+       options.configuration.ordinary.addedByFactory = 'factory-only';
+       return createBaseDriver(options);
+     }`,
+  );
+  const configuration = installation();
+  const privateKey = `private-field-${randomUUID()}`;
+  const privateValue = `private-material-${randomUUID()}`;
+  const ordinary = { enabled: false, count: 0, nested: { futureField: [null, "", {}, []] } };
+  configuration.drivers.configuration = {
+    ...selectedConfiguration(),
+    configuration: {
+      endpoint: "memory:accepted",
+      ordinary,
+      providerMaterial: { [privateKey]: privateValue },
+    },
+  };
+  const drivers = await load(owner, configuration, "development");
+  // The real package factory may normalize its mutable input, but cannot rewrite inspection.
+  assert.equal(
+    drivers.installation.drivers.configuration.configuration.endpoint,
+    "memory:factory-adjusted",
+  );
+  const fixture = await authenticatedApplication(t, drivers);
+  assert.equal(
+    (await request(fixture, "POST", "/installation/bootstrap", { name: "Package inspection" }))
+      .status,
+    201,
+  );
+  const response = await request(fixture, "GET", "/installation/driver-configurations");
+  assert.equal(response.status, 200, JSON.stringify(response));
+  const inspected = response.data.configurations.find(
+    (entry) => entry.capability === "configuration",
+  );
+  assert.deepEqual(inspected.startupConfiguration, {
+    endpoint: "memory:accepted",
+    ordinary,
+    providerMaterial: "[redacted]",
+  });
+  assert.ok(!JSON.stringify(response).includes(privateKey));
+  assert.ok(!JSON.stringify(response).includes(privateValue));
+  assert.ok(!JSON.stringify(inspected.startupConfiguration).includes("factory-only"));
+  assert.equal(Object.hasOwn(inspected.startupConfiguration, "defaulted"), false);
+});
+
+test("unsupported inspection schema reports unavailable without exposing accepted package values", async (t) => {
+  const owner = await onDiskConfigurationPackage(t, "./compiled/index.js");
+  const compiled = join(owner, "node_modules", configurationPackage, "compiled");
+  await cp(join(compiled, "index.js"), join(compiled, "base.js"));
+  await writeFile(
+    join(compiled, "index.js"),
+    `export { createDriver, validateConfiguration } from './base.js';
+     export const configurationSchema = {
+       type: 'object', additionalProperties: false, required: ['endpoint'],
+       properties: { endpoint: { type: 'string' } },
+       unevaluatedProperties: { writeOnly: true }
+     };`,
+  );
+  const configuration = installation();
+  configuration.drivers.configuration = selectedConfiguration();
+  const fixture = await authenticatedApplication(
+    t,
+    await load(owner, configuration, "development"),
+  );
+  assert.equal(
+    (await request(fixture, "POST", "/installation/bootstrap", { name: "Unavailable inspection" }))
+      .status,
+    201,
+  );
+  const response = await request(fixture, "GET", "/installation/driver-configurations");
+  assert.equal(response.status, 200, JSON.stringify(response));
+  const inspected = response.data.configurations.find(
+    (entry) => entry.capability === "configuration",
+  );
+  assert.equal(Object.hasOwn(inspected, "startupConfiguration"), false);
+  assert.ok(!JSON.stringify(response).includes("memory:driver-plugin-test"));
 });
 
 test("reviewed scoped Driver packages install, activate, and fail closed", async (t) => {
@@ -486,9 +540,10 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
         (descriptor) => descriptor.capability === "configuration",
       );
       assert.equal(installedConfiguration.driverId, "configuration-installed-fixture");
-      // This real installed package has no inspection contract; neither raw values nor defaults leak.
-      assert.equal(Object.hasOwn(installedConfiguration, "startupConfiguration"), false);
-      assert.ok(!JSON.stringify(inspection).includes("memory:driver-plugin-test"));
+      // Installed packages use their schema directly; no separate inspection callback is required.
+      assert.deepEqual(installedConfiguration.startupConfiguration, {
+        endpoint: "memory:driver-plugin-test",
+      });
       const namespace = await request(fixture, "POST", "/namespaces", {
         name: `installed-compute-${randomUUID()}`,
       });

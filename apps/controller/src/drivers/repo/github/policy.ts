@@ -20,12 +20,6 @@ import {
 
 /** Repository selection and approval policy, independent of credential transport. */
 export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
-  static projectStartupConfiguration(
-    configuration: Readonly<Record<string, unknown>>,
-  ): Readonly<Record<string, unknown>> {
-    return { sessionDurationSeconds: configuration.sessionDurationSeconds };
-  }
-
   static readonly configurationSchema: JSONSchema = {
     type: "object",
     additionalProperties: false,

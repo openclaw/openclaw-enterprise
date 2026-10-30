@@ -965,7 +965,10 @@ export function installFixture(scenario, evidence) {
                   scope: "installation",
                   key: "startup",
                   binding: "installation-startup",
-                  configurationSchema: { type: "object" },
+                  configurationSchema: {
+                    type: "object",
+                    properties: { operatorResources: { writeOnly: true } },
+                  },
                   startupConfiguration: {
                     endpoint: "/configuration/read",
                     optionalValues: {
@@ -1004,6 +1007,7 @@ export function installFixture(scenario, evidence) {
             binding: "installation-startup",
             configurationSchema: {
               type: "object",
+              ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
               required: ["binaries"],
               additionalProperties: false,
               properties: {
@@ -1030,8 +1034,17 @@ export function installFixture(scenario, evidence) {
             binding: "installation-startup",
             configurationSchema: {
               type: "object",
+              ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
               additionalProperties: false,
-              properties: { gateway: { type: "object" } },
+              properties: {
+                gateway: {
+                  type: "object",
+                  properties: {
+                    workspaceMode: { type: "string" },
+                    operatorWorkspaceResources: { type: "array", writeOnly: true },
+                  },
+                },
+              },
             },
             ...(scenario.installationValuesUnavailable
               ? {}
@@ -1052,7 +1065,12 @@ export function installFixture(scenario, evidence) {
             scope: "installation",
             key: "startup",
             binding: "installation-startup",
-            configurationSchema: { type: "object", additionalProperties: false, properties: {} },
+            configurationSchema: {
+              type: "object",
+              ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
+              additionalProperties: false,
+              properties: {},
+            },
             ...(scenario.installationValuesUnavailable ? {} : { startupConfiguration: {} }),
             actions: {},
           },

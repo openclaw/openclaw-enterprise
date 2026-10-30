@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Partially implemented
+implementation_status: Implemented
 author: kevinlin-openai
 ---
 
@@ -14,7 +14,7 @@ author: kevinlin-openai
 ## Summary
 
 Show accepted Driver startup values through one shared serializer using the
-existing `configurationSchema`. Values are visible unless an applicable schema
+existing `configurationSchema`. Values are visible unless a schema
 marks them `writeOnly: true`. The serializer replaces marked fields or complete
 subtrees with the existing string marker `[redacted]`. Remove the per-Driver
 projection methods and field allowlists. Keep the approved Fields/JSON Console
@@ -60,8 +60,9 @@ write-only annotation remain visible.
 
 Inspection supports properties, pattern and additional properties, item and tuple
 schemas, references, and composition keywords, combining redaction annotations conservatively. Schema-valued
-`unevaluatedProperties` and `unevaluatedItems` require evaluated-location tracking
-and are outside this serializer's initial scope. Such a definition reports values
+`unevaluatedProperties` and `unevaluatedItems` require evaluated-location tracking;
+encoded `contentSchema` objects require parsing nested content. These forms are
+outside this serializer's scope. Such a definition reports values
 unavailable rather than exposing raw input. Boolean forms need no redaction
 traversal. Other inspection errors also fail closed without exception text.
 
@@ -96,6 +97,10 @@ and failure without raw fallback. Remove obsolete missing-callback and callback
 failure tests. Retain the meaningful Console interaction regression and refresh
 media if its visible result changes. Fixture UI and in-memory API proof do not
 establish live Kubernetes, gateway, or model execution.
+
+The implementation now uses the shared serializer and annotated schemas. The
+[Driver reference](../../docs/reference/drivers/selection.md#configuration-definitions-and-discovery)
+owns the current contract; the approved Console layout remains unchanged.
 
 ## Manual Notes
 

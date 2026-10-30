@@ -1,6 +1,5 @@
 import { ConfigurationValidationError, type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
-import { pickConfiguredFields } from "../startup-configuration.ts";
 import type {
   Backend,
   CredentialAttachmentStatus,
@@ -918,12 +917,6 @@ function requireSourceEndpointForSelectedModels(
 
 /** Stores OCC credential sources as OpenShell providers; the supervisor injects them. */
 export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver {
-  static projectStartupConfiguration(
-    configuration: Readonly<OpenShellCredentialGatewayOptions>,
-  ): Readonly<Record<string, unknown>> {
-    return pickConfiguredFields(configuration, ["binaries", "toolBinaries"]);
-  }
-
   static readonly configurationSchema = Object.freeze({
     type: "object",
     required: ["binaries"],

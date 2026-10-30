@@ -1798,10 +1798,10 @@ export const scenarios = {
     name: "Account",
     path: "/console/settings",
     description:
-      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect accepted startup fields or the same values as JSON, including redacted sections and an empty projection. There are no editable settings in this release.",
+      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect accepted startup fields or the same values as JSON, including redacted sections and an empty object. There are no editable settings in this release.",
     steps: [
       "Check that the page has no Namespace selector and that the account card shows initials, name and email.",
-      "Expand each Installation Driver below the cards. Read the human labels and raw keys; Credential Gateway shows binary paths, Sandbox shows nested fields and hidden resources, and IAM explains its empty projection. Switch Fields / JSON and confirm the expanded groups stay open.",
+      "Expand each Installation Driver below the cards. Read the human labels and raw keys; Credential Gateway shows binary paths, Sandbox shows nested fields and hidden resources, and IAM has no visible fields. Switch Fields / JSON and confirm the expanded groups stay open.",
       "Choose Sign out in the Session card: “Signing out…” appears, then the sign-in page.",
       "On a long page, scroll to the bottom and check that the sidebar background and operator profile reach it. At phone width, values fit and the existing navigation drawer still opens.",
     ],
@@ -1812,7 +1812,7 @@ export const scenarios = {
     path: "/console/settings",
     installationNestedValues: true,
     description:
-      "A package Driver supplies nested records, arrays, empty values and redaction markers. The production renderer handles the safe JSON projection without a bundled schema-specific form. The expanded page exercises the shared sidebar beyond one viewport.",
+      "A simulated package Driver has nested records, arrays, empty values and a writeOnly field. The API fixture returns its redaction marker, and the production renderer handles the safe JSON without a bundled schema-specific form. The expanded page exercises the shared sidebar beyond one viewport.",
     steps: [
       "Expand Configuration. Inspect groups, nested records, false, zero, null, empty arrays and objects, literal markup text, and the hidden value.",
       "Switch to JSON and back to Fields. The values and expanded state remain unchanged.",
@@ -1825,7 +1825,7 @@ export const scenarios = {
     path: "/console/settings",
     installationValuesUnavailable: true,
     description:
-      "The selected Drivers do not provide accepted startup values. Each expanded group explains that values are unavailable; schemas are not substituted.",
+      "These simulated Driver schemas mark the whole startup object writeOnly, so the API omits its values. Each expanded group explains that values are unavailable; schemas are not substituted.",
     steps: ["Expand a Driver and check the unavailable message. No JSON Schema is shown."],
   },
   settingsDriverConfigurationsEmpty: {

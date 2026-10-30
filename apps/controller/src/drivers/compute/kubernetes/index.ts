@@ -1,6 +1,4 @@
 import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
-import { pickConfiguredFields } from "../../startup-configuration.ts";
-import { projectKubernetesAuthentication } from "../../kubernetes/authentication.ts";
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
   assertExecutionAdmission,
@@ -1486,6 +1484,7 @@ const POD_LABEL_VALUE_PATTERN = "^(?:[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)
 const POD_LABEL_VALUE = new RegExp(POD_LABEL_VALUE_PATTERN);
 const POD_LABELS_SCHEMA = {
   type: "object",
+  writeOnly: true,
   minProperties: 1,
   additionalProperties: { type: "string", maxLength: 63, pattern: POD_LABEL_VALUE_PATTERN },
 };
@@ -3392,139 +3391,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
-  static projectStartupConfiguration(
-    configuration: Readonly<KubernetesComputeDriverOptions>,
-  ): Readonly<Record<string, unknown>> {
-    const peer = (value: KubernetesWorkloadPeer) => ({
-      namespace: value.namespace,
-      podLabels: "[redacted]",
-    });
-    const resources = (value: V1ResourceRequirements) => ({
-      requests: pickConfiguredFields(value.requests!, ["cpu", "memory"]),
-      limits: pickConfiguredFields(value.limits!, ["cpu", "memory"]),
-    });
-    const routing = (value: KubernetesGatewayRoutingOptions) => ({
-      ...pickConfiguredFields(value, [
-        "hostname",
-        "endpointPort",
-        "gatewayName",
-        "gatewayNamespace",
-        "envoyNamespace",
-        "envoyHttpsTargetPort",
-      ]),
-      ...(value.sandbox === undefined
-        ? {}
-        : { sandbox: pickConfiguredFields(value.sandbox, ["domain", "publicPort"]) }),
-    });
-    const network: Record<string, unknown> = {
-      ...pickConfiguredFields(configuration.network, [
-        "gatewayPort",
-        "gatewayTrustedProxyCidrs",
-        "pluginStatusProxySourceCidrs",
-      ]),
-      dns: peer(configuration.network.dns),
-    };
-    if (configuration.network.gatewayClients !== undefined) {
-      network.gatewayClients = configuration.network.gatewayClients.map(peer);
-    }
-    if (configuration.network.repositoryCredentials !== undefined) {
-      network.repositoryCredentials = {
-        ...peer(configuration.network.repositoryCredentials),
-        port: configuration.network.repositoryCredentials.port,
-      };
-    }
-    if (configuration.network.publicGithubRead !== undefined) {
-      network.publicGithubRead = {
-        ...peer(configuration.network.publicGithubRead),
-        address: configuration.network.publicGithubRead.address,
-      };
-    }
-    if (configuration.network.providerHarness !== undefined) {
-      network.providerHarness = {
-        ...peer(configuration.network.providerHarness),
-        ...pickConfiguredFields(configuration.network.providerHarness, ["address", "port"]),
-      };
-    }
-    const projected: Record<string, unknown> = {
-      authentication: projectKubernetesAuthentication(configuration.authentication),
-      images: pickConfiguredFields(configuration.images, [
-        "gateway",
-        "agent",
-        "requireImmutableDigest",
-      ]),
-      resources: {
-        gateway: resources(configuration.resources.gateway),
-        agent: resources(configuration.resources.agent),
-        namespace: {
-          // Quotas are validated Kubernetes resource quantities, not arbitrary text settings.
-          quota: configuration.resources.namespace.quota,
-          containerDefaults: resources(configuration.resources.namespace.containerDefaults),
-        },
-      },
-      network,
-      servicePrincipalCredentials:
-        configuration.servicePrincipalCredentials.mode === "disabled"
-          ? { mode: configuration.servicePrincipalCredentials.mode }
-          : pickConfiguredFields(configuration.servicePrincipalCredentials, [
-              "mode",
-              "audience",
-              "expirationSeconds",
-            ]),
-    };
-    const execution = configuration.executionCluster;
-    if (execution !== undefined) {
-      projected.executionCluster = {
-        authentication: projectKubernetesAuthentication(execution.authentication),
-        harnessRouting: routing(execution.harnessRouting),
-        network: {
-          dns: peer(execution.network.dns),
-          ...pickConfiguredFields(execution.network, [
-            "harnessEndpointCidrs",
-            "gatewayEndpointCidrs",
-            "pluginStatusProxySourceCidrs",
-          ]),
-        },
-        ...(execution.caBundle === undefined ? {} : { caBundle: "[redacted]" }),
-      };
-    }
-    const runtime = configuration.runtime;
-    if (runtime !== undefined) {
-      projected.runtime = {
-        ...pickConfiguredFields(runtime, [
-          "transportSecretPrefix",
-          "gatewayStorageClassName",
-          "nativeOpenClawSessionCapacity",
-          "codexSeccompProfile",
-          "codexModelBaseUrl",
-        ]),
-        ...(runtime.nodeSelector === undefined ? {} : { nodeSelector: "[redacted]" }),
-        ...(runtime.gatewayNodeSelector === undefined ? {} : { gatewayNodeSelector: "[redacted]" }),
-        ...(runtime.channels === undefined
-          ? {}
-          : {
-              channels: {
-                proxyUrl: runtime.channels.proxyUrl,
-                ...(runtime.channels.managedProxy === undefined
-                  ? {}
-                  : {
-                      managedProxy: {
-                        ...peer(runtime.channels.managedProxy),
-                        ...pickConfiguredFields(runtime.channels.managedProxy, [
-                          "hostname",
-                          "port",
-                        ]),
-                      },
-                    }),
-              },
-            }),
-      };
-    }
-    if (configuration.gatewayRouting !== undefined) {
-      projected.gatewayRouting = routing(configuration.gatewayRouting);
-    }
-    return projected;
-  }
-
   static readonly configurationSchema = Object.freeze({
     type: "object",
     required: ["authentication", "images", "resources", "network", "servicePrincipalCredentials"],
@@ -3567,7 +3433,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               envoyHttpsTargetPort: { type: "integer", minimum: 1, maximum: 65535 },
             },
           },
-          caBundle: { type: "string", minLength: 1, maxLength: 65536 },
+          caBundle: { type: "string", minLength: 1, maxLength: 65536, writeOnly: true },
           network: {
             type: "object",
             additionalProperties: false,
@@ -3676,8 +3542,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
           transportSecretPrefix: { type: "string" },
           gatewayStorageClassName: { type: "string", minLength: 1 },
           nativeOpenClawSessionCapacity: { type: "integer", minimum: 1, maximum: 1024 },
-          nodeSelector: { type: "object", additionalProperties: { type: "string" } },
-          gatewayNodeSelector: { type: "object", additionalProperties: { type: "string" } },
+          nodeSelector: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            writeOnly: true,
+          },
+          gatewayNodeSelector: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            writeOnly: true,
+          },
           codexSeccompProfile: { type: "string", minLength: 1 },
           codexModelBaseUrl: { type: "string", minLength: 1 },
           channels: {
