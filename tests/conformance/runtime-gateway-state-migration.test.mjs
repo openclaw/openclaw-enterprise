@@ -1126,10 +1126,15 @@ test("Native worker readiness answers 503 at its deadline when a check never set
   const next = outcome.ready();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(callbacks.length, 2);
+  // The hung check fails late, while the fresh check still runs: its answer reaches no probe
+  // and does not free the fresh check's slot, so a probe now joins the fresh check.
+  callbacks[0](new Error("node identity failed"));
+  await new Promise((resolve) => setImmediate(resolve));
+  const joined = outcome.ready();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 2);
   callbacks[1](null, JSON.stringify({ deviceId: "a".repeat(64) }));
-  assert.equal(await next, 200);
-  // A late answer from the hung check is not kept: the next probe checks again.
-  callbacks[0](null, JSON.stringify({ deviceId: "a".repeat(64) }));
+  assert.deepEqual(await Promise.all([next, joined]), [200, 200]);
   const after = outcome.ready();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(callbacks.length, 3);
