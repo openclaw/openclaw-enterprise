@@ -59,8 +59,9 @@ persists the requested stopped state, and queues reconciliation. Success means a
 not that Compute has shut down. Cancel restores focus to the invoking button; submission focuses
 **Refresh stop status**. A `403` about grants shows the Console's refusal with the Agent's name
 and the Request ID; any other `403` shows the API's text. Either way Stop stays unavailable,
-described by it, until a newer permission answer allows operate, such as the one a window refocus
-rereads.
+described by it, until a permission answer read after the refusal allows operate, such as the one
+a window refocus rereads. An answer read before the refusal, even one that arrives after it,
+does not lift it.
 
 For a stopped Agent, **Request Stop again** confirms a new stop intent, even with no selected
 version; the Console cannot inspect history or candidate cleanup. Its confirmation says the
@@ -92,8 +93,8 @@ reference covers worker shutdown and preservation of versions, credentials, and 
 **Delete Agent** requests confirmation before sending a bodyless `DELETE` to the
 exact Agent URL. The controller requires Agent `delete`. A `403` shows the Console's
 refusal with the Agent's name and the Request ID, or the API's text when the refusal is not
-about grants. Delete Agent stays unavailable, described by it, until a newer permission
-answer allows delete. Acceptance starts asynchronous cleanup and marks the Agent deleting. The page
+about grants. Delete Agent stays unavailable, described by it, until a permission answer read
+after the refusal allows delete. Acceptance starts asynchronous cleanup and marks the Agent deleting. The page
 rereads the exact Agent every few seconds; **Refresh deletion status** reads it
 on demand. A read error stops polling. Only a not-found read after
 an accepted or uncertain request, or when an already-deleting Agent is opened,
@@ -134,7 +135,9 @@ After a `403` about grants, the refused icon stays unavailable and the row's not
 under it, until a permission answer read later allows that action. Any other `403`, such as
 retry ownership on a stale row, shows the API's text, the row's note points to it, and the row's
 actions stay unavailable, described by it, until **Refresh**. A window refocus that rebuilds the
-list shows that refusal again and keeps focus on the same row control.
+list shows that refusal again while the Agent is listed, and keeps focus on the same row control.
+If that control is gone or disabled, focus goes to the row's name, or to the page heading when
+the row is gone.
 
 ## Debugging and Verification
 

@@ -917,6 +917,8 @@ export function renderAgentList(context: AgentListContext) {
             "aria-label": `Stop ${item.name}`,
             title: "Stop Agent",
             "data-refocus-key": `${item.id} stop`,
+            // A rebuilt row whose Stop is gone or disabled gives focus to its name (finding 2967).
+            "data-refocus-fallback": `${item.id} name`,
             // A deleting or Stop requested badge explains a stopped Agent's disabled icon.
             ...describedBy(stopBlocked, stopped ? badgeId : null, "stop"),
           },
@@ -936,6 +938,7 @@ export function renderAgentList(context: AgentListContext) {
         "aria-label": `Delete ${item.name}`,
         title: "Delete Agent",
         "data-refocus-key": `${item.id} delete`,
+        "data-refocus-fallback": `${item.id} name`,
         ...describedBy(deleteBlocked, item.status === "deleting" ? badgeId : null, "delete"),
       },
     );

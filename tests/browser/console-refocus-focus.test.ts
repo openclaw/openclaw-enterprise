@@ -3,6 +3,7 @@ import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
 import type { NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
+import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 
 import {
   AGENT_READ,
@@ -237,6 +238,79 @@ test("refocusing an Agents list that rebuilds keeps focus on the row's icon", as
   await waitForEnabled(remove);
   assert.equal(await alert.count(), 0);
   assert.equal(await hasFocus(remove), true);
+});
+
+// A rebuilt row whose focused control is natively disabled, here Stop on a row that another
+// session's deletion made Deleting, dropped focus to the body (finding 2967). Focus now goes to
+// the same row's name.
+test("refocusing a rebuilt Agents list whose focused Stop is now disabled focuses the row's name", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refocus deleting row");
+  const agent = await fixture.createAgent(namespace.id, "Deleting Row", nativeValues("deleting"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const view = page.locator(settledView);
+  const stop = view.getByRole("button", { name: "Stop Deleting Row", exact: true });
+  await waitForEnabled(stop);
+  await stop.focus();
+  await tagList(page);
+  // Another session deletes the Agent, so the recheck's list read changes and the list rebuilds.
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  assert.equal((await fixture.request("DELETE", agentPath)).status, 202);
+  await refocusHeld(t, page);
+  assert.equal(await listKept(page), false, "the refocus rebuilds the list");
+  assert.equal(await stop.isDisabled(), true, "a Deleting row's Stop is natively disabled");
+  const name = view.getByRole("link", { name: "Deleting Row", exact: true });
+  assert.equal(await hasFocus(name), true, "focus goes to the row's name");
+});
+
+// A refusal that is not about grants is kept through a refocus that rebuilds the list (finding
+// D812), but only for an Agent the rebuilt list still shows. When another session's deletion
+// removed the row, the refocus drops the refusal, and focus on its icon goes to the page heading,
+// not to the body (findings 2967, 2968).
+test("refocusing after a refused row's Agent was deleted elsewhere drops the refusal", async (t) => {
+  // The fixture's own State, which completes the deletion as the worker's finalizer does.
+  const kept: { state?: InMemoryPlatformState } = {};
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refocus removed row", {
+    wrapState: (base: InMemoryPlatformState) => (kept.state = base),
+  });
+  await fixture.createAgent(namespace.id, "Listed Row", nativeValues("listed"));
+  const removed = await fixture.createAgent(namespace.id, "Removed Row", nativeValues("removed"));
+  await fixture.seedActiveAgentRevision(namespace.id, removed.id);
+  const { page } = await newPage(t, fixture, { browser });
+  const agentPath = `/namespaces/${namespace.id}/agents/${removed.id}`;
+  // A caller-state denial any authorized request can get; the in-memory app has no disabled
+  // identity, so the API's answer is fulfilled.
+  const message = "The acting identity is unavailable.";
+  await page.route(`${fixture.origin}${agentPath}/stop`, (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill(apiErrorResponse(403, "FORBIDDEN", message))
+      : route.fallback(),
+  );
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const view = page.locator(settledView);
+  const stop = view.getByRole("button", { name: "Stop Removed Row", exact: true });
+  await waitForEnabled(stop);
+  await stop.click();
+  await page
+    .getByRole("dialog", { name: "Stop Removed Row?" })
+    .getByRole("button", { name: "Stop Agent", exact: true })
+    .click();
+  const alert = page.getByRole("alert").filter({ hasText: message });
+  await alert.waitFor();
+  assert.equal(await hasFocus(stop), true);
+  // Another session deletes the Agent, and its deletion completes.
+  const { state } = kept;
+  assert.ok(state, "the fixture's State");
+  assert.equal((await fixture.request("DELETE", agentPath)).status, 202);
+  assert.equal(await state.completeAgentDeletion(namespace.id, removed.id), true);
+  await tagList(page);
+  await refocusHeld(t, page);
+  assert.equal(await listKept(page), false, "the refocus rebuilds the list");
+  await view.getByRole("link", { name: "Listed Row", exact: true }).waitFor();
+  assert.equal(await view.getByRole("link", { name: "Removed Row", exact: true }).count(), 0);
+  assert.equal(await alert.count(), 0, "no refusal for an Agent the list no longer shows");
+  assert.equal(await hasFocus(page.locator(".content h1")), true, "focus goes to the heading");
 });
 
 // Shell controls outside the page are replaced by the recheck's shells; focus returns to the

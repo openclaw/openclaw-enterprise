@@ -1286,6 +1286,17 @@ export const scenarios = {
     description:
       "The row is stale: another person's deletion of this Agent failed after the list loaded, and the controller refuses this caller's Delete for that reason, not for a missing grant. The alert shows the API's text with the Agent's name. The row's note names no grant; it reads Not deleted: see above, so a narrow screen that scrolled the alert away still says why. Both icons stay in the Tab order, unavailable and described by the refusal, until Refresh; focus stays on Delete.",
   },
+  agentsRowRefocusDeleting: {
+    group: "Pages/Agents",
+    name: "Refocus after another person starts deletion",
+    deployed: true,
+    deletingOnListReread: true,
+    description:
+      "Another person starts deleting the Agent after the list loads. A window refocus rechecks the list and rebuilds it with the row Deleting. Its Stop icon is disabled there, so focus on it moves to the same row's name, not to the page (finding 2967). Simulated API; no backend proof.",
+    steps: [
+      "Press Tab until Stop Research assistant has focus. Switch to another window, then return. The row reads Deleting, and focus is on the Research assistant link.",
+    ],
+  },
   agentsRowRestricted: {
     group: "Pages/Agents",
     name: "Row actions unavailable for this caller",

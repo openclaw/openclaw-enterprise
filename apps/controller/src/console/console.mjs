@@ -1120,8 +1120,11 @@ function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
 // pending deployment that a second refocus's reread replaced (finding 1663). A shell control
 // outside the page (sidebar, page header, navigation toggle), which the recheck's shells replace,
 // gives it to the same control in the remounted shell, unless that control is gone or disabled
-// (finding 1662). A recheck that rebuilds the page instead gives focus only to the control that
+// (finding 1662). A recheck that rebuilds the page instead gives focus to the control that
 // carries the same data-refocus-key, such as an Agents list row's name or icon (finding D814).
+// When that control is gone or natively disabled, such as Stop on a row that now reads Deleting,
+// focus goes to the control its data-refocus-fallback names (the row's name), and when the row
+// is gone too, to the page heading, not to the body (finding 2967).
 function focusInShownView() {
   const view = app.querySelector('.content [aria-live="polite"]');
   const focused = document.activeElement;
@@ -1132,16 +1135,20 @@ function focusInShownView() {
   }
   const href = focused.href ?? focused.dataset?.returnFocusHref ?? null;
   const key = inView ? (focused.dataset?.refocusKey ?? null) : null;
+  const fallbackKey = key ? (focused.dataset.refocusFallback ?? null) : null;
   return {
     restore(remounted, { rebuilt = false } = {}) {
       if (!document.hasFocus() || document.activeElement !== document.body) {
         return;
       }
+      const keyed = (wanted) =>
+        wanted
+          ? Array.from(remounted.querySelectorAll("[data-refocus-key]")).find(
+              (item) => item.dataset.refocusKey === wanted && !item.disabled,
+            )
+          : undefined;
       const target = rebuilt
-        ? key &&
-          Array.from(remounted.querySelectorAll("[data-refocus-key]")).find(
-            (item) => item.dataset.refocusKey === key,
-          )
+        ? key && (keyed(key) ?? keyed(fallbackKey) ?? app.querySelector(".content h1"))
         : shellControl
           ? shellUI.matchingControl(focused)
           : remounted.contains(focused)
