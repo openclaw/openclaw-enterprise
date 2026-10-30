@@ -118,11 +118,12 @@ search text remains separate from committed IDs. Plugin approver fields accept
 raw Slack user IDs when lookup is unavailable; directory-selected approvers
 remain workspace-qualified. Arrow keys and Enter select results, and Escape
 closes the list. It resolves saved IDs again when the editor opens or the
-selected Secret changes. A view sends these name lookups one at a time
-(`slack-directory.mjs:nameLookupInTurn`). A `403` also answers the lookups
-already waiting for the same Secret, unsent, so each field shows that refusal and
-the API audits one denial; a later lookup asks again. A lookup still waiting when
-its page is left is not sent. A denied or failed lookup leaves manual exact-ID entry
+selected Secret changes. A view sends the first of these name lookups alone
+(`slack-directory.mjs:nameLookupInTurn`, `request-turns.mjs`); the others wait
+until one succeeds, then go at once. A `403` answers the lookups waiting behind
+it for the same Secret, unsent, so each field shows that refusal and the API
+audits one denial; once no lookup is pending, a later one asks again. A lookup
+still waiting when its page is left is not sent. A denied or failed lookup leaves manual exact-ID entry
 available; no directory result changes the saved Configuration until the
 operator saves the channel edit.
 
@@ -166,7 +167,7 @@ view.
 
 ## Changelog
 
-- 2026-10-30: Send a view's name lookups one at a time, so a revoked grant costs one audited denial. (2939)
+- 2026-10-30: Send a view's first name lookup alone and the rest after it succeeds, so a revoked grant costs one audited denial. (2939)
 
 - 2026-10-25: Name the Slack proxy settings, and keep a retry for another approved route, when production credential validation cannot connect to Slack. (findings 2521, 2531, 2532)
 

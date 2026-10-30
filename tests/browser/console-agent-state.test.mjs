@@ -1583,6 +1583,24 @@ const secretReads = (requests) =>
   requests.filter(({ method, path }) => method === "GET" && /\/secrets\/[^/?]+$/.test(path));
 const nameLookups = (requests) =>
   requests.filter(({ path }) => path.endsWith("/channel-directory/lookup"));
+// The fixture has no Slack workspace: a lookup the API allows fails at Slack. Tests that need an
+// allowed lookup to succeed simulate only this provider answer.
+const SLACK_DIRECTORY = {
+  status: 200,
+  contentType: "application/json",
+  body: JSON.stringify({
+    data: {
+      workspaceId: "TTEST123",
+      workspaceName: "Test workspace",
+      candidates: [
+        { id: "C123", name: "release-room" },
+        { id: "U123", name: "alex", displayName: "Alex" },
+      ],
+      complete: true,
+    },
+    meta: { requestId: "req_test_slack_directory" },
+  }),
+};
 
 // Finding 2938. Revoked before her first Channels open, the Slack card read both bound Slack
 // Secrets by ID at once, and the API refused and audited both reads. They go one at a time: the
@@ -1790,8 +1808,7 @@ test("A lookup refusal for one Slack Secret does not answer another Secret's loo
 // Findings 2938 and 2939, an allowed administrator: only the first of a view's lookups waits
 // alone. While Edit Slack's first lookup is in flight she picks another bot token Secret, so three
 // lookups wait behind it. Once the first succeeds, all three are sent at once, not one per round
-// trip: each is held until all three are in flight, which one at a time never are. The fixture
-// has no Slack workspace, so only the provider's directory answer is simulated.
+// trip: each is held until all three are in flight, which one at a time never are.
 test("Edit Slack sends its waiting lookups at once after the first succeeds", async (t) => {
   const { fixture, namespace, page, requests } = await slackAdministratorPage(
     t,
@@ -1806,22 +1823,6 @@ test("Edit Slack sends its waiting lookups at once after the first succeeds", as
     "hidden-spare-token",
   );
   const lookupUrl = `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`;
-  const directory = {
-    status: 200,
-    contentType: "application/json",
-    body: JSON.stringify({
-      data: {
-        workspaceId: "TTEST123",
-        workspaceName: "Test workspace",
-        candidates: [
-          { id: "C123", name: "release-room" },
-          { id: "U123", name: "alex", displayName: "Alex" },
-        ],
-        complete: true,
-      },
-      meta: { requestId: "req_test_slack_directory" },
-    }),
-  };
   let inFlight = 0;
   let mostInFlight = 0;
   let arrived = 0;
@@ -1842,14 +1843,14 @@ test("Edit Slack sends its waiting lookups at once after the first succeeds", as
     await Promise.race([
       waiting,
       new Promise((resolve) => {
-        timer = setTimeout(resolve, 5_000);
+        timer = setTimeout(resolve, 2_000);
       }),
     ]);
     clearTimeout(timer);
     inFlight -= 1;
-    await route.fulfill(directory).catch(() => {});
+    await route.fulfill(SLACK_DIRECTORY).catch(() => {});
   });
-  const held = await holdRequests(t, page, lookupUrl, { once: true, fulfill: directory });
+  const held = await holdRequests(t, page, lookupUrl, { once: true, fulfill: SLACK_DIRECTORY });
   const sent = requests.length;
   await page.getByRole("button", { name: "Edit Slack" }).click();
   const drawer = page.getByRole("dialog", { name: "Edit Slack" });
@@ -1862,6 +1863,60 @@ test("Edit Slack sends its waiting lookups at once after the first succeeds", as
   await waitForIdleFetches(page);
   assert.equal(nameLookups(requests.slice(sent)).length, 4);
   assert.equal(mostInFlight, 3);
+});
+
+// Findings 2938 and 2939. Only a success sends the waiting lookups at once, and only until none
+// is pending. Edit Slack's lookups succeed, then she picks another bot token Secret, whose first
+// lookup goes alone again. While it is in flight she picks the bound Secret back, and operate on
+// both Secrets is restricted. Each Secret's first lookup is refused; that refusal answers its own
+// Secret's other lookup unsent and does not release the next Secret's: two denials in all.
+test("Each Slack Secret's first lookup waits alone after a refusal", async (t) => {
+  const { fixture, namespace, page, requests, secrets } = await slackAdministratorPage(
+    t,
+    "Alone lookup",
+    "channels",
+  );
+  await page.getByRole("button", { name: "Edit Slack" }).waitFor();
+  await waitForIdleFetches(page);
+  const other = await fixture.createSecret(
+    namespace.id,
+    "Alone lookup spare bot token",
+    "hidden-spare-token",
+  );
+  const lookupUrl = `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`;
+  let simulate = true;
+  await page.route(lookupUrl, (route) =>
+    simulate ? route.fulfill(SLACK_DIRECTORY) : route.fallback(),
+  );
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  const drawer = page.getByRole("dialog", { name: "Edit Slack" });
+  await drawer.waitFor();
+  await drawer.getByText("Slack workspace: Test workspace", { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  simulate = false;
+  const held = await holdRequests(t, page, lookupUrl, { once: true });
+  const audited = authorizationDenials(fixture.auditSink).length;
+  const sent = requests.length;
+  await selectSecret(drawer, "Slack bot token", other);
+  await held.requested;
+  await selectSecret(drawer, "Slack bot token", secrets.bot);
+  for (const secret of [other, secrets.bot]) {
+    restrict(fixture.policy, "operate", "secret", {
+      namespaceId: namespace.id,
+      resourceId: secret.id,
+    });
+  }
+  held.release();
+  await waitForIdleFetches(page);
+  const lookups = nameLookups(requests.slice(sent));
+  assert.equal(lookups.filter(({ body }) => body?.secretId === other.id).length, 1);
+  assert.equal(lookups.filter(({ body }) => body?.secretId === secrets.bot.id).length, 1);
+  assert.deepEqual(
+    authorizationDenials(fixture.auditSink)
+      .slice(audited)
+      .map(({ action }) => action),
+    ["openclaw.channel_directory.lookup", "openclaw.channel_directory.lookup"],
+  );
 });
 
 // Finding 2637. A Restriction refuses an administrator's bound Secret read, and the permission
