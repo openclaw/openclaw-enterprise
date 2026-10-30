@@ -62,11 +62,19 @@ Driver instance from the resources it manages.]
 
 ## Configuration
 
-[Explain shared configuration inputs, their scope, validation, and when changes
-take effect. Distinguish Installation settings from per-resource configuration.
-Link the shared selection and configuration contract. Keep implementation-specific
-fields, defaults, and examples in the implementation references. State explicitly
-when this Driver contract defines no common settings.]
+[Identify the configuration scope and when changes take effect. List required
+settings before optional settings, using only `Required` or `Optional` in the
+Requirement column. Include defaults, constraints, and omission behavior in the
+last column. Use separate tables for Installation and per-resource settings.]
+
+| Setting              | Type     | Requirement | Value, default, and constraints                    |
+| -------------------- | -------- | ----------- | -------------------------------------------------- |
+| `<required setting>` | `<type>` | Required    | [Meaning and accepted values; no default.]         |
+| `<optional setting>` | `<type>` | Optional    | [Meaning, constraints, and behavior when omitted.] |
+
+[Link the shared selection and configuration contract. Keep implementation-specific
+fields and examples in the implementation references. If there are no shared
+settings, say so and omit the empty table.]
 
 ## Limits
 

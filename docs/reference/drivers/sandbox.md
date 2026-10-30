@@ -289,13 +289,19 @@ any workload it owns. Namespace cleanup follows revision cleanup.
 
 ## Configuration
 
-Select the Sandbox for the Installation under `drivers.sandbox` in the trusted
-startup YAML. Its `configuration` contains settings defined by the selected
-implementation; the base `SandboxDriver` interface defines no common startup
-fields. The implementation supplies the schema and semantic validation. Both API
-and worker load the selection at startup; changing these settings requires a
-restart. See [Driver selection and configuration discovery](selection.md#configuration-definitions-and-discovery)
-and the [OpenShell settings](openshell-sandbox.md#configuration).
+Sandbox selection is optional. When selecting one, set these fields under
+`drivers.sandbox` in the Installation startup YAML:
+
+| Setting         | Type   | Requirement | Value, default, and constraints                                                                                                        |
+| --------------- | ------ | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`            | string | Required    | Nonempty Driver identity. No default.                                                                                                  |
+| `configuration` | object | Required    | Settings validated by the selected implementation. No default; use `{}` only if its schema permits it.                                 |
+| `package`       | string | Optional    | Installed Driver package name. Omit for bundled OpenShell; see [package selection](selection.md#package-identity-and-factory-exports). |
+
+The base interface defines no common fields inside `configuration`; see the
+[OpenShell settings](openshell-sandbox.md#configuration) for that implementation.
+Both API and worker load these settings at startup; changes require a restart.
+See [configuration validation and discovery](selection.md#configuration-definitions-and-discovery).
 
 Per-Agent network additions use the `sandbox-network-policy` configuration
 contribution when the selected Driver declares network policy support. The

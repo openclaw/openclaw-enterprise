@@ -17,10 +17,17 @@ where it differs from or adds detail to the shared contract.]
 
 ## Configuration
 
-[Show how to select and configure this implementation. List each supported field,
-its type, whether it is required, its default, and its constraints. Identify where
-settings are declared and when changes take effect. Include a minimal example
-and explain credential references without including secret values.]
+[Identify where these settings are declared and when changes take effect. List
+required settings before optional settings, using only `Required` or `Optional`
+in the Requirement column. Use separate tables for different configuration scopes.]
+
+| Setting              | Type     | Requirement | Value, default, and constraints                    |
+| -------------------- | -------- | ----------- | -------------------------------------------------- |
+| `<required setting>` | `<type>` | Required    | [Meaning and accepted values; no default.]         |
+| `<optional setting>` | `<type>` | Optional    | [Meaning, constraints, and behavior when omitted.] |
+
+[Include a minimal selection and configuration example. Explain credential
+references without including secret values. Link shared settings to their owner.]
 
 ## Limits
 
