@@ -11,6 +11,7 @@ import {
   fileBrowser,
   grantMember,
   hasFocus,
+  holdRequests,
   login,
   nativeValues,
   newPage,
@@ -198,9 +199,14 @@ test("an Agents list row refusal describes the row's icon, and an unavailable ic
   await fixture.seedActiveAgentRevision(namespace.id, guarded.id);
   const member = await fixture.createNamespaceMember(MEMBER, namespace.id, AGENT_READ);
   const { page } = await newPage(t, fixture, { browser });
-  // The refused row has no permission answer, so its icons stay available and the real API
-  // refuses the member's writes. The guarded row has the real answer: neither action.
-  await withholdPermissionSummary(page, fixture, namespace.id, refusedRow.id);
+  // The refused row's permission answer is still pending, so its icons stay available and the
+  // real API refuses the member's writes. The guarded row has the real answer: neither action.
+  const firstAnswer = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${refusedRow.id}/permissions`,
+    { once: true, method: "GET" },
+  );
   await page.setViewportSize({ width: 390, height: 844 });
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`, member.credentials);
 
@@ -248,17 +254,16 @@ test("an Agents list row refusal describes the row's icon, and an unavailable ic
   }
   // Only the latest refusal describes its icon; the earlier one is described by the row's reason.
   assert.equal(await accessibleDescription(stop), AGENT_STOP_AND_DELETE_DENIED);
-  // A permission answer read after the refusal (Back from the Agent page rereads it) that allows
-  // delete makes Delete available again; a later accepted write replaces the refusal, and no
-  // icon is described by it any more.
-  await page.unroute(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${refusedRow.id}/permissions`,
-  );
+  // A permission answer read after the refusal that allows delete makes Delete available again.
+  // A search that hides the row retires its pending read, and showing the row again reads anew.
+  assert.equal(firstAnswer.wasRequested(), true);
   grantMember(fixture, MEMBER, [["delete", "agent"]]);
-  await row.getByRole("link", { name: "Refused Row", exact: true }).click();
-  await page.getByRole("region", { name: "Agent state at a glance" }).waitFor();
-  await page.goBack();
+  const search = page.getByRole("searchbox", { name: "Search Agents" });
+  await search.fill("Guarded");
+  await row.waitFor({ state: "detached" });
+  await search.fill("");
   await waitForEnabled(remove);
+  // A later accepted write replaces the refusal, and no icon is described by it any more.
   await row.getByText("Needs Agent operate", { exact: true }).waitFor();
   assert.equal(await stop.getAttribute("aria-disabled"), "true");
   await remove.click();
