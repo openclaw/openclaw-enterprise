@@ -5,6 +5,7 @@ import {
   assertConsoleSignIn,
   assertExternalSignInRefused,
   attachProvider,
+  changeAccount,
   clientAddresses,
   consoleOrigin as origin,
   currentSession,
@@ -25,6 +26,7 @@ import {
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
 import { providerInstanceId } from "../helpers/human-login-transport.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
@@ -114,6 +116,12 @@ test(
       const cookie = await assertConsoleSignIn(app, signIn.callback, userId);
       return { ...signIn, cookie };
     }
+    // A console browser at a fresh client address starts sign-in with `provider`.
+    const startSignIn = (provider = "oidc") =>
+      injectLocalhost(app, "POST", `/api/auth/providers/${provider}/start`, {
+        remoteAddress: address(),
+        headers: { origin },
+      });
 
     await t.test(
       "recovery-only OIDC activates the guarded profile and reports uncovered accounts",
@@ -148,20 +156,10 @@ test(
         assert.equal((await passwordSignIn(app, origin, member, address())).statusCode, 401);
         adminHeaders = await signedInHeaders(app, origin, admin, address());
         for (const provider of ["github", "google"]) {
-          const start = await app.inject({
-            method: "POST",
-            url: `/api/auth/providers/${provider}/start`,
-            remoteAddress: address(),
-            headers: { origin },
-          });
+          const start = await startSignIn(provider);
           assert.equal(start.statusCode, 403, `${provider} stays unconfigured`);
         }
-        const start = await app.inject({
-          method: "POST",
-          url: "/api/auth/providers/oidc/start",
-          remoteAddress: address(),
-          headers: { origin },
-        });
+        const start = await startSignIn();
         assert.equal(start.statusCode, 200, start.body);
         const authorize = new URL(start.json().data.url);
         assert.equal(
@@ -200,12 +198,10 @@ test(
       const signIn = await assertSignIn(memberSubject, member.id);
       const setCookies = [signIn.callback.headers["set-cookie"]].flat();
       assert.ok(setCookies.some((cookie) => cookie.startsWith("__Host-occ_login_receipt=")));
-      const exchanged = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/oidc/result",
+      const exchanged = await injectLocalhost(app, "POST", "/api/auth/providers/oidc/result", {
         remoteAddress: address(),
-        headers: { cookie: signIn.cookie, origin },
-        payload: { attemptId: signIn.attemptId },
+        session: { cookie: signIn.cookie, origin },
+        body: { attemptId: signIn.attemptId },
       });
       assert.equal(exchanged.statusCode, 200, exchanged.body);
       assert.equal(
@@ -268,12 +264,7 @@ test(
 
     await t.test("a rotated signing key verifies on the next callback", async () => {
       // An authorization issued under the old key fails once that key is withdrawn.
-      const start = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/oidc/start",
-        remoteAddress: address(),
-        headers: { origin },
-      });
+      const start = await startSignIn();
       const { url } = start.json().data;
       const code = idp.authorize(url, { subject: memberSubject });
       idp.rotate();
@@ -306,12 +297,7 @@ test(
     await t.test("disabling an account ends its session and refuses OIDC", async () => {
       assert.equal((await attach(disabled.id, disabledSubject)).statusCode, 200);
       const { cookie } = await assertSignIn(disabledSubject, disabled.id);
-      const disable = await app.inject({
-        method: "POST",
-        url: `/api/auth/accounts/${disabled.id}/disable`,
-        headers: adminHeaders,
-        payload: { expectedVersion: (await readAccount(app, adminHeaders, disabled.id)).version },
-      });
+      const disable = await changeAccount(app, adminHeaders, disabled.id, "disable");
       assert.equal(disable.statusCode, 200, disable.body);
       assert.equal(await currentSession(app, cookie), null);
       // The IdP proved this identity, and it is attached: the person is told the account is
@@ -428,12 +414,10 @@ test(
         ]) {
           const cookie = cookieHeaderFromSetCookie(signIn.callback.headers["set-cookie"]);
           const confirm = (name, headers = {}, payload = { attemptId: signIn.attemptId }) =>
-            app.inject({
-              method: "POST",
-              url: `/api/auth/providers/${name}/result`,
+            injectLocalhost(app, "POST", `/api/auth/providers/${name}/result`, {
               remoteAddress: address(),
               headers: { origin, cookie, ...headers },
-              payload,
+              body: payload,
             });
           // All providers are configured and the session/attempt are valid. Only
           // the callback's provider may exchange this receipt, without consuming

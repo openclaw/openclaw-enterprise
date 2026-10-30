@@ -33,3 +33,15 @@ export function injectJson(
     ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
   });
 }
+
+/**
+ * injectJson with the Host header Fastify's `inject` sends when a request names none
+ * (`localhost:80`) instead of 127.0.0.1, for suites written against that default.
+ * @param {any} app
+ * @param {string} method
+ * @param {string} url
+ * @param {Parameters<typeof injectJson>[3]} [options]
+ */
+export function injectLocalhost(app, method, url, options = {}) {
+  return injectJson(app, method, url, { host: "localhost:80", ...options });
+}

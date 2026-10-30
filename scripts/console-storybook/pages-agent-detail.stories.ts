@@ -121,6 +121,7 @@ export const RuntimeLogsStartupWarnings = story("runtimeLogsStartupWarnings");
 export const RuntimeLogsDedicatedPods = story("runtimeLogsDedicatedPods");
 export const RuntimeLogsMissingAgentPod = story("runtimeLogsMissingAgentPod");
 export const RuntimeLogsNoPod = story("runtimeLogsNoPod");
+export const RuntimeLogsReplacedVersion = story("runtimeLogsReplacedVersion");
 export const RuntimeLogsFilteredDownload = story("runtimeLogsFilteredDownload");
 export const RuntimeLogsRateLimited = story("runtimeLogsRateLimited");
 export const RuntimeLogsRefreshRateLimited = story("runtimeLogsRefreshRateLimited");

@@ -838,8 +838,6 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
   assert.deepEqual(writes, []);
 });
 
-const STOP_REFUSED = stopRefused("this Agent");
-
 // The page's other operate-gated controls follow the same observed answer as Workspace: the Stop
 // row hides and each version's Run diagnostics disables while operate is denied (finding 2328).
 async function expectOperateControls(page: Page, allowed: boolean) {
@@ -1020,7 +1018,7 @@ test("a Stop refusal clears once a later answer grants Agent operate", async (t)
     .getByRole("dialog", { name: "Stop this Agent?" })
     .getByRole("button", { name: "Stop Agent", exact: true })
     .click();
-  const refusal = page.getByText(STOP_REFUSED, { exact: true });
+  const refusal = page.getByText(stopRefused("Stop refusal grant"), { exact: true });
   await refusal.waitFor();
   await page.unroute(scenario.permissionsUrl);
   await scenario.rememberStatusDenial();

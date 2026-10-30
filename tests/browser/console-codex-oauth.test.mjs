@@ -475,6 +475,87 @@ test("Codex sign-in can retry a refused start but cannot repeat one with an unre
   );
 });
 
+// Hold a real committed start at the browser boundary: navigating away aborts its
+// response, but must not erase the attempt from either authentication form's draft.
+for (const savedAgent of [false, true]) {
+  test(`an interrupted OAuth start stays blocked after returning to ${savedAgent ? "Agent credentials" : "Create Agent"}`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth navigation");
+    const { gateway, refresh } = createDeviceCredentialDrivers({ approve: async () => false });
+    for (const driver of [gateway, refresh]) {
+      fixture.controller.registerDriver(driver);
+      fixture.controller.selectDriver(driver.capability, driver.id);
+    }
+    const agent = savedAgent
+      ? await fixture.createAgent(
+          namespace.id,
+          "OAuth navigation",
+          nativeValues("oauth-navigation", { harnessId: "codex" }),
+          { executionMode: "dedicated" },
+        )
+      : null;
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await trackSettledFetches(page);
+    await login(
+      page,
+      fixture,
+      agent
+        ? `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`
+        : `/console/agents/new?namespace=${namespace.id}`,
+    );
+    if (!agent) {
+      await page.getByRole("button", { name: "Start without Preset" }).click();
+    }
+    const methodLabel = agent ? "Authentication source" : "Authentication method";
+    await page.getByLabel(methodLabel).selectOption("credential_source");
+    const committed = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    t.after(() => release.resolve());
+    const beginPath = `/namespaces/${namespace.id}/agents${agent ? `/${agent.id}` : ""}/device-authorizations`;
+    await page.route(`**${beginPath}`, async (route) => {
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      committed.resolve((await response.json()).data.session.id);
+      await release.promise;
+      await route.fulfill({ response }).catch(() => {});
+    });
+    await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
+    const sessionId = await committed.promise;
+    assert.equal(gateway.sources.size, 1);
+    assert.equal(
+      (await fixture.request("GET", `/namespaces/${namespace.id}/secrets/${sessionId}`)).status,
+      200,
+    );
+    await page.getByRole("link", { name: "Secrets", exact: true }).click();
+    await page.waitForURL("**/console/secrets?**");
+    release.resolve();
+    await waitForSettledFetches(page, beginPath, 1);
+    await page.goBack();
+    await page.getByLabel(methodLabel).waitFor();
+    const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
+    assert.equal(await start.isDisabled(), true, "the committed start lost its confirmation");
+    await page
+      .getByText(
+        /may have started.*until an Installation administrator investigates the pending attempt/i,
+      )
+      .waitFor();
+    assert.equal(
+      await page.getByRole("button", { name: "Cancel login", exact: true }).isVisible(),
+      false,
+    );
+    // Method changes rerender controls; even a delivered click cannot repeat the write.
+    await page.getByLabel(methodLabel).selectOption("api_key");
+    await page.getByLabel(methodLabel).selectOption("credential_source");
+    await start.dispatchEvent("click");
+    await settlePageRequests(page);
+    assert.equal(
+      requests.filter(({ method, path }) => method === "POST" && path === beginPath).length,
+      1,
+    );
+    assert.equal(gateway.sources.size, 1);
+  });
+}
+
 // A refused device login names what the API checked for that request (finding 2577). Create
 // Agent's start checks Agent create, Secret create and credential source create in the Namespace,
 // which only an Installation administrator holds. The real Native IAM Driver refuses each request

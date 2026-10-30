@@ -79,7 +79,6 @@ import {
   AGENT_DEPLOY_NOT_INCLUDED,
   AGENT_SAVE_DENIED,
   AGENT_SOURCES_DENIED,
-  askForGrant,
   CONFIGURATION_EDITS_PENDING,
   CONFIGURATION_UPDATE_DENIED,
   CONSOLE_NAMESPACE_NOT_READY,
@@ -95,6 +94,7 @@ import {
   SECRET_NAME_CONFLICT,
   SECRET_OPERATE_DENIED,
   STOP_CONFIRMATION,
+  STOP_REPEAT_CONFIRMATION,
   STOP_REQUESTED,
   STOP_RUNNING_VERSION,
   STOP_STATUS_REFRESH_FAILED,
@@ -3498,10 +3498,12 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
     .waitFor();
   await page.getByText(STOPPED_NO_VERSION).waitFor();
   // A completed stop also clears the selected version, but no deployment is in progress: a new
-  // stop intent must not say it cancels one, nor report one cancelled (finding D691).
+  // stop intent must not say it cancels one, nor report one cancelled (finding D691). No gateway
+  // runs either, so it says it only repeats the stop request (finding D815).
   await page.getByRole("button", { name: "Request Stop again", exact: true }).click();
   dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
-  await dialog.getByText(STOP_CONFIRMATION, { exact: true }).waitFor();
+  await dialog.getByText(STOP_REPEAT_CONFIRMATION, { exact: true }).waitFor();
+  assert.equal(await dialog.getByText(/runtime gateway/).count(), 0);
   assert.equal(await dialog.getByText(/deployment in progress/).count(), 0);
   const repeated = page.waitForResponse(
     (response) =>
@@ -4005,9 +4007,13 @@ test("Agent stop denial keeps the Agent running with permission feedback", async
     .click();
   assert.equal((await denied).status(), 403);
 
-  await page.getByText(stopRefused("this Agent")).waitFor();
+  await page.getByText(stopRefused("Denied Stop Candidate")).waitFor();
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
-  await waitForEnabled(page.getByRole("button", { name: "Stop Agent" }));
+  // Stop stays reachable but unavailable: the API would refuse it again (finding 2955).
+  assert.equal(
+    await page.getByRole("button", { name: "Stop Agent" }).getAttribute("aria-disabled"),
+    "true",
+  );
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(current.data.desiredRuntimeState, "running");
   assert.equal(current.data.activeRevisionId, active.revision.id);
@@ -4502,7 +4508,6 @@ test("a version editor without Agent update can recover a failed deployment from
 // The Agent page's copy for a caller without Configuration update (finding 2421).
 const CONFIGURATION_READ_ONLY = CONFIGURATION_UPDATE_DENIED;
 const CHANNELS_READ_ONLY = `These are the version draft’s channel settings. ${CONFIGURATION_READ_ONLY}`;
-const CONFIGURATION_SECRETS_READ_ONLY = `Saving this Configuration needs Secret operate on each Secret it binds, which your access does not include. ${askForGrant("Secret operate on each of them")}`;
 // A channel save keeps a binding whose Secret the member may not operate (finding 2444).
 const KEPT_SECRET_CHANNEL_SECRETS =
   "Each Configuration save needs Secret operate on every Secret it keeps bound. Your access does not include it for EXTERNAL_API_TOKEN, which channel saves keep.";
@@ -4976,7 +4981,12 @@ test("a Configuration editor without Secret operate on a kept bound Secret reads
 
   // The Configuration editor's Save binds the same Secrets, so it is read-only too.
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-  await page.getByText(CONFIGURATION_SECRETS_READ_ONLY, { exact: true }).waitFor();
+  await page
+    .getByText(
+      "Saving this Configuration needs Secret operate on Bound app token, Bound bot token and External token, which your access does not include. Ask an Installation administrator to grant it.",
+      { exact: true },
+    )
+    .waitFor();
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page
@@ -5036,6 +5046,108 @@ async function replaceSecretFixture(t, label, { agentUpdate = false } = {}) {
   };
 }
 
+test("late Configuration Secret names preserve an open focused native disclosure", async (t) => {
+  const { fixture, namespace, agent, member } = await replaceSecretFixture(t, "Disclosure names");
+  const { page } = await newPage(t, fixture);
+  const configuration = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+  );
+  const botId = configuration.data.secretBindings.SLACK_BOT_TOKEN.source.id;
+  const held = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/secrets/${botId}`,
+    {
+      method: "GET",
+      once: true,
+      afterServer: true,
+    },
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    member.credentials,
+  );
+  await held.requested;
+  const summary = page.getByText("View native Configuration", { exact: true });
+  await summary.click();
+  await summary.focus();
+  held.release();
+  await page
+    .getByText(
+      "Saving this Configuration needs Secret operate on Admin bot token, which your access does not include. Ask an Installation administrator to grant it.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await summary.evaluate((node) => node.parentElement.open), true);
+  assert.equal(await summary.evaluate((node) => node.ownerDocument.activeElement === node), true);
+});
+
+test("a superseded draft Secret metadata read cannot replace the current Configuration hint", async (t) => {
+  const { fixture, namespace, agent, member, configurationPath } = await replaceSecretFixture(
+    t,
+    "Superseded names",
+  );
+  const replacement = await fixture.createSecret(
+    namespace.id,
+    "Current bot token",
+    "xoxb-current-value",
+  );
+  const configuration = await fixture.request("GET", configurationPath);
+  const botId = configuration.data.secretBindings.SLACK_BOT_TOKEN.source.id;
+  const { page } = await newPage(t, fixture);
+  const held = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/secrets/${botId}`,
+    {
+      method: "GET",
+      once: true,
+      afterServer: true,
+    },
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
+    member.credentials,
+  );
+  await held.requested;
+  // Another authorized editor changes the binding while the old draft's metadata read waits.
+  const changed = await fixture.request("PATCH", configurationPath, {
+    body: {
+      values: configuration.data.values,
+      expectedGeneration: configuration.data.generation,
+      secretBindings: {
+        ...configuration.data.secretBindings,
+        SLACK_BOT_TOKEN: { source: replacement.ref, delivery: { type: "env" } },
+      },
+    },
+  });
+  assert.equal(changed.status, 200, JSON.stringify(changed.body));
+  await page.getByRole("button", { name: "Reload authentication source", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  const reason =
+    "Saving this Configuration needs Secret operate on Current bot token, which your access does not include. Ask an Installation administrator to grant it.";
+  await page.getByText(reason, { exact: true }).waitFor();
+  const oldResponse = page.waitForResponse((response) =>
+    response.url().endsWith(`/secrets/${botId}`),
+  );
+  held.release();
+  await oldResponse;
+  // Let the completed metadata read publish and the browser paint before inspecting the hint.
+  await page.locator("body").evaluate(
+    (node) =>
+      new Promise((resolve) => {
+        const view = node.ownerDocument.defaultView;
+        view.requestAnimationFrame(() => view.requestAnimationFrame(resolve));
+      }),
+  );
+  assert.equal(await page.getByText(reason, { exact: true }).count(), 1);
+});
+
 // A save is checked on the Secrets it submits, not on the ones it replaces. A member who may not
 // operate the administrator's bot token Secret, but may operate the app token Secret and their
 // own, can bind their own Secret for the bot token. A save that keeps the administrator's Secret
@@ -5070,7 +5182,12 @@ test("a channel Secrets save may replace a bound Secret the member cannot operat
   // The Configuration editor submits no bindings, so its save keeps the administrator's Secret:
   // it stays read-only for this member.
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-  await page.getByText(CONFIGURATION_SECRETS_READ_ONLY, { exact: true }).waitFor();
+  await page
+    .getByText(
+      "Saving this Configuration needs Secret operate on Admin bot token, which your access does not include. Ask an Installation administrator to grant it.",
+      { exact: true },
+    )
+    .waitFor();
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await page.getByText(REPLACE_BOT_TOKEN, { exact: true }).waitFor();

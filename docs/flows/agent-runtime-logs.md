@@ -197,6 +197,7 @@ take `-previous.log` from the request.
 `console/agents/logs.mts` clears output when status selects another source, Pod or instance.
 Only a readable replacement starts a fresh tail. Status denial preserves log access; cached `403` avoids repeat denials.
 A version the page could not read gets no status read.
+With no running Pod, each status poll rereads the Agent (`detail.mts:runningVersion`) and links to another running version's Logs.
 Follow leaves loaded rows and unchanged statuses alone; its first line replaces an empty-tail status.
 Pod cards show state/exit; Gateway links Harness output or Deployment activity.
 

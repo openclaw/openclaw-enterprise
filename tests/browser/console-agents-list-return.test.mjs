@@ -13,7 +13,7 @@ import {
   waitForCondition,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 

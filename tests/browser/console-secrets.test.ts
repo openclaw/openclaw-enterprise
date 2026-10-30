@@ -606,9 +606,12 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
       json: { ...body, data: { ...body.data, callerPermissions: { update: true, delete: true } } },
     });
   });
+  // A fresh page: a refused replace concerns only this Secret, so Create Secret stays available.
+  await page.reload();
   await openAction("Replace value");
   await value.fill("synthetic-denied-replacement");
   await expectDenied("Replace value", "PATCH", "update");
+  assert.equal(await createSecret.getAttribute("aria-disabled"), null);
   await openAction("Delete Secret");
   await expectDenied("Permanently delete Secret", "DELETE", "delete");
   await page.unroute(secretUrl);

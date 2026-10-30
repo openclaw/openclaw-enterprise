@@ -176,3 +176,5 @@ export const CredentialsSavedRetryReadDenied = {
   ...story("credentialsSavedRetryReadDenied"),
   name: "Saved channel bindings, retry read denied",
 };
+
+export const AuthOAuthStartNavigation = story("authOAuthStartNavigation");
