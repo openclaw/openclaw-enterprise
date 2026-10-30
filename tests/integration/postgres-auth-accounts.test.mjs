@@ -9,6 +9,7 @@ import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
@@ -332,8 +333,7 @@ test(
         session: noGrantSession,
         body: payload,
       });
-      assert.equal(denied.statusCode, 403, `${method} ${url}: ${denied.body}`);
-      assert.equal(denied.json().error.code, "FORBIDDEN");
+      assertApiError(denied, 403, "FORBIDDEN", `${method} ${url}`);
     }
     const iamBefore = await state.loadNativeIAMState(installation.id);
     assert.equal(iamBefore.identities.length, iamBeforeNoGrant.identities.length + 1);
@@ -451,8 +451,7 @@ test(
         roleId: namespaceRole.json().data.id,
       },
     });
-    assert.equal(namespaceRoleAccount.statusCode, 400, namespaceRoleAccount.body);
-    assert.equal(namespaceRoleAccount.json().error.code, "INVALID_REQUEST");
+    assertApiError(namespaceRoleAccount, 400, "INVALID_REQUEST");
     assert.deepEqual(
       (await observerPool.query(`SELECT id FROM occ."user" WHERE email = $1`, [namespaceRoleEmail]))
         .rows,
@@ -564,8 +563,7 @@ test(
       session,
       body: { email, password, name: "Postgres Audit Rollback", roleId: role.id },
     });
-    assert.equal(response.statusCode, 503, response.body);
-    assert.equal(response.json().error.code, "DEPENDENCY_UNAVAILABLE");
+    assertApiError(response, 503, "DEPENDENCY_UNAVAILABLE");
 
     await assert.rejects(signInToControllerApp(app, { email, password }), /HTTP 401/);
     const iamAfter = await state.loadNativeIAMState(installation.id);
@@ -677,8 +675,7 @@ test(
       body: payload,
     });
     assert.equal(proxy.observedCommit, true);
-    assert.equal(unknown.statusCode, 503, unknown.body);
-    assert.equal(unknown.json().error.code, "DEPENDENCY_UNAVAILABLE");
+    assertApiError(unknown, 503, "DEPENDENCY_UNAVAILABLE");
     assert.match(unknown.json().error.message, /outcome is unknown/i);
 
     // Nothing was compensated: the login and its Principal committed together.
@@ -706,8 +703,7 @@ test(
       session,
       body: payload,
     });
-    assert.equal(retry.statusCode, 409, retry.body);
-    assert.equal(retry.json().error.code, "RESOURCE_CONFLICT");
+    assertApiError(retry, 409, "RESOURCE_CONFLICT");
     assert.deepEqual(await persisted(), committed);
     const iamAfter = await state.loadNativeIAMState(installation.id);
     assert.equal(iamAfter.identities.length, iamBefore.identities.length + 1);

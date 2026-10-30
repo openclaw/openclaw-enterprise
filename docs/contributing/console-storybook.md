@@ -119,8 +119,8 @@ long names and direct switching. In **Mobile drawer**, widen past 760px while op
 Agents search must work without Escape. Shrink and check reopening and dismissal.
 No-readable, unavailable, loading, and denied stories cover restrictions.
 
-In **Pages → Namespaces → Unavailable selection**, recover inline and check the
-URL, dismissed warning, unchanged page, and Back navigation. **Unavailable selection
+In **Pages → Namespaces → Unavailable selection**, check the warning's reason, recover
+inline, and check the URL, dismissed warning, unchanged page, and Back navigation. **Unavailable selection
 mobile** repeats this at 390px; **Unavailable selection without access** shows access
 guidance. Simulated examples:
 [desktop](../assets/console-namespace-recovery/desktop.png),
