@@ -79,12 +79,25 @@ function derivePluginAppServerTokenFromBase(baseToken, revisionId, startupId) {
 }
 `;
 
+// A readiness check can spawn "openclaw node identity" or open a Codex app-server
+// WebSocket, so concurrent requests share the running check instead of each starting
+// another (finding 1789). No answer is cached: a request after it settles checks again.
 const RUNTIME_READINESS_RESPONSE_HELPER = String.raw`
+let runtimeReadinessCheck;
+function sharedRuntimeReadiness(readiness) {
+  runtimeReadinessCheck ??= (async () => {
+    try {
+      return await readiness() === true;
+    } catch {
+      return false;
+    }
+  })().finally(() => {
+    runtimeReadinessCheck = undefined;
+  });
+  return runtimeReadinessCheck;
+}
 async function answerRuntimeReadiness(response, readiness) {
-  let ready = false;
-  try {
-    ready = await readiness() === true;
-  } catch {}
+  const ready = await sharedRuntimeReadiness(readiness);
   if (response.destroyed) return;
   response.writeHead(ready ? 200 : 503, { "cache-control": "no-store" });
   response.end();
