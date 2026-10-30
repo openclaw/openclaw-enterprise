@@ -4,6 +4,11 @@ kind: reference/driver
 
 # Harness execution contract
 
+**Interface contents**
+
+- [Properties](#properties) — `id`, `version`, `mode`
+- [Methods](#methods) — `HarnessResolver(harnessId, executionMode)`
+
 ## Overview
 
 A Harness calls the model and runs Agent tools. OpenClaw Control Plane (OCC)
@@ -26,7 +31,9 @@ selection at `AgentRevision.harness`. All three properties are required.
 | `version` | Required    | Version of the descriptor approved by the resolver.                              |
 | `mode`    | Required    | `embedded` runs inside the gateway. `dedicated` runs in a separate workload.     |
 
-### Resolver
+### Methods
+
+<a id="resolver"></a>
 
 | Operation                                   | Requirement | Caller and result                                                                                                                                                                                                                                                                                                              |
 | ------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
