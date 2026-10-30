@@ -230,11 +230,8 @@ async function authenticatedApplication(t, drivers) {
   });
   t.after(async () => app.close());
 
-  const signedIn = await app.inject({
-    method: "POST",
-    url: "/api/auth/sign-in/email",
-    headers: { host: "127.0.0.1", "content-type": "application/json" },
-    payload: { email: authFixture.email, password: authFixture.password },
+  const signedIn = await injectJson(app, "POST", "/api/auth/sign-in/email", {
+    body: { email: authFixture.email, password: authFixture.password },
   });
   assert.equal(signedIn.statusCode, 200, signedIn.body);
   const setCookie = signedIn.headers["set-cookie"];
@@ -508,22 +505,14 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
 
       // Require an actual Better Auth session before creating the singleton Installation.
       for (const headers of [{}, { authorization: "Bearer invalid-production-token" }]) {
-        const unauthenticated = await fixture.app.inject({
-          method: "POST",
-          url: "/installation/bootstrap",
-          headers: {
-            host: "127.0.0.1",
-            ...headers,
-          },
-          payload: { name: "Unauthenticated Driver selection" },
+        const unauthenticated = await injectJson(fixture.app, "POST", "/installation/bootstrap", {
+          headers,
+          body: { name: "Unauthenticated Driver selection" },
         });
         assert.equal(unauthenticated.statusCode, 401);
       }
-      const publicSignup = await fixture.app.inject({
-        method: "POST",
-        url: "/api/auth/sign-up/email",
-        headers: { host: "127.0.0.1", "content-type": "application/json" },
-        payload: {
+      const publicSignup = await injectJson(fixture.app, "POST", "/api/auth/sign-up/email", {
+        body: {
           email: "public-driver-plugin@example.test",
           password: "public-driver-plugin-password",
           name: "Public",
