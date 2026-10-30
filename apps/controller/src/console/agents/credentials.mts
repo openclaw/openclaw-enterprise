@@ -1482,8 +1482,9 @@ export function createChannelSecretsPanel({
     // The permission answer changed what this caller may edit: update the form in place.
     applyAccess() {
       // The answer can take Retry away: a missing grant's warning then names who grants it.
+      // Only the words change: the outstanding grants stay as they are.
       if (state.saveGrantWarning) {
-        updateGrantWarning();
+        state.saveGrantWarning = slackGrantWarning();
         if (shown.error && (!state.saveError || state.saveError.step === "grant")) {
           shown.error.textContent = saveErrorText();
         }
