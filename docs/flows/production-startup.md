@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-10-24"
-last_updated_session: "authoring-run/21b9b442-e8b7-45d3-a482-742f1742b077"
+updated: "2026-10-30"
+last_updated_session: authoring-run/43b61103-4082-4fc2-b9a0-511a18ebc761
 ---
 
 # Production Startup Flow
@@ -241,11 +241,11 @@ preflight with the same advisory warning, emits `worker.started`, and polls
 durable Namespace/AgentRevision work. Readiness requires fresh queue-health
 observations; neither process mounts the bootstrap PVC.
 
-`apps/controller/src/composition/repository-credentials/platform.ts:composeRepositoryAccess`
+`apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 
 With `repository` selected, both processes load the same registry and construct
 `GitHubRepositoryPolicy`; the GitHub Backend's `drivers.repo` member must equal
-`repository.id`. Native delivery adds the public CA and a lazy Unix client for
+`repository.id`. Only native delivery loads the Unix client and CA reader used by
 `GitHubNativeRepositorySender`. Startup refuses the retired Installation
 `drivers.repo`. API startup performs no control operation and loads no App key.
 With prepared repository Git, the worker reads the App key at startup and exits
@@ -333,6 +333,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 03:58: Load the native repository transport only for explicit native delivery. (authoring-run/43b61103-4082-4fc2-b9a0-511a18ebc761 - 87ed6c37e543e5501eae6285450d01d03d8abe7d)
 
 - 2026-10-28: Give the worker a startup probe and 5-second exec probe timeouts.
 
