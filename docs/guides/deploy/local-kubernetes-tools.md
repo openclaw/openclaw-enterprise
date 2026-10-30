@@ -37,6 +37,7 @@ tar -xf "$tools/node.tar.xz" -C "$tools"
 tar -xf "$tools/go.tar.gz" -C "$tools"
 mkdir "$tools/bin"
 export PATH="$tools/bin:$tools/$node_dir/bin:$tools/go/bin:$PATH"
+export COREPACK_HOME="$tools/corepack"
 corepack enable --install-directory "$tools/bin" pnpm
 ```
 
