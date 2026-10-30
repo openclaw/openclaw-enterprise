@@ -5117,6 +5117,7 @@ export const scenarios = {
     steps: [
       "Read the notice: Version draft · read-only with your access.",
       "In Configuration, read that saving needs Secret operate on Slack app token (simulated) and Slack bot token (simulated). No Edit Configuration button is offered. View native Configuration still opens the saved JSON.",
+      "In Plugins and Credentials, read the same missing Secret names after the general source-grant explanation. Plugin selections remain a saved summary; authentication controls remain unavailable. Switching tabs retains their state.",
       "The Versions entry reads Version draft with Read-only Configuration, and the draft card has no Prepare this version steps.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every save.",

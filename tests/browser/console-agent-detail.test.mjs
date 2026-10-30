@@ -5046,6 +5046,103 @@ async function replaceSecretFixture(t, label, { agentUpdate = false } = {}) {
   };
 }
 
+test("Agent save hints name a denied Harness Secret without making Configuration read-only", async (t) => {
+  const { fixture, namespace, agent, member, configurationPath, path } = await replaceSecretFixture(
+    t,
+    "Harness names",
+    { agentUpdate: true },
+  );
+  const configuration = await fixture.request("GET", configurationPath);
+  grantSecretOperate(
+    fixture,
+    namespace.id,
+    member.principal,
+    [configuration.data.secretBindings.SLACK_BOT_TOKEN.source.id],
+  );
+  const readAgent = await fixture.request("GET", path);
+  assert.equal(readAgent.status, 200, JSON.stringify(readAgent.body));
+  const auth = readAgent.data.harnessAuth;
+  const harnessId = auth.source.id;
+  const harnessName = (
+    await fixture.request("GET", `/namespaces/${namespace.id}/secrets/${harnessId}`)
+  ).data.name;
+  const bindingIndex = fixture.policy.bindings.findIndex(
+    (binding) => binding.resourceId === harnessId && binding.subjectId === member.principal.id,
+  );
+  assert.notEqual(bindingIndex, -1);
+  fixture.policy.bindings.splice(bindingIndex, 1);
+  const session = await fixture.signIn(member.credentials);
+  // Both tabs save through Agent PATCH, which checks the current Harness even when replaced.
+  for (const body of [{ plugins: {} }, { harnessAuth: auth }]) {
+    const refused = await fixture.request("PATCH", path, { session, body });
+    assert.equal(refused.status, 403);
+  }
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"),
+    member.credentials,
+  );
+  const reason = `${AGENT_SOURCES_DENIED} Missing Secret operate on ${harnessName}.`;
+  await page.getByText(reason, { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  await page.getByText(reason, { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).waitFor();
+  assert.equal(await page.getByText(reason, { exact: true }).count(), 0);
+});
+
+for (const tab of ["plugins", "credentials"]) {
+  test(`late ${tab} Secret names preserve the focused saved view`, async (t) => {
+    const { fixture, namespace, agent, member, own, configurationPath } =
+      await replaceSecretFixture(t, `Late ${tab} names`, { agentUpdate: true });
+    const configuration = await fixture.request("GET", configurationPath);
+    const botId = configuration.data.secretBindings.SLACK_BOT_TOKEN.source.id;
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    const held = await holdRequests(
+      t,
+      page,
+      `${fixture.origin}/namespaces/${namespace.id}/secrets/${botId}`,
+      {
+        method: "GET",
+        once: true,
+        afterServer: true,
+      },
+    );
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", tab),
+      member.credentials,
+    );
+    await held.requested;
+    await page.getByText(AGENT_SOURCES_DENIED, { exact: true }).waitFor();
+    // Metadata enrichment cannot replace the saved view or disturb an in-progress channel choice.
+    const focus =
+      tab === "plugins"
+        ? page.getByRole("heading", { name: "Plugin selections", exact: true })
+        : page.getByLabel("Slack bot token");
+    if (tab === "plugins") {
+      await focus.evaluate((node) => (node.tabIndex = 0));
+    } else {
+      await selectSecret(page, "Slack bot token", own);
+    }
+    await focus.focus();
+    await focus.evaluate((node) => (node.dataset.retainedView = "yes"));
+    held.release();
+    await page
+      .getByText(`${AGENT_SOURCES_DENIED} Missing Secret operate on Admin bot token.`, {
+        exact: true,
+      })
+      .waitFor();
+    assert.equal(await focus.getAttribute("data-retained-view"), "yes");
+    assert.equal(await focus.evaluate((node) => node.ownerDocument.activeElement === node), true);
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+  });
+}
+
 test("late Configuration Secret names preserve an open focused native disclosure", async (t) => {
   const { fixture, namespace, agent, member } = await replaceSecretFixture(t, "Disclosure names");
   const { page } = await newPage(t, fixture);
@@ -5740,14 +5837,22 @@ test("a channel save that rebinds a denied Secret makes the Agent-side tabs edit
   );
   assert.equal((await (await permissions).json()).data.agentSourcesOperate, false);
   await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
-  await page.getByText(AGENT_SOURCES_DENIED, { exact: true }).waitFor();
+  await page
+    .getByText(`${AGENT_SOURCES_DENIED} Missing Secret operate on Admin bot token.`, {
+      exact: true,
+    })
+    .waitFor();
   // Repositories is drawn now and parked, so its rebuild is proved too, not only a first draw.
   await page.getByRole("tab", { name: "Repositories", exact: true }).click();
   await page.getByText(AGENT_SOURCES_DENIED, { exact: true }).waitFor();
   assert.equal(await page.locator("#repository-selection-title").count(), 0);
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   const saveSource = page.getByRole("button", { name: "Save authentication source" });
-  await page.getByText(AGENT_SOURCES_DENIED, { exact: true }).waitFor();
+  await page
+    .getByText(`${AGENT_SOURCES_DENIED} Missing Secret operate on Admin bot token.`, {
+      exact: true,
+    })
+    .waitFor();
   assert.equal(await saveSource.isDisabled(), true);
 
   await selectSecret(page, "Slack bot token", own);
