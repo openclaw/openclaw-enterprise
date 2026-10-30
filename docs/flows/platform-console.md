@@ -301,13 +301,15 @@ opened from the list focuses its heading when the title renders. Tabs (one Tab
 stop; arrows move) and focused controls keep focus. Navigation, Namespace changes, and logout invalidate
 reads; generations reject late responses. Refocus coalesces events.
 `revalidateMountedAgent` rechecks session, Namespace, Agent, and version;
-unchanged access preserves controls, input, and saves.
+unchanged access preserves controls, input, and saves. The page then rereads its Agent
+permission answer, so a grant or revocation reaches Stop, Delete, and the draft without Refresh.
 Refocus sends a fresh GET. A repeated 403 on a never-readable draft Configuration
 keeps the partial Agent; a version proved unreadable is not read again.
 Lost access scrubs; Agent, session, and scope failures clear their protected views.
 Other pages revalidate before reuse, including a shown 403 or 404; forms defer the check.
 Returning to the tab restores focus after the unchanged view is admitted, if the control
-remains and the reader hasn’t moved on. Draft save baselines and Namespace scopes stay separate.
+remains and the reader hasn’t moved on. A rebuilt Agents list returns it to the same row's
+name or icon (`data-refocus-key`). Draft save baselines and Namespace scopes stay separate.
 
 Other admission failures clear affected content;
 a current protected `401` clears all private state. `pagehide` clears

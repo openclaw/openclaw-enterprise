@@ -131,8 +131,9 @@ unknown outcome and keeps the last observed state of both Agents. After `404`, `
 uncertain outcome, the requested row’s actions stay disabled until **Refresh** rereads it.
 After a `403` about grants, the refused icon stays unavailable and the row's note names the grant
 under it, until a permission answer read later allows that action. Any other `403`, such as
-retry ownership on a stale row, shows the API's text, and the row's actions stay disabled
-until **Refresh**.
+retry ownership on a stale row, shows the API's text, the row's note points to it, and the row's
+actions stay unavailable, described by it, until **Refresh**. A window refocus that rebuilds the
+list shows that refusal again and keeps focus on the same row control.
 
 ## Debugging and Verification
 

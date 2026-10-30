@@ -133,6 +133,59 @@ for (const action of ["Stop", "Delete"] as const) {
   });
 }
 
+// A refused Stop or Delete stayed unavailable after a re-grant until header Refresh, though coming
+// back to the window rechecks the Agent page and the Agents list follows a refocus (r54 row 11).
+// The refocus recheck now reads the permission answer again, which lifts the refusal.
+for (const action of ["Stop", "Delete"] as const) {
+  test(`a re-grant lifts an Agent page ${action} refusal when the reader comes back to the window`, async (t) => {
+    const stopping = action === "Stop";
+    const name = `Regranted ${action.toLowerCase()}`;
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
+    const agent = await fixture.createAgent(namespace.id, name, nativeValues(`regrant-${action}`));
+    const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    const member = await fixture.createNamespaceMember(MEMBER, namespace.id, AGENT_READ);
+    const { page } = await newPage(t, fixture, { browser });
+    const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    const permissionsUrl = `${fixture.origin}${agentPath}/permissions`;
+    await routeOperateDenials(page, fixture.origin, agentPath, active.revision.id);
+    // With no permission answer the page keeps Stop and Delete, and the real API refuses them.
+    await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+      member.credentials,
+    );
+    const row = page.getByRole("region", { name: `${action} Agent`, exact: true });
+    const control = row.getByRole("button", { name: `${action} Agent`, exact: true });
+    await waitForEnabled(control);
+    await control.click();
+    await page
+      .getByRole("dialog", { name: stopping ? "Stop this Agent?" : `Delete ${name}?` })
+      .getByRole("button", {
+        name: stopping ? "Stop Agent" : "Permanently delete Agent",
+        exact: true,
+      })
+      .click();
+    const alert = row.getByRole("alert");
+    await alert.getByText(stopping ? stopRefused(name) : deleteRefused(name)).waitFor();
+    assert.equal(await control.getAttribute("aria-disabled"), "true");
+    await page.unroute(permissionsUrl);
+    grantMember(fixture, MEMBER, [[stopping ? "operate" : "delete", "agent"]]);
+    const answered = page.waitForResponse(
+      (reply) =>
+        reply.url() === permissionsUrl &&
+        reply.request().method() === "GET" &&
+        reply.status() === 200,
+    );
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await answered;
+    await alert.waitFor({ state: "detached" });
+    await waitForEnabled(control);
+    assert.equal(await hasFocus(control), true);
+  });
+}
+
 // The page's first permission answer was requested before any Stop or Delete, so it never lifts a
 // refusal, even when it answers after a grant that allows the action: only a read started after
 // the refusal speaks for this viewer's access now (finding 2955).
@@ -426,10 +479,12 @@ test("an Agents list row refusal lifts only for a permission answer read after i
 // the row's note under the icon, so a refusal about something else told a person who holds the
 // grant that the row "Needs Agent operate" (finding 2958). As on the Agent page, a refusal that is
 // not about grants now shows the API's text with the Agent's name and names no grant; the row
-// waits for Refresh, since a repeat would be refused the same way. A denial about grants, here the
-// older API's generic one, keeps the console's sentence and the row's grant note. The API's
-// answers are fulfilled: the in-memory app has no disabled identity, no permanently failed
-// deletion work and no older API.
+// waits for Refresh, since a repeat would be refused the same way. At 390 px that alert is far
+// above the row, which showed only a faded icon, and a refocus dropped it (finding D812): the row's
+// note now points to it, both icons stay reachable, described by it, and a refocus keeps it until
+// Refresh. A denial about grants, here the older API's generic one, keeps the console's sentence
+// and the row's grant note. The API's answers are fulfilled: the in-memory app has no disabled
+// identity, no permanently failed deletion work and no older API.
 test("an Agents list row refused for another reason shows the API's text and names no grant", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Other row refusals");
   const other = await fixture.createAgent(namespace.id, "Other Row", nativeValues("other-row"));
@@ -483,19 +538,39 @@ test("an Agents list row refused for another reason shows the API's text and nam
       alert,
       `Could not ${action.toLowerCase()} Other Row. ${message} Select Refresh before trying again.`,
     );
-    // No grant under the icons: the row's note stays empty, and both icons wait for Refresh,
-    // natively disabled, so focus falls back to the Agent's name.
-    assert.equal((await row.locator(".row-action-note").textContent())?.trim(), "");
-    for (const kind of ["Stop", "Delete"]) {
-      const each = row.getByRole("button", { name: `${kind} Other Row`, exact: true });
-      assert.equal(await each.evaluate((node) => (node as HTMLButtonElement).disabled), true);
-    }
-    await page.waitForFunction(
-      () => globalThis.document.activeElement?.textContent === "Other Row",
-    );
+    const shown = page.getByRole("alert").filter({ hasText: `Request ID: ${id}` });
+    const refusal = (await shown.textContent())?.trim() ?? "";
+    const note = action === "Stop" ? "Not stopped: see above" : "Not deleted: see above";
+    // No grant under the icons: the row's note, in view under them, points to the alert, and
+    // both icons wait for Refresh, reachable and described by it. Focus stays on the refused icon.
+    const checkRow = async () => {
+      const line = row.getByText(note, { exact: true });
+      await line.waitFor();
+      const [iconBox, lineBox] = [await icon.boundingBox(), await line.boundingBox()];
+      assert.ok(iconBox && lineBox && lineBox.y - iconBox.y < 80, `${note} sits under the icon`);
+      assert.ok(lineBox.y + lineBox.height <= 844, `${note} is in view`);
+      assert.equal(await hasFocus(icon), true);
+      for (const kind of ["Stop", "Delete"]) {
+        const each = row.getByRole("button", { name: `${kind} Other Row`, exact: true });
+        // The refused icon is described by the alert, with its Request ID; the other by the note.
+        await expectReachableReason(page, each, kind === action ? refusal : alert);
+      }
+    };
+    await checkRow();
+    // A refocus rebuilds the list (a row write makes it one it does not reuse). The alert and
+    // the row's note stay until Refresh, and focus stays on the refused icon.
+    await icon.focus();
+    const view = page.locator('.content [aria-live="polite"]');
+    await view.evaluate((node) => node.setAttribute("data-before-refocus", ""));
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await page.locator("[data-before-refocus]").waitFor({ state: "detached" });
+    await page.locator('.content [aria-live="polite"][aria-busy="false"]:not([inert])').waitFor();
+    assert.equal((await shown.textContent())?.trim(), refusal);
+    await checkRow();
     // Refresh rereads the row and makes its icons available again.
     await refresh.click();
     await waitForEnabled(icon);
+    assert.equal(await shown.count(), 0);
   }
 
   // A denial about grants keeps the console's sentence, and the refused icon stays unavailable

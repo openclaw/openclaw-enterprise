@@ -8,6 +8,7 @@ This record preserves the dated changes to the platform console request flow. Se
 
 ## Changelog
 
+- 2026-10-30 12:00: Refocus rereads the Agent page's permission answer and keeps focus on a rebuilt Agents list row. (fix-dogfood-r59)
 - 2026-10-29 20:40: Refocus does not read again a version the page proved unreadable. (fix-console-r53)
 - 2026-10-29 18:30: A Tab lap past the page end starts no refocus check. (fix-keyboard-sweep)
 - 2026-10-28 13:01: Keep a held press on one Agent’s copy button from activating another Agent’s button after navigation. (fix-3678 - 594de5868)

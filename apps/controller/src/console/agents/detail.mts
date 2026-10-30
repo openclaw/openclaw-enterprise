@@ -1825,6 +1825,17 @@ export async function renderAgentDetail(
       agentSaveDenial(permissions, agent),
     );
   });
+  // A refocus recheck reads the permission answer again too, so a re-granted Stop, Delete or
+  // draft edit applies once the reader comes back to the window, as on the Agents list; only
+  // header Refresh did (r54 row 11).
+  context.onRechecked?.(() => {
+    if (!context.isCurrent() || deleting) {
+      return;
+    }
+    agentSaveDenied = rereadPermissions().then((permissions) =>
+      agentSaveDenial(permissions, agent),
+    );
+  });
   // Shown once by the tab a draft refresh rebuilds after a save (finding 1445).
   let savedNotice = "";
   let activityPanel = deploymentStatus;
