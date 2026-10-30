@@ -6812,7 +6812,8 @@ export const scenarios = {
     description:
       "v7 was stopped, so no version is selected and its Pods are gone. While its Logs are open, another person deploys v8, and v8's startup model check times out: the Agent runs again with no version selected. The Logs status poll rereads the Agent and, finding it running with no version selected, lists the versions again: the page shows v8's failed deployment (finding 2978).",
     steps: [
-      "Wait for the Logs view to say “This version has no running Pod for this source.” The summary then reads Latest visible deployment v8 · Failed, and Deployment needs attention leads with v8's timed-out model check.",
+      "Wait for the Logs view to say “This version has no running Pod for this source.” The summary reads Latest visible deployment v7 · Completed and Selected for service None.",
+      "Wait for the next status poll (10 seconds). The summary then reads Latest visible deployment v8 · Failed, and Deployment needs attention leads with v8's timed-out model check.",
       "Open the version picker: v8 is listed above v7.",
     ],
     gap: "Simulated UI state only; this preview does not prove a live stop, redeploy or deployment failure.",
