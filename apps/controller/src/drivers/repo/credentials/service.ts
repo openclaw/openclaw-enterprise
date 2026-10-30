@@ -2,6 +2,7 @@ import type {
   RepositoryBackend,
   PreparedRepositoryBackend,
   RepositoryServiceFactory,
+  ResolvedGrant,
   Clock,
   Denied,
   RequestHead,
@@ -249,9 +250,14 @@ export function createCredentialService(
     if (sessions.size + failedConstructions.size + pendingOpens >= limits.sessions) {
       throw new Error("SESSION_CAPACITY");
     }
-    const resolved = isBoundInput(admittedInput)
-      ? factory.resolveBound!(admittedInput)
-      : factory.resolve(profile);
+    let resolved: ResolvedGrant;
+    if (isBoundInput(admittedInput)) {
+      resolved = factory.resolveBound!(admittedInput);
+    } else if ("resolve" in factory) {
+      resolved = factory.resolve(profile);
+    } else {
+      throw new Error("INVALID_BINDING");
+    }
     const binding = snapshotBinding(resolved.binding);
     const client = Object.freeze({ ...resolved.client });
     if (isBoundInput(admittedInput) && !sameBinding(binding, admittedInput.expectedBinding)) {
