@@ -355,6 +355,7 @@ function installationApiOperation(request: OpenShellOnlineHttpRequest, head: Req
   if (
     head.contentEncoding !== "identity" ||
     // Dedicated credential issuance is not ordinary repository collaboration.
+    (method === "POST" && /^\/repos\/[\w-]+\/[\w.-]+\/keys$/i.test(path)) ||
     (method === "POST" &&
       /^\/(?:repos\/[\w-]+\/[\w.-]+|orgs\/[\w-]+)\/actions\/runners\/(?:registration-token|remove-token|generate-jitconfig)$/i.test(
         path,

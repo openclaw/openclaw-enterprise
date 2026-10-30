@@ -640,7 +640,33 @@ test("repository API credential issuance is refused while ordinary collaboration
         }
       }
     }
+    for (const path of [
+      "/repos/example/project/keys",
+      "/repos/EXAMPLE/Project/keys",
+      "/repos/example/project/KEYS",
+      "/REPOS/example/project/keys",
+      "/repos/openclaw/openclaw-enterprise/keys",
+    ]) {
+      for (const read_only of [undefined, false, true]) {
+        const before = approvals;
+        const result = await evaluate(path, "POST", {
+          title: "inert fixture",
+          key: "not-a-real-public-key",
+          ...(read_only === undefined ? {} : { read_only }),
+        });
+        assert.deepEqual(
+          [result.decision, approvals - before],
+          [2, 0],
+          `${scope}: ${path}: read_only=${read_only}; refusal before owner approval`,
+        );
+        assert.equal(result.reason_code, "request_not_allowed");
+      }
+    }
     for (const [path, method, body] of [
+      ["/repos/example/project/keys", "GET"],
+      ["/repos/example/project/keys/12", "GET"],
+      ["/repos/example/project/keys/12", "DELETE"],
+      ["/repos/example/project/issues", "POST", { title: "keys" }],
       ["/repos/example/project", "GET"],
       ["/repos/example/project/actions/runners", "GET"],
       ["/repos/example/project/actions/runners/12/labels", "POST", { labels: ["ordinary-label"] }],
