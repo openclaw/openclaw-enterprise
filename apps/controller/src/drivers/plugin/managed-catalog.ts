@@ -12,7 +12,7 @@ import {
   googleRequestScope,
   googleRelease as release,
   googleReleaseSha256,
-} from "./google-operations.ts";
+} from "./google-workspace/operations.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 

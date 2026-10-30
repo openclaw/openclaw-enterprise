@@ -206,4 +206,15 @@ export interface PreparedRepositoryBackendFactory extends Omit<RepositoryBackend
   createPrepared(authority: AuthorityIdentity, selection: ResolvedGrant): PreparedRepositoryBackend;
 }
 
-export type RepositoryServiceFactory = RepositoryBackendFactory | PreparedRepositoryBackendFactory;
+/** Bound selection without a profile resolver; construction remains a separate capability. */
+export interface BoundPreparedRepositoryBackendFactory extends Omit<
+  PreparedRepositoryBackendFactory,
+  "resolve"
+> {
+  resolveBound(input: RepositoryCredentialBoundSessionInput): ResolvedGrant;
+}
+
+export type RepositoryServiceFactory =
+  | RepositoryBackendFactory
+  | PreparedRepositoryBackendFactory
+  | BoundPreparedRepositoryBackendFactory;

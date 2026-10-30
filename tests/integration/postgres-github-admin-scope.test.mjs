@@ -133,6 +133,19 @@ test(
     assert.equal(await recoveryHolder(), admin.id);
     // A refused move is audited against the current holder, whose grants were not covered.
     assertCoverageDenials(await coverageDenials(["openclaw.auth.recovery.replace"]), 1);
+    // The version read before the GitHub attach is stale, so the API refuses the change.
+    const stale = await changeAccount(
+      app,
+      adminHeaders,
+      limited.id,
+      "disable",
+      limitedAccount.version,
+    );
+    assert.equal(stale.statusCode, 409, stale.body);
+    assert.equal(
+      stale.json().error.message,
+      "The authentication account version changed. Read its current state before a new action.",
+    );
     const disabled = await changeAccount(app, adminHeaders, limited.id, "disable");
     assert.equal(disabled.statusCode, 200, disabled.body);
     const enabled = await changeAccount(app, adminHeaders, limited.id, "enable");

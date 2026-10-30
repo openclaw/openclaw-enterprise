@@ -19,19 +19,12 @@ import { basename, dirname, join } from "node:path";
 import test, { before } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
 import { projectRepositorySessions } from "../fixtures/repository-credentials/projection.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const deadlineWallMs = Date.now() + 86400000;
-const client = {
-  gatewayOrigin: "https://credentials.example.test",
-  gitRemote: "https://credentials.example.test/example/project.git",
-  gitUsername: "gateway-session",
-  canonicalApiHost: "github.com",
-  apiHost: "credentials.example.test",
-  repository: "example/project",
-  pushRefAllowlist: ["refs/heads/agent/*"],
-};
+const client = repositoryClientData({ pushRefAllowlist: ["refs/heads/agent/*"] });
 
 let nativeClientImport;
 

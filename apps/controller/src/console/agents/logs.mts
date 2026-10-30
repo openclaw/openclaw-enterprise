@@ -53,6 +53,9 @@ interface AgentLogsOptions {
   onLogsDenied?(): void;
   // A read was refused after the same read succeeded: the caller's access changed.
   onAccessChanged?(): void;
+  // Rereads the Agent while this version has no running Pod. Answers another version selected
+  // for service while the Agent runs, with a link to its Logs, or null.
+  runningVersion?(): Promise<{ label: string; link: HTMLElement } | null>;
 }
 
 // A reader without operate can read logs without observing a Pod or status timestamp.
@@ -212,6 +215,7 @@ export function renderAgentLogs(
     versionRead = Promise.resolve(undefined),
     onLogsDenied = () => {},
     onAccessChanged = () => {},
+    runningVersion = () => Promise.resolve(null),
   }: AgentLogsOptions,
 ) {
   const base = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(agent.id)}/deployments/${encodeURIComponent(revisionId)}/runtime`;
@@ -258,6 +262,59 @@ export function renderAgentLogs(
   const stripStatus = element("span", { role: "status" }, "Loading runtime status…");
   const stripObserved = element("span", { "aria-live": "off" });
   const stripLine = element("p", { className: "muted" }, stripStatus, stripObserved);
+  // Names the version selected for service when this one has no running Pod: after a stop and
+  // redeploy the view stayed on the stopped version with no hint (finding 2975). A version
+  // picked on purpose stays selected; the notice only links to the other version's Logs.
+  const runningVersionNotice = element("div", {
+    className: "log-running-version",
+    role: "status",
+  });
+  let runningVersionShown: string | null = null;
+  let runningVersionReads = 0;
+  async function showRunningVersion(noPod: boolean) {
+    const ticket = ++runningVersionReads;
+    const answer = noPod ? await runningVersion().catch(() => null) : null;
+    if (!current() || ticket !== runningVersionReads) {
+      return;
+    }
+    const label = answer?.label ?? null;
+    if (label === runningVersionShown) {
+      return;
+    }
+    runningVersionShown = label;
+    runningVersionNotice.replaceChildren(
+      ...(answer
+        ? [
+            statusBlock("info", null, `${answer.label} is selected for service.`, [answer.link], {
+              role: null,
+            }),
+          ]
+        : []),
+    );
+  }
+  // The latest deployment's failure, from the Agent page's recovery card. That card sits above
+  // the tabs, about 700 px above this view at phone width, so a redeploy from elsewhere that
+  // failed while Logs stayed open said nothing here (finding 2993). It is drawn in place, without
+  // moving focus or scrolling, and only when it changes, so a reader on its link keeps focus.
+  const deploymentFailureNotice = element("div", {
+    className: "log-deployment-failure",
+    role: "status",
+  });
+  let deploymentFailureShown: string | null = null;
+  function showDeploymentFailure(
+    failure: { revisionId: string; text: string; link: HTMLElement } | null,
+  ) {
+    const key = failure ? JSON.stringify([failure.revisionId, failure.text]) : null;
+    if (!current() || key === deploymentFailureShown) {
+      return;
+    }
+    deploymentFailureShown = key;
+    deploymentFailureNotice.replaceChildren(
+      ...(failure
+        ? [statusBlock("danger", null, failure.text, [failure.link], { role: null })]
+        : []),
+    );
+  }
   function showStripStatus(text: string) {
     setText(stripObserved, "");
     stripStatus.textContent = text;
@@ -666,6 +723,7 @@ export function renderAgentLogs(
     statusDenied = true;
     description = unobservedDescription();
     strip.replaceChildren();
+    void showRunningVersion(false);
     renderPickers();
     if (first && !logsDenied) {
       firstLogRead = readLogs({ restart: true });
@@ -747,6 +805,7 @@ export function renderAgentLogs(
         statusDenied = false;
         renderStrip();
         renderPickers();
+        void showRunningVersion(answer.pods.length === 0);
         if (first && !logsDenied) {
           firstLogRead = readLogs({ restart: true });
         } else if (!logsDenied && selection !== effectiveSelection()) {
@@ -1152,6 +1211,8 @@ export function renderAgentLogs(
     element("h3", {}, "Runtime"),
     stripLine,
     strip,
+    deploymentFailureNotice,
+    runningVersionNotice,
     element(
       "div",
       { className: "log-viewer" },
@@ -1285,5 +1346,5 @@ export function renderAgentLogs(
     .then(() => firstLogRead)
     .catch(() => {})
     .finally(showFirstView);
-  return { section, firstView };
+  return { section, firstView, showDeploymentFailure };
 }

@@ -106,7 +106,7 @@ import { TokenService } from "../backends/token-service/service.ts";
 import { githubMetadataProvider } from "../drivers/egress-proxy/github-metadata.ts";
 import { PostgresPreparedGitHubLifecycle } from "../drivers/repo/github/credentials/prepared-lifecycle.ts";
 import { GitHubRepositoryPolicy } from "../drivers/repo/github/policy.ts";
-import { composeRepositoryAccess } from "./repository-credentials/platform.ts";
+import { loadRepositoryPolicy } from "./repository-credentials/policy.ts";
 import type { PreparedRepositoryGitConfiguration } from "../backends/repository-credentials/prepared-git-owner.ts";
 import { createOpenShellBackend, type OpenShellGateway } from "../backends/openshell.ts";
 import {
@@ -243,7 +243,7 @@ export interface InstallationRuntimeDrivers {
   readonly preparedRepositoryGit?: PreparedRepositoryGitConfiguration;
   readonly repositoryTransport?: OpenShellRepositoryTransport;
   readonly repositoryRegistry?: Awaited<
-    ReturnType<typeof composeRepositoryAccess>
+    ReturnType<typeof loadRepositoryPolicy>
   >["repositoryRegistry"];
   readonly repositoryOwner?: Readonly<{
     controlSocket?: string;
@@ -1113,20 +1113,32 @@ export async function loadInstallationConfiguration(options: {
       : (options.createOpenShellBackend?.(openShellBackend) ??
         createOpenShellBackend(openShellBackend));
   const repositoryBackend = backends.find((backend) => backend.type === "github");
-  const repositoryRuntime =
-    repoSelection === undefined || repositoryBackend === undefined
-      ? undefined
-      : await composeRepositoryAccess({
-          backend: repositoryBackend,
-          selection: nativeRepositorySelection
-            ? {
-                ...repoSelection,
-                configuration: { ...repoSelection.configuration, ...nativeRepositorySelection },
-              }
-            : repoSelection,
-          protectedGit: repositoryDeliveryMode === "protected",
-          configuration: repositoryConfiguration,
-        });
+  let repositoryRuntime;
+  if (repoSelection !== undefined && repositoryBackend !== undefined) {
+    if (repositoryDeliveryMode === "native") {
+      const { composeRepositoryAccess } = await import("./repository-credentials/platform.ts");
+      repositoryRuntime = await composeRepositoryAccess({
+        backend: repositoryBackend,
+        selection: nativeRepositorySelection
+          ? {
+              ...repoSelection,
+              configuration: { ...repoSelection.configuration, ...nativeRepositorySelection },
+            }
+          : repoSelection,
+        configuration: repositoryConfiguration,
+      });
+    } else {
+      repositoryRuntime = await loadRepositoryPolicy({
+        backend: repositoryBackend,
+        selection: repoSelection,
+        policyConfiguration: requireConfiguration<{ readonly sessionDurationSeconds: number }>(
+          GitHubRepositoryPolicy,
+          repoSelection.configuration,
+        ),
+        configuration: repositoryConfiguration,
+      });
+    }
+  }
   validateOpenShellRepositoryTransport(repositoryTransportConfiguration, {
     prepared: preparedRepositoryGit !== undefined,
     repository: repositoryRuntime !== undefined,

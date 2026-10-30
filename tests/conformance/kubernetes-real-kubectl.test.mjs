@@ -896,7 +896,7 @@ test(
       logs.at(-1),
       /^teardown: exiting once the file's tests settle for 10 ms; abandoned cleanups registered at kubernetes-real-kubectl\.test\.mjs:\d+$/,
     );
-    await delay(100);
+    await waitUntil("the exit after the 10 ms grace", () => exits.length > 0, 2_000);
     assert.deepEqual(exits, ["exit"]);
     assert.equal(teardownStepLimitMs, 180_000, "longer than the 120 s Namespace delete waits");
     assert.equal(abandonedTeardownExitGraceMs, 2_000);
@@ -1033,7 +1033,13 @@ test(
         }),
       { message: stopsSetup },
     );
-    await delay(300);
+    // The drain ends with the oldest late cleanup, after the stalled one's 50 ms limit; each
+    // late cleanup fails the file once it ran.
+    await waitUntil(
+      "the five late cleanups' failures and the exit",
+      () => events.filter((event) => event === "fail").length >= 5 && events.includes("exit"),
+      2_000,
+    );
     // Registered in one turn, they run newest-first like the teardown, and a cleanup's own
     // registration runs next.
     assert.deepEqual(ran, [

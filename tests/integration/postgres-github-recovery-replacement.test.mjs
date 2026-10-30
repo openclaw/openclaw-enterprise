@@ -169,11 +169,15 @@ test(
         });
         // The former holder still administers the Installation, so it stays reserved too.
         assert.deepEqual(lane, { fresh: 429, former: 200, holder: 200 });
+        const disabled = await changeAccount(app, adminHeaders, holder.id, "disable");
         assert.equal(
-          (await changeAccount(app, adminHeaders, holder.id, "disable")).statusCode,
+          disabled.statusCode,
           409,
           "the new holder is protected like the recovery account",
         );
+        // Enable answers 409 too for an account that is not disabled; only the recovery guard
+        // names the recovery account.
+        assert.equal(disabled.json().error.message, "The recovery account cannot be disabled.");
       },
     );
 

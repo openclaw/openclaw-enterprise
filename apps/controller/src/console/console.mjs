@@ -1120,7 +1120,12 @@ function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
 // pending deployment that a second refocus's reread replaced (finding 1663). A shell control
 // outside the page (sidebar, page header, navigation toggle), which the recheck's shells replace,
 // gives it to the same control in the remounted shell, unless that control is gone or disabled
-// (finding 1662).
+// (finding 1662). A recheck that rebuilds the page instead gives focus to the control that
+// carries the same data-refocus-key, such as an Agents list row's name or icon (finding D814).
+// When that control is gone or natively disabled, such as Stop on a row whose Agent another
+// person stopped before a version was selected, focus goes to the control its
+// data-refocus-fallback names (the row's name), and when the row is gone too, to the page
+// heading, not to the body (finding 2967).
 function focusInShownView() {
   const view = app.querySelector('.content [aria-live="polite"]');
   const focused = document.activeElement;
@@ -1130,20 +1135,37 @@ function focusInShownView() {
     return null;
   }
   const href = focused.href ?? focused.dataset?.returnFocusHref ?? null;
+  const key = inView ? (focused.dataset?.refocusKey ?? null) : null;
+  const fallbackKey = key ? (focused.dataset.refocusFallback ?? null) : null;
   return {
-    restore(remounted) {
+    restore(remounted, { rebuilt = false } = {}) {
       if (!document.hasFocus() || document.activeElement !== document.body) {
         return;
       }
-      const target = shellControl
-        ? shellUI.matchingControl(focused)
-        : remounted.contains(focused)
-          ? focused
-          : href &&
-            Array.from(remounted.querySelectorAll("[data-return-focus-href]")).find(
-              (item) => item.dataset.returnFocusHref === href,
-            );
+      const keyed = (wanted) =>
+        wanted
+          ? Array.from(remounted.querySelectorAll("[data-refocus-key]")).find(
+              (item) => item.dataset.refocusKey === wanted && !item.disabled,
+            )
+          : undefined;
+      const target = rebuilt
+        ? key && (keyed(key) ?? keyed(fallbackKey) ?? app.querySelector(".content h1"))
+        : shellControl
+          ? shellUI.matchingControl(focused)
+          : remounted.contains(focused)
+            ? focused
+            : href &&
+              Array.from(remounted.querySelectorAll("[data-return-focus-href]")).find(
+                (item) => item.dataset.returnFocusHref === href,
+              );
       target?.focus({ preventScroll: true });
+      // A rebuilt row can be taller than the one it replaces: a reread that finds the Agent
+      // deleting adds its badge above the row's icons. The restored icon then sat cut off at the
+      // viewport's bottom with its row note below the fold (finding 2976). Keep the control's
+      // area (the cell with its note) in view, moving the page only as far as that needs.
+      if (rebuilt && target?.dataset?.refocusKey !== undefined) {
+        (target.closest("[data-refocus-area]") ?? target).scrollIntoView({ block: "nearest" });
+      }
     },
   };
 }
@@ -2205,6 +2227,8 @@ async function loadPage({
       revalidators: new Set(),
       // Called once Installation administration settles as ended while the view is mounted.
       administrationEnded: new Set(),
+      // Called after a refocus recheck of a mounted Agent page found it still readable.
+      rechecked: new Set(),
       user: session.user,
       // The view this load renders, retained by its own node (finding 1542).
       view: shell.view,
@@ -2342,6 +2366,7 @@ async function loadPage({
         return () => viewState.revalidators.delete(check);
       },
       onAdministrationEnded: (handler) => viewState.administrationEnded.add(handler),
+      onRechecked: (handler) => viewState.rechecked.add(handler),
       recheckAdministration,
       onExpired: () => {
         if (lifetime.isCurrent(viewState.active)) {
@@ -2580,8 +2605,19 @@ async function loadPage({
     }
     viewState.reads.set(collectionPath(current.feature, namespaceId), JSON.stringify(items));
     if (current.feature === "agents") {
-      renderAgentList({ ...agentContext, items, permissions: firstPermissions });
+      renderAgentList({
+        ...agentContext,
+        items,
+        permissions: firstPermissions,
+        resumed: resumingView,
+      });
       showChatLinkFailure(shell.view, chatLinkFailure);
+      // A refocus rebuilds the list when its recheck reads changed (a re-grant, a row another
+      // person deleted) or after a row write, which makes the list one it never reuses. Focus on
+      // a row's name or icon returns to the same control in the rebuilt row instead of falling
+      // to the body (finding D814).
+      const rebuiltView = shell.view;
+      restoreRefocus = () => refocused?.restore(rebuiltView, { rebuilt: true });
     } else if (current.feature === "namespaces") {
       renderNamespaces(
         {
@@ -2995,6 +3031,14 @@ async function revalidateMountedAgent(current) {
             throw error;
           }),
       ]);
+    }
+    // The page's own answers follow the recheck: a grant or revocation since the page loaded
+    // applies without Refresh, as on the Agents list (r54 row 11).
+    if (!isCurrent()) {
+      return;
+    }
+    for (const handler of mountedViewState?.rechecked ?? []) {
+      handler();
     }
   } catch (error) {
     if (!isCurrent() || error.name === "AbortError") {

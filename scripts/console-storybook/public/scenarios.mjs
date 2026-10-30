@@ -62,6 +62,19 @@ const modelCredentialSourceTypes = [
     harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
   },
 ];
+// A Credential Gateway that also offers ChatGPT device login. Without that source type Sign in
+// with OAuth is unavailable before the click (finding 2991).
+const deviceLoginSourceTypes = [
+  ...modelCredentialSourceTypes,
+  {
+    type: "codex-oauth",
+    config: [],
+    secrets: [],
+    rotation: "refresh",
+    deviceAuthorization: { harnessId: "codex" },
+    harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" },
+  },
+];
 const dedicatedOpenclawForm = [
   ...readyForm,
   { selector: "#agent-harness", value: "openclaw" },
@@ -1264,6 +1277,63 @@ export const scenarios = {
     ],
     description:
       "Permission advice allowed Delete, but the controller refuses the confirmed write. The alert names the missing Agent delete access; the Agent stays in the list. Its Delete icon takes focus back and looks unavailable, described by the alert, and the row's note under the icons says Needs Agent delete.",
+  },
+  agentsRowDeleteRefusedOther: {
+    group: "Pages/Agents",
+    name: "Delete from the list refused for another reason",
+    deployed: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "DELETE",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Only the actor that started this deletion can retry it while that actor still holds delete. Retry as that actor, or remove its delete permission first.",
+      },
+    ],
+    actions: [
+      { selector: '[aria-label="Delete Research assistant"]', click: true },
+      { selector: ".agent-delete-dialog button.danger", click: true },
+    ],
+    description:
+      "The row is stale: another person's deletion of this Agent failed after the list loaded, and the controller refuses this caller's Delete for that reason, not for a missing grant. The alert shows the API's text with the Agent's name. The row's note names no grant; it reads Not deleted: see above, so a narrow screen that scrolled the alert away still says why. Both icons stay in the Tab order, unavailable and described by the refusal, until Refresh; focus stays on Delete.",
+  },
+  agentsRowRefocusDeleting: {
+    group: "Pages/Agents",
+    name: "Refocus after another person's deletion, with a kept refusal",
+    deployed: true,
+    deletingOnListReread: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "DELETE",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Only the actor that started this deletion can retry it while that actor still holds delete. Retry as that actor, or remove its delete permission first.",
+      },
+    ],
+    actions: [
+      { selector: '[aria-label="Delete Research assistant"]', click: true },
+      { selector: ".agent-delete-dialog button.danger", click: true },
+    ],
+    description:
+      "This caller's Delete was refused for a reason that is not a grant, and another person's deletion of the Agent started after the list loaded. A window refocus rebuilds the list: the row gains its Deleting badge, keeps the refusal and its note, and focus returns to Delete. The page scrolls only as far as needed to keep the icon and its note in view (finding 2976). Simulated API; no backend proof.",
+    steps: [
+      "At 390 px, scroll until the note Not deleted: see above sits at the bottom of the window, with Delete Research assistant focused. Switch to another window, then return. The row reads Deleting, and Delete and its note are both in view.",
+    ],
+  },
+  agentsRowRefocusStopped: {
+    group: "Pages/Agents",
+    name: "Refocus after another person's stop",
+    deployed: true,
+    stoppedOnListReread: true,
+    description:
+      "Another person's stop completes after the list loads, so the Agent has no selected version. A window refocus rechecks the list and rebuilds it; the row has no Stop icon now, so focus on it moves to the same row's name, not to the page (finding 2967). Simulated API; no backend proof.",
+    steps: [
+      "Press Tab until Stop Research assistant has focus. Switch to another window, then return. The row has no Stop icon, and focus is on the Research assistant link.",
+    ],
   },
   agentsRowRestricted: {
     group: "Pages/Agents",
@@ -4149,6 +4219,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT OAuth before sign-in (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     pluginDiscovery,
     pluginCapabilities,
     actions: oauthForm,
@@ -4159,15 +4230,27 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT device login pending (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     oauthPending: true,
     actions: startOAuthLogin,
     description:
       "The user code and provider link are visible while authorization is pending. Cancel login removes this staged login locally.",
   },
+  createOAuthStartNavigation: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT sign-in interrupted by navigation (Experimental)",
+    path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
+    rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
+    actions: oauthForm,
+    description:
+      "Start sign-in, navigate to Secrets, and return with Back. The retained attempt blocks a second start and asks an administrator to investigate. The fixture holds the response; it does not prove provider persistence.",
+  },
   createOAuthReady: {
     group: "Pages/Create Agent",
     name: "ChatGPT login ready for plugin discovery (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     pluginDiscovery,
     pluginCapabilities,
     actions: startOAuthLogin,
@@ -4182,6 +4265,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login permission denied (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/device-authorizations", method: "POST", status: 403 }],
     actions: startOAuthLogin,
     description:
@@ -4191,15 +4275,35 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login unavailable (Experimental)",
     path: create,
-    rules: [{ suffix: "/device-authorizations", method: "POST", status: 501 }],
+    credentialSourceTypes: deviceLoginSourceTypes,
+    rules: [
+      {
+        suffix: "/device-authorizations",
+        method: "POST",
+        status: 501,
+        code: "NOT_IMPLEMENTED",
+        message:
+          "Device login needs a Credential Gateway and a Credential Refresh Driver, and this Installation does not select both. Ask an Installation administrator to select them; see the credential lifecycle guide.",
+      },
+    ],
     actions: startOAuthLogin,
     description:
-      "An Installation whose selected Drivers do not support device login reports it as unavailable. Choose another authentication method; no device code or sign-in link appears.",
+      "The Credential Gateway offers device login, but the Installation selects no Credential Refresh Driver. The refused start names the API's reason, and Sign in with OAuth stays unavailable, described by it. No device code or sign-in link appears.",
+  },
+  createOAuthNotOffered: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT login not offered by the Drivers (Experimental)",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: oauthForm,
+    description:
+      "The Installation's Credential Gateway offers no ChatGPT device login. Sign in with OAuth is unavailable before any request: Tab reaches it, it is described by the reason, and Enter sends nothing.",
   },
   createOAuthStartUnconfirmed: {
     group: "Pages/Create Agent",
     name: "ChatGPT sign-in start unconfirmed (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/device-authorizations", method: "POST", bodyError: true }],
     actions: oauthForm,
     description:
@@ -4209,6 +4313,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login exchange failed (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/poll", method: "POST", status: 503 }],
     actions: startOAuthLogin,
     description:
@@ -4218,6 +4323,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT device login expired (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     oauthExpired: true,
     actions: startOAuthLogin,
     description:
@@ -4238,10 +4344,61 @@ export const scenarios = {
       "Tab to Save plugin selections and Discard changes. Each takes focus, looks unavailable and is described by No plugin changes to save.; Enter or Space does nothing. Edit the JSON: both become live.",
     ],
   },
+  authOAuthStartNavigation: {
+    group: "Components/Credentials",
+    name: "ChatGPT replacement interrupted by navigation (Experimental)",
+    path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
+    deployed: true,
+    auth: "oauth",
+    rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
+    description:
+      "Start a replacement sign-in, navigate to Secrets, and return with Back. The saved authentication remains; the unconfirmed replacement cannot start twice.",
+  },
+  authOAuthStartTabSwitch: {
+    group: "Components/Credentials",
+    name: "ChatGPT sign-in answered on another tab (Experimental)",
+    path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
+    deployed: true,
+    auth: "oauth",
+    oauthPending: true,
+    rules: [{ suffix: "/device-authorizations", method: "POST", delayMs: 3000, once: true }],
+    description:
+      "Start a replacement sign-in and open Configuration within 3 s. The reply arrives while Configuration shows; Credentials keeps it, so returning shows the code and Cancel login. The fixture delays the reply; it does not prove provider persistence.",
+  },
+  authOAuthStartTabSwitchRefused: {
+    group: "Components/Credentials",
+    name: "ChatGPT sign-in refused on another tab (Experimental)",
+    path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
+    deployed: true,
+    auth: "oauth",
+    rules: [
+      { suffix: "/device-authorizations", method: "POST", delayMs: 3000, status: 403, once: true },
+    ],
+    description:
+      "Start a replacement sign-in and open Configuration within 3 s. The simulated refusal arrives while Configuration shows; returning to Credentials names the missing grants and offers Sign in with OAuth again.",
+  },
+  authOAuthRestartTabSwitch: {
+    group: "Components/Credentials",
+    name: "ChatGPT sign-in restarted on another tab (Experimental)",
+    path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
+    deployed: true,
+    auth: "oauth",
+    oauthPending: true,
+    rules: [
+      { suffix: "/device-authorizations", method: "POST", delayMs: 3000, skip: 1, once: true },
+    ],
+    description:
+      "Start a replacement sign-in, choose Cancel login, then start again and open Configuration within 3 s. The second reply arrives while Configuration shows; Credentials keeps it, so returning shows the code. The fixture delays the reply; it does not prove provider persistence.",
+  },
   authOAuthReconnect: {
     group: "Components/Credentials",
     name: "Explicit ChatGPT credential replacement (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     credentialSources: [
@@ -5066,6 +5223,8 @@ export const scenarios = {
     name: "Version draft, editor cannot operate a bound Secret",
     path: `${draft}&tab=configuration`,
     deployed: true,
+    slack: true,
+    secretOperateDenied: ["sec_demo_slack_app_token", "sec_demo_slack_bot_token"],
     agentPermissionSummary: {
       update: true,
       deploy: false,
@@ -5083,6 +5242,8 @@ export const scenarios = {
       "The permission answer allows Agent and Configuration update but not operate on a Secret the Configuration binds, which every save checks. Each editor is disabled, so the draft reads as read-only with this access, as for a viewer.",
     steps: [
       "Read the notice: Version draft · read-only with your access.",
+      "In Configuration, read that saving needs Secret operate on Slack app token (simulated) and Slack bot token (simulated). No Edit Configuration button is offered. View native Configuration still opens the saved JSON.",
+      "In Plugins and Credentials, read the same missing Secret names after the general source-grant explanation. Plugin selections remain a saved summary; authentication controls remain unavailable. Switching tabs retains their state.",
       "The Versions entry reads Version draft with Read-only Configuration, and the draft card has no Prepare this version steps.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every save.",
@@ -6729,6 +6890,36 @@ export const scenarios = {
       "Tab through the log controls. Previous instance, Follow, Refresh logs and Download each take focus and look unavailable, described by “This version has no running Pod for this source.” Enter, Space or a click does nothing (finding 2929).",
     ],
     gap: "Simulated UI state only; this preview does not prove a live Pod transition.",
+  },
+  runtimeLogsReplacedVersion: {
+    ...runtimeLogsPage,
+    name: "Logs of a version stopped and replaced since",
+    path: `${currentVersion}&tab=logs`,
+    runtimePod: "replaced",
+    description:
+      "v6 has no running Pod: it was stopped and v7 is now selected for service. The Logs view keeps v6, says it has no running Pod, and names v7 with a link to its Logs.",
+    steps: [
+      "Check the notice under the runtime status: “v7 is selected for service.” with Open v7 Logs. The version picker still shows v6, and its log controls stay unavailable, described by “This version has no running Pod for this source.” (finding 2975).",
+      "Select Open v7 Logs. The page opens v7's Logs with its running Gateway Pod and no notice.",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live stop and redeploy.",
+  },
+  runtimeLogsFailedRedeploy: {
+    ...runtimeLogsPage,
+    name: "Logs of a stopped version after a failed redeploy elsewhere",
+    stopped: true,
+    stopNoSelection: true,
+    runtimePod: "none",
+    failedRedeployOnReread: true,
+    description:
+      "v7 was stopped, so no version is selected and its Pods are gone. While its Logs are open, another person deploys v8, and v8's startup model check times out: the Agent runs again with no version selected. The Logs status poll rereads the Agent and, finding it running with no version selected, lists the versions again: the page shows v8's failed deployment (finding 2978), and the Logs view says so in place under its runtime status (finding 2993).",
+    steps: [
+      "Wait for the Logs view to say “This version has no running Pod for this source.” The summary reads Latest visible deployment v7 · Completed and Selected for service None.",
+      "Wait for the next status poll (10 seconds). The summary then reads Latest visible deployment v8 · Failed, and Deployment needs attention leads with v8's timed-out model check.",
+      "Check the Logs view under the runtime status: “v8 failed its startup model check.” with the same next step and no error code, and View v8 deployment. Focus and the scroll position stay where they were; at 390 px wide the line is in view under the Runtime heading.",
+      "Open the version picker: v8 is listed above v7.",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live stop, redeploy or deployment failure.",
   },
   runtimeLogsFilteredDownload: {
     group: "Pages/Agent detail",
@@ -9734,7 +9925,7 @@ export const scenarios = {
     stopped: true,
     actions: [click("Request Stop again")],
     description:
-      "An explicit repeated Stop uses the same confirmation and preserves the selected version. Cancel or Escape returns keyboard focus to Request Stop again.",
+      "An explicit repeated Stop preserves the selected version. Its confirmation says the Agent is already requested to stop and that this sends the request again, not that it interrupts a running gateway (finding D815). Cancel or Escape returns keyboard focus to Request Stop again.",
   },
   stopNoSelection: {
     group: "Components/Stop Agent",

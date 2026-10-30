@@ -11228,8 +11228,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (revision.harnessAuth.method !== "credential_source") {
       return undefined;
     }
+    const gateway = this.requireCredentialGateway();
+    if (gateway.id !== revision.harnessAuth.credentialGatewayId) {
+      return undefined;
+    }
     const sourceType = revision.harnessAuth.sourceType;
-    const catalog = await this.requireCredentialGateway().listSourceTypes({
+    const catalog = await gateway.listSourceTypes({
       signal: this.operationSignal(),
     });
     return catalog.find((entry) => entry.type === sourceType);

@@ -78,6 +78,7 @@ import {
   CHANNEL_BINDING_PLACES,
   channelBindingRefusal,
   agentSaveDenial,
+  agentSaveGap,
   describeFailure,
   message,
   rejectionMessage,
@@ -138,6 +139,7 @@ type DetailContext = ConsolePageContext & {
   namespaceId: string;
   agentId: string;
   onProtectedReadDenied(error: unknown, receipt: HTMLElement): void;
+  isPageCurrent?(): boolean;
 };
 type Permissions = Static<typeof AgentCallerPermissionsResponse>["data"];
 type RevisionPage = Awaited<ReturnType<typeof readRevisionPage>>;
@@ -216,6 +218,8 @@ interface MountedTab {
   reusable: boolean;
   loading: boolean;
   pending: number;
+  // Pending `keepsTab` writes, which do not stop the tab from being parked (finding 2980).
+  keeping: number;
   mutations: number;
   resumeDrafts?(): void;
   showBlock?(): void;
@@ -447,6 +451,9 @@ const CHANNEL_BINDING_CONSOLE_REMEDY = `This editor does not save Secret binding
 // slow link that read lands over a second after the page, and a failed version's banner then
 // pushed the shown overview down (finding 1489).
 export const FIRST_ACTIVITY_WAIT_MS = 2000;
+// How often a Logs status poll may list the versions while the Agent runs with no version
+// selected and nothing about it changed (finding 2988).
+const NEWER_VERSION_REREAD_MS = 60_000;
 // The badge tone of a recorded deployment outcome in the Agent summary; superseded and stopped
 // records stay neutral.
 const DEPLOYMENT_OUTCOME_TONES: Partial<Record<DeploymentOutcome, string>> = {
@@ -671,10 +678,30 @@ export async function renderAgentDetail(
   const configurationReadOnly = () =>
     callerPermissions?.configurationUpdate === false ||
     callerPermissions?.configurationSecretsOperate === false;
-  const configurationReadOnlyReason = () =>
-    callerPermissions?.configurationUpdate === false
-      ? CONFIGURATION_READ_ONLY
+  let configurationDeniedSecretNames: readonly string[] = [];
+  let agentDeniedSecretNames: readonly string[] = [];
+  let agentNamesGeneration = 0;
+  let refreshDeniedSecretNames: (() => void) | undefined;
+  const agentSaveReason = (permissions = callerPermissions) => {
+    if (agentSaveGap(permissions, agent) !== "sources" || agentDeniedSecretNames.length === 0) {
+      return agentSaveDenial(permissions, agent);
+    }
+    const names = agentDeniedSecretNames;
+    const listed =
+      names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+    return `${agentSaveDenial(permissions, agent)} Missing Secret operate on ${listed}.`;
+  };
+  const configurationReadOnlyReason = () => {
+    if (callerPermissions?.configurationUpdate === false) {
+      return CONFIGURATION_READ_ONLY;
+    }
+    const names = configurationDeniedSecretNames;
+    const listed =
+      names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+    return names.length
+      ? `Saving this Configuration needs Secret operate on ${listed}, which your access does not include. ${askAdministratorTo("grant it")}`
       : CONFIGURATION_SECRETS_READ_ONLY;
+  };
   // Channel saves submit the Secret bindings, and a save is checked only on the Secrets it
   // submits. Lacking operate only on Secrets bound to the Slack token names, which channel saves
   // replace, leaves Channels and channel Secrets editable: a save must replace each of them
@@ -1211,6 +1238,9 @@ export async function renderAgentDetail(
     showDeleting,
     (next) => updateCurrentAgent(next, latestRevisionResult, viewedSnapshot),
     callerPermissionsRead.then((permissions) => permissions?.operate),
+    // A refusal records how many rereads had started, so an answer read before it, such as a
+    // refocus reread still in flight, cannot lift it (finding 2966), as on the Agents list.
+    () => permissionsRereads,
   );
   const deletion = createAgentDeletion(
     context,
@@ -1218,6 +1248,7 @@ export async function renderAgentDetail(
     agent,
     showDeleting,
     callerPermissionsRead.then((permissions) => permissions?.delete),
+    () => permissionsRereads,
   );
   // Stop and Delete are the rows of one danger zone at the end of the page (UX spec 3.9). A row
   // hides itself when the caller's permission answer denies it, and the zone hides with no row.
@@ -1825,6 +1856,17 @@ export async function renderAgentDetail(
       agentSaveDenial(permissions, agent),
     );
   });
+  // A refocus recheck reads the permission answer again too, so a re-granted Stop, Delete or
+  // draft edit applies once the reader comes back to the window, as on the Agents list; only
+  // header Refresh did (r54 row 11).
+  context.onRechecked?.(() => {
+    if (!context.isCurrent() || deleting) {
+      return;
+    }
+    agentSaveDenied = rereadPermissions().then((permissions) =>
+      agentSaveDenial(permissions, agent),
+    );
+  });
   // Shown once by the tab a draft refresh rebuilds after a save (finding 1445).
   let savedNotice = "";
   let activityPanel = deploymentStatus;
@@ -2222,13 +2264,101 @@ export async function renderAgentDetail(
     versionRecord?.renderDiagnostics();
   }
 
+  // The Logs view of a version with no running Pod asks which version serves now. A stop and
+  // redeploy from elsewhere left this page on the stopped version, still named as selected for
+  // service, with no hint (finding 2975). The reread updates the page in place, as a finished
+  // deployment does; a new current version also needs the version list for its label.
+  let servingReread: Promise<void> | null = null;
+  // When this reread last listed the versions to look for a newer one.
+  let newerVersionListedAt = Number.NEGATIVE_INFINITY;
+  async function rereadServing() {
+    const fresh = await readAgent();
+    if (!context.isCurrent() || deleting) {
+      return;
+    }
+    const changed =
+      fresh.status === "deleting" ||
+      fresh.activeRevisionId !== currentRevisionId ||
+      fresh.desiredRuntimeState !== currentRuntimeState;
+    // A deployment requested elsewhere sets the Agent running and selects its version only once
+    // it succeeds. Running with no version selected, while the newest listed version's own
+    // deployment is not in progress, can mean a newer version exists: list it, so its deployment
+    // panel reads its outcome. A failed redeploy otherwise left the page on the stopped version's
+    // "Completed" until a reload (finding 2978). The Agent read does not change when a second
+    // redeploy follows a failed one, and a newer version the caller cannot read is never listed,
+    // so with no change the list is read at most once a minute, not on every 10 s poll (finding
+    // 2988).
+    const newerDeployment =
+      fresh.status !== "deleting" &&
+      fresh.desiredRuntimeState === "running" &&
+      !fresh.activeRevisionId &&
+      !deploymentPending(latestDeploymentStatus) &&
+      (changed || Date.now() - newerVersionListedAt >= NEWER_VERSION_REREAD_MS);
+    if (!changed && !newerDeployment) {
+      return;
+    }
+    const unknownVersion =
+      newerDeployment ||
+      (fresh.activeRevisionId !== undefined && !listedRevisions.has(fresh.activeRevisionId));
+    if (newerDeployment) {
+      newerVersionListedAt = Date.now();
+    }
+    const page = unknownVersion ? revisionsForPage(await readRevisionPage(request, path)) : null;
+    if (!context.isCurrent() || deleting) {
+      return;
+    }
+    // A list with no new version or outcome changes nothing: the version chooser is not
+    // rebuilt, so an open dropdown stays open and keeps focus.
+    if (
+      !changed &&
+      page &&
+      latestRevisionResult?.status === "fulfilled" &&
+      page.revisions.every((revision) => {
+        const listed = listedRevisions.get(revision.id);
+        return (
+          listed?.deploymentStatus === revision.deploymentStatus &&
+          listed.deploymentErrorCode === revision.deploymentErrorCode
+        );
+      })
+    ) {
+      return;
+    }
+    updateCurrentAgent(
+      fresh,
+      page ? { status: "fulfilled", value: page } : latestRevisionResult,
+      viewedSnapshot,
+    );
+  }
+  async function runningVersion() {
+    servingReread ??= rereadServing()
+      .catch(() => {})
+      .finally(() => {
+        servingReread = null;
+      });
+    await servingReread;
+    const serving =
+      currentRuntimeState === "running" && currentRevisionId !== selected
+        ? visibleRevisions.find(({ id }) => id === currentRevisionId)
+        : undefined;
+    if (!context.isCurrent() || deleting || !serving) {
+      return null;
+    }
+    const label = `v${serving.revision}`;
+    return { label, link: versionLink(`Open ${label} Logs`, serving.id, "logs") };
+  }
+
   // The failed version the recovery block leads with, if any. The viewed version's record does
   // not repeat that version's error below it (finding 2368).
   let recoveryRevisionId: string | null = null;
+  // The recovery card's failure in one line, and the open Logs view that repeats it in place
+  // (finding 2993).
+  let recoveryLine: ReturnType<typeof recovery.show> = null;
+  let logsFailure: ((line: typeof recoveryLine) => void) | null = null;
   function showRecovery(failure: Parameters<typeof recovery.show>[0]) {
-    recovery.show(failure);
+    recoveryLine = recovery.show(failure);
     recoveryRevisionId = failure?.latest.id ?? null;
     versionRecord?.setFailureShownAbove(recoveryRevisionId === selected);
+    logsFailure?.(recoveryLine);
   }
 
   function renderLatestDeployment() {
@@ -2824,7 +2954,9 @@ export async function renderAgentDetail(
     }
   }
 
+  let detailsGeneration = 0;
   async function loadDetails(): Promise<DetailsResult> {
+    const generation = ++detailsGeneration;
     const results = await Promise.allSettled([
       revisionsPromise,
       selected === "draft" && agent.configurationReadError ? Promise.resolve(null) : readSnapshot(),
@@ -3079,7 +3211,9 @@ export async function renderAgentDetail(
     // may operate but not read holds nothing: the deployment checks only operate.
     let deploySecretsDenied: DeploySecretsDenied = { names: [], unreadable: 0 };
     let deploySecretsRead = 0;
-    async function boundSecretsDenied({ fresh = false } = {}): Promise<DeploySecretsDenied> {
+    async function boundSecretsDenied({ fresh = false } = {}): Promise<
+      DeploySecretsDenied & { configurationNames: readonly string[] }
+    > {
       const bound = new Map<string, unknown>();
       for (const binding of Object.values(snapshot.secretBindings ?? {})) {
         const source = secretSourceForBinding(binding);
@@ -3087,45 +3221,72 @@ export async function renderAgentDetail(
           bound.set(source.id, source);
         }
       }
+      const configurationIds = new Set(bound.keys());
       const harness = harnessCredential(agent.harnessAuth, namespaceId);
       if (harness?.kind === "secret") {
         bound.set(harness.id, harness);
       }
       if (bound.size === 0) {
-        return { names: [], unreadable: 0 };
+        return { names: [], unreadable: 0, configurationNames: [] };
       }
       const denied = await secretsOperateDenied({ fresh });
       const unreadable = secretsOperateAnswer.unreadable();
       // The answer lists only Secrets this caller may read, so each one's name reads too.
+      // Reuse these authorized reads for the Configuration hint, excluding Harness-only Secrets.
+      const configurationNames: string[] = [];
       const names = await Promise.all(
         [...bound]
           .filter(([id]) => denied?.has(id))
           .map(async ([id, source]) => {
             const href = sameNamespaceSecretHref(source, namespaceId);
+            let name = id;
             try {
-              return href ? (secretMetadata(await request(href), namespaceId)?.name ?? id) : id;
+              name = href ? (secretMetadata(await request(href), namespaceId)?.name ?? id) : id;
             } catch {
-              return id;
+              // Keep the same authorized identifier fallback as the Deploy note.
             }
+            if (configurationIds.has(id)) {
+              configurationNames.push(name);
+            }
+            return name;
           }),
       );
       return {
         names: names.sort((left, right) => left.localeCompare(right)),
         unreadable: unreadable ?? 0,
+        configurationNames: configurationNames.sort((left, right) => left.localeCompare(right)),
       };
     }
     function readDeploySecretsDenied(options?: { fresh?: boolean }) {
       const read = ++deploySecretsRead;
+      const namesGeneration = agentNamesGeneration;
       return boundSecretsDenied(options).then(
         (denied) => {
-          if (read === deploySecretsRead && context.isCurrent()) {
+          if (
+            generation === detailsGeneration &&
+            namesGeneration === agentNamesGeneration &&
+            read === deploySecretsRead &&
+            context.isCurrent()
+          ) {
             deploySecretsDenied = denied;
+            configurationDeniedSecretNames = denied.configurationNames;
+            agentDeniedSecretNames = denied.names;
+            redrawConfigurationAccessViews();
             updateDeployControls();
           }
           return denied;
         },
         () => deploySecretsDenied,
       );
+    }
+    if (generation === detailsGeneration) {
+      // Deploy keeps the last answer until the reread lands. Clearing it first enabled Deploy
+      // and said "Ready to deploy." on every refocus while the Secrets were read (finding 2987).
+      refreshDeniedSecretNames = () => {
+        if (generation === detailsGeneration && context.isCurrent()) {
+          void readDeploySecretsDenied();
+        }
+      };
     }
     function editedSubject() {
       if (selectedTab === "repositories") {
@@ -3824,8 +3985,8 @@ export async function renderAgentDetail(
 
   // Every operate-gated control follows the newest answer read, without a reload: the Stop row,
   // the shown version's Run diagnostics, and Workspace editors, shown or parked (finding 2328).
-  function applyOperateAnswer(allowed: boolean | undefined) {
-    stopPanel.applyOperate(allowed);
+  function applyOperateAnswer(allowed: boolean | undefined, read: number) {
+    stopPanel.applyOperate(allowed, read);
     versionRecord?.applyOperate(allowed);
     mountedTab?.applyOperate?.(allowed);
     for (const tab of retainedTabs.values()) {
@@ -3860,6 +4021,12 @@ export async function renderAgentDetail(
 
   // Reads the caller's permission answer again; a failed read keeps the last answer.
   function rereadPermissions() {
+    // Rechecking grants invalidates names immediately. The admitted answer refreshes the
+    // existing authorized Secret reads; an older metadata completion cannot restore them.
+    ++agentNamesGeneration;
+    agentDeniedSecretNames = [];
+    configurationDeniedSecretNames = [];
+    redrawConfigurationAccessViews();
     secretsOperateAnswer.reset();
     const previous = latestPermissionsRead;
     const reread = ++permissionsRereads;
@@ -3872,6 +4039,9 @@ export async function renderAgentDetail(
         if (context.isCurrent() && reread > appliedReread) {
           appliedReread = reread;
           callerPermissions = permissions;
+          if (permissions && reread === permissionsRereads) {
+            refreshDeniedSecretNames?.();
+          }
           // Views built from now on take this answer; shown ones follow it below (finding 2470).
           // While a newer reread is in flight, views built meanwhile wait for it instead, so
           // Plugins sends no read it denies (findings D795, 2902). A newer reread that fails
@@ -3885,8 +4055,8 @@ export async function renderAgentDetail(
           }
           // A grant or revocation since the last answer relabels the draft (finding 2421).
           applyDraftAccess();
-          deletion.applyDelete(permissions?.delete);
-          applyOperateAnswer(permissions?.operate);
+          deletion.applyDelete(permissions?.delete, reread);
+          applyOperateAnswer(permissions?.operate, reread);
         }
         return permissions;
       },
@@ -4023,7 +4193,7 @@ export async function renderAgentDetail(
           input.dispatchEvent(new Event("input", { bubbles: true }));
         }
       }
-      if (mountedTab.reusable && !mountedTab.loading && mountedTab.pending === 0) {
+      if (mountedTab.reusable && !mountedTab.loading && mountedTab.pending === mountedTab.keeping) {
         mountedTab.nodes = [...content.childNodes];
         // Its editor's block note returns with it, not the last built tab's (finding 1962).
         mountedTab.showBlock = showDraftEditorNavigationBlock;
@@ -4083,23 +4253,41 @@ export async function renderAgentDetail(
       reusable: true,
       loading: true,
       pending: 0,
+      keeping: 0,
       mutations: context.mutationVersion(),
     };
     mountedTab = state;
     const tabContext: DetailContext = {
       ...context,
       isCurrent: () => context.isCurrent() && mountedTab === state,
+      isPageCurrent: () => context.isCurrent(),
       request: async (readPath, options) => {
         const read = (options?.method ?? "GET") === "GET";
+        const keeps = options?.keepsTab === true;
+        const showsOutcome = keeps || options?.showsOutcome === true;
+        const unchanged = state.mutations === context.mutationVersion();
         state.pending += 1;
+        if (keeps) {
+          state.keeping += 1;
+        }
         try {
-          const result = await context.request(readPath, options);
+          const reply = context.request(readPath, options);
+          // The tab shows this write's outcome itself, so that write alone does not make it
+          // stale: a second OAuth start after a poll or Cancel login is kept too (finding 2981).
+          if (showsOutcome && unchanged) {
+            state.mutations = context.mutationVersion();
+          }
+          const result = await reply;
           if (read) {
             allowedReads.add(readPath);
           }
           return result;
         } catch (error) {
-          state.reusable = false;
+          // The tab shows this write's refusal, as of an OAuth start: it stays reusable, so a
+          // retry can still be kept (finding 2980).
+          if (!showsOutcome) {
+            state.reusable = false;
+          }
           // Any tab's refusal of a read the page had the grant for, not only Logs', makes the next
           // tab change read the page again instead of reusing tabs read before (finding 2568).
           if (read && requestFailure(error).status === 403 && readHadGrant(readPath)) {
@@ -4108,6 +4296,9 @@ export async function renderAgentDetail(
           throw error;
         } finally {
           state.pending -= 1;
+          if (keeps) {
+            state.keeping -= 1;
+          }
         }
       },
     };
@@ -4260,7 +4451,16 @@ export async function renderAgentDetail(
         onAccessChanged: () => {
           accessChanged = true;
         },
+        runningVersion,
       });
+      logsFailure = (line) =>
+        logs.showDeploymentFailure(
+          line && {
+            ...line,
+            link: versionLink(`View ${line.version} deployment`, line.revisionId, "deployment"),
+          },
+        );
+      logsFailure(recoveryLine);
       content.append(logs.section);
       state.loading = false;
       // The pending view is nearly empty: Stop and Delete sat under it, then the strip and
@@ -4356,7 +4556,14 @@ export async function renderAgentDetail(
           }
         },
         savedNotice,
-        saveDenied: agentSaveDenied,
+        saveDenied: agentSaveDenied.then(() => agentSaveReason()),
+        followSaveReason: (apply) => {
+          followConfigurationAccess(() => {
+            if (context.isCurrent()) {
+              apply(agentSaveReason());
+            }
+          });
+        },
         // Saves and reloads rebuild the tab in place (finding 1445's rest).
         onSaved: (savedAgent) => {
           if (!data.draft || agent.configurationReadError) {
@@ -4663,6 +4870,7 @@ export async function renderAgentDetail(
         servicePrincipalId: agent.servicePrincipalId,
       };
       let syncUnsavedAuthentication = () => {};
+      let recordAuthentication = () => {};
       const auth = createHarnessAuthFields(
         { ...context, secretsOperateDenied },
         agent.harnessAuth,
@@ -4671,6 +4879,7 @@ export async function renderAgentDetail(
           agentName: agent.name,
           draft: retained?.fields,
           onChange: () => syncUnsavedAuthentication(),
+          onStartSettled: () => recordAuthentication(),
         },
       );
       const feedback = element("p", { role: "status", className: "hint" }, savedNotice);
@@ -4763,16 +4972,16 @@ export async function renderAgentDetail(
         // The missing-grant warning names who grants it once Save is refused (finding 2949).
         applySavedGrantWarning();
       };
-      void agentSaveDenied.then((reason) => {
+      void agentSaveDenied.then(() => {
         if (context.isCurrent()) {
-          applyUpdateDenial(reason);
+          applyUpdateDenial(agentSaveReason());
         }
       });
       // A newer answer updates the form in place: the channel Secrets panel below it keeps its
       // state and focus (finding 2470).
       followConfigurationAccess(() => {
         if (context.isCurrent() && form.isConnected) {
-          applyUpdateDenial(agentSaveDenial(callerPermissions, agent));
+          applyUpdateDenial(agentSaveReason());
         }
       });
       let savedAuthentication = retained?.savedAuthentication ?? null;
@@ -4868,7 +5077,7 @@ export async function renderAgentDetail(
       form.addEventListener("input", () => syncUnsavedAuthentication());
       form.addEventListener("change", () => syncUnsavedAuthentication());
       syncUnsavedAuthentication();
-      context.drafts.track("authentication", () => {
+      const captureAuthentication = () => {
         const fields = auth.capture();
         return pending ||
           outcomeUnknown ||
@@ -4883,7 +5092,11 @@ export async function renderAgentDetail(
               ...(grantProblem ? { grantProblem } : {}),
             }
           : undefined;
-      });
+      };
+      context.drafts.track("authentication", captureAuthentication);
+      // An OAuth start answered after this tab was left updates the draft a rebuilt tab reads,
+      // unless a newer Credentials tab tracks it (finding 2981).
+      recordAuthentication = () => context.drafts.record("authentication", captureAuthentication);
       if (savedAuthentication) {
         save.textContent = "Retry credential access";
         setAuthUnavailable(true);
@@ -5872,13 +6085,15 @@ export async function renderAgentDetail(
     }
 
     let shownReadOnly = false;
+    const readOnlyHint = element("p", { className: "hint" });
     function render() {
       shownReadOnly = !editing && configurationReadOnly();
+      readOnlyHint.textContent = configurationReadOnlyReason();
       syncSafety();
       if (shownReadOnly) {
         // A reader views the saved JSON; no editor whose Save would answer 403 (finding 2421).
         body.replaceChildren(
-          element("p", { className: "hint" }, configurationReadOnlyReason()),
+          readOnlyHint,
           nativeDocument(values, "View native Configuration"),
           ...(feedback.textContent ? [feedback] : []),
         );
@@ -5934,8 +6149,12 @@ export async function renderAgentDetail(
     render();
     // An answer that lands after this view changes whether it is read-only (finding 2421).
     followConfigurationAccess(() => {
-      if (context.isCurrent() && !editing && configurationReadOnly() !== shownReadOnly) {
-        render();
+      if (context.isCurrent() && !editing) {
+        if (configurationReadOnly() !== shownReadOnly) {
+          render();
+        } else if (shownReadOnly) {
+          readOnlyHint.textContent = configurationReadOnlyReason();
+        }
       }
     });
     return container;
