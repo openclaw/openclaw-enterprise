@@ -4,32 +4,25 @@ import { request as httpsRequest, createServer as createHttpsServer } from "node
 import { connect as connectTcp } from "node:net";
 import { connect as connectTls } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
-import { appModule } from "../fixtures/repository-credentials/runtime.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
-import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
-import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
+import { listen } from "../fixtures/repository-credentials/process.mjs";
+import { startTokenServiceScope } from "../fixtures/repository-credentials/service.mjs";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
 import {
-  startGitHubFixture,
-  fixtureRepository,
-} from "../fixtures/repository-credentials/github.mjs";
-import {
-  createGitHubTokenServiceFactory,
+  createStaticTokenServiceFactory,
   startServiceListeners,
 } from "../fixtures/repository-credentials/service-resources.mjs";
 
 async function fixture(t) {
-  const resources = createTestResourceScope(t);
-  const { createSystemClock } = await appModule("drivers/repo/credentials/clock");
-  const clock = createSystemClock();
-  const tls = await createTlsMaterial(resources);
-  const config = await createLoopbackServiceConfiguration(resources, {
-    headerMs: 200,
-    stallMs: 2000,
-    connectMs: 2000,
-    firstHeaderMs: 2000,
-    exchangeMs: 5000,
+  const { resources, clock, tls, config, github } = await startTokenServiceScope(t, {
+    clock: "system",
+    limits: {
+      headerMs: 200,
+      stallMs: 2000,
+      connectMs: 2000,
+      firstHeaderMs: 2000,
+      exchangeMs: 5000,
+    },
   });
-  const github = await startGitHubFixture(resources, { clock, tls });
   const upstream = createHttpsServer(tls, (request, response) => {
     if (!github.authorize(request.headers.authorization, "git")) {
       response.writeHead(401).end();
@@ -39,13 +32,12 @@ async function fixture(t) {
     response.end("0000");
   });
   const upstreamOrigin = await listen(resources, upstream);
-  const token = `gho_${"t".repeat(36)}`;
-  github.acceptStatic(token);
-  const actualFactory = await createGitHubTokenServiceFactory(resources, {
+  const { factory: actualFactory } = await createStaticTokenServiceFactory(resources, {
     config,
     clock,
-    token,
-    trustedEndpoints: { apiOrigin: github.origin, gitOrigin: upstreamOrigin, ca: tls.ca },
+    tls,
+    github,
+    gitOrigin: upstreamOrigin,
   });
   let acquisitionStarted = false;
   let acquisitionFinished = Promise.resolve();

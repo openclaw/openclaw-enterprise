@@ -24,7 +24,10 @@ import {
   type InstallationFieldDetail,
   requireChartListener,
 } from "./installation-fields.ts";
-import { requireConfiguration } from "@openclaw-enterprise/contracts";
+import {
+  requireConfiguration,
+  serializeStartupConfiguration,
+} from "@openclaw-enterprise/contracts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import type { SandboxNetworkGrant } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
@@ -103,7 +106,7 @@ import { TokenService } from "../backends/token-service/service.ts";
 import { githubMetadataProvider } from "../drivers/egress-proxy/github-metadata.ts";
 import { PostgresPreparedGitHubLifecycle } from "../drivers/repo/github/credentials/prepared-lifecycle.ts";
 import { GitHubRepositoryPolicy } from "../drivers/repo/github/policy.ts";
-import { composeRepositoryAccess } from "./repository-credentials/platform.ts";
+import { loadRepositoryPolicy } from "./repository-credentials/policy.ts";
 import type { PreparedRepositoryGitConfiguration } from "../backends/repository-credentials/prepared-git-owner.ts";
 import { createOpenShellBackend, type OpenShellGateway } from "../backends/openshell.ts";
 import {
@@ -129,6 +132,7 @@ export interface SelectedDriverConfiguration<T = ConfigurationRecord> {
   readonly package?: string;
   readonly configuration: T;
   readonly definition: DriverImplementation;
+  readonly startupConfiguration?: Readonly<Record<string, unknown>>;
 }
 
 export interface InstallationStartupConfiguration {
@@ -157,7 +161,7 @@ export interface InstallationStartupConfiguration {
   };
 }
 
-/** Definitions stay with their selected identities across API and worker composition. */
+/** Definitions and safe startup projections stay with their selected process identities. */
 export function installationDriverConfigurations(
   installation: InstallationStartupConfiguration | undefined,
 ): readonly import("@openclaw-enterprise/occ").DriverConfigurationRegistration[] {
@@ -165,18 +169,21 @@ export function installationDriverConfigurations(
     ...installation?.drivers,
     ...(installation?.repository === undefined ? {} : { repo: installation.repository }),
   };
-  return Object.entries(selections).flatMap(([capability, selection]) =>
-    "definition" in selection
-      ? [
-          {
-            capability: capability as import("@openclaw-enterprise/contracts").DriverCapability,
-            driverId: selection.id,
-            implementation: selection.implementation,
-            definition: selection.definition,
-          },
-        ]
-      : [],
-  );
+  return Object.entries(selections).flatMap(([capability, selection]) => {
+    if (!("definition" in selection)) {
+      return [];
+    }
+    const { startupConfiguration } = selection;
+    return [
+      {
+        capability: capability as import("@openclaw-enterprise/contracts").DriverCapability,
+        driverId: selection.id,
+        implementation: selection.implementation,
+        definition: selection.definition,
+        ...(startupConfiguration === undefined ? {} : { startupConfiguration }),
+      },
+    ];
+  });
 }
 
 /**
@@ -234,7 +241,7 @@ export interface InstallationRuntimeDrivers {
   readonly preparedRepositoryGit?: PreparedRepositoryGitConfiguration;
   readonly repositoryTransport?: OpenShellRepositoryTransport;
   readonly repositoryRegistry?: Awaited<
-    ReturnType<typeof composeRepositoryAccess>
+    ReturnType<typeof loadRepositoryPolicy>
   >["repositoryRegistry"];
   readonly repositoryOwner?: Readonly<{
     controlSocket?: string;
@@ -543,6 +550,13 @@ function selected(
     definition: driver,
   });
   const validated = object(requireConfiguration(driver, configuration), `${path}.configuration`);
+  let startupConfiguration: Readonly<Record<string, unknown>> | undefined;
+  try {
+    // Capture accepted values before a factory can mutate its own configuration input.
+    startupConfiguration = serializeStartupConfiguration(schema, validated);
+  } catch {
+    // Unsupported inspection remains unavailable; never fall back to raw values or exception text.
+  }
   return Object.freeze({
     id,
     implementation,
@@ -551,6 +565,7 @@ function selected(
       : {}),
     configuration: validated,
     definition: driver,
+    ...(startupConfiguration === undefined ? {} : { startupConfiguration }),
   });
 }
 
@@ -1103,20 +1118,32 @@ export async function loadInstallationConfiguration(options: {
       : (options.createOpenShellBackend?.(openShellBackend) ??
         createOpenShellBackend(openShellBackend));
   const repositoryBackend = backends.find((backend) => backend.type === "github");
-  const repositoryRuntime =
-    repoSelection === undefined || repositoryBackend === undefined
-      ? undefined
-      : await composeRepositoryAccess({
-          backend: repositoryBackend,
-          selection: nativeRepositorySelection
-            ? {
-                ...repoSelection,
-                configuration: { ...repoSelection.configuration, ...nativeRepositorySelection },
-              }
-            : repoSelection,
-          protectedGit: repositoryDeliveryMode === "protected",
-          configuration: repositoryConfiguration,
-        });
+  let repositoryRuntime;
+  if (repoSelection !== undefined && repositoryBackend !== undefined) {
+    if (repositoryDeliveryMode === "native") {
+      const { composeRepositoryAccess } = await import("./repository-credentials/platform.ts");
+      repositoryRuntime = await composeRepositoryAccess({
+        backend: repositoryBackend,
+        selection: nativeRepositorySelection
+          ? {
+              ...repoSelection,
+              configuration: { ...repoSelection.configuration, ...nativeRepositorySelection },
+            }
+          : repoSelection,
+        configuration: repositoryConfiguration,
+      });
+    } else {
+      repositoryRuntime = await loadRepositoryPolicy({
+        backend: repositoryBackend,
+        selection: repoSelection,
+        policyConfiguration: requireConfiguration<{ readonly sessionDurationSeconds: number }>(
+          GitHubRepositoryPolicy,
+          repoSelection.configuration,
+        ),
+        configuration: repositoryConfiguration,
+      });
+    }
+  }
   validateOpenShellRepositoryTransport(repositoryTransportConfiguration, {
     prepared: preparedRepositoryGit !== undefined,
     repository: repositoryRuntime !== undefined,

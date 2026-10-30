@@ -53,6 +53,9 @@ tokens (Credentials tab and Channels drawer). See
 [Create and deploy in the console](../reference/console/create-and-deploy.md)
 for the supported installation workflow, prerequisites, and Teams deployment limits.
 
+The [repository collaborator walkthrough](../../scripts/console-storybook/repository-access-workflow.md)
+covers new selections, saved access during discovery, and explicit Read-only overrides.
+
 Repository previews cover access levels, empty or pending discovery, unavailable
 choices, denied or unverified authorization, and reselection after a rejected save.
 In **Locale-stable repository search**, search `ibm`, select `acme/platform`, and

@@ -17,6 +17,8 @@ import {
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { READ_RETRY_PAUSES_MS, withRetryTimers } from "../helpers/kubernetes-request-retry.mjs";
 
+import { assertProtectedStaticSecretRead } from "../helpers/protected-static-secret-read.ts";
+
 function clone(value) {
   return structuredClone(value);
 }
@@ -34,6 +36,7 @@ function kubernetesNamespaceName(namespaceId) {
 }
 
 class FakeCoreV1Api {
+  secretUid = undefined;
   namespaces = new Map();
   secrets = new Map();
   reads = 0;
@@ -127,7 +130,7 @@ class FakeCoreV1Api {
       ...clone(body),
       metadata: {
         ...body.metadata,
-        uid: `uid-${this.secrets.size + 1}`,
+        uid: this.secretUid ?? `uid-${this.secrets.size + 1}`,
         resourceVersion: "1",
       },
       data: Object.fromEntries(
@@ -1114,3 +1117,26 @@ test("kubernetes-secret-driver reports a read the owner cancels in flight as can
     await result.catch(() => {});
   }
 });
+
+test(
+  "kubernetes-secret-driver protects versioned static reads by exact UID",
+  { timeout: 5_000 },
+  async (t) => {
+    const client = new FakeCoreV1Api();
+    client.secretUid = "00000000-0000-4000-8000-000000000010";
+    const nsId = namespaceId();
+    client.addNamespace(nsId);
+    await assertProtectedStaticSecretRead(
+      t,
+      driverWithClient(client),
+      { id: secretId(), namespaceId: nsId, name: "protected-static" },
+      (error) =>
+        error instanceof SecretOwnershipError &&
+        error.message === "Secret backend identity changed.",
+    );
+    t.after(() => {
+      assert.equal(client.secrets.size, 0);
+      assert.equal(client.calls.deleteNamespacedSecret, 1);
+    });
+  },
+);

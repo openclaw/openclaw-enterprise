@@ -154,7 +154,9 @@ checks each selected model (`apps/controller/src/drivers/native-openai-catalog.t
 the selection Compute renders) against the immutable source endpoint before
 attachment, and a refusal names the `baseUrl` setting and both hosts. Catalog
 ids match after trimming, as OpenClaw merges such entries, so a second match
-fails. The startup model probe gets only the primary model's entry.
+fails. The startup model probe gets only the primary model's entry as rendered
+for the worker, with its endpoint and API as the provider defaults, and no other
+provider setting.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:NATIVE_WORKER_ENTRYPOINT`
 writes capacity/isolation settings and Driver-provided `OPENCLAW_WORKSPACE_DIR`;
 Compute and Sandbox supply private temporary directories.
@@ -208,6 +210,8 @@ the native ID.
 Kubelet probes private `/readyz`: Gateway plugin status and native `/startupz`
 and `/readyz`, Codex plugin state and authenticated app-server WebSocket, or
 dedicated OpenClaw identity gate runtime-backed workload readiness.
+Concurrent requests share the running check; a request after it ends starts a new one.
+A shared check that does not end within 5 seconds answers not ready and frees the slot.
 While first-deploy [workspace setup](workspace-files.md) is pending, embedded
 preparation starts the replacement Gateway before activation. If a never-served
 version's Gateway is unready (its Service selects no Pod), for example after rejected

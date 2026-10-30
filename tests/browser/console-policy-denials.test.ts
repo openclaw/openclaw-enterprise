@@ -4,7 +4,11 @@ import test from "node:test";
 import type { Page } from "playwright";
 import type { RuntimeLogRecord, SandboxNetworkGrant } from "../../packages/contracts/src/index.ts";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
-import { PLACEHOLDER_DESTINATION } from "../helpers/refusal-text.mjs";
+import {
+  callerDenied,
+  DEPLOY_SANDBOX_POLICY_READ_DENIED,
+  PLACEHOLDER_DESTINATION,
+} from "../helpers/refusal-text.mjs";
 import { openShellSandboxRecords } from "../helpers/runtime-logs.mjs";
 
 import {
@@ -16,6 +20,7 @@ import {
   newPage,
   nextFrames,
   pathRequests,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 
@@ -692,4 +697,43 @@ test("an application refused for a revoked SandboxPolicy read names the read gra
   assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 1);
   fixture.policy.restrictions.pop();
   assert.equal((await fixture.request("GET", base)).data.policy.application, undefined);
+});
+
+// Finding D801. Deploy checks SandboxPolicy read on the Agent's network policy when it has saved
+// rules (finding 2151). The API's denial names that policy by its raw ID; the Deploy alert names
+// it in words and who grants the read. The permission answer cannot tell whether saved rules
+// exist, so Deploy stays enabled up front and the API decides.
+test("a deploy refused for SandboxPolicy read names the network policy in words", async (t) => {
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, grants);
+  assert.equal(
+    (await fixture.request("PUT", base, { body: { expectedVersion: 1, additions: [grants[0]] } }))
+      .status,
+    200,
+  );
+  restrict(fixture.policy, "read", "sandbox_policy", { namespaceId: namespace.id });
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
+  await waitForEnabled(deploy);
+  const refused = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${path}/deploy` &&
+      response.request().method() === "POST",
+  );
+  await deploy.click();
+  const response = await refused;
+  assert.equal(response.status(), 403);
+  const policyId = `sbp_${agent.id.slice(4)}`;
+  assert.equal(
+    (await response.json()).error.message,
+    callerDenied("SandboxPolicy read", `SandboxPolicy ${policyId}`),
+  );
+  const alert = page.getByRole("alert").filter({ hasText: DEPLOY_SANDBOX_POLICY_READ_DENIED });
+  await alert.waitFor();
+  assert.equal(await alert.textContent(), DEPLOY_SANDBOX_POLICY_READ_DENIED);
+  assert.equal(await page.locator("main").getByText(policyId).count(), 0);
+  // Nothing was admitted, so Deploy is available again once the read is granted.
+  await waitForEnabled(deploy);
+  assert.equal((await fixture.request("GET", `${path}/revisions`)).data.length, 0);
 });

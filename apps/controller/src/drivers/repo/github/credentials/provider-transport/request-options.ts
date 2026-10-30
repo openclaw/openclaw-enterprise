@@ -1,3 +1,4 @@
+import { validateGitHubRepositoryGrant, type GitHubRepositoryGrant } from "../repository-grant.ts";
 import type { RequestOptions } from "node:https";
 import { isGitHubWireCredential } from "../wire-credential.ts";
 import type { GitHubTokenProfile } from "../types.ts";
@@ -7,6 +8,7 @@ import { permissionsForProfile } from "../profiles.ts";
 declare const scopeIdentity: unique symbol;
 export type ProviderScope = Readonly<{ [scopeIdentity]: true }>;
 export type ProviderIssuanceScope =
+  | GitHubRepositoryGrant
   | GitHubInstallationGrant
   | Readonly<{ installationId: string; repositoryId: string; profile: GitHubTokenProfile }>;
 type Scope = Readonly<{ origin: string; issuePath: string; issueBody: string }>;
@@ -30,7 +32,15 @@ export function prepareProviderScope(origin: string, scope: ProviderIssuanceScop
   }
   const installationId = numericId(scope.installationId);
   let issueBody: string;
-  if (scope.profile === "github-installation") {
+  if (scope.profile === "github-repository") {
+    validateGitHubRepositoryGrant(scope);
+    issueBody = JSON.stringify({
+      repository_ids: [...scope.repositories]
+        .map((r) => numericId(r.repositoryId))
+        .sort((a, b) => a - b),
+      permissions: scope.permissions,
+    });
+  } else if (scope.profile === "github-installation") {
     // Reject a mixed persisted grant instead of silently dropping its narrowing constraints.
     const fields = ["id", "isolationId", "appId", "installationId", "profile"];
     if (

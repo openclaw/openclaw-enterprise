@@ -8,7 +8,6 @@ import {
   defaultRegistryRepositories,
   startRegistryCredentialServiceFixture,
 } from "../fixtures/repository-credentials/registry.mjs";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import {
   createResourceScope,
   createTestResourceScope,
@@ -20,10 +19,7 @@ import {
   createAlternateDriverFactory,
   startAlternateUpstream,
 } from "../fixtures/repository-credentials/alternate.mjs";
-import {
-  startGitHubFixture,
-  fixtureRepository,
-} from "../fixtures/repository-credentials/github.mjs";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
 import {
   createTlsMaterial,
   listen,
@@ -39,10 +35,12 @@ import {
   createServiceConfiguration,
   eventually,
   createLoopbackServiceConfiguration,
+  startTokenServiceScope,
 } from "../fixtures/repository-credentials/service.mjs";
 import {
-  createGitHubTokenServiceFactory,
+  createStaticTokenServiceFactory,
   startServiceListeners,
+  startStaticTokenService,
 } from "../fixtures/repository-credentials/service-resources.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
@@ -97,11 +95,11 @@ async function dropControlResponse(t, target) {
 }
 
 async function admissionFixture(t, onCreate) {
-  const resources = createTestResourceScope(t);
+  const { resources, clock, tls, config } = await startTokenServiceScope(t, {
+    limits: { sessions: 1 },
+    github: false,
+  });
   const { callControl } = await appModule("drivers/repo/github/credentials/client/operator");
-  const clock = createControlledClock();
-  const tls = await createTlsMaterial(resources);
-  const config = await createLoopbackServiceConfiguration(resources, { sessions: 1 });
   const upstream = await startAlternateUpstream(resources, { clock, tls });
   const driverFactory = createAlternateDriverFactory({
     origin: upstream.origin,
@@ -302,27 +300,10 @@ test(
   "private control socket opens, inspects and closes real sessions with bounded input",
   { timeout: 10000 },
   async (t) => {
-    const resources = createTestResourceScope(t);
-    const { createSystemClock } = await appModule("drivers/repo/credentials/clock");
-    const clock = createSystemClock();
-    const tls = await createTlsMaterial(resources);
-    const config = await createLoopbackServiceConfiguration(resources);
-    const github = await startGitHubFixture(resources, { clock, tls });
-    const token = `gho_${"t".repeat(36)}`;
-    github.acceptStatic(token);
-    const factory = await createGitHubTokenServiceFactory(resources, {
-      config,
-      clock,
-      token,
-      trustedEndpoints: { apiOrigin: github.origin, gitOrigin: github.origin, ca: tls.ca },
+    const { resources, clock, tls, config, github } = await startTokenServiceScope(t, {
+      clock: "system",
     });
-    const { listeners } = await startServiceListeners(resources, {
-      config,
-      tls,
-      factory,
-      clock,
-      upstreamOrigins: [github.origin],
-    });
+    const { listeners } = await startStaticTokenService(resources, { config, clock, tls, github });
     assert.equal((await lstat(config.gateway.controlSocket)).mode & 0o777, 0o600);
     // Standalone services do not implement registry-backed durable admission.
     assert.equal(
@@ -584,21 +565,15 @@ test(
   "Agent response completion and premature close preserve lifecycle outcomes",
   { timeout: 10000 },
   async (t) => {
-    const resources = createTestResourceScope(t);
-    const [{ createSystemClock }, { createCredentialService }, { startListeners }] =
-      await Promise.all([
-        appModule("drivers/repo/credentials/clock"),
-        appModule("drivers/repo/credentials/service"),
-        appModule("drivers/repo/credentials/server"),
-      ]);
-    const clock = createSystemClock();
-    const tls = await createTlsMaterial(resources);
-    // A single exchange slot makes leaked ownership observable on the next request.
-    const config = await createLoopbackServiceConfiguration(resources, {
-      exchanges: 1,
-      exchangesPerSession: 1,
+    const { resources, clock, tls, config, github } = await startTokenServiceScope(t, {
+      clock: "system",
+      // A single exchange slot makes leaked ownership observable on the next request.
+      limits: { exchanges: 1, exchangesPerSession: 1 },
     });
-    const github = await startGitHubFixture(resources, { clock, tls });
+    const [{ createCredentialService }, { startListeners }] = await Promise.all([
+      appModule("drivers/repo/credentials/service"),
+      appModule("drivers/repo/credentials/server"),
+    ]);
     const received = [];
     let upstreamCancelled = false;
     const upstream = createTlsServer(tls, async (request, response) => {
@@ -624,13 +599,12 @@ test(
       }
     });
     const origin = await listen(resources, upstream);
-    const token = `gho_${"t".repeat(36)}`;
-    github.acceptStatic(token);
-    const factory = await createGitHubTokenServiceFactory(resources, {
+    const { factory } = await createStaticTokenServiceFactory(resources, {
       config,
       clock,
-      token,
-      trustedEndpoints: { apiOrigin: github.origin, gitOrigin: origin, ca: tls.ca },
+      tls,
+      github,
+      gitOrigin: origin,
     });
     const actual = createCredentialService({ config, factory, clock });
     const outcomes = [];

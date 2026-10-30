@@ -292,6 +292,19 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 	if !strings.HasPrefix(platform, "linux/") {
 		return "", fmt.Errorf("development image must contain a Linux platform: %s", image)
 	}
+	// Docker's containerd image store cannot save a manifest-list reference
+	// as one complete image (see resolveDevelopmentImageSource), so point the
+	// staging tag at the platform child the list names for this host when there
+	// is one.
+	resolved, err := r.resolveDevelopmentImageSource(ctx, image, platform)
+	if err != nil {
+		return "", err
+	}
+	if resolved != image {
+		if err := r.run(ctx, r.engine, "tag", resolved, selected); err != nil {
+			return "", err
+		}
+	}
 	// Images are imported concurrently, so each needs its own archive.
 	archive := filepath.Join(s.directory, developmentImportArchive(selected))
 	defer func() {
@@ -299,8 +312,12 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 			resultErr = errors.Join(resultErr, fmt.Errorf("remove development image archive: %w", err))
 		}
 	}()
+	// The staging tag names one complete image once it points at the platform
+	// child, so the archive needs no platform selection. Without a resolved
+	// child, keep the platform filter: it still works where the engine can
+	// resolve it, and names the failure otherwise.
 	saveArgs := []string{"image", "save"}
-	if r.engine == "docker" {
+	if r.engine == "docker" && resolved == image {
 		saveArgs = append(saveArgs, "--platform", platform)
 	}
 	saveArgs = append(saveArgs, "--output", archive, selected)
@@ -403,11 +420,11 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		compute := config["drivers"].(map[string]any)["compute"].(map[string]any)["configuration"].(map[string]any)
 		compute["runtime"].(map[string]any)["codexSeccompProfile"] = codexSeccompProfile
 	}
+	config["drivers"].(map[string]any)["plugin"] = map[string]any{
+		"id": "codex-plugin", "configuration": map[string]any{"catalogSource": "openai-curated"},
+	}
 	if s.SandboxDriver == "none" {
 		config["presets"] = map[string]any{"includeDefaults": true}
-		config["drivers"].(map[string]any)["plugin"] = map[string]any{
-			"id": "codex-plugin", "configuration": map[string]any{"catalogSource": "openai-curated"},
-		}
 	}
 	if s.SandboxDriver == "openshell" {
 		if openShell == nil {

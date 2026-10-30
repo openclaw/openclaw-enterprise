@@ -14,6 +14,7 @@ import {
   AGENT_READ,
   apiRequests,
   detailUrl,
+  expectReachableReason,
   fileBrowser,
   holdRequests,
   login,
@@ -205,7 +206,8 @@ test("a member who can only read the Configuration sees the collaboration and sa
 });
 
 // Every field a tab's Save would write is disabled or inert: an edit no Save can keep would
-// only block leaving the tab or Deploy (finding 1539).
+// only block leaving the tab or Deploy (finding 1539). An unavailable field with its reason is
+// aria-disabled and ignores edits (finding 2899).
 const editableFields = (page: Page, scope = ".agent-card") =>
   page.locator(scope).evaluateAll((cards) =>
     cards
@@ -220,6 +222,7 @@ const editableFields = (page: Page, scope = ".agent-card") =>
         (field) =>
           field.type !== "hidden" &&
           !field.disabled &&
+          field.getAttribute("aria-disabled") !== "true" &&
           !("readOnly" in field && field.readOnly) &&
           !field.closest("[inert]"),
       )
@@ -835,8 +838,6 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
   assert.deepEqual(writes, []);
 });
 
-const STOP_REFUSED = stopRefused("this Agent");
-
 // The page's other operate-gated controls follow the same observed answer as Workspace: the Stop
 // row hides and each version's Run diagnostics disables while operate is denied (finding 2328).
 async function expectOperateControls(page: Page, allowed: boolean) {
@@ -1017,7 +1018,7 @@ test("a Stop refusal clears once a later answer grants Agent operate", async (t)
     .getByRole("dialog", { name: "Stop this Agent?" })
     .getByRole("button", { name: "Stop Agent", exact: true })
     .click();
-  const refusal = page.getByText(STOP_REFUSED, { exact: true });
+  const refusal = page.getByText(stopRefused("Stop refusal grant"), { exact: true });
   await refusal.waitFor();
   await page.unroute(scenario.permissionsUrl);
   await scenario.rememberStatusDenial();
@@ -1026,11 +1027,48 @@ test("a Stop refusal clears once a later answer grants Agent operate", async (t)
   const notice = stopRow.getByText(AGENT_STOP_DENIED, { exact: true });
   await scenario.rereadThroughLogs();
   await notice.waitFor();
+  // The refused Stop stays in the Tab order, described by that notice (finding 2935).
+  const stop = stopRow.getByRole("button", { name: "Stop Agent", exact: true });
+  await expectReachableReason(page, stop, AGENT_STOP_DENIED);
   scenario.operate(true);
   await scenario.rereadThroughLogs();
   await notice.waitFor({ state: "hidden" });
-  await waitForEnabled(stopRow.getByRole("button", { name: "Stop Agent", exact: true }));
+  await waitForEnabled(stop);
+  // The grant leaves no stale reason on Stop.
+  assert.deepEqual(
+    await stop.evaluate((node) => ({
+      ariaDisabled: node.getAttribute("aria-disabled"),
+      describedby: node.getAttribute("aria-describedby"),
+    })),
+    { ariaDisabled: null, describedby: null },
+  );
   assert.equal(await refusal.count(), 0);
+});
+
+// After this viewer's Stop is accepted, a later answer that denies Agent operate keeps the row
+// (they used it). Request Stop again stays in the Tab order, described by the denial notice,
+// and activating it opens no confirmation and sends nothing (finding 2946).
+test("a refused Request Stop again stays reachable with its reason", async (t) => {
+  const scenario = await operateScenario(t, "Repeat stop refusal");
+  const { page } = scenario;
+  scenario.operate(true);
+  await scenario.open({ answered: false });
+  const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
+  const stop = stopRow.getByRole("button", { name: "Stop Agent", exact: true });
+  await waitForEnabled(stop);
+  await stop.click();
+  await page
+    .getByRole("dialog", { name: "Stop this Agent?" })
+    .getByRole("button", { name: "Stop Agent", exact: true })
+    .click();
+  const repeat = stopRow.getByRole("button", { name: "Request Stop again", exact: true });
+  await waitForEnabled(repeat);
+  scenario.operate(false);
+  await scenario.rememberStatusDenial();
+  await scenario.rereadThroughLogs();
+  await stopRow.getByText(AGENT_STOP_DENIED, { exact: true }).waitFor();
+  await expectReachableReason(page, repeat, AGENT_STOP_DENIED);
+  assert.equal(await page.getByRole("dialog", { name: "Stop this Agent?" }).count(), 0);
 });
 
 for (const reply of ["an incomplete preview", "a save with different rules"] as const) {

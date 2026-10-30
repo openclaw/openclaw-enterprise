@@ -22,6 +22,13 @@ operations through the selected Drivers and settings described in
 
 See [authentication](authentication.md) for supported credentials and their scope.
 
+## Table of contents
+
+- [Error responses](#error-responses)
+- [Resources](#resources)
+- [Operations](#operations)
+- [Shared schemas](#shared-schemas)
+
 ## Error responses
 
 Non-success JSON responses use the following envelope.
@@ -63,6 +70,8 @@ the paths.
 | `error.remainingResources[].kind` | `string` | Yes | min length: 1; max length: 64 |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+[Browse interactive examples in the API explorer](api-explorer.md).
 
 ## Resources
 
@@ -147,6 +156,15 @@ Create a local auth account as an Installation administrator
 | `password` | `string` | Yes | min length: 12; max length: 128 |
 | `roleId` | `string` | No | min length: 1; max length: 200 |
 
+Example request
+```json
+{
+  "email": "admin@example.com",
+  "name": "Documentation administrator",
+  "password": "replace-with-a-unique-password"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
@@ -172,6 +190,21 @@ Create a local auth account as an Installation administrator
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
 
+Example response
+```json
+{
+  "data": {
+    "email": "admin@example.com",
+    "id": "user-docs-admin",
+    "name": "Documentation administrator",
+    "principalId": "principal-administrator"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /api/auth/accounts/{userId}`
 
 <span id="get-apiauthaccountsuserid"></span>
@@ -188,9 +221,9 @@ Inspect current human account state
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `userId` | path | `string` | Yes | min length: 1; max length: 200 |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `userId` | path | `string` | Yes | min length: 1; max length: 200 | "user-docs-admin" |
 
 ##### Responses
 
@@ -220,6 +253,28 @@ Inspect current human account state
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
 
+Example response
+```json
+{
+  "data": {
+    "disabled": false,
+    "methods": [
+      {
+        "methodId": "method-password",
+        "providerId": "credential",
+        "subject": "user-docs-admin"
+      }
+    ],
+    "principalId": "principal-administrator",
+    "userId": "user-docs-admin",
+    "version": 1
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /api/auth/accounts/{userId}/disable`
 
 <span id="post-apiauthaccountsuseriddisable"></span>
@@ -236,9 +291,9 @@ Disable a human account
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `userId` | path | `string` | Yes | min length: 1; max length: 200 |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `userId` | path | `string` | Yes | min length: 1; max length: 200 | "user-docs-admin" |
 
 ##### Request body
 
@@ -249,6 +304,13 @@ Disable a human account
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
+
+Example request
+```json
+{
+  "expectedVersion": 1
+}
+```
 
 ##### Responses
 
@@ -272,6 +334,18 @@ Disable a human account
 | `data.userId` | `string` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "userId": "user-docs-admin"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /api/auth/accounts/{userId}/enable`
 
@@ -289,9 +363,9 @@ Re-enable a disabled human account
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `userId` | path | `string` | Yes | min length: 1; max length: 200 |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `userId` | path | `string` | Yes | min length: 1; max length: 200 | "user-docs-admin" |
 
 ##### Request body
 
@@ -302,6 +376,13 @@ Re-enable a disabled human account
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
+
+Example request
+```json
+{
+  "expectedVersion": 2
+}
+```
 
 ##### Responses
 
@@ -326,6 +407,18 @@ Re-enable a disabled human account
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
 
+Example response
+```json
+{
+  "data": {
+    "userId": "user-docs-admin"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /api/auth/accounts/{userId}/enrol`
 
 <span id="post-apiauthaccountsuseridenrol"></span>
@@ -342,9 +435,9 @@ Enrol an existing account that activation skipped
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `userId` | path | `string` | Yes | min length: 1; max length: 200 |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `userId` | path | `string` | Yes | min length: 1; max length: 200 | "user-docs-admin" |
 
 ##### Responses
 
@@ -370,6 +463,21 @@ Enrol an existing account that activation skipped
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
 
+Example response
+```json
+{
+  "data": {
+    "created": true,
+    "principalId": "principal-administrator",
+    "userId": "user-docs-admin",
+    "version": 1
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /api/auth/accounts/{userId}/methods/{methodId}/detach`
 
 <span id="post-apiauthaccountsuseridmethodsmethodiddetach"></span>
@@ -386,10 +494,10 @@ Detach an external sign-in identity from an account
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `userId` | path | `string` | Yes | min length: 1; max length: 200 |
-| `methodId` | path | `string` | Yes | min length: 1; max length: 200 |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `userId` | path | `string` | Yes | min length: 1; max length: 200 | "user-docs-admin" |
+| `methodId` | path | `string` | Yes | min length: 1; max length: 200 | "method-password" |
 
 ##### Request body
 
@@ -400,6 +508,13 @@ Detach an external sign-in identity from an account
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
+
+Example request
+```json
+{
+  "expectedVersion": 1
+}
+```
 
 ##### Responses
 
@@ -423,6 +538,18 @@ Detach an external sign-in identity from an account
 | `data.userId` | `string` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "userId": "user-docs-admin"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /api/auth/accounts/{userId}/providers/github`
 
@@ -440,9 +567,9 @@ Attach an exact GitHub identity to an existing account
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `userId` | path | `string` | Yes | min length: 1; max length: 200 |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `userId` | path | `string` | Yes | min length: 1; max length: 200 | "user-docs-admin" |
 
 ##### Request body
 
@@ -454,6 +581,14 @@ Attach an exact GitHub identity to an existing account
 | --- | --- | --- | --- |
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
 | `subject` | `string` | Yes | pattern: `^[1-9][0-9]{0,19}$` |
+
+Example request
+```json
+{
+  "expectedVersion": 1,
+  "subject": "12345678"
+}
+```
 
 ##### Responses
 
@@ -477,6 +612,18 @@ Attach an exact GitHub identity to an existing account
 | `data.userId` | `string` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "userId": "user-docs-admin"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /api/auth/accounts/{userId}/providers/google`
 
@@ -494,9 +641,9 @@ Attach an exact Google identity to an existing account
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `userId` | path | `string` | Yes | min length: 1; max length: 200 |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `userId` | path | `string` | Yes | min length: 1; max length: 200 | "user-docs-admin" |
 
 ##### Request body
 
@@ -508,6 +655,14 @@ Attach an exact Google identity to an existing account
 | --- | --- | --- | --- |
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
 | `subject` | `string` | Yes | pattern: `^[\x21-\x7E]{1,255}$` |
+
+Example request
+```json
+{
+  "expectedVersion": 1,
+  "subject": "123456789012345678901"
+}
+```
 
 ##### Responses
 
@@ -531,6 +686,18 @@ Attach an exact Google identity to an existing account
 | `data.userId` | `string` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "userId": "user-docs-admin"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /api/auth/accounts/{userId}/providers/oidc`
 
@@ -548,9 +715,9 @@ Attach an exact OIDC identity to an existing account
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `userId` | path | `string` | Yes | min length: 1; max length: 200 |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `userId` | path | `string` | Yes | min length: 1; max length: 200 | "user-docs-admin" |
 
 ##### Request body
 
@@ -562,6 +729,14 @@ Attach an exact OIDC identity to an existing account
 | --- | --- | --- | --- |
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
 | `subject` | `string` | Yes | pattern: `^[\x21-\x7E]{1,255}$` |
+
+Example request
+```json
+{
+  "expectedVersion": 1,
+  "subject": "provider-subject-docs-admin"
+}
+```
 
 ##### Responses
 
@@ -585,6 +760,18 @@ Attach an exact OIDC identity to an existing account
 | `data.userId` | `string` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "userId": "user-docs-admin"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /api/auth/accounts/{userId}/revoke`
 
@@ -602,9 +789,9 @@ Revoke all sessions for a human account
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `userId` | path | `string` | Yes | min length: 1; max length: 200 |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `userId` | path | `string` | Yes | min length: 1; max length: 200 | "user-docs-admin" |
 
 ##### Request body
 
@@ -615,6 +802,13 @@ Revoke all sessions for a human account
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
+
+Example request
+```json
+{
+  "expectedVersion": 1
+}
+```
 
 ##### Responses
 
@@ -639,6 +833,18 @@ Revoke all sessions for a human account
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
 
+Example response
+```json
+{
+  "data": {
+    "userId": "user-docs-admin"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /api/auth/providers`
 
 <span id="get-apiauthproviders"></span>
@@ -647,7 +853,7 @@ List configured browser sign-in methods
 
 **Operation ID:** `getAuthProviders`
 
-**Permissions:** No IAM permission required.
+**Permissions:** List configured browser sign-in methods
 
 ##### Responses
 
@@ -672,6 +878,22 @@ List configured browser sign-in methods
 | `data.sessionBinding` | `boolean` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "github": false,
+    "google": false,
+    "oidc": false,
+    "password": true,
+    "sessionBinding": false
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /api/auth/providers/github/callback`
 
@@ -709,6 +931,13 @@ Confirm which session a GitHub sign-in created
 | --- | --- | --- | --- |
 | `attemptId` | `string` | Yes | pattern: `^[A-Za-z0-9_-]{43}$` |
 
+Example request
+```json
+{
+  "attemptId": "example000000000000000000000000000000000000"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
@@ -729,6 +958,18 @@ Confirm which session a GitHub sign-in created
 | `data.sessionKey` | `string` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "sessionKey": "example-session-binding-not-a-credential"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /api/auth/providers/github/start`
 
@@ -758,6 +999,19 @@ Start GitHub sign-in for an enrolled account
 | `data.url` | `string (uri)` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "attemptId": "example000000000000000000000000000000000000",
+    "url": "https://github.com/login/oauth/authorize?client_id=example&state=example-browser-bound-state"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /api/auth/providers/google/callback`
 
@@ -795,6 +1049,13 @@ Confirm which session a Google sign-in created
 | --- | --- | --- | --- |
 | `attemptId` | `string` | Yes | pattern: `^[A-Za-z0-9_-]{43}$` |
 
+Example request
+```json
+{
+  "attemptId": "example000000000000000000000000000000000000"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
@@ -815,6 +1076,18 @@ Confirm which session a Google sign-in created
 | `data.sessionKey` | `string` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "sessionKey": "example-session-binding-not-a-credential"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /api/auth/providers/google/start`
 
@@ -844,6 +1117,19 @@ Start Google sign-in for an enrolled account
 | `data.url` | `string (uri)` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "attemptId": "example000000000000000000000000000000000000",
+    "url": "https://accounts.google.com/o/oauth2/v2/auth?client_id=example&state=example-browser-bound-state"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /api/auth/providers/oidc/callback`
 
@@ -881,6 +1167,13 @@ Confirm which session an OIDC sign-in created
 | --- | --- | --- | --- |
 | `attemptId` | `string` | Yes | pattern: `^[A-Za-z0-9_-]{43}$` |
 
+Example request
+```json
+{
+  "attemptId": "example000000000000000000000000000000000000"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
@@ -901,6 +1194,18 @@ Confirm which session an OIDC sign-in created
 | `data.sessionKey` | `string` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "sessionKey": "example-session-binding-not-a-credential"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /api/auth/providers/oidc/start`
 
@@ -930,6 +1235,19 @@ Start OIDC sign-in for an enrolled account
 | `data.url` | `string (uri)` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "attemptId": "example000000000000000000000000000000000000",
+    "url": "https://identity.example.com/authorize?client_id=example&state=example-browser-bound-state"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /api/auth/recovery`
 
@@ -967,6 +1285,20 @@ Inspect the recovery account designation
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
 
+Example response
+```json
+{
+  "data": {
+    "methodId": "method-password",
+    "principalId": "principal-administrator",
+    "userId": "user-docs-admin"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /api/auth/recovery`
 
 <span id="post-apiauthrecovery"></span>
@@ -992,6 +1324,15 @@ Move the recovery designation to another Installation administrator
 | `expectedCurrentUserId` | `string` | Yes | min length: 1; max length: 200 |
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
 | `userId` | `string` | Yes | min length: 1; max length: 200 |
+
+Example request
+```json
+{
+  "expectedCurrentUserId": "user-docs-admin",
+  "expectedVersion": 1,
+  "userId": "user-recovery-admin"
+}
+```
 
 ##### Responses
 
@@ -1019,6 +1360,21 @@ Move the recovery designation to another Installation administrator
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
 
+Example response
+```json
+{
+  "data": {
+    "changed": true,
+    "methodId": "method-recovery-password",
+    "principalId": "principal-recovery-administrator",
+    "userId": "user-recovery-admin"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /api/auth/service-keys`
 
 <span id="post-apiauthservicekeys"></span>
@@ -1045,6 +1401,16 @@ Issue a service API key
 | `name` | `string` | Yes | min length: 1; max length: 32; pattern: `\S` |
 | `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `servicePrincipalId` | `string` | Yes | min length: 1; max length: 200 |
+
+Example request
+```json
+{
+  "expiresIn": 86400,
+  "name": "Documentation automation",
+  "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+  "servicePrincipalId": "principal-docs-agent"
+}
+```
 
 ##### Responses
 
@@ -1074,6 +1440,23 @@ Issue a service API key
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
 
+Example response
+```json
+{
+  "data": {
+    "expiresAt": "2026-10-02T12:00:00.000Z",
+    "id": "key-docs-automation",
+    "key": "example-key-not-valid-for-authentication",
+    "name": "Documentation automation",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "servicePrincipalId": "principal-docs-agent"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `DELETE /api/auth/service-keys/{keyId}`
 
 <span id="delete-apiauthservicekeyskeyid"></span>
@@ -1090,9 +1473,9 @@ Revoke a service API key
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `keyId` | path | `string` | Yes | min length: 1; max length: 200 |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `keyId` | path | `string` | Yes | min length: 1; max length: 200 | "key-docs-automation" |
 
 ##### Responses
 
@@ -1115,6 +1498,19 @@ Revoke a service API key
 | `data.revoked` | `true` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "id": "key-docs-automation",
+    "revoked": true
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /api/auth/session`
 
@@ -1141,6 +1537,16 @@ Inspect authentication without revealing session tokens
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
 
+Example response
+```json
+{
+  "data": null,
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /api/auth/sign-in/email`
 
 <span id="post-apiauthsigninemail"></span>
@@ -1161,6 +1567,14 @@ Sign in with email and password
 | --- | --- | --- | --- |
 | `email` | `string` | Yes | min length: 3; max length: 320 |
 | `password` | `string` | Yes | min length: 12; max length: 128 |
+
+Example request
+```json
+{
+  "email": "admin@example.com",
+  "password": "replace-with-a-unique-password"
+}
+```
 
 ##### Responses
 
@@ -1184,6 +1598,18 @@ Sign in with email and password
 | `data.sessionKey` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "authenticated": true
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /api/auth/sign-out`
 
@@ -1212,6 +1638,16 @@ Sign out of the current session
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
 
+Example response
+```json
+{
+  "data": {},
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 <span id="backends"></span>
 
 ### Backends
@@ -1239,12 +1675,12 @@ List configured Backends (experimental)
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -1256,6 +1692,16 @@ List configured Backends (experimental)
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 <span id="installation"></span>
 
 ### Installation
@@ -1265,7 +1711,7 @@ List configured Backends (experimental)
 | [`GET /installation`](#get-installation) | Get the singleton Installation |
 | [`POST /installation/bootstrap`](#post-installationbootstrap) | Bootstrap the singleton Installation |
 | [`GET /installation/deployment-inventory`](#get-installationdeploymentinventory) | Get the complete authorized Agent deployment inventory |
-| [`GET /installation/driver-configurations`](#get-installationdriverconfigurations) | Inspect selected Driver startup configuration schemas |
+| [`GET /installation/driver-configurations`](#get-installationdriverconfigurations) | Inspect selected Driver accepted startup values and configuration schemas |
 | [`GET /observability`](#get-observability) | Get the configured external observability destination |
 
 #### `GET /installation`
@@ -1287,12 +1733,12 @@ Get the singleton Installation
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -1354,6 +1800,20 @@ Get the singleton Installation
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "id": "ins_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Engineering"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /installation/bootstrap`
 
 <span id="post-installationbootstrap"></span>
@@ -1378,19 +1838,26 @@ Bootstrap the singleton Installation
 | --- | --- | --- | --- |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 
+Example request
+```json
+{
+  "name": "Engineering"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `201` | Created |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
 
@@ -1452,6 +1919,20 @@ Bootstrap the singleton Installation
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "id": "ins_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Engineering"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /installation/deployment-inventory`
 
 <span id="get-installationdeploymentinventory"></span>
@@ -1471,12 +1952,12 @@ Get the complete authorized Agent deployment inventory
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -1497,11 +1978,38 @@ Get the complete authorized Agent deployment inventory
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "installationId": "ins_123e4567-e89b-42d3-a456-426614174000",
+    "namespaces": [
+      {
+        "agents": [
+          {
+            "deploymentInProgress": false,
+            "desiredRuntimeState": "stopped",
+            "executionMode": "dedicated",
+            "id": "agt_123e4567-e89b-42d3-a456-426614174000",
+            "status": "active"
+          }
+        ],
+        "id": "ns_123e4567-e89b-42d3-a456-426614174000",
+        "status": "ready"
+      }
+    ]
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /installation/driver-configurations`
 
 <span id="get-installationdriverconfigurations"></span>
 
-Inspect selected Driver startup configuration schemas
+Inspect selected Driver accepted startup values and configuration schemas
 
 **Operation ID:** `discoverInstallationConfigurations`
 
@@ -1516,12 +2024,12 @@ Inspect selected Driver startup configuration schemas
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -1553,8 +2061,21 @@ Inspect selected Driver startup configuration schemas
 | `data.configurations[].implementation` | `string` | Yes | — |
 | `data.configurations[].key` | `string` | Yes | — |
 | `data.configurations[].scope` | `"installation" or "agent"` | Yes | — |
+| `data.configurations[].startupConfiguration` | `object<string, SafeJsonValue>` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "configurations": []
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /observability`
 
@@ -1575,12 +2096,12 @@ Get the configured external observability destination
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -1590,6 +2111,18 @@ Get the configured external observability destination
 | `data.url` | `string (uri) or null` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "url": null
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 <span id="namespaces"></span>
 
@@ -1623,12 +2156,12 @@ List authorized Namespaces
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -1642,6 +2175,33 @@ List authorized Namespaces
 | `data[].status` | `"provisioning" or "ready" or "failed" or "deleting"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "id": "ns_123e4567-e89b-42d3-a456-426614174000",
+      "name": "engineering",
+      "status": "ready"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces`
 
@@ -1669,20 +2229,27 @@ Create an Installation-owned Namespace
 | `existingNamespace` | `string` | No | min length: 1; max length: 63; pattern: `^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$` |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 
+Example request
+```json
+{
+  "name": "engineering"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `201` | Created |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
 
@@ -1696,6 +2263,21 @@ Create an Installation-owned Namespace
 | `data.status` | `"provisioning" or "ready" or "failed" or "deleting"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "id": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "name": "engineering",
+    "status": "provisioning"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `DELETE /namespaces/{namespaceId}`
 
@@ -1713,22 +2295,22 @@ Begin or retry deletion of an empty Installation-owned Namespace
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `202` | Accepted |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`202` response body:** `application/json`
 
@@ -1742,6 +2324,21 @@ Begin or retry deletion of an empty Installation-owned Namespace
 | `data.status` | `"provisioning" or "ready" or "failed" or "deleting"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "id": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "name": "engineering",
+    "status": "deleting"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /namespaces/{namespaceId}`
 
@@ -1759,21 +2356,21 @@ Get an exact Installation-owned Namespace
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -1787,6 +2384,21 @@ Get an exact Installation-owned Namespace
 | `data.status` | `"provisioning" or "ready" or "failed" or "deleting"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "id": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "name": "engineering",
+    "status": "ready"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /namespaces/{namespaceId}/permissions`
 
@@ -1804,21 +2416,21 @@ Report advisory primary IAM permissions on a readable Namespace, not authorizati
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -1834,6 +2446,27 @@ Report advisory primary IAM permissions on a readable Namespace, not authorizati
 | `data.secrets.create` | `boolean` | Yes | Whether the selected IAM Driver allows Secret creation in this Namespace now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "agents": {
+      "create": true
+    },
+    "delete": true,
+    "installation": {
+      "administer": true
+    },
+    "secrets": {
+      "create": true
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /namespaces/{namespaceId}/permissions/secrets`
 
@@ -1851,21 +2484,21 @@ Report the readable Secrets that the caller may not bind to a new Agent, not aut
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -1875,6 +2508,18 @@ Report the readable Secrets that the caller may not bind to a new Agent, not aut
 | `data.operateDenied` | `array<string>` | Yes | The IDs of the Namespace's Secrets that the caller may read but the selected IAM Driver does not allow Secret operate on now, sorted. Agent creation needs Secret operate on each Secret it binds or uses: its Harness authentication source, its Configuration's Secret bindings, and a directory search Secret. Empty when it is not reported: reported only to a caller who may create an Agent in this Namespace. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "operateDenied": []
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 <span id="agents"></span>
 
@@ -1948,21 +2593,21 @@ List authorized Agents in one exact Namespace
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -1971,6 +2616,48 @@ List authorized Agents in one exact Namespace
 | `data` | `array<object or object>` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "backendId": null,
+      "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "desiredRuntimeState": "stopped",
+      "executionMode": "dedicated",
+      "gatewayManagedMode": true,
+      "harnessAuth": {
+        "method": "api_key",
+        "source": {
+          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+          "kind": "secret",
+          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+        }
+      },
+      "id": "agt_123e4567-e89b-42d3-a456-426614174000",
+      "name": "Documentation assistant",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+      "servicePrincipalId": "principal-docs-agent",
+      "status": "active"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/agents`
 
@@ -1993,9 +2680,9 @@ Create a Namespace-owned Agent
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -2032,20 +2719,37 @@ Create a Namespace-owned Agent
 | `repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `workspaceDefaultsId` | `string` | No | pattern: `^[a-f0-9]{64}$` |
 
+Example request
+```json
+{
+  "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+  "executionMode": "dedicated",
+  "harnessAuth": {
+    "method": "api_key",
+    "source": {
+      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "secret",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    }
+  },
+  "name": "Documentation assistant"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `201` | Created |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
 
@@ -2083,6 +2787,36 @@ Create a Namespace-owned Agent
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "backendId": null,
+    "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "desiredRuntimeState": "stopped",
+    "executionMode": "dedicated",
+    "gatewayManagedMode": true,
+    "harnessAuth": {
+      "method": "api_key",
+      "source": {
+        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+        "kind": "secret",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    "id": "agt_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Documentation assistant",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "servicePrincipalId": "principal-docs-agent",
+    "status": "active"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /namespaces/{namespaceId}/agents/device-authorizations`
 
 <span id="post-namespacesnamespaceidagentsdeviceauthorizations"></span>
@@ -2100,9 +2834,9 @@ Experimental: Start a private device login for Agent configuration
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -2114,21 +2848,28 @@ Experimental: Start a private device login for Agent configuration
 | --- | --- | --- | --- |
 | `harnessId` | `string` | Yes | min length: 1; max length: 100 |
 
+Example request
+```json
+{
+  "harnessId": "codex"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `501` | Not Implemented |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -2150,6 +2891,27 @@ Experimental: Start a private device login for Agent configuration
 | `data.verificationUrl` | `string (uri)` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "expiresAt": "2026-10-01T12:15:00.000Z",
+    "intervalSeconds": 5,
+    "session": {
+      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "secret",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    },
+    "status": "pending",
+    "userCode": "ABCD-EFGH",
+    "verificationUrl": "https://auth.example.com/device"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `DELETE /namespaces/{namespaceId}/agents/device-authorizations/{secretId}`
 
@@ -2168,24 +2930,24 @@ Experimental: Discard a local device login without upstream revocation
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `204` | No Content |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `501` | Not Implemented |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
 
 #### `POST /namespaces/{namespaceId}/agents/device-authorizations/{secretId}/poll`
 
@@ -2204,10 +2966,10 @@ Experimental: Complete device login without returning credential material
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -2217,21 +2979,26 @@ Experimental: Complete device login without returning credential material
 
 Schema: `object`.
 
+Example request
+```json
+{}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `501` | Not Implemented |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -2254,6 +3021,27 @@ Schema: `object`.
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "expiresAt": "2026-10-01T12:15:00.000Z",
+    "intervalSeconds": 5,
+    "session": {
+      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "secret",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    },
+    "status": "pending",
+    "userCode": "ABCD-EFGH",
+    "verificationUrl": "https://auth.example.com/device"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /namespaces/{namespaceId}/agents/models`
 
 <span id="post-namespacesnamespaceidagentsmodels"></span>
@@ -2270,9 +3058,9 @@ List provider models for Agent creation without storing the supplied credential
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -2286,22 +3074,31 @@ List provider models for Agent creation without storing the supplied credential
 | `authMethod` | `"api_key" or "codex_pat"` | Yes | — |
 | `provider` | `"openai" or "anthropic"` | Yes | — |
 
+Example request
+```json
+{
+  "apiKey": "replace-with-your-authorized-model-key",
+  "authMethod": "api_key",
+  "provider": "openai"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `429` | Too Many Requests |
-| `500` | Internal Server Error |
-| `501` | Not Implemented |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -2312,6 +3109,31 @@ List provider models for Agent creation without storing the supplied credential
 | `data[].name` | `string` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "id": "gpt-5.1-codex",
+      "name": "gpt-5.1-codex"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/agents/plugins`
 
@@ -2330,9 +3152,9 @@ List or search available plugins for Agent creation using the selected Driver
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -2342,22 +3164,33 @@ List or search available plugins for Agent creation using the selected Driver
 
 Schema: `object or object or object or object`.
 
+Example request
+```json
+{
+  "secretRef": {
+    "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+    "kind": "secret",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `429` | Too Many Requests |
-| `500` | Internal Server Error |
-| `501` | Not Implemented |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -2389,6 +3222,26 @@ Schema: `object or object or object or object`.
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "nextCursor": null,
+    "plugins": [
+      {
+        "description": "Search the documentation service.",
+        "id": "documentation",
+        "name": "Documentation",
+        "tools": null
+      }
+    ]
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /namespaces/{namespaceId}/agents/plugins/details`
 
 <span id="post-namespacesnamespaceidagentspluginsdetails"></span>
@@ -2406,9 +3259,9 @@ Read plugin details using the selected Driver
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -2418,22 +3271,34 @@ Read plugin details using the selected Driver
 
 Schema: `object or object or object or object`.
 
+Example request
+```json
+{
+  "pluginId": "documentation",
+  "secretRef": {
+    "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+    "kind": "secret",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `429` | Too Many Requests |
-| `500` | Internal Server Error |
-| `501` | Not Implemented |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -2458,6 +3323,21 @@ Schema: `object or object or object or object`.
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "description": "Search the documentation service.",
+    "id": "documentation",
+    "name": "Documentation",
+    "tools": null
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /namespaces/{namespaceId}/agents/provision`
 
 <span id="post-namespacesnamespaceidagentsprovision"></span>
@@ -2478,9 +3358,9 @@ Create a new Agent and queue first-time provisioning
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -2519,20 +3399,109 @@ Create a new Agent and queue first-time provisioning
 | `requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `workspaceDefaultsId` | `string` | No | pattern: `^[a-f0-9]{64}$` |
 
+Example request
+```json
+{
+  "configuration": {
+    "kind": "agent",
+    "values": {
+      "agents": {
+        "defaults": {
+          "model": "codex/gpt-5.1-codex",
+          "models": {
+            "codex/gpt-5.1-codex": {
+              "agentRuntime": {
+                "id": "codex"
+              }
+            }
+          }
+        }
+      },
+      "gateway": {
+        "auth": {
+          "password": {
+            "id": "OPENCLAW_GATEWAY_PASSWORD",
+            "provider": "default",
+            "source": "env"
+          }
+        },
+        "bind": "lan",
+        "controlUi": {
+          "enabled": false
+        },
+        "http": {
+          "endpoints": {
+            "chatCompletions": {
+              "enabled": true
+            }
+          }
+        },
+        "mode": "local"
+      },
+      "models": {
+        "providers": {
+          "codex": {
+            "api": "openai-responses",
+            "baseUrl": "http://127.0.0.1:9",
+            "models": [
+              {
+                "id": "gpt-5.1-codex",
+                "name": "gpt-5.1-codex"
+              }
+            ]
+          }
+        }
+      },
+      "plugins": {
+        "allow": [
+          "codex"
+        ],
+        "entries": {
+          "codex": {
+            "config": {
+              "appServer": {
+                "approvalPolicy": "on-request",
+                "authToken": "${APP_SERVER_TOKEN}",
+                "mode": "guardian",
+                "sandbox": "read-only",
+                "transport": "websocket",
+                "url": "${APP_SERVER_URL}"
+              }
+            },
+            "enabled": true
+          }
+        }
+      }
+    }
+  },
+  "executionMode": "dedicated",
+  "harnessAuth": {
+    "method": "api_key",
+    "source": {
+      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "secret",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    }
+  },
+  "name": "Documentation assistant",
+  "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `202` | Accepted |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`202` response body:** `application/json`
 
@@ -2559,6 +3528,26 @@ Create a new Agent and queue first-time provisioning
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "provisioning": {
+      "attemptCount": 0,
+      "phase": "admitted",
+      "requestId": "req_123e4567-e89b-42d3-a456-426614174000",
+      "status": "queued",
+      "updatedAt": "2026-10-01T12:00:00.000Z",
+      "url": "/namespaces/ns_123e4567-e89b-42d3-a456-426614174000/agents/provision/provision-docs-assistant",
+      "workId": "provision-docs-assistant"
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /namespaces/{namespaceId}/agents/provision/{workId}`
 
 <span id="get-namespacesnamespaceidagentsprovisionworkid"></span>
@@ -2584,23 +3573,23 @@ Get first-time provisioning status for one exact work item
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `workId` | path | `string` | Yes | min length: 1; max length: 200; pattern: `^[A-Za-z0-9._~:@/-]{1,200}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `workId` | path | `string` | Yes | min length: 1; max length: 200; pattern: `^[A-Za-z0-9._~:@/-]{1,200}$` | "provision-docs-assistant" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -2625,6 +3614,24 @@ Get first-time provisioning status for one exact work item
 | `data.workId` | `string` | Yes | min length: 1; max length: 200 |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "attemptCount": 0,
+    "phase": "admitted",
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000",
+    "status": "queued",
+    "updatedAt": "2026-10-01T12:00:00.000Z",
+    "url": "/namespaces/ns_123e4567-e89b-42d3-a456-426614174000/agents/provision/provision-docs-assistant",
+    "workId": "provision-docs-assistant"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/agents/provision/{workId}/retry`
 
@@ -2651,23 +3658,23 @@ Retry failed first-time provisioning for one exact work item
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `workId` | path | `string` | Yes | min length: 1; max length: 200; pattern: `^[A-Za-z0-9._~:@/-]{1,200}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `workId` | path | `string` | Yes | min length: 1; max length: 200; pattern: `^[A-Za-z0-9._~:@/-]{1,200}$` | "provision-docs-assistant" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `202` | Accepted |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`202` response body:** `application/json`
 
@@ -2693,6 +3700,24 @@ Retry failed first-time provisioning for one exact work item
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "attemptCount": 0,
+    "phase": "admitted",
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000",
+    "status": "queued",
+    "updatedAt": "2026-10-01T12:00:00.000Z",
+    "url": "/namespaces/ns_123e4567-e89b-42d3-a456-426614174000/agents/provision/provision-docs-assistant",
+    "workId": "provision-docs-assistant"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /namespaces/{namespaceId}/agents/repository-options`
 
 <span id="get-namespacesnamespaceidagentsrepositoryoptions"></span>
@@ -2709,21 +3734,21 @@ List approved repository choices for Agent creation in one Namespace
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
 | `503` | Check `error.code`: `REPOSITORY_OPTIONS_UNAVAILABLE` means optional repository discovery is unavailable after Namespace lifecycle and Agent create authorization checks, because the selected Compute or Sandbox Driver cannot support repository credentials or the selected repository Driver is unavailable. Without repository settings the answer is 200 with `meta.notConfigured` instead. Creation without repository bindings remains available subject to fresh authorization. `DEPENDENCY_UNAVAILABLE` includes IAM and other required dependency failures and does not permit proceeding. Successful discovery returns a data array, including an empty array when no repositories are approved. |
 
 **`200` response body:** `application/json`
@@ -2738,6 +3763,34 @@ List approved repository choices for Agent creation in one Namespace
 | `meta` | `object` | Yes | — |
 | `meta.notConfigured` | `true` | No | Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT. |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "allowedProfiles": [
+        "read"
+      ],
+      "displayName": "Documentation",
+      "repositoryRef": "documentation"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/agents/validate`
 
@@ -2756,9 +3809,9 @@ Check an unsaved Agent Configuration, plugin selections, initial workspace files
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -2786,20 +3839,108 @@ Check an unsaved Agent Configuration, plugin selections, initial workspace files
 | `pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
 | `plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
 
+Example request
+```json
+{
+  "configuration": {
+    "kind": "agent",
+    "values": {
+      "agents": {
+        "defaults": {
+          "model": "codex/gpt-5.1-codex",
+          "models": {
+            "codex/gpt-5.1-codex": {
+              "agentRuntime": {
+                "id": "codex"
+              }
+            }
+          }
+        }
+      },
+      "gateway": {
+        "auth": {
+          "password": {
+            "id": "OPENCLAW_GATEWAY_PASSWORD",
+            "provider": "default",
+            "source": "env"
+          }
+        },
+        "bind": "lan",
+        "controlUi": {
+          "enabled": false
+        },
+        "http": {
+          "endpoints": {
+            "chatCompletions": {
+              "enabled": true
+            }
+          }
+        },
+        "mode": "local"
+      },
+      "models": {
+        "providers": {
+          "codex": {
+            "api": "openai-responses",
+            "baseUrl": "http://127.0.0.1:9",
+            "models": [
+              {
+                "id": "gpt-5.1-codex",
+                "name": "gpt-5.1-codex"
+              }
+            ]
+          }
+        }
+      },
+      "plugins": {
+        "allow": [
+          "codex"
+        ],
+        "entries": {
+          "codex": {
+            "config": {
+              "appServer": {
+                "approvalPolicy": "on-request",
+                "authToken": "${APP_SERVER_TOKEN}",
+                "mode": "guardian",
+                "sandbox": "read-only",
+                "transport": "websocket",
+                "url": "${APP_SERVER_URL}"
+              }
+            },
+            "enabled": true
+          }
+        }
+      }
+    }
+  },
+  "executionMode": "dedicated",
+  "harnessAuth": {
+    "method": "api_key",
+    "source": {
+      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "secret",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    }
+  },
+  "name": "Documentation assistant"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `204` | No Content |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 #### `DELETE /namespaces/{namespaceId}/agents/{agentId}`
 
@@ -2817,23 +3958,23 @@ Begin or retry deletion of the requested Agent and its Agent revisions
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `202` | Accepted |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`202` response body:** `application/json`
 
@@ -2871,6 +4012,36 @@ Begin or retry deletion of the requested Agent and its Agent revisions
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "backendId": null,
+    "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "desiredRuntimeState": "stopped",
+    "executionMode": "dedicated",
+    "gatewayManagedMode": true,
+    "harnessAuth": {
+      "method": "api_key",
+      "source": {
+        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+        "kind": "secret",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    "id": "agt_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Documentation assistant",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "servicePrincipalId": "principal-docs-agent",
+    "status": "deleting"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /namespaces/{namespaceId}/agents/{agentId}`
 
 <span id="get-namespacesnamespaceidagentsagentid"></span>
@@ -2887,22 +4058,22 @@ Get an exact Namespace-owned Agent
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -2911,6 +4082,36 @@ Get an exact Namespace-owned Agent
 | `data` | `object or object` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "backendId": null,
+    "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "desiredRuntimeState": "stopped",
+    "executionMode": "dedicated",
+    "gatewayManagedMode": true,
+    "harnessAuth": {
+      "method": "api_key",
+      "source": {
+        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+        "kind": "secret",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    "id": "agt_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Documentation assistant",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "servicePrincipalId": "principal-docs-agent",
+    "status": "active"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `PATCH /namespaces/{namespaceId}/agents/{agentId}`
 
@@ -2934,10 +4135,10 @@ Replace an exact Namespace-owned Agent's editable draft
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -2966,20 +4167,36 @@ Replace an exact Namespace-owned Agent's editable draft
 | `repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryStandingApproval` | `object or object` | No | — |
 
+Example request
+```json
+{
+  "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+  "executionMode": "dedicated",
+  "harnessAuth": {
+    "method": "api_key",
+    "source": {
+      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "secret",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    }
+  }
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -3017,6 +4234,36 @@ Replace an exact Namespace-owned Agent's editable draft
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "backendId": null,
+    "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "desiredRuntimeState": "stopped",
+    "executionMode": "dedicated",
+    "gatewayManagedMode": true,
+    "harnessAuth": {
+      "method": "api_key",
+      "source": {
+        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+        "kind": "secret",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    "id": "agt_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Documentation assistant",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "servicePrincipalId": "principal-docs-agent",
+    "status": "active"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdraw`
 
 <span id="post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw"></span>
@@ -3033,24 +4280,24 @@ Revoke one credential source from the selected Agent revision
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cs_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `202` | Accepted |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`202` response body:** `application/json`
 
@@ -3071,6 +4318,25 @@ Revoke one credential source from the selected Agent revision
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "agentId": "agt_123e4567-e89b-42d3-a456-426614174000",
+    "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "requestedAt": "2026-10-01T12:00:00.000Z",
+    "requestedBy": "principal-administrator",
+    "revisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+    "state": "pending",
+    "withdrawalInProgress": true
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdrawal`
 
 <span id="get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal"></span>
@@ -3087,23 +4353,23 @@ Get the withdrawal state of a credential source for an Agent
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cs_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -3123,6 +4389,25 @@ Get the withdrawal state of a credential source for an Agent
 | `data.withdrawalInProgress` | `boolean` | Yes | `true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no queued or running attempt. OCC maintenance can queue a new attempt. To request another attempt, send the withdraw request again. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "agentId": "agt_123e4567-e89b-42d3-a456-426614174000",
+    "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "requestedAt": "2026-10-01T12:00:00.000Z",
+    "requestedBy": "principal-administrator",
+    "revisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+    "state": "pending",
+    "withdrawalInProgress": true
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/deploy`
 
@@ -3147,23 +4432,23 @@ Save an Agent revision from the Agent's saved settings
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `202` | Accepted |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`202` response body:** `application/json`
 
@@ -3213,6 +4498,113 @@ Save an Agent revision from the Agent's saved settings
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "agentId": "agt_123e4567-e89b-42d3-a456-426614174000",
+    "backendId": null,
+    "compute": {
+      "id": "kubernetes",
+      "implementation": "kubernetes"
+    },
+    "configuration": {
+      "agents": {
+        "defaults": {
+          "model": "codex/gpt-5.1-codex",
+          "models": {
+            "codex/gpt-5.1-codex": {
+              "agentRuntime": {
+                "id": "codex"
+              }
+            }
+          }
+        }
+      },
+      "gateway": {
+        "auth": {
+          "password": {
+            "id": "OPENCLAW_GATEWAY_PASSWORD",
+            "provider": "default",
+            "source": "env"
+          }
+        },
+        "bind": "lan",
+        "controlUi": {
+          "enabled": false
+        },
+        "http": {
+          "endpoints": {
+            "chatCompletions": {
+              "enabled": true
+            }
+          }
+        },
+        "mode": "local"
+      },
+      "models": {
+        "providers": {
+          "codex": {
+            "api": "openai-responses",
+            "baseUrl": "http://127.0.0.1:9",
+            "models": [
+              {
+                "id": "gpt-5.1-codex",
+                "name": "gpt-5.1-codex"
+              }
+            ]
+          }
+        }
+      },
+      "plugins": {
+        "allow": [
+          "codex"
+        ],
+        "entries": {
+          "codex": {
+            "config": {
+              "appServer": {
+                "approvalPolicy": "on-request",
+                "authToken": "${APP_SERVER_TOKEN}",
+                "mode": "guardian",
+                "sandbox": "read-only",
+                "transport": "websocket",
+                "url": "${APP_SERVER_URL}"
+              }
+            },
+            "enabled": true
+          }
+        }
+      }
+    },
+    "configurationGeneration": 1,
+    "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+    "configurationKind": "agent",
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "gatewayManagedMode": true,
+    "harness": {
+      "id": "codex",
+      "mode": "dedicated",
+      "version": "1"
+    },
+    "harnessAuth": {
+      "method": "api_key",
+      "source": {
+        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+        "kind": "secret",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    "id": "rev_123e4567-e89b-42d3-a456-426614174000",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "revision": 1
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations`
 
 <span id="post-namespacesnamespaceidagentsagentiddeviceauthorizations"></span>
@@ -3231,10 +4623,10 @@ Experimental: Start a private device login for Agent configuration
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -3246,21 +4638,28 @@ Experimental: Start a private device login for Agent configuration
 | --- | --- | --- | --- |
 | `harnessId` | `string` | Yes | min length: 1; max length: 100 |
 
+Example request
+```json
+{
+  "harnessId": "codex"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `501` | Not Implemented |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -3282,6 +4681,27 @@ Experimental: Start a private device login for Agent configuration
 | `data.verificationUrl` | `string (uri)` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "expiresAt": "2026-10-01T12:15:00.000Z",
+    "intervalSeconds": 5,
+    "session": {
+      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "secret",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    },
+    "status": "pending",
+    "userCode": "ABCD-EFGH",
+    "verificationUrl": "https://auth.example.com/device"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `DELETE /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}`
 
@@ -3301,25 +4721,25 @@ Experimental: Discard a local device login without upstream revocation
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `204` | No Content |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `501` | Not Implemented |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
 
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}/poll`
 
@@ -3339,11 +4759,11 @@ Experimental: Complete device login without returning credential material
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -3353,21 +4773,26 @@ Experimental: Complete device login without returning credential material
 
 Schema: `object`.
 
+Example request
+```json
+{}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `501` | Not Implemented |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -3390,6 +4815,27 @@ Schema: `object`.
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "expiresAt": "2026-10-01T12:15:00.000Z",
+    "intervalSeconds": 5,
+    "session": {
+      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "secret",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    },
+    "status": "pending",
+    "userCode": "ABCD-EFGH",
+    "verificationUrl": "https://auth.example.com/device"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/driver-configurations`
 
 <span id="get-namespacesnamespaceidagentsagentiddriverconfigurations"></span>
@@ -3406,22 +4852,22 @@ Discover authorized Agent Driver configuration contributions
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -3453,8 +4899,21 @@ Discover authorized Agent Driver configuration contributions
 | `data.configurations[].implementation` | `string` | Yes | — |
 | `data.configurations[].key` | `string` | Yes | — |
 | `data.configurations[].scope` | `"installation" or "agent"` | Yes | — |
+| `data.configurations[].startupConfiguration` | `object<string, SafeJsonValue>` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "configurations": []
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/harness-status`
 
@@ -3472,22 +4931,22 @@ Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -3503,6 +4962,18 @@ Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox
 | `data.status` | `"observed" or "unobserved"` | Yes | `observed` when OCC read the Sandbox record of the running Agent's active revision. `unobserved` when there is nothing to read: the Agent is stopped, deleting or has no active revision, its Harness is not dedicated, or the selected Sandbox Driver keeps no lifecycle record. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "status": "unobserved"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/native-admin`
 
@@ -3520,10 +4991,10 @@ Resolve native admin UI launch availability for one Agent
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | min length: 1; max length: 200 |
-| `agentId` | path | `string` | Yes | min length: 1; max length: 200 |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | min length: 1; max length: 200 | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | min length: 1; max length: 200 | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
@@ -3548,6 +5019,18 @@ Resolve native admin UI launch availability for one Agent
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
 
+Example response
+```json
+{
+  "data": {
+    "status": "stopped"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/permissions`
 
 <span id="get-namespacesnamespaceidagentsagentidpermissions"></span>
@@ -3564,22 +5047,22 @@ Report advisory primary IAM permissions on a readable Agent, not authorization f
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -3601,6 +5084,29 @@ Report advisory primary IAM permissions on a readable Agent, not authorization f
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "administer": true,
+    "agentSourcesOperate": true,
+    "configurationRead": true,
+    "configurationSecretsOperate": true,
+    "configurationSecretsOperateDeniedBindings": [],
+    "configurationUpdate": true,
+    "delete": true,
+    "deploy": true,
+    "operate": true,
+    "readLogs": true,
+    "sandboxPolicyRead": true,
+    "update": true
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/permissions/secrets`
 
 <span id="get-namespacesnamespaceidagentsagentidpermissionssecrets"></span>
@@ -3617,22 +5123,22 @@ Report the readable Secrets that the caller may not bind to a readable Agent, no
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -3643,6 +5149,19 @@ Report the readable Secrets that the caller may not bind to a readable Agent, no
 | `data.unreadableOperateDenied` | `integer` | Yes | minimum: 0; How many of the Secrets the draft binds the caller may neither read nor Secret operate now: its Configuration's Secret bindings and a Secret Harness authentication source. Deploying the draft needs Secret operate on each. A count only: the caller may not read them, so their IDs are never reported. 0 when it is not reported, under the same conditions as `operateDenied`. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "operateDenied": [],
+    "unreadableOperateDenied": 0
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/plugins`
 
@@ -3662,10 +5181,10 @@ List or search plugins for an active Agent; caller needs Agent read/update. Cura
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -3682,22 +5201,27 @@ List or search plugins for an active Agent; caller needs Agent read/update. Cura
 | `cursor` | `string` | No | min length: 1; max length: 8192 |
 | `q` | `string` | No | max length: 1024 |
 
+Example request
+```json
+{}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `429` | Too Many Requests |
-| `500` | Internal Server Error |
-| `501` | Not Implemented |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -3729,6 +5253,26 @@ List or search plugins for an active Agent; caller needs Agent read/update. Cura
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "nextCursor": null,
+    "plugins": [
+      {
+        "description": "Search the documentation service.",
+        "id": "documentation",
+        "name": "Documentation",
+        "tools": null
+      }
+    ]
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/plugins/capabilities`
 
 <span id="get-namespacesnamespaceidagentsagentidpluginscapabilities"></span>
@@ -3746,24 +5290,24 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `501` | Not Implemented |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -3799,6 +5343,41 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "discoveryCredential": "required",
+    "driver": {
+      "id": "codex",
+      "implementation": "codex"
+    },
+    "driverPolicySchema": {},
+    "toolDefaults": {
+      "approval": [
+        "all_actions"
+      ],
+      "enabled": true,
+      "reviewer": [
+        "human"
+      ]
+    },
+    "tools": {
+      "approval": [
+        "all_actions"
+      ],
+      "enabled": true,
+      "reviewer": [
+        "human"
+      ]
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/plugins/details`
 
 <span id="post-namespacesnamespaceidagentsagentidpluginsdetails"></span>
@@ -3817,10 +5396,10 @@ Read plugin details for an active Agent; caller needs Agent read/update. Curated
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -3836,22 +5415,29 @@ Read plugin details for an active Agent; caller needs Agent read/update. Curated
 | `credentialSource.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `pluginId` | `string` | Yes | min length: 1; max length: 256 |
 
+Example request
+```json
+{
+  "pluginId": "documentation"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `429` | Too Many Requests |
-| `500` | Internal Server Error |
-| `501` | Not Implemented |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -3876,6 +5462,21 @@ Read plugin details for an active Agent; caller needs Agent read/update. Curated
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "description": "Search the documentation service.",
+    "id": "documentation",
+    "name": "Documentation",
+    "tools": null
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/repository-approval-scopes`
 
 <span id="get-namespacesnamespaceidagentsagentidrepositoryapprovalscopes"></span>
@@ -3892,23 +5493,23 @@ Review resolved repository scope before explicitly approving it
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -3921,6 +5522,16 @@ Review resolved repository scope before explicitly approving it
 | `data[].scopeFingerprint` | `string` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/repository-approvals`
 
@@ -3938,22 +5549,22 @@ Read attributable repository approvals and removed generations for one Agent
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -3972,6 +5583,16 @@ Read attributable repository approvals and removed generations for one Agent
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
 
+Example response
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/repository-approvals/{approvalId}/remove`
 
 <span id="post-namespacesnamespaceidagentsagentidrepositoryapprovalsapprovalidremove"></span>
@@ -3988,11 +5609,11 @@ Remove repository approval independently of configuration or runtime cleanup
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `approvalId` | path | `string` | Yes | pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `approvalId` | path | `string` | Yes | pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` | "approval-documentation" |
 
 ##### Request body
 
@@ -4004,20 +5625,27 @@ Remove repository approval independently of configuration or runtime cleanup
 | --- | --- | --- | --- |
 | `expectedGeneration` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
 
+Example request
+```json
+{
+  "expectedGeneration": 1
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `204` | No Content |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/repository-options`
 
@@ -4035,23 +5663,23 @@ List approved repository choices for updating one Agent
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -4065,6 +5693,34 @@ List approved repository choices for updating one Agent
 | `meta` | `object` | Yes | — |
 | `meta.notConfigured` | `true` | No | Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT. |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "allowedProfiles": [
+        "read"
+      ],
+      "displayName": "Documentation",
+      "repositoryRef": "documentation"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/revisions/{revisionId}/sandbox-policy/{facet}/recommendations`
 
@@ -4083,26 +5739,26 @@ Read policy suggestions for the requested Agent revision
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `facet` | path | `"networking" or "filesystem" or "process"` | Yes | — |
-| `revisionId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `facet` | path | `"networking" or "filesystem" or "process"` | Yes | — | "networking" |
+| `revisionId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "rev_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `429` | Too Many Requests |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -4125,6 +5781,19 @@ Read policy suggestions for the requested Agent revision
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "recommendations": [],
+    "truncated": false
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/runtime-credentials`
 
 <span id="get-namespacesnamespaceidagentsagentidruntimecredentials"></span>
@@ -4141,22 +5810,22 @@ Get metadata for one Agent's provisioned runtime credentials
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -4166,6 +5835,18 @@ Get metadata for one Agent's provisioned runtime credentials
 | `data.transportConfigured` | `boolean` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "transportConfigured": true
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/runtime-credentials`
 
@@ -4184,10 +5865,10 @@ Provision initial runtime credentials for one undeployed Agent
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -4197,20 +5878,25 @@ Provision initial runtime credentials for one undeployed Agent
 
 Schema: `object`.
 
+Example request
+```json
+{}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -4220,6 +5906,18 @@ Schema: `object`.
 | `data.transportConfigured` | `boolean` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "transportConfigured": true
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/runtime-images`
 
@@ -4237,22 +5935,22 @@ Read observed images and source commits for an Agent's active runtime
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -4269,6 +5967,19 @@ Read observed images and source commits for an Agent's active runtime
 | `data.status` | `"observed" or "undeployed" or "unsupported"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "images": [],
+    "status": "undeployed"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}`
 
@@ -4287,24 +5998,24 @@ Read one Agent sandbox policy and delegation ceiling
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `facet` | path | `"networking" or "filesystem" or "process"` | Yes | — |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `facet` | path | `"networking" or "filesystem" or "process"` | Yes | — | "networking" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -4344,6 +6055,7 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.configuration.implementation` | `string` | Yes | — |
 | `data.configuration.key` | `string` | Yes | — |
 | `data.configuration.scope` | `"installation" or "agent"` | Yes | — |
+| `data.configuration.startupConfiguration` | `object<string, SafeJsonValue>` | No | — |
 | `data.defaults` | `null or object<string, any>` | Yes | — |
 | `data.defaultsRevisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.deployedPolicyVersion` | `integer` | No | minimum: 1; maximum: 2147483647; The saved policy version the active revision (defaultsRevisionId) was deployed with. Its Sandbox enforces that version without a live application. |
@@ -4379,6 +6091,29 @@ Read one Agent sandbox policy and delegation ceiling
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "capability": null,
+    "ceiling": [],
+    "defaults": null,
+    "editingEnabled": true,
+    "policy": {
+      "additions": [],
+      "agentId": "agt_123e4567-e89b-42d3-a456-426614174000",
+      "id": "sbp_123e4567-e89b-42d3-a456-426614174000",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+      "version": 1
+    },
+    "protectedExecution": false
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `PUT /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}`
 
 <span id="put-namespacesnamespaceidagentsagentidsandboxpolicyfacet"></span>
@@ -4396,11 +6131,11 @@ Replace one Agent network policy additions
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `facet` | path | `"networking" or "filesystem" or "process"` | Yes | — |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `facet` | path | `"networking" or "filesystem" or "process"` | Yes | — | "networking" |
 
 ##### Request body
 
@@ -4419,20 +6154,28 @@ Replace one Agent network policy additions
 | `additions[].ports[].to` | `integer` | Yes | minimum: 1; maximum: 65535 |
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
 
+Example request
+```json
+{
+  "additions": [],
+  "expectedVersion": 1
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -4466,6 +6209,22 @@ Replace one Agent network policy additions
 | `data.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "additions": [],
+    "agentId": "agt_123e4567-e89b-42d3-a456-426614174000",
+    "id": "sbp_123e4567-e89b-42d3-a456-426614174000",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "version": 2
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/apply`
 
@@ -4485,11 +6244,11 @@ Apply the saved policy to the running Agent revision
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `facet` | path | `"networking" or "filesystem" or "process"` | Yes | — |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `facet` | path | `"networking" or "filesystem" or "process"` | Yes | — | "networking" |
 
 ##### Request body
 
@@ -4502,20 +6261,28 @@ Apply the saved policy to the running Agent revision
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
 | `revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example request
+```json
+{
+  "expectedVersion": 1,
+  "revisionId": "rev_123e4567-e89b-42d3-a456-426614174000"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `202` | Accepted |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`202` response body:** `application/json`
 
@@ -4550,6 +6317,30 @@ Apply the saved policy to the running Agent revision
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "additions": [],
+    "agentId": "agt_123e4567-e89b-42d3-a456-426614174000",
+    "application": {
+      "id": "123e4567-e89b-42d3-a456-426614174000",
+      "policyVersion": 1,
+      "requestedAt": "2026-10-01T12:00:00.000Z",
+      "requestedBy": "principal-administrator",
+      "revisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+      "state": "pending"
+    },
+    "id": "sbp_123e4567-e89b-42d3-a456-426614174000",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "version": 1
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `PATCH /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/editing`
 
 <span id="patch-namespacesnamespaceidagentsagentidsandboxpolicyfacetediting"></span>
@@ -4567,11 +6358,11 @@ Temporarily enable or disable future policy edits for one Agent
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `facet` | path | `"networking" or "filesystem" or "process"` | Yes | — |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `facet` | path | `"networking" or "filesystem" or "process"` | Yes | — | "networking" |
 
 ##### Request body
 
@@ -4583,20 +6374,27 @@ Temporarily enable or disable future policy edits for one Agent
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | Yes | — |
 
+Example request
+```json
+{
+  "enabled": true
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -4634,6 +6432,36 @@ Temporarily enable or disable future policy edits for one Agent
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "backendId": null,
+    "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "desiredRuntimeState": "stopped",
+    "executionMode": "dedicated",
+    "gatewayManagedMode": true,
+    "harnessAuth": {
+      "method": "api_key",
+      "source": {
+        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+        "kind": "secret",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    "id": "agt_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Documentation assistant",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "servicePrincipalId": "principal-docs-agent",
+    "status": "active"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/validate`
 
 <span id="post-namespacesnamespaceidagentsagentidsandboxpolicyfacetvalidate"></span>
@@ -4650,11 +6478,11 @@ Preview Agent network policy admission without saving or applying
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `facet` | path | `"networking" or "filesystem" or "process"` | Yes | — |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `facet` | path | `"networking" or "filesystem" or "process"` | Yes | — | "networking" |
 
 ##### Request body
 
@@ -4667,20 +6495,28 @@ Preview Agent network policy admission without saving or applying
 | `additions` | `any` | Yes | — |
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
 
+Example request
+```json
+{
+  "additions": [],
+  "expectedVersion": 1
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -4689,6 +6525,19 @@ Preview Agent network policy admission without saving or applying
 | `data` | `object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "data": [],
+    "success": true
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/stop`
 
@@ -4706,23 +6555,23 @@ Stop one Agent and keep its saved Agent revision and persistent state
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `202` | Accepted |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`202` response body:** `application/json`
 
@@ -4760,6 +6609,36 @@ Stop one Agent and keep its saved Agent revision and persistent state
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "backendId": null,
+    "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "desiredRuntimeState": "stopped",
+    "executionMode": "dedicated",
+    "gatewayManagedMode": true,
+    "harnessAuth": {
+      "method": "api_key",
+      "source": {
+        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+        "kind": "secret",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    "id": "agt_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Documentation assistant",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "servicePrincipalId": "principal-docs-agent",
+    "status": "active"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/workspace/files/{name}`
 
 <span id="get-namespacesnamespaceidagentsagentidworkspacefilesname"></span>
@@ -4776,24 +6655,24 @@ Read an allowed workspace file from one active Agent
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `name` | path | `"AGENTS.md" or "SOUL.md" or "IDENTITY.md" or "USER.md"` | Yes | — |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `name` | path | `"AGENTS.md" or "SOUL.md" or "IDENTITY.md" or "USER.md"` | Yes | — | "AGENTS.md" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
 | `409` | Conflict. The Agent has no running version: deploy it, or wait until its deployment finishes. |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -4804,6 +6683,19 @@ Read an allowed workspace file from one active Agent
 | `data.name` | `"AGENTS.md" or "SOUL.md" or "IDENTITY.md" or "USER.md"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "content": "Explain your changes and verify the affected behavior.\n",
+    "name": "AGENTS.md"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `PUT /namespaces/{namespaceId}/agents/{agentId}/workspace/files/{name}`
 
@@ -4821,11 +6713,11 @@ Create or replace an allowed workspace file for one active Agent
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `name` | path | `"AGENTS.md" or "SOUL.md" or "IDENTITY.md" or "USER.md"` | Yes | — |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `name` | path | `"AGENTS.md" or "SOUL.md" or "IDENTITY.md" or "USER.md"` | Yes | — | "AGENTS.md" |
 
 ##### Request body
 
@@ -4837,19 +6729,26 @@ Create or replace an allowed workspace file for one active Agent
 | --- | --- | --- | --- |
 | `content` | `string` | Yes | max length: 16384; pattern: `^[^\u0000]*$`; Workspace file content. The controller also enforces a 16 KiB UTF-8 byte limit and rejects unpaired UTF-16 surrogates. |
 
+Example request
+```json
+{
+  "content": "Explain your changes and verify the affected behavior.\n"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
 | `503` | Service Unavailable. Check `error.code`: `DEPENDENCY_UNAVAILABLE` means workspace access is unavailable. `UNKNOWN_OUTCOME` means OCC could not confirm the write or its audit record; the file may already contain the requested content. Read the same file with `GET` and compare its content before deciding whether to retry. If the content matches, do not retry. If you cannot read it, wait or ask someone with `read` permission on the Agent to check. |
 
 **`200` response body:** `application/json`
@@ -4861,6 +6760,19 @@ Create or replace an allowed workspace file for one active Agent
 | `data.size` | `integer` | No | minimum: 0; maximum: 16384 |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "name": "AGENTS.md",
+    "size": 54
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/channel-directory/lookup`
 
@@ -4881,9 +6793,9 @@ Search a channel directory using an authorized Namespace Secret
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -4893,22 +6805,31 @@ Search a channel directory using an authorized Namespace Secret
 
 Schema: `object or object or object or object or object or object`.
 
+Example request
+```json
+{
+  "kind": "channels",
+  "query": "engineering",
+  "secretId": "sec_123e4567-e89b-42d3-a456-426614174000"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `429` | Too Many Requests |
-| `500` | Internal Server Error |
-| `501` | Not Implemented |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -4926,6 +6847,26 @@ Schema: `object or object or object or object or object or object`.
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "candidates": [
+      {
+        "id": "C0123456789",
+        "name": "engineering"
+      }
+    ],
+    "complete": true,
+    "workspaceId": "T0123456789",
+    "workspaceName": "Engineering"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /native-admin/return/{agentKey}`
 
 <span id="get-nativeadminreturnagentkey"></span>
@@ -4942,9 +6883,9 @@ Resolve an authorized Agent from a copied native chat link
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `agentKey` | path | `string` | Yes | pattern: `^[0-9a-f]{32}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `agentKey` | path | `string` | Yes | pattern: `^[0-9a-f]{32}$` | "123e4567e89b42d3a456426614174000" |
 
 ##### Responses
 
@@ -4967,6 +6908,19 @@ Resolve an authorized Agent from a copied native chat link
 | `data.namespaceId` | `string` | Yes | min length: 1; max length: 200 |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "agentId": "agt_123e4567-e89b-42d3-a456-426614174000",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 <span id="agent-deployments"></span>
 
@@ -4995,23 +6949,23 @@ Get the saved deployment status for an Agent revision
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `deploymentId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `deploymentId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "rev_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -5031,6 +6985,25 @@ Get the saved deployment status for an Agent revision
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "agentId": "agt_123e4567-e89b-42d3-a456-426614174000",
+    "cleanup": null,
+    "deploymentId": "rev_123e4567-e89b-42d3-a456-426614174000",
+    "error": null,
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "progress": null,
+    "status": "succeeded",
+    "warnings": []
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/diagnostics`
 
 <span id="post-namespacesnamespaceidagentsagentiddeploymentsdeploymentiddiagnostics"></span>
@@ -5049,24 +7022,24 @@ Check the current runtime for an Agent revision
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `deploymentId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `deploymentId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "rev_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -5083,6 +7056,27 @@ Check the current runtime for an Agent revision
 | `data.revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "checks": [
+      {
+        "check": "running",
+        "checkedAt": "2026-10-01T12:00:00.000Z",
+        "component": "harness",
+        "state": "succeeded"
+      }
+    ],
+    "observedAt": "2026-10-01T12:00:00.000Z",
+    "revisionId": "rev_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/runtime`
 
@@ -5102,26 +7096,26 @@ Read Pod status, restart counts, Events, and log sources for an Agent revision
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `deploymentId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `deploymentId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "rev_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `429` | Too Many Requests |
-| `500` | Internal Server Error |
-| `501` | Not Implemented |
-| `503` | Service Unavailable |
-| `504` | Gateway Timeout |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
+| `504` | The runtime status or log read timed out. |
 
 **`200` response body:** `application/json`
 
@@ -5172,6 +7166,30 @@ Read Pod status, restart counts, Events, and log sources for an Agent revision
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "observedAt": "2026-10-01T12:00:00.000Z",
+    "pods": [],
+    "revisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+    "sources": [
+      {
+        "available": false,
+        "id": "agent",
+        "kind": "container",
+        "pods": [],
+        "retention": "Pod lifetime",
+        "unavailableCode": "NO_POD"
+      }
+    ]
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/runtime/logs`
 
 <span id="get-namespacesnamespaceidagentsagentiddeploymentsdeploymentidruntimelogs"></span>
@@ -5190,35 +7208,35 @@ Read one page of redacted container output for an Agent revision
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `source` | query | `"gateway" or "agent" or "sandbox"` | Yes | — |
-| `pod` | query | `string` | No | min length: 1; max length: 253; pattern: `^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$` |
-| `container` | query | `string` | No | min length: 1; max length: 253; pattern: `^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$` |
-| `previous` | query | `"true" or "false"` | No | — |
-| `tailLines` | query | `string` | No | pattern: `^(?:[1-9][0-9]{0,2}\|1000)$` |
-| `sinceSeconds` | query | `string` | No | pattern: `^(?:[1-9][0-9]{0,3}\|[1-7][0-9]{4}\|8[0-5][0-9]{3}\|86[0-3][0-9]{2}\|86400)$` |
-| `minLevel` | query | `"error" or "warn" or "info" or "debug"` | No | — |
-| `cursor` | query | `string` | No | max length: 2048; pattern: `^v[12]\.[A-Za-z0-9_-]{1,1900}\.[A-Za-z0-9_-]{43}$` |
-| `download` | query | `"true" or "false"` | No | — |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `deploymentId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `source` | query | `"gateway" or "agent" or "sandbox"` | Yes | — | "agent" |
+| `pod` | query | `string` | No | min length: 1; max length: 253; pattern: `^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$` | "agent-docs-0" |
+| `container` | query | `string` | No | min length: 1; max length: 253; pattern: `^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$` | "agent" |
+| `previous` | query | `"true" or "false"` | No | — | "false" |
+| `tailLines` | query | `string` | No | pattern: `^(?:[1-9][0-9]{0,2}\|1000)$` | "100" |
+| `sinceSeconds` | query | `string` | No | pattern: `^(?:[1-9][0-9]{0,3}\|[1-7][0-9]{4}\|8[0-5][0-9]{3}\|86[0-3][0-9]{2}\|86400)$` | "300" |
+| `minLevel` | query | `"error" or "warn" or "info" or "debug"` | No | — | "info" |
+| `cursor` | query | `string` | No | max length: 2048; pattern: `^v[12]\.[A-Za-z0-9_-]{1,1900}\.[A-Za-z0-9_-]{43}$` | "v1.ZXhhbXBsZQ.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" |
+| `download` | query | `"true" or "false"` | No | — | "false" |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `deploymentId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "rev_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | One page of records, or a text/plain attachment when `download=true` |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `429` | Too Many Requests |
-| `500` | Internal Server Error |
-| `501` | Not Implemented |
-| `503` | Service Unavailable |
-| `504` | Gateway Timeout |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `429` | Too many requests. Wait for Retry-After and try again. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
+| `504` | The runtime status or log read timed out. |
 
 **`200` response body:** `application/json`
 
@@ -5236,9 +7254,34 @@ Read one page of redacted container output for an Agent revision
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "cursor": null,
+    "observedAt": "2026-10-01T12:00:00.000Z",
+    "records": [],
+    "revisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+    "source": "agent",
+    "stream": null,
+    "truncated": false,
+    "withheld": 0
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 **`200` response body:** `text/plain`
 
 Schema: `string`.
+
+Log download (download=true)
+```text
+2026-10-01T12:00:00.000Z Agent ready
+
+```
 
 <span id="agent-revisions"></span>
 
@@ -5266,24 +7309,24 @@ List Agent revision summaries that you can read for the requested Agent, newest 
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `limit` | query | `string` | No | pattern: `^(?:[1-9][0-9]?\|100)$` |
-| `cursor` | query | `string` | No | max length: 32; pattern: `^v1\.[1-9][0-9]{0,14}$` |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `limit` | query | `string` | No | pattern: `^(?:[1-9][0-9]?\|100)$` | "20" |
+| `cursor` | query | `string` | No | max length: 32; pattern: `^v1\.[1-9][0-9]{0,14}$` | "v1.1" |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -5308,6 +7351,46 @@ List Agent revision summaries that you can read for the requested Agent, newest 
 | `meta.nextCursor` | `string or null` | Yes | Pass this value as `cursor` to read older Agent revisions. OCC returns a cursor only when it finds an older Agent revision that you can read during this request. A later page can be empty if access changes. `null` means OCC found no older Agent revision that you can read. |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "nextCursor": null,
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "agentId": "agt_123e4567-e89b-42d3-a456-426614174000",
+      "backendId": null,
+      "configurationGeneration": 1,
+      "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "deploymentErrorCode": null,
+      "deploymentStatus": "succeeded",
+      "harness": {
+        "id": "codex",
+        "mode": "dedicated",
+        "version": "1"
+      },
+      "id": "rev_123e4567-e89b-42d3-a456-426614174000",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+      "revision": 1
+    }
+  ],
+  "meta": {
+    "nextCursor": null,
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/revisions/{revisionId}`
 
 <span id="get-namespacesnamespaceidagentsagentidrevisionsrevisionid"></span>
@@ -5324,23 +7407,23 @@ Get an Agent revision that you can read
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `revisionId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `revisionId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "rev_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -5349,6 +7432,113 @@ Get an Agent revision that you can read
 | `data` | `object or object` | Yes | Returns an Agent revision with saved settings that cannot change. If OCC cannot read them, the response omits saved configuration fields and includes `configurationReadError` with code `SAVED_CONFIGURATION_UNREADABLE` and the unreadable field. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "agentId": "agt_123e4567-e89b-42d3-a456-426614174000",
+    "backendId": null,
+    "compute": {
+      "id": "kubernetes",
+      "implementation": "kubernetes"
+    },
+    "configuration": {
+      "agents": {
+        "defaults": {
+          "model": "codex/gpt-5.1-codex",
+          "models": {
+            "codex/gpt-5.1-codex": {
+              "agentRuntime": {
+                "id": "codex"
+              }
+            }
+          }
+        }
+      },
+      "gateway": {
+        "auth": {
+          "password": {
+            "id": "OPENCLAW_GATEWAY_PASSWORD",
+            "provider": "default",
+            "source": "env"
+          }
+        },
+        "bind": "lan",
+        "controlUi": {
+          "enabled": false
+        },
+        "http": {
+          "endpoints": {
+            "chatCompletions": {
+              "enabled": true
+            }
+          }
+        },
+        "mode": "local"
+      },
+      "models": {
+        "providers": {
+          "codex": {
+            "api": "openai-responses",
+            "baseUrl": "http://127.0.0.1:9",
+            "models": [
+              {
+                "id": "gpt-5.1-codex",
+                "name": "gpt-5.1-codex"
+              }
+            ]
+          }
+        }
+      },
+      "plugins": {
+        "allow": [
+          "codex"
+        ],
+        "entries": {
+          "codex": {
+            "config": {
+              "appServer": {
+                "approvalPolicy": "on-request",
+                "authToken": "${APP_SERVER_TOKEN}",
+                "mode": "guardian",
+                "sandbox": "read-only",
+                "transport": "websocket",
+                "url": "${APP_SERVER_URL}"
+              }
+            },
+            "enabled": true
+          }
+        }
+      }
+    },
+    "configurationGeneration": 1,
+    "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+    "configurationKind": "agent",
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "gatewayManagedMode": true,
+    "harness": {
+      "id": "codex",
+      "mode": "dedicated",
+      "version": "1"
+    },
+    "harnessAuth": {
+      "method": "api_key",
+      "source": {
+        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+        "kind": "secret",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    "id": "rev_123e4567-e89b-42d3-a456-426614174000",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "revision": 1
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 <span id="configurations"></span>
 
@@ -5378,9 +7568,9 @@ Create a native Namespace-owned Agent Configuration
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -5394,20 +7584,96 @@ Create a native Namespace-owned Agent Configuration
 | `secretBindings` | `object<string, object>` | No | Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: "env"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `ANTHROPIC_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth. |
 | `values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |
 
+Example request
+```json
+{
+  "kind": "agent",
+  "values": {
+    "agents": {
+      "defaults": {
+        "model": "codex/gpt-5.1-codex",
+        "models": {
+          "codex/gpt-5.1-codex": {
+            "agentRuntime": {
+              "id": "codex"
+            }
+          }
+        }
+      }
+    },
+    "gateway": {
+      "auth": {
+        "password": {
+          "id": "OPENCLAW_GATEWAY_PASSWORD",
+          "provider": "default",
+          "source": "env"
+        }
+      },
+      "bind": "lan",
+      "controlUi": {
+        "enabled": false
+      },
+      "http": {
+        "endpoints": {
+          "chatCompletions": {
+            "enabled": true
+          }
+        }
+      },
+      "mode": "local"
+    },
+    "models": {
+      "providers": {
+        "codex": {
+          "api": "openai-responses",
+          "baseUrl": "http://127.0.0.1:9",
+          "models": [
+            {
+              "id": "gpt-5.1-codex",
+              "name": "gpt-5.1-codex"
+            }
+          ]
+        }
+      }
+    },
+    "plugins": {
+      "allow": [
+        "codex"
+      ],
+      "entries": {
+        "codex": {
+          "config": {
+            "appServer": {
+              "approvalPolicy": "on-request",
+              "authToken": "${APP_SERVER_TOKEN}",
+              "mode": "guardian",
+              "sandbox": "read-only",
+              "transport": "websocket",
+              "url": "${APP_SERVER_URL}"
+            }
+          },
+          "enabled": true
+        }
+      }
+    }
+  }
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `201` | Created |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
 
@@ -5423,6 +7689,91 @@ Create a native Namespace-owned Agent Configuration
 | `data.values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "generation": 1,
+    "id": "cfg_123e4567-e89b-42d3-a456-426614174000",
+    "kind": "agent",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "values": {
+      "agents": {
+        "defaults": {
+          "model": "codex/gpt-5.1-codex",
+          "models": {
+            "codex/gpt-5.1-codex": {
+              "agentRuntime": {
+                "id": "codex"
+              }
+            }
+          }
+        }
+      },
+      "gateway": {
+        "auth": {
+          "password": {
+            "id": "OPENCLAW_GATEWAY_PASSWORD",
+            "provider": "default",
+            "source": "env"
+          }
+        },
+        "bind": "lan",
+        "controlUi": {
+          "enabled": false
+        },
+        "http": {
+          "endpoints": {
+            "chatCompletions": {
+              "enabled": true
+            }
+          }
+        },
+        "mode": "local"
+      },
+      "models": {
+        "providers": {
+          "codex": {
+            "api": "openai-responses",
+            "baseUrl": "http://127.0.0.1:9",
+            "models": [
+              {
+                "id": "gpt-5.1-codex",
+                "name": "gpt-5.1-codex"
+              }
+            ]
+          }
+        }
+      },
+      "plugins": {
+        "allow": [
+          "codex"
+        ],
+        "entries": {
+          "codex": {
+            "config": {
+              "appServer": {
+                "approvalPolicy": "on-request",
+                "authToken": "${APP_SERVER_TOKEN}",
+                "mode": "guardian",
+                "sandbox": "read-only",
+                "transport": "websocket",
+                "url": "${APP_SERVER_URL}"
+              }
+            },
+            "enabled": true
+          }
+        }
+      }
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `DELETE /namespaces/{namespaceId}/configurations/{configurationId}`
 
@@ -5440,23 +7791,23 @@ Delete an exact unreferenced Namespace-owned Configuration
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `configurationId` | path | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `configurationId` | path | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cfg_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `204` | No Content |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 #### `GET /namespaces/{namespaceId}/configurations/{configurationId}`
 
@@ -5474,22 +7825,22 @@ Get an exact Namespace-owned Configuration
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `configurationId` | path | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `configurationId` | path | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cfg_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -5505,6 +7856,91 @@ Get an exact Namespace-owned Configuration
 | `data.values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "generation": 1,
+    "id": "cfg_123e4567-e89b-42d3-a456-426614174000",
+    "kind": "agent",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "values": {
+      "agents": {
+        "defaults": {
+          "model": "codex/gpt-5.1-codex",
+          "models": {
+            "codex/gpt-5.1-codex": {
+              "agentRuntime": {
+                "id": "codex"
+              }
+            }
+          }
+        }
+      },
+      "gateway": {
+        "auth": {
+          "password": {
+            "id": "OPENCLAW_GATEWAY_PASSWORD",
+            "provider": "default",
+            "source": "env"
+          }
+        },
+        "bind": "lan",
+        "controlUi": {
+          "enabled": false
+        },
+        "http": {
+          "endpoints": {
+            "chatCompletions": {
+              "enabled": true
+            }
+          }
+        },
+        "mode": "local"
+      },
+      "models": {
+        "providers": {
+          "codex": {
+            "api": "openai-responses",
+            "baseUrl": "http://127.0.0.1:9",
+            "models": [
+              {
+                "id": "gpt-5.1-codex",
+                "name": "gpt-5.1-codex"
+              }
+            ]
+          }
+        }
+      },
+      "plugins": {
+        "allow": [
+          "codex"
+        ],
+        "entries": {
+          "codex": {
+            "config": {
+              "appServer": {
+                "approvalPolicy": "on-request",
+                "authToken": "${APP_SERVER_TOKEN}",
+                "mode": "guardian",
+                "sandbox": "read-only",
+                "transport": "websocket",
+                "url": "${APP_SERVER_URL}"
+              }
+            },
+            "enabled": true
+          }
+        }
+      }
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `PATCH /namespaces/{namespaceId}/configurations/{configurationId}`
 
@@ -5523,10 +7959,10 @@ Replace values and increment an exact Namespace-owned Configuration generation
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `configurationId` | path | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `configurationId` | path | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cfg_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -5540,20 +7976,96 @@ Replace values and increment an exact Namespace-owned Configuration generation
 | `secretBindings` | `object<string, object>` | No | Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: "env"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `ANTHROPIC_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth. |
 | `values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |
 
+Example request
+```json
+{
+  "expectedGeneration": 1,
+  "values": {
+    "agents": {
+      "defaults": {
+        "model": "codex/gpt-5.1-codex",
+        "models": {
+          "codex/gpt-5.1-codex": {
+            "agentRuntime": {
+              "id": "codex"
+            }
+          }
+        }
+      }
+    },
+    "gateway": {
+      "auth": {
+        "password": {
+          "id": "OPENCLAW_GATEWAY_PASSWORD",
+          "provider": "default",
+          "source": "env"
+        }
+      },
+      "bind": "lan",
+      "controlUi": {
+        "enabled": false
+      },
+      "http": {
+        "endpoints": {
+          "chatCompletions": {
+            "enabled": true
+          }
+        }
+      },
+      "mode": "local"
+    },
+    "models": {
+      "providers": {
+        "codex": {
+          "api": "openai-responses",
+          "baseUrl": "http://127.0.0.1:9",
+          "models": [
+            {
+              "id": "gpt-5.1-codex",
+              "name": "gpt-5.1-codex"
+            }
+          ]
+        }
+      }
+    },
+    "plugins": {
+      "allow": [
+        "codex"
+      ],
+      "entries": {
+        "codex": {
+          "config": {
+            "appServer": {
+              "approvalPolicy": "on-request",
+              "authToken": "${APP_SERVER_TOKEN}",
+              "mode": "guardian",
+              "sandbox": "read-only",
+              "transport": "websocket",
+              "url": "${APP_SERVER_URL}"
+            }
+          },
+          "enabled": true
+        }
+      }
+    }
+  }
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -5569,6 +8081,91 @@ Replace values and increment an exact Namespace-owned Configuration generation
 | `data.values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "generation": 2,
+    "id": "cfg_123e4567-e89b-42d3-a456-426614174000",
+    "kind": "agent",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "values": {
+      "agents": {
+        "defaults": {
+          "model": "codex/gpt-5.1-codex",
+          "models": {
+            "codex/gpt-5.1-codex": {
+              "agentRuntime": {
+                "id": "codex"
+              }
+            }
+          }
+        }
+      },
+      "gateway": {
+        "auth": {
+          "password": {
+            "id": "OPENCLAW_GATEWAY_PASSWORD",
+            "provider": "default",
+            "source": "env"
+          }
+        },
+        "bind": "lan",
+        "controlUi": {
+          "enabled": false
+        },
+        "http": {
+          "endpoints": {
+            "chatCompletions": {
+              "enabled": true
+            }
+          }
+        },
+        "mode": "local"
+      },
+      "models": {
+        "providers": {
+          "codex": {
+            "api": "openai-responses",
+            "baseUrl": "http://127.0.0.1:9",
+            "models": [
+              {
+                "id": "gpt-5.1-codex",
+                "name": "gpt-5.1-codex"
+              }
+            ]
+          }
+        }
+      },
+      "plugins": {
+        "allow": [
+          "codex"
+        ],
+        "entries": {
+          "codex": {
+            "config": {
+              "appServer": {
+                "approvalPolicy": "on-request",
+                "authToken": "${APP_SERVER_TOKEN}",
+                "mode": "guardian",
+                "sandbox": "read-only",
+                "transport": "websocket",
+                "url": "${APP_SERVER_URL}"
+              }
+            },
+            "enabled": true
+          }
+        }
+      }
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 <span id="credential-sources"></span>
 
@@ -5600,21 +8197,21 @@ List readable credential sources without revealing credential values
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -5649,6 +8246,48 @@ List readable credential sources without revealing credential values
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "config": {},
+      "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+      "name": "Model credentials",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+      "ownerCapability": "credential_gateway",
+      "ref": {
+        "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+        "kind": "credential_source",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+      },
+      "secrets": {
+        "api_key": {
+          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+          "kind": "secret",
+          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+        }
+      },
+      "state": "ready",
+      "type": "openai"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /namespaces/{namespaceId}/credential-sources`
 
 <span id="post-namespacesnamespaceidcredentialsources"></span>
@@ -5666,9 +8305,9 @@ Register a credential source with the selected Credential Gateway
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -5683,20 +8322,36 @@ Register a credential source with the selected Credential Gateway
 | `secrets` | `object<string, object>` | No | Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
 | `type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
 
+Example request
+```json
+{
+  "config": {},
+  "name": "Model credentials",
+  "secrets": {
+    "api_key": {
+      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "secret",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    }
+  },
+  "type": "openai"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `201` | Created |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
 
@@ -5731,6 +8386,36 @@ Register a credential source with the selected Credential Gateway
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "config": {},
+    "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Model credentials",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "ownerCapability": "credential_gateway",
+    "ref": {
+      "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "credential_source",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    },
+    "secrets": {
+      "api_key": {
+        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+        "kind": "secret",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    "state": "ready",
+    "type": "openai"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `DELETE /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`
 
 <span id="delete-namespacesnamespaceidcredentialsourcescredentialsourceid"></span>
@@ -5747,23 +8432,23 @@ Remove an unreferenced credential source from the Credential Gateway
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cs_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `204` | No Content |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 #### `GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`
 
@@ -5781,22 +8466,22 @@ Get one credential source and its live Credential Gateway status
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cs_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -5830,6 +8515,36 @@ Get one credential source and its live Credential Gateway status
 | `data.type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "config": {},
+    "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Model credentials",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "ownerCapability": "credential_gateway",
+    "ref": {
+      "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "credential_source",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    },
+    "secrets": {
+      "api_key": {
+        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+        "kind": "secret",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    "state": "ready",
+    "type": "openai"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `PATCH /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`
 
@@ -5848,10 +8563,10 @@ Push current or replacement Secret values to the Credential Gateway copy
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cs_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -5865,20 +8580,34 @@ Push current or replacement Secret values to the Credential Gateway copy
 | `authorityScope` | `"execution"` | No | Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change. |
 | `secrets` | `object<string, object>` | No | Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
 
+Example request
+```json
+{
+  "adoption": "live",
+  "secrets": {
+    "api_key": {
+      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "secret",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    }
+  }
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -5912,6 +8641,36 @@ Push current or replacement Secret values to the Credential Gateway copy
 | `data.type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "config": {},
+    "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Model credentials",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "ownerCapability": "credential_gateway",
+    "ref": {
+      "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "credential_source",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    },
+    "secrets": {
+      "api_key": {
+        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+        "kind": "secret",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    "state": "ready",
+    "type": "openai"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`
 
@@ -5929,23 +8688,23 @@ Force the Credential Refresh Driver to mint a new token for a refresh-type sourc
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cs_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -5979,6 +8738,36 @@ Force the Credential Refresh Driver to mint a new token for a refresh-type sourc
 | `data.type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "config": {},
+    "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Model credentials",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "ownerCapability": "credential_gateway",
+    "ref": {
+      "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "credential_source",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    },
+    "secrets": {
+      "api_key": {
+        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+        "kind": "secret",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    "state": "ready",
+    "type": "openai"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 <span id="iam"></span>
 
@@ -6015,21 +8804,21 @@ List exact Namespace IAM AccessBindings
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -6038,6 +8827,36 @@ List exact Namespace IAM AccessBindings
 | `data` | `array<object or object>` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "id": "binding-agent-secret",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+      "resourceId": "sec_123e4567-e89b-42d3-a456-426614174000",
+      "resourceKind": "secret",
+      "roleId": "role-secret-operator",
+      "subjectId": "principal-docs-agent",
+      "subjectKind": "identity"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/iam/access-bindings`
 
@@ -6064,9 +8883,9 @@ Create an immutable exact-resource Namespace IAM AccessBinding
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -6082,20 +8901,31 @@ Create an immutable exact-resource Namespace IAM AccessBinding
 | `subjectId` | `string` | Yes | min length: 1; max length: 200 |
 | `subjectKind` | `"identity"` | Yes | — |
 
+Example request
+```json
+{
+  "resourceId": "sec_123e4567-e89b-42d3-a456-426614174000",
+  "resourceKind": "secret",
+  "roleId": "role-secret-operator",
+  "subjectId": "principal-docs-agent",
+  "subjectKind": "identity"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `201` | Created |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
 
@@ -6104,6 +8934,24 @@ Create an immutable exact-resource Namespace IAM AccessBinding
 | `data` | `object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "binding-agent-secret",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "resourceId": "sec_123e4567-e89b-42d3-a456-426614174000",
+    "resourceKind": "secret",
+    "roleId": "role-secret-operator",
+    "subjectId": "principal-docs-agent",
+    "subjectKind": "identity"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `DELETE /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`
 
@@ -6122,23 +8970,23 @@ Delete one exact Namespace IAM AccessBinding
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `bindingId` | path | `string` | Yes | min length: 1; max length: 200 |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `bindingId` | path | `string` | Yes | min length: 1; max length: 200 | "binding-agent-secret" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `204` | No Content |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 #### `GET /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`
 
@@ -6157,22 +9005,22 @@ Get an exact Namespace IAM AccessBinding
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `bindingId` | path | `string` | Yes | min length: 1; max length: 200 |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `bindingId` | path | `string` | Yes | min length: 1; max length: 200 | "binding-agent-secret" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -6181,6 +9029,24 @@ Get an exact Namespace IAM AccessBinding
 | `data` | `object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "binding-agent-secret",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "resourceId": "sec_123e4567-e89b-42d3-a456-426614174000",
+    "resourceKind": "secret",
+    "roleId": "role-secret-operator",
+    "subjectId": "principal-docs-agent",
+    "subjectKind": "identity"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /namespaces/{namespaceId}/iam/roles`
 
@@ -6199,21 +9065,21 @@ List exact Namespace IAM Roles
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -6228,6 +9094,38 @@ List exact Namespace IAM Roles
 | `data[].permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "id": "role-secret-operator",
+      "name": "Secret operator",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+      "permissions": [
+        {
+          "action": "operate",
+          "resourceKind": "secret"
+        }
+      ]
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/iam/roles`
 
@@ -6246,9 +9144,9 @@ Create an immutable Namespace IAM Role
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -6263,20 +9161,33 @@ Create an immutable Namespace IAM Role
 | `permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy"` | Yes | — |
 | `permissions[].resourceKind` | `"namespace" or "agent" or "agent_revision" or "configuration" or "credential_source" or "sandbox_policy" or "preset" or "secret" or "service_account"` | Yes | — |
 
+Example request
+```json
+{
+  "name": "Secret operator",
+  "permissions": [
+    {
+      "action": "operate",
+      "resourceKind": "secret"
+    }
+  ]
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `201` | Created |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
 
@@ -6291,6 +9202,26 @@ Create an immutable Namespace IAM Role
 | `data.permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "role-secret-operator",
+    "name": "Secret operator",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "permissions": [
+      {
+        "action": "operate",
+        "resourceKind": "secret"
+      }
+    ]
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `DELETE /namespaces/{namespaceId}/iam/roles/{roleId}`
 
@@ -6309,23 +9240,23 @@ Delete an unreferenced exact Namespace IAM Role
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `roleId` | path | `string` | Yes | min length: 1; max length: 200 |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `roleId` | path | `string` | Yes | min length: 1; max length: 200 | "role-secret-operator" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `204` | No Content |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 #### `GET /namespaces/{namespaceId}/iam/roles/{roleId}`
 
@@ -6344,22 +9275,22 @@ Get an exact Namespace IAM Role
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `roleId` | path | `string` | Yes | min length: 1; max length: 200 |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `roleId` | path | `string` | Yes | min length: 1; max length: 200 | "role-secret-operator" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -6374,6 +9305,26 @@ Get an exact Namespace IAM Role
 | `data.permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "role-secret-operator",
+    "name": "Secret operator",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "permissions": [
+      {
+        "action": "operate",
+        "resourceKind": "secret"
+      }
+    ]
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /namespaces/{namespaceId}/iam/service-principals`
 
@@ -6392,21 +9343,21 @@ List the Namespace's non-Agent ServicePrincipals
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -6417,6 +9368,31 @@ List the Namespace's non-Agent ServicePrincipals
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "id": "principal-docs-agent",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/iam/service-principals`
 
@@ -6435,9 +9411,9 @@ Create a Namespace ServicePrincipal with no grants for automation or CLI keys
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -6447,20 +9423,25 @@ Create a Namespace ServicePrincipal with no grants for automation or CLI keys
 
 Schema: `object`.
 
+Example request
+```json
+{}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `201` | Created |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
 
@@ -6471,6 +9452,19 @@ Schema: `object`.
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "principal-docs-agent",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /namespaces/{namespaceId}/iam/service-principals/{servicePrincipalId}`
 
@@ -6489,22 +9483,22 @@ Get an exact Namespace ServicePrincipal
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `servicePrincipalId` | path | `string` | Yes | min length: 1; max length: 200 |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `servicePrincipalId` | path | `string` | Yes | min length: 1; max length: 200 | "principal-docs-agent" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -6515,6 +9509,19 @@ Get an exact Namespace ServicePrincipal
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "principal-docs-agent",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 <span id="presets"></span>
 
@@ -6545,21 +9552,21 @@ List readable Preset summaries in one Namespace
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -6572,6 +9579,33 @@ List readable Preset summaries in one Namespace
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "id": "pre_123e4567-e89b-42d3-a456-426614174000",
+      "name": "Documentation assistant",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/presets`
 
@@ -6589,9 +9623,9 @@ Create a reusable Namespace-owned Agent Preset
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -6622,20 +9656,103 @@ Create a reusable Namespace-owned Agent Preset
 | `template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
 | `template.variables` | `object<string, object>` | No | — |
 
+Example request
+```json
+{
+  "name": "Documentation assistant",
+  "template": {
+    "agent": {
+      "executionMode": "dedicated"
+    },
+    "configuration": {
+      "values": {
+        "agents": {
+          "defaults": {
+            "model": "codex/gpt-5.1-codex",
+            "models": {
+              "codex/gpt-5.1-codex": {
+                "agentRuntime": {
+                  "id": "codex"
+                }
+              }
+            }
+          }
+        },
+        "gateway": {
+          "auth": {
+            "password": {
+              "id": "OPENCLAW_GATEWAY_PASSWORD",
+              "provider": "default",
+              "source": "env"
+            }
+          },
+          "bind": "lan",
+          "controlUi": {
+            "enabled": false
+          },
+          "http": {
+            "endpoints": {
+              "chatCompletions": {
+                "enabled": true
+              }
+            }
+          },
+          "mode": "local"
+        },
+        "models": {
+          "providers": {
+            "codex": {
+              "api": "openai-responses",
+              "baseUrl": "http://127.0.0.1:9",
+              "models": [
+                {
+                  "id": "gpt-5.1-codex",
+                  "name": "gpt-5.1-codex"
+                }
+              ]
+            }
+          }
+        },
+        "plugins": {
+          "allow": [
+            "codex"
+          ],
+          "entries": {
+            "codex": {
+              "config": {
+                "appServer": {
+                  "approvalPolicy": "on-request",
+                  "authToken": "${APP_SERVER_TOKEN}",
+                  "mode": "guardian",
+                  "sandbox": "read-only",
+                  "transport": "websocket",
+                  "url": "${APP_SERVER_URL}"
+                }
+              },
+              "enabled": true
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `201` | Created |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
 
@@ -6668,6 +9785,97 @@ Create a reusable Namespace-owned Agent Preset
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "id": "pre_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Documentation assistant",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "template": {
+      "agent": {
+        "executionMode": "dedicated"
+      },
+      "configuration": {
+        "values": {
+          "agents": {
+            "defaults": {
+              "model": "codex/gpt-5.1-codex",
+              "models": {
+                "codex/gpt-5.1-codex": {
+                  "agentRuntime": {
+                    "id": "codex"
+                  }
+                }
+              }
+            }
+          },
+          "gateway": {
+            "auth": {
+              "password": {
+                "id": "OPENCLAW_GATEWAY_PASSWORD",
+                "provider": "default",
+                "source": "env"
+              }
+            },
+            "bind": "lan",
+            "controlUi": {
+              "enabled": false
+            },
+            "http": {
+              "endpoints": {
+                "chatCompletions": {
+                  "enabled": true
+                }
+              }
+            },
+            "mode": "local"
+          },
+          "models": {
+            "providers": {
+              "codex": {
+                "api": "openai-responses",
+                "baseUrl": "http://127.0.0.1:9",
+                "models": [
+                  {
+                    "id": "gpt-5.1-codex",
+                    "name": "gpt-5.1-codex"
+                  }
+                ]
+              }
+            }
+          },
+          "plugins": {
+            "allow": [
+              "codex"
+            ],
+            "entries": {
+              "codex": {
+                "config": {
+                  "appServer": {
+                    "approvalPolicy": "on-request",
+                    "authToken": "${APP_SERVER_TOKEN}",
+                    "mode": "guardian",
+                    "sandbox": "read-only",
+                    "transport": "websocket",
+                    "url": "${APP_SERVER_URL}"
+                  }
+                },
+                "enabled": true
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `DELETE /namespaces/{namespaceId}/presets/{presetId}`
 
 <span id="delete-namespacesnamespaceidpresetspresetid"></span>
@@ -6684,23 +9892,23 @@ Delete a Preset without changing existing Agents
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `presetId` | path | `string` | Yes | pattern: `^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `presetId` | path | `string` | Yes | pattern: `^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "pre_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `204` | No Content |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 #### `GET /namespaces/{namespaceId}/presets/{presetId}`
 
@@ -6718,22 +9926,22 @@ Read one exact Namespace-owned Preset
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `presetId` | path | `string` | Yes | pattern: `^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `presetId` | path | `string` | Yes | pattern: `^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "pre_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -6766,6 +9974,97 @@ Read one exact Namespace-owned Preset
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "id": "pre_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Documentation assistant",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "template": {
+      "agent": {
+        "executionMode": "dedicated"
+      },
+      "configuration": {
+        "values": {
+          "agents": {
+            "defaults": {
+              "model": "codex/gpt-5.1-codex",
+              "models": {
+                "codex/gpt-5.1-codex": {
+                  "agentRuntime": {
+                    "id": "codex"
+                  }
+                }
+              }
+            }
+          },
+          "gateway": {
+            "auth": {
+              "password": {
+                "id": "OPENCLAW_GATEWAY_PASSWORD",
+                "provider": "default",
+                "source": "env"
+              }
+            },
+            "bind": "lan",
+            "controlUi": {
+              "enabled": false
+            },
+            "http": {
+              "endpoints": {
+                "chatCompletions": {
+                  "enabled": true
+                }
+              }
+            },
+            "mode": "local"
+          },
+          "models": {
+            "providers": {
+              "codex": {
+                "api": "openai-responses",
+                "baseUrl": "http://127.0.0.1:9",
+                "models": [
+                  {
+                    "id": "gpt-5.1-codex",
+                    "name": "gpt-5.1-codex"
+                  }
+                ]
+              }
+            }
+          },
+          "plugins": {
+            "allow": [
+              "codex"
+            ],
+            "entries": {
+              "codex": {
+                "config": {
+                  "appServer": {
+                    "approvalPolicy": "on-request",
+                    "authToken": "${APP_SERVER_TOKEN}",
+                    "mode": "guardian",
+                    "sandbox": "read-only",
+                    "transport": "websocket",
+                    "url": "${APP_SERVER_URL}"
+                  }
+                },
+                "enabled": true
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `PATCH /namespaces/{namespaceId}/presets/{presetId}`
 
 <span id="patch-namespacesnamespaceidpresetspresetid"></span>
@@ -6782,10 +10081,10 @@ Update a Preset without changing existing Agents
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `presetId` | path | `string` | Yes | pattern: `^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `presetId` | path | `string` | Yes | pattern: `^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "pre_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -6816,20 +10115,103 @@ Update a Preset without changing existing Agents
 | `template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
 | `template.variables` | `object<string, object>` | No | — |
 
+Example request
+```json
+{
+  "name": "Updated documentation assistant",
+  "template": {
+    "agent": {
+      "executionMode": "dedicated"
+    },
+    "configuration": {
+      "values": {
+        "agents": {
+          "defaults": {
+            "model": "codex/gpt-5.1-codex",
+            "models": {
+              "codex/gpt-5.1-codex": {
+                "agentRuntime": {
+                  "id": "codex"
+                }
+              }
+            }
+          }
+        },
+        "gateway": {
+          "auth": {
+            "password": {
+              "id": "OPENCLAW_GATEWAY_PASSWORD",
+              "provider": "default",
+              "source": "env"
+            }
+          },
+          "bind": "lan",
+          "controlUi": {
+            "enabled": false
+          },
+          "http": {
+            "endpoints": {
+              "chatCompletions": {
+                "enabled": true
+              }
+            }
+          },
+          "mode": "local"
+        },
+        "models": {
+          "providers": {
+            "codex": {
+              "api": "openai-responses",
+              "baseUrl": "http://127.0.0.1:9",
+              "models": [
+                {
+                  "id": "gpt-5.1-codex",
+                  "name": "gpt-5.1-codex"
+                }
+              ]
+            }
+          }
+        },
+        "plugins": {
+          "allow": [
+            "codex"
+          ],
+          "entries": {
+            "codex": {
+              "config": {
+                "appServer": {
+                  "approvalPolicy": "on-request",
+                  "authToken": "${APP_SERVER_TOKEN}",
+                  "mode": "guardian",
+                  "sandbox": "read-only",
+                  "transport": "websocket",
+                  "url": "${APP_SERVER_URL}"
+                }
+              },
+              "enabled": true
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -6862,6 +10244,97 @@ Update a Preset without changing existing Agents
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "id": "pre_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Documentation assistant",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "template": {
+      "agent": {
+        "executionMode": "dedicated"
+      },
+      "configuration": {
+        "values": {
+          "agents": {
+            "defaults": {
+              "model": "codex/gpt-5.1-codex",
+              "models": {
+                "codex/gpt-5.1-codex": {
+                  "agentRuntime": {
+                    "id": "codex"
+                  }
+                }
+              }
+            }
+          },
+          "gateway": {
+            "auth": {
+              "password": {
+                "id": "OPENCLAW_GATEWAY_PASSWORD",
+                "provider": "default",
+                "source": "env"
+              }
+            },
+            "bind": "lan",
+            "controlUi": {
+              "enabled": false
+            },
+            "http": {
+              "endpoints": {
+                "chatCompletions": {
+                  "enabled": true
+                }
+              }
+            },
+            "mode": "local"
+          },
+          "models": {
+            "providers": {
+              "codex": {
+                "api": "openai-responses",
+                "baseUrl": "http://127.0.0.1:9",
+                "models": [
+                  {
+                    "id": "gpt-5.1-codex",
+                    "name": "gpt-5.1-codex"
+                  }
+                ]
+              }
+            }
+          },
+          "plugins": {
+            "allow": [
+              "codex"
+            ],
+            "entries": {
+              "codex": {
+                "config": {
+                  "appServer": {
+                    "approvalPolicy": "on-request",
+                    "authToken": "${APP_SERVER_TOKEN}",
+                    "mode": "guardian",
+                    "sandbox": "read-only",
+                    "transport": "websocket",
+                    "url": "${APP_SERVER_URL}"
+                  }
+                },
+                "enabled": true
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 <span id="secrets"></span>
 
 ### Secrets
@@ -6891,21 +10364,21 @@ List readable Namespace-owned Secret metadata without revealing material
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -6921,6 +10394,37 @@ List readable Namespace-owned Secret metadata without revealing material
 | `data[].ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+      "name": "model-api-key",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+      "ref": {
+        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+        "kind": "secret",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+      }
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/secrets`
 
@@ -6938,9 +10442,9 @@ Create exact Namespace-owned Secret material and return metadata only
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -6953,20 +10457,28 @@ Create exact Namespace-owned Secret material and return metadata only
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `value` | `string` | Yes | min length: 1; max length: 65536; pattern: `^[^\u0000]*$`; Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit. |
 
+Example request
+```json
+{
+  "name": "model-api-key",
+  "value": "replace-with-your-authorized-model-key"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `201` | Created |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
 
@@ -6982,6 +10494,25 @@ Create exact Namespace-owned Secret material and return metadata only
 | `data.ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+    "name": "model-api-key",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "ref": {
+      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "secret",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `DELETE /namespaces/{namespaceId}/secrets/{secretId}`
 
@@ -6999,23 +10530,23 @@ Delete exact unbound Namespace-owned Secret material
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `204` | No Content |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 #### `GET /namespaces/{namespaceId}/secrets/{secretId}`
 
@@ -7033,22 +10564,22 @@ Get exact Namespace-owned Secret metadata and its readable consumers
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -7075,6 +10606,39 @@ Get exact Namespace-owned Secret metadata and its readable consumers
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+Example response
+```json
+{
+  "data": {
+    "callerPermissions": {
+      "delete": true,
+      "update": true
+    },
+    "consumers": {
+      "agents": [
+        "agt_123e4567-e89b-42d3-a456-426614174000"
+      ],
+      "configurations": [],
+      "credentialSources": [],
+      "provisioningRequests": [],
+      "truncated": false,
+      "unreadable": 0
+    },
+    "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+    "name": "model-api-key",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "ref": {
+      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "secret",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `PATCH /namespaces/{namespaceId}/secrets/{secretId}`
 
 <span id="patch-namespacesnamespaceidsecretssecretid"></span>
@@ -7091,10 +10655,10 @@ Replace exact Namespace-owned Secret material and return stable metadata
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -7106,20 +10670,27 @@ Replace exact Namespace-owned Secret material and return stable metadata
 | --- | --- | --- | --- |
 | `value` | `string` | Yes | min length: 1; max length: 65536; pattern: `^[^\u0000]*$`; Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit. |
 
+Example request
+```json
+{
+  "value": "replace-with-your-rotated-model-key"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -7135,6 +10706,25 @@ Replace exact Namespace-owned Secret material and return stable metadata
 | `data.ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+    "name": "model-api-key",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "ref": {
+      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
+      "kind": "secret",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 <span id="service-accounts"></span>
 
@@ -7166,21 +10756,21 @@ List authorized Namespace-owned ServiceAccounts in one exact Namespace
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -7194,6 +10784,32 @@ List authorized Namespace-owned ServiceAccounts in one exact Namespace
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "id": "sa_123e4567-e89b-42d3-a456-426614174000",
+      "name": "Model service account",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/service-accounts`
 
@@ -7211,9 +10827,9 @@ Create a native Namespace-owned ServiceAccount
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -7225,20 +10841,27 @@ Create a native Namespace-owned ServiceAccount
 | --- | --- | --- | --- |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 
+Example request
+```json
+{
+  "name": "Model service account"
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `201` | Created |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
 
@@ -7252,6 +10875,20 @@ Create a native Namespace-owned ServiceAccount
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "sa_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Model service account",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `DELETE /namespaces/{namespaceId}/service-accounts/{serviceAccountId}`
 
@@ -7269,11 +10906,11 @@ Delete an exact unreferenced Namespace-owned ServiceAccount
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `force` | query | `"true" or "false"` | No | — |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `serviceAccountId` | path | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `force` | query | `"true" or "false"` | No | — | "false" |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `serviceAccountId` | path | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sa_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
@@ -7281,13 +10918,13 @@ Delete an exact unreferenced Namespace-owned ServiceAccount
 | --- | --- |
 | `200` | A forced deletion removed the account and its credential Secret but could not revoke its issued access token. |
 | `204` | No Content |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -7300,6 +10937,20 @@ Delete an exact unreferenced Namespace-owned ServiceAccount
 | `data.revocation` | `"skipped"` | Yes | The account's issued access token was not revoked: no ChatGPT Backend can revoke it. Revoke it at the provider; the audit event names its Backend and credential ID. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "sa_123e4567-e89b-42d3-a456-426614174000",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "revocation": "skipped"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /namespaces/{namespaceId}/service-accounts/{serviceAccountId}`
 
@@ -7317,22 +10968,22 @@ Get an exact Namespace-owned ServiceAccount
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `serviceAccountId` | path | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `serviceAccountId` | path | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sa_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -7346,6 +10997,20 @@ Get an exact Namespace-owned ServiceAccount
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "id": "sa_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Model service account",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `PATCH /namespaces/{namespaceId}/service-accounts/{serviceAccountId}/credential`
 
@@ -7363,10 +11028,10 @@ Associate an exact Namespace-local credential reference with a ServiceAccount
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `serviceAccountId` | path | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `serviceAccountId` | path | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sa_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -7381,20 +11046,31 @@ Associate an exact Namespace-local credential reference with a ServiceAccount
 | `secretRef.key` | `string` | Yes | max length: 253; pattern: `^(?![.]{1,2}$)[-._a-zA-Z0-9]+$` |
 | `secretRef.name` | `string` | Yes | max length: 253; pattern: `^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:[.][a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$` |
 
+Example request
+```json
+{
+  "kind": "api_key",
+  "secretRef": {
+    "key": "value",
+    "name": "model-api-key"
+  }
+}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
 
@@ -7408,6 +11084,23 @@ Associate an exact Namespace-local credential reference with a ServiceAccount
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "credential": {
+      "kind": "api_key"
+    },
+    "id": "sa_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Model service account",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/service-accounts/{serviceAccountId}/credentials`
 
@@ -7425,10 +11118,10 @@ Issue a managed credential for an exact Namespace-owned ServiceAccount
 
 ##### Parameters
 
-| Name | In | Type | Required | Constraints |
-| --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `serviceAccountId` | path | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `serviceAccountId` | path | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sa_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -7438,20 +11131,25 @@ Issue a managed credential for an exact Namespace-owned ServiceAccount
 
 Schema: `object`.
 
+Example request
+```json
+{}
+```
+
 ##### Responses
 
 | Status | Meaning |
 | --- | --- |
 | `201` | Created |
-| `400` | Bad Request |
-| `401` | Unauthorized |
-| `403` | Forbidden |
-| `404` | Not Found |
-| `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
-| `500` | Internal Server Error |
-| `503` | Service Unavailable |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
 
@@ -7465,6 +11163,23 @@ Schema: `object`.
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "credential": {
+      "kind": "access_token"
+    },
+    "id": "sa_123e4567-e89b-42d3-a456-426614174000",
+    "name": "Model service account",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 ## Shared schemas
 

@@ -7,14 +7,17 @@ import type {
   DriverRegistrationRef,
   PreparedGitHubUseRequest,
   PreparedGitHubInstallationUseRequest,
+  PreparedGitHubRepositoryUseRequest,
   PreparedGitHubPullResult,
   RepositoryGitInstallationFence,
 } from "@openclaw-enterprise/contracts";
 import type { PostgresPool } from "@openclaw-enterprise/occ";
 import type { Clock } from "../../drivers/repo/credentials/backend-contracts.ts";
 import { createSystemClock } from "../../drivers/repo/credentials/clock.ts";
-import { githubProviderOrigin } from "../../drivers/repo/github/credentials/origin.ts";
-import { preparationIssuerAuthority } from "../../drivers/repo/github/credentials/grants.ts";
+import {
+  githubProviderOrigin,
+  preparationIssuerAuthority,
+} from "../../drivers/repo/github/credentials/origin.ts";
 import { createGitHubKeyOwner } from "../../drivers/repo/github/credentials/material.ts";
 import { createGitHubPreparationOwner } from "../../drivers/repo/github/credentials/prepared-owner.ts";
 import { retirePreparedGitHubToken } from "../../drivers/repo/github/credentials/prepared-retirement.ts";
@@ -25,12 +28,14 @@ import {
 import {
   validateGitHubRepositoryRegistry,
   resolveGitHubRepositoryBinding,
+  resolveSelectedRepositoryGrant,
   resolveGitHubStandingApprovalScope,
   type GitHubRepositoryRegistry,
 } from "../../drivers/repo/github/credentials/registry.ts";
 import {
   protectedGitAdoption,
   installationGitAdoption,
+  selectedGitAdoption,
   type RepositoryGitRecipientEvidence,
 } from "../../drivers/repo/credentials/protected-repository-git-installation.ts";
 import { TokenService } from "../token-service/service.ts";
@@ -75,9 +80,16 @@ function useRequest(
   input: unknown,
   scope: "github-installation",
 ): PreparedGitHubInstallationUseRequest;
-function useRequest(input: unknown, scope?: "github-installation") {
+function useRequest(input: unknown, scope: "github-repository"): PreparedGitHubRepositoryUseRequest;
+function useRequest(
+  input: unknown,
+  scope?: "github-installation" | "github-repository",
+):
+  | PreparedGitHubUseRequest
+  | PreparedGitHubInstallationUseRequest
+  | PreparedGitHubRepositoryUseRequest {
   const q = input as PreparedGitHubUseRequest & PreparedGitHubInstallationUseRequest;
-  const installation = scope === "github-installation";
+  const installation = scope !== undefined;
   const fields = [
     "providerInstanceId",
     "grantId",
@@ -86,7 +98,9 @@ function useRequest(input: unknown, scope?: "github-installation") {
     "operation",
     "requestDigestSha256",
     "deadlineAt",
-    ...(installation ? ["scope", "installationId"] : ["repositoryId", "pushRef"]),
+    ...(installation
+      ? ["scope", "installationId", ...(scope === "github-repository" ? ["repositories"] : [])]
+      : ["repositoryId", "pushRef"]),
     ...(!installation && (input as PreparedGitHubUseRequest)?.operation === "create-draft-pull"
       ? ["pull"]
       : []),
@@ -97,7 +111,8 @@ function useRequest(input: unknown, scope?: "github-installation") {
     Object.keys(input).length !== fields.length ||
     Object.entries(input).some(
       ([k, v]) =>
-        !fields.includes(k) || (k !== "pull" && (typeof v !== "string" || !v || v.length > 1024)),
+        !fields.includes(k) ||
+        (k !== "pull" && k !== "repositories" && (typeof v !== "string" || !v || v.length > 1024)),
     ) ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(q.exchangeId) ||
     !/^[0-9a-f]{64}$/.test(q.requestDigestSha256) ||
@@ -193,8 +208,9 @@ export async function startPreparedGitHubGitOwner(
     if (
       repo.namespaces.some(
         (p) =>
-          !["git-only", "git-and-draft-pr"].includes(p.transport ?? "") ||
-          p.pushRefAllowlist?.length !== 1,
+          !p.profiles.includes("github-repository") &&
+          (!["git-only", "git-and-draft-pr"].includes(p.transport ?? "") ||
+            p.pushRefAllowlist?.length !== 1),
       )
     ) {
       throw new Error("PREPARED_REPOSITORY_REQUIRES_ONE_EXPLICIT_REVIEW_REF");
@@ -218,6 +234,32 @@ export async function startPreparedGitHubGitOwner(
     (session) => {
       const { driver, binding, namespaceId } = session;
       const { repositoryRef, profile } = binding;
+      if (binding.profile === "github-repository") {
+        if (
+          !options.protectedGitDriver ||
+          driver.id !== options.driverId ||
+          driver.implementation !== options.implementation ||
+          !session.bindings
+        ) {
+          return;
+        }
+        try {
+          const grant = resolveSelectedRepositoryGrant(
+            registry,
+            namespaceId,
+            session.revisionId,
+            session.bindings,
+          );
+          return {
+            key: { source: { id: "repository-git:" + session.admissionId } },
+            session,
+            adoption: selectedGitAdoption,
+            grant,
+          };
+        } catch {
+          return;
+        }
+      }
       const repo = registry.repositories.find((r) => r.repositoryRef === repositoryRef);
       const policy = repo?.namespaces.find((p) => p.namespaceId === namespaceId);
       const pushRef = policy?.pushRefAllowlist?.[0];
@@ -376,6 +418,10 @@ export async function startPreparedGitHubGitOwner(
     // Recovery-only observation for the worker, never part of its use socket.
     inspectTokenAttempt: (familyId: string, attemptId: string) =>
       store.inspectTokenAttempt(familyId, attemptId),
+    // Deployment-only observation for the native broker; protected delivery observes its install.
+    ...(options.protectedGitDriver === undefined && options.controlSocket !== undefined
+      ? { revisionMaterial: (revisionId: string) => store.revisionMaterial(revisionId) }
+      : {}),
     // Worker-only custody transfer to the verified OpenShell provider; never a control RPC.
     readOpenShellMaterial(
       revisionId: string,

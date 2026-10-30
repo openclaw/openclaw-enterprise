@@ -303,8 +303,11 @@ model turn.
 
 ## Failure conditions
 
-- **Namespace provisioning fails:** Verify tenant-local RoleBindings, namespace
-  ownership labels, restricted Pod Security labels, and enforced
+- **Namespace provisioning fails:** A `worker.completed` log for `namespace.ensure` with
+  `hintCode: KUBERNETES_TENANT_ACCESS_DENIED` means Kubernetes returned HTTP 403 while the
+  worker reconciled the tenant's quota, limits, or network policies. Check the worker's
+  [tenant-local RoleBinding](../../guides/deploy/production-agents.md#grant-tenant-rolebindings) in the affected target.
+  Also verify namespace ownership labels, restricted Pod Security labels, and enforced
   NetworkPolicies in each selected tenant target. Existing
   namespaces also require external lifecycle ownership, exclusive tenant use,
   and no foreign NetworkPolicies.

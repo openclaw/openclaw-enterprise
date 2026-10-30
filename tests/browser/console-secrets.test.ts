@@ -10,6 +10,7 @@ import type {
   UpdateAgentBody,
 } from "../../packages/contracts/src/api/common.ts";
 import type {
+  AgentListResponse,
   IAMAccessBindingResponse,
   IAMRoleResponse,
   NamespaceListResponse,
@@ -29,13 +30,16 @@ import {
   SECRET_UPDATE_DENIED,
   tooManyRequestsIn,
 } from "../helpers/refusal-text.mjs";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import { consoleStorage } from "../helpers/console-storage.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  accessibleDescription,
   apiRequests,
+  expectReachableReason,
   expectWriteAsksBeforeUnload,
   fileBrowser,
+  fulfillPatchedJson,
   hasFocus,
   holdRequests,
   login,
@@ -51,6 +55,8 @@ type SecretWriteMethod = "POST" | "PATCH" | "DELETE";
 const secretsUrl = (namespace: Namespace) => `/console/secrets?namespace=${namespace.id}`;
 const secretPath = (namespace: Namespace) => `/namespaces/${namespace.id}/secrets`;
 const dialog = (page: Page, name: string) => page.getByRole("dialog", { name, exact: true });
+const DELETE_BLOCKED =
+  "Deletion is blocked while references remain. Remove them from their owning resources first.";
 
 async function createFromConsole(page: Page, name: string, value: string) {
   await page.getByRole("button", { name: "Create Secret", exact: true }).click();
@@ -64,9 +70,10 @@ async function createFromConsole(page: Page, name: string, value: string) {
 test("console Secret creation, replacement, Agent consumers and cleanup use real API and IAM", async (t) => {
   const audit = new InMemoryAuditSink();
   const storage = createTestSecretDriver();
-  const fixture = await createConsoleAppFixture(t, { auditSink: audit, secretDriver: storage });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Secret editors", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Secret editors", {
+    auditSink: audit,
+    secretDriver: storage,
+  });
   const other = await fixture.createNamespace("Other tenant", { ready: true });
   await fixture.createSecret(other.id, "Other tenant credential", "synthetic-other-value");
   const { page } = await newPage(t, fixture, { browser });
@@ -113,9 +120,11 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
   // Consumers name the Agent, its ID beside it (finding D761).
   await detail.getByRole("link", { name: agent.name, exact: true }).waitFor();
   await detail.getByText(agent.id, { exact: true }).waitFor();
-  assert.equal(
-    await detail.getByRole("button", { name: "Delete Secret", exact: true }).isDisabled(),
-    true,
+  // A keyboard reader reaches the blocked Delete Secret and hears why (finding 2925).
+  await expectReachableReason(
+    page,
+    detail.getByRole("button", { name: "Delete Secret", exact: true }),
+    DELETE_BLOCKED,
   );
   await detail.getByRole("link", { name: agent.name, exact: true }).click();
   await page.waitForURL(new RegExp(`/console/agents/${agent.id}`));
@@ -168,9 +177,7 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
 });
 
 test("unknown console Secret writes erase entered material and never replay mutations", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Interrupted writes", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Interrupted writes");
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, secretsUrl(namespace));
@@ -248,9 +255,7 @@ test("unknown console Secret writes erase entered material and never replay muta
 });
 
 test("checking an uncertain deletion cannot mistake another Secret for the deleted one", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Deletion status", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Deletion status");
   const selected = await fixture.createSecret(
     namespace.id,
     "Selected Secret",
@@ -296,13 +301,11 @@ test("checking an uncertain deletion cannot mistake another Secret for the delet
 test("console Secret writes honor read-only access, revocation and a new Agent reference", async (t) => {
   const audit = new InMemoryAuditSink();
   const storage = createTestSecretDriver();
-  const fixture = await createConsoleAppFixture(t, {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Restricted operations", {
     auditSink: audit,
     secretDriver: storage,
     provisionedPeople: ["secret-reader"],
   });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Restricted operations", { ready: true });
   const original = "synthetic-restricted-value";
   const secret = await fixture.createSecret(namespace.id, "Shared credential", original);
   const privateSecret = await fixture.createSecret(
@@ -359,6 +362,7 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   await grant("read", "secret", privateSecret.id);
   await grant("read", "secret", secret.id);
   await grant("read", "agent", sharedAgent.id);
+  const privateAgentRead = await grant("read", "agent", privateAgent.id);
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, secretsUrl(namespace), member.credentials);
   // Without Secret create the page never offers creation that the API would refuse after the
@@ -371,18 +375,97 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
     await createSecret.getAttribute("aria-describedby"),
     await createReason.getAttribute("id"),
   );
+  // Hold the name lookup before it reaches IAM, after the Secret read has listed both
+  // consumers. Revoking one exact grant must not turn that older ID into a current identity.
+  const requests = apiRequests(page, fixture.origin);
+  const detailUrl = `${fixture.origin}${secretPath(namespace)}/${privateSecret.id}`;
+  const agentsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
+  const heldNames = await holdRequests(t, page, agentsUrl, {
+    method: "GET",
+    once: true,
+  });
+  const initialRead = page.waitForResponse(
+    (response) => response.url() === detailUrl && response.request().method() === "GET",
+  );
   await page.getByRole("button", { name: privateSecret.name, exact: true }).click();
+  const initialResponse = await initialRead;
+  assert.equal(initialResponse.status(), 200, "the first Secret read must succeed");
+  const { data: initial }: SecretDetailResponse = await initialResponse.json();
+  assert.deepEqual([...initial.consumers.agents].sort(), [privateAgent.id, sharedAgent.id].sort());
+  assert.equal(initial.consumers.unreadable, 0);
+  await heldNames.requested;
+  // fixture.request uses the separate administrator session, not the scoped browser member.
+  assert.equal((await fixture.request("DELETE", privateAgentRead)).status, 204);
+  const nameRead = page.waitForResponse(
+    (response) => response.url() === agentsUrl && response.request().method() === "GET",
+  );
+  heldNames.release();
+  const nameResponse = await nameRead;
+  assert.equal(nameResponse.status(), 200, "the subsequent genuine Agent list must succeed");
+  const { data: namedAgents }: AgentListResponse = await nameResponse.json();
+  assert.deepEqual(
+    namedAgents.map((agent) => agent.id),
+    [sharedAgent.id],
+  );
+  const raceDetail = dialog(page, privateSecret.name);
+  const readableLink = raceDetail.getByRole("link", { name: sharedAgent.name, exact: true });
+  await readableLink.waitFor();
+  assert.equal(
+    new URL((await readableLink.getAttribute("href"))!, fixture.origin).pathname,
+    `/console/agents/${sharedAgent.id}`,
+  );
+  const missingRow = raceDetail.locator(".secret-consumers").first().locator("li").filter({
+    hasNotText: sharedAgent.id,
+  });
+  const missingText = await missingRow.innerText();
+  const missingOutput = `${missingText}\n${await missingRow.ariaSnapshot()}\n${await missingRow.innerHTML()}`;
+  for (const name of ["Replace value", "Delete Secret"]) {
+    assert.equal(await raceDetail.getByRole("button", { name, exact: true }).isDisabled(), true);
+  }
+  await raceDetail.getByRole("button", { name: "Close" }).click();
+
+  // A fresh read is the control: IAM now counts the hidden consumer without returning its ID.
+  const freshRead = page.waitForResponse(
+    (response) => response.url() === detailUrl && response.request().method() === "GET",
+  );
+  await page.getByRole("button", { name: privateSecret.name, exact: true }).click();
+  const freshResponse = await freshRead;
+  assert.equal(freshResponse.status(), 200);
+  const { data: fresh }: SecretDetailResponse = await freshResponse.json();
+  assert.deepEqual(fresh.consumers.agents, [sharedAgent.id]);
+  assert.equal(fresh.consumers.unreadable, 1);
   const privateDetail = dialog(page, privateSecret.name);
   await privateDetail.getByText(/1 additional consumer/).waitFor();
   assert.equal(await privateDetail.getByText(privateAgent.id, { exact: true }).count(), 0);
   // A consumer the member may read shows by name, its ID beside it (finding D761).
   await privateDetail.getByRole("link", { name: sharedAgent.name, exact: true }).waitFor();
   await privateDetail.getByText(sharedAgent.id, { exact: true }).waitFor();
-  assert.equal(
-    await privateDetail.getByRole("button", { name: "Delete Secret", exact: true }).isDisabled(),
-    true,
+  // Both reasons describe Delete Secret: the references and the missing grant (finding 2925).
+  await expectReachableReason(
+    page,
+    privateDetail.getByRole("button", { name: "Delete Secret", exact: true }),
+    `${DELETE_BLOCKED} ${SECRET_DELETE_DENIED}`,
   );
   await privateDetail.getByRole("button", { name: "Close" }).click();
+  assert.ok(
+    requests.every((request) => request.method === "GET"),
+    "inspection must be read-only",
+  );
+  // Assert the captured race row after the fresh-read control, so a red identifies the
+  // stale renderer output rather than a failed grant, interception, or server response.
+  for (const identity of [privateAgent.id, privateAgent.name]) {
+    assert.equal(
+      missingOutput.includes(identity),
+      false,
+      "the unresolved Agent row exposes stale identity in text, accessibility or markup",
+    );
+  }
+  assert.doesNotMatch(missingText, /cannot read|denied|no access|permission|delet/i);
+  assert.match(
+    missingText,
+    /reopen|recheck/i,
+    "the unresolved Agent row must explain how to check usage again",
+  );
 
   // The Secret read's answer disables what the member may not do, and each button names why,
   // before any value is typed (finding D761).
@@ -395,6 +478,8 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
     const action = readOnly.getByRole("button", { name, exact: true, description: reason });
     await action.waitFor();
     assert.equal(await action.isDisabled(), true, name);
+    // Still in the Tab order, so a keyboard reader hears why (finding 2925).
+    await expectReachableReason(page, action, reason);
   }
   await readOnly.getByRole("button", { name: "Close" }).click();
 
@@ -467,18 +552,30 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
       }
       assert.equal(await hasFocus(close), true, "Close is the next available action");
     }
+    // The refused submit and fields stay in the Tab order, described by the refusal after their
+    // own help, and send nothing (finding 2935).
+    const refusal = (await form.getByRole("alert").textContent())?.trim() ?? "";
+    await expectReachableReason(page, submit, refusal);
+    const fields: (typeof value)[] = method === "DELETE" ? [] : [value];
+    if (creating) {
+      fields.push(form.getByLabel("Secret name"));
+    }
+    for (const field of fields) {
+      const description = await accessibleDescription(field);
+      assert.ok(description.endsWith(refusal), description);
+      await expectReachableReason(page, field, description);
+    }
+    assert.equal(storage.calls.length, callCount);
     await close.click();
   }
   // A page that read the permission answer before a revocation still offers creation, as the
   // API's answer to a creator does; the API refuses the POST.
-  await page.route(`**/namespaces/${namespace.id}/permissions`, async (route) => {
-    const response = await route.fetch();
-    const body = await response.json();
-    await route.fulfill({
-      response,
-      json: { ...body, data: { ...body.data, secrets: { create: true } } },
-    });
-  });
+  await page.route(`**/namespaces/${namespace.id}/permissions`, (route) =>
+    fulfillPatchedJson(route, (body) => ({
+      ...body,
+      data: { ...body.data, secrets: { create: true } },
+    })),
+  );
   await page.reload();
   await createSecret.click();
   await form.getByLabel("Secret name").fill("Reader cannot create this");
@@ -496,16 +593,17 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
       await route.fallback();
       return;
     }
-    const response = await route.fetch();
-    const body = await response.json();
-    await route.fulfill({
-      response,
-      json: { ...body, data: { ...body.data, callerPermissions: { update: true, delete: true } } },
-    });
+    await fulfillPatchedJson(route, (body) => ({
+      ...body,
+      data: { ...body.data, callerPermissions: { update: true, delete: true } },
+    }));
   });
+  // A fresh page: a refused replace concerns only this Secret, so Create Secret stays available.
+  await page.reload();
   await openAction("Replace value");
   await value.fill("synthetic-denied-replacement");
   await expectDenied("Replace value", "PATCH", "update");
+  assert.equal(await createSecret.getAttribute("aria-disabled"), null);
   await openAction("Delete Secret");
   await expectDenied("Permanently delete Secret", "DELETE", "delete");
   await page.unroute(secretUrl);
@@ -553,9 +651,10 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
 });
 
 test("a Secret name conflict allows correction, but a Namespace that stops being ready ends create and replacement", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Changing Secret availability", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(
+    t,
+    "Changing Secret availability",
+  );
   const secret = await fixture.createSecret(namespace.id, "Existing Secret", "synthetic-original");
   const path = secretPath(namespace);
   const { page } = await newPage(t, fixture, { browser });
@@ -625,9 +724,7 @@ test("a Secret name conflict allows correction, but a Namespace that stops being
 // refusal rather than an unknown outcome, an incomplete consumer list cannot show deletion as
 // safe, and a Namespace that is not ready offers no replacement.
 test("Secret refusals keep their meaning, and incomplete consumers or a not-ready Namespace block changes", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Secret refusal meanings", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Secret refusal meanings");
   const secret = await fixture.createSecret(namespace.id, "Listed Secret", "synthetic-listed");
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
@@ -685,12 +782,11 @@ test("Secret refusals keep their meaning, and incomplete consumers or a not-read
   // A truncated consumer list names no consumer, yet more references exist than it shows.
   await page.route(
     `${fixture.origin}${secretPath(namespace)}/${secret.id}`,
-    async (route) => {
-      const response = await route.fetch();
-      const body: SecretDetailResponse = await response.json();
-      body.data.consumers = { ...body.data.consumers, truncated: true };
-      await route.fulfill({ response, json: body });
-    },
+    (route) =>
+      fulfillPatchedJson(route, (body: SecretDetailResponse) => {
+        body.data.consumers = { ...body.data.consumers, truncated: true };
+        return body;
+      }),
     { times: 1 },
   );
   await page.getByRole("button", { name: secret.name, exact: true }).click();
@@ -723,16 +819,17 @@ test("Secret refusals keep their meaning, and incomplete consumers or a not-read
   await page.getByRole("button", { name: secret.name, exact: true }).click();
   const unready = dialog(page, secret.name);
   await unready.getByText(/No current consumers were found/).waitFor();
+  // The dialog shows no reason for it, so Replace value is natively disabled, out of the Tab order.
   assert.equal(
-    await unready.getByRole("button", { name: "Replace value", exact: true }).isDisabled(),
+    await unready
+      .getByRole("button", { name: "Replace value", exact: true })
+      .evaluate((node: HTMLButtonElement) => node.disabled),
     true,
   );
 });
 
 test("pending Secret creation blocks navigation and replay, then session loss clears material", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Pending writes", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Pending writes");
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
@@ -779,9 +876,7 @@ test("pending Secret creation blocks navigation and replay, then session loss cl
 // The dialog holds in-app navigation while its write is in flight; a reload or tab close asks
 // first too, and stops asking once the answer comes, refused or saved (finding 2181).
 test("a reload asks first only while a Secret write is in flight", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Reload writes", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Reload writes");
   await fixture.createSecret(namespace.id, "Taken name", "synthetic-taken-value");
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, secretsUrl(namespace));

@@ -6,7 +6,7 @@ import {
   parseInstallationTokenResponse,
   validateInstallationTokenResponse,
 } from "./installation-token-response.ts";
-import { preparationIssuerAuthority } from "./grants.ts";
+import { preparationIssuerAuthority } from "./origin.ts";
 import { permissionsForProfile } from "./profiles.ts";
 import { createProviderTransport, type ProviderAttempt } from "./provider-transport.ts";
 
@@ -34,13 +34,15 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
   const { grant } = admission;
   const exchange = createProviderTransport(options.apiOrigin, options.ca, clock, grant);
   const scope =
-    grant.profile === "github-installation"
-      ? { profile: grant.profile }
-      : {
-          repositoryId: grant.repositoryId,
-          repository: grant.repository,
-          permissions: permissionsForProfile(grant.profile),
-        };
+    grant.profile === "github-repository"
+      ? { profile: grant.profile, repositories: grant.repositories, permissions: grant.permissions }
+      : grant.profile === "github-installation"
+        ? { profile: grant.profile }
+        : {
+            repositoryId: grant.repositoryId,
+            repository: grant.repository,
+            permissions: permissionsForProfile(grant.profile),
+          };
 
   return createTokenPreparation({
     admission,

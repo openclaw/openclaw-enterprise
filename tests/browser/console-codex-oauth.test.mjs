@@ -7,6 +7,7 @@ import {
   DEVICE_ACCOUNT_ID,
 } from "../helpers/device-credential-gateway.mjs";
 import {
+  MEMBER_WRITE,
   apiRequests,
   expectNoText,
   login,
@@ -16,6 +17,7 @@ import {
   settlePageRequests,
   trackSettledFetches,
   waitForEnabled,
+  waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { submitCreateAgent } from "./console-agents-test-support.mjs";
@@ -25,6 +27,7 @@ import {
   AGENT_DEVICE_LOGIN_POLL_DENIED,
   AGENT_DEVICE_LOGIN_START_DENIED,
   DEVICE_LOGIN_START_DENIED,
+  DEVICE_LOGIN_NOT_CONFIGURED,
 } from "../helpers/refusal-text.mjs";
 
 // The fixture's login asks the Console to poll every 5 s, and the API refuses an earlier poll.
@@ -411,29 +414,105 @@ test("saving ChatGPT OAuth before sign-in names the missing step and sends nothi
   assert.equal((await fixture.request("GET", agentPath)).data.harnessAuth.method, "api_key");
 });
 
-test("Codex sign-in can retry a refused start but cannot repeat one with an unreadable confirmation", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth unavailable");
+// The Installation's capabilities list its Credential Gateway's source types. Without a Codex
+// device-login type every start is refused with 501, so Sign in is unavailable before the click,
+// described by why. With the type but no Credential Refresh Driver the real API still answers 501:
+// the Console then shows the API's reason and keeps Sign in unavailable. Before finding 2991, Sign
+// in was offered in both cases, every click was refused again, and the text dropped the reason.
+const DEVICE_LOGIN_NOT_OFFERED =
+  "ChatGPT sign-in needs a Credential Gateway that offers ChatGPT device login and a Credential Refresh Driver, and this Installation's Drivers do not offer it. Choose another authentication method.";
+
+for (const savedAgent of [false, true]) {
+  for (const drivers of ["none", "Credential Gateway only"]) {
+    test(`Codex sign-in on ${savedAgent ? "Agent credentials" : "Create Agent"} with ${drivers === "none" ? "no device-login Drivers" : "a Credential Gateway only"} is unavailable and says why`, async (t) => {
+      const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth unavailable");
+      if (drivers !== "none") {
+        const { gateway } = createDeviceCredentialDrivers();
+        fixture.controller.registerDriver(gateway);
+        fixture.controller.selectDriver(gateway.capability, gateway.id);
+      }
+      const agent = savedAgent
+        ? await fixture.createAgent(
+            namespace.id,
+            "OAuth unavailable",
+            nativeValues("oauth-unavailable", { harnessId: "codex" }),
+            { executionMode: "dedicated" },
+          )
+        : null;
+      const { page } = await newPage(t, fixture);
+      const requests = apiRequests(page, fixture.origin);
+      await login(
+        page,
+        fixture,
+        agent
+          ? `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`
+          : `/console/agents/new?namespace=${namespace.id}`,
+      );
+      if (!agent) {
+        await page.getByRole("button", { name: "Start without Preset" }).click();
+      }
+      await page
+        .getByLabel(agent ? "Authentication source" : "Authentication method")
+        .selectOption("credential_source");
+      const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
+      const beginPath = `/namespaces/${namespace.id}/agents${agent ? `/${agent.id}` : ""}/device-authorizations`;
+      const starts = () =>
+        requests.filter(({ method, path }) => method === "POST" && path === beginPath).length;
+      let reason = DEVICE_LOGIN_NOT_OFFERED;
+      if (drivers === "none") {
+        await page.getByText(reason, { exact: true }).waitFor();
+      } else {
+        await waitForEnabled(start);
+        const refused = page.waitForResponse(
+          (response) => new URL(response.url()).pathname === beginPath,
+        );
+        await start.click();
+        const answer = await refused;
+        assert.equal(answer.status(), 501);
+        assert.equal((await answer.json()).error.message, DEVICE_LOGIN_NOT_CONFIGURED);
+        reason = `ChatGPT sign-in is unavailable for this Installation. ${DEVICE_LOGIN_NOT_CONFIGURED} Choose another authentication method.`;
+        await page.getByText(reason, { exact: true }).waitFor();
+      }
+      assert.equal(await page.getByRole("link", { name: "Open Codex sign-in" }).isVisible(), false);
+      // Sign in stays in the Tab order, described by the reason, and starts nothing.
+      assert.equal(await start.getAttribute("aria-disabled"), "true");
+      await start.focus();
+      assert.equal(
+        await start.evaluate((node) => node === globalThis.document.activeElement),
+        true,
+      );
+      assert.equal(
+        await start.evaluate((node) =>
+          (node.getAttribute("aria-describedby") ?? "")
+            .split(/\s+/)
+            .map((id) => globalThis.document.getElementById(id)?.textContent)
+            .join(" "),
+        ),
+        reason,
+      );
+      await page.keyboard.press("Enter");
+      await start.dispatchEvent("click");
+      await settlePageRequests(page);
+      assert.equal(starts(), drivers === "none" ? 0 : 1);
+    });
+  }
+}
+
+test("Codex sign-in cannot repeat a start with an unreadable confirmation", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth unconfirmed");
+  const { gateway, refresh } = createDeviceCredentialDrivers();
+  for (const driver of [gateway, refresh]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method").selectOption("credential_source");
   const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
-  await start.click();
-  await page
-    .getByText(
-      "ChatGPT sign-in is unavailable for this Installation. Choose another authentication method.",
-      { exact: true },
-    )
-    .waitFor();
-  assert.equal(await page.getByRole("link", { name: "Open Codex sign-in" }).isVisible(), false);
   await waitForEnabled(start);
 
-  const { gateway, refresh } = createDeviceCredentialDrivers();
-  for (const driver of [gateway, refresh]) {
-    fixture.controller.registerDriver(driver);
-    fixture.controller.selectDriver(driver.capability, driver.id);
-  }
   const namespacePath = `/namespaces/${namespace.id}`;
   const beginPath = `${namespacePath}/agents/device-authorizations`;
   const requests = apiRequests(page, fixture.origin);
@@ -451,7 +530,7 @@ test("Codex sign-in can retry a refused start but cannot repeat one with an unre
     await route.fulfill({ response, json: body });
   });
   await start.click();
-  await waitForSettledFetches(page, beginPath, 2);
+  await waitForSettledFetches(page, beginPath, 1);
   assert.equal(await start.isDisabled(), true, "a login may already exist");
   await page
     .getByText(
@@ -475,12 +554,408 @@ test("Codex sign-in can retry a refused start but cannot repeat one with an unre
   );
 });
 
+// Hold a real committed start at the browser boundary: navigating away aborts its
+// response, but must not erase the attempt from either authentication form's draft.
+for (const savedAgent of [false, true]) {
+  test(`an interrupted OAuth start stays blocked after returning to ${savedAgent ? "Agent credentials" : "Create Agent"}`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth navigation");
+    const { gateway, refresh } = createDeviceCredentialDrivers({ approve: async () => false });
+    for (const driver of [gateway, refresh]) {
+      fixture.controller.registerDriver(driver);
+      fixture.controller.selectDriver(driver.capability, driver.id);
+    }
+    const agent = savedAgent
+      ? await fixture.createAgent(
+          namespace.id,
+          "OAuth navigation",
+          nativeValues("oauth-navigation", { harnessId: "codex" }),
+          { executionMode: "dedicated" },
+        )
+      : null;
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await trackSettledFetches(page);
+    await login(
+      page,
+      fixture,
+      agent
+        ? `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`
+        : `/console/agents/new?namespace=${namespace.id}`,
+    );
+    if (!agent) {
+      await page.getByRole("button", { name: "Start without Preset" }).click();
+    }
+    const methodLabel = agent ? "Authentication source" : "Authentication method";
+    await page.getByLabel(methodLabel).selectOption("credential_source");
+    const committed = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    t.after(() => release.resolve());
+    const beginPath = `/namespaces/${namespace.id}/agents${agent ? `/${agent.id}` : ""}/device-authorizations`;
+    await page.route(`**${beginPath}`, async (route) => {
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      committed.resolve((await response.json()).data.session.id);
+      await release.promise;
+      await route.fulfill({ response }).catch(() => {});
+    });
+    await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
+    const sessionId = await committed.promise;
+    assert.equal(gateway.sources.size, 1);
+    assert.equal(
+      (await fixture.request("GET", `/namespaces/${namespace.id}/secrets/${sessionId}`)).status,
+      200,
+    );
+    await page.getByRole("link", { name: "Secrets", exact: true }).click();
+    await page.waitForURL("**/console/secrets?**");
+    release.resolve();
+    await waitForSettledFetches(page, beginPath, 1);
+    await page.goBack();
+    await page.getByLabel(methodLabel).waitFor();
+    const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
+    assert.equal(await start.isDisabled(), true, "the committed start lost its confirmation");
+    await page
+      .getByText(
+        /may have started.*until an Installation administrator investigates the pending attempt/i,
+      )
+      .waitFor();
+    assert.equal(
+      await page.getByRole("button", { name: "Cancel login", exact: true }).isVisible(),
+      false,
+    );
+    // Method changes rerender controls; even a delivered click cannot repeat the write.
+    await page.getByLabel(methodLabel).selectOption("api_key");
+    await page.getByLabel(methodLabel).selectOption("credential_source");
+    await start.dispatchEvent("click");
+    await settlePageRequests(page);
+    assert.equal(
+      requests.filter(({ method, path }) => method === "POST" && path === beginPath).length,
+      1,
+    );
+    assert.equal(gateway.sources.size, 1);
+  });
+}
+
+const WAITING = "Waiting for you to complete sign-in in the other tab…";
+
+// A saved Agent's Credentials tab with ChatGPT OAuth selected, on fixture Gateway and Refresh
+// Drivers whose sign-in stays pending.
+async function openAgentOAuth(t, name) {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
+  const { gateway, refresh } = createDeviceCredentialDrivers({ approve: async () => false });
+  for (const driver of [gateway, refresh]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const agent = await fixture.createAgent(
+    namespace.id,
+    name,
+    nativeValues(name.toLowerCase().replaceAll(" ", "-"), { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await trackSettledFetches(page);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  await page.getByLabel("Authentication source").selectOption("credential_source");
+  const beginPath = `/namespaces/${namespace.id}/agents/${agent.id}/device-authorizations`;
+  return {
+    fixture,
+    gateway,
+    page,
+    beginPath,
+    start: page.getByRole("button", { name: "Sign in with OAuth", exact: true }),
+    // Every start the API received; a kept or recorded reply never sends a second one.
+    starts: () =>
+      requests.filter(({ method, path }) => method === "POST" && path === beginPath).length,
+  };
+}
+
+// Holds the next start's real API answer at the browser boundary until `release()`.
+async function holdNextStart(t, { page, beginPath }) {
+  const answered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  await page.route(
+    `**${beginPath}`,
+    async (route) => {
+      const response = await route.fetch();
+      answered.resolve({ status: response.status(), body: await response.json() });
+      await release.promise;
+      await route.fulfill({ response }).catch(() => {});
+    },
+    { times: 1 },
+  );
+  return { answered: answered.promise, release: () => release.resolve() };
+}
+
+async function showTab(page, name) {
+  await page.getByRole("tab", { name, exact: true }).click();
+  await page.getByRole("tab", { name, exact: true, selected: true }).waitFor();
+}
+
+// Saves the draft's Configuration from its tab, which rebuilds every other tab from its draft.
+async function saveConfiguration(page, name) {
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await page
+    .getByLabel("Configuration JSON", { exact: true })
+    .fill(JSON.stringify(nativeValues(name, { harnessId: "codex" }), null, 2));
+  await page.getByRole("button", { name: "Save Configuration" }).click();
+  await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
+}
+
+// The delivered challenge shows: its code, and Cancel login for this known session.
+async function expectChallenge(page, userCode) {
+  await page.getByText(WAITING, { exact: true }).waitFor();
+  assert.equal(await page.locator(".device-login-code").textContent(), userCode);
+  assert.equal(
+    await page.getByRole("button", { name: "Cancel login", exact: true }).isEnabled(),
+    true,
+  );
+  await expectNoText(page, /may have started/i);
+}
+
+// Sign in and Cancel login replace each other in place, and each is unavailable while its
+// request runs. A keyboard reader keeps focus through the start, its reply and the cancel: on Sign
+// in while "Checking Codex login…" shows, then on Cancel login, then on Sign in again. Before
+// finding 2992, each press dropped focus to the page body.
+test("Sign in with OAuth and Cancel login keep keyboard focus", async (t) => {
+  const oauth = await openAgentOAuth(t, "OAuth focus");
+  const { page, start } = oauth;
+  const focused = () =>
+    page.evaluate(() =>
+      globalThis.document.activeElement === globalThis.document.body
+        ? "BODY"
+        : globalThis.document.activeElement?.textContent,
+    );
+  const held = await holdNextStart(t, oauth);
+  await waitForIdleFetches(page);
+  await start.focus();
+  await page.keyboard.press("Enter");
+  await held.answered;
+  await page.getByText("Checking Codex login…", { exact: true }).waitFor();
+  assert.equal(await focused(), "Sign in with OAuth");
+  // Enter again while the start runs sends nothing.
+  await page.keyboard.press("Enter");
+  held.release();
+  await page.getByText(WAITING, { exact: true }).waitFor();
+  assert.equal(await focused(), "Cancel login");
+  await page.keyboard.press("Enter");
+  await page.getByText("Sign in to connect your ChatGPT account.", { exact: true }).waitFor();
+  assert.equal(await focused(), "Sign in with OAuth");
+  await waitForEnabled(start);
+  assert.equal(await focused(), "Sign in with OAuth");
+  await settlePageRequests(page);
+  assert.equal(oauth.starts(), 1);
+});
+
+// Focus moves only off the control the reader pressed. A reader who moved on while the start ran
+// keeps focus where they put it when the reply replaces Sign in with Cancel login.
+test("a start's reply leaves focus where the reader moved it", async (t) => {
+  const oauth = await openAgentOAuth(t, "OAuth focus elsewhere");
+  const { page, start } = oauth;
+  const held = await holdNextStart(t, oauth);
+  await waitForIdleFetches(page);
+  await start.focus();
+  await page.keyboard.press("Enter");
+  await held.answered;
+  const source = page.getByLabel("Authentication source");
+  await source.focus();
+  held.release();
+  await page.getByText(WAITING, { exact: true }).waitFor();
+  await settlePageRequests(page);
+  assert.equal(await source.evaluate((node) => node === globalThis.document.activeElement), true);
+});
+
+// A start's reply that lands after the reader switched to another tab of the same Agent page
+// belongs to the Credentials tab, which is kept while the start is pending (finding 2980). Before
+// the fix, the reply was dropped and the return rebuilt the tab from its draft: a usable challenge
+// showed as an unconfirmed start that only an administrator could clear, and a confirmed refusal
+// as the same, instead of permitting a retry.
+for (const refused of [false, true]) {
+  test(`an OAuth start ${refused ? "refused" : "answered"} while another Agent tab shows lands in Credentials`, async (t) => {
+    const oauth = await openAgentOAuth(t, "OAuth tab switch");
+    const { page } = oauth;
+    // The real Native IAM Driver refuses the start without Secret create.
+    if (refused) {
+      revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+    }
+    const held = await holdNextStart(t, oauth);
+    await waitForIdleFetches(page);
+    await oauth.start.click();
+    const { status, body } = await held.answered;
+    assert.equal(status, refused ? 403 : 200);
+    await showTab(page, "Configuration");
+    held.release();
+    await waitForSettledFetches(page, oauth.beginPath, 1);
+
+    await showTab(page, "Credentials");
+    if (refused) {
+      // A confirmed refusal permits a retry, as it does while the tab shows.
+      await page.getByText(AGENT_DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
+      assert.equal(await oauth.start.isEnabled(), true, "a confirmed refusal blocked a retry");
+      await expectNoText(page, /may have started/i);
+    } else {
+      await expectChallenge(page, body.data.userCode);
+      assert.equal(await oauth.start.isVisible(), false);
+    }
+    await settlePageRequests(page);
+    assert.equal(oauth.starts(), 1);
+    assert.equal(oauth.gateway.sources.size, refused ? 0 : 1);
+  });
+}
+
+// A start that is not the tab's first write is kept the same way (findings 2980, 2981): after a
+// refused start, or after a poll and Cancel login withdrew an earlier login. The tab shows the
+// outcome of its own start, poll and cancel, so those writes alone do not make it stale. Before the
+// fix, they did, and the return rebuilt the tab from its draft, which cannot name a refusal.
+for (const before of ["a refused start", "Cancel login"]) {
+  for (const refused of before === "Cancel login" ? [false, true] : [false]) {
+    test(`an OAuth start after ${before} ${refused ? "refused" : "answered"} while another Agent tab shows lands in Credentials`, async (t) => {
+      const oauth = await openAgentOAuth(t, "OAuth second start");
+      const { page, start } = oauth;
+      // Fetches the tab may still have in flight; none may be, or the tab is not kept.
+      let idle = {};
+      if (before === "Cancel login") {
+        const first = page.waitForResponse(
+          (response) => new URL(response.url()).pathname === oauth.beginPath,
+        );
+        await start.click();
+        const { session } = (await (await first).json()).data;
+        await page.getByText(WAITING, { exact: true }).waitFor();
+        // Let the login poll once (the fixture interval is 5 s): the poll is the tab's write too.
+        const polled = await page.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname === `${oauth.beginPath}/${session.id}/poll`,
+        );
+        assert.equal(polled.status(), 200);
+        await page.getByText(WAITING, { exact: true }).waitFor();
+        await page.getByRole("button", { name: "Cancel login", exact: true }).click();
+        await page.getByText("Sign in to connect your ChatGPT account.", { exact: true }).waitFor();
+        // The Console never reads the cancel's empty 204 body, so the fetch hook keeps
+        // counting it in flight although the tab's request has settled.
+        idle = { except: `${oauth.beginPath}/${session.id}` };
+      } else {
+        // The real Native IAM Driver refuses the first start without Secret create.
+        const restoreCreate = revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+        await start.click();
+        await page.getByText(AGENT_DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
+        restoreCreate();
+      }
+      await waitForEnabled(start);
+      if (refused) {
+        revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+      }
+      const held = await holdNextStart(t, oauth);
+      await waitForIdleFetches(page, idle);
+      await start.click();
+      const { status, body } = await held.answered;
+      assert.equal(status, refused ? 403 : 200);
+      await showTab(page, "Configuration");
+      held.release();
+      await waitForSettledFetches(page, oauth.beginPath, 2);
+
+      await showTab(page, "Credentials");
+      if (refused) {
+        // The kept tab shows the refusal itself; a tab rebuilt from its draft could not name it.
+        await page.getByText(AGENT_DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
+        assert.equal(await start.isEnabled(), true);
+        await expectNoText(page, /may have started/i);
+      } else {
+        await expectChallenge(page, body.data.userCode);
+      }
+      await settlePageRequests(page);
+      assert.equal(oauth.starts(), 2);
+      if (before === "a refused start") {
+        assert.equal(oauth.gateway.sources.size, 1);
+      }
+    });
+  }
+}
+
+// A Configuration save on another tab rebuilds the Credentials tab from its draft. A start
+// answered after the reader left the tab records its outcome in that draft, whether the reply
+// lands before the save or after it (finding 2981). Before the fix, the draft still said the
+// start was unconfirmed, so a delivered code was lost and a refusal blocked a retry.
+for (const replyFirst of [true, false]) {
+  for (const refused of [false, true]) {
+    test(`an OAuth start ${refused ? "refused" : "answered"} ${replyFirst ? "before" : "after"} a Configuration save on another Agent tab lands in Credentials`, async (t) => {
+      const oauth = await openAgentOAuth(t, "OAuth save");
+      const { page } = oauth;
+      if (refused) {
+        revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+      }
+      const held = await holdNextStart(t, oauth);
+      await waitForIdleFetches(page);
+      await oauth.start.click();
+      const { status, body } = await held.answered;
+      assert.equal(status, refused ? 403 : 200);
+      await showTab(page, "Configuration");
+      if (replyFirst) {
+        held.release();
+        await waitForSettledFetches(page, oauth.beginPath, 1);
+      }
+      await saveConfiguration(page, "oauth-save-v2");
+      if (!replyFirst) {
+        held.release();
+        await waitForSettledFetches(page, oauth.beginPath, 1);
+      }
+
+      await showTab(page, "Credentials");
+      if (refused) {
+        // The draft records the refusal as no login, so sign-in is offered again.
+        await waitForEnabled(oauth.start);
+        await expectNoText(page, /may have started/i);
+      } else {
+        await expectChallenge(page, body.data.userCode);
+      }
+      await settlePageRequests(page);
+      assert.equal(oauth.starts(), 1);
+    });
+  }
+}
+
+// A Credentials tab built before the reply landed owns the draft from then on: the earlier tab
+// never records over it, so this tab's later edit survives the next rebuild (finding 2981).
+test("an OAuth start answered after a newer Credentials tab was built keeps that tab's draft", async (t) => {
+  const oauth = await openAgentOAuth(t, "OAuth newer tab");
+  const { page } = oauth;
+  const held = await holdNextStart(t, oauth);
+  await waitForIdleFetches(page);
+  await oauth.start.click();
+  await held.answered;
+  await showTab(page, "Configuration");
+  await saveConfiguration(page, "oauth-newer-tab-v2");
+  // The newer tab is built from the draft taken before the reply: the start is unconfirmed.
+  await showTab(page, "Credentials");
+  await page.getByText(/may have started/i).waitFor();
+  await page.getByLabel("Authentication source").selectOption("api_key");
+  await showTab(page, "Configuration");
+  held.release();
+  await waitForSettledFetches(page, oauth.beginPath, 1);
+  await saveConfiguration(page, "oauth-newer-tab-v3");
+
+  await showTab(page, "Credentials");
+  assert.equal(await page.getByLabel("Authentication source").inputValue(), "api_key");
+  await settlePageRequests(page);
+  assert.equal(oauth.starts(), 1);
+});
+
 // A refused device login names what the API checked for that request (finding 2577). Create
 // Agent's start checks Agent create, Secret create and credential source create in the Namespace,
 // which only an Installation administrator holds. The real Native IAM Driver refuses each request
 // below after the administrator's grant is removed from its Role.
 test("a refused device login start on Create Agent names the create grants it checks", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth start refused");
+  // Drivers that offer device login, so Sign in is offered and the grants decide.
+  const { gateway, refresh } = createDeviceCredentialDrivers();
+  for (const driver of [gateway, refresh]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
   revokeAdministratorGrant(fixture, ["create", "secret"]);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -492,6 +967,38 @@ test("a refused device login start on Create Agent names the create grants it ch
       `/namespaces/${namespace.id}/agents/device-authorizations`,
   );
   await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
+  assert.equal((await refused).status(), 403);
+  await page.getByText(DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
+});
+
+// Only an Installation administrator reads the Installation. A member's refused read says nothing
+// about the Drivers, so Sign in stays offered and the API's answer decides (finding 2991): here its
+// 403 names the grants, never the Drivers reason.
+test("a member's refused Installation read leaves Sign in offered on Create Agent", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth member");
+  const { gateway, refresh } = createDeviceCredentialDrivers();
+  for (const driver of [gateway, refresh]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const member = await fixture.createNamespaceMember("oauth-member", namespace.id, MEMBER_WRITE);
+  const { page } = await newPage(t, fixture);
+  const installationRead = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/installation",
+  );
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Authentication method").selectOption("credential_source");
+  assert.equal((await installationRead).status(), 403);
+  await page.getByText("Sign in to connect your ChatGPT account.", { exact: true }).waitFor();
+  const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
+  assert.equal(await start.getAttribute("aria-disabled"), null);
+  const refused = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname ===
+      `/namespaces/${namespace.id}/agents/device-authorizations`,
+  );
+  await start.click();
   assert.equal((await refused).status(), 403);
   await page.getByText(DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
 });

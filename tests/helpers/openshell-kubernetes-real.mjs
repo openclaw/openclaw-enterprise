@@ -39,8 +39,8 @@ function safeKubectlFailure(error, signal) {
 
 // The pinned Kubernetes driver, not policy.process, owns workload identity.
 // This k3d fixture leaves sandbox_uid/gid and OpenShift namespace ranges unset:
-// NVIDIA/OpenShell bdb956f2cd65a635f1294fccf1d138d263bf650f
-// crates/openshell-driver-kubernetes/src/config.rs:335,569-602.
+// NVIDIA/OpenShell ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47
+// crates/openshell-driver-kubernetes/src/config.rs:425-455,731-758.
 export const OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY = Object.freeze({ uid: 10001, gid: 10001 });
 
 // Compute's dedicated Codex Harness categories: the workspace, generated images, and Codex
@@ -310,8 +310,13 @@ export function createOpenShellServiceLoopbackLookup(serviceHostname) {
   };
 }
 
-/** Initialize Codex once through its exposed service, without starting a thread or turn. */
-export async function assertExposedCodexInitializes(serviceUrl, appServerToken) {
+/** Initialize the actual exposed native process, then perform optional read-only discovery. */
+export async function assertExposedCodexInitializes(serviceUrl, appServerToken, reads = []) {
+  assert.ok(
+    reads.every(({ method }) =>
+      ["plugin/list", "plugin/read", "plugin/installed", "config/read"].includes(method),
+    ),
+  );
   const controllerRequire = createRequire(
     new URL("../../apps/controller/package.json", import.meta.url),
   );
@@ -324,66 +329,80 @@ export async function assertExposedCodexInitializes(serviceUrl, appServerToken) 
     perMessageDeflate: false,
     closeTimeout: 1_000,
   });
-
-  let stage = "WebSocket upgrade";
+  const requests = [
+    {
+      method: "initialize",
+      params: {
+        clientInfo: { name: "openclaw-enterprise-openshell-integration", version: "1.0.0" },
+        capabilities: { experimentalApi: true },
+      },
+    },
+    ...reads,
+  ];
+  let index = 0;
+  const results = [];
   try {
-    await new Promise((resolve, reject) => {
-      // Report only the stage and status; peer payloads and close reasons can contain credentials.
-      const fail = (detail) => reject(new Error(`OpenShell exposed Codex ${stage}: ${detail}.`));
-      const deadline = setTimeout(() => fail("timed out after 5 s"), 5_000);
+    return await new Promise((resolve, reject) => {
+      // Peer payloads and close reasons can contain credentials; report only method/status.
+      const fail = (detail) =>
+        reject(
+          new Error(
+            `OpenShell exposed Codex ${requests[index]?.method ?? "transport"}: ${detail}.`,
+          ),
+        );
+      const deadline = setTimeout(() => fail("timed out"), reads.length === 0 ? 5_000 : 30_000);
+      const send = () => socket.send(JSON.stringify({ id: index + 1, ...requests[index] }));
       socket.once("close", (code) => {
         clearTimeout(deadline);
         fail(`socket closed (code ${code})`);
       });
-      socket.once("error", () => fail("WebSocket error"));
+      socket.once("error", () => {
+        clearTimeout(deadline);
+        fail("WebSocket error");
+      });
       socket.once("unexpected-response", (_request, response) => {
+        clearTimeout(deadline);
         fail(`HTTP ${response.statusCode}`);
         response.destroy();
       });
-      const id = 1;
-      socket.once("open", () => {
-        stage = "initialize response after HTTP 101";
-        const params = {
-          clientInfo: { name: "openclaw-enterprise-openshell-integration", version: "1.0.0" },
-          capabilities: { experimentalApi: true },
-        };
-        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method: "initialize", params }));
-      });
-      socket.on("message", function receiveInitialize(data) {
+      socket.once("open", send);
+      socket.on("message", (data) => {
         let message;
         try {
           message = JSON.parse(data);
         } catch {
-          return fail("invalid JSON");
-        }
-        if (message?.id !== id || "method" in message) {
+          clearTimeout(deadline);
+          fail("invalid JSON");
           return;
         }
-        if (message.error !== undefined) {
-          const code = message.error?.code;
-          return fail(Number.isSafeInteger(code) ? `RPC error (code ${code})` : "RPC error");
+        if (message?.id !== index + 1 || "method" in message) {
+          return;
         }
-        if (message.result === undefined || message.result === null) {
-          return fail("missing initialize result");
-        }
-        socket.off("message", receiveInitialize);
-        stage = "initialized notification write";
-        const notification = { jsonrpc: "2.0", method: "initialized", params: {} };
-        socket.send(JSON.stringify(notification), (error) => {
-          if (error) {
-            return fail("WebSocket write failed");
-          }
+        if (message.error !== undefined || message.result == null) {
           clearTimeout(deadline);
-          resolve();
-        });
+          fail("RPC did not succeed");
+          return;
+        }
+        if (index === 0) {
+          socket.send(JSON.stringify({ method: "initialized", params: {} }));
+        } else {
+          results.push(message.result);
+        }
+        index++;
+        if (index === requests.length) {
+          clearTimeout(deadline);
+          resolve(results);
+        } else {
+          send();
+        }
       });
     });
   } catch (error) {
     socket.terminate();
     throw error;
+  } finally {
+    socket.close(1000);
   }
-  // Codex does not acknowledge initialized. Send a normal close; this route may not echo it.
-  socket.close(1000);
 }
 
 // Model egress comes only from the credential source's profile, bound to native Codex.
@@ -595,7 +614,7 @@ function openShellGatewayServiceName(namespace) {
   return `openshell-${openshellHash(namespace, 10)}`;
 }
 
-// OpenShell v0.1.5 runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
+// OpenShell v0.1.6 runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
 // the gateway back. Mirrors internal/occdev/kubernetes.go and OpenShell sandbox_runtime.rs labels.
 export const openShellSupervisorLabels = Object.freeze({
   "openshell.ai/managed-by": "openshell",
@@ -719,7 +738,7 @@ export function createOpenShellKubernetesFixture({
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
-  openShellChartVersion = "0.1.5",
+  openShellChartVersion = "0.1.6",
   commandTimeoutMs,
   signal,
 }) {
@@ -1335,7 +1354,7 @@ export function createOpenShellKubernetesFixture({
     assert.deepEqual(
       [...initCapabilities],
       [],
-      "OpenShell v0.1.5 must not add capabilities to workload Pod init containers.",
+      "OpenShell v0.1.6 must not add capabilities to workload Pod init containers.",
     );
     const networkSidecar = pod.spec.containers.find(({ name }) =>
       ["openshell-network", "openshell-supervisor-network"].includes(name),
@@ -1343,7 +1362,7 @@ export function createOpenShellKubernetesFixture({
     assert.equal(
       networkSidecar,
       undefined,
-      "OpenShell v0.1.5 must keep its network supervisor outside the workload Pod.",
+      "OpenShell v0.1.6 must keep its network supervisor outside the workload Pod.",
     );
     const container = pod.spec.containers.find(({ name }) => name === "agent");
     assert.ok(container, "the provider-owned Pod must contain its Agent container.");

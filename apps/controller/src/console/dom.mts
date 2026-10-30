@@ -232,7 +232,8 @@ export function focusSaveOutcome(
   if (active && active !== document.body && !root.contains(active)) {
     return;
   }
-  const control = controls.find((node) => node?.isConnected && !node.disabled);
+  // An unavailable control (aria-disabled) is not one to return to: its message says why.
+  const control = controls.find((node) => node?.isConnected && node && !isUnavailable(node));
   if (message?.isConnected && message.textContent) {
     if (!control) {
       message.tabIndex = -1;
@@ -529,6 +530,96 @@ export function describeDisabled(
   }
 }
 
+type UnavailableControl =
+  HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+
+const guardedControls = new WeakSet<UnavailableControl>();
+
+// An aria-disabled control keeps its activation: a click, Enter or Space would still run its
+// handler, submit its form or flip its checkbox. A capture listener on the control runs before
+// its own listeners, so it cancels all three.
+function blockUnavailable(event: Event) {
+  if ((event.currentTarget as Element).getAttribute("aria-disabled") === "true") {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+}
+
+// A select or text field also changes on keys and edits, not only on a click (finding 2899): a
+// select's mouse press opens its list, and every key but Tab, Escape and a shortcut chooses
+// another option; a text field's Enter submits its form and its arrows open a combobox list,
+// while its edits come as beforeinput. Escape still closes a dialog.
+function blockUnavailableKey(event: Event) {
+  const { key, ctrlKey, metaKey } = event as KeyboardEvent;
+  if (
+    event.currentTarget instanceof HTMLSelectElement
+      ? !["Tab", "Escape"].includes(key) && !ctrlKey && !metaKey
+      : ["Enter", "ArrowUp", "ArrowDown"].includes(key)
+  ) {
+    blockUnavailable(event);
+  }
+}
+
+function guardUnavailable(control: UnavailableControl) {
+  control.addEventListener("click", blockUnavailable, { capture: true });
+  if (control instanceof HTMLButtonElement || ["checkbox", "radio"].includes(control.type)) {
+    return;
+  }
+  control.addEventListener("keydown", blockUnavailableKey, { capture: true });
+  control.addEventListener(
+    control instanceof HTMLSelectElement ? "mousedown" : "beforeinput",
+    blockUnavailable,
+    { capture: true },
+  );
+}
+
+function reasonShown(reason: HTMLElement | string | null | undefined) {
+  if (!reason) {
+    return false;
+  }
+  return typeof reason === "string" || (!reason.hidden && Boolean(reason.textContent?.trim()));
+}
+
+/**
+ * Disables or enables a button, checkbox, select or text field that has a visible reason when it
+ * is unavailable (findings 2714, 2878, 2899). A disabled control whose `reason` shows text stays
+ * in the Tab order (aria-disabled, not disabled) and is described by the reason
+ * (describeDisabled), so a keyboard reader reaches why; a click, Enter, Space or edit does
+ * nothing, and its form does not submit. With no reason to read it is natively disabled, unless
+ * it has focus: disabling the focused control would drop focus to the page. A reason that is
+ * already part of the control's own description (its help) is not linked again. Call it wherever
+ * the control's state or its reason changes, after the reason's text is set.
+ */
+export function setUnavailable(
+  control: UnavailableControl,
+  unavailable: boolean,
+  reason: HTMLElement | string | null | undefined,
+) {
+  if (!guardedControls.has(control)) {
+    guardedControls.add(control);
+    guardUnavailable(control);
+  }
+  const reachable = unavailable && (reasonShown(reason) || document.activeElement === control);
+  control.disabled = unavailable && !reachable;
+  if (reachable) {
+    control.setAttribute("aria-disabled", "true");
+  } else {
+    control.removeAttribute("aria-disabled");
+  }
+  control.classList.toggle("control-unavailable", reachable);
+  const id = typeof reason === "string" ? reason : reason?.id;
+  const ownDescription =
+    Boolean(id) &&
+    control.dataset.disabledReason !== id &&
+    (control.getAttribute("aria-describedby") ?? "").split(/\s+/).includes(id as string);
+  describeDisabled(control, ownDescription ? null : reason);
+}
+
+/** True while `control` is disabled, natively or as an unavailable control (setUnavailable). */
+export function isUnavailable(control: HTMLElement & { disabled?: boolean }) {
+  return control.disabled === true || control.getAttribute("aria-disabled") === "true";
+}
+
 /**
  * A form field (UX plan C3, console.css "Form field"): a label, the control, then its help. The
  * control is described by the help, and by its error while one shows (setFieldError), which sits
@@ -715,8 +806,14 @@ export function validateFields(controls: Iterable<Element | null | undefined>) {
 }
 
 // Form.elements can include fieldsets and other elements that do not participate in validation.
+// An unavailable control (setUnavailable) is not checked, as a disabled one is not.
 function willValidate(control: Element | null | undefined): control is FormControl {
-  return !!control && "willValidate" in control && control.willValidate === true;
+  return (
+    !!control &&
+    "willValidate" in control &&
+    control.willValidate === true &&
+    control.getAttribute("aria-disabled") !== "true"
+  );
 }
 
 /**

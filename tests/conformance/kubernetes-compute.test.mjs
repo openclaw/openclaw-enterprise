@@ -1,3 +1,5 @@
+import { checkComputeCredentialCatalog } from "../helpers/compute-credential-catalog.ts";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import {
@@ -1606,6 +1608,7 @@ test("dedicated OpenClaw delivers the selected Google release digest without a S
       id: "native-sandbox",
       implementation: "openshell",
       capability: "sandbox",
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
       facets: ["networking", "filesystem", "process"],
       async workspaceNodePeerLabels() {
         return undefined;
@@ -1668,6 +1671,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels({ revision: target }) {
       return provisions.some(({ revision: { id } }) => id === target.id)
@@ -1701,16 +1705,38 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     "https://models.example.test:443/inference/v1/";
   nativeConfiguration.models.providers.openai.api = "openai-completions";
   const [selectedEntry] = nativeConfiguration.models.providers.openai.models;
+  // The primary row names its own API; the worker and the startup probe use it, not the
+  // provider's.
+  selectedEntry.api = "openai-responses";
+  // OpenClaw also names a catalog entry by the full reference; the worker and the startup probe
+  // get the split model ID (finding 2903).
+  selectedEntry.id = "openai/team/model";
+  // Model metadata may sit on the provider, with provider request options the worker never gets.
+  for (const setting of ["contextWindow", "maxTokens", "cost"]) {
+    nativeConfiguration.models.providers.openai[setting] = selectedEntry[setting];
+    delete selectedEntry[setting];
+  }
+  nativeConfiguration.models.providers.openai.request = { allowPrivateNetwork: true };
   // The worker gets every selected model; the startup probe checks only the primary.
   nativeConfiguration.agents.defaults.model = {
     primary: "openai/team/model",
     fallbacks: ["openai/team/fallback"],
   };
-  // An unselected entry for another endpoint reaches neither the worker nor the startup probe.
-  nativeConfiguration.models.providers.openai.models.push(
-    { ...selectedEntry, id: "team/fallback", name: "team/fallback" },
-    { id: "unselected", baseUrl: "https://other.example.test/v1" },
-  );
+  // The fallback row comes first in the catalog, with its own endpoint and the provider's API;
+  // it reaches only the worker. An unselected entry for another endpoint reaches neither the
+  // worker nor the startup probe.
+  const fallbackEntry = {
+    ...selectedEntry,
+    id: "team/fallback",
+    name: "team/fallback",
+    baseUrl: "https://fallback.example.test/v1",
+  };
+  delete fallbackEntry.api;
+  nativeConfiguration.models.providers.openai.models.unshift(fallbackEntry);
+  nativeConfiguration.models.providers.openai.models.push({
+    id: "unselected",
+    baseUrl: "https://other.example.test/v1",
+  });
   const sourceType = {
     type: "openai",
     config: [],
@@ -1830,28 +1856,47 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     nativeConfig.models.providers.openai.baseUrl,
     "https://models.example.test/inference/v1",
   );
-  assert.equal(
-    nativeConfig.models.providers.openai.models[0].baseUrl,
-    "https://models.example.test/inference/v1",
-  );
-  assert.equal(nativeConfig.models.providers.openai.models[0].api, "openai-completions");
   assert.deepEqual(nativeConfig.models.providers.openai.apiKey, {
     source: "env",
     provider: "model",
     id: "OPENAI_API_KEY",
   });
+  // The worker gets the selected rows in selection order, each with its own endpoint and API.
   assert.deepEqual(
-    nativeConfig.models.providers.openai.models.map(({ id }) => id),
-    ["team/model", "team/fallback"],
+    nativeConfig.models.providers.openai.models.map(({ id, api, baseUrl }) => [id, api, baseUrl]),
+    [
+      ["team/model", "openai-responses", "https://models.example.test/inference/v1"],
+      ["team/fallback", "openai-completions", "https://fallback.example.test/v1"],
+    ],
   );
-  // OpenClaw merges catalog entries whose ids match after trimming, so the startup probe gets
-  // only the primary model's entry, as written (findings 2882, 2883).
+  // The startup probe gets only the primary model's entry (OpenClaw merges entries whose ids
+  // match after trimming; findings 2882, 2883), as the worker gets it: the split model ID, and
+  // the checked endpoint as the provider default. OpenClaw refuses to probe a known model under
+  // the authored prefix when its endpoint differs from the provider's (finding 2903), and the
+  // unchecked provider baseUrl never reaches the probe. The row carries no baseUrl of its own:
+  // the runtime's upfront credential check skips rows that do (finding 2904).
   const probeConfig = JSON.parse(
     provisions[0].requirements.environment.find(
       ({ name }) => name === "OPENCLAW_HARNESS_PROBE_CONFIG",
     ).value,
   );
-  assert.deepEqual(probeConfig.models.providers.openai.models, [selectedEntry]);
+  const { baseUrl: workerEndpoint, ...workerPrimary } =
+    nativeConfig.models.providers.openai.models[0];
+  assert.equal(workerEndpoint, "https://models.example.test/inference/v1");
+  assert.deepEqual(
+    [workerPrimary.contextWindow, workerPrimary.maxTokens],
+    [128000, 8192],
+    "the worker gets the provider's model metadata on the row",
+  );
+  // No other authored provider setting reaches the probe: OpenClaw refuses provider-level model
+  // metadata there (finding 2905), and any provider key besides baseUrl, api, models and request
+  // turns off the runtime's upfront credential check (finding 2907). The provider API is the
+  // row's, which that check also compares.
+  assert.deepEqual(probeConfig.models, {
+    providers: {
+      openai: { baseUrl: workerEndpoint, api: workerPrimary.api, models: [workerPrimary] },
+    },
+  });
   // The provider's observed Pod readiness and enrolled node are independent of provisioning.
   // Until the provider's Pod is Ready, the wait has no named reason.
   const podPending = await prepare();
@@ -1956,6 +2001,7 @@ test("Kubernetes native Sandbox provisioning fails a revision on the worker's he
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels({ revision: target }) {
       return provisions.some(({ revision: { id } }) => id === target.id)
@@ -2130,6 +2176,7 @@ test("Kubernetes Sandbox provisioning fails a revision at once when the provider
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels() {
       return undefined;
@@ -2205,6 +2252,7 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels({ revision: target }) {
       return provisions.some(({ revision: { id } }) => id === target.id)
@@ -2361,6 +2409,7 @@ test("Kubernetes Compute withdraws a native Harness exposure outside a preparati
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async provisionHarness() {
       assert.fail("no preparation pass runs here");
@@ -3106,6 +3155,7 @@ test("activation waits for the first repository Git credential install and the n
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels({ revision: target }) {
       return provisions.some(({ revision: { id } }) => id === target.id)
@@ -3625,6 +3675,7 @@ test("the Pod quota check reads only the revision's own workload Deployments", a
     id: "native-sandbox",
     implementation: "openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async workspaceNodePeerLabels() {
       return undefined;
@@ -4554,6 +4605,7 @@ test("Kubernetes namespace deletion waits for Sandbox namespace cleanup", async 
     id: "sandbox-namespace-cleanup",
     implementation: "test/namespace-cleanup",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     async cleanup(context) {
       assert.equal(context.revision, undefined);
@@ -5751,6 +5803,364 @@ test("gateway routing caps the Gateway name at a label value's 63 characters", (
   );
 });
 
+test("Kubernetes preserves explicit human proxy identities alongside workspace access", () => {
+  const auth = {
+    mode: "trusted-proxy",
+    trustedProxy: {
+      userHeader: "x-occ-identity",
+      allowUsers: ["occ-workspace-files", "oidc:member-01", "oidc:maintainer-02"],
+    },
+    identityScopes: {
+      "occ-workspace-files": ["operator.admin"],
+      "oidc:member-01": ["operator.read", "operator.write"],
+      "oidc:maintainer-02": ["operator.admin"],
+    },
+  };
+  for (const configure of [options, routedOptions]) {
+    const driver = createKubernetesComputeDriver(configure());
+    const revision = routedRevision(driver);
+    revision.configuration.gateway.auth = structuredClone(auth);
+    const original = structuredClone(revision.configuration);
+
+    // Provisioning and rendering must preserve individual identities without
+    // replacing the platform's independently privileged workspace connection.
+    driver.validateAgentProvisioning({
+      executionMode: "dedicated",
+      configuration: revision.configuration,
+    });
+    const rendered = driver.kubernetesGatewayConfigurationDocument(revision.configuration);
+    // Native HTTP APIs ignore identityScopes and give a header-less trusted-proxy request
+    // OpenClaw's default operator scopes, operator.admin included (finding 2183). Admitting
+    // a human therefore makes the Gateway require x-openclaw-scopes on every request.
+    assert.deepEqual(rendered.gateway.auth, {
+      ...auth,
+      trustedProxy: { ...auth.trustedProxy, requiredHeaders: ["x-openclaw-scopes"] },
+    });
+    assert.deepEqual(revision.configuration, original);
+    const renderedRequiredHeaders = (trustedProxy, identityScopes = auth.identityScopes) =>
+      driver.kubernetesGatewayConfigurationDocument({
+        gateway: {
+          auth: {
+            ...auth,
+            trustedProxy: { ...auth.trustedProxy, ...trustedProxy },
+            identityScopes,
+          },
+        },
+      }).gateway.auth.trustedProxy.requiredHeaders;
+    // Operator-supplied required headers are kept, the Gateway matches names case-insensitively,
+    // and a machine-only allowlist keeps the existing route contract (no header required).
+    assert.deepEqual(renderedRequiredHeaders({ requiredHeaders: ["x-real-ip"] }), [
+      "x-real-ip",
+      "x-openclaw-scopes",
+    ]);
+    assert.deepEqual(
+      renderedRequiredHeaders({ requiredHeaders: ["X-OpenClaw-Scopes", "x-real-ip"] }),
+      ["X-OpenClaw-Scopes", "x-real-ip"],
+    );
+    assert.deepEqual(renderedRequiredHeaders({ requiredHeaders: [] }), ["x-openclaw-scopes"]);
+    assert.equal(
+      renderedRequiredHeaders(
+        { allowUsers: ["occ-workspace-files"] },
+        { "occ-workspace-files": ["operator.admin"] },
+      ),
+      undefined,
+    );
+    assert.deepEqual(
+      renderedRequiredHeaders(
+        { allowUsers: ["occ-workspace-files"], requiredHeaders: ["x-real-ip"] },
+        { "occ-workspace-files": ["operator.admin"] },
+      ),
+      ["x-real-ip"],
+    );
+    // Header names the Gateway could never match would refuse every request; non-arrays
+    // fail its schema at startup. Both are refused before rollout.
+    for (const requiredHeaders of [
+      "x-openclaw-scopes",
+      null,
+      {},
+      [""],
+      [" x-openclaw-scopes"],
+      ["x-openclaw-scopes "],
+      ["x-real-ip", 42],
+    ]) {
+      assert.throws(
+        () =>
+          driver.validateAgentProvisioning({
+            executionMode: "dedicated",
+            configuration: {
+              gateway: {
+                auth: { ...auth, trustedProxy: { ...auth.trustedProxy, requiredHeaders } },
+              },
+            },
+          }),
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.setting === "gateway.auth.trustedProxy.requiredHeaders",
+      );
+    }
+    // The operator HTTPRoute strips these headers, so requiring one on a routed Agent
+    // would refuse OCC's own access for good; without routing the operator's proxy decides.
+    for (const header of ["authorization", "Cookie", "forwarded", "x-forwarded-for"]) {
+      const validate = () =>
+        driver.validateAgentProvisioning({
+          executionMode: "dedicated",
+          configuration: {
+            gateway: {
+              auth: {
+                ...auth,
+                trustedProxy: { ...auth.trustedProxy, requiredHeaders: [header, "x-real-ip"] },
+              },
+            },
+          },
+        });
+      if (configure === routedOptions) {
+        assert.throws(
+          validate,
+          (error) =>
+            error instanceof ComputeGatewaySettingError &&
+            error.setting === "gateway.auth.trustedProxy.requiredHeaders" &&
+            error.message.includes("route removes"),
+        );
+      } else {
+        assert.doesNotThrow(validate);
+      }
+    }
+
+    // Legacy auto-approval grants are unioned into every human's identity scopes upstream.
+    // A human allowlist must not silently inherit the pilot's admin device grant.
+    for (const adminScope of [
+      "operator.admin",
+      " operator.admin",
+      "operator.admin ",
+      "\toperator.admin\n",
+    ]) {
+      assert.throws(
+        () =>
+          driver.validateAgentProvisioning({
+            executionMode: "dedicated",
+            configuration: {
+              gateway: {
+                auth: {
+                  ...auth,
+                  trustedProxy: {
+                    ...auth.trustedProxy,
+                    deviceAutoApprove: { enabled: true, scopes: [adminScope] },
+                  },
+                },
+              },
+            },
+          }),
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.setting === "gateway.auth.trustedProxy.deviceAutoApprove.scopes",
+      );
+    }
+    for (const scopes of [
+      "operator.read",
+      null,
+      {},
+      ["operator.read", 42],
+      ["operator.reed"],
+      [" operator.read"],
+      ["operator.read "],
+    ]) {
+      assert.throws(
+        () =>
+          driver.validateAgentProvisioning({
+            executionMode: "dedicated",
+            configuration: {
+              gateway: {
+                auth: {
+                  ...auth,
+                  identityScopes: {
+                    ...auth.identityScopes,
+                    "oidc:member-01": scopes,
+                  },
+                },
+              },
+            },
+          }),
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.setting === "gateway.auth.identityScopes",
+      );
+    }
+    // Removing login admission must not leave channel-linked authority behind.
+    // Empty/padded keys also make a native Gateway configuration invalid or ambiguous.
+    for (const identity of ["", " oidc:member-01", "oidc:member-01 ", "oidc:removed-03"]) {
+      assert.throws(
+        () =>
+          driver.validateAgentProvisioning({
+            executionMode: "dedicated",
+            configuration: {
+              gateway: {
+                auth: {
+                  ...auth,
+                  identityScopes: { ...auth.identityScopes, [identity]: ["operator.admin"] },
+                },
+              },
+            },
+          }),
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.setting === "gateway.auth.identityScopes",
+      );
+    }
+    assert.throws(
+      () =>
+        driver.validateAgentProvisioning({
+          executionMode: "dedicated",
+          configuration: {
+            gateway: {
+              auth: {
+                ...auth,
+                trustedProxy: { ...auth.trustedProxy, allowUsers: ["occ-workspace-files"] },
+              },
+            },
+          },
+        }),
+      (error) =>
+        error instanceof ComputeGatewaySettingError &&
+        error.setting === "gateway.auth.identityScopes",
+    );
+    // Each native operator scope accepted by the pinned runtime remains usable.
+    assert.doesNotThrow(() =>
+      driver.validateAgentProvisioning({
+        executionMode: "dedicated",
+        configuration: {
+          gateway: {
+            auth: {
+              ...auth,
+              identityScopes: {
+                ...auth.identityScopes,
+                "oidc:member-01": [
+                  "operator.admin",
+                  "operator.read",
+                  "operator.write",
+                  "operator.sessions.read",
+                  "operator.sessions.write",
+                  "operator.approvals",
+                  "operator.questions",
+                  "operator.pairing",
+                  "operator.talk",
+                  "operator.talk.secrets",
+                ],
+              },
+            },
+          },
+        },
+      }),
+    );
+    // Machine-only pilot Agents retain their existing admin auto-approval contract.
+    assert.doesNotThrow(() =>
+      driver.validateAgentProvisioning({
+        executionMode: "dedicated",
+        configuration: {
+          gateway: {
+            auth: {
+              ...auth,
+              trustedProxy: {
+                ...auth.trustedProxy,
+                allowUsers: ["occ-workspace-files"],
+                deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+              },
+              identityScopes: { "occ-workspace-files": ["operator.admin"] },
+            },
+          },
+        },
+      }),
+    );
+
+    // Human grants must not change the machine identity's exact administration.
+    for (const machineScopes of [
+      [],
+      ["operator.read", "operator.write"],
+      ["operator.admin", "operator.read"],
+      "operator.admin",
+    ]) {
+      assert.throws(
+        () =>
+          driver.validateAgentProvisioning({
+            executionMode: "dedicated",
+            configuration: {
+              gateway: {
+                auth: {
+                  ...auth,
+                  identityScopes: { ...auth.identityScopes, "occ-workspace-files": machineScopes },
+                },
+              },
+            },
+          }),
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.setting === "gateway.auth.identityScopes" &&
+          error.message.includes("exactly operator.admin"),
+      );
+    }
+    // Upstream matches allowUsers exactly, but resolves identityScopes for "@" identities
+    // case-insensitively; only exact-case, non-email identities may differ by case.
+    assert.doesNotThrow(() =>
+      driver.kubernetesGatewayConfigurationDocument({
+        gateway: {
+          auth: {
+            ...auth,
+            trustedProxy: {
+              ...auth.trustedProxy,
+              allowUsers: [...auth.trustedProxy.allowUsers, "oidc:Member-01"],
+            },
+          },
+        },
+      }),
+    );
+
+    // An empty list means "allow every proxy user" upstream. Additional humans
+    // must not turn explicit admission into a wildcard or remove machine access.
+    // Duplicates, case variants that share a grant or spoof the machine identity, and
+    // identities a proxy header cannot carry exactly are refused as well.
+    for (const allowUsers of [
+      [],
+      ["oidc:member-01"],
+      ["occ-workspace-files", " "],
+      null,
+      ["occ-workspace-files", "oidc:member-01", "oidc:member-01"],
+      ["occ-workspace-files", "occ-workspace-files"],
+      ["occ-workspace-files", "OCC-Workspace-Files"],
+      ["occ-workspace-files", "member@example.com", "Member@Example.com"],
+      ["occ-workspace-files", "oidc:m\u00e9mber-01"],
+      ["occ-workspace-files", "oidc:member\u200b-01"],
+      ["occ-workspace-files", "oidc:member\u0000-01"],
+      ["occ-workspace-files", "oidc:member\t01"],
+      ["occ-workspace-files", 42],
+      ["occ-workspace-files", "constructor"],
+      ["occ-workspace-files", "__proto__"],
+    ]) {
+      // Machine-only grants keep the identityScopes checks from refusing first.
+      assert.throws(
+        () =>
+          driver.kubernetesGatewayConfigurationDocument({
+            gateway: {
+              auth: {
+                ...auth,
+                trustedProxy: { ...auth.trustedProxy, allowUsers },
+                identityScopes: { "occ-workspace-files": ["operator.admin"] },
+              },
+            },
+          }),
+        /native trustedProxy\.allowUsers must contain/,
+      );
+    }
+    assert.throws(
+      () =>
+        driver.kubernetesGatewayConfigurationDocument({
+          gateway: {
+            auth: { ...auth, identityScopes: { "oidc:maintainer-02": ["operator.admin"] } },
+          },
+        }),
+      /identityScopes/,
+    );
+  }
+});
+
 test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", async () => {
   const driver = createKubernetesComputeDriver(routedOptions());
   const revision = routedRevision(driver);
@@ -5898,9 +6308,12 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       requestHeaderModifier: {
         set: [
           { name: "x-occ-identity", value: "occ-workspace-files" },
+          // The machine identity's exact grant: required by the Gateway once humans are
+          // admitted, and never left to a client header (finding 2183).
+          { name: "x-openclaw-scopes", value: "operator.admin" },
           { name: "x-real-ip", value: "%DOWNSTREAM_DIRECT_REMOTE_ADDRESS_WITHOUT_PORT%" },
         ],
-        remove: ["authorization", "cookie", "forwarded", "x-forwarded-for", "x-openclaw-scopes"],
+        remove: ["authorization", "cookie", "forwarded", "x-forwarded-for"],
       },
     },
   ]);
@@ -6150,7 +6563,7 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
           ...runtimeRevision.configuration.gateway.auth,
           trustedProxy: {
             ...runtimeRevision.configuration.gateway.auth.trustedProxy,
-            deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+            deviceAutoApprove: { enabled: true, scopes: ["operator.read", "operator.write"] },
           },
         },
       },
@@ -6821,7 +7234,7 @@ test("agent provisioning validation reuses native trusted-proxy admission before
         },
       },
       "gateway.auth.identityScopes",
-      "must grant only occ-workspace-files operator.admin when set",
+      "must grant occ-workspace-files exactly operator.admin when set",
     ],
     [
       { gateway: { trustedProxies: ["10.99.0.0/16"] } },
@@ -8510,6 +8923,7 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
   const sandboxDriver = {
     id: "sandbox-openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     harnessResource({ namespace, revision }) {
       return {
@@ -8891,6 +9305,7 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   const sandboxDriver = {
     id: "sandbox-openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     provisionHarness() {},
   };
@@ -9044,6 +9459,7 @@ test("credential-source authentication renders no model Secret and requires the 
   const sandboxDriver = {
     id: "sandbox-openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     provisionHarness() {},
   };
@@ -9259,6 +9675,7 @@ test("non-model credential sources resolved at dispatch must match the revision'
   const sandboxDriver = {
     id: "sandbox-openshell",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     provisionHarness() {},
   };
@@ -9413,6 +9830,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     id: "sandbox-native-worker",
     implementation: "test/native-worker",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async provisionHarness() {},
     async cleanup() {},
@@ -13296,6 +13714,7 @@ test("containment-only Sandbox cleanup retries after its Compute-owned workload 
     id: "sandbox-containment-only",
     implementation: "test/containment-only",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     async cleanup(context) {
       assert.equal(deploymentPresent, false);
@@ -14335,6 +14754,7 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
         id: "sandbox-native-worker",
         implementation: "test/native-worker",
         capability: "sandbox",
+        supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
         facets: ["networking", "filesystem", "process"],
         async provisionHarness() {},
         async cleanup() {},
@@ -15971,6 +16391,7 @@ test("stopping a containment-only Kubernetes revision removes its workload befor
     id: "sandbox-containment-only-stop",
     implementation: "test/containment-only",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     async cleanup(context) {
       assert.equal(deploymentPresent, false);
@@ -16379,6 +16800,7 @@ test("stopping a provider-owned Kubernetes revision waits for Sandbox workload t
     id: "sandbox-provider-stop",
     implementation: "test/provider-owned",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["execution"],
     async provisionHarness() {
       assert.fail("stop must not provision a Harness workload");
@@ -16518,6 +16940,7 @@ test("stop and retirement end credential-source access through Sandbox cleanup",
     id: "sandbox-credential-stop",
     implementation: "test/provider-owned",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async provisionHarness() {
       assert.fail("stop and retirement must not provision a Harness workload");
@@ -18383,6 +18806,24 @@ test("external ChatGPT source preparation delivers the exact placeholder and acc
       (entry) => entry.kind === "Secret" && entry.metadata.name.startsWith("harness-secrets-"),
     ),
     false,
+  );
+
+  await checkComputeCredentialCatalog(
+    t,
+    driver,
+    revision,
+    context,
+    credentialGatewayDriver,
+    objects,
+    driver.manifest(
+      "v1",
+      "Secret",
+      driver.workspaceNodeName(revision),
+      driver.workspaceNodeOwnership(revision),
+      { name: namespace, plane: "execution" },
+    ),
+    (await driver.apiClients).core,
+    requirements.labels,
   );
 
   await t.test("selects Harness authentication by source ID among multiple attachments", () => {

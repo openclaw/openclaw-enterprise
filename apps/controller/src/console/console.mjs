@@ -460,7 +460,7 @@ function forgetInstallationAccess() {
 // The caller does not administer the Installation: true for this tab, not kept across reloads,
 // which ask the permission answer again at no audited cost. The Observability link goes away.
 // A page built while the answer was another one is told, so it takes the new answer in place, as
-// its Refresh would (finding D795).
+// its Refresh would (finding D795), and the Namespace list is read again (finding 2917).
 function settleNotAdministrator() {
   const ended = installationAdmin !== false;
   forgetInstallationAccess();
@@ -472,7 +472,81 @@ function settleNotAdministrator() {
     for (const handler of mountedViewState?.administrationEnded ?? []) {
       handler();
     }
+    void rereadNamespacesAfterAdministration();
   }
+}
+
+// Refresh sharing asks again whether a caller this tab settled as no administrator administers
+// the Installation. Administration granted again with the Agent page open left Refresh sharing
+// refused unsent, the Access tab hidden and the page read-only until Refresh (finding 2943). The
+// Namespace permission answer audits nothing; when it confirms administration, the settled answer
+// is dropped, as Refresh drops it, and the policy reads are sent again. Any other answer, or none,
+// keeps it. Gating only: the API still authorizes every read.
+async function recheckAdministration() {
+  if (installationAdmin !== false) {
+    return;
+  }
+  const owner = sessionOwnerKey(session);
+  let answer;
+  try {
+    answer = await namespacePermissionsRead();
+  } catch {
+    return;
+  }
+  if (
+    owner === null ||
+    owner !== sessionOwnerKey(session) ||
+    installationAdmin !== false ||
+    answer?.installation?.administer !== true
+  ) {
+    return;
+  }
+  forgetInstallationAccess();
+  observabilityOwner = null;
+  installationAdmin = null;
+  administrationConfirmed = true;
+}
+
+// An administrator reads every Namespace, so the selector of a page loaded under administration
+// kept the Namespaces only administration could read until Refresh (finding 2917). Administration
+// ending reads the list once more: a member may list Namespaces, so the read audits nothing. The
+// selector keeps a Namespace still readable; a Namespace-scoped page whose Namespace is gone
+// settles as a refocus finds it gone. A failed read keeps the list; Refresh reads it again. A page
+// load in flight reads the list itself: the answer can settle after the page that asked was left,
+// and a Backends refusal settles it within its own load.
+async function rereadNamespacesAfterAdministration() {
+  if (mountedRouteKey === null) {
+    return;
+  }
+  const owner = sessionOwnerKey(session);
+  const active = lifetime.capture();
+  let readable;
+  try {
+    readable = await request("/namespaces");
+  } catch {
+    return;
+  }
+  if (
+    !lifetime.isCurrent(active) ||
+    owner === null ||
+    owner !== sessionOwnerKey(session) ||
+    !Array.isArray(readable)
+  ) {
+    return;
+  }
+  clearRetainedViewsOutsideNamespaces(readable);
+  setNamespaces(readable);
+  const current = route();
+  if (
+    ["agents", "secrets"].includes(current.feature) &&
+    !namespaces.some((item) => item.id === namespaceId)
+  ) {
+    clearRetainedViewsForNamespace(namespaceId);
+    resetReads();
+    namespaceUnavailablePanel(renderShell(current.feature, false, { page: null }).view);
+    return;
+  }
+  shellUI.updateNamespaces(namespaces);
 }
 
 // The refusal of a read only Installation administration may make, refused here without sending
@@ -1046,7 +1120,12 @@ function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
 // pending deployment that a second refocus's reread replaced (finding 1663). A shell control
 // outside the page (sidebar, page header, navigation toggle), which the recheck's shells replace,
 // gives it to the same control in the remounted shell, unless that control is gone or disabled
-// (finding 1662).
+// (finding 1662). A recheck that rebuilds the page instead gives focus to the control that
+// carries the same data-refocus-key, such as an Agents list row's name or icon (finding D814).
+// When that control is gone or natively disabled, such as Stop on a row whose Agent another
+// person stopped before a version was selected, focus goes to the control its
+// data-refocus-fallback names (the row's name), and when the row is gone too, to the page
+// heading, not to the body (finding 2967).
 function focusInShownView() {
   const view = app.querySelector('.content [aria-live="polite"]');
   const focused = document.activeElement;
@@ -1056,20 +1135,37 @@ function focusInShownView() {
     return null;
   }
   const href = focused.href ?? focused.dataset?.returnFocusHref ?? null;
+  const key = inView ? (focused.dataset?.refocusKey ?? null) : null;
+  const fallbackKey = key ? (focused.dataset.refocusFallback ?? null) : null;
   return {
-    restore(remounted) {
+    restore(remounted, { rebuilt = false } = {}) {
       if (!document.hasFocus() || document.activeElement !== document.body) {
         return;
       }
-      const target = shellControl
-        ? shellUI.matchingControl(focused)
-        : remounted.contains(focused)
-          ? focused
-          : href &&
-            Array.from(remounted.querySelectorAll("[data-return-focus-href]")).find(
-              (item) => item.dataset.returnFocusHref === href,
-            );
+      const keyed = (wanted) =>
+        wanted
+          ? Array.from(remounted.querySelectorAll("[data-refocus-key]")).find(
+              (item) => item.dataset.refocusKey === wanted && !item.disabled,
+            )
+          : undefined;
+      const target = rebuilt
+        ? key && (keyed(key) ?? keyed(fallbackKey) ?? app.querySelector(".content h1"))
+        : shellControl
+          ? shellUI.matchingControl(focused)
+          : remounted.contains(focused)
+            ? focused
+            : href &&
+              Array.from(remounted.querySelectorAll("[data-return-focus-href]")).find(
+                (item) => item.dataset.returnFocusHref === href,
+              );
       target?.focus({ preventScroll: true });
+      // A rebuilt row can be taller than the one it replaces: a reread that finds the Agent
+      // deleting adds its badge above the row's icons. The restored icon then sat cut off at the
+      // viewport's bottom with its row note below the fold (finding 2976). Keep the control's
+      // area (the cell with its note) in view, moving the page only as far as that needs.
+      if (rebuilt && target?.dataset?.refocusKey !== undefined) {
+        (target.closest("[data-refocus-area]") ?? target).scrollIntoView({ block: "nearest" });
+      }
     },
   };
 }
@@ -2131,6 +2227,8 @@ async function loadPage({
       revalidators: new Set(),
       // Called once Installation administration settles as ended while the view is mounted.
       administrationEnded: new Set(),
+      // Called after a refocus recheck of a mounted Agent page found it still readable.
+      rechecked: new Set(),
       user: session.user,
       // The view this load renders, retained by its own node (finding 1542).
       view: shell.view,
@@ -2268,6 +2366,8 @@ async function loadPage({
         return () => viewState.revalidators.delete(check);
       },
       onAdministrationEnded: (handler) => viewState.administrationEnded.add(handler),
+      onRechecked: (handler) => viewState.rechecked.add(handler),
+      recheckAdministration,
       onExpired: () => {
         if (lifetime.isCurrent(viewState.active)) {
           showExpiredLogin();
@@ -2505,8 +2605,19 @@ async function loadPage({
     }
     viewState.reads.set(collectionPath(current.feature, namespaceId), JSON.stringify(items));
     if (current.feature === "agents") {
-      renderAgentList({ ...agentContext, items, permissions: firstPermissions });
+      renderAgentList({
+        ...agentContext,
+        items,
+        permissions: firstPermissions,
+        resumed: resumingView,
+      });
       showChatLinkFailure(shell.view, chatLinkFailure);
+      // A refocus rebuilds the list when its recheck reads changed (a re-grant, a row another
+      // person deleted) or after a row write, which makes the list one it never reuses. Focus on
+      // a row's name or icon returns to the same control in the rebuilt row instead of falling
+      // to the body (finding D814).
+      const rebuiltView = shell.view;
+      restoreRefocus = () => refocused?.restore(rebuiltView, { rebuilt: true });
     } else if (current.feature === "namespaces") {
       renderNamespaces(
         {
@@ -2565,10 +2676,11 @@ async function loadPage({
     if (!accessResolved) {
       // Uncertain shared admission invalidates every preview, not just this route. Drafts stay:
       // a later read clears them only if it proves their Namespace or account gone (finding 1935).
+      const account = session;
       resetReads();
       clearPrivate();
       shell = null;
-      showAdmissionUnavailable(sessionResolved, error.status);
+      showAdmissionUnavailable(sessionResolved, error, account);
       return;
     }
     mountedRouteKey = null;
@@ -2873,7 +2985,9 @@ async function revalidateMountedAgent(current) {
       return;
     }
     checking = "detail";
-    await request(path);
+    // The page applies this answer once the recheck settles (finding 3000).
+    const readStartedAt = performance.now();
+    const rechecked = { agent: await request(path), readStartedAt };
     if (!isCurrent()) {
       return;
     }
@@ -2887,23 +3001,46 @@ async function revalidateMountedAgent(current) {
           : `${path}/revisions/${encodeURIComponent(selected)}`;
       const previousSnapshotRead = mountedViewState?.reads.get(snapshotPath);
       const snapshotWasReadable = mountedViewState?.readablePaths.has(snapshotPath);
+      // A refusal this page already showed, or this tab already settled, for a read it never had.
+      const refusalSettled =
+        snapshotWasReadable === false &&
+        (previousSnapshotRead === refusedRead(403) || deniedReadsFor(owner).has(snapshotPath));
+      const versions = request(`${path}/revisions`, { includeMeta: true });
+      // A version this page showed as unreadable has nothing on screen to scrub: its read would
+      // only be refused and audited again on every refocus, and the refusal would replace the
+      // page (finding D799). The page proved it on load as the version's own view does: a settled
+      // refusal, or a current version left out of a newest page of versions that lists every
+      // version the caller can read (finding D791). Refresh reads it again.
+      const shownUnreadable = async () =>
+        selected !== "draft" &&
+        snapshotWasReadable === false &&
+        (refusalSettled ||
+          (selected === agent.activeRevisionId &&
+            (await versions.then(
+              ({ data, meta }) =>
+                (meta?.nextCursor ?? null) === null && !data.some(({ id }) => id === selected),
+            ))));
       await Promise.all([
-        request(`${path}/revisions`),
-        request(snapshotPath).catch((error) => {
-          // Initial admission can show an Agent with its draft Configuration denied. Keep
-          // that same refusal, but scrub a page whose previously readable data was revoked.
-          if (
-            selected === "draft" &&
-            error.status === 403 &&
-            (previousSnapshotRead === refusedRead(403) ||
-              deniedReadsFor(owner).has(snapshotPath)) &&
-            snapshotWasReadable === false
-          ) {
-            return;
-          }
-          throw error;
-        }),
+        versions,
+        shownUnreadable()
+          .then((unreadable) => (unreadable ? undefined : request(snapshotPath)))
+          .catch((error) => {
+            // Initial admission can show an Agent with its draft Configuration denied. Keep
+            // that same refusal, but scrub a page whose previously readable data was revoked.
+            if (selected === "draft" && error.status === 403 && refusalSettled) {
+              return;
+            }
+            throw error;
+          }),
       ]);
+    }
+    // The page's own answers follow the recheck: a grant or revocation since the page loaded
+    // applies without Refresh, as on the Agents list (r54 row 11).
+    if (!isCurrent()) {
+      return;
+    }
+    for (const handler of mountedViewState?.rechecked ?? []) {
+      handler(rechecked);
     }
   } catch (error) {
     if (!isCurrent() || error.name === "AbortError") {
@@ -2916,8 +3053,9 @@ async function revalidateMountedAgent(current) {
     if (checking !== "detail") {
       resetReads();
       // Drafts survive an unavailable check, as in loadPage (finding 1935).
+      const account = session;
       clearPrivate();
-      showAdmissionUnavailable(checking !== "session", error.status);
+      showAdmissionUnavailable(checking !== "session", error, account);
       return;
     }
     showAgentReadFailure(current, selectedNamespace, error);
@@ -3026,10 +3164,44 @@ function settingsView() {
   );
 }
 
+const UNREACHABLE_TITLE = "Could not reach OpenClaw Enterprise";
+const UNREACHABLE_TEXT = "Check your connection, then try again.";
+
+// A read that never reached the API: the browser is offline, or the API did not answer in time.
+function unreachable(error) {
+  return (
+    error.status === undefined && (error.name === "TypeError" || error.name === "TimeoutError")
+  );
+}
+
 // The shared session or Namespace read failed, so no private page can show. Once the session
 // is confirmed, a refusal can be lasting (an account whose access was removed), and this panel
 // has no account menu, so it offers Sign out beside Retry (finding 1894).
-function showAdmissionUnavailable(sessionChecked, status) {
+// A read that never reached the API says nothing about the session (finding 1896). A tab that
+// was signed in as `account` keeps its shell, without Namespace or page data, names the
+// connection and puts focus on Retry. Any answer from the API (401, 403, 503) is shown below.
+function showAdmissionUnavailable(sessionChecked, error, account) {
+  const current = route();
+  if (unreachable(error) && account && Object.hasOwn(pages, current.feature)) {
+    // The account alone stays known, so Retry, Refresh and a refocus hold this shell while they
+    // check again, and a 401 then still signs the tab out.
+    session = account;
+    const shell = renderShell(current.feature, true, { recovery: false });
+    panel(shell.view, UNREACHABLE_TITLE, UNREACHABLE_TEXT, "Retry", () => void loadPage());
+    shell.refresh.disabled = false;
+    shell.view.setAttribute("aria-busy", "false");
+    const reason = shell.view.querySelector(".state-panel > p");
+    reason.id = "unreachable-reason";
+    const retry = shell.view.querySelector(".state-panel > button");
+    retry.setAttribute("aria-describedby", reason.id);
+    retry.focus();
+    return;
+  }
+  if (unreachable(error)) {
+    publicPanel(UNREACHABLE_TITLE, UNREACHABLE_TEXT, "Retry", () => void loadPage());
+    return;
+  }
+  const { status } = error;
   if (!sessionChecked) {
     publicPanel(
       "Session unavailable",
@@ -3098,8 +3270,41 @@ window.addEventListener("popstate", () => {
     navigation.traverse({ fromNavigation: !resumePending, mountedUrl: mountedRouteKey });
   }
 });
-window.addEventListener("focus", resumePage);
+// Tab past the page's last control moves focus to the browser's own controls, and the next Tab
+// brings it back. That lap is not the reader returning to the page: the refocus recheck it would
+// start holds the page inert, so the lap's next Tabs skipped the page (finding 2879). A return
+// within TAB_LAP_MS of tabbing out, with the page shown throughout, is not rechecked; a later
+// return, or one after the page was hidden, is.
+const TAB_LAP_MS = 10_000;
+let lastTabKey = -Infinity;
+let tabbedOutAt = null;
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (event.key === "Tab") {
+      lastTabKey = event.timeStamp;
+    }
+  },
+  { capture: true },
+);
+window.addEventListener("blur", (event) => {
+  if (event.target === window) {
+    // Focus leaves the page in the Tab key's own default action, right after its keydown.
+    tabbedOutAt = !document.hidden && event.timeStamp - lastTabKey < 1000 ? event.timeStamp : null;
+  }
+});
+window.addEventListener("focus", (event) => {
+  if (event.target !== window) {
+    return;
+  }
+  const lap = tabbedOutAt !== null && event.timeStamp - tabbedOutAt < TAB_LAP_MS;
+  tabbedOutAt = null;
+  if (!lap) {
+    resumePage();
+  }
+});
 document.addEventListener("visibilitychange", () => {
+  tabbedOutAt = null;
   resumePage();
 });
 // Drafts live only in this document, so a reload or tab close would lose unsaved editor work

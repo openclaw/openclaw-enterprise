@@ -1,29 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
   assertConsoleSignIn,
+  changeAccount,
   clientAddresses,
-  composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
   githubSignIn,
   githubUpgradeSettings,
-  onboardPasswordAccounts,
-  postgresSignInState,
   readAccount,
   signedInHeaders,
-  startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "scope-recovery@example.test";
-const password = "scope-limited-password";
-const authSecret = "scope-admin-auth-test-secret-at-least-32-bytes";
-const secrets = {
-  "occ-auth/secret": authSecret,
-  "occ-github-login/client-id": "scope-client-id",
-  "occ-github-login/client-secret": "scope-client-secret",
-};
 const limitedSubject = "9200001";
 const takeoverSubject = "9200002";
 
@@ -35,20 +26,24 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
-    await startFakeGitHub(t);
+    const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app],
+      {
+        email: "scope-recovery@example.test",
+        password: "scope-limited-password",
+        secrets: {
+          "occ-auth/secret": "scope-admin-auth-test-secret-at-least-32-bytes",
+          "occ-github-login/client-id": "scope-client-id",
+          "occ-github-login/client-secret": "scope-client-secret",
+        },
+      },
+    );
     const address = clientAddresses("198.19");
     const {
       admin,
       accounts: { limited },
-    } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
+    } = await onboard({
       remoteAddress: address(),
       accounts: { limited: { email: "scope-limited@example.test", role: "admin" } },
     });
@@ -63,11 +58,7 @@ test(
     );
     assert.deepEqual(bindings, [{ resource_kind: "installation", resource_id: installation.id }]);
 
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: githubUpgradeSettings(admin.id),
-      secrets,
-    });
+    app = await composeApp(githubUpgradeSettings(admin.id));
     const adminHeaders = await signedInHeaders(app, origin, admin, address());
     const limitedHeaders = await signedInHeaders(app, origin, limited, address());
     const post = (headers, url, payload) => app.inject({ method: "POST", url, headers, payload });
@@ -82,15 +73,12 @@ test(
       subject: takeoverSubject,
       expectedVersion: target.version,
     });
-    assert.equal(attached.statusCode, 403, attached.body);
-    assert.equal(attached.json().error.code, "FORBIDDEN");
+    assertApiError(attached, 403, "FORBIDDEN");
     const { callback } = await githubSignIn(app, origin, takeoverSubject, address());
     assert.equal(callback.headers.location, "/console/?authError=github", "no takeover sign-in");
     assert.equal(callback.headers["set-cookie"], undefined);
 
-    const revoked = await post(limitedHeaders, `/api/auth/accounts/${admin.id}/revoke`, {
-      expectedVersion: target.version,
-    });
+    const revoked = await changeAccount(app, limitedHeaders, admin.id, "revoke", target.version);
     assert.equal(revoked.statusCode, 403, revoked.body);
     assert.notEqual(await currentSession(app, adminHeaders.cookie), null, "admin stays signed in");
 
@@ -141,18 +129,26 @@ test(
     // Attaching GitHub revoked the earlier password session.
     let limitedAgain = await signedInHeaders(app, origin, limited, address());
     const taken = await moveRecovery(limitedAgain, limited.id, admin.id);
-    assert.equal(taken.statusCode, 403, taken.body);
-    assert.equal(taken.json().error.code, "FORBIDDEN");
+    assertApiError(taken, 403, "FORBIDDEN");
     assert.equal(await recoveryHolder(), admin.id);
     // A refused move is audited against the current holder, whose grants were not covered.
     assertCoverageDenials(await coverageDenials(["openclaw.auth.recovery.replace"]), 1);
-    const disabled = await post(adminHeaders, `/api/auth/accounts/${limited.id}/disable`, {
-      expectedVersion: (await readAccount(app, adminHeaders, limited.id)).version,
-    });
+    // The version read before the GitHub attach is stale, so the API refuses the change.
+    const stale = await changeAccount(
+      app,
+      adminHeaders,
+      limited.id,
+      "disable",
+      limitedAccount.version,
+    );
+    assert.equal(stale.statusCode, 409, stale.body);
+    assert.equal(
+      stale.json().error.message,
+      "The authentication account version changed. Read its current state before a new action.",
+    );
+    const disabled = await changeAccount(app, adminHeaders, limited.id, "disable");
     assert.equal(disabled.statusCode, 200, disabled.body);
-    const enabled = await post(adminHeaders, `/api/auth/accounts/${limited.id}/enable`, {
-      expectedVersion: (await readAccount(app, adminHeaders, limited.id)).version,
-    });
+    const enabled = await changeAccount(app, adminHeaders, limited.id, "enable");
     assert.equal(enabled.statusCode, 200, enabled.body);
 
     // Among accounts it covers, the narrower administrator still moves the designation.

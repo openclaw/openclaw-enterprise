@@ -7,6 +7,7 @@ export function createTokenAuthority({
   publicKey,
   lifetimeMs,
   repositoryId = fixtureRepositoryId,
+  expectedRepositoryIds = [repositoryId],
   additionalPermissions = [],
   installationAccess = false,
 }) {
@@ -51,7 +52,7 @@ export function createTokenAuthority({
     assert.ok(claims.exp - claims.iat <= 600);
     const installation = installationAccess && Object.keys(body).length === 0;
     if (!installation) {
-      assert.deepEqual(body.repository_ids.map(String), [String(repositoryId)]);
+      assert.deepEqual(body.repository_ids.map(String), expectedRepositoryIds.map(String));
     }
     const permissions = installation ? { metadata: "read", contents: "write" } : body.permissions;
     const acceptedPermissions = [
@@ -101,6 +102,7 @@ export function createTokenAuthority({
       uses: 0,
       attempts: 0,
       permissions: { ...permissions },
+      repositoryIds: installation ? "installation" : body.repository_ids.map(String),
     });
     issuesOfTokens.push({
       index,
@@ -139,9 +141,24 @@ export function createTokenAuthority({
     assert.ok(token, "retirement uses an owned provider token");
     token.revoked = true;
   }
+  function permitsRepository(authorization, repositoryId) {
+    const token = tokens.get(tokenFrom(authorization));
+    return (
+      token?.static === true ||
+      token?.repositoryIds === "installation" ||
+      token?.repositoryIds?.includes(String(repositoryId)) === true
+    );
+  }
   return {
+    permitsRepository,
     issue,
     authorize,
+    authorizeRepository(authorization, repositoryId) {
+      if (!authorize(authorization, `repository:${repositoryId}`)) {
+        return false;
+      }
+      return permitsRepository(authorization, repositoryId);
+    },
     acceptStatic,
     revoke,
     issuesOfTokens,

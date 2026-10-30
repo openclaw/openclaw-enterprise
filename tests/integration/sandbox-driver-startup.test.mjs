@@ -74,6 +74,7 @@ import {
   reservePort,
 } from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const controllerRequire = createRequire(
@@ -873,6 +874,16 @@ test("OpenShell refuses dedicated OpenClaw on settings its workspace preparation
     const options = sandboxInstallation().drivers.sandbox.configuration;
     settings(options);
     const driver = openShellDriver(workspaceGatewayClient(), options);
+    assert.deepEqual(driver.supportsHarnessExecutionMode.openclaw, {
+      embedded: { supported: false },
+      dedicated:
+        message === undefined ? { supported: true } : { supported: false, reason: message },
+    });
+    assert.throws(() => {
+      driver.supportsHarnessExecutionMode.openclaw.dedicated.supported = false;
+    }, TypeError);
+    // A caller's later mutation cannot change the constructed Driver's support decision.
+    options.kubernetes.userNamespaces = !options.kubernetes.userNamespaces;
     if (message === undefined) {
       assert.ok(driver.configureAgent(configuration, harness("openclaw")));
     } else {
@@ -3610,14 +3621,14 @@ test("OpenShell rejects unsupported or foreign Codex runtime providers before Sa
       expected: /requires its exact bounded plugin-runtime files/,
     },
     {
-      name: "selected plugin",
+      name: "non-Codex manifest",
       fixture: {
         runtimeManifest: JSON.stringify({
-          kind: "codex",
-          selections: { slack: { enabled: true } },
+          kind: "openclaw",
+          selections: {},
         }),
       },
-      expected: /does not yet support selected plugins/,
+      expected: /requires a Codex plugin-runtime manifest/,
     },
     {
       name: "foreign provider collision",
@@ -4598,7 +4609,7 @@ async function ready(operation) {
   assert.deepEqual(await operation, { state: "ready" });
 }
 
-test("Codex PAT profiles admit native startup without granting the whole backend", async () => {
+test("Codex PAT profiles restrict native startup and plugin routes", async () => {
   const { context, driver, profiles } = credentialGatewayOverProviders();
   const source = context("cs_00000000-0000-4000-8000-0000000000c1");
   await driver.registerSource(
@@ -4606,8 +4617,8 @@ test("Codex PAT profiles admit native startup without granting the whole backend
     { type: "codex-pat", config: {}, secrets: { access_token: "synthetic-codex-pat" } },
   );
   const [profile] = profiles.values();
-  // These are the pinned Codex dependency's startup, turn and usage-recovery routes. A broader backend
-  // or WHAM wildcard would release this credential to unrelated account APIs.
+  // The native client needs plugin installation, app metadata and MCP transport.
+  // Backend or WHAM wildcards would also admit unrelated account APIs.
   assert.deepEqual(profile.endpoints, [
     {
       host: "auth.openai.com",
@@ -4620,6 +4631,30 @@ test("Codex PAT profiles admit native startup without granting the whole backend
     { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/accounts/check" },
     { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/settings/user" },
     { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/usage" },
+    {
+      host: "chatgpt.com",
+      port: 443,
+      protocol: "rest",
+      path: "/backend-api/ps/plugins/**",
+      rules: [
+        { allow: { method: "GET", path: "/backend-api/ps/plugins/*" } },
+        { allow: { method: "POST", path: "/backend-api/ps/plugins/*/install" } },
+      ],
+    },
+    {
+      host: "chatgpt.com",
+      port: 443,
+      protocol: "rest",
+      path: "/backend-api/ps/apps/batch",
+      rules: [{ allow: { method: "POST", path: "/backend-api/ps/apps/batch" } }],
+    },
+    {
+      host: "chatgpt.com",
+      port: 443,
+      protocol: "rest",
+      path: "/backend-api/ps/mcp",
+      rules: [{ allow: { method: "POST", path: "/backend-api/ps/mcp" } }],
+    },
   ]);
   assert.deepEqual(profile.binaries, ["/usr/local/bin/codex"]);
 });
@@ -5833,12 +5868,9 @@ test("observed-hook preview recognizes a released Codex through its authenticate
     response.writeHead(status);
     response.end("WebSocket upgrade required");
   });
-  const sockets = new Set();
   server.on("upgrade", (request, socket) => {
     upgrades++;
-    sockets.add(socket);
     socket.on("error", () => {});
-    socket.once("close", () => sockets.delete(socket));
     if (!serving || request.headers.authorization !== `Bearer ${token}`) {
       socket.end("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
       return;
@@ -5851,17 +5883,10 @@ test("observed-hook preview recognizes a released Codex through its authenticate
         `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => {
-    for (const peer of sockets) {
-      peer.destroy();
-    }
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
-  const transport = new GrpcOpenShellGatewayClient({
-    endpoint: `http://127.0.0.1:${server.address().port}`,
-  });
+  // listen() closes the server when the test ends, after destroying every connection,
+  // including the upgraded sockets the HTTP server no longer tracks.
+  const port = await listen(t, server);
+  const transport = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
   t.after(() => transport.close());
   const gateway = workspaceGatewayClient();
   gateway.getServiceDocument = (...args) => transport.getServiceDocument(...args);
@@ -6688,15 +6713,17 @@ test(
       ...fragment.repository.openShell.authority,
       host: "127.0.0.1",
       port,
-      certificatePath: join(tls.directory, "server.pem"),
-      privateKeyPath: join(tls.directory, "server.key"),
+      certificatePath: tls.certPath,
+      privateKeyPath: tls.keyPath,
       issuerPublicKeyPath: publicKeyPath,
       issuer: "https://gateway.example.test",
       audience: "online-authorizer",
       keyId: "gateway-key",
     };
     const gateway = workspaceGatewayClient();
+    let repositoryGatewayVersion = "0.1.5";
     gateway.getGatewayInfo = async () => ({
+      gateway_version: repositoryGatewayVersion,
       extensions: [{ configured_name: "oce-prepared-git", kind: 4, protocol_major: 1 }],
     });
     const originalGetWorkspace = gateway.getWorkspace;
@@ -6870,14 +6897,19 @@ test(
     assert.equal(protectedGit.nativeRepositorySender, undefined);
     assert.equal(protectedGit.egressAuthority, undefined);
     assert.equal(protectedGit.sandboxDriver.openShellGit.configuration.protectedExecution, true);
-    // Finding 2199: no OpenShell release is qualified to enforce git-write, so the bundled sender
-    // refuses the profile before it reads the gateway, instead of admitting a revision that waits
-    // at enrollment until the convergence deadline.
-    await assert.rejects(
-      protectedGit.proxyDriver.sourceControl.assertAvailable(t.signal, "repository_git"),
-      { name: "RepositoryGitSenderUnqualifiedError", code: "REPOSITORY_GIT_SENDER_UNQUALIFIED" },
-    );
+    // Release labels do not qualify the sender; runtime proof still gates material.
+    repositoryGatewayVersion = "unknown";
+    for (const profile of ["repository_git", "github_repository"]) {
+      assert.deepEqual(
+        await protectedGit.proxyDriver.sourceControl.assertAvailable(t.signal, profile),
+        {
+          profile,
+          authorization: "online-request",
+        },
+      );
+    }
 
+    repositoryGatewayVersion = "0.1.5";
     protectedGit.computeDriver.validateRepositoryCredentials(
       { id: "codex", mode: "dedicated" },
       protectedGit.sandboxDriver.id,
@@ -6970,17 +7002,8 @@ test(
           "protected-codex-no-connection-retry:v1",
         );
         protectedGit.computeDriver.validateRepositoryCredentials(rev.harness, sandbox.id);
-        // Compute's preparation refuses the profile too, so a revision admitted before this check
-        // fails with the code instead of waiting at enrollment (finding 2199). The Sandbox's own
-        // v5 checks stay covered with the wiring a qualified sender would prepare: what
-        // configureRevision returns, without its profile gate.
-        await assert.rejects(new ProtectedExecutionDriver(owner).configure(ctx), {
-          name: "RepositoryGitSenderUnqualifiedError",
-          code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
-        });
-        await assert.rejects(proxy.configureRevision(ctx), {
-          code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
-        });
+        // Preparation accepts the configured facilities independently of the release label.
+        await new ProtectedExecutionDriver(owner).configure(ctx);
         // Finding 2204: a git-read binding maps to no delivery profile. Preparation never checks
         // its counterpart as an ordinary egress plan; it refuses the plan with its own code.
         const readGit = {
@@ -7009,7 +7032,7 @@ test(
           plan: c.plan,
           configuration: openShellEgressConfiguration(c.plan, proxy.options),
         });
-        const proxyWiring = qualifiedWiring(ctx);
+        const proxyWiring = await proxy.configureRevision(ctx);
         const required = structuredClone({ ...requirements, proxyWiring });
         const { harnessEgressEnrollment } =
           await import("../../apps/controller/src/drivers/compute/egress-enrollment.ts");

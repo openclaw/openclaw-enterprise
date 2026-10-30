@@ -85,6 +85,7 @@ export function createOpenShellCapabilities(input: {
       ...(git && {
         bindRepositoryGit: git.bindRepositoryGit.bind(git),
         previewEnforcement: git.previewEnforcement.bind(git),
+        mandatoryEnforcement: git.mandatoryEnforcement.bind(git),
       }),
     });
   const repositoryTransport: OpenShellRepositoryTransport | undefined = git && {

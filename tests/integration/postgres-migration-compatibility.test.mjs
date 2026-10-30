@@ -1990,7 +1990,8 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [63, "preGatewayManagedMode"],
-      [64, "preCredentialSourceRetainedSecrets"],
+      [64, "preSelectedRepositorySet"],
+      [65, "preCredentialSourceRetainedSecrets"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2427,7 +2428,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
-      [64, "preCredentialSourceRetainedSecrets"],
+      [65, "preCredentialSourceRetainedSecrets"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2461,13 +2462,13 @@ async function restoreHistoryArchive(context, fixture, archive) {
   return restored;
 }
 
-async function logicalRestoreSnapshot(db) {
+async function logicalRestoreSnapshot(db, identityReader = db.app) {
   const sequence = await db.migrator.query(
     "SELECT last_value,is_called FROM drizzle.__drizzle_migrations_id_seq",
   );
   return {
     ...(await historySnapshot(db)),
-    identities: (await db.app.query("SELECT * FROM occ.iam_identities ORDER BY id")).rows,
+    identities: (await identityReader.query("SELECT * FROM occ.iam_identities ORDER BY id")).rows,
     sequence: sequence.rows,
   };
 }
@@ -2477,17 +2478,25 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    for (const lineage of ["canonical", "provider"]) {
+    for (const lineage of ["canonical", "provider", "canonical51"]) {
+      const prefix = lineage === "canonical51";
+      const history = prefix ? "preProvisioningDeploymentOutcome" : "completed";
       const source = await historyDatabase(context, fixture, "dump");
       if (lineage === "provider") {
         await installProviderCompletedHistory(source);
       }
-      const previous = await historyReceipts(source.migrator);
-      assert.deepEqual(await runHistoryCommand(source, "production"), {
-        ok: true,
-        history: lineage === "provider" ? "providerCompleted" : "empty",
-      });
-      await assertCompletedHistory(source, previous);
+      if (prefix) {
+        // Use the published prefix verbatim, before any production upgrade.
+        await installCanonicalPrefix(source, 51);
+        assert.equal((await historyReceipts(source.migrator)).length, 51);
+      } else {
+        const previous = await historyReceipts(source.migrator);
+        assert.deepEqual(await runHistoryCommand(source, "production"), {
+          ok: true,
+          history: lineage === "provider" ? "providerCompleted" : "empty",
+        });
+        await assertCompletedHistory(source, previous);
+      }
       await source.app.query(
         "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES ('restore-human','principal','restore-fixture','human'), ('restore-service','service_principal',NULL,NULL)",
       );
@@ -2508,16 +2517,38 @@ test(
       assert.deepEqual(accepted.drizzle, native.drizzle);
       assert.deepEqual(accepted.identities, native.identities);
       assert.deepEqual(accepted.sequence, native.sequence);
+      assert.deepEqual(await runHistoryCommand(restored, "production", "--check"), {
+        ok: true,
+        history,
+      });
+      assert.deepEqual(await logicalRestoreSnapshot(restored), accepted);
+      assert.deepEqual(await runHistoryCommand(restored, "production"), {
+        ok: true,
+        history,
+      });
       await assertCredentialSchemaPrivileges(restored.app);
-      for (const flag of ["--check", undefined]) {
-        assert.deepEqual(await runHistoryCommand(restored, "production", flag), {
+      if (prefix) {
+        const manifest = JSON.parse(
+          await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
+        );
+        const upgraded = await logicalRestoreSnapshot(restored);
+        assert.deepEqual(upgraded.identities, native.identities);
+        assert.deepEqual(upgraded.receipts.slice(0, 51), native.receipts);
+        assert.deepEqual(
+          upgraded.receipts.map(({ hash, created_at }) => [hash, Number(created_at)]),
+          manifest.entries.map(({ sha256, when }) => [sha256, when]),
+        );
+        // The upgraded restore has its own completed catalog spelling.
+        assert.deepEqual(await runHistoryCommand(restored, "production", "--check"), {
           ok: true,
           history: "completed",
         });
+        assert.deepEqual(await logicalRestoreSnapshot(restored), upgraded);
+      } else {
         assert.deepEqual(await logicalRestoreSnapshot(restored), accepted);
       }
 
-      if (lineage !== "canonical") {
+      if (lineage === "provider") {
         continue;
       }
       // Start each hostile case from the accepted archive; never undo digest-sensitive DDL.
@@ -2545,12 +2576,15 @@ test(
         if (expectedRows !== undefined) {
           assert.equal(change.rowCount, expectedRows);
         }
-        const beforeRefusal = await historySnapshot(drifted);
-        assert.deepEqual(await runHistoryCommand(drifted, "production", undefined, refusal), {
-          ok: false,
-          code: "MIGRATION_HISTORY_UNSUPPORTED",
-        });
-        assert.deepEqual(await historySnapshot(drifted), beforeRefusal);
+        // Read as migrator so the lost app grant does not hide row/sequence mutations.
+        const beforeRefusal = await logicalRestoreSnapshot(drifted, drifted.migrator);
+        for (const flag of ["--check", undefined]) {
+          assert.deepEqual(await runHistoryCommand(drifted, "production", flag, refusal), {
+            ok: false,
+            code: "MIGRATION_HISTORY_UNSUPPORTED",
+          });
+          assert.deepEqual(await logicalRestoreSnapshot(drifted, drifted.migrator), beforeRefusal);
+        }
       }
     }
   },
@@ -2625,7 +2659,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
-      [64, "preCredentialSourceRetainedSecrets"],
+      [65, "preCredentialSourceRetainedSecrets"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2804,7 +2838,8 @@ test(
     // A valid first and last receipt cannot vouch for the interior 0061 receipt.
     // Start each fault from accepted history so rejection cannot pass merely because
     // a retired preview hash was already unsupported.
-    const middle = completed.receipts.at(-5);
+    const middle =
+      completed.receipts[manifest.entries.findIndex(({ tag }) => tag.startsWith("0061_"))];
     for (const [label, sql] of [
       ["changed interior hash", "UPDATE drizzle.__drizzle_migrations SET hash=$2 WHERE id=$1"],
       [

@@ -76,6 +76,7 @@ export async function openShellOnlineWire(
   return {
     keys,
     client,
+    server,
     endpoint: `https://localhost:${port}`,
     certFile: rootCertificatePath,
     close: () => server.forceShutdown(),

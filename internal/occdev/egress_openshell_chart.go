@@ -6,6 +6,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"io"
+	"os"
 	"path"
 	"path/filepath"
 	"slices"
@@ -21,6 +22,17 @@ import (
 func (r *runner) checkProtectedOpenShellChart(ctx context.Context, state *developmentState, images openShellImageSelection) error {
 	const selector = "OCC_DEVELOPMENT_OPENSHELL_HELM_CHART"
 	chart := r.env[selector]
+	if chart == "" {
+		root, err := os.MkdirTemp("", "oce-openshell-chart-preflight-")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(root)
+		chart, _, err = r.openShellCharts(ctx, root)
+		if err != nil {
+			return err
+		}
+	}
 	if !filepath.IsAbs(chart) || filepath.Clean(chart) != chart {
 		return fmt.Errorf("protected egress requires %s to be an absolute canonical chart path", selector)
 	}
@@ -79,10 +91,12 @@ func verifyProtectedOpenShellChart(rendered []byte, state *developmentState) err
 			Supervisor struct {
 				Middleware []struct {
 					Name, Audience, Timeout string
-					Endpoint                string `toml:"grpc_endpoint"`
-					Payload                 int    `toml:"max_payload_bytes"`
-					Insecure                *bool  `toml:"allow_insecure_transport"`
-					CAPath                  string `toml:"tls_ca_cert_path"`
+					BindingPolicy           string   `toml:"binding_policy"`
+					Bindings                []string `toml:"bindings"`
+					Endpoint                string   `toml:"grpc_endpoint"`
+					Payload                 int      `toml:"max_payload_bytes"`
+					Insecure                *bool    `toml:"allow_insecure_transport"`
+					CAPath                  string   `toml:"tls_ca_cert_path"`
 				}
 			}
 		}
@@ -98,6 +112,11 @@ func verifyProtectedOpenShellChart(rendered []byte, state *developmentState) err
 	if m.Endpoint != developmentAuthorityEndpoint(state) || m.Audience != developmentEgressAudience ||
 		m.Insecure == nil || *m.Insecure || m.Payload != developmentEgressPayload || m.Timeout != developmentEgressTimeout {
 		return fmt.Errorf("rendered %s registration does not select the required HTTPS endpoint, audience, secure transport and request limits", m.Name)
+	}
+
+	if (m.BindingPolicy != "allowlist" && m.BindingPolicy != "exact") ||
+		!slices.Equal(m.Bindings, []string{"http_request_pre_credentials"}) {
+		return fmt.Errorf("rendered %s must require the pre-credentials request binding", m.Name)
 	}
 
 	for _, c := range pod.Containers {

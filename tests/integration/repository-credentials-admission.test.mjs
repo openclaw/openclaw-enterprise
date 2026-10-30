@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -17,7 +18,6 @@ import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-pr
 import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { reconcileSandboxPolicy } from "../../apps/controller/src/worker/sandbox-policy.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
   validateGitHubRepositoryRegistry,
@@ -57,7 +57,6 @@ import {
   CREDENTIAL_PROXY_INSTALLATION_ACCESS,
   CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
   DEPENDENCY_UNAVAILABLE,
-  PREVIEW_GATEWAY_VERSION,
   PROXY_REGISTRATION_UNAVAILABLE,
   REPOSITORY_ACCESS_OR_BINDINGS,
   REPOSITORY_SELECTION_NOT_APPROVED,
@@ -232,14 +231,11 @@ function registryFor(namespaceId, extraRepositories = [], installationAccess = f
 }
 
 function repositoryDriver(registry, Driver = GitHubRepositoryPolicy) {
+  // Admission must complete without contacting the service or obtaining credentials.
   return new Driver(
     {
-      id: backendId,
-      // Admission must complete without contacting the service or obtaining credentials.
-      client: new UnixRepositoryCredentialControlClient({
-        controlSocket: "/unused/repository-admission/control.sock",
-      }),
-      drivers: { repo: driverId },
+      driverId,
+      backendId,
     },
     validateGitHubRepositoryRegistry(registry, backendId),
     { sessionDurationSeconds: 600 },
@@ -457,6 +453,7 @@ test("Repository options expose only Namespace-approved display choices behind A
     id: "repository-options-sandbox",
     capability: "sandbox",
     implementation: "test-sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async cleanup() {},
   };
@@ -1153,6 +1150,7 @@ test("Dedicated repository admission still rejects a selected Sandbox Driver", a
     id: "repository-admission-sandbox",
     capability: "sandbox",
     implementation: "test-sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async cleanup() {},
   };
@@ -1503,6 +1501,7 @@ test("Provisioning refuses repository bindings on a topology Agent create refuse
     id: "repository-provisioning-sandbox",
     capability: "sandbox",
     implementation: "test-sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async cleanup() {},
   };
@@ -1838,20 +1837,24 @@ test("Deploy refuses OpenShell Git when its Credential Proxy has no qualified se
 });
 
 test("Deploy names what installation-wide access needs from the OpenShell Proxy and its gateway", async (t) => {
-  // Finding 2536: without observedHookPreviewWorkspace the OpenShell Credential Proxy cannot
-  // enforce a github-installation binding, an Installation setting no retry changes; with it,
-  // the preview needs gateway 0.1.5, a gateway state an operator changes. Deploy answered both
-  // with a generic 503. Now the setting is a 409 before any gateway read, and the gateway state a
-  // 503 that names it. Neither creates a revision.
+  // Opt-in is an Installation setting (409); missing registration is gateway state (503).
+  // Neither refusal creates a revision or changes with the gateway release label.
   const installation = [{ repositoryRef: "installation", profile: "github-installation" }];
   for (const [label, options, status, code, message, reads] of [
-    ["no preview", {}, 409, "RESOURCE_CONFLICT", CREDENTIAL_PROXY_INSTALLATION_PREVIEW, 0],
     [
-      "preview on another gateway",
-      { preview: true, gatewayVersion: "0.1.6" },
+      "no preview",
+      { gatewayVersion: "0.1.6" },
+      409,
+      "RESOURCE_CONFLICT",
+      CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
+      0,
+    ],
+    [
+      "preview without registration",
+      { preview: true, gatewayVersion: "unknown", registered: false },
       503,
       "DEPENDENCY_UNAVAILABLE",
-      PREVIEW_GATEWAY_VERSION,
+      PROXY_REGISTRATION_UNAVAILABLE,
       1,
     ],
   ]) {

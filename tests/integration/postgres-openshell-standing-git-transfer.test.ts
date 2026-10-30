@@ -1,3 +1,4 @@
+import { repositorySetJourney } from "../helpers/postgres-repository-set-journey.ts";
 import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -871,4 +872,11 @@ test(
       await runtime.close();
     }
   },
+);
+
+// The same production worker/issuer and authenticated Gateway fixtures also cover finite selections.
+test(
+  "one deployed OpenShell Agent pushes A and B with one repository-scoped token and cannot push C",
+  { ...requiresPostgres, timeout: 90000 },
+  repositorySetJourney,
 );

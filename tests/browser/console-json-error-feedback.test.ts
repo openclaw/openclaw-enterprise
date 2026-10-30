@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Page } from "playwright";
 
@@ -7,12 +6,15 @@ import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import {
   detailUrl,
   fileBrowser,
+  focusedId,
   login,
   nativeValues,
   newPage,
+  shippedPreset,
 } from "./console-agents-browser-helpers.mjs";
 import {
   enterManualModel,
@@ -21,9 +23,7 @@ import {
 } from "./console-agents-test-support.mjs";
 import { SAVED_CONFIGURATION_CHANGED } from "../helpers/refusal-text.mjs";
 
-const defaultCodexPreset = JSON.parse(
-  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
-);
+const defaultCodexPreset = await shippedPreset("default-codex");
 
 // The Configuration editor's errors read as errors and its hints as hints, including after the
 // editor is rebuilt from a kept draft (finding 1940).
@@ -63,9 +63,7 @@ async function leaveAndReturn(page: Page) {
 }
 
 test("a refused or stale Configuration save is an error; editing again is a hint", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Configuration feedback", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Configuration feedback");
   const agent = await fixture.createAgent(namespace.id, "Feedback Agent", nativeValues("saved"));
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   const { page } = await newPage(t, fixture, { browser });
@@ -117,9 +115,7 @@ test("a refused or stale Configuration save is an error; editing again is a hint
 });
 
 test("an unknown Configuration save outcome stays an error when the editor is rebuilt", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Unknown feedback", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Unknown feedback");
   const agent = await fixture.createAgent(namespace.id, "Unknown Agent", nativeValues("saved"));
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   const { page } = await newPage(t, fixture, { browser });
@@ -152,9 +148,9 @@ test("an unknown Configuration save outcome stays an error when the editor is re
 });
 
 test("Create Agent: Reset template clears a JSON error; a primary or fallback model mismatch focuses the JSON", async (t) => {
-  const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Create JSON feedback", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Create JSON feedback", {
+    defaultPresets: [defaultCodexPreset],
+  });
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
@@ -184,7 +180,6 @@ test("Create Agent: Reset template clears a JSON error; a primary or fallback mo
   assert.equal(await jsonError.isHidden(), true);
   assert.equal(await json.getAttribute("aria-invalid"), null);
 
-  const focusedId = () => page.evaluate(() => globalThis.document.activeElement?.id);
   // The selected model under the OpenAI prefix, which Codex does not run: the primary-model
   // mismatch, the most common one (finding 1951).
   const values = JSON.parse(template);
@@ -200,7 +195,7 @@ test("Create Agent: Reset template clears a JSON error; a primary or fallback mo
       { exact: true },
     )
     .waitFor();
-  assert.equal(await focusedId(), "configuration-json");
+  assert.equal(await focusedId(page), "configuration-json");
 
   values.agents.defaults.model = {
     primary,
@@ -214,5 +209,5 @@ test("Create Agent: Reset template clears a JSON error; a primary or fallback mo
       { exact: true },
     )
     .waitFor();
-  assert.equal(await focusedId(), "configuration-json");
+  assert.equal(await focusedId(page), "configuration-json");
 });

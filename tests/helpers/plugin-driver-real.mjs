@@ -14,6 +14,11 @@ import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import {
+  createEnvoyWorkspaceGatewayPlan,
+  ensureEnvoyGatewayControllers,
+  startWorkspaceGatewayHostRelay,
+} from "./envoy-workspace-gateway.mjs";
+import {
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
   kubernetesHash as hash,
@@ -155,11 +160,19 @@ function installationAdministratorServicePrincipal(iamState) {
   return principal;
 }
 
-function createAgentPluginApi({ request, namespaceId }) {
+function createAgentPluginApi({ request, namespaceId, gatewayAuth }) {
   async function createAgent({ harnessId, executionMode, name, harnessAuth, backendId }) {
+    const values = nativeConfiguration(harnessId);
+    if (gatewayAuth !== undefined) {
+      values.gateway = {
+        ...values.gateway,
+        ...gatewayAuth,
+        auth: { ...gatewayAuth.auth, password: values.gateway.auth.password },
+      };
+    }
     const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
       kind: "agent",
-      values: nativeConfiguration(harnessId),
+      values,
     });
     assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
     const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
@@ -240,6 +253,7 @@ function installationConfiguration({
   pluginDriverId,
   pluginDriverConfiguration,
   codexServiceAccountImport,
+  workspaceGateway,
 }) {
   const configuration = createKubernetesInstallationConfiguration({
     authentication,
@@ -258,6 +272,12 @@ function installationConfiguration({
   configuration.drivers.configuration.id = "configuration-kubernetes-plugin-real";
   configuration.drivers.compute.id = "compute-kubernetes-plugin-real";
   configuration.drivers.plugin = { id: pluginDriverId, configuration: pluginDriverConfiguration };
+  if (workspaceGateway !== undefined) {
+    configuration.drivers.compute.configuration.gatewayRouting = workspaceGateway.routing;
+    configuration.drivers.compute.configuration.network.gatewayTrustedProxyCidrs =
+      workspaceGateway.nativeOptions.gatewayAuth.trustedProxies;
+    delete configuration.drivers.compute.configuration.network.gatewayClients;
+  }
   configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
     pluginProofPluginStatusProxyCidrs();
   if (codexServiceAccountImport !== undefined) {
@@ -438,6 +458,15 @@ function sanitizedPluginProofWorkerEvents(events, revisionId) {
       revisionId: event.revisionId,
       outcome: event.outcome,
       code: event.code,
+      step: event.step,
+      status: event.status,
+      errorClass: event.errorClass,
+      dependency: event.dependency,
+      cause: event.cause,
+      reason: event.reason,
+      method: event.method,
+      grpcStatus: event.grpcStatus,
+      validationCategory: event.validationCategory,
     }));
 }
 
@@ -2236,6 +2265,8 @@ export async function createPluginDriverRealFixture(
     validatePrerequisites,
     provisionAgentTransportSecret,
     startPortForward,
+    startPortForwardTarget,
+    applyManifest,
   } = createRealKubernetesFixture({
     kubeconfigPath,
     kubernetesContext,
@@ -2342,6 +2373,30 @@ export async function createPluginDriverRealFixture(
   });
 
   await kubectl("create", "namespace", platformNamespace);
+  // Dedicated Agents use the production routed endpoint. The fixture owns the
+  // real Envoy resources; Compute creates each Agent's route during deployment.
+  let workspaceGateway;
+  if (pluginDriverId === "codex-plugin") {
+    const helpers = {
+      kubectl,
+      resource,
+      resources,
+      waitFor,
+      startPortForwardTarget,
+      applyManifest,
+    };
+    await ensureEnvoyGatewayControllers(helpers);
+    workspaceGateway = await createEnvoyWorkspaceGatewayPlan(
+      context,
+      { platformNamespace },
+      helpers,
+    );
+    workspaceGateway.routing.endpointPort = await startWorkspaceGatewayHostRelay(
+      context,
+      workspaceGateway,
+      { ...helpers, gatewayImage },
+    );
+  }
   await kubectl(
     "create",
     "clusterrole",
@@ -2354,7 +2409,7 @@ export async function createPluginDriverRealFixture(
     "clusterrole",
     `${proofPrefix}-tenant-${suffix}`,
     "--verb=create,get,list,patch,update,delete",
-    "--resource=deployments.apps,services,serviceaccounts,configmaps,endpointslices.discovery.k8s.io,networkpolicies.networking.k8s.io,resourcequotas,limitranges,persistentvolumeclaims",
+    "--resource=deployments.apps,services,serviceaccounts,configmaps,endpointslices.discovery.k8s.io,networkpolicies.networking.k8s.io,resourcequotas,limitranges,persistentvolumeclaims,jobs.batch,httproutes.gateway.networking.k8s.io,securitypolicies.gateway.envoyproxy.io",
   );
   await kubectl(
     "create",
@@ -2413,6 +2468,7 @@ export async function createPluginDriverRealFixture(
           pluginDriverId,
           pluginDriverConfiguration,
           codexServiceAccountImport,
+          workspaceGateway,
         }),
       ),
       { mode: 0o600 },
@@ -2428,11 +2484,20 @@ export async function createPluginDriverRealFixture(
           pluginDriverId,
           pluginDriverConfiguration,
           codexServiceAccountImport,
+          workspaceGateway,
         }),
       ),
       { mode: 0o600 },
     ),
   ]);
+
+  const driverEnvironment = {};
+  if (workspaceGateway !== undefined) {
+    const keyPath = join(directory, "gateway-api-key");
+    await writeFile(keyPath, workspaceGateway.apiKey, { mode: 0o600 });
+    driverEnvironment.OCC_GATEWAY_API_KEY_PATH = keyPath;
+    driverEnvironment.OCC_GATEWAY_CA_PATH = process.env.OCC_TEST_GATEWAY_CA_CERT_PATH;
+  }
 
   const [
     { PostgresPlatformState },
@@ -2453,11 +2518,11 @@ export async function createPluginDriverRealFixture(
   const [apiDrivers, workerDrivers] = await Promise.all([
     loadInstallationConfiguration({
       mode: "production",
-      environment: { OCC_CONFIG_PATH: apiConfigurationPath },
+      environment: { ...driverEnvironment, OCC_CONFIG_PATH: apiConfigurationPath },
     }),
     loadInstallationConfiguration({
       mode: "production",
-      environment: { OCC_CONFIG_PATH: workerConfigurationPath },
+      environment: { ...driverEnvironment, OCC_CONFIG_PATH: workerConfigurationPath },
     }),
   ]);
   assert.equal(apiDrivers.pluginDriver?.id, pluginDriverId);
@@ -2604,7 +2669,11 @@ export async function createPluginDriverRealFixture(
     return observed.data.status === "ready" ? observed.data : undefined;
   });
 
-  const agentApi = createAgentPluginApi({ request, namespaceId: createdNamespace.data.id });
+  const agentApi = createAgentPluginApi({
+    request,
+    namespaceId: createdNamespace.data.id,
+    gatewayAuth: workspaceGateway?.nativeOptions.gatewayAuth,
+  });
 
   async function createCodexServiceAccountFromToken({ accessToken, name }) {
     assert.ok(
@@ -2745,6 +2814,40 @@ export async function createPluginDriverRealFixture(
         };
       }),
       workerEvents: sanitizedPluginProofWorkerEvents(workerEvents, revisionId),
+      runtime: await safeDiagnostic(async () => {
+        const pods = (await resources("pods", gatewayPlacement)).filter(
+          (pod) => pod.metadata.labels?.["openclaw.dev/agent"] === agent.id,
+        );
+        const privateDiagnostics = await mkdtemp(join(tmpdir(), "occ-plugin-proof-failure-"));
+        // Keep raw native logs private and outside the fixture directory that cleanup removes.
+        for (const pod of pods) {
+          try {
+            const logs = await kubectl(
+              "logs",
+              pod.metadata.name,
+              "--namespace",
+              gatewayPlacement,
+              "--all-containers=true",
+              "--tail=200",
+            );
+            await writeFile(join(privateDiagnostics, `${pod.metadata.name}.log`), logs, {
+              mode: 0o600,
+            });
+          } catch {
+            // Preserve the deployment failure when a removed Pod has no logs.
+          }
+        }
+        return {
+          privateDiagnostics,
+          pods: pods.map((pod) => ({
+            name: pod.metadata.name,
+            revisionId: pod.metadata.labels?.["openclaw.dev/revision"],
+            role: pod.metadata.labels?.["openclaw.dev/workload-role"],
+            phase: pod.status?.phase,
+            ready: isPodReady(pod),
+          })),
+        };
+      }),
     };
   }
 

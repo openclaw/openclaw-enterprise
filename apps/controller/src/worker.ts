@@ -6,6 +6,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
+import { closeResources } from "./composition/close-resources.ts";
 import { installationDriverConfigurations } from "./composition/installation-config.ts";
 import {
   DriverConfigurationRegistry,
@@ -13,7 +14,11 @@ import {
 } from "@openclaw-enterprise/occ";
 import { reconcileSandboxPolicy, failAbandonedSandboxPolicies } from "./worker/sandbox-policy.ts";
 import { timerDelayMs } from "./worker/timer-settings.ts";
-import { isSecretHarnessAuth, isServiceAccountHarnessAuth } from "@openclaw-enterprise/contracts";
+import {
+  isSecretHarnessAuth,
+  isServiceAccountHarnessAuth,
+  protectedRepositoryGitAdmission,
+} from "@openclaw-enterprise/contracts";
 import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -84,6 +89,7 @@ import {
   TransientDependencyError,
   WorkClaimLostError,
   CREDENTIAL_WITHDRAWAL_TARGET,
+  controllerWorkDeploymentStatus,
   credentialWithdrawalCompanionRevisions,
   isCredentialWithdrawalWork,
   isRepositoryCleanupWork,
@@ -115,8 +121,11 @@ import {
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
+import type { PreparedRepositoryGitMaterialState } from "./drivers/repo/github/credentials/prepared-repository-git.ts";
 import {
   ComputeStopYieldedError,
+  captureNamespaceEnsureHint,
+  type NamespaceEnsureHintCode,
   withComputeAbortSignal,
   withComputeWorkWaiting,
   withYieldingComputeStop,
@@ -177,6 +186,13 @@ export interface ControllerWorkerOptions {
    * a wedged worker from one waiting out a database outage (each pass then fails fast).
    */
   readonly onProgress?: () => Promise<void>;
+  /**
+   * Native prepared Git only: whether each open repository session of a revision holds a
+   * committed GitHub token. The worker's own prepared owner supplies it, never a Driver.
+   */
+  readonly repositoryGitMaterial?: (
+    revisionId: string,
+  ) => Promise<PreparedRepositoryGitMaterialState>;
 }
 
 type Observation = NamespaceEnsureResult | NamespaceDeleteResult;
@@ -208,6 +224,13 @@ const REVISION_READINESS_CODES: ReadonlySet<string> = new Set([
   "REPOSITORY_GIT_MATERIAL_PENDING",
   "WORKSPACE_NODE_RECONNECT_PENDING",
   ...Object.values(REVISION_PENDING_CODES),
+]);
+
+// A failed deployment whose version continueRevisionWithoutGit kept running (owner decision
+// 2026-10-28): its maintenance chain continues. Every other failed deployment ends it.
+const REVISION_KEPT_WITHOUT_GIT_CODES: ReadonlySet<string> = new Set([
+  "REPOSITORY_GIT_TOKEN_QUARANTINED",
+  "REPOSITORY_GIT_TOKEN_PENDING",
 ]);
 
 // A candidate revision's own deployment work: the only work that observes its OAuth bootstrap.
@@ -521,6 +544,7 @@ interface DispatchResult {
   readonly outcome: Outcome;
   readonly code: string;
   readonly observation?: Observation;
+  readonly hintCode?: NamespaceEnsureHintCode;
   readonly decision?: AuthorizationDecision;
   readonly authorization?: AuthorizationRequest;
 }
@@ -1172,10 +1196,12 @@ export class ControllerWorker {
   private readonly emit: (event: Readonly<Record<string, unknown>>) => void;
   private readonly onHealthy: (() => Promise<void>) | undefined;
   private readonly onProgress: (() => Promise<void>) | undefined;
+  private readonly repositoryGitMaterial: ControllerWorkerOptions["repositoryGitMaterial"];
   private readonly abort = new AbortController();
   private installation: Readonly<Installation> | undefined;
   private loop: Promise<void> | undefined;
   private stopping = false;
+  private closing = false;
   private lastHealthAt = 0;
   private pendingHealth: Promise<void> | undefined;
   private lastProgressAt = 0;
@@ -1330,6 +1356,7 @@ export class ControllerWorker {
       });
     this.onHealthy = options.onHealthy;
     this.onProgress = options.onProgress;
+    this.repositoryGitMaterial = options.repositoryGitMaterial;
     this.repositoryPolicy = drivers?.repositoryPolicy;
     this.nativeRepositorySender = drivers?.nativeRepositorySender;
     this.repositoryCleanupRetryMs = positiveInteger(
@@ -1439,15 +1466,29 @@ export class ControllerWorker {
     this.loop = this.run();
   }
 
+  /**
+   * Stop claiming work and running health checks. Resolves once the pass and the health check
+   * in flight end, so shutdown closes the worker's other parts only after the loop that uses
+   * them (finding 2997). The database pool stays open until `stop()`.
+   */
+  async stopLoop(): Promise<void> {
+    if (!this.stopping) {
+      this.stopping = true;
+      this.abort.abort();
+    }
+    await this.loop;
+    // A claim's heartbeat starts health checks that the loop does not await.
+    await this.pendingHealth;
+  }
+
   async stop(): Promise<void> {
-    if (this.stopping) {
+    if (this.closing) {
       return;
     }
-    this.stopping = true;
-    this.abort.abort();
-    await this.loop;
-    await this.protectedDriver?.close();
-    await this.state.close();
+    this.closing = true;
+    await this.stopLoop();
+    // A failed protected Driver close must not leave the database pool open.
+    await closeResources(this.protectedDriver, this.state);
     this.emit({ event: "worker.stopped" });
   }
 
@@ -1591,6 +1632,10 @@ export class ControllerWorker {
   }
 
   private async health(force: boolean): Promise<void> {
+    // A stopping worker starts no check, so none rewrites readiness after its removal.
+    if (this.stopping) {
+      return;
+    }
     if (this.pendingHealth !== undefined) {
       return this.pendingHealth;
     }
@@ -3646,6 +3691,47 @@ export class ControllerWorker {
     this.emit({ event: "worker.harness-exposure-withdrawn", ...fields });
   }
 
+  /** Whether this deployment waits for its native version's first GitHub token (finding 2415). */
+  private gatesRepositoryGitMaterial(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): boolean {
+    return (
+      this.repositoryGitMaterial !== undefined &&
+      revision.repositoryCredentials !== undefined &&
+      !protectedRepositoryGitAdmission(revision.executionAdmission) &&
+      isCandidateDeployment(claim)
+    );
+  }
+
+  /**
+   * Native prepared Git issues a version's first GitHub token only after its active pointer is
+   * published, so a ready runtime alone would report success before GitHub answered. Hold the
+   * deployment until the token commits, and fail it when GitHub's answer quarantined the
+   * preparation: no later pass prepares that version again (finding 2415). finalizeRevision then
+   * keeps an existing Agent's version running (continueRevisionWithoutGit). Maintenance of a
+   * running version is unchanged; its renewal failures stay in the worker log.
+   */
+  private async assertRepositoryGitMaterial(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<void> {
+    const material = this.repositoryGitMaterial;
+    if (material === undefined || !this.gatesRepositoryGitMaterial(claim, revision)) {
+      return;
+    }
+    const state = await this.withClaimHeartbeat(claim, () => material(revision.id));
+    if (state === "quarantined") {
+      throw new RepositoryCredentialAuthorityError("REPOSITORY_GIT_TOKEN_QUARANTINED");
+    }
+    if (state !== "ready") {
+      throw new ActivationPendingError(
+        "REPOSITORY_GIT_MATERIAL_PENDING",
+        "The exact AgentRevision's first repository Git token is not committed.",
+      );
+    }
+  }
+
   /**
    * A candidate that failed for good keeps its Sandbox for diagnosis, and with it the exposure
    * Compute's status read used, which nothing reads any more and which the Gateway's node
@@ -4256,7 +4342,10 @@ export class ControllerWorker {
           return;
         }
         if (
-          original.state === "failed_permanent" ||
+          (original.state === "failed_permanent" &&
+            // An existing Agent's version kept running without Git (continueRevisionWithoutGit)
+            // is maintained: that failure queued this chain while the version was active.
+            !REVISION_KEPT_WITHOUT_GIT_CODES.has(original.reasonCode ?? "")) ||
           original.reasonCode === "REVISION_SUPERSEDED"
         ) {
           // Maintenance must never prepare or reactivate a terminally failed deployment.
@@ -4544,6 +4633,7 @@ export class ControllerWorker {
               this.stagedRevision("activateRevision", revision, context),
             );
           }
+          await this.assertRepositoryGitMaterial(claim, revision);
           await this.retireEarlierRevisions(claim, revision);
         } catch (error) {
           // A yielded predecessor stop ends the pass pending below, like a candidate's.
@@ -5147,10 +5237,13 @@ export class ControllerWorker {
       );
       // v6 needs its current active pointer to select credential material. Commit that pointer
       // only for the observed, still-held launcher; the ordinary active pass must later see
-      // the real Harness serving before it completes activation. No v4/v5 admission uses this.
+      // the real Harness serving before it completes activation. Mandatory online Git uses
+      // the same held challenge before releasing credentials.
       const held =
-        revision.executionAdmission.version === 6 &&
-        revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed" &&
+        ((revision.executionAdmission.version === 6 &&
+          revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed") ||
+          (revision.executionAdmission.version === 5 &&
+            revision.egressPlan?.repositoryGitAuthorization === "online-request")) &&
         this.compute.activationOrder !== "beforeCommit" &&
         !observation.ready &&
         observation.heldForRepositoryGitMaterial === true &&
@@ -5681,10 +5774,11 @@ export class ControllerWorker {
           }
         }
       }
-      const observation =
+      const observed =
         claim.namespaceTarget === "ready"
-          ? await this.compute.ensureNamespace(namespace)
-          : await this.compute.deleteNamespace(namespace);
+          ? await captureNamespaceEnsureHint(() => this.compute.ensureNamespace(namespace))
+          : { observation: await this.compute.deleteNamespace(namespace) };
+      const { observation } = observed;
       if (!validObservation(observation, namespace.id, claim.namespaceTarget ?? "ready")) {
         return { outcome: "permanent", code: "INVALID_DRIVER_OBSERVATION" };
       }
@@ -5703,7 +5797,7 @@ export class ControllerWorker {
       return {
         outcome,
         code: complete ? "NAMESPACE_RECONCILED" : "NAMESPACE_INCOMPLETE",
-        observation,
+        ...observed,
       };
     });
   }
@@ -5827,6 +5921,34 @@ export class ControllerWorker {
       (await this.continueExhaustedActiveRevision(claim, resolved.code, failureLogFields))
     ) {
       return;
+    }
+    if (
+      resolved.code === "REPOSITORY_GIT_TOKEN_QUARANTINED" &&
+      isCandidateDeployment(claim) &&
+      (await this.continueRevisionWithoutGit(claim, resolved.code, failureLogFields))
+    ) {
+      return;
+    }
+    if (
+      resolved.code === "CONVERGENCE_DEADLINE_EXCEEDED" &&
+      result.code === "REPOSITORY_GIT_MATERIAL_PENDING" &&
+      isCandidateDeployment(claim)
+    ) {
+      // Finding 2894: the deployment still waits for its version's first Git token (no attempt
+      // finished: an unreadable App key, a worker restart mid-request). An existing Agent keeps
+      // this version, as for a quarantined token. Compute's Sandbox install shares the wait
+      // code, so the token state decides; a read failure keeps the deadline failure.
+      const token = await this.repositoryGitMaterial?.(claim.revisionId!).catch(() => undefined);
+      if (
+        (token === "pending" || token === "quarantined") &&
+        (await this.continueRevisionWithoutGit(
+          claim,
+          token === "pending" ? "REPOSITORY_GIT_TOKEN_PENDING" : "REPOSITORY_GIT_TOKEN_QUARANTINED",
+          failureLogFields,
+        ))
+      ) {
+        return;
+      }
     }
     // OCC refused this candidate (its authority, credentials or configuration), so its runtime
     // must not keep serving. A runtime that failed by itself (a held startup failure, the
@@ -6035,6 +6157,7 @@ export class ControllerWorker {
             this.stagedRevision("activateRevision", activated!, resolved.context),
           );
         }
+        await this.assertRepositoryGitMaterial(claim, activated);
         await this.retireEarlierRevisions(claim, activated);
       } catch (error) {
         if (error instanceof WorkClaimLostError) {
@@ -6597,7 +6720,8 @@ export class ControllerWorker {
   // deadline, and the next pass re-checks authority before any new material.
   // The same holds for a deployment that already published the active pointer
   // (for example one recovered after its lease expired): its last retry fails
-  // the deployment without retiring the runtime it activated.
+  // the deployment without retiring the runtime it activated, unless it is a new
+  // Agent's native version without its first Git token (finding 2425).
   private async continueExhaustedActiveRevision(
     claim: ClaimedWork,
     code: string,
@@ -6617,35 +6741,32 @@ export class ControllerWorker {
     if (!maintenance && claim.idempotencyKey !== `agent_revision:${revisionId}:reconcile`) {
       return false;
     }
+    // Read outside the locks; an unreadable state counts as no token.
+    const material = this.repositoryGitMaterial;
+    const gitReady =
+      maintenance ||
+      material === undefined ||
+      (await material(revisionId).then(
+        (state) => state === "ready",
+        () => false,
+      ));
     let continued = false;
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
-      const agent = await this.lockClaimAgent(unit, claim);
-      if (agent?.activeRevisionId !== revisionId || agent.desiredRuntimeState !== "running") {
-        return;
-      }
-      const namespace = await unit.namespaces.findNamespace(claim.namespaceId);
-      const revision = await unit.revisions.findRevision(
-        claim.namespaceId,
-        claim.agentId!,
-        revisionId,
-      );
+      const continuing = await this.lockContinuingRevision(unit, queue, claim);
       if (
-        namespace?.status !== "ready" ||
-        revision === undefined ||
-        revision.servicePrincipalId !== agent.servicePrincipalId ||
-        (maintenance && this.revisionMaintenanceInterval(revision) === undefined) ||
-        (revision.repositoryCredentials !== undefined &&
-          revision.repositoryCredentials.standingApprovalId === undefined &&
-          Date.now() >= revision.repositoryCredentials.deadlineWallMs)
+        continuing === undefined ||
+        (maintenance && this.revisionMaintenanceInterval(continuing.revision) === undefined) ||
+        // Owner decision 2026-10-28: a new Agent with no Git access fails; only an existing
+        // Agent keeps a version that has none.
+        (!gitReady &&
+          this.gatesRepositoryGitMaterial(claim, continuing.revision) &&
+          !(await this.activatedEarlierRevision(unit, queue, continuing.revision)))
       ) {
         return;
       }
       await queue.fail(claim, { code }, { continuingRevision: true });
       if (maintenance) {
-        await this.enqueueMaintenance(queue, claim, revision);
+        await this.enqueueMaintenance(queue, claim, continuing.revision);
       }
       continued = true;
     }, this.queueOptions);
@@ -6667,6 +6788,128 @@ export class ControllerWorker {
       ...this.deployTimingFields(claim),
     });
     return true;
+  }
+
+  /**
+   * The claim's revision, under Namespace then Agent locks, if it may keep running after its
+   * work fails: the running Agent's active revision, of the Agent's service principal, in a
+   * ready Namespace and within its repository deadline. The queue's continuation repeats these
+   * checks on the database clock.
+   */
+  private async lockContinuingRevision(
+    unit: PlatformUnitOfWork,
+    queue: Pick<PostgresWorkQueue, keyof PostgresWorkQueue>,
+    claim: ClaimedWork,
+  ): Promise<
+    { readonly agent: Readonly<Agent>; readonly revision: Readonly<AgentRevision> } | undefined
+  > {
+    if ((await queue.heartbeat(claim)) === undefined) {
+      throw new WorkClaimLostError();
+    }
+    const agent = await this.lockClaimAgent(unit, claim);
+    if (
+      agent === undefined ||
+      agent.activeRevisionId !== claim.revisionId ||
+      agent.desiredRuntimeState !== "running"
+    ) {
+      return undefined;
+    }
+    const namespace = await unit.namespaces.findNamespace(claim.namespaceId);
+    const revision = await unit.revisions.findRevision(
+      claim.namespaceId,
+      claim.agentId!,
+      claim.revisionId!,
+    );
+    if (
+      namespace?.status !== "ready" ||
+      revision === undefined ||
+      revision.servicePrincipalId !== agent.servicePrincipalId ||
+      (revision.repositoryCredentials !== undefined &&
+        revision.repositoryCredentials.standingApprovalId === undefined &&
+        Date.now() >= revision.repositoryCredentials.deadlineWallMs)
+    ) {
+      return undefined;
+    }
+    return { agent, revision };
+  }
+
+  /**
+   * Owner decision 2026-10-28 (finding 2425): a native deployment whose first repository Git
+   * token GitHub's answer quarantined fails. A new Agent's version is then retired like any
+   * failed repository version. An existing Agent keeps this version running without Git, so it
+   * can still chat and report the problem: the earlier version stopped serving when this one
+   * was published, and no Driver can bring it back. A quarantined version is never prepared
+   * again, so it cannot regain Git unsupervised. Fails the deployment and starts this version's
+   * maintenance chain in one transaction, under Namespace then Agent locks. Returns false when
+   * the Agent has no earlier activated version or no longer runs this one; the caller then
+   * fails it for good. A token still pending at the convergence deadline is continued the same
+   * way (REPOSITORY_GIT_TOKEN_PENDING, finding 2894): if it commits later, it gives Git to a
+   * version that is authorized and maintained.
+   */
+  private async continueRevisionWithoutGit(
+    claim: ClaimedWork,
+    code: string,
+    failureLogFields?: Readonly<Record<string, string | number>>,
+  ): Promise<boolean> {
+    if (claim.agentId === undefined || claim.revisionId === undefined) {
+      return false;
+    }
+    let continued = false;
+    await this.state.transactWithQueue(async (unit, queue) => {
+      const continuing = await this.lockContinuingRevision(unit, queue, claim);
+      if (
+        continuing === undefined ||
+        !this.gatesRepositoryGitMaterial(claim, continuing.revision) ||
+        this.revisionMaintenanceInterval(continuing.revision) === undefined ||
+        !(await this.activatedEarlierRevision(unit, queue, continuing.revision))
+      ) {
+        return;
+      }
+      await queue.fail(claim, { code }, { continuingRevision: true });
+      await this.enqueueMaintenance(queue, claim, continuing.revision);
+      continued = true;
+    }, this.queueOptions);
+    if (!continued) {
+      return false;
+    }
+    this.passOutcome = "permanent";
+    this.emit({
+      event: "worker.completed",
+      ...workLogFields(claim),
+      namespaceId: claim.namespaceId,
+      agentId: claim.agentId,
+      revisionId: claim.revisionId,
+      result: "permanent",
+      outcome: "permanent",
+      code,
+      ...failureLogFields,
+      ...this.deployTimingFields(claim),
+    });
+    return true;
+  }
+
+  /**
+   * Whether an earlier version of this Agent was activated by its own deployment. A stopped or
+   * superseded deployment completes without activation and does not count
+   * (controllerWorkDeploymentStatus). Revisions belong to one Agent, whose service principal
+   * never changes. Newest first; a fail path, so the linear scan is bounded by the Agent's
+   * revision history.
+   */
+  private async activatedEarlierRevision(
+    unit: PlatformUnitOfWork,
+    queue: Pick<PostgresWorkQueue, keyof PostgresWorkQueue>,
+    revision: Readonly<AgentRevision>,
+  ): Promise<boolean> {
+    const earlier = (
+      await unit.revisions.listRevisionMetadata(revision.namespaceId, revision.agentId)
+    ).filter((candidate) => candidate.revision < revision.revision);
+    for (const listed of earlier.reverse()) {
+      const deployment = await queue.findWork(`agent_revision:${listed.id}:reconcile`);
+      if (deployment !== undefined && controllerWorkDeploymentStatus(deployment) === "succeeded") {
+        return true;
+      }
+    }
+    return false;
   }
 
   // Lock the claim's Agent in admission order: Namespace, then Agent. These
@@ -6925,6 +7168,7 @@ export class ControllerWorker {
       outcome: resolved.outcome,
       code: resolved.code,
       ...(reason === undefined ? {} : { reason }),
+      ...(resolved.hintCode === undefined ? {} : { hintCode: resolved.hintCode }),
     });
   }
 

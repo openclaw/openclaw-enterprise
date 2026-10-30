@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import {
   assertWriteAuthorizationDenial,
@@ -32,9 +32,9 @@ const driverAccepts = async (values) => {
 };
 
 async function createFixture(t) {
-  const fixture = await createConsoleAppFixture(t, { providers: [] });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Configuration body limits", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Configuration body limits", {
+    providers: [],
+  });
   return { ...fixture, namespace };
 }
 
