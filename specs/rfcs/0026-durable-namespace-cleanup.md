@@ -91,8 +91,41 @@ Driver ID and implementation; the Driver cannot select another scope. The
 provider response text. Core does not interpret provider names or phases.
 Compute versions and validates its payload, including any selected Sandbox
 Driver ID/implementation and a restricted child payload. Sandbox Namespace
-preparation and cleanup receive that child checkpoint context. Revision cleanup
+preparation and cleanup receive that child checkpoint context and the original
+`kubernetesNamespaceUid` saved by Compute, before child placement effects. Revision cleanup
 keeps its revision-scoped context and existing completion requirement.
+
+### Namespace cleanup result and parent resource sweep
+
+Namespace-only `Sandbox.cleanup` must also return `SandboxNamespaceCleanupResult`.
+Revision cleanup keeps its existing void result. The Namespace result contains
+`kubernetesResources`, an array of references with `apiVersion`, `kind`, physical
+`namespace`, and `name`, plus one of:
+
+- `state: "absent"`: the child confirms that reference is absent, including a
+  proven never-attempted stage. A later object at that reference is refused,
+  regardless of labels or UID; the parent never adopts it as an orphan.
+- `state: "retained", uid`: the original operator-owned object is intentionally
+  retained. A currently present object must have that saved UID and satisfy
+  current ownership checks. Only that original is excluded from parent deletion.
+  A present replacement is refused. Authorized absence means nothing remains to
+  retain; it does not imply the child or parent deleted it.
+
+Compute validates exact Namespace scope, supported Kubernetes reference shape,
+nonempty kind/name/API version, and duplicate/conflicting references. An absent
+or invalid Namespace result refuses completion. Compute saves the validated
+result in its Namespace-bound journal before any parent orphan sweep or Gateway
+teardown. It can reconstruct a lost result from the child's durable inventory;
+process memory and terminal work results do not establish authority. On an
+unknown checkpoint acknowledgment, read the durable result before further effects.
+
+The parent checks these references during each sweep and retry. It refuses an
+absent reference that reappears and a retained reference whose current UID differs,
+including replacements appearing after child cleanup. Ordinary orphan cleanup
+continues for other exactly owned resources. Do not parse provider-specific child
+schemas or annotations in Compute or core to coordinate these ownership sets.
+The result is bound to the same lifecycle, selected Drivers, and physical placement;
+it cannot authorize another Namespace or later owner.
 
 The checkpoint returns only after its State transaction commits. Returning
 `namespaceDeleted: false`, updating process memory, or returning a payload in a
@@ -121,6 +154,9 @@ saved immutable identity. Deletion while provisioning or failed resumes these
 stage records, including cancellation before the first ensure claim. An in-flight
 creation during cancellation remains attempted, not never-attempted; no later
 creation step starts after deletion is observed.
+A first authoritative refusal can record a distinct confirmed-no-create outcome
+when the provider guarantees no effect. A refusal of a later request cannot settle
+an earlier unknown creation or deletion.
 
 Drivers record exact effect selectors and immutable resource identities:
 cluster endpoint and trust selection, control/execution plane, Kubernetes
@@ -183,6 +219,14 @@ For an external Namespace with missing OCC claim labels, use neither its name as
 authority nor unconditional configured-resource deletes. Refuse an observable
 foreign/reassigned incarnation. Only saved owned identities and confirmed
 removal can complete cleanup; unresolved ownership stays incomplete.
+
+SSH records the selected endpoint/root, normalized selected public file-key trust,
+and the helper's generation receipt and original filesystem identity under its
+existing host lock. Normal trusted profiles, proxies, global files and HostKeyAlias
+remain supported. Active KnownHostsCommand or VerifyHostKeyDNS trust is refused
+before mutation because it cannot be represented by a stable selected-file policy.
+The fingerprint records trust policy, not a frozen atomic connection or peer beyond
+ordinary SSH verification and the remote generation receipt.
 
 ## Claims, transactions, and uncertain outcomes
 

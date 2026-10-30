@@ -5,7 +5,7 @@ rfc: ../rfcs/0026-durable-namespace-cleanup.md
 # Implementation plan: durable Namespace cleanup
 
 - **ID:** RFC-0026
-- **Delivery status:** Planned
+- **Delivery status:** In progress
 - **Owner:** @russellb
 - **Authority:** [RFC-0026](../rfcs/0026-durable-namespace-cleanup.md)
 - **Source baseline:** PR #4088 at `bfef7f0d5f8091390d5ec8296d0be4cd5bb5faaa` and main `330073017`.
@@ -24,7 +24,8 @@ is included.
 - `packages/contracts/src/drivers/compute/index.ts`: required Namespace lifecycle
   context and checkpoint types; export public types through the top-level index.
 - `packages/contracts/src/drivers/sandbox/index.ts`: restricted Namespace-only
-  child context for preparation/cleanup; retain revision cleanup semantics.
+  child context for preparation/cleanup and required generic Namespace cleanup
+  result; retain revision cleanup semantics.
 - `packages/occ/src/state/{platform-state,postgres-state,postgres-schema}.ts` and
   the existing schema/migration owner: Namespace lifecycle repository, constraints,
   revision CAS, and in-memory adapter invariants.
@@ -38,6 +39,11 @@ is included.
   to the same contract without provider-specific core behavior.
 
 ## Ordered implementation
+
+The initial submission remains recorded below. Submit the generic cleanup-result
+amendment for human review in a documentation-only commit before implementing its
+contract. Record its SHA and review comment after publication; keep the PR draft
+and all security/runtime holds until the amended behavior is proved.
 
 1. Submit RFC-0026 and this plan in an initial documentation-only commit on
    PR #4088. Record submission SHA and explicit human-review comment URL below.
@@ -66,6 +72,11 @@ is included.
    Namespaces and release only their exact OCC claim with an atomic release witness
    and UID/resourceVersion preconditions. Test lost release replies and committed
    release retries. Keep preprovisioned automatic-teardown refusal unchanged.
+   Require a validated generic Sandbox cleanup result before the parent sweep:
+   confirmed-absent references refuse any reappearance; intentionally retained
+   original references exclude only their saved UID. Persist these Namespace-bound
+   facts before parent effects and test replacement after child cleanup, not only
+   while its tail is pending. Do not inspect a provider's private child schema.
 6. Extend the existing real OpenShell development installation case using an
    owned disposable cluster, private kubeconfig, isolated database, and official
    provider. Build this worktree's CLI. Test missing Namespace and foreign or
@@ -106,8 +117,8 @@ created, and no live result is claimed.
 
 ## Delivery record
 
-- Draft: RFC/plan only. Submission and implementation have not occurred.
-- RFC submission SHA and human-review comment URL: pending publication.
+- RFC submitted for review before new Driver-contract code; implementation is starting.
+- RFC submission: documentation-only commit `536e71d95bf39797f2b60048cb3677e879ed046b`; [explicit human-review request](https://github.com/openclaw/openclaw-enterprise/pull/4088#issuecomment-6523250103). Decision status remains Proposed.
 - Implementation PR: [#4088](https://github.com/openclaw/openclaw-enterprise/pull/4088), draft with existing proof/security holds.
 
 ## Manual Notes
