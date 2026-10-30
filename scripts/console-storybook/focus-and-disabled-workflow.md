@@ -91,9 +91,8 @@ follows `:focus-visible`. No part of any ring may be cut off.
    see above", and its icons stay reachable, described by the alert, until
    Refresh (**Pages / Agents / Delete from the list refused for another
    reason**, findings 2958, D812). On **Pages / Agents / Refocus after
-   another person starts deletion**, focus Stop, switch windows and return:
-   the rebuilt row reads Deleting, its Stop is disabled, and focus is on the
-   Agent's name (finding 2967).
+   another person's stop**, focus Stop, switch windows and return: the
+   rebuilt row has no Stop, and focus is on the Agent's name (finding 2967).
    So do Previous instance before a restart (**Pages / Agent
    detail / Runtime status after a healthy first deploy**), described by its
    note (finding 2944), and Execution mode with the Codex harness (**Pages /

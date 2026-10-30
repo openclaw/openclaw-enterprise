@@ -1507,10 +1507,11 @@ export function installFixture(scenario, evidence) {
       }
       if (resource === "agents") {
         if (method === "GET") {
-          // Another person starts deleting the Agents after the list's first read.
-          if (scenario.deletingOnListReread && ++agentListReadCount > 1) {
+          // Another person's stop completes after the list's first read: no version is selected.
+          if (scenario.stoppedOnListReread && ++agentListReadCount > 1) {
             for (const listed of agents.values()) {
-              listed.status = "deleting";
+              listed.desiredRuntimeState = "stopped";
+              listed.activeRevisionId = null;
             }
           }
           return response([...agents.values()]);

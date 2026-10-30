@@ -1122,9 +1122,10 @@ function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
 // gives it to the same control in the remounted shell, unless that control is gone or disabled
 // (finding 1662). A recheck that rebuilds the page instead gives focus to the control that
 // carries the same data-refocus-key, such as an Agents list row's name or icon (finding D814).
-// When that control is gone or natively disabled, such as Stop on a row that now reads Deleting,
-// focus goes to the control its data-refocus-fallback names (the row's name), and when the row
-// is gone too, to the page heading, not to the body (finding 2967).
+// When that control is gone or natively disabled, such as Stop on a row whose Agent another
+// person stopped before a version was selected, focus goes to the control its
+// data-refocus-fallback names (the row's name), and when the row is gone too, to the page
+// heading, not to the body (finding 2967).
 function focusInShownView() {
   const view = app.querySelector('.content [aria-live="polite"]');
   const focused = document.activeElement;
