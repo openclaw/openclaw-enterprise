@@ -1273,10 +1273,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         COALESCE((SELECT jsonb_agg(v ORDER BY group_id, principal_id) FROM
           (SELECT namespace_id, group_id, principal_id FROM occ.iam_group_memberships) v),
           '[]'::jsonb) AS memberships,
-        COALESCE((SELECT jsonb_agg(v ORDER BY id) FROM
-          (SELECT id, namespace_id, identity_subject_id, group_subject_id,
-            namespace_subject_id, role_id, resource_kind, resource_id
-            FROM occ.iam_access_bindings) v),
+        COALESCE((SELECT jsonb_agg(v ORDER BY v.id) FROM occ.iam_access_bindings v),
           '[]'::jsonb) AS bindings,
         COALESCE((SELECT jsonb_agg(v ORDER BY id) FROM
           (SELECT id, namespace_id, action, resource_kind, resource_id, effect

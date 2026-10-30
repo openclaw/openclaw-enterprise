@@ -6107,6 +6107,22 @@ export class OpenClawController {
     return this.mcpDiscovery(serverUrl);
   }
 
+  /** Resolve the optional template scope before contacting an issuer or storing client credentials. */
+  private async connectionTemplateNamespace(
+    principalId: string,
+    namespaceId?: string,
+  ): Promise<string | undefined> {
+    if (namespaceId === undefined) {
+      return undefined;
+    }
+    await this.authorize(principalId, "read", { kind: "namespace", id: namespaceId, namespaceId });
+    const namespace = await this.read((state) => this.exactNamespace(state, namespaceId));
+    if (namespace.status !== "ready") {
+      throw new NamespaceNotReadyError();
+    }
+    return namespace.id;
+  }
+
   async createConnectionTemplate(
     principalId: string,
     input: CreateConnectionTemplateInput,
@@ -6114,18 +6130,7 @@ export class OpenClawController {
   ): Promise<Readonly<ConnectionTemplate>> {
     await this.authorize(principalId, "create", this.connectionTemplateRef(this.installation.id));
     const refresh = this.connectionRefreshDriver();
-    const { namespaceId } = input;
-    if (namespaceId !== undefined) {
-      await this.authorize(principalId, "read", {
-        kind: "namespace",
-        id: namespaceId,
-        namespaceId,
-      });
-      const namespace = await this.read((state) => this.exactNamespace(state, namespaceId));
-      if (namespace.status !== "ready") {
-        throw new NamespaceNotReadyError();
-      }
-    }
+    const namespaceId = await this.connectionTemplateNamespace(principalId, input.namespaceId);
     const templateId = this.nextIdentifier("connection_template");
     const createdAt = this.timestamp();
     const displayName = connectionDisplayName(input.displayName);

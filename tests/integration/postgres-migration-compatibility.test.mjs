@@ -1205,7 +1205,7 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.retry_failed_namespace_deletion(text,text,text)", true],
       // The Agent trigger keeps the credential-source join table exact; occ_app cannot write it.
       ["occ.sync_agent_credential_sources()", false],
-      ["occ.validate_access_binding_scope()", false, "search_path=pg_catalog, occ"],
+      ["occ.validate_access_binding_scope()", false],
       ["occ.validate_group_membership()", false],
       ["occ.validate_restriction_scope()", false],
     ].map(([identity, app_execute, searchPath = "search_path=pg_catalog, occ, pg_temp"]) => ({
@@ -1977,7 +1977,21 @@ test(
         });
         assert.deepEqual(await runHistoryMigration(db), { ok: true, history });
         await assertCompletedHistory(db, receipts);
-        assert.deepEqual(await canonicalData(db), before);
+        assert.deepEqual(await canonicalData(db), {
+          ...before,
+          // 0060 seeds the template user Role in an existing Installation.
+          iam_roles: [
+            ...before.iam_roles,
+            {
+              value: {
+                id: "role_connection_template_user",
+                namespace_id: null,
+                name: "Connection template user",
+                permissions: [{ action: "use", resourceKind: "connection_template" }],
+              },
+            },
+          ],
+        });
         await assertUpgradedAuthentication(db);
         if (prefix === 55) {
           const upgradedReceipts = await historyReceipts(db.migrator);
@@ -2834,7 +2848,13 @@ test(
     const attempts = await count();
     assert.deepEqual(await runHistoryMigration(db, "production"), { ok: true, history: "main" });
     await assertCompletedHistory(db, receipts);
-    assert.deepEqual(await canonicalData(db), before);
+    assert.deepEqual(await canonicalData(db), {
+      ...before,
+      // Every binding already present at 0060 keeps its original subject.
+      iam_access_bindings: before.iam_access_bindings.map(({ value }) => ({
+        value: { ...value, namespace_subject_id: null },
+      })),
+    });
     // Keep the same hostile application session: ALTER FUNCTION must invalidate
     // the already-compiled vulnerable bodies while ordinary IAM inserts still work.
     await exercise("after", false);
