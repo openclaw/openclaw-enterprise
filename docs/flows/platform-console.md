@@ -272,8 +272,8 @@ prevent reuse. Tabs ignore responses after unmount.
 exclude passwords. Secret saves update the shared snapshot.
 `agents/detail.mts:boundSecretsDenied` reuses Deploy's authorized names.
 Configuration excludes Harness-only Secrets; Plugins/Credentials include them.
-Current permission epochs publish; rechecks clear names and refresh authorized reads.
-Late names preserve state/focus; metadata failures keep authorized IDs, unknown grants general explanations.
+Permission epochs fence publication; rechecks clear names and refresh authorized reads.
+Late names preserve state/focus; metadata failures keep authorized IDs; unknown grants stay generic.
 
 [Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
 owns receipts and draft retirement.
@@ -372,7 +372,7 @@ gateway startup and file availability.
 
 ## Changelog
 
-- 2026-10-30 11:02: Name Secrets in Plugins/Credentials hints. (b03beb3e-57d1-47cf-829f-e31955a47d3c - f5d5dfda697a9e0d41c88a4e570dafcce768ec7b)
+- 2026-10-30 11:02: Name denied Secrets. (b03beb3e-57d1-47cf-829f-e31955a47d3c - f5d5dfda697a9e0d41c88a4e570dafcce768ec7b)
 
 - 2026-10-30 09:32: Name authorized bound Secrets in the Configuration save permission hint. (b03beb3e-57d1-47cf-829f-e31955a47d3c - 755ff77baa3377441be0938302030386fa985c75)
 
