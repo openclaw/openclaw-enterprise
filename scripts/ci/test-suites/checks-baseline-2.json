@@ -82,6 +82,7 @@
     "tests/conformance/plugin-runtime-policy.test.mjs",
     "tests/integration/password-sign-in-policy.test.mjs",
     "tests/integration/compute-singleton-worker.test.mjs",
+    "tests/integration/worker-shutdown.test.ts",
     "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
     "tests/integration/oidc-id-token.test.mjs",
     "tests/integration/repository-credentials-shutdown.test.mjs",
@@ -180,6 +181,9 @@
         "before-commit Compute Drivers must expose an activation operation",
         "Compute Driver maintenance intervals must be positive safe integers"
       ]
+    },
+    {
+      "path": "tests/integration/worker-shutdown.test.ts"
     },
     {
       "path": "tests/integration/local-first-agent-session-identity.test.ts"
