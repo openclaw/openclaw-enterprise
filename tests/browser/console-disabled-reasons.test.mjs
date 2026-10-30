@@ -17,10 +17,14 @@ import {
   accessibleDescription,
   detailUrl,
   expectReachableReason,
+  grantInstallationAdministration,
+  holdRequests,
   login,
   nativeValues,
   newPage,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
+import { enterManualModel } from "./console-agents-test-support.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 
 // The shipped default Preset, so Create Agent offers "Start with default Preset".
@@ -378,4 +382,88 @@ test("Save channel Secrets names an unbound Slack token as its reason", async (t
   const reason = "Choose a Secret for each Slack token to save.";
   assert.equal(await page.getByText(reason, { exact: true }).isVisible(), true);
   await expectReachableReason(page, save, reason);
+});
+
+// An Installation administrator's Credentials tab read the IAM policy and found no grant of the
+// saved authentication Secret to the Agent (finding 2260).
+const HARNESS_GRANT_MISSING =
+  "This Agent has no access to its authentication Secret, so deploying it would be refused. Select Save authentication source to grant it.";
+// The same missing grant, read by a session whose Save authentication source is unavailable.
+const HARNESS_GRANT_MISSING_ASK =
+  "This Agent has no access to its authentication Secret, so deploying it would be refused. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source.";
+
+// Finding 2949. While she administers the Installation, the warning names the Save that grants
+// the Agent its Secret. Her administration then ends: the newer permission answer refuses her
+// Agent update, so Save is unavailable, and the shown warning is reworded in place to name who
+// grants it instead of a Save she cannot use.
+test("a missing harness grant names the administrator once a revoke makes Save unavailable", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revoked harness grant", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Revoked harness Secret", "hidden");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Revoked Grant Agent",
+    nativeValues("revoked-grant"),
+  );
+  // The Agent's binding moves to a Secret it holds no grant for.
+  await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    harnessAuth: { method: "api_key", source: secret.ref },
+  });
+  const account = await fixture.createNamespaceMember("revoked-harness", namespace.id, AGENT_READ);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
+    account.credentials,
+  );
+  await page.getByRole("heading", { name: "Revoked Grant Agent" }).waitFor();
+  const save = page.getByRole("button", { name: "Save authentication source" });
+  await page.getByText(HARNESS_GRANT_MISSING, { exact: true }).waitFor();
+  await waitForEnabled(save);
+
+  revoke();
+  // The Access tab's policy read is refused, which settles that she no longer administers the
+  // Installation; the page reads its permission answer again and leaves for Configuration.
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  await page.getByText(HARNESS_GRANT_MISSING_ASK, { exact: true }).waitFor();
+  assert.equal(await page.getByText(HARNESS_GRANT_MISSING, { exact: true }).count(), 0);
+  assert.equal(await save.isDisabled(), true);
+});
+
+// Finding 2950. The Codex lock keeps Execution mode in the Tab order with its hint (finding
+// 2945). A pending Create disables every field natively, this select too: it must not be turned
+// into the reachable Codex lock, which a keyboard could still open while the request runs.
+test("a pending Codex Create keeps Execution mode natively disabled", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Pending Codex mode", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
+  await page.getByLabel("Agent name").fill("Pending Codex Agent");
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  await enterManualModel(page, "pending-codex-key", "gpt-5.1");
+  await page.locator(".launch-runtime > summary").click();
+  const mode = page.getByLabel("Execution mode");
+  assert.equal(await mode.getAttribute("aria-disabled"), "true");
+  // The first write Create sends after the model Secret is held, so the form stays pending.
+  const write = await holdRequests(
+    t,
+    page,
+    (url) =>
+      url.pathname.startsWith(`/namespaces/${namespace.id}/`) && !url.pathname.includes("/secrets"),
+    { method: "POST", once: true },
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await write.requested;
+  await page.waitForFunction((node) => node.disabled, await mode.elementHandle());
+  assert.equal(await mode.getAttribute("aria-disabled"), null);
+  write.release();
 });

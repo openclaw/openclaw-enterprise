@@ -98,6 +98,8 @@ cannot use the Secret, ask an Installation administrator to give the Agent
 `operate` on it, for example by opening the Agent's Credentials and selecting
 **Save authentication source**. **Deploy new version** stays available. When an administrator opens Credentials, the tab reads Namespace IAM, says
 when that grant is missing and holds **Deploy new version** until it is granted.
+When your access no longer includes updating this Agent, the warning asks an
+Installation administrator to grant it.
 If the grant was already in place, **Reload authentication source** clears the
 warning. If a grant request is refused or its outcome is lost, the console says
 so and offers **Retry credential access**.

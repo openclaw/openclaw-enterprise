@@ -4760,6 +4760,8 @@ export async function renderAgentDetail(
           authUnavailable = outcomeUnknown || updateDenied;
         }
         describeUpdateDenial();
+        // The missing-grant warning names who grants it once Save is refused (finding 2949).
+        applySavedGrantWarning();
       };
       void agentSaveDenied.then((reason) => {
         if (context.isCurrent()) {
@@ -4814,12 +4816,16 @@ export async function renderAgentDetail(
         submitted = true;
       });
       let savedGrantMissing = false;
-      const missingGrantWarning = () =>
+      // A reader whose Agent update is refused, such as an administrator whose administration
+      // ended after the IAM read, is told who saves the source instead of a Save they cannot
+      // use (finding 2949).
+      const missingGrantWarning = (canSave = !updateDenied) =>
         grantWarning(
           "missing",
           harnessGrantSubject(
             agent.harnessAuth?.method === "credential_source" ? "credential_source" : "secret",
           ),
+          canSave,
         );
       const selectionMatchesSavedGrant = () => {
         const saved = baseline.harnessAuth;
@@ -4851,7 +4857,10 @@ export async function renderAgentDetail(
           feedback.textContent = warning;
           return;
         }
-        if (feedback.textContent === warning) {
+        // Either wording: the answer may have changed since it was shown.
+        if (
+          [true, false].some((canSave) => feedback.textContent === missingGrantWarning(canSave))
+        ) {
           setStatusTone(feedback, null);
           feedback.textContent = "";
         }
