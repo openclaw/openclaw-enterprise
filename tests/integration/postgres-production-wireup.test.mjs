@@ -481,6 +481,54 @@ test(
         });
       }
 
+      // The worker owns the same protected Driver and its own pool. A Driver that fails to close
+      // must not strand the worker's PostgreSQL connections at shutdown.
+      await t.test(
+        "worker stop closes its pool after a protected Driver close failure",
+        async () => {
+          const driverFailure = new Error("protected Driver cleanup failure");
+          const runtime = await productionDrivers();
+          const registration = createProtectedFixture({
+            id: "worker-cleanup-fixture",
+            implementation: "worker-cleanup-fixture",
+            configuration: { endpoint: "https://127.0.0.1:1", ca: "unused" },
+          });
+          delete registration.computeLifecycleHooks;
+          registration.close = async () => {
+            throw driverFailure;
+          };
+          runtime.protectedDriver = new InstalledDriver(
+            {
+              id: "worker-cleanup-fixture",
+              implementation: "worker-cleanup-fixture",
+              configuration: {},
+            },
+            registration,
+          );
+          const workerPool = new pg.Pool({ connectionString: databaseUrl });
+          const worker = createControllerWorker({
+            pool: workerPool,
+            mode: "production",
+            drivers: runtime,
+            pollIntervalMs: 20,
+            emit: () => {},
+          });
+          try {
+            await worker.start();
+            await assert.rejects(worker.stop(), (error) => error === driverFailure);
+            assert.equal(
+              workerPool.ended,
+              true,
+              "the worker pool must close after the Driver fails",
+            );
+          } finally {
+            if (!workerPool.ended) {
+              await workerPool.end();
+            }
+          }
+        },
+      );
+
       await t.test("API listen failure survives completed PostgreSQL cleanup", async (t) => {
         const port = await listen(t, createServer());
         // These constructors need settings; no Docker operation runs during this startup.
