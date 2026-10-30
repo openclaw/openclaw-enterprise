@@ -1641,7 +1641,8 @@ export const scenarios = {
     group: "Pages/Namespaces",
     name: "Unavailable selection",
     path: "/console/namespaces?namespace=ns_00000000-0000-4000-8000-000000000099",
-    description: "Recover from a stale Namespace URL using the selector inside the message.",
+    description:
+      "Recover from a stale Namespace URL using the selector inside the message, which says the Namespace is missing or not readable.",
     steps: [
       "Choose Engineering under Choose a valid Namespace; the URL changes and the warning disappears without leaving Namespaces.",
       "Use browser Back to return to the unavailable selection and recover again.",
