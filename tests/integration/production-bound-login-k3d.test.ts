@@ -5,7 +5,8 @@ import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { k3sImage } from "../../scripts/ci/openshell.mjs";
-import { qualifyBoundLogin } from "../helpers/production-bound-login.ts";
+import { QualificationOperations } from "../fixtures/bound-login/operations.ts";
+import { qualifyBoundLogin, validateBoundReleaseHooks } from "../helpers/production-bound-login.ts";
 
 async function readPreparedState() {
   const path = process.env.OPENCLAW_ENTERPRISE_CI_STATE;
@@ -127,3 +128,77 @@ test(
     }
   },
 );
+
+// Synthetic shapes test exact comparison; full pinned-chart renders are separate evidence.
+test("bound release hook contract accepts only the complete safe stock set", async (t) => {
+  const metadata = (name: string) => ({
+    name,
+    annotations: { "helm.sh/hook": "pre-install,pre-upgrade" },
+  });
+  const policy = {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: metadata("fixture-bootstrap-isolation"),
+    spec: {
+      podSelector: { matchLabels: { release: "fixture" } },
+      policyTypes: ["Ingress", "Egress"],
+      egress: [],
+    },
+  };
+  const account = {
+    apiVersion: "v1",
+    kind: "ServiceAccount",
+    metadata: metadata("openclaw-enterprise-initialization"),
+    automountServiceAccountToken: false,
+  };
+  const yaml = (...docs: unknown[]) => docs.map((doc) => JSON.stringify(doc)).join("\n---\n");
+  const pair = yaml(policy, account);
+  const reference = yaml({ apiVersion: "v1", kind: "ConfigMap" }, policy, account);
+  const check = (text: string, release = "fixture") =>
+    validateBoundReleaseHooks(text, reference, release, "fixture-system");
+  check(pair);
+  check(yaml(account, policy));
+  const namespaced = (namespace: unknown) =>
+    yaml({ ...policy, metadata: { ...policy.metadata, namespace } }, account);
+  check(namespaced("fixture-system"));
+  for (const [name, text, release] of [
+    ["unknown addon", yaml(policy, account, { kind: "Unknown", data: "PRIVATE_SENTINEL" })],
+    ["initialization Job", yaml(policy, account, { apiVersion: "batch/v1", kind: "Job" })],
+    ["weakened networking", yaml({ ...policy, spec: { ...policy.spec, egress: [{}] } }, account)],
+    ["token mount", yaml(policy, { ...account, automountServiceAccountToken: true })],
+    ["empty", ""],
+    ["missing policy", yaml(account)],
+    ["missing account", yaml(policy)],
+    ["duplicate policy", yaml(policy, policy)],
+    ["duplicate account", yaml(account, account)],
+    ["malformed", "metadata: [PRIVATE_SENTINEL"],
+    ["wrong release", pair, "other"],
+    ["wrong namespace", namespaced("other")],
+    ["null namespace", namespaced(null)],
+  ] as const) {
+    await t.test(name, () => {
+      assert.throws(
+        () => check(text, release),
+        (error: unknown) => {
+          assert.ok(error instanceof assert.AssertionError);
+          assert.equal(error.message, "Bound release hook contract refused");
+          const operations = new QualificationOperations(t.signal);
+          operations.begin("helm-read");
+          operations.reportFailure(error, "observe", 1, (receipt) => {
+            assert.deepEqual(JSON.parse(receipt), {
+              stage: "observe",
+              status: "FAILED_OR_UNKNOWN",
+              installedQualified: false,
+              commandCount: 1,
+              action: "helm-read",
+              failureClass: "assertion",
+              remoteOutcome: "unknown",
+            });
+          });
+          assert.doesNotMatch(JSON.stringify(error), /PRIVATE_SENTINEL/);
+          return true;
+        },
+      );
+    });
+  }
+});

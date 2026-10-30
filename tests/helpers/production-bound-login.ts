@@ -3,6 +3,7 @@ import { randomBytes, createHash } from "node:crypto";
 import { mkdtemp, readFile, writeFile, chmod, mkdir, lstat, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { createRequire } from "node:module";
 import type { TestContext } from "node:test";
 import { requireHostSessionCookie } from "../fixtures/bound-login/browser.ts";
 import { cleanEnvironment } from "../fixtures/repository-credentials/process.mjs";
@@ -17,6 +18,58 @@ import { installNativeGateway } from "../fixtures/bound-login/native.ts";
 import { QualificationFailure, type FailureClass } from "../fixtures/bound-login/failure.ts";
 import { QualificationOperations, type Action } from "../fixtures/bound-login/operations.ts";
 import { certificateAuthority, signedLeaf } from "./certificates.mjs";
+
+// Use the post-renderer's YAML parser without Kubernetes model deserialization:
+// model conversion discards unknown fields that this exact contract must reject.
+const controllerRequire = createRequire(
+  new URL("../../apps/controller/package.json", import.meta.url),
+);
+const yamlRequire = createRequire(controllerRequire.resolve("@kubernetes/client-node"));
+const { loadAll } = yamlRequire("js-yaml") as { loadAll: (text: string) => unknown[] };
+
+/** The reference is rendered from the pinned phase's chart and intended values. */
+export function validateBoundReleaseHooks(
+  text: string,
+  rendered: string,
+  release: string,
+  namespace: string,
+): void {
+  try {
+    type Resource = {
+      apiVersion: string;
+      kind: string;
+      metadata: { name: string; namespace?: string; annotations?: Record<string, string> };
+    };
+    const reference = (loadAll(rendered) as Resource[]).filter(
+      (doc) => doc?.metadata?.annotations?.["helm.sh/hook"] !== undefined,
+    );
+    const expectedKeys = new Set([
+      `networking.k8s.io/v1/NetworkPolicy/${release}-bootstrap-isolation`,
+      "v1/ServiceAccount/openclaw-enterprise-initialization",
+    ]);
+    const index = (docs: Resource[]) => {
+      assert.equal(docs.length, expectedKeys.size);
+      const result = new Map<string, Resource>();
+      for (const doc of docs) {
+        const key = `${doc.apiVersion}/${doc.kind}/${doc.metadata.name}`;
+        assert.ok(expectedKeys.has(key) && !result.has(key));
+        // Omission is valid; explicit null or any other value is not the context.
+        assert.ok(
+          !Object.hasOwn(doc.metadata, "namespace") || doc.metadata.namespace === namespace,
+        );
+        doc.metadata.namespace = namespace;
+        result.set(key, doc);
+      }
+      return result;
+    };
+    // Map equality ignores document order but compares each complete object,
+    // including networking, account labels and disabled token mounting.
+    assert.ok(isDeepStrictEqual(index(loadAll(text) as Resource[]), index(reference)));
+  } catch {
+    // Neither parser diagnostics nor assertion diffs may disclose release payloads.
+    assert.fail("Bound release hook contract refused");
+  }
+}
 
 const hash = (x: string) => createHash("sha256").update(x).digest("hex");
 /** Runs only against the selected normal CI-owned disposable k3d context. */
@@ -1313,9 +1366,20 @@ export async function qualifyBoundLogin(
         ).trim(),
         "",
       );
-      assert.equal(
-        (await helm("get", "hooks", release, "--revision", String(revision))).trim(),
-        "",
+      const rendered = await helm(
+        "template",
+        release,
+        github ? chart : oldChart,
+        "--is-upgrade",
+        "-f",
+        valuePath,
+        ...(github ? ["-f", overlay] : []),
+      );
+      validateBoundReleaseHooks(
+        await helm("get", "hooks", release, "--revision", String(revision)),
+        rendered,
+        release,
+        system,
       );
       const continuity: Record<
         string,
