@@ -712,7 +712,7 @@ test(
       namespaceId: foreign.id,
       namespaceReady: false,
       failure: "permanent",
-      reason: `Refusing unowned Kubernetes Namespace ${foreignName}.`,
+      reason: "A managed Namespace exists without a lifecycle creation binding.",
     });
     const foreignLabels = (await resource("namespace", foreignName)).metadata.labels ?? {};
     assert.equal(
