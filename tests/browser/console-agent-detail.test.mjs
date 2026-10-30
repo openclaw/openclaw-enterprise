@@ -5082,7 +5082,7 @@ test("late Configuration Secret names preserve an open focused native disclosure
     )
     .waitFor();
   assert.equal(await summary.evaluate((node) => node.parentElement.open), true);
-  assert.equal(await summary.evaluate((node) => document.activeElement === node), true);
+  assert.equal(await summary.evaluate((node) => node.ownerDocument.activeElement === node), true);
 });
 
 test("a superseded draft Secret metadata read cannot replace the current Configuration hint", async (t) => {
@@ -5138,8 +5138,12 @@ test("a superseded draft Secret metadata read cannot replace the current Configu
   held.release();
   await oldResponse;
   // Let the completed metadata read publish and the browser paint before inspecting the hint.
-  await page.evaluate(
-    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  await page.locator("body").evaluate(
+    (node) =>
+      new Promise((resolve) => {
+        const view = node.ownerDocument.defaultView;
+        view.requestAnimationFrame(() => view.requestAnimationFrame(resolve));
+      }),
   );
   assert.equal(await page.getByText(reason, { exact: true }).count(), 1);
 });
