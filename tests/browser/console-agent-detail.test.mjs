@@ -5053,12 +5053,9 @@ test("Agent save hints name a denied Harness Secret without making Configuration
     { agentUpdate: true },
   );
   const configuration = await fixture.request("GET", configurationPath);
-  grantSecretOperate(
-    fixture,
-    namespace.id,
-    member.principal,
-    [configuration.data.secretBindings.SLACK_BOT_TOKEN.source.id],
-  );
+  grantSecretOperate(fixture, namespace.id, member.principal, [
+    configuration.data.secretBindings.SLACK_BOT_TOKEN.source.id,
+  ]);
   const readAgent = await fixture.request("GET", path);
   assert.equal(readAgent.status, 200, JSON.stringify(readAgent.body));
   const auth = readAgent.data.harnessAuth;
@@ -5074,8 +5071,11 @@ test("Agent save hints name a denied Harness Secret without making Configuration
   const session = await fixture.signIn(member.credentials);
   // Both tabs save through Agent PATCH, which checks the current Harness even when replaced.
   for (const body of [{ plugins: {} }, { harnessAuth: auth }]) {
-    const refused = await fixture.request("PATCH", path, { session, body });
-    assert.equal(refused.status, 403);
+    const refused = await fixture.request("PATCH", path, {
+      session,
+      body: { configurationId: agent.configurationId, ...body },
+    });
+    assert.equal(refused.status, 403, JSON.stringify(refused.body));
   }
   const { page } = await newPage(t, fixture);
   await login(
