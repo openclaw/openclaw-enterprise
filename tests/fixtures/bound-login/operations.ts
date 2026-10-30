@@ -192,6 +192,15 @@ export class QualificationOperations {
       if ("error" in result) {
         // The private peer can only contribute these bounded classes and a numeric status.
         const kind = result.failureClass;
+        if (
+          this.#action === "browser-bootstrap" &&
+          shape === "response" &&
+          result.error === true &&
+          kind === "local-setup" &&
+          Object.keys(result).length === 2
+        ) {
+          throw new QualificationFailure("local-setup");
+        }
         throw new QualificationFailure(
           kind === "timeout" ||
             kind === "malformed-response" ||

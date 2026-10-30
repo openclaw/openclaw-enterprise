@@ -99,7 +99,15 @@ http
         return;
       }
       if (x.action === "bootstrap") {
-        const password = fs.readFileSync("/bootstrap/initial-admin-password", "utf8").trim();
+        let password: string;
+        try {
+          password = fs.readFileSync("/bootstrap/initial-admin-password", "utf8").trim();
+        } catch {
+          throw new QualificationFailure("local-setup");
+        }
+        if (!password) {
+          throw new QualificationFailure("local-setup");
+        }
         reply(
           await b.request("POST", "/api/auth/sign-in/email", {
             email: x.email,

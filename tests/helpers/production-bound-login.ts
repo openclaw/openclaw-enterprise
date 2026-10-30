@@ -783,6 +783,19 @@ export async function qualifyBoundLogin(
     ): Promise<T> => request(browser, "GET", path, undefined, 200, validate);
     const bootstrap = async (name: string, expectedUserId?: string) => {
       await fresh(name);
+      if (expectedUserId === undefined) {
+        // Check the Console Service, TLS ingress and API before sending the first password.
+        const anonymous = await rpc({
+          action: "request",
+          browser: name,
+          method: "GET",
+          path: "/api/auth/session",
+        });
+        operations.validateResponse(anonymous, 200, () => {
+          assert.equal(anonymous.data, null);
+          assert.equal(anonymous.sessionCookieIssued, false);
+        });
+      }
       const r = await rpc({
         action: "bootstrap",
         browser: name,
