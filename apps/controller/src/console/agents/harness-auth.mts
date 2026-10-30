@@ -1,11 +1,11 @@
 import type {
   CredentialSourceReference,
   HarnessAuthBinding,
+  InstallationCapabilities,
   SecretMetadata,
   SecretReference,
   ServiceAccount,
 } from "@openclaw-enterprise/contracts";
-import type { InstallationCapabilities } from "@openclaw-enterprise/contracts";
 import { INSTALLATION_ADMINISTRATION, requestFailure, responseFields } from "../api-client.mjs";
 import { element, setUnavailable } from "../dom.mjs";
 import { message, namespaceListNeed, namespacePath } from "./list.mjs";
