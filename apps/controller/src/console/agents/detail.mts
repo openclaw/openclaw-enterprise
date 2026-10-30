@@ -4212,9 +4212,14 @@ export async function renderAgentDetail(
       },
       {
         version: selected !== "draft",
-        // The current version, every listed one and one this tab deployed are known to exist.
+        // The current version, every listed one, one this tab deployed and one this page showed
+        // as selected for service are known to exist. A tab built after a stop or redeploy made
+        // elsewhere called a former current version one that may not exist (finding 3004).
         exists:
-          selected === currentRevisionId || listedRevisions.has(selected) || deployedHere(selected),
+          selected === currentRevisionId ||
+          listedRevisions.has(selected) ||
+          deployedHere(selected) ||
+          formerCurrent.has(selected),
       },
     );
   }
