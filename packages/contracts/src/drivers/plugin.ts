@@ -11,7 +11,7 @@ import type {
   PluginDesiredState,
   PluginPolicyCapabilities,
   RevisionHarnessDescriptor,
-} from "./index.ts";
+} from "../index.ts";
 
 export interface PluginDriverContext {
   readonly namespace: Readonly<Namespace>;

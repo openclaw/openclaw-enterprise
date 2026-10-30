@@ -3,7 +3,7 @@ import type {
   Configuration,
   ConfigurationReference,
   OpenClawConfigurationDocument,
-} from "./index.ts";
+} from "../index.ts";
 
 /**
  * Options for Configuration rules that also run on Preset defaults. `unresolved` locates text its

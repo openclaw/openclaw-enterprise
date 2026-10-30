@@ -26,7 +26,7 @@ The public [contracts entry point](../../../packages/contracts/src/index.ts)
 exports `CredentialProxyDriver`, `DriverRegistration`, the
 [exchange types](../../../packages/contracts/src/credential-proxy-exchange.ts)
 and [repository delivery types](../../../packages/contracts/src/protected-repository-git.ts).
-The [Driver source](../../../packages/contracts/src/credential-proxy.ts) defines
+The [Driver source](../../../packages/contracts/src/drivers/credential-proxy.ts) defines
 these operations:
 
 | Member                                      | Caller, inputs and result                                                                                                                                               | Requirement                                                                                              |
@@ -71,7 +71,7 @@ independently admitted routes. Reduction can remove Git while preserving the exa
 recipient and other bindings. It does not convert v5 online authorization or v6
 observed hooks to exact dispatch. Existing v3–v6 admissions keep their semantics.
 The [admission source](../../../packages/occ/src/index.ts) and
-[version checks](../../../packages/contracts/src/credential-proxy.ts) implement
+[version checks](../../../packages/contracts/src/drivers/credential-proxy.ts) implement
 this support; they do not qualify stock OpenShell or any installed deployment.
 
 ## IAM

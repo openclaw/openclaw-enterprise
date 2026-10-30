@@ -3,7 +3,7 @@ import type { ComputeDriver, ComputeLifecycleHooks } from "./compute.ts";
 import type {
   ConfigurationContribution,
   ConfigurationDefinition,
-} from "./configuration-definition.ts";
+} from "../configuration-definition.ts";
 import type { ConfigurationDriver } from "./configuration.ts";
 import type { CredentialGatewayDriver } from "./credential-gateway.ts";
 import type { CredentialProxyDriver } from "./credential-proxy.ts";

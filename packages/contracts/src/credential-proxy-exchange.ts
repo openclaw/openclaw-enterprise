@@ -8,7 +8,7 @@ import type {
   EgressRequest,
   EgressResponse,
   EgressRoute,
-} from "./credential-proxy.ts";
+} from "./drivers/credential-proxy.ts";
 
 export interface CredentialProxyBinding {
   close(): void | Promise<void>;

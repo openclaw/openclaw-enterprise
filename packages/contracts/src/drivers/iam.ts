@@ -11,7 +11,7 @@ import type {
   Restriction,
   Role,
   ServicePrincipal,
-} from "./index.ts";
+} from "../index.ts";
 
 export interface IAMDriver extends Driver {
   readonly capability: "iam";

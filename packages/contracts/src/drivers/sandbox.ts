@@ -10,15 +10,15 @@ import type {
   OpenClawConfigurationDocument,
   RevisionHarnessDescriptor,
   SandboxFacet,
-} from "./index.ts";
+} from "../index.ts";
 import type { RepositoryExecutionIdentity } from "./repo.ts";
-import type { SandboxLogChunk, SandboxLogContext, SandboxLogRequest } from "./runtime-logs.ts";
+import type { SandboxLogChunk, SandboxLogContext, SandboxLogRequest } from "../runtime-logs.ts";
 import type {
   SandboxNetworkGrant,
   SandboxPolicyObservation,
   SandboxPolicyRecommendations,
   SandboxPolicySnapshot,
-} from "./sandbox-policy.ts";
+} from "../sandbox-policy.ts";
 
 export type KubernetesNamespacedResource = Readonly<Record<string, unknown>>;
 
