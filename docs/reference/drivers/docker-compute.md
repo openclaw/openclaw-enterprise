@@ -184,38 +184,34 @@ Driver's 120-second readiness budget; deploying again retries it.
 
 ## Dedicated state and native-owner recovery
 
-For dedicated Codex with persistent workspace inputs, the Gateway keeps the
-original Agent state volume. The Harness receives a separate OpenClaw state
-volume; both still mount the workspace volume. This preserves existing Gateway
-data and removes the shared state mount from the Harness.
-Deployments without persistent inputs retain separate ephemeral container state.
+With persistent workspace inputs, a dedicated Codex Gateway keeps its original
+Agent state volume. The Harness gets its own state volume. Both mount the shared
+workspace. Without persistent inputs, each container keeps ephemeral state.
 
-Automatic native-owner recovery additionally requires the private constructor
-input `trustedGatewayToolBoundary: "oce-gateway-tools/v1"`, a supported Docker
-Engine, qualified Gateway code/configuration and state created with private-origin
-metadata. The ordinary factory leaves recovery disabled; trusted wiring and
-Native-runtime qualification remain pending. Driver JSON cannot enable it.
-Podman, legacy state and unreviewed configuration shapes retain operator recovery.
-Gateway-native MCP servers, custom browser executables and CLI-backed channels
-need that fallback. Codex MCP/plugin selections run in the Harness.
+Automatic recovery requires the private constructor input
+`trustedGatewayToolBoundary: "oce-gateway-tools/v1"`, a supported Docker Engine,
+qualified Gateway code and configuration, and private-origin state. The ordinary
+factory disables recovery. Driver JSON cannot enable it. Deployment wiring and
+runtime qualification remain pending. Podman, legacy state, Gateway-native MCP
+servers, custom browser executables, CLI-backed channels, and other unreviewed
+configurations require operator recovery. Codex MCP servers and plugins run in
+the Harness.
 
-The Driver keeps recovery metadata in an Agent-owned volume mounted read-only by
-the Gateway and never mounted by the Harness. A never-started metadata container
-lets the Driver use the existing Engine archive API to update it. Missing metadata
-does not recreate trust from a label on the data volume. Embedded or unsafe reuse
-invalidates that trust before the volume is exposed again.
+The Gateway mounts the Agent-owned recovery metadata volume read-only. The
+Harness has no mount. The Driver updates metadata through the Engine archive
+API on a never-started container. A data-volume label cannot replace missing
+metadata. Embedded or unsafe reuse invalidates trust before exposing the volume.
 
-The Gateway's protected healthcheck emits bounded owner observations from its
-authenticated loopback status endpoint. The Driver reads current health records
-through Engine inspection; it adds no host-published status port or management
-network attachment. Both startup and readiness checks still control health.
+The Gateway healthcheck collects bounded owner observations through authenticated
+loopback. The Driver reads them through Engine inspection without publishing a
+status port or attaching a management network. Startup and readiness checks
+still control health.
 
-Before removing a Gateway, the Driver verifies that the exact observed container
-instance has stopped and saves that proof. A replacement receives an intent for
-its own wrapper instance and uses Native's existing snapshot confirmation and
-live-owner checks. Container absence, elapsed time or retained health logs alone
-cannot authorize recovery. A refused native attempt holds the replacement without
-retrying that intent. See the shared [native-owner contract](kubernetes-compute/storage-and-credentials.md#native-owner-recovery).
+Before removal, the Driver verifies and records that the observed container
+instance stopped. Only the intended replacement wrapper can use that proof.
+It checks the native lock snapshot and live owner. Container absence, elapsed
+time, or retained health logs alone cannot authorize recovery. A refusal holds
+the replacement without retrying. See the [native-owner contract](kubernetes-compute/storage-and-credentials.md#native-owner-recovery).
 
 ## Gateway authentication
 
