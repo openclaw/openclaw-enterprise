@@ -1471,12 +1471,14 @@ export class ControllerWorker {
    * in flight end, so shutdown closes the worker's other parts only after the loop that uses
    * them (finding 2997). The database pool stays open until `stop()`.
    */
-  stopLoop(): Promise<void> {
+  async stopLoop(): Promise<void> {
     if (!this.stopping) {
       this.stopping = true;
       this.abort.abort();
     }
-    return this.loop ?? Promise.resolve();
+    await this.loop;
+    // A claim's heartbeat starts health checks that the loop does not await.
+    await this.pendingHealth;
   }
 
   async stop(): Promise<void> {
@@ -1630,6 +1632,10 @@ export class ControllerWorker {
   }
 
   private async health(force: boolean): Promise<void> {
+    // A stopping worker starts no check, so none rewrites readiness after its removal.
+    if (this.stopping) {
+      return;
+    }
     if (this.pendingHealth !== undefined) {
       return this.pendingHealth;
     }
