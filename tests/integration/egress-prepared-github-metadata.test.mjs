@@ -19,7 +19,7 @@ import {
 } from "../fixtures/repository-credentials/github.mjs";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts";
-import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/credentials/grants.ts";
+import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/credentials/origin.ts";
 import { createGitHubWarmReader } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-reader.ts";
 import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
 

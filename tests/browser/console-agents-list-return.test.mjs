@@ -9,10 +9,12 @@ import {
   nativeValues,
   newPage,
   persistedDeploymentError,
+  settledView,
   trackSettledFetches,
   waitForCondition,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { refocus, tagView, viewTag } from "./console-refocus-helpers.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
@@ -27,7 +29,6 @@ const browser = fileBrowser();
 const AGENTS = 12;
 const READING = "Reading deployment…";
 const activeView = '.content [aria-live="polite"]:not([inert])';
-const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
 const revisionsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/revisions`;
 const deploymentsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/deployments/*`;
 
@@ -125,17 +126,6 @@ const revealed = (page) =>
     deployments: globalThis.__revealed.deployments,
     agents: [...globalThis.__revealed.agents].sort(),
   }));
-
-function tagView(page) {
-  return page.evaluate(() => {
-    globalThis.document.querySelector('.content [aria-live="polite"]').dataset.listTag = "kept";
-  });
-}
-const viewTag = (page) =>
-  page.evaluate(
-    () =>
-      globalThis.document.querySelector('.content [aria-live="polite"]')?.dataset.listTag ?? null,
-  );
 
 async function openAgent(page, agent) {
   await page.locator(settledView).getByRole("link", { name: agent.name, exact: true }).click();
@@ -668,7 +658,7 @@ test("A list resumed while its rows wait to fill shows only the new rereads", as
   await land(50);
   assert.equal(await readingCells(), 3);
   const rereads = await holdRowReads(t, page, namespace);
-  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await refocus(page);
   await rereads.revisions.requested;
   await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
   await page.clock.runFor(200);
@@ -690,7 +680,7 @@ test("A list held by a refocus while its rows wait to fill paints no earlier ans
     once: true,
   });
   const rereads = await holdRowReads(t, page, namespace);
-  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await refocus(page);
   await list.requested;
   await page.clock.runFor(200);
   // The held view is inert, so read it directly: deploymentCells reads only the active view.

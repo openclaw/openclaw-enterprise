@@ -16,6 +16,7 @@ import {
   settlePageRequests,
   trackSettledFetches,
   waitForEnabled,
+  waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { submitCreateAgent } from "./console-agents-test-support.mjs";
@@ -555,6 +556,263 @@ for (const savedAgent of [false, true]) {
     assert.equal(gateway.sources.size, 1);
   });
 }
+
+const WAITING = "Waiting for you to complete sign-in in the other tab…";
+
+// A saved Agent's Credentials tab with ChatGPT OAuth selected, on fixture Gateway and Refresh
+// Drivers whose sign-in stays pending.
+async function openAgentOAuth(t, name) {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
+  const { gateway, refresh } = createDeviceCredentialDrivers({ approve: async () => false });
+  for (const driver of [gateway, refresh]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const agent = await fixture.createAgent(
+    namespace.id,
+    name,
+    nativeValues(name.toLowerCase().replaceAll(" ", "-"), { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await trackSettledFetches(page);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  await page.getByLabel("Authentication source").selectOption("credential_source");
+  const beginPath = `/namespaces/${namespace.id}/agents/${agent.id}/device-authorizations`;
+  return {
+    fixture,
+    gateway,
+    page,
+    beginPath,
+    start: page.getByRole("button", { name: "Sign in with OAuth", exact: true }),
+    // Every start the API received; a kept or recorded reply never sends a second one.
+    starts: () =>
+      requests.filter(({ method, path }) => method === "POST" && path === beginPath).length,
+  };
+}
+
+// Holds the next start's real API answer at the browser boundary until `release()`.
+async function holdNextStart(t, { page, beginPath }) {
+  const answered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  await page.route(
+    `**${beginPath}`,
+    async (route) => {
+      const response = await route.fetch();
+      answered.resolve({ status: response.status(), body: await response.json() });
+      await release.promise;
+      await route.fulfill({ response }).catch(() => {});
+    },
+    { times: 1 },
+  );
+  return { answered: answered.promise, release: () => release.resolve() };
+}
+
+async function showTab(page, name) {
+  await page.getByRole("tab", { name, exact: true }).click();
+  await page.getByRole("tab", { name, exact: true, selected: true }).waitFor();
+}
+
+// Saves the draft's Configuration from its tab, which rebuilds every other tab from its draft.
+async function saveConfiguration(page, name) {
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await page
+    .getByLabel("Configuration JSON", { exact: true })
+    .fill(JSON.stringify(nativeValues(name, { harnessId: "codex" }), null, 2));
+  await page.getByRole("button", { name: "Save Configuration" }).click();
+  await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
+}
+
+// The delivered challenge shows: its code, and Cancel login for this known session.
+async function expectChallenge(page, userCode) {
+  await page.getByText(WAITING, { exact: true }).waitFor();
+  assert.equal(await page.locator(".device-login-code").textContent(), userCode);
+  assert.equal(
+    await page.getByRole("button", { name: "Cancel login", exact: true }).isEnabled(),
+    true,
+  );
+  await expectNoText(page, /may have started/i);
+}
+
+// A start's reply that lands after the reader switched to another tab of the same Agent page
+// belongs to the Credentials tab, which is kept while the start is pending (finding 2980). Before
+// the fix, the reply was dropped and the return rebuilt the tab from its draft: a usable challenge
+// showed as an unconfirmed start that only an administrator could clear, and a confirmed refusal
+// as the same, instead of permitting a retry.
+for (const refused of [false, true]) {
+  test(`an OAuth start ${refused ? "refused" : "answered"} while another Agent tab shows lands in Credentials`, async (t) => {
+    const oauth = await openAgentOAuth(t, "OAuth tab switch");
+    const { page } = oauth;
+    // The real Native IAM Driver refuses the start without Secret create.
+    if (refused) {
+      revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+    }
+    const held = await holdNextStart(t, oauth);
+    await waitForIdleFetches(page);
+    await oauth.start.click();
+    const { status, body } = await held.answered;
+    assert.equal(status, refused ? 403 : 200);
+    await showTab(page, "Configuration");
+    held.release();
+    await waitForSettledFetches(page, oauth.beginPath, 1);
+
+    await showTab(page, "Credentials");
+    if (refused) {
+      // A confirmed refusal permits a retry, as it does while the tab shows.
+      await page.getByText(AGENT_DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
+      assert.equal(await oauth.start.isEnabled(), true, "a confirmed refusal blocked a retry");
+      await expectNoText(page, /may have started/i);
+    } else {
+      await expectChallenge(page, body.data.userCode);
+      assert.equal(await oauth.start.isVisible(), false);
+    }
+    await settlePageRequests(page);
+    assert.equal(oauth.starts(), 1);
+    assert.equal(oauth.gateway.sources.size, refused ? 0 : 1);
+  });
+}
+
+// A start that is not the tab's first write is kept the same way (findings 2980, 2981): after a
+// refused start, or after a poll and Cancel login withdrew an earlier login. The tab shows the
+// outcome of its own start, poll and cancel, so those writes alone do not make it stale. Before the
+// fix, they did, and the return rebuilt the tab from its draft, which cannot name a refusal.
+for (const before of ["a refused start", "Cancel login"]) {
+  for (const refused of before === "Cancel login" ? [false, true] : [false]) {
+    test(`an OAuth start after ${before} ${refused ? "refused" : "answered"} while another Agent tab shows lands in Credentials`, async (t) => {
+      const oauth = await openAgentOAuth(t, "OAuth second start");
+      const { page, start } = oauth;
+      // Fetches the tab may still have in flight; none may be, or the tab is not kept.
+      let idle = {};
+      if (before === "Cancel login") {
+        const first = page.waitForResponse(
+          (response) => new URL(response.url()).pathname === oauth.beginPath,
+        );
+        await start.click();
+        const { session } = (await (await first).json()).data;
+        await page.getByText(WAITING, { exact: true }).waitFor();
+        // Let the login poll once (the fixture interval is 5 s): the poll is the tab's write too.
+        const polled = await page.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname === `${oauth.beginPath}/${session.id}/poll`,
+        );
+        assert.equal(polled.status(), 200);
+        await page.getByText(WAITING, { exact: true }).waitFor();
+        await page.getByRole("button", { name: "Cancel login", exact: true }).click();
+        await page.getByText("Sign in to connect your ChatGPT account.", { exact: true }).waitFor();
+        // The Console never reads the cancel's empty 204 body, so the fetch hook keeps
+        // counting it in flight although the tab's request has settled.
+        idle = { except: `${oauth.beginPath}/${session.id}` };
+      } else {
+        // The real Native IAM Driver refuses the first start without Secret create.
+        const restoreCreate = revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+        await start.click();
+        await page.getByText(AGENT_DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
+        restoreCreate();
+      }
+      await waitForEnabled(start);
+      if (refused) {
+        revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+      }
+      const held = await holdNextStart(t, oauth);
+      await waitForIdleFetches(page, idle);
+      await start.click();
+      const { status, body } = await held.answered;
+      assert.equal(status, refused ? 403 : 200);
+      await showTab(page, "Configuration");
+      held.release();
+      await waitForSettledFetches(page, oauth.beginPath, 2);
+
+      await showTab(page, "Credentials");
+      if (refused) {
+        // The kept tab shows the refusal itself; a tab rebuilt from its draft could not name it.
+        await page.getByText(AGENT_DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
+        assert.equal(await start.isEnabled(), true);
+        await expectNoText(page, /may have started/i);
+      } else {
+        await expectChallenge(page, body.data.userCode);
+      }
+      await settlePageRequests(page);
+      assert.equal(oauth.starts(), 2);
+      if (before === "a refused start") {
+        assert.equal(oauth.gateway.sources.size, 1);
+      }
+    });
+  }
+}
+
+// A Configuration save on another tab rebuilds the Credentials tab from its draft. A start
+// answered after the reader left the tab records its outcome in that draft, whether the reply
+// lands before the save or after it (finding 2981). Before the fix, the draft still said the
+// start was unconfirmed, so a delivered code was lost and a refusal blocked a retry.
+for (const replyFirst of [true, false]) {
+  for (const refused of [false, true]) {
+    test(`an OAuth start ${refused ? "refused" : "answered"} ${replyFirst ? "before" : "after"} a Configuration save on another Agent tab lands in Credentials`, async (t) => {
+      const oauth = await openAgentOAuth(t, "OAuth save");
+      const { page } = oauth;
+      if (refused) {
+        revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+      }
+      const held = await holdNextStart(t, oauth);
+      await waitForIdleFetches(page);
+      await oauth.start.click();
+      const { status, body } = await held.answered;
+      assert.equal(status, refused ? 403 : 200);
+      await showTab(page, "Configuration");
+      if (replyFirst) {
+        held.release();
+        await waitForSettledFetches(page, oauth.beginPath, 1);
+      }
+      await saveConfiguration(page, "oauth-save-v2");
+      if (!replyFirst) {
+        held.release();
+        await waitForSettledFetches(page, oauth.beginPath, 1);
+      }
+
+      await showTab(page, "Credentials");
+      if (refused) {
+        // The draft records the refusal as no login, so sign-in is offered again.
+        await waitForEnabled(oauth.start);
+        await expectNoText(page, /may have started/i);
+      } else {
+        await expectChallenge(page, body.data.userCode);
+      }
+      await settlePageRequests(page);
+      assert.equal(oauth.starts(), 1);
+    });
+  }
+}
+
+// A Credentials tab built before the reply landed owns the draft from then on: the earlier tab
+// never records over it, so this tab's later edit survives the next rebuild (finding 2981).
+test("an OAuth start answered after a newer Credentials tab was built keeps that tab's draft", async (t) => {
+  const oauth = await openAgentOAuth(t, "OAuth newer tab");
+  const { page } = oauth;
+  const held = await holdNextStart(t, oauth);
+  await waitForIdleFetches(page);
+  await oauth.start.click();
+  await held.answered;
+  await showTab(page, "Configuration");
+  await saveConfiguration(page, "oauth-newer-tab-v2");
+  // The newer tab is built from the draft taken before the reply: the start is unconfirmed.
+  await showTab(page, "Credentials");
+  await page.getByText(/may have started/i).waitFor();
+  await page.getByLabel("Authentication source").selectOption("api_key");
+  await showTab(page, "Configuration");
+  held.release();
+  await waitForSettledFetches(page, oauth.beginPath, 1);
+  await saveConfiguration(page, "oauth-newer-tab-v3");
+
+  await showTab(page, "Credentials");
+  assert.equal(await page.getByLabel("Authentication source").inputValue(), "api_key");
+  await settlePageRequests(page);
+  assert.equal(oauth.starts(), 1);
+});
 
 // A refused device login names what the API checked for that request (finding 2577). Create
 // Agent's start checks Agent create, Secret create and credential source create in the Namespace,

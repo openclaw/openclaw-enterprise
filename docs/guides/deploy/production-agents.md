@@ -352,12 +352,20 @@ override a matching Restriction. See [Namespace IAM policy](../../reference/auth
 
 ### Prepare transport credentials and deploy
 
+Use a separate operator shell with the production `OCC_URL`, Namespace,
+resource IDs, and Kubernetes context. Set
+`OCC_SERVICE_KEY_FILE` to the private [service API key response file](../../reference/authentication/service-api-keys.md#issue-a-service-key)
+for a non-Agent service principal in this Namespace. An Installation
+administrator who covers its grants can issue the key, which uses the
+principal's current permissions. Leave the bootstrap copy in the Installation
+shell for [cleanup](#end-the-operator-session).
+
 For a draft Agent, **Deploy new version** generates missing transport
-credentials before its first version. API clients may call the endpoint below
-first. Keep `OCC_URL` and
-`OCC_SERVICE_KEY_FILE` from Installation bootstrap. The API derives the correct
-Secret placement for the Agent's execution mode and never returns credential
-values. It never rotates credentials.
+credentials before its first version. To prepare them separately, the caller
+needs `read` and `operate` on this exact Agent. The Agent must be active in a
+ready Namespace and have no prior revision. Compute creates the backing Secrets
+using the API's Kubernetes permissions. The API selects their placement for the
+Agent's execution mode, returns only status, and never rotates credentials.
 
 ```bash
 node --input-type=module <<'NODE'
@@ -399,6 +407,12 @@ Secrets; follow [Slack setup](../integrations/slack.md). Keep credential values
 out of Helm values, Installation YAML, Configurations, shell history, and this
 repository.
 
+Deployment requires `deploy` on this Agent and `read` on its saved
+Configuration. Both the caller and the Agent's service principal need `operate`
+on the model Secret and each Configuration `secretBindings` Secret. If Compute
+generates missing transport credentials on first deploy, the caller also needs
+Agent `read` and `operate`.
+
 Deploy the Agent and capture the Agent revision ID:
 
 ```bash
@@ -408,12 +422,13 @@ export REVISION_ID &&
 printf '%s' "$REVISION_RESPONSE" | python3 -c 'import json,os,sys; data=json.load(sys.stdin); expected={"id":os.environ["REVISION_ID"],"agentId":os.environ["AGENT_ID"],"configurationId":os.environ["CONFIGURATION_ID"]}; sys.exit("Revision does not match this Agent and Configuration." if any(data.get(k)!=v for k,v in expected.items()) else 0)'
 ```
 
-`occ` exits unsuccessfully when deployment is rejected and returns the created
-AgentRevision for structured output. If `configuration.json` includes OCC
-`secretBindings`, the caller and Agent service principal must have `operate` on
-every selected Secret before deploy. Binding changes are authorized by OCC IAM;
-Kubernetes RoleBindings only allow the API to materialize backing tenant
-Secrets. Wait for this version's [deployment status](../../reference/agents.md#deployment-status)
+`occ` exits unsuccessfully when deployment is rejected. After admission, it
+prints the new AgentRevision and checks its [deployment status](../../reference/agents.md#deployment-status).
+If the CLI says you cannot read the new revision, deployment was accepted.
+Ask an Installation administrator for `read` on that `agent_revision`, then
+check it without deploying again. OCC IAM authorizes binding
+changes. Kubernetes RoleBindings allow the API to materialize backing tenant
+Secrets. Wait for the revision's deployment status
 to become `succeeded` before the checks below; admission and a selected version
 alone do not prove workspace connectivity.
 

@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   readFileSync,
   statSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -424,7 +425,25 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
           `Error from server (AlreadyExists): ${collection[kind]} "${name}" already exists`,
         );
       }
-      object.metadata.uid = randomUUID();
+      if (state.preflightFault?.mode === "interrupt") {
+        object.metadata.annotations = { "fixture/manifest": "private-manifest-sentinel" };
+        if (kind === "secret") {
+          object.data.fixture = Buffer.from("private-secret-sentinel").toString("base64");
+        }
+      }
+      object.metadata.uid =
+        (state.preflightFault?.target === target && state.preflightFault.uid) || randomUUID();
+      (state.preflight.created ??= []).push({ kind, name, uid: object.metadata.uid });
+      if (fault === "evidence-file" || fault === "evidence-symlink") {
+        const destination = join(root, "evidence", "preflight-secret-identity.json");
+        if (fault === "evidence-symlink") {
+          const target = join(root, "unrelated");
+          writeFileSync(target, "unrelated sentinel");
+          symlinkSync(target, destination);
+        } else {
+          writeFileSync(destination, "unrelated sentinel");
+        }
+      }
       inventory[name] =
         object.kind === "Pod"
           ? {
@@ -1136,9 +1155,23 @@ async function fixture(
   const directory = await mkdtemp(join(tmpdir(), "occ-upgrade-recovery-"));
   const bin = join(directory, "bin");
   await mkdir(bin);
+  let upgradeProcess;
+  let interrupted = false;
   const server = await startCommandServer({
     forwardedEnv: [],
-    handle: ({ command, args, cwd, io }) => fakeCommand(directory, { command, args, cwd }, io),
+    handle: ({ command, args, cwd, io }) => {
+      if (
+        preflightFault?.mode === "interrupt" &&
+        !interrupted &&
+        command === "kubectl" &&
+        args.includes("get") &&
+        args.some((arg) => arg.startsWith("pod/oce-upgrade-preflight-"))
+      ) {
+        interrupted = true;
+        upgradeProcess.kill("SIGTERM");
+      }
+      return fakeCommand(directory, { command, args, cwd }, io);
+    },
   });
   t.after(() => server.close());
   // Hooks run in order: stop answering commands before the directory goes.
@@ -1395,7 +1428,11 @@ async function fixture(
     kubernetesReads: api?.reads ?? [],
     executionReads: api?.executionReads ?? [],
     accessReviews: api?.reviews ?? [],
-    run: (...extra) => execute(script, [...args, ...extra], { cwd: repository, env }),
+    run: (...extra) => {
+      const result = execute(script, [...args, ...extra], { cwd: repository, env });
+      upgradeProcess = result.child;
+      return result;
+    },
     runWithStderr: (fd) =>
       spawnResult("/bin/bash", ["--", script, ...args], { cwd: repository, env }, fd),
     // Close the read end before launch; subprocess restores the CLI's default SIGPIPE.
@@ -3705,6 +3742,105 @@ test("an API preflight that reports no draft result stops the upgrade", async (t
 });
 
 // The command fixture models API inventory and conditional deletion; it is not a live cluster.
+// Read only the four fixed identity records, never manifests or create stdout.
+async function preflightIdentities(f) {
+  const records = [];
+  for (const slot of ["networkpolicy", "secret", "api", "worker"]) {
+    const filename = join(f.evidence, `preflight-${slot}-identity.json`);
+    let handle;
+    try {
+      handle = await open(
+        filename,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        continue;
+      }
+      throw error;
+    }
+    try {
+      const stats = await handle.stat();
+      assert.ok(stats.isFile());
+      assert.equal(stats.mode & 0o777, 0o600);
+      const text = await handle.readFile("utf8");
+      const record = JSON.parse(text);
+      assert.deepEqual(Object.keys(record).sort(), ["kind", "name", "uid"]);
+      assert.doesNotMatch(
+        text,
+        /private-response-marker|private-manifest-sentinel|private-secret-sentinel|installation.yaml|apiVersion|spec|data/,
+      );
+      records.push(record);
+    } finally {
+      await handle.close();
+    }
+  }
+  return records;
+}
+
+test("cleanup ownership: acknowledged identities survive a real interruption", async (t) => {
+  // Valid opaque UIDs need not be UUIDs, safe filenames, or unescaped JSON strings.
+  const uid = '../opaque/"\\雪;$(value)';
+  const f = await fixture(t, {
+    controllerOnly: true,
+    preflightPolicy: true,
+    preflightFault: { target: "secret", mode: "interrupt", uid },
+    preflightResults: {
+      api: { phase: "Succeeded", log: "installation-startup-ready\n" },
+      worker: { phase: "Succeeded", log: "installation-startup-ready\n" },
+    },
+  });
+  const failure = await f.run().catch((error) => error);
+  assert.equal(failure.code, 143);
+  assert.match(failure.stderr, /upgrade interrupted/);
+  assert.ok(existsSync(join(f.evidence, ".upgrade-lock")));
+  const state = await f.state();
+  const records = await preflightIdentities(f);
+  assert.equal(records.length, 4);
+  assert.equal(statSync(f.evidence).mode & 0o777, 0o700);
+  assert.ok(!(await readdir(f.evidence)).some((name) => name.endsWith("-identity.json.tmp")));
+  assert.deepEqual(records, state.preflight.created);
+  assert.equal(records.find((record) => record.kind === "secret").uid, uid);
+  assert.equal(new Set(records.map((record) => record.uid)).size, 4);
+  assert.deepEqual(state.preflight.deleted, []);
+  const secret = Object.values(state.preflight.secrets)[0];
+  for (const value of Object.values(secret.data)) {
+    assert.ok(!JSON.stringify(records).includes(value), "no Secret data in identity evidence");
+  }
+  assert.deepEqual(await f.events(), []);
+});
+
+test("cleanup ownership: local publication failure retains guarded cleanup", async (t) => {
+  for (const mode of ["evidence-file", "evidence-symlink"]) {
+    await t.test(mode, async (t) => {
+      const f = await fixture(t, {
+        controllerOnly: true,
+        preflightPolicy: true,
+        preflightFault: { target: "secret", mode },
+      });
+      const failure = await f.run().catch((error) => error);
+      assert.equal(failure.code, 1);
+      assert.match(
+        failure.stderr,
+        /create acknowledged, but local identity evidence could not be confirmed/,
+      );
+      assert.doesNotMatch(failure.stderr, /ownership unconfirmed|Traceback|unrelated sentinel/);
+      assert.ok(!failure.stderr.includes(f.evidence), "no local path in the diagnostic");
+      const state = await f.state();
+      assert.deepEqual(state.preflight.secrets, {});
+      assert.equal(state.preflight.deleted.length, 2);
+      assert.equal(state.preflight.created.length, 2, "stops before creating Pods");
+      const destination = join(f.evidence, "preflight-secret-identity.json");
+      assert.equal(await readFile(destination, "utf8"), "unrelated sentinel");
+      if (mode === "evidence-symlink") {
+        assert.equal(await readFile(join(f.directory, "unrelated"), "utf8"), "unrelated sentinel");
+      }
+      assert.ok(!(await readdir(f.evidence)).some((name) => name.endsWith("-identity.json.tmp")));
+      assert.deepEqual(await f.events(), []);
+    });
+  }
+});
+
 // kubectl's create output stays off the terminal but is kept in the private evidence
 // directory, so an operator can tell a refusal from a lost or unusable acknowledgement.
 for (const [target, mode, acknowledged, errors, reason, kubectlOutput] of [
@@ -3764,6 +3900,9 @@ for (const [target, mode, acknowledged, errors, reason, kubectlOutput] of [
     );
     assert.equal(remaining.length, 1, "only the unconfirmed object survives");
     assert.equal(state.preflight.deleted.length, acknowledged, "acknowledged objects are cleaned");
+    const identities = await preflightIdentities(f);
+    assert.equal(identities.length, acknowledged);
+    assert.ok(!identities.some((record) => record.uid === remaining[0].metadata.uid));
     assert.equal(failure.code, 1);
     assert.ok(
       failure.stderr.includes(
@@ -3798,6 +3937,7 @@ test("cleanup ownership: a Secret manifest kubectl quotes stays out of the evide
   // kubectl refused before any request; only the NetworkPolicy existed and is cleaned.
   assert.deepEqual(state.preflight.secrets, {});
   assert.equal(state.preflight.deleted.length, 1);
+  assert.equal((await preflightIdentities(f)).length, 1);
   // The diagnosis survives, but not the Installation bytes the Secret carried.
   const errors = await readFile(join(f.evidence, "preflight-secret-create.err"), "utf8");
   assert.match(errors, /^error: unable to decode "STDIN": Object 'Kind' is missing in '/);
@@ -3821,6 +3961,13 @@ test("cleanup ownership: same-name replacement survives EXIT cleanup", async (t)
   const state = await f.state();
   assert.equal(Object.values(state.preflight.pods).length, 1);
   assert.equal(Object.values(state.preflight.pods)[0].foreign, true);
+  const records = await preflightIdentities(f);
+  assert.deepEqual(records, state.preflight.created);
+  const replacement = Object.values(state.preflight.pods)[0];
+  assert.notEqual(
+    records.find((record) => record.name === replacement.metadata.name).uid,
+    replacement.metadata.uid,
+  );
   assert.equal(state.preflight.deleted.length, 3, "cleanup continues for other owned objects");
   assert.equal(failure.code, 1);
   assert.match(failure.stderr, /primary startup failure/);

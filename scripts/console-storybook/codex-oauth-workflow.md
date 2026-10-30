@@ -49,6 +49,25 @@ Repeat with **Components/Credentials → ChatGPT replacement interrupted by navi
 an interrupted reply; the browser regression also checks a real OCC commit with
 fixture Gateway and Refresh Drivers.
 
+## Reply after a tab switch
+
+Open **Components/Credentials → ChatGPT sign-in answered on another tab
+(Experimental)**. Choose **Sign in with OAuth**, then the **Configuration** tab
+within 3 seconds. Wait 3 seconds and return to **Credentials**. Confirm the code
+and an enabled **Cancel login**. The request log must show one start.
+
+Repeat with **ChatGPT sign-in refused on another tab (Experimental)**. On return,
+the refusal names the missing grants and **Sign in with OAuth** is enabled.
+
+Repeat the answered story, but before returning, choose **Edit Configuration**,
+change the JSON and choose **Save Configuration**. The rebuilt **Credentials**
+tab shows the same code.
+
+Open **ChatGPT sign-in restarted on another tab (Experimental)**. Choose **Sign
+in with OAuth**, then **Cancel login**, then **Sign in with OAuth** again and the
+**Configuration** tab within 3 seconds. On return, the code shows. The request
+log must show two starts and one cancellation.
+
 ## Inspect bootstrap failures
 
 1. Open **Pages/Create Agent → Initial deployment pending**. Choose **Create

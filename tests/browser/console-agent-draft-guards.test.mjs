@@ -2655,8 +2655,20 @@ test("a refocus after a Secret operate grant updates the Deploy note", async (t)
     await settlePageRequests(page);
   };
 
-  // Without a grant, the recheck keeps the note and Deploy stays refused.
-  await refocus();
+  // Without a grant, the recheck keeps the note and Deploy stays refused, also while it reads the
+  // Secret operate answer again: the last answer stands until the fresh one lands. The recheck
+  // cleared it first, so each refocus enabled Deploy and said "Ready to deploy." until the
+  // answer came back (finding 2987).
+  const recheck = await holdRequests(t, page, `${fixture.origin}${path}/permissions/secrets`, {
+    once: true,
+    method: "GET",
+  });
+  const rechecked = refocus();
+  await recheck.requested;
+  assert.equal(await note.isVisible(), true);
+  assert.equal(await deploy.isDisabled(), true);
+  recheck.release();
+  await rechecked;
   await note.waitFor();
   assert.equal(await deploy.isDisabled(), true);
 

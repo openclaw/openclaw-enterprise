@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
 import {
+  accountPrincipalId,
   assertConsoleSignIn,
   assertExternalSignInRefused,
   attachProvider,
@@ -209,12 +210,7 @@ test(
         exchanged.json().data.sessionKey,
       );
 
-      const principalId = (
-        await pool.query(
-          "SELECT principal_id FROM occ.human_authentication_accounts WHERE user_id = $1",
-          [member.id],
-        )
-      ).rows[0].principal_id;
+      const principalId = await accountPrincipalId(pool, member.id);
       const audits = (await state.transact((unit) => unit.audit.list()))
         .filter(
           ({ action, outcome, details }) =>

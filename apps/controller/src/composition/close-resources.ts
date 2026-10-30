@@ -8,7 +8,7 @@ export async function closeResources(
       await resource?.close();
     } catch (error) {
       // Fastify treats falsey hook rejections as successful shutdown.
-      firstFailure ??= error || new Error("API resource cleanup failed.", { cause: error });
+      firstFailure ??= error || new Error("Resource cleanup failed.", { cause: error });
     }
   }
   if (firstFailure !== undefined) {

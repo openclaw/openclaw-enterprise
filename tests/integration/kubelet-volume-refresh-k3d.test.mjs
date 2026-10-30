@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import {
   createKubernetesClient,
+  explicitK3dSelection,
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
@@ -18,10 +19,7 @@ import { waitUntil } from "../helpers/wait-for.mjs";
 // annotation on the running Pod is an update event, which syncs the Pod at once.
 
 const execute = promisify(execFile);
-const selection = {
-  kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
-  kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
-};
+const selection = explicitK3dSelection();
 const image = process.env.OCC_TEST_KUBERNETES_IMAGE;
 const requested = [...Object.values(selection), image].some(Boolean);
 

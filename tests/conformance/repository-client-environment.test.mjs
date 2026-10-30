@@ -2,20 +2,14 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import test from "node:test";
 import { createClientEnvironment } from "../../apps/controller/src/drivers/repo/github/credentials/client/environment.ts";
+import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
 import { setEnvironment } from "../helpers/environment.mjs";
 
 const configuration = {
   sessionId: "session",
   deadlineWallMs: Date.now() + 86400000,
   hasPublicCa: true,
-  client: {
-    gatewayOrigin: "https://credentials.example.test",
-    gitRemote: "https://credentials.example.test/example/project.git",
-    gitUsername: "gateway-session",
-    canonicalApiHost: "github.com",
-    apiHost: "credentials.example.test",
-    repository: "example/project",
-  },
+  client: repositoryClientData(),
 };
 
 test("repository client environment preserves only managed proxy and CA variables", (t) => {

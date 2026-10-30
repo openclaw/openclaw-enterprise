@@ -292,6 +292,29 @@ export function renderAgentLogs(
         : []),
     );
   }
+  // The latest deployment's failure, from the Agent page's recovery card. That card sits above
+  // the tabs, about 700 px above this view at phone width, so a redeploy from elsewhere that
+  // failed while Logs stayed open said nothing here (finding 2993). It is drawn in place, without
+  // moving focus or scrolling, and only when it changes, so a reader on its link keeps focus.
+  const deploymentFailureNotice = element("div", {
+    className: "log-deployment-failure",
+    role: "status",
+  });
+  let deploymentFailureShown: string | null = null;
+  function showDeploymentFailure(
+    failure: { revisionId: string; text: string; link: HTMLElement } | null,
+  ) {
+    const key = failure ? JSON.stringify([failure.revisionId, failure.text]) : null;
+    if (!current() || key === deploymentFailureShown) {
+      return;
+    }
+    deploymentFailureShown = key;
+    deploymentFailureNotice.replaceChildren(
+      ...(failure
+        ? [statusBlock("danger", null, failure.text, [failure.link], { role: null })]
+        : []),
+    );
+  }
   function showStripStatus(text: string) {
     setText(stripObserved, "");
     stripStatus.textContent = text;
@@ -1188,6 +1211,7 @@ export function renderAgentLogs(
     element("h3", {}, "Runtime"),
     stripLine,
     strip,
+    deploymentFailureNotice,
     runningVersionNotice,
     element(
       "div",
@@ -1322,5 +1346,5 @@ export function renderAgentLogs(
     .then(() => firstLogRead)
     .catch(() => {})
     .finally(showFirstView);
-  return { section, firstView };
+  return { section, firstView, showDeploymentFailure };
 }

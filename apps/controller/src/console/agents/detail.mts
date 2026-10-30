@@ -139,6 +139,7 @@ type DetailContext = ConsolePageContext & {
   namespaceId: string;
   agentId: string;
   onProtectedReadDenied(error: unknown, receipt: HTMLElement): void;
+  isPageCurrent?(): boolean;
 };
 type Permissions = Static<typeof AgentCallerPermissionsResponse>["data"];
 type RevisionPage = Awaited<ReturnType<typeof readRevisionPage>>;
@@ -217,6 +218,8 @@ interface MountedTab {
   reusable: boolean;
   loading: boolean;
   pending: number;
+  // Pending `keepsTab` writes, which do not stop the tab from being parked (finding 2980).
+  keeping: number;
   mutations: number;
   resumeDrafts?(): void;
   showBlock?(): void;
@@ -448,6 +451,9 @@ const CHANNEL_BINDING_CONSOLE_REMEDY = `This editor does not save Secret binding
 // slow link that read lands over a second after the page, and a failed version's banner then
 // pushed the shown overview down (finding 1489).
 export const FIRST_ACTIVITY_WAIT_MS = 2000;
+// How often a Logs status poll may list the versions while the Agent runs with no version
+// selected and nothing about it changed (finding 2988).
+const NEWER_VERSION_REREAD_MS = 60_000;
 // The badge tone of a recorded deployment outcome in the Agent summary; superseded and stopped
 // records stay neutral.
 const DEPLOYMENT_OUTCOME_TONES: Partial<Record<DeploymentOutcome, string>> = {
@@ -2263,6 +2269,8 @@ export async function renderAgentDetail(
   // service, with no hint (finding 2975). The reread updates the page in place, as a finished
   // deployment does; a new current version also needs the version list for its label.
   let servingReread: Promise<void> | null = null;
+  // When this reread last listed the versions to look for a newer one.
+  let newerVersionListedAt = Number.NEGATIVE_INFINITY;
   async function rereadServing() {
     const fresh = await readAgent();
     if (!context.isCurrent() || deleting) {
@@ -2274,30 +2282,52 @@ export async function renderAgentDetail(
       fresh.desiredRuntimeState !== currentRuntimeState;
     // A deployment requested elsewhere sets the Agent running and selects its version only once
     // it succeeds. Running with no version selected, while the newest listed version's own
-    // deployment is neither in progress nor failed, means a newer version exists: list it, so
-    // its deployment panel reads its outcome. A failed redeploy otherwise left the page on the
-    // stopped version's "Completed" until a reload (finding 2978).
+    // deployment is not in progress, can mean a newer version exists: list it, so its deployment
+    // panel reads its outcome. A failed redeploy otherwise left the page on the stopped version's
+    // "Completed" until a reload (finding 2978). The Agent read does not change when a second
+    // redeploy follows a failed one, and a newer version the caller cannot read is never listed,
+    // so with no change the list is read at most once a minute, not on every 10 s poll (finding
+    // 2988).
     const newerDeployment =
       fresh.status !== "deleting" &&
       fresh.desiredRuntimeState === "running" &&
       !fresh.activeRevisionId &&
       !deploymentPending(latestDeploymentStatus) &&
-      latestDeploymentStatus !== "failed";
+      (changed || Date.now() - newerVersionListedAt >= NEWER_VERSION_REREAD_MS);
     if (!changed && !newerDeployment) {
       return;
     }
     const unknownVersion =
       newerDeployment ||
       (fresh.activeRevisionId !== undefined && !listedRevisions.has(fresh.activeRevisionId));
-    const revisionResult: RevisionResult | null = unknownVersion
-      ? {
-          status: "fulfilled",
-          value: revisionsForPage(await readRevisionPage(request, path)),
-        }
-      : latestRevisionResult;
-    if (context.isCurrent() && !deleting) {
-      updateCurrentAgent(fresh, revisionResult, viewedSnapshot);
+    if (newerDeployment) {
+      newerVersionListedAt = Date.now();
     }
+    const page = unknownVersion ? revisionsForPage(await readRevisionPage(request, path)) : null;
+    if (!context.isCurrent() || deleting) {
+      return;
+    }
+    // A list with no new version or outcome changes nothing: the version chooser is not
+    // rebuilt, so an open dropdown stays open and keeps focus.
+    if (
+      !changed &&
+      page &&
+      latestRevisionResult?.status === "fulfilled" &&
+      page.revisions.every((revision) => {
+        const listed = listedRevisions.get(revision.id);
+        return (
+          listed?.deploymentStatus === revision.deploymentStatus &&
+          listed.deploymentErrorCode === revision.deploymentErrorCode
+        );
+      })
+    ) {
+      return;
+    }
+    updateCurrentAgent(
+      fresh,
+      page ? { status: "fulfilled", value: page } : latestRevisionResult,
+      viewedSnapshot,
+    );
   }
   async function runningVersion() {
     servingReread ??= rereadServing()
@@ -2320,10 +2350,15 @@ export async function renderAgentDetail(
   // The failed version the recovery block leads with, if any. The viewed version's record does
   // not repeat that version's error below it (finding 2368).
   let recoveryRevisionId: string | null = null;
+  // The recovery card's failure in one line, and the open Logs view that repeats it in place
+  // (finding 2993).
+  let recoveryLine: ReturnType<typeof recovery.show> = null;
+  let logsFailure: ((line: typeof recoveryLine) => void) | null = null;
   function showRecovery(failure: Parameters<typeof recovery.show>[0]) {
-    recovery.show(failure);
+    recoveryLine = recovery.show(failure);
     recoveryRevisionId = failure?.latest.id ?? null;
     versionRecord?.setFailureShownAbove(recoveryRevisionId === selected);
+    logsFailure?.(recoveryLine);
   }
 
   function renderLatestDeployment() {
@@ -3245,10 +3280,10 @@ export async function renderAgentDetail(
       );
     }
     if (generation === detailsGeneration) {
+      // Deploy keeps the last answer until the reread lands. Clearing it first enabled Deploy
+      // and said "Ready to deploy." on every refocus while the Secrets were read (finding 2987).
       refreshDeniedSecretNames = () => {
         if (generation === detailsGeneration && context.isCurrent()) {
-          deploySecretsDenied = { names: [], unreadable: 0 };
-          updateDeployControls();
           void readDeploySecretsDenied();
         }
       };
@@ -4158,7 +4193,7 @@ export async function renderAgentDetail(
           input.dispatchEvent(new Event("input", { bubbles: true }));
         }
       }
-      if (mountedTab.reusable && !mountedTab.loading && mountedTab.pending === 0) {
+      if (mountedTab.reusable && !mountedTab.loading && mountedTab.pending === mountedTab.keeping) {
         mountedTab.nodes = [...content.childNodes];
         // Its editor's block note returns with it, not the last built tab's (finding 1962).
         mountedTab.showBlock = showDraftEditorNavigationBlock;
@@ -4218,23 +4253,41 @@ export async function renderAgentDetail(
       reusable: true,
       loading: true,
       pending: 0,
+      keeping: 0,
       mutations: context.mutationVersion(),
     };
     mountedTab = state;
     const tabContext: DetailContext = {
       ...context,
       isCurrent: () => context.isCurrent() && mountedTab === state,
+      isPageCurrent: () => context.isCurrent(),
       request: async (readPath, options) => {
         const read = (options?.method ?? "GET") === "GET";
+        const keeps = options?.keepsTab === true;
+        const showsOutcome = keeps || options?.showsOutcome === true;
+        const unchanged = state.mutations === context.mutationVersion();
         state.pending += 1;
+        if (keeps) {
+          state.keeping += 1;
+        }
         try {
-          const result = await context.request(readPath, options);
+          const reply = context.request(readPath, options);
+          // The tab shows this write's outcome itself, so that write alone does not make it
+          // stale: a second OAuth start after a poll or Cancel login is kept too (finding 2981).
+          if (showsOutcome && unchanged) {
+            state.mutations = context.mutationVersion();
+          }
+          const result = await reply;
           if (read) {
             allowedReads.add(readPath);
           }
           return result;
         } catch (error) {
-          state.reusable = false;
+          // The tab shows this write's refusal, as of an OAuth start: it stays reusable, so a
+          // retry can still be kept (finding 2980).
+          if (!showsOutcome) {
+            state.reusable = false;
+          }
           // Any tab's refusal of a read the page had the grant for, not only Logs', makes the next
           // tab change read the page again instead of reusing tabs read before (finding 2568).
           if (read && requestFailure(error).status === 403 && readHadGrant(readPath)) {
@@ -4243,6 +4296,9 @@ export async function renderAgentDetail(
           throw error;
         } finally {
           state.pending -= 1;
+          if (keeps) {
+            state.keeping -= 1;
+          }
         }
       },
     };
@@ -4397,6 +4453,14 @@ export async function renderAgentDetail(
         },
         runningVersion,
       });
+      logsFailure = (line) =>
+        logs.showDeploymentFailure(
+          line && {
+            ...line,
+            link: versionLink(`View ${line.version} deployment`, line.revisionId, "deployment"),
+          },
+        );
+      logsFailure(recoveryLine);
       content.append(logs.section);
       state.loading = false;
       // The pending view is nearly empty: Stop and Delete sat under it, then the strip and
@@ -4806,6 +4870,7 @@ export async function renderAgentDetail(
         servicePrincipalId: agent.servicePrincipalId,
       };
       let syncUnsavedAuthentication = () => {};
+      let recordAuthentication = () => {};
       const auth = createHarnessAuthFields(
         { ...context, secretsOperateDenied },
         agent.harnessAuth,
@@ -4814,6 +4879,7 @@ export async function renderAgentDetail(
           agentName: agent.name,
           draft: retained?.fields,
           onChange: () => syncUnsavedAuthentication(),
+          onStartSettled: () => recordAuthentication(),
         },
       );
       const feedback = element("p", { role: "status", className: "hint" }, savedNotice);
@@ -5011,7 +5077,7 @@ export async function renderAgentDetail(
       form.addEventListener("input", () => syncUnsavedAuthentication());
       form.addEventListener("change", () => syncUnsavedAuthentication());
       syncUnsavedAuthentication();
-      context.drafts.track("authentication", () => {
+      const captureAuthentication = () => {
         const fields = auth.capture();
         return pending ||
           outcomeUnknown ||
@@ -5026,7 +5092,11 @@ export async function renderAgentDetail(
               ...(grantProblem ? { grantProblem } : {}),
             }
           : undefined;
-      });
+      };
+      context.drafts.track("authentication", captureAuthentication);
+      // An OAuth start answered after this tab was left updates the draft a rebuilt tab reads,
+      // unless a newer Credentials tab tracks it (finding 2981).
+      recordAuthentication = () => context.drafts.record("authentication", captureAuthentication);
       if (savedAuthentication) {
         save.textContent = "Retry credential access";
         setAuthUnavailable(true);
