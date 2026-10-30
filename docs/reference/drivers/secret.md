@@ -194,17 +194,30 @@ backend-reference format, splitting the digest into DNS labels of at most
 32 characters. Every operation reconstructs and verifies that ARN;
 changed account, region, prefix, Namespace, Driver, or resource identity fails
 closed. Requests use the complete ARN, never a partial ARN or name fallback.
-Live ownership checks require `openclaw:managed-by`, `openclaw:namespace`,
-`openclaw:secret`, and `openclaw:driver` tags.
+The Driver checks four ownership tags on the live resource.
 
-Grant the controller role `secretsmanager:CreateSecret`, `TagResource`,
-`DescribeSecret`, `GetSecretValue`, `PutSecretValue`, and `DeleteSecret` only
-within its account, region, and prefix. Constrain creation with `aws:RequestTag`
-and existing resources with `aws:ResourceTag` conditions for the ownership tags.
-Deny changes to ownership tags after creation and deny resource replacement by
-untrusted principals. Tag reads and writes are not an atomic authorization fence;
-AWS IAM must enforce these boundaries too. A customer-managed KMS key also needs
-appropriate `kms:GenerateDataKey` and `kms:Decrypt` grants and key policy.
+Scope the controller role to its account, region, and prefix. For creation, grant
+`secretsmanager:CreateSecret` and `secretsmanager:TagResource` with
+`aws:RequestTag` conditions for the expected ownership tags. Prevent untrusted
+principals from replacing Secrets or changing their ownership tags after creation.
+
+For existing Secrets, IAM must pair the Namespace and Secret identified by the ARN
+with their expected ownership tags on every `DescribeSecret`, `GetSecretValue`,
+`PutSecretValue`, and `DeleteSecret` the role can perform. An earlier `DescribeSecret` cannot protect
+a later request if the tags change. A policy that lists the ARNs for Namespaces
+A and B and accepts either namespace tag can still allow a read of A's Secret
+after someone changes its namespace tag to B.
+
+For a fixed set of existing Secrets, one conservative policy uses a separate
+`Allow` statement for each complete ARN. Require `StringEquals` on all four
+`aws:ResourceTag` conditions in that statement. Match `openclaw:namespace` to the
+Namespace ID, `openclaw:secret` to the Secret ID, `openclaw:driver` to the selected
+Driver ID, and `openclaw:managed-by` to `openclaw-enterprise`.
+
+Check other identity and resource policies for broader grants. A customer-managed KMS key also requires appropriate
+`kms:GenerateDataKey` and `kms:Decrypt` grants and key policy. See the
+[Secrets Manager action and condition keys](https://docs.aws.amazon.com/service-authorization/latest/reference/list_secretsmanager.html)
+and [tag-based access examples](https://docs.aws.amazon.com/secretsmanager/latest/userguide/auth-and-access-abac.html).
 
 Updates create an AWS version and move `AWSCURRENT`; they refuse an observed
 separate `AWSPENDING` rotation version. Trusted reads request both the observed
