@@ -50,8 +50,10 @@ async function localRuntimeImage(): Promise<string> {
 // function's own test (worker-shutdown.test.ts) calls it directly, so dropping the worker stop
 // or a listener from worker.mjs's call passed every lane. This boots the real worker.mjs
 // process against PostgreSQL and the Docker Engine, as the development stack runs it, and
-// sends SIGTERM as the kubelet or Compose does. Any part the call skips keeps a timer, pool
-// or listener open, so the process would run until SIGKILL instead of exiting with code 0.
+// sends SIGTERM as the kubelet or Compose does. A skipped listener or worker loop timer keeps
+// the process running until SIGKILL instead of exiting with code 0. A database pool left open
+// (worker.stop() or closeMetrics() not ending its pool) only delays the exit until pg's 10 s
+// idle timeout closes its clients, so the exit must also come well before that (finding 2999).
 // Not covered here: the repository receipt server, which starts only with native repository
 // delivery and therefore the bundled Kubernetes Compute Driver, whose preflight needs a cluster.
 test(
@@ -127,6 +129,7 @@ test(
       `worker.started is logged before the worker reports ready:\n${output}`,
     );
 
+    const signalled = performance.now();
     child.kill("SIGTERM");
     // An idle worker closes in well under a second; the bound only absorbs a loaded runner.
     const [code, signal] = await Promise.race([
@@ -140,7 +143,14 @@ test(
       }),
     ]);
 
+    const exitMs = performance.now() - signalled;
+
     assert.deepEqual({ code, signal }, { code: 0, signal: null }, output);
+    // About 60 ms at 2 CPUs; a pool left open exits only after its 10 s idle timeout.
+    assert.ok(
+      exitMs < 5_000,
+      `worker.mjs exited ${Math.round(exitMs)} ms after SIGTERM:\n${output}`,
+    );
     const logged = events(output);
     // The worker stop ran to its end, and no shutdown step reported a failure.
     assert.equal(logged.at(-1), "worker.stopped", output);
