@@ -1670,6 +1670,40 @@ test(
 );
 
 test(
+  "template versions pin the revocation URL through upgrades and edits",
+  requiresHistoryPostgres,
+  async (t) => {
+    const db = await historyDatabase(t, await migrationHistoryFixture(), "revocation_url", {
+      prefix: 65,
+    });
+    const templateId = await seedLegacyConnectionTemplate(db);
+    assert.deepEqual(await runHistoryMigration(db), { ok: true, history: "preOAuthRevocationUrl" });
+    const store = postgresConnectionTemplates(db.app, async () => {});
+    const original = (await store.findConnectionTemplate(templateId)).current;
+    assert.equal(Object.hasOwn(original, "revocationUrl"), false);
+
+    const added = { ...original, version: 2, revocationUrl: "https://issuer.example/revoke" };
+    const changed = { ...added, version: 3, revocationUrl: "https://issuer.example/revoke?v=2" };
+    const cleared = { ...original, version: 4 };
+    let previous = original;
+    for (const version of [added, changed, cleared]) {
+      assert.equal(connectionValuesChanged(previous, version), true);
+      assert.deepEqual(
+        (await store.updateConnectionTemplate(templateId, { version })).current,
+        version,
+      );
+      previous = version;
+    }
+    for (const version of [original, added, changed, cleared]) {
+      assert.deepEqual(
+        await store.findConnectionTemplateVersion(templateId, version.version),
+        version,
+      );
+    }
+  },
+);
+
+test(
   "MCP template migration preserves existing consent and versions the approved resource",
   requiresHistoryPostgres,
   async (t) => {

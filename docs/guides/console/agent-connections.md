@@ -14,6 +14,11 @@ connected account is removed from every version that holds it.
 
 You need Installation administration.
 
+For an MCP server, choose **New MCP connection template**. Console discovers
+its OAuth settings and offers client registration when the issuer supports it.
+Follow the [MCP setup steps](../../reference/connection-templates.md#discover-an-mcp-connection-template).
+For a provider configured manually, follow the steps below.
+
 1. Open **Settings**. The **Connection templates** card lists each template, its
    version, its OAuth client, and its **Redirect URI**.
 2. Choose **New connection template**. For Google, choose

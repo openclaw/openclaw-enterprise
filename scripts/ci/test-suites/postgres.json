@@ -9,6 +9,7 @@
       "expectedTests": [
         "First installation requires empty migration history under the migration lock",
         "Agent connection profile migration upgrades the previous connection schema",
+        "template versions pin the revocation URL through upgrades and edits",
         "MCP template migration preserves existing consent and versions the approved resource",
         "Canonical repository-prefix upgrade retains exact attempt cleanup context",
         "Drizzle generates repository schema migrations without redundant regeneration",

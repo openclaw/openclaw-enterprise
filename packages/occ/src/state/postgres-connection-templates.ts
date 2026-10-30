@@ -11,7 +11,7 @@ import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 type Row = Record<string, unknown>;
 
 const versionColumns = `v.template_id, v.version, v.client_registration_id, v.issuer, v.client_id,
-  v.authorization_url, v.token_url, v.scopes, v.authorization_parameters, v.endpoint_host,
+  v.authorization_url, v.token_url, v.revocation_url, v.scopes, v.authorization_parameters, v.endpoint_host,
   v.endpoint_port, v.endpoint_path, v.env_var, v.mcp_server_url, v.mcp_resource,
   v.created_at AS version_created_at`;
 
@@ -58,6 +58,7 @@ function versionFromRow(row: Row): ConnectionTemplateVersion {
     clientId: text(row, "client_id"),
     authorizationUrl: text(row, "authorization_url"),
     tokenUrl: text(row, "token_url"),
+    ...(row.revocation_url === null ? {} : { revocationUrl: text(row, "revocation_url") }),
     scopes,
     authorizationParameters: parameters as Record<string, string>,
     endpoint: {
@@ -97,8 +98,8 @@ async function insertVersion(
     `INSERT INTO occ.connection_template_versions
      (template_id, version, client_registration_id, issuer, client_id, authorization_url,
       token_url, scopes, authorization_parameters, endpoint_host, endpoint_port, endpoint_path,
-      env_var, created_at, mcp_server_url, mcp_resource)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9::jsonb, $10, $11, $12, $13, $14, $15, $16)`,
+      env_var, created_at, mcp_server_url, mcp_resource, revocation_url)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17)`,
     [
       version.templateId,
       version.version,
@@ -116,6 +117,7 @@ async function insertVersion(
       version.createdAt,
       version.mcp?.serverUrl ?? null,
       version.mcp?.resource ?? null,
+      version.revocationUrl ?? null,
     ],
   );
 }

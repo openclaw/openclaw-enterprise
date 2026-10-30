@@ -175,6 +175,9 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 51) {
         return "preProvisioningDeploymentOutcome";
       }
+      if (receipts.length === 65) {
+        return "preOAuthRevocationUrl";
+      }
       if (receipts.length === 64) {
         return "preCredentialSourceProfiles";
       }
@@ -221,6 +224,9 @@ function classifyReceipts(receipts, manifest) {
     }
   } else {
     requireReceiptsMatchEntries(receipts, manifest.entries);
+  }
+  if (receipts.length === 65) {
+    return "preOAuthRevocationUrl";
   }
   if (receipts.length === 64) {
     return "preCredentialSourceProfiles";

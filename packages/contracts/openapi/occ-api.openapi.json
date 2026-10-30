@@ -10897,6 +10897,12 @@
                                 "required": ["serverUrl", "resource"],
                                 "type": "object"
                               },
+                              "revocationUrl": {
+                                "maxLength": 2048,
+                                "minLength": 9,
+                                "pattern": "^https://",
+                                "type": "string"
+                              },
                               "scopes": { "items": { "type": "string" }, "type": "array" },
                               "tokenUrl": { "type": "string" },
                               "version": { "minimum": 1, "type": "integer" }
@@ -10998,6 +11004,9 @@
             "application/json": {
               "schema": {
                 "additionalProperties": false,
+                "description": "Supply a registered client ID or request dynamic registration at the reviewed MCP registration URL.",
+                "else": { "required": ["clientId"] },
+                "if": { "required": ["registrationUrl"] },
                 "properties": {
                   "authorizationParameters": {
                     "additionalProperties": { "maxLength": 512, "type": "string" },
@@ -11054,6 +11063,18 @@
                     "required": ["serverUrl", "resource"],
                     "type": "object"
                   },
+                  "registrationUrl": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
+                  "revocationUrl": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
                   "scopes": {
                     "items": {
                       "maxLength": 512,
@@ -11077,15 +11098,19 @@
                   "issuer",
                   "authorizationUrl",
                   "tokenUrl",
-                  "clientId",
                   "scopes",
                   "endpoint",
                   "envVar"
                 ],
+                "then": {
+                  "properties": { "clientId": false, "clientSecret": false },
+                  "required": ["mcp"]
+                },
                 "type": "object"
               }
             }
           },
+          "description": "Supply a registered client ID or request dynamic registration at the reviewed MCP registration URL.",
           "required": true
         },
         "responses": {
@@ -11140,6 +11165,12 @@
                               },
                               "required": ["serverUrl", "resource"],
                               "type": "object"
+                            },
+                            "revocationUrl": {
+                              "maxLength": 2048,
+                              "minLength": 9,
+                              "pattern": "^https://",
+                              "type": "string"
                             },
                             "scopes": { "items": { "type": "string" }, "type": "array" },
                             "tokenUrl": { "type": "string" },
@@ -11237,6 +11268,12 @@
             },
             "description": "Default Response"
           },
+          "501": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
           "503": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
@@ -11297,7 +11334,20 @@
                           "pattern": "^https://",
                           "type": "string"
                         },
+                        "redirectUri": { "type": "string" },
+                        "registrationUrl": {
+                          "maxLength": 2048,
+                          "minLength": 9,
+                          "pattern": "^https://",
+                          "type": "string"
+                        },
                         "resource": {
+                          "maxLength": 2048,
+                          "minLength": 9,
+                          "pattern": "^https://",
+                          "type": "string"
+                        },
+                        "revocationUrl": {
                           "maxLength": 2048,
                           "minLength": 9,
                           "pattern": "^https://",
@@ -11555,6 +11605,12 @@
                               "required": ["serverUrl", "resource"],
                               "type": "object"
                             },
+                            "revocationUrl": {
+                              "maxLength": 2048,
+                              "minLength": 9,
+                              "pattern": "^https://",
+                              "type": "string"
+                            },
                             "scopes": { "items": { "type": "string" }, "type": "array" },
                             "tokenUrl": { "type": "string" },
                             "version": { "minimum": 1, "type": "integer" }
@@ -11722,6 +11778,17 @@
                     "required": ["serverUrl", "resource"],
                     "type": "object"
                   },
+                  "revocationUrl": {
+                    "anyOf": [
+                      {
+                        "maxLength": 2048,
+                        "minLength": 9,
+                        "pattern": "^https://",
+                        "type": "string"
+                      },
+                      { "type": "null" }
+                    ]
+                  },
                   "scopes": {
                     "items": {
                       "maxLength": 512,
@@ -11799,6 +11866,12 @@
                               "required": ["serverUrl", "resource"],
                               "type": "object"
                             },
+                            "revocationUrl": {
+                              "maxLength": 2048,
+                              "minLength": 9,
+                              "pattern": "^https://",
+                              "type": "string"
+                            },
                             "scopes": { "items": { "type": "string" }, "type": "array" },
                             "tokenUrl": { "type": "string" },
                             "version": { "minimum": 1, "type": "integer" }
@@ -11872,6 +11945,18 @@
             "description": "Default Response"
           },
           "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
             },
@@ -11980,6 +12065,12 @@
                               "required": ["serverUrl", "resource"],
                               "type": "object"
                             },
+                            "revocationUrl": {
+                              "maxLength": 2048,
+                              "minLength": 9,
+                              "pattern": "^https://",
+                              "type": "string"
+                            },
                             "scopes": { "items": { "type": "string" }, "type": "array" },
                             "tokenUrl": { "type": "string" },
                             "version": { "minimum": 1, "type": "integer" }
@@ -12053,6 +12144,18 @@
             "description": "Default Response"
           },
           "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
             },
@@ -27518,6 +27621,12 @@
                                 },
                                 "required": ["serverUrl", "resource"],
                                 "type": "object"
+                              },
+                              "revocationUrl": {
+                                "maxLength": 2048,
+                                "minLength": 9,
+                                "pattern": "^https://",
+                                "type": "string"
                               },
                               "scopes": { "items": { "type": "string" }, "type": "array" },
                               "tokenUrl": { "type": "string" },

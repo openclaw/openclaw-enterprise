@@ -1,7 +1,7 @@
 ---
 created: "2026-10-20"
 updated: "2026-10-30"
-last_updated_session: "authoring-run/736dede9-441f-4c48-8be0-afb1c1921afa"
+last_updated_session: "authoring-run/8a02f39b-ba03-418f-9b9a-2eb55712ab2c"
 ---
 
 # Agent OAuth connection lifecycle Flow
@@ -19,8 +19,13 @@ removes it. Deployment and attachment continue in the
 
 Administrators can prepare an MCP connection template in Settings. The OCE API
 uses the MCP SDK to read the server's public OAuth metadata, then repeats discovery
-when the administrator saves. OCC checks the settings against that metadata before
-registering the client. The saved version pins the server URL and OAuth resource.
+when the administrator saves. If the administrator selects dynamic registration,
+`OpenClawController.createConnectionTemplate` verifies the registration endpoint
+and approved scopes against the new discovery result. The MCP SDK sends the
+configured OCE callback URI and those scopes to the issuer. OCC stores the
+returned client through the same registration path as a manually supplied
+client. The saved version pins the server URL, OAuth resource, and any approved
+revocation URL.
 Connecting an Agent returns `501` before creating a credential source. That step
 requires the Token Service to accept the OAuth grant for refresh.
 [Connection template setup](../reference/connection-templates.md#discover-an-mcp-connection-template)
@@ -216,6 +221,8 @@ deletion.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 06:56: Trace dynamic client registration during template setup. (authoring-run/8a02f39b-ba03-418f-9b9a-2eb55712ab2c - e1ce2f4a)
 
 - 2026-10-30 01:16: Trace account profile reads to the bound credential source. (authoring-run/736dede9-441f-4c48-8be0-afb1c1921afa - b4be38e2)
 

@@ -14,6 +14,8 @@ export interface McpAuthorizationMetadata {
   readonly issuer: string;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
+  readonly registrationUrl?: string;
+  readonly revocationUrl?: string;
   readonly scopes: readonly string[];
 }
 
@@ -24,6 +26,7 @@ export interface ConnectionTemplateValues {
   readonly issuer: string;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
+  readonly revocationUrl?: string;
   readonly clientId: string;
   readonly scopes: readonly string[];
   readonly authorizationParameters: Readonly<Record<string, string>>;
@@ -70,6 +73,7 @@ export function connectionValuesChanged(
     current.issuer !== next.issuer ||
     current.authorizationUrl !== next.authorizationUrl ||
     current.tokenUrl !== next.tokenUrl ||
+    current.revocationUrl !== next.revocationUrl ||
     current.clientId !== next.clientId ||
     current.envVar !== next.envVar ||
     current.endpoint.host !== next.endpoint.host ||

@@ -1318,6 +1318,7 @@ List Installation connection templates
 | `data[].current.mcp` | `object` | No | — |
 | `data[].current.mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
 | `data[].current.mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data[].current.revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `data[].current.scopes` | `array<string>` | Yes | — |
 | `data[].current.tokenUrl` | `string` | Yes | — |
 | `data[].current.version` | `integer` | Yes | minimum: 1 |
@@ -1351,7 +1352,7 @@ Create an Installation connection template
 | --- | --- | --- | --- |
 | `authorizationParameters` | `object<string, string>` | No | — |
 | `authorizationUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
-| `clientId` | `string` | Yes | min length: 1; max length: 256 |
+| `clientId` | `string` | No | min length: 1; max length: 256 |
 | `clientSecret` | `string` | No | min length: 1; max length: 4096 |
 | `displayName` | `string` | Yes | min length: 1; max length: 200 |
 | `endpoint` | `object` | Yes | — |
@@ -1363,6 +1364,8 @@ Create an Installation connection template
 | `mcp` | `object` | No | — |
 | `mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
 | `mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `registrationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
+| `revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `scopes` | `array<string>` | Yes | min items: 1; max items: 32 |
 | `tokenUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
 
@@ -1379,6 +1382,7 @@ Create an Installation connection template
 | `413` | Payload Too Large |
 | `415` | Unsupported Media Type |
 | `500` | Internal Server Error |
+| `501` | Not Implemented |
 | `503` | Service Unavailable |
 
 **`201` response body:** `application/json`
@@ -1402,6 +1406,7 @@ Create an Installation connection template
 | `data.current.mcp` | `object` | No | — |
 | `data.current.mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
 | `data.current.mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.current.revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `data.current.scopes` | `array<string>` | Yes | — |
 | `data.current.tokenUrl` | `string` | Yes | — |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
@@ -1458,7 +1463,10 @@ Discover OAuth settings for an MCP connection template
 | `data` | `object` | Yes | — |
 | `data.authorizationUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
 | `data.issuer` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.redirectUri` | `string` | No | — |
+| `data.registrationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `data.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `data.scopes` | `array<string>` | Yes | — |
 | `data.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
 | `data.tokenUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
@@ -1551,6 +1559,7 @@ Get one connection template
 | `data.current.mcp` | `object` | No | — |
 | `data.current.mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
 | `data.current.mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.current.revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `data.current.scopes` | `array<string>` | Yes | — |
 | `data.current.tokenUrl` | `string` | Yes | — |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
@@ -1602,6 +1611,7 @@ Rename a connection template, or create a version with new approved values
 | `mcp` | `object` | No | — |
 | `mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
 | `mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `revocationUrl` | `string or null` | No | — |
 | `scopes` | `array<string>` | No | min items: 1; max items: 32 |
 | `tokenUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 
@@ -1615,6 +1625,8 @@ Rename a connection template, or create a version with new approved values
 | `403` | Forbidden |
 | `404` | Not Found |
 | `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
 | `500` | Internal Server Error |
 | `503` | Service Unavailable |
 
@@ -1639,6 +1651,7 @@ Rename a connection template, or create a version with new approved values
 | `data.current.mcp` | `object` | No | — |
 | `data.current.mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
 | `data.current.mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.current.revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `data.current.scopes` | `array<string>` | Yes | — |
 | `data.current.tokenUrl` | `string` | Yes | — |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
@@ -1688,6 +1701,8 @@ Replace the OAuth client secret used by new connections
 | `403` | Forbidden |
 | `404` | Not Found |
 | `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
 | `500` | Internal Server Error |
 | `503` | Service Unavailable |
 
@@ -1712,6 +1727,7 @@ Replace the OAuth client secret used by new connections
 | `data.current.mcp` | `object` | No | — |
 | `data.current.mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
 | `data.current.mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data.current.revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `data.current.scopes` | `array<string>` | Yes | — |
 | `data.current.tokenUrl` | `string` | Yes | — |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
@@ -1929,6 +1945,7 @@ List connection templates the caller may connect in this Namespace
 | `data[].current.mcp` | `object` | No | — |
 | `data[].current.mcp.resource` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
 | `data[].current.mcp.serverUrl` | `string` | Yes | min length: 9; max length: 2048; pattern: `^https://` |
+| `data[].current.revocationUrl` | `string` | No | min length: 9; max length: 2048; pattern: `^https://` |
 | `data[].current.scopes` | `array<string>` | Yes | — |
 | `data[].current.tokenUrl` | `string` | Yes | — |
 | `data[].current.version` | `integer` | Yes | minimum: 1 |

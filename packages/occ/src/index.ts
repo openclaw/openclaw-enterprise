@@ -589,6 +589,11 @@ export type RuntimeLogReadAdmission = <T>(read: () => Promise<T>) => Promise<T>;
 
 export interface ControllerOptions {
   readonly discoverMcpAuthorization?: (serverUrl: string) => Promise<McpAuthorizationMetadata>;
+  readonly registerMcpOAuthClient?: (
+    metadata: Readonly<McpAuthorizationMetadata>,
+    redirectUri: string,
+    scopes: readonly string[],
+  ) => Promise<{ readonly clientId: string; readonly clientSecret: string }>;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   readonly authorize?: (
     request: AuthorizationRequest,
@@ -778,6 +783,7 @@ export interface ConnectionTemplateInput {
   readonly issuer: string;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
+  readonly revocationUrl?: string;
   readonly clientId: string;
   readonly scopes: readonly string[];
   readonly authorizationParameters?: Readonly<Record<string, string>>;
@@ -785,12 +791,25 @@ export interface ConnectionTemplateInput {
   readonly envVar: string;
 }
 
-export interface CreateConnectionTemplateInput extends ConnectionTemplateInput {
-  /** Required only when no registration exists yet for this issuer and client ID. */
-  readonly clientSecret?: string;
-}
+export type CreateConnectionTemplateInput = Omit<ConnectionTemplateInput, "clientId"> &
+  (
+    | {
+        readonly clientId: string;
+        readonly clientSecret?: string;
+        readonly registrationUrl?: never;
+      }
+    | {
+        readonly mcp: NonNullable<ConnectionTemplateValues["mcp"]>;
+        readonly registrationUrl: string;
+        readonly clientId?: never;
+        readonly clientSecret?: never;
+      }
+  );
 
-export type UpdateConnectionTemplateInput = Partial<ConnectionTemplateInput> & {
+export type UpdateConnectionTemplateInput = Partial<
+  Omit<ConnectionTemplateInput, "revocationUrl">
+> & {
+  readonly revocationUrl?: string | null;
   readonly clientSecret?: string;
 };
 
@@ -1088,17 +1107,29 @@ function revisionHoldsCredentialSource(
   );
 }
 
-/** A name-based (version 5 layout) UUID, so a replayed registration step reuses its request ID. */
 /** Normalizes connection template input; the database enforces every value format. */
-function connectionTemplateValues(
-  input: Omit<ConnectionTemplateInput, "displayName">,
-): ConnectionTemplateValues {
+function connectionTemplateSettings(
+  input: Omit<ConnectionTemplateInput, "displayName" | "clientId" | "revocationUrl"> & {
+    readonly revocationUrl?: string | null;
+  },
+): Omit<ConnectionTemplateValues, "clientId"> {
+  if (input.revocationUrl != null) {
+    if (
+      !URL.canParse(input.revocationUrl) ||
+      !/^https:\/\/[^/?#@\s]+(?:[/?][^#\s]*)?$/u.test(input.revocationUrl) ||
+      input.revocationUrl.length > 2048
+    ) {
+      throw new ScopeViolationError(
+        "The revocation URL must be an HTTPS endpoint without user information or a fragment.",
+      );
+    }
+  }
   return Object.freeze({
     ...(input.mcp ? { mcp: Object.freeze({ ...input.mcp }) } : {}),
     issuer: input.issuer,
     authorizationUrl: input.authorizationUrl,
     tokenUrl: input.tokenUrl,
-    clientId: input.clientId,
+    ...(input.revocationUrl == null ? {} : { revocationUrl: input.revocationUrl }),
     scopes: Object.freeze([...input.scopes]),
     authorizationParameters: Object.freeze({ ...(input.authorizationParameters ?? {}) }),
     endpoint: Object.freeze({
@@ -1661,6 +1692,7 @@ export class OpenClawController {
 
   private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
   private readonly mcpDiscovery?: ControllerOptions["discoverMcpAuthorization"];
+  private readonly registerMcpOAuthClient?: ControllerOptions["registerMcpOAuthClient"];
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly clock: () => Date;
   private readonly identifier?: ControllerOptions["createId"];
@@ -1703,6 +1735,7 @@ export class OpenClawController {
     validateSandboxNetworkGrants(options.sandboxNetworkPolicyCeiling ?? []);
     this.sandboxNetworkPolicyCeiling = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
     this.mcpDiscovery = options.discoverMcpAuthorization;
+    this.registerMcpOAuthClient = options.registerMcpOAuthClient;
     this.authorization = options.authorize;
     this.clock = options.now ?? (() => new Date());
     this.identifier = options.createId;
@@ -6073,18 +6106,43 @@ export class OpenClawController {
   async createConnectionTemplate(
     principalId: string,
     input: CreateConnectionTemplateInput,
+    redirectUri?: string,
   ): Promise<Readonly<ConnectionTemplate>> {
     await this.authorize(principalId, "create", this.connectionTemplateRef(this.installation.id));
     const refresh = this.connectionRefreshDriver();
     const templateId = this.nextIdentifier("connection_template");
     const createdAt = this.timestamp();
-    const values = connectionTemplateValues(input);
-    await this.validateConnectionTemplate(values);
+    const displayName = connectionDisplayName(input.displayName);
+    const settings = connectionTemplateSettings(input);
+    const metadata = await this.validateConnectionTemplate(settings, input.clientId);
+    let clientId: string;
+    let clientSecret: string | undefined;
+    if (input.registrationUrl !== undefined) {
+      if (!metadata || metadata.registrationUrl !== input.registrationUrl) {
+        throw new ResourceStateConflictError(
+          "The MCP registration endpoint changed. Discover settings again.",
+        );
+      }
+      if (!this.registerMcpOAuthClient || !redirectUri) {
+        throw new NotImplementedError(
+          "connection_templates",
+          "Dynamic client registration requires an OCE callback URI and an MCP registration client.",
+        );
+      }
+      ({ clientId, clientSecret } = await this.registerMcpOAuthClient(
+        metadata,
+        redirectUri,
+        settings.scopes,
+      ));
+    } else {
+      ({ clientId, clientSecret } = input);
+    }
+    const values = { ...settings, clientId };
     const registration = await this.connectionClientRegistration(
       refresh,
       values.issuer,
       values.clientId,
-      input.clientSecret,
+      clientSecret,
     );
     try {
       return await this.mutate(async (state) => {
@@ -6098,7 +6156,7 @@ export class OpenClawController {
         }
         return state.connectionTemplates.createConnectionTemplate({
           id: templateId,
-          displayName: connectionDisplayName(input.displayName),
+          displayName,
           createdAt,
           current: {
             ...values,
@@ -6124,10 +6182,11 @@ export class OpenClawController {
   ): Promise<Readonly<ConnectionTemplate>> {
     await this.authorize(principalId, "update", this.connectionTemplateRef(templateId));
     const current = await this.getConnectionTemplate(principalId, templateId);
-    const values = connectionTemplateValues({ ...current.current, ...input });
+    const next = { ...current.current, ...input };
+    const values = { ...connectionTemplateSettings(next), clientId: next.clientId };
     const changed = connectionValuesChanged(current.current, values);
     if (changed) {
-      await this.validateConnectionTemplate(values);
+      await this.validateConnectionTemplate(values, values.clientId);
     }
     const refresh = this.connectionRefreshDriver();
     const registration = changed
@@ -6193,8 +6252,9 @@ export class OpenClawController {
    * its gateway cannot reach, so administrators see the error instead of the connecting person.
    */
   private async validateConnectionTemplate(
-    values: Readonly<ConnectionTemplateValues>,
-  ): Promise<void> {
+    values: Omit<ConnectionTemplateValues, "clientId">,
+    clientId?: string,
+  ): Promise<McpAuthorizationMetadata | undefined> {
     this.assertCredentialGatewaySelected();
     if (values.mcp) {
       // Recheck at save before registering a secret. The preview is supplied by the browser.
@@ -6206,6 +6266,7 @@ export class OpenClawController {
         values.issuer !== metadata.issuer ||
         values.authorizationUrl !== metadata.authorizationUrl ||
         values.tokenUrl !== metadata.tokenUrl ||
+        (values.revocationUrl !== undefined && values.revocationUrl !== metadata.revocationUrl) ||
         values.endpoint.host !== endpoint.host ||
         values.endpoint.port !== endpoint.port ||
         values.endpoint.path !== endpoint.path ||
@@ -6221,12 +6282,16 @@ export class OpenClawController {
         type: "bearer-token",
         config: { ...values.endpoint, port: String(values.endpoint.port), env_var: values.envVar },
       });
-      return;
+      return metadata;
+    }
+    if (!clientId) {
+      throw new ScopeViolationError("A manual OAuth template requires a client ID.");
     }
     this.credentialGatewayDriver().validateSourceConfig({
       type: "oauth2-refresh-token",
-      config: connectionSourceConfig(values),
+      config: connectionSourceConfig({ ...values, clientId }),
     });
+    return undefined;
   }
 
   /** Replaces the stored client secret; new connections use it, existing ones keep theirs. */

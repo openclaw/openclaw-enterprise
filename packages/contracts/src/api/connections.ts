@@ -33,6 +33,9 @@ export const DiscoverMcpConnectionResponse = Type.Object(
         issuer: HttpsUrl,
         authorizationUrl: HttpsUrl,
         tokenUrl: HttpsUrl,
+        revocationUrl: Type.Optional(HttpsUrl),
+        registrationUrl: Type.Optional(HttpsUrl),
+        redirectUri: Type.Optional(Type.String()),
         scopes: Type.Array(Scope),
       },
       { additionalProperties: false },
@@ -57,7 +60,7 @@ const ConnectionTemplateFields = {
   issuer: HttpsUrl,
   authorizationUrl: HttpsUrl,
   tokenUrl: HttpsUrl,
-  clientId: Type.String({ minLength: 1, maxLength: 256 }),
+  revocationUrl: Type.Optional(HttpsUrl),
   scopes: Type.Array(Scope, { minItems: 1, maxItems: 32 }),
   authorizationParameters: Type.Optional(
     Type.Record(Type.String({ minLength: 1, maxLength: 128 }), Type.String({ maxLength: 512 }), {
@@ -68,6 +71,7 @@ const ConnectionTemplateFields = {
   envVar: Type.String({ pattern: "^[A-Z_][A-Z0-9_]{0,63}$" }),
 };
 
+const ClientId = Type.String({ minLength: 1, maxLength: 256 });
 /** Write-only; never returned. Required only for an OAuth client that is not registered yet. */
 const ClientSecret = Type.String({ minLength: 1, maxLength: 4096 });
 
@@ -77,8 +81,20 @@ export const ConnectionTemplateParams = Type.Object(
 );
 
 export const CreateConnectionTemplateBody = Type.Object(
-  { ...ConnectionTemplateFields, clientSecret: Type.Optional(ClientSecret) },
-  { additionalProperties: false },
+  {
+    ...ConnectionTemplateFields,
+    clientId: Type.Optional(ClientId),
+    clientSecret: Type.Optional(ClientSecret),
+    registrationUrl: Type.Optional(HttpsUrl),
+  },
+  {
+    additionalProperties: false,
+    if: { required: ["registrationUrl"] },
+    then: { required: ["mcp"], properties: { clientId: false, clientSecret: false } },
+    else: { required: ["clientId"] },
+    description:
+      "Supply a registered client ID or request dynamic registration at the reviewed MCP registration URL.",
+  },
 );
 
 export const UpdateConnectionTemplateBody = Type.Object(
@@ -88,7 +104,8 @@ export const UpdateConnectionTemplateBody = Type.Object(
     issuer: Type.Optional(ConnectionTemplateFields.issuer),
     authorizationUrl: Type.Optional(ConnectionTemplateFields.authorizationUrl),
     tokenUrl: Type.Optional(ConnectionTemplateFields.tokenUrl),
-    clientId: Type.Optional(ConnectionTemplateFields.clientId),
+    revocationUrl: Type.Optional(Type.Union([HttpsUrl, Type.Null()])),
+    clientId: Type.Optional(ClientId),
     scopes: Type.Optional(ConnectionTemplateFields.scopes),
     authorizationParameters: ConnectionTemplateFields.authorizationParameters,
     endpoint: Type.Optional(ConnectionEndpointSchema),
@@ -110,6 +127,7 @@ const ConnectionTemplateVersionSchema = Type.Object(
     issuer: Type.String(),
     authorizationUrl: Type.String(),
     tokenUrl: Type.String(),
+    revocationUrl: Type.Optional(HttpsUrl),
     clientId: Type.String(),
     clientRegistrationId: Type.String(),
     scopes: Type.Array(Type.String()),

@@ -467,7 +467,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       body: CreateConnectionTemplateBody,
-      response: { 201: ConnectionTemplateResponse, ...createErrors },
+      response: { 201: ConnectionTemplateResponse, 501: ErrorResponseRef, ...createErrors },
     },
   },
   {
@@ -500,7 +500,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: ConnectionTemplateParams,
       body: UpdateConnectionTemplateBody,
-      response: { 200: ConnectionTemplateResponse, ...mutationErrors },
+      response: { 200: ConnectionTemplateResponse, ...createErrors },
     },
   },
   {
@@ -533,7 +533,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: ConnectionTemplateParams,
       body: RotateConnectionClientSecretBody,
-      response: { 200: ConnectionTemplateResponse, ...mutationErrors },
+      response: { 200: ConnectionTemplateResponse, ...createErrors },
     },
   },
   {

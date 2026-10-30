@@ -922,6 +922,8 @@ test(
       issuer: "https://login.example.test",
       authorizationUrl: "https://login.example.test/authorize",
       tokenUrl: "https://login.example.test/token",
+      revocationUrl: "https://login.example.test/revoke",
+      registrationUrl: "https://login.example.test/register",
       scopes: ["documents:read", "documents:write"],
     };
     // The provider's discovery result is controlled. Settings, admission, registration,
@@ -930,45 +932,66 @@ test(
       assert.equal(serverUrl, metadata.serverUrl);
       return metadata;
     });
+    const issuedClient = { clientId: randomUUID(), clientSecret: "issuer-generated-secret" };
+    const registerMcpOAuthClient = t.mock.fn(async () => issuedClient);
     const fixture = await createPostgresAgentApp(t, {
       label: `mcp-settings-${randomUUID().slice(0, 8)}`,
       authSecret: "openclaw-mcp-settings-auth-secret-minimum-32-bytes",
       authOrigin: consoleOrigin,
-      controllerOptions: { discoverMcpAuthorization },
+      controllerOptions: { discoverMcpAuthorization, registerMcpOAuthClient },
       appOptions: { publicOrigin: consoleOrigin },
     });
     const { namespace, agent } = await fixture.deployAgent("MCP Settings");
     const { page, pageErrors } = await openSettingsBrowser(t, fixture.app, consoleOrigin);
     await page.goto(`${consoleOrigin}/console/settings`);
-    await page.getByRole("button", { name: "New MCP connection template" }).click();
-    const discovery = page.getByRole("dialog", { name: "Discover MCP server" });
-    await discovery.getByLabel("MCP server URL").fill(metadata.serverUrl);
-    await discovery.getByRole("button", { name: "Discover", exact: true }).click();
     const editor = page.getByRole("dialog", { name: "New MCP connection template" });
-    await editor.getByText(metadata.resource, { exact: true }).waitFor();
+    async function openMcpEditor(name) {
+      await page.getByRole("button", { name: "New MCP connection template" }).click();
+      const discovery = page.getByRole("dialog", { name: "Discover MCP server" });
+      await discovery.getByLabel("MCP server URL").fill(metadata.serverUrl);
+      await discovery.getByRole("button", { name: "Discover", exact: true }).click();
+      await editor.getByText(metadata.resource, { exact: true }).waitFor();
+      await editor.getByLabel("Name", { exact: true }).fill(name);
+      await editor.getByLabel("Variable", { exact: true }).fill("TOOLS_TOKEN");
+    }
+    const name = `Tools ${randomUUID()}`;
+    await openMcpEditor(name);
     // The Installation admin can preview metadata before selecting any credential drivers.
     assert.equal(discoverMcpAuthorization.mock.callCount(), 1);
     assert.doesNotMatch(await editor.innerText(), /\bnull\b/);
-    const name = `Tools ${randomUUID()}`;
-    await editor.getByLabel("Name", { exact: true }).fill(name);
+    await editor.getByText(metadata.revocationUrl, { exact: true }).waitFor();
+    await editor.getByText(`${consoleOrigin}/oauth/callback`, { exact: true }).waitFor();
     await editor.getByLabel("Client ID", { exact: true }).fill(randomUUID());
     await editor.getByLabel("Client secret", { exact: true }).fill("controlled-client-secret");
-    await editor.getByLabel("Variable", { exact: true }).fill("TOOLS_TOKEN");
     const scopes = editor.getByLabel("Scopes", { exact: true });
     await scopes.fill("undiscovered-scope");
     await editor.getByRole("button", { name: "Create template" }).click();
     await editor.getByText("Choose scopes from those discovered for this MCP server.").waitFor();
     await scopes.fill("documents:read");
     const { providers } = selectConnectionDrivers(fixture);
-    const creating = page.waitForResponse(
-      (response) =>
-        response.request().method() === "POST" &&
-        new URL(response.url()).pathname === "/connection-templates",
-    );
-    await editor.getByRole("button", { name: "Create template" }).click();
-    const created = await creating;
+    async function createFromEditor() {
+      const creating = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          new URL(response.url()).pathname === "/connection-templates",
+      );
+      await editor.getByRole("button", { name: "Create template" }).click();
+      return creating;
+    }
+    // Metadata can change between preview and save. The administrator can still use
+    // a preregistered client without accepting a changed registration endpoint.
+    await editor.getByLabel("OAuth client", { exact: true }).selectOption("dynamic");
+    discoverMcpAuthorization.mock.mockImplementationOnce(async () => ({
+      ...metadata,
+      registrationUrl: "https://login.example.test/changed-registration",
+    }));
+    assert.equal((await createFromEditor()).status(), 409);
+    assert.equal(registerMcpOAuthClient.mock.callCount(), 0);
+    await editor.getByLabel("OAuth client", { exact: true }).selectOption("existing");
+    await editor.getByLabel("Client secret", { exact: true }).fill("controlled-client-secret");
+    const created = await createFromEditor();
     assert.equal(created.status(), 201, (await created.json()).error?.message);
-    assert.equal(discoverMcpAuthorization.mock.callCount(), 2);
+    assert.equal(discoverMcpAuthorization.mock.callCount(), 3);
 
     await editor.waitFor({ state: "detached" });
     const row = page.getByRole("listitem").filter({ hasText: name });
@@ -987,6 +1010,43 @@ test(
     });
     assert.deepEqual(saved.current.scopes, ["documents:read"]);
     assert.equal(saved.current.tokenUrl, metadata.tokenUrl);
+    assert.equal(saved.current.revocationUrl, metadata.revocationUrl);
+    const dynamicName = `Dynamic client ${randomUUID()}`;
+    await openMcpEditor(dynamicName);
+    await editor.getByLabel("OAuth client", { exact: true }).selectOption("dynamic");
+    await editor.getByText(metadata.registrationUrl, { exact: true }).waitFor();
+    await editor.getByLabel("Client ID", { exact: true }).waitFor({ state: "hidden" });
+    await scopes.fill("documents:write");
+    assert.equal(registerMcpOAuthClient.mock.callCount(), 0);
+    const dynamic = await createFromEditor();
+    const dynamicBody = await dynamic.json();
+    assert.equal(dynamic.status(), 201, dynamicBody.error?.message);
+    assert.equal(dynamicBody.data.current.clientId, issuedClient.clientId);
+    assert.deepEqual(dynamicBody.data.current.scopes, ["documents:write"]);
+    assert.doesNotMatch(JSON.stringify(dynamicBody), /issuer-generated-secret/);
+    const [registered] = registerMcpOAuthClient.mock.calls;
+    assert.deepEqual(registered.arguments, [
+      metadata,
+      `${consoleOrigin}/oauth/callback`,
+      ["documents:write"],
+    ]);
+    const mixed = {
+      ...dynamic.request().postDataJSON(),
+      displayName: `Mixed client ${randomUUID()}`,
+      clientId: issuedClient.clientId,
+    };
+    const refused = await fixture.inject("POST", "/connection-templates", mixed);
+    assert.equal(refused.statusCode, 400, refused.body);
+    const templates = (await fixture.inject("GET", "/connection-templates")).json().data;
+    assert.ok(!templates.some((template) => template.displayName === mixed.displayName));
+    assert.equal(registerMcpOAuthClient.mock.callCount(), 1);
+    // A rename keeps the saved registration and approved version.
+    const renamed = await fixture.inject("PATCH", `/connection-templates/${dynamicBody.data.id}`, {
+      displayName: `${dynamicName} renamed`,
+    });
+    assert.equal(renamed.statusCode, 200, renamed.body);
+    assert.equal(renamed.json().data.current.version, dynamicBody.data.current.version);
+    assert.equal(registerMcpOAuthClient.mock.callCount(), 1);
     // A caller can bypass the editor, but cannot register a new client at an unreviewed endpoint.
     const registrations = providers.size;
     const tampered = await fixture.inject("PATCH", `/connection-templates/${saved.id}`, {

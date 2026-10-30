@@ -40,6 +40,7 @@ allows each TCP port in `ports` (default `[443]`) to any IPv4 address except
 link-local `169.254.0.0/16`. When restricting CIDRs and ports, allow the OAuth
 destinations the API contacts. For MCP discovery these include the server, the
 protected-resource metadata URL in its challenge, and the issuer's metadata
+endpoint. For dynamic client registration, also allow the issuer's registration
 endpoint. Include their HTTPS ports. The gateway Pod needs its own egress.
 
 ## Connection templates
@@ -55,6 +56,7 @@ belong to the Agent's Namespace.
 | `issuer`                  | The authorization server identifier, an `https` URL. It scopes the client ID.                   |
 | `authorizationUrl`        | The provider consent page.                                                                      |
 | `tokenUrl`                | The token endpoint the Refresh Driver and gateway call.                                         |
+| `revocationUrl`           | Optional HTTPS token revocation endpoint, pinned to the template version.                       |
 | `clientId`                | The administrator's OAuth client at `issuer`.                                                   |
 | `clientSecret`            | Write-only. Required only when this `issuer` and `clientId` pair is not registered yet.         |
 | `scopes`                  | The fixed scopes the person approves.                                                           |
@@ -79,10 +81,17 @@ the resource, issuer, OAuth endpoints, and proposed scopes. Discovery supports
 publicly routable HTTPS servers with one authorization server. It runs without
 the client secret.
 
-Review the values, choose the scopes, and enter the registered OAuth client. OCC
-checks the server metadata again before saving the version or registering the
-secret. Existing templates with manually configured endpoints keep their OAuth
-flow. This release supports template setup. Connecting an MCP account requires
+Review the endpoints and scopes. To supply an existing client, enter its ID and
+any required secret. If the issuer advertises a registration endpoint and supports
+`client_secret_post`, you can instead ask OCE to register a client. On **Create
+template**, OCE checks the reviewed metadata again and sends the selected scopes
+and its configured callback URI to that endpoint. OCE saves the returned client
+with the template. If the issuer refuses registration, you can supply an existing
+client. Renaming a template reuses the saved client.
+
+For manual OAuth setup, choose **New connection template** and enter the
+issuer, endpoints, scopes, and client details directly. Both setup paths save
+the same versioned resource. Connecting an MCP account requires
 OCE to hand the grant to the Token Service for refresh and deliver a prepared
 access token to OpenShell for worker requests.
 

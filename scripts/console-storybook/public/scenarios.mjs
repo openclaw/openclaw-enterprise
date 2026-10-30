@@ -647,6 +647,8 @@ export const scenarios = {
       issuer: "https://login.example.test",
       authorizationUrl: "https://login.example.test/authorize",
       tokenUrl: "https://login.example.test/token",
+      registrationUrl: "https://login.example.test/register",
+      revocationUrl: "https://login.example.test/revoke",
       scopes: ["documents:read", "documents:write"],
     },
     actions: [
@@ -655,7 +657,7 @@ export const scenarios = {
       click("Discover"),
     ],
     description:
-      "Review simulated MCP metadata, choose scopes, and enter the registered client before saving the template.",
+      "Review simulated MCP metadata and choose approved scopes. Supply a preregistered client or ask the issuer to register one on save.",
   },
   runtimeImages: {
     group: "Pages/Navigation",

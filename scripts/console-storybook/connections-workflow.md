@@ -39,6 +39,8 @@ refresh need the real backend.
    **Edit**, change a scope, and save: the template shows **Version 2**.
    **New connection template** opens the form filled from the Gmail example.
 10. Open **Pages / Settings / Discover an MCP connection template**. Inspect the
-    protected resource, issuer and exact worker endpoint. Narrow the scopes, enter
-    a name, OAuth client and worker variable, then save. The story simulates discovery
-    and registration and never contacts an MCP server.
+    protected resource, issuer, revocation URL and redirect URI. Narrow the scopes
+    and enter a name and worker variable. Under **OAuth client**, choose **Register a
+    new client with the issuer** and save. The template shows the client ID returned
+    by the simulated issuer. **Use a preregistered client** accepts a client ID
+    and secret supplied by the administrator.

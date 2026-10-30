@@ -24,6 +24,7 @@ const FIELDS = [
   ["issuer", "Issuer", "The provider's issuer URL."],
   ["authorizationUrl", "Authorization URL", null],
   ["tokenUrl", "Token URL", null],
+  ["revocationUrl", "Revocation URL", "Optional HTTPS endpoint for revoking tokens."],
   ["clientId", "Client ID", "The OAuth client registered with the provider."],
   [
     "clientSecret",
@@ -50,6 +51,7 @@ function formValues(template) {
     issuer: version.issuer,
     authorizationUrl: version.authorizationUrl,
     tokenUrl: version.tokenUrl,
+    revocationUrl: version.revocationUrl ?? "",
     clientId: version.clientId,
     clientSecret: "",
     scopes: version.scopes.join("\n"),
@@ -82,18 +84,24 @@ function requestBody(values, before) {
     ...(values.port.trim() ? { port: Number(values.port) } : {}),
     ...(values.path.trim() ? { path: values.path.trim() } : {}),
   };
+  const revocationUrl = values.revocationUrl?.trim();
   const body = {
     displayName: values.displayName.trim(),
     issuer: values.issuer.trim(),
     authorizationUrl: values.authorizationUrl.trim(),
     tokenUrl: values.tokenUrl.trim(),
-    clientId: values.clientId.trim(),
+    ...(revocationUrl || before?.revocationUrl ? { revocationUrl: revocationUrl || null } : {}),
+    ...(values.registrationUrl
+      ? { registrationUrl: values.registrationUrl }
+      : {
+          clientId: values.clientId.trim(),
+          ...(values.clientSecret ? { clientSecret: values.clientSecret } : {}),
+        }),
     scopes: lines(values.scopes),
     authorizationParameters: parameters,
     endpoint,
     envVar: values.envVar.trim(),
     ...(values.mcp ? { mcp: values.mcp } : {}),
-    ...(values.clientSecret ? { clientSecret: values.clientSecret } : {}),
   };
   if (!before) {
     return body;
@@ -277,6 +285,9 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
         element("dd", {}, element("code", {}, version.clientId), ` at ${version.issuer}`),
         element("dt", {}, "Scopes"),
         element("dd", {}, ...version.scopes.map((scope) => element("code", {}, scope))),
+        ...(version.revocationUrl
+          ? [element("dt", {}, "Revocation URL"), element("dd", {}, version.revocationUrl)]
+          : []),
         element("dt", {}, "Endpoint"),
         element(
           "dd",
@@ -462,6 +473,7 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
         issuer: discovered.issuer,
         authorizationUrl: discovered.authorizationUrl,
         tokenUrl: discovered.tokenUrl,
+        revocationUrl: discovered.revocationUrl ?? "",
         scopes: (template
           ? template.current.scopes.filter((scope) => discovered.scopes.includes(scope))
           : discovered.scopes
@@ -485,11 +497,32 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
         ...(multiline ? { rows: 3, spellcheck: "false" } : {}),
         ...(key === "clientSecret" ? { type: "password", autocomplete: "new-password" } : {}),
         ...(key === "port" ? { inputmode: "numeric" } : {}),
-        required: !["clientSecret", "authorizationParameters", "port"].includes(key),
+        required: !["clientSecret", "revocationUrl", "authorizationParameters", "port"].includes(
+          key,
+        ),
       });
       control.value = initial[key] ?? "";
       controls[key] = control;
       return field({ label, control, help });
+    });
+    const registration =
+      !template && discovered?.registrationUrl && discovered.redirectUri
+        ? element(
+            "select",
+            { id: "connection-template-registration" },
+            element("option", { value: "existing" }, "Use a preregistered client"),
+            element("option", { value: "dynamic" }, "Register a new client with the issuer"),
+          )
+        : null;
+    registration?.addEventListener("change", () => {
+      const dynamic = registration.value === "dynamic";
+      for (const control of [controls.clientId, controls.clientSecret]) {
+        control.disabled = dynamic;
+        control.parentElement.hidden = dynamic;
+      }
+      if (dynamic) {
+        controls.clientSecret.value = "";
+      }
     });
     const feedback = element("p", { className: "error", role: "alert" });
     const note = element(
@@ -523,7 +556,17 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
         const values = Object.fromEntries(
           Object.entries(controls).map(([key, control]) => [key, control.value]),
         );
-        const body = requestBody({ authorizationParameters: "", ...initial, ...values }, before);
+        const body = requestBody(
+          {
+            authorizationParameters: "",
+            ...initial,
+            ...values,
+            ...(registration?.value === "dynamic"
+              ? { registrationUrl: discovered.registrationUrl }
+              : {}),
+          },
+          before,
+        );
         if (
           mcp &&
           body.scopes &&
@@ -579,13 +622,36 @@ export function renderConnectionTemplates({ request, namespaces, isCurrent, onEx
           element("dd", {}, initial.authorizationUrl),
           element("dt", {}, "Token URL"),
           element("dd", {}, initial.tokenUrl),
+          ...(initial.revocationUrl
+            ? [element("dt", {}, "Revocation URL"), element("dd", {}, initial.revocationUrl)]
+            : []),
+          ...(discovered?.registrationUrl && !template
+            ? [
+                element("dt", {}, "Registration endpoint"),
+                element("dd", {}, discovered.registrationUrl),
+              ]
+            : []),
+          ...(discovered?.redirectUri
+            ? [element("dt", {}, "Redirect URI"), element("dd", {}, discovered.redirectUri)]
+            : []),
           discovered && template ? element("dt", {}, "Available scopes") : null,
           discovered && template ? element("dd", {}, discovered.scopes.join(", ")) : null,
         ),
       );
     }
     dialog.append(
-      element("div", { className: "connection-template-form" }, ...fields),
+      element(
+        "div",
+        { className: "connection-template-form" },
+        registration
+          ? field({
+              label: "OAuth client",
+              control: registration,
+              help: "OCE registers a new client when you create the template. If the issuer declines, you can supply a preregistered client.",
+            })
+          : null,
+        ...fields,
+      ),
       feedback,
       element("div", { className: "dialog-actions" }, cancel, save),
     );

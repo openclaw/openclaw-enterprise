@@ -907,7 +907,7 @@ export function installFixture(scenario, evidence) {
     });
     if (path === "/connection-templates/discover-mcp" && method === "POST") {
       return scenario.mcpDiscovery && body.serverUrl === scenario.mcpDiscovery.serverUrl
-        ? response(scenario.mcpDiscovery)
+        ? response(templateResponse(scenario.mcpDiscovery))
         : error(400);
     }
     if (path === "/connection-templates") {
@@ -915,7 +915,7 @@ export function installFixture(scenario, evidence) {
         return response(connectionTemplates.map(templateResponse));
       }
       if (method === "POST") {
-        const { displayName, clientSecret: _secret, endpoint, ...rest } = body;
+        const { displayName, clientSecret: _secret, registrationUrl, endpoint, ...rest } = body;
         const created = {
           id: nextId("ctp"),
           displayName,
@@ -924,6 +924,7 @@ export function installFixture(scenario, evidence) {
             clientRegistrationId: "ccr_storybook",
             authorizationParameters: {},
             ...rest,
+            ...(registrationUrl ? { clientId: "client-issued-by-storybook" } : {}),
             endpoint: { port: 443, path: "/**", ...endpoint },
             createdAt,
           },

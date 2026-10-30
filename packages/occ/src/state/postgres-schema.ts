@@ -1680,6 +1680,7 @@ export const connectionTemplateVersions = occSchema.table(
     clientId: collatedText("client_id").notNull(),
     authorizationUrl: collatedText("authorization_url").notNull(),
     tokenUrl: collatedText("token_url").notNull(),
+    revocationUrl: collatedText("revocation_url"),
     scopes: text("scopes").array().notNull(),
     authorizationParameters: jsonb("authorization_parameters")
       .$type<Record<string, string>>()
@@ -1694,6 +1695,10 @@ export const connectionTemplateVersions = occSchema.table(
   },
   (table) => [
     primaryKey({ columns: [table.templateId, table.version] }),
+    check(
+      "connection_template_versions_revocation_url_https",
+      sql`${table.revocationUrl} ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$' AND length(${table.revocationUrl}) <= 2048`,
+    ),
     foreignKey({
       name: "connection_template_versions_registration_pair",
       columns: [table.clientRegistrationId, table.issuer, table.clientId],
