@@ -3513,12 +3513,25 @@ test("a Pod that comes back drops the no-Pod reason", async (t) => {
       ariaDisabled: node.getAttribute("aria-disabled"),
       reason: node.dataset.disabledReason ?? null,
     }));
-  // No restarts, so Previous instance stays unavailable, but not for the old no-Pod reason.
-  assert.deepEqual(await state(page.getByLabel("Previous instance")), {
-    disabled: true,
-    ariaDisabled: null,
-    reason: null,
-  });
+  // No restarts, so Previous instance stays unavailable, but not for the old no-Pod reason: the
+  // note that the container has not restarted describes it now (finding 2944).
+  const previous = page.getByLabel("Previous instance");
+  const previousState = await state(previous);
+  assert.deepEqual(
+    { ...previousState, reason: null },
+    {
+      disabled: false,
+      ariaDisabled: "true",
+      reason: null,
+    },
+  );
+  assert.equal(
+    await page.evaluate(
+      (id) => globalThis.document.getElementById(id)?.textContent,
+      previousState.reason ?? "",
+    ),
+    "This container has not restarted, so there is no previous instance.",
+  );
   for (const name of ["Follow", "Refresh logs", "Download"]) {
     assert.deepEqual(await state(page.getByRole("button", { name })), {
       disabled: false,
