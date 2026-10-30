@@ -10,6 +10,7 @@ import {
   element,
   revealStatus,
   setStatusTone,
+  setUnavailable,
   statusBlock,
   validateOnSubmit,
   withRequestId,
@@ -146,9 +147,6 @@ export function renderAgentAccess(
 
   function render() {
     const blocked = state.pending || !state.loaded || state.needsRefresh;
-    principal.disabled = blocked;
-    acknowledge.disabled = blocked;
-    share.disabled = blocked;
     refresh.disabled = state.pending;
     // The form shows disabled while the policy loads, instead of popping in above the grants
     // once it has (finding 1410); it hides only when the policy could not be read.
@@ -175,6 +173,11 @@ export function renderAgentAccess(
     const refusal = feedback.querySelector<HTMLElement>("[role=alert]");
     if (refusal) {
       setStatusTone(refusal, "danger");
+    }
+    // After a refused or failed change the form waits for Refresh sharing, and the refusal says
+    // so: each control stays in the Tab order, described by it (class of finding 2899).
+    for (const control of [principal, acknowledge, share]) {
+      setUnavailable(control, blocked, state.needsRefresh ? refusal : null);
     }
     grants.replaceChildren();
     if (!state.loaded) {

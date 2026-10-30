@@ -57,7 +57,15 @@ follows `:focus-visible`. No part of any ring may be cut off.
    account select (**Components / Credentials / Issued service accounts
    unavailable**) (finding 2925). On **Pages / Agents / Stop from the list**,
    confirm Stop: the Stop icon becomes unavailable and keeps focus, described
-   by its Stop requested badge (finding 2926).
+   by its Stop requested badge (finding 2926). So do a refused **Create
+   Namespace** (**Pages / Namespaces / Create refused, then closed**), **Create
+   Agent** waiting for a Namespace (**Pages / Create Agent / Form, Namespace
+   still provisioning**), **Disable Slack** (**Components / Channels / Slack
+   Disable, editor must replace the bot token Secret**), Configure Slack on an
+   Embedded Agent, the Share Agent form after a failed change (**Pages / Agent
+   detail / Sharing outcome uncertain**) and the Logs controls of a version
+   with no running Pod (**Pages / Agent detail / Logs of a version with no
+   running Pod**).
 10. Open **Components / Stop Agent / Stop pending**. Stopping… sets
     `aria-busy="true"` and shows the `progress` pointer, as Deleting… and a
     saving Save Configuration do (finding 1927).

@@ -64,6 +64,9 @@ const STATUS_POLL_MS = 10_000;
 const FOLLOW_POLL_MS = 2_000;
 const MAX_ROWS = 5_000;
 const TAIL_LINES = 200;
+// The output status for a selection with no running Pod. It is also why the log controls that
+// read output are unavailable then (finding 2929).
+const NO_POD_STATUS = "This version has no running Pod for this source.";
 // The longest the Logs view keeps its strip and output back for their first reads.
 const FIRST_VIEW_WAIT_MS = 2_000;
 // A 403 is audited; remember it for this sign-in instead of re-asking every poll or every
@@ -471,10 +474,13 @@ export function renderAgentLogs(
   }
 
   // A refused log read disables every log control; each is described by the refusal that says
-  // why (finding D749) and stays in the Tab order while it shows (finding 2899).
+  // why (finding D749) and stays in the Tab order while it shows (finding 2899). So do the
+  // controls a selection with no running Pod leaves unavailable, described by the output status
+  // that says so (finding 2929).
   function describeDeniedControls() {
+    const noPod = !logsDenied && logStatus.textContent === NO_POD_STATUS;
     for (const [control, off] of unavailable) {
-      setUnavailable(control, off, logsDenied ? logError : null);
+      setUnavailable(control, off, logsDenied ? logError : noPod ? logStatus : null);
     }
   }
 
@@ -988,7 +994,8 @@ export function renderAgentLogs(
     }
     if (!current() || reading || logsDenied || !source || !readableSelection(source)) {
       if (source && !readableSelection(source)) {
-        logStatus.textContent = "This version has no running Pod for this source.";
+        logStatus.textContent = NO_POD_STATUS;
+        describeDeniedControls();
       }
       return;
     }
@@ -1049,7 +1056,7 @@ export function renderAgentLogs(
       if (restart || hasLine) {
         const text =
           page.stream === null
-            ? "This version has no running Pod for this source."
+            ? NO_POD_STATUS
             : !hasLine && page.withheld > 0
               ? `Only withheld output in the last ${TAIL_LINES} lines.`
               : !hasLine

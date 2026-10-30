@@ -1667,6 +1667,9 @@ export const scenarios = {
     ],
     description:
       "After the API refuses creation, the page disables Create Namespace, says why, and focuses that reason. Refresh or a browser reload offers creation again.",
+    steps: [
+      "Tab to Create Namespace. It takes focus and looks unavailable, described by the refusal; Enter, Space or a click opens nothing.",
+    ],
   },
   namespaceCreate: {
     group: "Pages/Namespaces",
@@ -1864,6 +1867,9 @@ export const scenarios = {
     actions: [click("Start without Preset"), { selector: "#agent-auth-method", value: "api_key" }],
     description:
       "The Create form keeps the provisioning Namespace's warning note, and says a Dedicated Agent can be created once the Namespace is ready instead of promising it deploys when created. Create Agent stays disabled, described by that line; an Embedded OpenClaw draft still saves.",
+    steps: [
+      "Tab to Create Agent. It takes focus and looks unavailable, described by that line; Enter, Space or a click submits nothing.",
+    ],
   },
   createFormNamespaceBecomesReady: {
     group: "Pages/Create Agent",
@@ -4666,6 +4672,9 @@ export const scenarios = {
     rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 503, once: true }],
     description:
       "A failed mutation response leaves the outcome uncertain. Refresh current policy before explicitly retrying; no automatic replay occurs.",
+    steps: [
+      "Tab to the Principal ID, the acknowledgement and Share Agent. Each takes focus and looks unavailable, described by the alert that asks for Refresh sharing; typing, Enter, Space or a click changes nothing.",
+    ],
   },
   agentSharingRequiredFields: {
     group: "Pages/Agent detail",
@@ -6546,6 +6555,17 @@ export const scenarios = {
     ],
     gap: "Simulated UI state only; this preview does not prove a live Pod transition.",
   },
+  runtimeLogsNoPod: {
+    ...runtimeLogsPage,
+    name: "Logs of a version with no running Pod",
+    runtimePod: "none",
+    description:
+      "The version has no running Pod, so Previous instance, Follow, Refresh logs and Download are unavailable, and the output status says why.",
+    steps: [
+      "Tab through the log controls. Previous instance, Follow, Refresh logs and Download each take focus and look unavailable, described by “This version has no running Pod for this source.” Enter, Space or a click does nothing (finding 2929).",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live Pod transition.",
+  },
   runtimeLogsFilteredDownload: {
     group: "Pages/Agent detail",
     name: "Runtime logs filtered and downloaded",
@@ -7167,6 +7187,9 @@ export const scenarios = {
     },
     description:
       "The permission answer lists the bot token binding as the only one whose Secret the editor cannot operate. Disable saves no bindings, so it would keep that Secret bound: Disable Slack is shown disabled with a note to choose another Secret in Edit Slack first. Edit Slack stays available.",
+    steps: [
+      "Tab to Disable Slack. It takes focus and looks unavailable, described by the note; Enter, Space or a click saves nothing.",
+    ],
     gap: "The permission answer is simulated, so a rebind here does not enable Disable; the browser test covers that step.",
   },
   slackThreadedDefault: {
