@@ -1013,6 +1013,7 @@ function dedicatedFirstDeployFixture({
   statusProxy = true,
   clock,
   modelEndpoint,
+  standaloneWebSearch,
   sandboxDriver,
   openShellGit,
   credentialGatewayDriver,
@@ -1047,6 +1048,9 @@ function dedicatedFirstDeployFixture({
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
         ...(modelEndpoint === undefined ? {} : { codexModelBaseUrl: modelEndpoint }),
+        ...(standaloneWebSearch === undefined
+          ? {}
+          : { codexModelSupportsStandaloneWebSearch: standaloneWebSearch }),
       },
       // The API server proxy can reach private status, so activation reads the
       // node OpenClaw applied.
@@ -1596,6 +1600,102 @@ test("custom Codex endpoints compile explicit providers without changing the adm
       baseUrl: "https://models.example.test/api/v1",
       modelProvider: "openai-compatible",
     });
+  }
+});
+
+test("custom Codex standalone search is opt-in and preserves provider identity and session policy", async () => {
+  for (const standaloneWebSearch of [undefined, false, true]) {
+    const fixture = dedicatedFirstDeployFixture({
+      modelEndpoint: "https://models.example.test/v1",
+      standaloneWebSearch,
+    });
+    await fixture.prepare();
+    const runtime = [...fixture.objects.values()].find(
+      (object) => object.kind === "ConfigMap" && object.data?.["runtime.json"] !== undefined,
+    );
+    const manifest = JSON.parse(runtime.data["runtime.json"]);
+    assert.deepEqual(manifest.modelEndpoint, {
+      baseUrl: "https://models.example.test/v1",
+      modelProvider: "openai-compatible",
+      ...(standaloneWebSearch === true ? { supportsStandaloneWebSearch: true } : {}),
+    });
+    const config = runtime.data["config.toml"];
+    assert.match(config, /model_provider = "openai-compatible"/);
+    assert.match(config, /\[model_providers\.openai-compatible\]/);
+    assert.match(config, /requires_openai_auth = true/);
+    assert.equal(
+      config.includes("supports_standalone_web_search = true"),
+      standaloneWebSearch === true,
+    );
+    assert.equal(config.includes('web_search = "disabled"'), false);
+    const admitted = structuredClone(fixture.revision.configuration);
+    await fixture.prepare();
+    assert.deepEqual(fixture.revision.configuration, admitted);
+    assert.deepEqual(fixture.read("ConfigMap", runtime.metadata.name).data, runtime.data);
+  }
+});
+
+test("custom endpoint search declarations do not change Codex account-login providers", async () => {
+  const fixture = dedicatedFirstDeployFixture({
+    modelEndpoint: "https://models.example.test/v1",
+    standaloneWebSearch: true,
+    revision: { harnessAuth: { ...apiKeyAuth, method: "codex_pat" } },
+  });
+  await fixture.prepare();
+  const runtime = [...fixture.objects.values()].find(
+    (object) => object.kind === "ConfigMap" && object.data?.["runtime.json"] !== undefined,
+  );
+  assert.equal(JSON.parse(runtime.data["runtime.json"]).modelEndpoint, undefined);
+  assert.equal(runtime.data["config.toml"].includes("supports_standalone_web_search"), false);
+  assert.equal(runtime.data["config.toml"].includes("model_provider"), false);
+});
+
+test("standalone Codex search requires an explicit model endpoint and a boolean declaration", () => {
+  const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
+  for (const value of [undefined, false]) {
+    assert.doesNotThrow(() =>
+      createKubernetesComputeDriver(
+        options({
+          runtime: {
+            ...runtime,
+            ...(value === undefined ? {} : { codexModelSupportsStandaloneWebSearch: value }),
+          },
+        }),
+      ),
+    );
+  }
+  assert.throws(
+    () =>
+      createKubernetesComputeDriver(
+        options({
+          runtime: { ...runtime, codexModelSupportsStandaloneWebSearch: true },
+        }),
+      ),
+    (error) => {
+      assert.ok(error instanceof SharedConfigurationValidationError);
+      assert.equal(error.error.details[0].path, "/runtime/codexModelSupportsStandaloneWebSearch");
+      assert.match(error.error.details[0].message, /explicit.*Codex model endpoint/);
+      return true;
+    },
+  );
+  for (const value of ["true", 1, null]) {
+    assert.throws(
+      () =>
+        createKubernetesComputeDriver(
+          options({
+            runtime: {
+              ...runtime,
+              codexModelBaseUrl: "https://models.example.test/v1",
+              codexModelSupportsStandaloneWebSearch: value,
+            },
+          }),
+        ),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError);
+        assert.equal(error.error.details[0].path, "/runtime/codexModelSupportsStandaloneWebSearch");
+        return true;
+      },
+    );
   }
 });
 

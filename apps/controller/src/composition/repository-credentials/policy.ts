@@ -30,7 +30,17 @@ export async function loadRepositoryPolicy(input: RepositoryPolicyInput) {
     input.backend.configuration.registryPath,
     input.backend.id,
   );
-  return composeRepositoryPolicy(input, registry);
+  const policy = composeRepositoryPolicy(input, registry);
+  return Object.freeze({
+    ...policy,
+    authorityIdentity: githubRepositoryAuthorityIdentity(
+      input.selection,
+      input.backend,
+      registry,
+      input.configuration,
+    ),
+    resolveRepositoryDelivery: createGitHubRepositoryDeliveryResolver(registry),
+  });
 }
 
 /** Native composition calls this only after its registry and public CA have been read. */
@@ -48,14 +58,7 @@ export function composeRepositoryPolicy(
     sessionDurationSeconds: input.policyConfiguration.sessionDurationSeconds,
   });
   return Object.freeze({
-    authorityIdentity: githubRepositoryAuthorityIdentity(
-      selection,
-      definition,
-      registry,
-      input.configuration,
-    ),
     repositoryRegistry: registry,
-    resolveRepositoryDelivery: createGitHubRepositoryDeliveryResolver(registry),
     repositoryOwner,
     repositoryPolicy,
   });

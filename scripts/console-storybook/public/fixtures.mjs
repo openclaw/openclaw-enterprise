@@ -77,7 +77,8 @@ function configurationValues(scenario) {
   }
   if (scenario.slack) {
     values.channels.slack = {
-      enabled: true,
+      // `slackOff`: Disable Slack saved the channel off and kept its bindings.
+      enabled: scenario.slackOff !== true,
       mode: scenario.slackMode ?? "socket",
       ...(scenario.slackReplyToMode === undefined
         ? {}

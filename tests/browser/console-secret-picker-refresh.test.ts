@@ -21,6 +21,7 @@ import {
   settlePageRequests,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
+import { responseTo } from "./console-action-helpers.mjs";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.mjs";
 
 test("refreshing a Secret picker keeps staged choices and finds a Secret created in another tab", async (t) => {
@@ -39,8 +40,7 @@ test("refreshing a Secret picker keeps staged choices and finds a Secret created
   const member = await fixture.createNamespaceMember("picker-member", namespace.id, MEMBER_WRITE);
   const { page } = await newPage(t, fixture);
   const collection = `${fixture.origin}/namespaces/${namespace.id}/secrets`;
-  const listRead = () =>
-    page.waitForResponse((r) => r.url() === collection && r.request().method() === "GET");
+  const listRead = () => responseTo(page, "GET", collection);
   const initial = listRead();
   await login(
     page,
@@ -77,9 +77,7 @@ test("refreshing a Secret picker keeps staged choices and finds a Secret created
   const dialog = other.getByRole("dialog", { name: "Create Secret", exact: true });
   await dialog.getByLabel("Secret name", { exact: true }).fill(laterName);
   await dialog.getByLabel("Value", { exact: true }).fill("synthetic-later");
-  const created = other.waitForResponse(
-    (r) => r.url() === collection && r.request().method() === "POST",
-  );
+  const created = responseTo(other, "POST", collection);
   await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
   const response = await created;
   assert.equal(response.status(), 201);
@@ -148,9 +146,7 @@ test("refreshing a Secret picker keeps staged choices and finds a Secret created
   assert.deepEqual(writes, []);
 
   const configuration = `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-  const saved = page.waitForResponse(
-    (r) => r.url() === configuration && r.request().method() === "PATCH",
-  );
+  const saved = responseTo(page, "PATCH", configuration);
   await page.getByRole("button", { name: "Save channel Secrets", exact: true }).click();
   const save = await saved;
   assert.equal(save.status(), 200);
@@ -199,8 +195,7 @@ test("a real list refusal clears readable metadata but preserves staged referenc
   const member = await fixture.createNamespaceMember("revoked-picker", namespace.id, MEMBER_WRITE);
   const { page } = await newPage(t, fixture);
   const collection = `${fixture.origin}/namespaces/${namespace.id}/secrets`;
-  const listRead = () =>
-    page.waitForResponse((r) => r.url() === collection && r.request().method() === "GET");
+  const listRead = () => responseTo(page, "GET", collection);
   const initial = listRead();
   await login(
     page,

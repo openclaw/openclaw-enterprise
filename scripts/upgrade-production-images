@@ -739,6 +739,9 @@ preflight_startup() {
             message="the selected controller image refuses to deploy $(grep -c '^Agent draft refused: ' "$evidence_dir/preflight-api.log") recorded Agent draft(s):
 $draft_refusals
 No OCC writer was stopped; the old release keeps serving. Correct each draft as its refusal says, for example remove a setting the new release retired, or stop the Agent, then start again with a new evidence directory."
+          elif [[ "$component" == api && -n "$drafts" ]] &&
+            grep -Fxq 'Agent draft check could not load the configured Harness resolver.' "$evidence_dir/preflight-api.log"; then
+            message="the selected controller image could not check saved Agent drafts because its configured Harness resolver is unavailable. No OCC writer was stopped; the old release keeps serving. Select a corrected controller image and start again with a new evidence directory."
           elif [[ -n "$name_refusal" ]]; then
             message="the $component startup preflight stopped: $name_refusal (INSTALLATION_NAME_INVALID) No OCC writer was stopped; the old release keeps serving. Rename the Installation as in docs/guides/deploy/production-upgrade-recovery.md#correct-an-invalid-installation-name, then start again with a new evidence directory."
           elif [[ -n "$refusal" ]]; then

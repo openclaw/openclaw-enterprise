@@ -2420,6 +2420,13 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   border-radius: var(--radius-lg);
   background: var(--surface);
 }
+/* The details grow while a deploy runs and shrink when it settles. As the scroll anchor, they or
+   their label above moved the version's record below them (finding 3016). The browser anchors on
+   the first box crossing the top of the view, so neither is an anchor and the record stays put. */
+.agent-deployment-panels > .hint,
+.agent-deployment-panels > .deployment-evidence {
+  overflow-anchor: none;
+}
 .agent-deployment-panels > .deployment-evidence > button {
   top: 18px;
   right: 24px;

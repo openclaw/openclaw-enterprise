@@ -20,6 +20,7 @@ import {
   waitForIdleFetches,
   trackSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { responseTo } from "./console-action-helpers.mjs";
 
 // The real controller admits and authorizes the deployment. The fixture has no
 // worker: change only its exact work lookup/lease, then its revision lookup.
@@ -349,10 +350,7 @@ for (const viewport of [
           responses.push(response.status());
         }
       });
-      const next = () =>
-        page.waitForResponse(
-          (response) => response.url() === url && response.request().method() === "GET",
-        );
+      const next = () => responseTo(page, "GET", url);
       let recordedLabel = "Queued";
       type Outcome = "queued" | "running" | "succeeded" | 503 | 404;
       async function received(
@@ -650,10 +648,7 @@ test("a pending cleanup after a final outcome keeps the reader's fold until it e
   const run = page
     .locator(".version-deployment-record")
     .getByRole("button", { name: "Refresh record", exact: true });
-  const next = () =>
-    page.waitForResponse(
-      (response) => response.url() === url && response.request().method() === "GET",
-    );
+  const next = () => responseTo(page, "GET", url);
   async function received(pending: ReturnType<typeof next>, cleanup: string | null) {
     const response = await pending;
     if (cleanup === null) {

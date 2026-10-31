@@ -727,3 +727,25 @@ export const NAMESPACE_DELETE_DENIED =
 // Namespace (finding 2861): administration cannot lift it.
 export const NAMESPACE_DELETE_RESTRICTED =
   "A Restriction denies deleting this Namespace, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it.";
+
+// Deploy new version's reason while saved Secrets wait for the Agent's grant names the bindings
+// whose Secrets wait, as the Credentials tab lists them, and where to grant access (finding 3017).
+// `missing`: an Installation administrator's console read no grant; otherwise a grant request left
+// it unconfirmed. `administrator`: the grant was refused, or the reader is offered no Retry.
+export const secretGrantDeployReason = (
+  bindings,
+  { missing = false, administrator = false } = {},
+) => {
+  const names =
+    bindings.length < 2
+      ? bindings.join("")
+      : `${bindings.slice(0, -1).join(", ")} and ${bindings.at(-1)}`;
+  const secrets = `the ${bindings.length > 1 ? "Secrets" : "Secret"} bound to ${names}`;
+  const problem = missing
+    ? `This Agent has no access to ${secrets}, so deploying it would be refused.`
+    : `This Agent's access to ${secrets} is not confirmed.`;
+  const step = administrator
+    ? "Granting access needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Retry Secret access."
+    : "Open Credentials and select Retry Secret access.";
+  return `${problem} ${step}`;
+};

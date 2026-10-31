@@ -18,6 +18,7 @@ import {
   stopFocusTrail,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
+import { confirmAgentAction } from "./console-action-helpers.mjs";
 import {
   heldView,
   refocus,
@@ -1473,8 +1474,7 @@ test("A Stop that lands after leaving the Agent closes its dialog, and Back rebu
     afterServer: true,
   });
   await page.getByRole("button", { name: "Stop Agent", exact: true }).first().click();
-  const dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
-  await dialog.getByRole("button", { name: "Stop Agent" }).click();
+  await confirmAgentAction(page, "Stop this Agent?", "Stop");
   await stop.requested;
   // The dialog is modal, so leave through the navigation link's own handler.
   await page.evaluate(() => globalThis.document.querySelector('a[data-nav="agents"]').click());

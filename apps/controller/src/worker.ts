@@ -28,6 +28,7 @@ import type {
   AgentRevision,
   AgentRevisionMetadata,
   CredentialSource,
+  CredentialSourceSnapshot,
   AuditEvent,
   AuthorizationDecision,
   AuthorizationRequest,
@@ -5359,6 +5360,31 @@ export class ControllerWorker {
     }
   }
 
+  private async resolveRevisionCredentialSource(
+    revision: Readonly<AgentRevision>,
+    snapshot: CredentialSourceSnapshot,
+  ) {
+    const { namespaceId, id: revisionId } = revision;
+    const { sourceId } = snapshot;
+    return this.state.read(async (view) => {
+      const source = await view.credentialSources.findCredentialSource(namespaceId, sourceId);
+      const withdrawal = await view.credentialSources.findCredentialWithdrawal(
+        namespaceId,
+        revisionId,
+        sourceId,
+      );
+      return {
+        source:
+          withdrawal === undefined &&
+          source?.state === "ready" &&
+          credentialSourceMatchesSnapshot(source, snapshot)
+            ? source
+            : undefined,
+        withdrawal,
+      };
+    });
+  }
+
   private async resolveRevisionSecretContext(
     revision: Readonly<AgentRevision>,
   ): Promise<
@@ -5444,27 +5470,13 @@ export class ControllerWorker {
       ) {
         return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
       }
-      const { source, withdrawal } = await this.state.read(async (view) => ({
-        source: await view.credentialSources.findCredentialSource(
-          revision.namespaceId,
-          auth.sourceId,
-        ),
-        withdrawal: await view.credentialSources.findCredentialWithdrawal(
-          revision.namespaceId,
-          revision.id,
-          auth.sourceId,
-        ),
-      }));
+      const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, auth);
       // A withdrawn source never re-attaches to its revision, for example after Pod loss.
       if (withdrawal !== undefined) {
         return { result: { outcome: "permanent", code: "CREDENTIAL_WITHDRAWN" } };
       }
       // A deleting source can no longer be attached, even to an admitted revision.
-      if (
-        source === undefined ||
-        source.state !== "ready" ||
-        !credentialSourceMatchesSnapshot(source, auth)
-      ) {
+      if (source === undefined) {
         return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
       }
       if (source.egress !== undefined) {
@@ -5502,26 +5514,12 @@ export class ControllerWorker {
       ) {
         return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
       }
-      const { source, withdrawal } = await this.state.read(async (view) => ({
-        source: await view.credentialSources.findCredentialSource(
-          revision.namespaceId,
-          snapshot.sourceId,
-        ),
-        withdrawal: await view.credentialSources.findCredentialWithdrawal(
-          revision.namespaceId,
-          revision.id,
-          snapshot.sourceId,
-        ),
-      }));
+      const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, snapshot);
       // A withdrawn non-model source stays detached; the revision keeps running without it.
       if (withdrawal !== undefined) {
         continue;
       }
-      if (
-        source === undefined ||
-        source.state !== "ready" ||
-        !credentialSourceMatchesSnapshot(source, snapshot)
-      ) {
+      if (source === undefined) {
         return { result: { outcome: "permanent", code: "CREDENTIAL_SOURCE_UNAVAILABLE" } };
       }
       credentialSources.push(source);
