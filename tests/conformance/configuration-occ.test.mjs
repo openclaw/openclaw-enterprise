@@ -35,6 +35,7 @@ import {
   codexRuntimeOffProvider,
   GATEWAY_MANAGED_MODE_DENIED,
   runtimeIdRequired,
+  runtimeOfOtherModels,
   runtimeIdUnsupported,
   runtimePoliciesConflict,
   selectableModelOffProvider,
@@ -1762,11 +1763,59 @@ test("model policy refusals name the Configuration setting", () => {
           entries: { main: { model: "openai/gpt-4.1", models: { "openai/gpt-4.1": {} } } },
         },
       },
-      runtimeIdRequired('agents.entries.main.models["openai/gpt-4.1"]'),
+      runtimeIdRequired('agents.entries.main.models["openai/gpt-4.1"]', "openclaw"),
     ],
     [
       { agents: { entries: { main: { model: "openai/gpt-4.1" } } } },
-      runtimeIdRequired('agents.defaults.models["openai/gpt-4.1"]'),
+      runtimeIdRequired('agents.defaults.models["openai/gpt-4.1"]', "openclaw"),
+    ],
+    // A missing runtime offers only values deployment then accepts. Codex runs a codex model, or
+    // an openai model through the Codex plugin's WebSocket app server.
+    [
+      { agents: { defaults: { model: "codex/gpt-5.1" } } },
+      runtimeIdRequired('agents.defaults.models["codex/gpt-5.1"]', "openclaw or codex"),
+    ],
+    [
+      {
+        agents: { defaults: { model: "openai/gpt-4.1" } },
+        plugins: {
+          entries: { codex: { enabled: true, config: { appServer: { transport: "websocket" } } } },
+        },
+      },
+      runtimeIdRequired('agents.defaults.models["openai/gpt-4.1"]', "openclaw or codex"),
+    ],
+    // A fallback must select its primary's runtime.
+    [
+      {
+        agents: {
+          defaults: {
+            model: { primary: "codex/gpt-5.1", fallbacks: ["codex/gpt-5.1-mini"] },
+            models: { "codex/gpt-5.1": runtime("codex") },
+          },
+        },
+      },
+      runtimeIdRequired(
+        'agents.defaults.models["codex/gpt-5.1-mini"]',
+        runtimeOfOtherModels("codex"),
+      ),
+    ],
+    // An entry whose own policy sets its primary's runtime gets its fallback's there: in the
+    // defaults' policy it would need the primary's runtime too.
+    [
+      {
+        agents: {
+          entries: {
+            main: {
+              model: { primary: "openai/gpt-4.1", fallbacks: ["openai/gpt-4.1-mini"] },
+              models: { "openai/gpt-4.1": runtime("openclaw") },
+            },
+          },
+        },
+      },
+      runtimeIdRequired(
+        'agents.entries.main.models["openai/gpt-4.1-mini"]',
+        runtimeOfOtherModels("openclaw"),
+      ),
     ],
     [
       { agents: { defaults: { models: {} } } },

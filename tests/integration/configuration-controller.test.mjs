@@ -1310,7 +1310,7 @@ test("Configuration save refuses a model policy whose settings conflict, with de
     [
       "an openai model without a runtime",
       { agents: { defaults: { model: "openai/gpt-4.1" } } },
-      runtimeIdRequired(defaultPolicy),
+      runtimeIdRequired(defaultPolicy, "openclaw"),
     ],
     // The entry's own models policy lists the model, so deployment names that policy, not the
     // defaults'.
@@ -1321,7 +1321,7 @@ test("Configuration save refuses a model policy whose settings conflict, with de
           entries: { main: { model: "openai/gpt-4.1", models: { "openai/gpt-4.1": {} } } },
         },
       },
-      runtimeIdRequired('agents.entries.main.models["openai/gpt-4.1"]'),
+      runtimeIdRequired('agents.entries.main.models["openai/gpt-4.1"]', "openclaw"),
     ],
   ]) {
     await t.test(`saves ${name}`, async () => {
@@ -3475,7 +3475,7 @@ test("Deploy rejects Configuration content that selects no supported Harness run
   assert.equal(deployed.body.error.code, "INVALID_REQUEST");
   assert.equal(
     deployed.body.error.message,
-    runtimeIdRequired('agents.defaults.models["openai/gpt-4.1"]'),
+    runtimeIdRequired('agents.defaults.models["openai/gpt-4.1"]', "openclaw"),
   );
   const unchanged = await request(context.app, "GET", agentPath);
   assert.equal(unchanged.status, 200);

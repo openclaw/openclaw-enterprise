@@ -563,15 +563,27 @@ function resolveModelPolicy(
   const plugins = asRecord(asRecord(values.plugins)?.entries);
   const catalogs = new Map<string, CatalogIndex>();
 
+  const codexPlugin = asRecord(plugins?.codex);
+  const codexAppServer = asRecord(asRecord(codexPlugin?.config)?.appServer);
+  // Codex runs a model of its own provider, or an openai model through the Codex plugin's
+  // WebSocket app server.
+  const codexRuns = (providerId: string) =>
+    providerId === "codex" ||
+    (providerId === "openai" &&
+      codexPlugin?.enabled === true &&
+      codexAppServer?.transport === "websocket");
+
   // The Harness one candidate selects. `entryKey` names the agents.entries entry whose `models`
   // policy for the model is `entryPolicy`. Each refusal names the setting to change: the policy
-  // that selects the runtime, or, for a missing runtime, the entry's policy when it lists the
-  // model and the defaults' otherwise. A draft leaves a candidate without its required runtime to
-  // deployment (finding 3022).
+  // that selects the runtime, or, for a missing runtime, the entry's `models` policy when it
+  // lists the model or the entry's primary (`entryListsPrimary`), and the defaults' otherwise, so
+  // the selectable rule still holds once it is set. A draft leaves a candidate without its
+  // required runtime to deployment (finding 3022).
   const resolveCandidate = (
     model: string,
     entryPolicy: unknown,
     entryKey: string | undefined,
+    entryListsPrimary: boolean,
   ): string | undefined => {
     const providerId = splitModelRef(model).provider;
     const provider = asRecord(providerConfigurations?.[providerId]);
@@ -618,25 +630,21 @@ function resolveModelPolicy(
       if (draft) {
         return undefined;
       }
+      // Offer only a value deployment then accepts: the runtime an earlier candidate selected,
+      // as every candidate must select the same one, and codex only where Codex runs the model.
+      const [earlier] = resolved;
       throw new ConfigurationHarnessError(
         configurationSettingMessage(
-          `${entryPolicy === undefined ? defaultModelPolicy(model) : entryPolicyPath()}.agentRuntime.id`,
-          "is required for the selected model: set it to openclaw or codex",
+          `${entryPolicy === undefined && !entryListsPrimary ? defaultModelPolicy(model) : entryPolicyPath()}.agentRuntime.id`,
+          resolved.size === 1
+            ? `is required for the selected model: set it to ${earlier}, the runtime the other selected models use`
+            : codexRuns(providerId)
+              ? "is required for the selected model: set it to openclaw or codex"
+              : "is required for the selected model: set it to openclaw",
         ),
       );
     }
-    const codexPlugin = asRecord(plugins?.codex);
-    const codexPluginConfiguration = asRecord(codexPlugin?.config);
-    const codexAppServer = asRecord(codexPluginConfiguration?.appServer);
-    if (
-      selected === "codex" &&
-      providerId !== "codex" &&
-      !(
-        providerId === "openai" &&
-        codexPlugin?.enabled === true &&
-        codexAppServer?.transport === "websocket"
-      )
-    ) {
+    if (selected === "codex" && !codexRuns(providerId)) {
       throw new ConfigurationHarnessError(
         configurationSettingMessage(
           `${first![1]()}.agentRuntime.id`,
@@ -674,7 +682,12 @@ function resolveModelPolicy(
         }
         resolvedModels.add(model);
       }
-      const harness = resolveCandidate(model, entryPolicy, key);
+      const harness = resolveCandidate(
+        model,
+        entryPolicy,
+        key,
+        entryModels?.[models[0]!] !== undefined,
+      );
       if (harness !== undefined) {
         resolved.add(harness);
       }
