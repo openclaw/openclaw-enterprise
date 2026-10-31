@@ -1098,8 +1098,9 @@ test("Configuration save refuses a model policy whose settings conflict, with de
   const conflictingPolicies = "The selected model has conflicting Harness runtime policies.";
   const unselectedRow = { providers: { openai: { models: [{ id: "gpt-unselected" }] } } };
   // Each document sets two values that cannot both hold. Create and update refuse it; a row an
-  // older release stored still reads, and deployment refuses it with the same text.
-  for (const [name, values, message] of [
+  // older release stored still reads, and deployment refuses it with the same text unless the row
+  // names another deployment text.
+  for (const [name, values, message, deploy] of [
     [
       "an Agent entry's primary that differs from the defaults'",
       {
@@ -1161,8 +1162,67 @@ test("Configuration save refuses a model policy whose settings conflict, with de
       { ...runtimeSelected, models: { providers: { openai: { agentRuntime: { id: "pi" } } } } },
       "The configured model Harness runtime identity is unsupported.",
     ],
+    // Each policy names one runtime, so no single model conflicts: the primary and its fallback
+    // together select two Harnesses.
+    [
+      "a primary and a fallback whose catalog rows name different runtimes",
+      {
+        agents: {
+          defaults: { model: { primary: "codex/gpt-5", fallbacks: ["codex/gpt-5-mini"] } },
+        },
+        models: {
+          providers: {
+            codex: {
+              models: [
+                { id: "gpt-5", agentRuntime: { id: "openclaw" } },
+                { id: "gpt-5-mini", agentRuntime: { id: "codex" } },
+              ],
+            },
+          },
+        },
+      },
+      "The configured Agent models select conflicting Harness runtimes.",
+    ],
+    // Both rows name the selected model, one by its id and one by its complete ref.
+    [
+      "a catalog that lists the selected model twice",
+      {
+        ...runtimeSelected,
+        models: {
+          providers: { openai: { models: [{ id: "gpt-4.1" }, { id: "openai/gpt-4.1" }] } },
+        },
+      },
+      setting(
+        "models.providers.openai.models",
+        "lists the selected model more than once: keep one entry",
+      ),
+    ],
+    // A draft skips the entry without a model and still checks the entries after it. Deployment
+    // names the missing model first.
+    [
+      "an entry primary that differs from an earlier entry's, after an entry without a model",
+      {
+        agents: {
+          ownership: "explicit",
+          entries: {
+            pending: {},
+            other: { model: "openai/gpt-4.1" },
+            main: { model: "openai/gpt-4.1-mini" },
+          },
+        },
+      },
+      entryPrimary,
+      {
+        message: setting(
+          "agents.entries.pending.model",
+          "is required when agents.defaults.model is unset: set either one",
+        ),
+      },
+    ],
   ]) {
-    await t.test(`refuses ${name}`, () => refusedAtSaveAndDeploy(context, agent, values, message));
+    await t.test(`refuses ${name}`, () =>
+      refusedAtSaveAndDeploy(context, agent, values, message, deploy),
+    );
   }
 
   // Save checks these rules in deployment's order, so a document that breaks two names the same
