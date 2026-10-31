@@ -1068,3 +1068,29 @@ for (const [shape, options] of Object.entries(olderShapes)) {
     },
   );
 }
+
+// The active version is left to its maintenance: superseding or stopping it would take down the
+// recorded selection, and its own pass keeps failing and retrying as before.
+revisionTest(
+  "an active exclusive version keeps its maintenance when a newer embedded version fails with a held code",
+  async (fixture) => {
+    const driver = sharedGatewayCompute(fixture);
+    await fixture.start(driver.compute, { convergenceTimeoutMs: 3_000 });
+    const owner = await fixture.agent("exclusive-active-held");
+    const active = await fixture.revision(owner, 1, olderShapes.exclusive);
+    driver.outcomes.set(active.id, "ready");
+    await fixture.work(active, "succeeded");
+    const newer = await fixture.revision(owner, 2);
+    driver.outcomes.set(newer.id, "probe-failed");
+    await assertWorkEnds(fixture, newer, "failed_permanent", "RUNTIME_MODEL_PROBE_FAILED");
+    const before = driver.passes(active);
+    // The maintenance pass reaches Compute, which reports it not ready while the newer version
+    // holds the Gateway, so it ends at its deadline without a stop.
+    const maintenance = await enqueueMaintenance(fixture, owner, active);
+    await assertWorkEnds(fixture, maintenance, "failed_permanent", "CONVERGENCE_DEADLINE_EXCEEDED");
+    assert.ok(driver.passes(active) > before, "the maintenance pass prepared the active version");
+    assert.equal(driver.stops(active), 0);
+    assert.ok(driver.harnesses.has(active.id));
+    assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, active.id);
+  },
+);
