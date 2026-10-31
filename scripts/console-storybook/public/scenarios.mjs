@@ -5117,6 +5117,20 @@ export const scenarios = {
     ],
     gap: "The stored reference is simulated; this story does not call OCC's save or deploy admission or start a Gateway.",
   },
+  secretProviderAliasRefused: {
+    group: "Pages/Agent detail",
+    name: "Secret provider alias OpenClaw refuses",
+    path: draft,
+    deployed: true,
+    secretProviderAliasRefused: true,
+    description:
+      "An older release saved secrets.defaults.env as BAD. OpenClaw's configuration check refuses an alias outside its grammar and OCC refuses to save or deploy it, so the page names the alias and offers no Enable gateway password access.",
+    steps: [
+      "On Configuration the hint reads Configuration setting secrets.defaults.env is BAD, not a provider alias OpenClaw reads, then says to edit the Configuration before you enable gateway password access; the button is absent.",
+      "In Prepare this version, the first step reads Fix the secret provider alias and Deploy new version is disabled with the same refusal.",
+    ],
+    gap: "The stored alias is simulated; this story does not call OCC's save or deploy admission or start a Gateway.",
+  },
   gatewayPasswordSaveDenied: {
     group: "Pages/Agent detail",
     name: "Gateway password save denied",

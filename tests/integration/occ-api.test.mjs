@@ -8277,6 +8277,18 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
       },
       sshGatewayPasswordRefusal.reference(),
     ],
+    // The refusal offers the reference on the default env alias.
+    [
+      "other-password-variable-custom-alias",
+      {
+        auth: {
+          mode: "password",
+          password: { source: "env", provider: "custom", id: "SYNTHETIC_GATEWAY_PASSWORD" },
+        },
+      },
+      sshGatewayPasswordRefusal.reference("custom"),
+      { defaults: { env: "custom" } },
+    ],
     ["password", { auth: { mode: "password" } }],
     [
       "password-expression",

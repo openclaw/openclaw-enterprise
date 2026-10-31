@@ -72,6 +72,10 @@ function configurationValues(scenario) {
     // A reference an older release saved without a provider, which OpenClaw cannot read.
     values.gateway.auth = { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } };
   }
+  if (scenario.secretProviderAliasRefused) {
+    // An env alias an older release saved in upper case, which OpenClaw's config check refuses.
+    values.secrets = { defaults: { env: "BAD" } };
+  }
   if (scenario.messageQueue !== undefined) {
     values.messages = { queue: structuredClone(scenario.messageQueue) };
   }

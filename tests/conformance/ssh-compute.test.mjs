@@ -39,7 +39,10 @@ import { withComputeAbortSignal } from "../../apps/controller/src/drivers/comput
 import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
-import { sshGatewayPasswordRefusal } from "../helpers/refusal-text.mjs";
+import {
+  sshGatewayPasswordRefusal,
+  unreadableGatewayPasswordRefusal,
+} from "../helpers/refusal-text.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { Check } = require("typebox/value");
@@ -1053,6 +1056,20 @@ test("SSH renders a readable custom-alias gateway password and still tears down 
     ),
   });
   assert.equal(f.calls.length, before);
+  // Trusted proxy renders the expression as written, which the runtime substitutes from the
+  // unit's environment whatever the alias, so it needs no SecretRef.
+  const proxy = revision(f.driver, 1, "agent-ssh-proxy-custom-alias", {
+    gateway: {
+      auth: {
+        mode: "trusted-proxy",
+        password: "${OPENCLAW_GATEWAY_PASSWORD}",
+        trustedProxy: { userHeader: "x-user" },
+      },
+    },
+    secrets: { defaults: { env: "custom" } },
+  });
+  await prepare(f, proxy);
+  assert.deepEqual(await json(join(f.revisionDir(proxy), "openclaw.json")), proxy.configuration);
 
   // The old producer admitted the default-provider reference under a custom alias and rendered it
   // as written; seed that snapshot through the real host helper.
@@ -1064,7 +1081,9 @@ test("SSH renders a readable custom-alias gateway password and still tears down 
     secrets: { defaults: { env: "custom" } },
   });
   bind(f.driver, legacy);
-  await assert.rejects(f.driver.prepareRevision(legacy), /secret provider default/);
+  await assert.rejects(f.driver.prepareRevision(legacy), {
+    message: unreadableGatewayPasswordRefusal("provider", "default"),
+  });
   const configuration = expectedRuntimeConfiguration(legacy);
   await f.driver.execute(f.configured.hosts.stable, {
     operation: "prepare-revision",

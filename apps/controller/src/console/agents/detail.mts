@@ -5884,7 +5884,6 @@ export async function renderAgentDetail(
     const defaultsProblem = secretProviderDefaultsProblem(values.secrets);
     const passwordRequirement = gatewayPasswordRequirement(gatewayAuth.password, values.secrets);
     const usesGeneratedGatewayPassword =
-      defaultsProblem === undefined &&
       passwordRequirement === undefined &&
       password.source === "env" &&
       password.id === "OPENCLAW_GATEWAY_PASSWORD";
@@ -6207,12 +6206,12 @@ export async function renderAgentDetail(
           element(
             "p",
             { className: "hint" },
-            usesGeneratedGatewayPassword
-              ? gatewayPasswordRevision
-                ? `Gateway password access is enabled in the saved Configuration and included in v${gatewayPasswordRevision.revision}.`
-                : "Gateway password access is enabled in the saved Configuration. Deploy a new version to apply it."
-              : defaultsProblem !== undefined
-                ? `Configuration setting ${defaultsProblem.setting} ${defaultsProblem.requirement}. Edit Configuration to fix it before you enable gateway password access.`
+            defaultsProblem !== undefined
+              ? `Configuration setting ${defaultsProblem.setting} ${defaultsProblem.requirement}. Edit Configuration to fix it before you enable gateway password access.`
+              : usesGeneratedGatewayPassword
+                ? gatewayPasswordRevision
+                  ? `Gateway password access is enabled in the saved Configuration and included in v${gatewayPasswordRevision.revision}.`
+                  : "Gateway password access is enabled in the saved Configuration. Deploy a new version to apply it."
                 : passwordRequirement === undefined
                   ? "Use generated credentials for direct gateway password access. Enable access, save Configuration, then deploy a new version."
                   : `Configuration setting gateway.auth.password ${passwordRequirement}. Enable gateway password access to replace it, save Configuration, then deploy a new version.`,
