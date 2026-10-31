@@ -14422,9 +14422,10 @@ export class OpenClawController {
    * refusals offer codex alone where Codex runs the model (finding 3036). With the deploy route's
    * `resolveHarness`, an embedded Agent cannot run Codex where the Installation approves the Codex
    * Harness only for dedicated execution (resolveAgentHarness refuses it), so its refusals offer
-   * openclaw alone, or name the next step on a codex/<model> model (finding 3037). Read only to
-   * word a refusal: an unavailable Sandbox Driver or no resolver keeps every offer, and admission
-   * refuses it later.
+   * openclaw alone, or name the next step on a codex/<model> model (finding 3037). Callers without
+   * that resolver (Agent provisioning, which Kubernetes Compute admits only for dedicated Agents,
+   * and saved-Agent plugin discovery) keep every offer. Read only to word a refusal: an
+   * unavailable Sandbox Driver keeps every offer too, and admission refuses it later.
    */
   private modelPolicyAgent(
     executionMode: HarnessExecutionMode,
@@ -14433,9 +14434,8 @@ export class OpenClawController {
     return {
       codexRuns: () =>
         executionMode !== "embedded" ||
-        resolveHarness === undefined ||
-        resolveHarness("codex", "embedded")?.id === "codex" ||
-        resolveHarness("codex", "dedicated")?.id !== "codex",
+        resolveHarness?.("codex", "embedded")?.id === "codex" ||
+        resolveHarness?.("codex", "dedicated")?.id !== "codex",
       openclawRuns: () => {
         if (executionMode !== "dedicated") {
           return true;
