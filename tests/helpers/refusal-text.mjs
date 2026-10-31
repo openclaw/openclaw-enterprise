@@ -567,6 +567,24 @@ export const dedicatedCodexVariableRefusal = (
   `Configuration setting ${setting} references ${name}, which only a Dedicated Codex Agent receives: on ${agent} Agent, remove plugins.entries.${plugin} or set its enabled to false.`;
 export const unboundPluginSecretRefusal = (setting, name, plugin) =>
   `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
+// The plugin secret input rule's refusal of a reference OpenClaw cannot read, which stops the
+// Gateway at startup whatever the bindings (finding 3056), on the default env alias "default".
+const UNREADABLE_PLUGIN_SECRETS = {
+  providerless: (source = "env") =>
+    `is a SecretRef without a provider: add ${["env", "store"].includes(source) ? "provider default" : `a provider that secrets.providers configures for ${source}`}`,
+  provider: (provider, source = "env") =>
+    `uses secret provider ${provider}, which secrets.providers does not configure for ${source}`,
+  id: (id) =>
+    `references ${id}, not an id OpenClaw reads in env SecretRefs (A-Z, 0-9 and _, from a letter)`,
+  allowlist: (id, provider = "default") =>
+    `references ${id}, which secrets.providers.${provider}.allowlist omits`,
+};
+export const unreadablePluginSecretRefusal = (setting, plugin, held, ...shown) =>
+  `Configuration setting ${setting} ${UNREADABLE_PLUGIN_SECRETS[held](...shown)}, or remove plugins.entries.${plugin} or set its enabled to false.`;
+// The same refusal of a whole `${NAME}` at an input with a runtime owner (beam, imap): OpenClaw
+// reads it as a SecretRef only while NAME is unset, so deployment refuses it while unbound.
+export const unboundUnreadablePluginSecretRefusal = (setting, plugin, name, held, ...shown) =>
+  `Configuration setting ${setting} ${UNREADABLE_PLUGIN_SECRETS[held](...shown)}: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
 const USE_UPPERCASE =
   "use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}";
 export const unsubstitutedReferenceRefusal = (setting, shown) =>
