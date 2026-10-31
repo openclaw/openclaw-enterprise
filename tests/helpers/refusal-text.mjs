@@ -341,14 +341,26 @@ export const runtimeIdRequired = (policy, offer) =>
   `Configuration setting ${policy}.agentRuntime.id is required for the selected model: set it to ${offer}.`;
 export const runtimeOfOtherModels = (runtime) =>
   `${runtime}, the runtime the other selected models use`;
-export const runtimePoliciesConflict = (first, firstId, second, secondId) =>
-  `Configuration settings ${first}.agentRuntime.id (${firstId}) and ${second}.agentRuntime.id (${secondId}) conflict: set both to openclaw or both to codex, or remove one.`;
+// `remedy` offers only values deployment then accepts: BOTH_RUNTIMES, or keepRuntime(...) when
+// only one runtime is accepted (Codex does not run the model, or another policy or an earlier
+// selected model already selects it).
+export const runtimePoliciesConflict = (first, firstId, second, secondId, remedy) =>
+  `Configuration settings ${first}.agentRuntime.id (${firstId}) and ${second}.agentRuntime.id (${secondId}) conflict: ${remedy}.`;
+export const BOTH_RUNTIMES = "set both to openclaw or both to codex, or remove one";
+export const keepRuntime = (runtime, other) =>
+  `set both to ${runtime}, or remove the one set to ${other}`;
 export const codexRuntimeOffProvider = (policy) =>
   `Configuration setting ${policy}.agentRuntime.id selects codex for a model outside the codex provider: select a codex/<model> model, or set it to openclaw.`;
 export const selectableModelsNotObject = (parent) =>
   `Configuration setting ${parent} must be an object keyed by model ref, such as {"openai/gpt-5.1": {"agentRuntime": {"id": "openclaw"}}}.`;
-export const selectablePrimaryRuntimeRequired = (primaryPolicy) =>
-  `Configuration setting ${primaryPolicy}.agentRuntime.id is required when other models are listed beside the primary model: set it to openclaw or codex.`;
+// `offer` as for runtimeIdRequired, or the runtime other settings or the listed models select.
+export const selectablePrimaryRuntimeRequired = (primaryPolicy, offer) =>
+  `Configuration setting ${primaryPolicy}.agentRuntime.id is required when other models are listed beside the primary model: set it to ${offer}.`;
+export const runtimeOfPrimaryElsewhere = (runtime) =>
+  `${runtime}, the runtime other settings select for the primary model`;
+export const runtimeOfListedModels = (runtime) => `${runtime}, the runtime the listed models use`;
+export const runtimeOfEntries = (runtime) =>
+  `${runtime}, the runtime agents.entries select for the model`;
 export const selectableModelOffProvider = (policy, provider) =>
   `Configuration setting ${policy} is not on the primary model's provider, "${provider}": remove it, or list a model of that provider.`;
 export const selectableModelRuntimeMismatch = (policy, runtime) =>
