@@ -161,11 +161,11 @@ owns these checks.
 
 Revocation and denial fail permanently before Compute. Selected versions enter
 finalization or maintenance. Older versions end superseded, also once the newest,
-without Git, has a held runtime failure. With
+without Git, has a held runtime failure. Under
 [exclusive replacement](../reference/drivers/compute.md#production-revision-stages),
-the older one then stops itself, and a newer admission supersedes older active
-maintenance before Compute effects, even after candidate failure. Recovery uses
-a new version.
+a newer admission supersedes older active maintenance before Compute effects,
+even after candidate failure; a superseded inactive version stops itself.
+Recovery uses a new version.
 
 Agent-stop work rechecks current exact-Agent `operate`; superseded desired state
 completes without shutdown.
