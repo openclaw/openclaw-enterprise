@@ -125,8 +125,20 @@ defines snapshot ownership and zero-retention reads.
 
 ### Interface and consumer migration
 
+OCC calls the Backend's source registration contract for ordinary sources. A bundled
+OpenShell Backend declares `credentialSources.id` and its binary configuration. Startup
+can decode the released Gateway selector into that same owner. Preserve the source ID,
+snapshot fields and protected Driver configuration digest across either spelling.
+
+For an ordinary source, Kubernetes Compute calls its paired Sandbox to prepare, observe
+and withdraw provider attachments. These operations retain their existing enforcement.
+A protected source uses the Credential Proxy and its admitted bindings. The Token Service
+can read an existing grant under operator credentials after enrollment is disabled.
+Reading alone grants no authority to start a login or rotate a source.
+
 | Credential Gateway method | Responsibility that must survive retirement |
 | --- | --- |
+| `withSourceToken` | Authorized Token Service management use for discovery, including account metadata and a permission recheck before invoking the consumer |
 | `listSourceTypes` | `CredentialSourceControl.describeTypes`, including provider schema and Harness compatibility |
 | `registerSource` | `applySource`, then separately `configureRefresh` for dynamic inputs |
 | `updateSource` | `applySource` with admitted configuration and static adoption or approved replacement |
@@ -134,7 +146,7 @@ defines snapshot ownership and zero-retention reads.
 | `removeSource` | `removeSource`, `removeRefresh` and owned provider/profile cleanup |
 | `attachForRevision` | `configureRevision`, then Sandbox `applyCredentialProxy` |
 | `attachmentStatus` | Join Credential Proxy `wiringStatus` to Sandbox `credentialProxyStatus` for the exact installation |
-| `withdraw` | Durable withdrawal, `withdrawBinding` and late-installation rechecks |
+| `withdraw` | Durable withdrawal, verified policy reduction or execution retirement, and late-installation rechecks |
 | Additional `validateSourceConfig` | OCC schema validation and provider `normalizeInput`, without I/O and before Secret access |
 
 Move persisted driver IDs, revision and Harness snapshots, Agent bindings and authentication
@@ -145,12 +157,15 @@ audit, console, setup and generated schemas.
 
 Keep Kubernetes, same-Backend and Repo guards until their replacements qualify. Move worker,
 Compute, maintenance, withdrawal and companion-revision consumers with their attempts and cleanup.
-A withdrawn required model binding blocks startup; an optional tool can be omitted. Transfer native
-OAuth input custody only after stopping the old refresher. Keep Repo discovery, profiles and sessions,
-and use separately authorized OCC preparation for management retrieval. Migrate repositories,
-constraints and source-copy utilities without rewriting historical migrations. Test an upgrade from
-the released catalog with revisions that exercise its latest admission fields, including a public
-GitHub reader revision with `compute.admission` populated. Preserve every released receipt and
-still-supported snapshot. If receipt history diverges, refuse the upgrade and leave the ledger unchanged.
+A withdrawn required model binding blocks startup. An optional tool can be omitted.
+Keep Repo discovery, profiles and sessions. A pre-1.0 Installation can retire an old
+source and enroll a fresh one through the selected Token Service. Stop its refresher
+and settle outstanding work with the original owner before removing it. Reject an
+unsupported stored owner explicitly. Migrate repositories, constraints and source-copy
+utilities without rewriting historical migrations. Test an upgrade from the released
+catalog with revisions that exercise its latest admission fields, including a public
+GitHub reader revision with `compute.admission` populated. Preserve every released
+receipt and still-supported snapshot. If receipt history diverges, refuse the upgrade
+and leave the ledger unchanged.
 Disable legacy reattachment and refresh before removing capability selection, registration, exports,
 package checks and persistence coupling. A temporary adapter is useful only while those obligations remain.
