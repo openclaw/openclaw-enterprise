@@ -1,24 +1,21 @@
 ---
 created: "2026-10-08"
 updated: 2026-10-30
-last_updated_session: authoring-run/264fbe79-1af9-492d-aa8b-c020cde317f2
+last_updated_session: authoring-run/3c09c85b-a796-4bb6-ba0c-b1a7b496d3d7
 ---
 
 # Credential source refresh Flow
 
 ## Overview
 
-For an OAuth2 source, the API registers an empty provider. The paired Refresh
-Driver configures the issuer and requests the first token. The gateway renews it
-before expiry while the Agent keeps one placeholder. See the
-[credential source lifecycle](credential-source-lifecycle.md) for binding and withdrawal.
+OCC registers an empty OAuth2 provider. The Refresh Driver requests a token;
+the gateway renews it before expiry.
 
 In the [Codex device flow](#device-authorization-and-configuration), OpenShell keeps
 the refresh grant. The Harness receives a placeholder and account metadata. An
 operator connection can retrieve an access token for authorized discovery.
 These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
 
-For [GitHub access](#6-issue-and-renew-a-github-installation-token), the OCE worker owns issuance.
 [Git and draft pull requests](../reference/repository-credentials/prepared-native-git.md)
 can use committed tokens but cannot trigger issuance.
 
@@ -128,11 +125,14 @@ marks the source `ready` with its audit event.
 `packages/occ/src/index.ts:startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
-For a type declaring `deviceAuthorization.harnessId`, OCC registers the empty
-source, asks the paired Refresh Driver to start login, then stores the opaque
-handle, actor, source, and Driver IDs in the session Secret.
-The HTTP handler in `apps/controller/src/index.ts` audits the successful start,
-naming the Agent or Namespace but not the session Secret, before replying.
+`deviceAuthorization.harnessId` sources register before login.
+`source_registering` and `source_ready` audit events commit with state, identifying
+actor, request, and source. Audit failure blocks login; failed starts retain audited sources.
+
+OCC commits the session Secret's handle, actor, source, and Driver IDs with
+`session_pending`. Known commit failure deletes metadata and private Driver value;
+unknown outcomes skip compensation. Session events identify Agent or Namespace
+and source ID. Audit excludes handles, credentials, and user codes.
 
 `apps/controller/src/console/agents/device-login.mts:createDeviceLogin` records
 `start_unconfirmed` before a start; both authentication forms retain it across
@@ -147,14 +147,13 @@ Driver selections before completion. Uncertain exchanges close the handle but
 keep the source.
 
 `apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
-starts the issuer request from the API Pods. Start, poll, and token-exchange
-requests use fixed `auth.openai.com` endpoints and refuse redirects. Its
-`DeviceAuthorizationStartError` is `unreachable` for a connection failure or
-timeout and `unavailable` for an HTTP rejection, malformed reply, or
-`AbortError`. The HTTP handler returns `503 DEPENDENCY_UNAVAILABLE`, naming
-`auth.openai.com` and API Pod egress only for `unreachable`. The
-`device_authorization.start_failed` warning keeps the Refresh boundary and allowed
-failure class, never provider messages, response bodies, or nested causes.
+uses fixed `auth.openai.com` endpoints from API Pods for start, poll, and exchange.
+Redirects are refused. `DeviceAuthorizationStartError` reports connection failure
+or timeout as `unreachable`; HTTP rejection, malformed replies, and `AbortError`
+as `unavailable`. HTTP returns `503 DEPENDENCY_UNAVAILABLE`, naming the host and
+API Pod egress only for `unreachable`. The `device_authorization.start_failed`
+warning includes the Refresh boundary and failure class, never provider messages,
+response bodies, or nested causes.
 
 `apps/controller/src/drivers/credential-refresh/openshell.ts:pollDeviceAuthorization`
 performs the Codex exchange, configures OpenShell with refresh material, and
@@ -338,11 +337,19 @@ detached reads. Clearing bytes cannot revoke a token.
 
 ## Changelog
 
+- 2026-10-30 13:13: Reconcile recovery. (authoring-run/3c09c85b-a796-4bb6-ba0c-b1a7b496d3d7 - 8d689e31869b067327c13e69c104d29cc3414e4d)
+
+- 2026-10-30 11:48: Reconcile recovery. (authoring-run/6d054d8d-36a8-473d-a19e-d677d01685d1 - 72ac4681002676b346792a56cfc42dd45a4a4588)
+
 - 2026-10-30 12:27: Record late starts. (authoring-run/264fbe79-1af9-492d-aa8b-c020cde317f2 - cd2a58116a69f1a6d68a572a226ef8945408ef54)
 
 - 2026-10-30 11:39: Keep pending-start tabs. (authoring-run/ba84d894-356c-419d-ab61-c51ce59bdec6 - 01c78bee6b7eac13f95585291232ff763edb7828)
 
+- 2026-10-30 08:11: Reconcile device login. (authoring-run/9120ced5-00df-4b42-bd89-da00f981ef38 - 0ef6ddffdbe0688b9d7d3d87f75093ace992852b)
+
 - 2026-10-29 16:08: Qualify retry visibility. (authoring-run/91cf4dad-e612-4f33-8307-7989dfcd611e - 0dae5b3d5a3d4be177e8edad6d1baa07aa0747ed)
+
+- 2026-10-29 15:03: Trace device-start audit transactions. (authoring-run/7671e83f-de1e-402c-bc7c-7704dbdd54dd - 72dfce5bfdbde5a79f714dc62777425c26619581)
 
 - 2026-10-29 14:58: Retain unconfirmed Console starts across navigation. (authoring-run/f0c1d1b2-80e6-4a5b-9dce-e888c5e30bb2 - 2de02b7f995d5401c9a300b1e350b9f80be1073d)
 
