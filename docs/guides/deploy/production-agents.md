@@ -94,7 +94,7 @@ deploying either example. Kubernetes Compute renders native trusted-proxy
 authentication for Console workspace access; the examples omit Driver-owned
 settings. Follow the [native authentication requirements](workspace-routing.md#configure-native-gateway-authentication)
 for proxy identity and NetworkPolicy isolation; do not trust arbitrary client
-addresses. The gateway password SecretRef enables the separate local model check.
+addresses.
 Dedicated Codex also requires the [matching runtime images](workspace-routing.md#runtime-prerequisite-for-separate-storage).
 
 Choose one runtime mode and write the matching Namespace-owned
@@ -255,6 +255,13 @@ give each model a compatible Harness policy. OCC validates the full selection
 and preserves its fallback order; mixed Harnesses are rejected. See
 [native runtime selection](../../reference/harness-execution.md#native-runtime-selection).
 
+If you customize `configuration.json` and plan to verify a local model reply,
+check these settings before saving it. The [OpenClaw TUI](#attach-with-the-openclaw-tui) uses the
+`values.gateway.auth.password` SecretRef shown in both examples. The
+loopback HTTP check also needs
+`values.gateway.http.endpoints.chatCompletions.enabled` set to boolean `true`.
+Agents using neither check can omit these settings.
+
 Post the Configuration and capture the server-generated ID:
 
 ```bash
@@ -286,6 +293,52 @@ AGENT_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(j
 AGENT_SERVICE_PRINCIPAL_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["servicePrincipalId"])')" &&
 export AGENT_ID AGENT_SERVICE_PRINCIPAL_ID
 ```
+
+### Check saved settings for local model verification
+
+If you used either example unchanged, continue to the grant below. To use a
+local check with a reused or customized Configuration, check the settings that
+the saved Agent references before granting model Secret access or deploying.
+The caller needs `read` on the Agent and its Namespace Configuration. Set
+`AGENT_ID` to the saved Agent's ID and pass `tui` or `http`.
+
+```bash
+OCC_NAMESPACE="${NAMESPACE_ID:?}" python3 - "${AGENT_ID:?}" tui <<'PYTHON'
+import json, subprocess, sys
+
+agent_id, route = sys.argv[1:]
+if route not in ("tui", "http"):
+    sys.exit("Choose tui or http.")
+
+def read(kind, resource_id):
+    return json.loads(subprocess.check_output(
+        ["occ", kind, "get", resource_id, "--output", "json"],
+        stderr=subprocess.DEVNULL,
+    ))
+
+try:
+    configuration_id = read("agent", agent_id)["configurationId"]
+    if not isinstance(configuration_id, str) or not configuration_id:
+        sys.exit("The saved Agent has no readable Configuration ID.")
+    configuration = read("configuration", configuration_id)
+except (OSError, subprocess.CalledProcessError, KeyError, TypeError, ValueError):
+    sys.exit("Could not read the saved settings. Check the CLI setup, IDs, and read access.")
+
+try:
+    gateway = configuration["values"]["gateway"]
+    password = {"source": "env", "provider": "default", "id": "OPENCLAW_GATEWAY_PASSWORD"}
+    if configuration["kind"] != "agent" or gateway["auth"]["password"] != password:
+        sys.exit("Use the kind and gateway password SecretRef from the example.")
+    if route == "http" and gateway["http"]["endpoints"]["chatCompletions"]["enabled"] is not True:
+        sys.exit("Enable chat completions for the HTTP check.")
+except (KeyError, TypeError):
+    sys.exit("Add the missing settings for the chosen check.")
+print("Saved Configuration matches the chosen check.")
+PYTHON
+```
+
+A match confirms the saved fields. Complete the required grants and deployment,
+then [verify a model reply](#verify-production-workloads).
 
 ### Grant the Agent access to its model Secret
 
@@ -398,9 +451,6 @@ for permissions and conflicts. Dedicated Agents keep the canonical transport
 token and Gateway password in separate control-plane Kubernetes Secrets. Compute
 projects only the app-server token to the Harness. Embedded Agents use their tenant-local bundle.
 
-Kubernetes gateways use trusted-proxy authentication. For direct operator
-loopback checks, explicitly select the generated Gateway password and native HTTP
-endpoint as described in [Model response verification](../operate/model-verification.md).
 Model authentication comes from the saved `harnessAuth` binding and is projected
 only into the model-executing workload. Slack tokens use separate Namespace
 Secrets; follow [Slack setup](../integrations/slack.md). Keep credential values

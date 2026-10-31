@@ -6,7 +6,6 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   readlinkSync,
@@ -14,9 +13,9 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
 const repo = resolve(import.meta.dirname, "../..");
 
@@ -31,8 +30,7 @@ function copyPackHelper(root: string): void {
 for (const name of ["contracts", "utils"]) {
   for (const dangling of [false, true]) {
     test(`${name} prepack refuses a ${dangling ? "dangling" : "directory"} dist link before compiling`, (t) => {
-      const root = mkdtempSync(join(tmpdir(), "package-prepack-"));
-      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const root = temporaryDirectorySync(t, "package-prepack-");
       copyPackHelper(root);
       const pkg = join(root, "packages", name);
       const target = join(root, "target");
@@ -71,8 +69,7 @@ for (const name of ["contracts", "utils"]) {
 }
 
 test("cold contracts prepack builds from workspace source without writing to utils output", async (t) => {
-  const root = mkdtempSync(join(tmpdir(), "contracts-prepack-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const root = temporaryDirectorySync(t, "contracts-prepack-");
   copyPackHelper(root);
   copyFileSync(join(repo, "tsconfig.base.json"), join(root, "tsconfig.base.json"));
   symlinkSync(join(repo, "node_modules"), join(root, "node_modules"), "dir");
