@@ -1212,6 +1212,32 @@ revisionTest(
   },
 );
 
+// An older shared (embedded) version superseded the same way is left alone beside an active
+// version, as a refused shared candidate is: on Kubernetes it may hold the Agent's shared Gateway,
+// which its stop would delete. The next deployment that activates retires it.
+revisionTest(
+  "an older shared version superseded by a refused newer exclusive version is not stopped beside an active version",
+  async (fixture) => {
+    const driver = sharedGatewayCompute(fixture);
+    await fixture.start(driver.compute);
+    const owner = await fixture.agent("shared-refused-successor");
+    const active = await fixture.revision(owner, 1);
+    driver.outcomes.set(active.id, "ready");
+    await fixture.work(active, "succeeded");
+    const older = await fixture.revision(owner, 2);
+    await waitFor("the older version's first preparation", async () =>
+      driver.passes(older) > 0 ? true : undefined,
+    );
+    await refusedExclusiveVersion(fixture, driver, owner, 3);
+    await assertWorkEnds(fixture, older, "succeeded", "REVISION_SUPERSEDED");
+    assert.equal(driver.stops(older), 0);
+    assert.equal(driver.stops(active), 0);
+    assert.equal(driver.gateway.get(owner.id), older.revision);
+    assert.deepEqual(driver.removedBy, []);
+    assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, active.id);
+  },
+);
+
 // Finding 3075 control: a newer exclusive version that reaches its sweep stops the older version
 // itself. The older version's own pass then skips its stop, or stops first and spares the sweep,
 // so the older version stops once. Its stop never touches the newer version's Gateway or Harness,
