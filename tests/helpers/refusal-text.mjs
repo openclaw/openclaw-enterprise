@@ -791,3 +791,16 @@ export const secretGrantDeployReason = (
     : "Open Credentials and select Retry Secret access.";
   return `${problem} ${step}`;
 };
+
+// Channel Secrets outcomes once the Agent can use its bound Secrets (agents/credentials.mts). With
+// Slack on they name the saved Slack Secrets. With Slack off a Retry saved nothing about Slack, so
+// they name the bound Secrets (finding 3021). A grant read that finds the grant a lost Retry made
+// says access is confirmed (finding 3030).
+const SLACK_SECRETS_USABLE =
+  "This Agent can use its saved Slack Secrets. Deploy the new version to deliver them.";
+const BOUND_SECRETS_USABLE =
+  "This Agent can use its bound Secrets. Deploy the new version to deliver them.";
+export const SLACK_RETRY_GRANTED = SLACK_SECRETS_USABLE;
+export const SLACK_OFF_RETRY_GRANTED = `Secret access granted. ${BOUND_SECRETS_USABLE}`;
+export const secretAccessConfirmed = (slackOn) =>
+  `Secret access confirmed. ${slackOn ? SLACK_SECRETS_USABLE : BOUND_SECRETS_USABLE}`;

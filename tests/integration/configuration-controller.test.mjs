@@ -914,16 +914,10 @@ test("Configuration save checks the shared content rules before a Compute Driver
 
 // One shape per rule. Every topology's OpenClaw Gateway rejects each (finding 874).
 const rosterRefusals = [
-  [{ agents: "x" }, "Configuration setting agents must be an object."],
-  [{ agents: { defaults: [] } }, "Configuration setting agents.defaults must be an object."],
-  [
-    withAgents({ entries: [] }),
-    "Configuration setting agents.entries must be an object keyed by Agent ID.",
-  ],
-  [
-    withAgents({ entries: { main: null } }),
-    "Configuration setting agents.entries.main must be an object.",
-  ],
+  [{ agents: "x" }, setting("agents", "must be an object")],
+  [{ agents: { defaults: [] } }, setting("agents.defaults", "must be an object")],
+  [withAgents({ entries: [] }), setting("agents.entries", "must be an object keyed by Agent ID")],
+  [withAgents({ entries: { main: null } }), setting("agents.entries.main", "must be an object")],
   [
     withAgents({ list: [{ id: "main" }] }),
     "Configuration setting agents.list is unsupported: remove it and configure each Agent under agents.entries, keyed by its Agent ID.",
@@ -2073,7 +2067,6 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
   const binding = "model credentials come from the Agent's Harness authentication binding";
   const credentialHeader = (name) =>
     `must not set the credential header "${name}" (its name marks a credential)`;
-  const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
 
   for (const [values, message] of [
     [

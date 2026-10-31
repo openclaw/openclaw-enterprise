@@ -22,7 +22,9 @@ import {
   pathRequests,
   secretOptionLabel,
   selectSecret,
+  trackSettledFetches,
   waitForEnabled,
+  waitForIdleFetches,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
@@ -34,7 +36,10 @@ import {
   DEPLOY_CLUSTER_RBAC_REFUSED,
   READ_UNAVAILABLE,
   namespaceListDenied,
+  secretAccessConfirmed,
   secretGrantDeployReason,
+  SLACK_OFF_RETRY_GRANTED,
+  SLACK_RETRY_GRANTED,
   unreadableSlackTokenRefusal,
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
@@ -686,12 +691,6 @@ async function agentWithoutGrant(t, { name, slackValues, bindings, ungranted, fi
   return { fixture, namespace, agent, secrets };
 }
 
-// What a successful Retry Secret access says with Slack on.
-const SLACK_RETRY_GRANTED =
-  "This Agent can use its saved Slack Secrets. Deploy the new version to deliver them.";
-// With Slack off, Retry saved nothing about Slack: it granted the bound Secrets (finding 3021).
-const SLACK_OFF_RETRY_GRANTED =
-  "Secret access granted. This Agent can use its bound Secrets. Deploy the new version to deliver them.";
 // A Retry whose grant answer was lost saved no Configuration, so it names only the grant (finding
 // 3023).
 const SLACK_RETRY_UNCONFIRMED =
@@ -803,16 +802,13 @@ test("Secrets left bound after Disable Slack still need the Agent's grant", (t) 
     retried: SLACK_OFF_RETRY_GRANTED,
   }));
 
-// With Slack off, Retry Secret access makes no Secret choices, yet after another browser's write
-// its Reload draft said "Your channel Secret choices were not reapplied: Slack is off in the
-// reloaded Configuration." The rebuilt section also lost a keyboard reader's focus: Reload draft
-// put it on Retry Secret access, then the grant read that followed rebuilt that button and focus
-// fell to the page (finding 3021). The Retry the IAM API left unconfirmed said "Configuration
-// saved", though a Retry saves none, and Reload draft showed that outcome again beside "Draft
-// reloaded." until the grant read ended (finding 3023). When the first Retry's grant was made but
-// its answer lost, the read after Reload draft finds nothing outstanding: with Slack off the
-// section vanished, focus fell to the page and nothing said access was confirmed; with Slack on
-// Retry turned into an unavailable Save, again with nothing said (finding 3030).
+// A Retry Secret access that the IAM API leaves unconfirmed (unavailable, or its grant made but the
+// answer lost) meets another browser's write, and Reload draft rebuilds Channel Secrets. The
+// Retry's outcome names only the grant, as a Retry saves no Configuration. Reload draft adds no
+// note about Secret choices a Retry never made, keeps focus on Retry Secret access, and restates
+// no outcome until the rebuilt section's grant read lands. That read finds the grant missing, and
+// Retry grants it; or it finds the lost Retry's grant, says access is confirmed and moves focus to
+// that outcome, with Slack off or on (findings 3021, 3023, 3030).
 for (const { lost, slackOn } of [
   { lost: false, slackOn: false },
   { lost: true, slackOn: false },
@@ -829,12 +825,6 @@ for (const { lost, slackOn } of [
       retryConflictReload(t, { lost, slackOn, viewport }));
   }
 }
-
-// What the section says once the read after Reload draft finds the grants a lost Retry made.
-const ACCESS_CONFIRMED = {
-  on: "Secret access confirmed. This Agent can use its saved Slack Secrets. Deploy the new version to deliver them.",
-  off: "Secret access confirmed. This Agent can use its bound Secrets. Deploy the new version to deliver them.",
-};
 
 async function retryConflictReload(t, { lost, slackOn, viewport }) {
   const { fixture, namespace, agent, secrets } = await agentWithoutGrant(t, {
@@ -933,7 +923,7 @@ async function retryConflictReload(t, { lost, slackOn, viewport }) {
     // The policy read lands with the lost Retry's grant in place. The section says access is
     // confirmed, as a successful Retry says it is granted, and that outcome takes the focus the
     // replaced Retry had, so the reader keeps their place.
-    const confirmed = ACCESS_CONFIRMED[slackOn ? "on" : "off"];
+    const confirmed = secretAccessConfirmed(slackOn);
     await section.getByText(confirmed, { exact: true }).waitFor();
     assert.equal(await focused(), `status: ${confirmed}`);
     assert.equal(await section.getByRole("button", { name: "Retry Secret access" }).count(), 0);
@@ -1062,32 +1052,15 @@ test("Deploy waits for the Agent's Secret grant read and sends no deploy it woul
     ungranted: "SLACK_APP_TOKEN",
   });
   const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const deployRequests = () =>
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`).length;
   // Hold the policy reads until the test has checked Deploy while they are in flight.
-  let releaseReads;
-  const readsReleased = new Promise((resolve) => {
-    releaseReads = resolve;
-  });
-  let readHeld;
-  const readStarted = new Promise((resolve) => {
-    readHeld = resolve;
-  });
-  await page.route(
+  const reads = await holdRequests(
+    t,
+    page,
     `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
-    async (route, request) => {
-      if (request.method() === "GET") {
-        readHeld();
-        await readsReleased;
-      }
-      await route.fallback();
-    },
-  );
-  let deployRequests = 0;
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-    async (route) => {
-      deployRequests += 1;
-      await route.fallback();
-    },
+    { method: "GET" },
   );
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const deploy = page.getByRole("button", { name: "Deploy new version" });
@@ -1097,7 +1070,7 @@ test("Deploy waits for the Agent's Secret grant read and sends no deploy it woul
     .filter({ hasText: /\S/ })
     .waitFor();
   // The grant read asks for the bindings once the roles have answered (finding 2919).
-  await readStarted;
+  await reads.requested;
   assert.equal(await deploy.isDisabled(), true);
   await page.getByText("Checking this Agent's credential access before deploying.").waitFor();
   // The checking text sits in the 250 ms delayed-status span, in the deploy status and the
@@ -1111,22 +1084,18 @@ test("Deploy waits for the Agent's Secret grant read and sends no deploy it woul
     await actions.locator(".checklist-detail > .delayed-status").textContent(),
     "Checking credential access…",
   );
-  releaseReads();
+  reads.release();
   await page
     .getByText(secretGrantDeployReason(["Slack app token"], { missing: true }), { exact: true })
     .waitFor();
   assert.equal(await deploy.isDisabled(), true);
-  assert.equal(deployRequests, 0);
+  assert.equal(deployRequests(), 0);
   // Positive control: Retry Secret access grants the Secret, and Deploy becomes available.
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await page.getByRole("button", { name: "Retry Secret access" }).click();
-  await page
-    .getByText(
-      "This Agent can use its saved Slack Secrets. Deploy the new version to deliver them.",
-    )
-    .waitFor();
+  await page.getByText(SLACK_RETRY_GRANTED, { exact: true }).waitFor();
   await waitForEnabled(deploy);
-  assert.equal(deployRequests, 0);
+  assert.equal(deployRequests(), 0);
 });
 
 // Finding 3017's read-only branch. An Installation administrator's console finds a bound Slack
@@ -1187,70 +1156,36 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
   });
   const replacement = await fixture.createSecret(namespace.id, "Replacement bot token", "xoxb-new");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
+  const deployRequests = () =>
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`).length;
   // Hold only the panel's first policy read; the save's own grant reads pass.
-  let releaseRead;
-  const readReleased = new Promise((resolve) => {
-    releaseRead = resolve;
-  });
-  let heldRead = null;
-  let readHeld;
-  const readStarted = new Promise((resolve) => {
-    readHeld = resolve;
-  });
-  await page.route(
+  const read = await holdRequests(
+    t,
+    page,
     `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
-    async (route, request) => {
-      if (request.method() === "GET" && heldRead === null) {
-        heldRead = request;
-        readHeld();
-        await readReleased;
-      }
-      await route.fallback();
-    },
+    { method: "GET", once: true },
   );
-  let releaseWrite = () => {};
-  const writeReleased = new Promise((resolve) => {
-    releaseWrite = resolve;
-  });
-  let writeHeld;
-  const writeStarted = new Promise((resolve) => {
-    writeHeld = resolve;
-  });
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-    async (route, request) => {
-      if (readLandsDuringSave && request.method() === "PATCH") {
-        writeHeld();
-        await writeReleased;
-      }
-      await route.fallback();
-    },
-  );
-  let deployRequests = 0;
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-    async (route) => {
-      deployRequests += 1;
-      await route.fallback();
-    },
-  );
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const write = readLandsDuringSave
+    ? await holdRequests(t, page, `${fixture.origin}${configurationPath}`, { method: "PATCH" })
+    : null;
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   const deployStatus = page.locator("section.agent-draft-actions p.muted[role=status]");
   await deployStatus.filter({ hasText: /\S/ }).waitFor();
   // The grant read asks for the bindings once the roles have answered (finding 2919).
-  await readStarted;
+  await read.requested;
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await selectSecret(page, "Slack bot token", replacement);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   if (readLandsDuringSave) {
-    await writeStarted;
-    releaseRead();
-    await heldRead.response();
-    // Let the page take the read's answer before the save ends.
-    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)));
-    releaseWrite();
+    await write.requested;
+    read.release();
+    // The page takes the read's answer while the save's Configuration write is still held.
+    await waitForIdleFetches(page, { except: configurationPath });
+    write.release();
   }
   // The save ends with a grant read still to come, so it does not point to Deploy yet. With the
   // app grant present, the save's own unheld recheck may already have settled and named Deploy.
@@ -1262,8 +1197,8 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
     assert.equal(await saveStatus.textContent(), "Channel Secret bindings saved.");
   }
   if (!readLandsDuringSave) {
-    releaseRead();
-    await heldRead.response();
+    read.release();
+    await waitForIdleFetches(page);
   }
   await deployStatus
     .filter({ hasText: /^This Agent has no access to the Secret bound to |^Ready to deploy\.$/ })
@@ -1295,7 +1230,7 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
       after.map(({ id }) => id).filter((id) => !before.some((revision) => revision.id === id)),
       [deployed.id],
     );
-    assert.equal(deployRequests, 1);
+    assert.equal(deployRequests(), 1);
     return;
   }
   assert.equal(
@@ -1315,20 +1250,16 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
       .count(),
     0,
   );
-  assert.equal(deployRequests, 0);
+  assert.equal(deployRequests(), 0);
   // Retry Secret access grants the app Secret, and Deploy becomes available.
   await page.getByRole("button", { name: "Retry Secret access" }).click();
-  await page
-    .getByText(
-      "This Agent can use its saved Slack Secrets. Deploy the new version to deliver them.",
-    )
-    .waitFor();
+  await page.getByText(SLACK_RETRY_GRANTED, { exact: true }).waitFor();
   assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [
     replacement.id,
     secrets.SLACK_APP_TOKEN.id,
   ]);
   await waitForEnabled(deploy);
-  assert.equal(deployRequests, 0);
+  assert.equal(deployRequests(), 0);
 }
 
 test("a channel Secrets save that ends before the grant read lands reads the grants again", (t) =>

@@ -39,6 +39,7 @@ import {
   CONFIGURATION_SAVE_DENIED,
   SECRET_CREATE_DENIED,
   secretGrantDeployReason,
+  SLACK_RETRY_GRANTED,
   SLACK_SETUP_HINT,
 } from "../helpers/refusal-text.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
@@ -112,6 +113,25 @@ async function slackTokenBindings(fixture, namespace, label, tokens = ["app", "b
     };
   }
   return bindings;
+}
+
+// A Slack Agent named "<label> Agent" with both Slack tokens bound, in a Namespace whose IAM policy
+// lists no grant of those Secrets to the Agent.
+async function ungrantedSlackAgent(t, label, slug) {
+  const { fixture, namespace } = await readyNamespace(t, label);
+  const { agent } = await createSlackAgent(fixture, namespace, {
+    name: `${label} Agent`,
+    slug,
+    secretBindings: await slackTokenBindings(fixture, namespace, label),
+  });
+  for (const { id } of await fixture.addedAccessBindings(namespace.id)) {
+    const removed = await fixture.request(
+      "DELETE",
+      `/namespaces/${namespace.id}/iam/access-bindings/${id}`,
+    );
+    assert.equal(removed.status, 204);
+  }
+  return { fixture, namespace, agent };
 }
 
 // Signs in at the Agent's draft `tab` and waits for its `heading`.
@@ -1212,11 +1232,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
         true,
       );
       await adminPage.getByRole("button", { name: "Retry Secret access" }).click();
-      await adminPage
-        .getByText(
-          "This Agent can use its saved Slack Secrets. Deploy the new version to deliver them.",
-        )
-        .waitFor();
+      await adminPage.getByText(SLACK_RETRY_GRANTED, { exact: true }).waitFor();
       await adminPage.getByText("Ready to deploy.", { exact: true }).waitFor();
       assert.deepEqual(
         await adminPage
@@ -1232,20 +1248,11 @@ describe("Agent channels", { concurrency: 3 }, () => {
   // permission answer now refuses her Configuration update, so neither tab offers Retry Secret
   // access, and the warning names who grants it instead of the Retry she no longer has.
   test("A missing Slack Secret grant names the administrator once a revoke removes Retry", async (t) => {
-    const { fixture, namespace } = await readyNamespace(t, "Revoked Slack grant");
-    const { agent } = await createSlackAgent(fixture, namespace, {
-      name: "Revoked Slack Grant Agent",
-      slug: "revoked-slack-grant",
-      secretBindings: await slackTokenBindings(fixture, namespace, "Revoked grant"),
-    });
-    // The Namespace's IAM policy lists no grant of the bound Slack Secrets to the Agent.
-    for (const { id } of await fixture.addedAccessBindings(namespace.id)) {
-      const removed = await fixture.request(
-        "DELETE",
-        `/namespaces/${namespace.id}/iam/access-bindings/${id}`,
-      );
-      assert.equal(removed.status, 204);
-    }
+    const { fixture, namespace, agent } = await ungrantedSlackAgent(
+      t,
+      "Revoked Slack Grant",
+      "revoked-slack-grant",
+    );
     const account = await fixture.createNamespaceMember("revoked-grant", namespace.id, AGENT_READ);
     const revoke = grantInstallationAdministration(fixture, account.principal);
     const { page } = await newPage(t, fixture, { browser });
@@ -1345,20 +1352,11 @@ describe("Agent channels", { concurrency: 3 }, () => {
     { width: 390, height: 844 },
   ]) {
     test(`A save after a refused Retry says the Configuration saved once administration ends (${viewport.width} px)`, async (t) => {
-      const { fixture, namespace } = await readyNamespace(t, `Refused Retry ${viewport.width}`);
-      const { agent } = await createSlackAgent(fixture, namespace, {
-        name: "Refused Retry Agent",
-        slug: "refused-retry",
-        secretBindings: await slackTokenBindings(fixture, namespace, "Refused Retry"),
-      });
-      // The Namespace's IAM policy lists no grant of the bound Slack Secrets to the Agent.
-      for (const { id } of await fixture.addedAccessBindings(namespace.id)) {
-        const removed = await fixture.request(
-          "DELETE",
-          `/namespaces/${namespace.id}/iam/access-bindings/${id}`,
-        );
-        assert.equal(removed.status, 204);
-      }
+      const { fixture, namespace, agent } = await ungrantedSlackAgent(
+        t,
+        "Refused Retry",
+        "refused-retry",
+      );
       const botSecret = await fixture.createSecret(
         namespace.id,
         "Refused Retry new bot token",
@@ -1774,11 +1772,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
         // The pending grant is retried on its own once IAM answers again.
         await page.unroute(`**/namespaces/${namespace.id}/iam/access-bindings`);
         await page.getByRole("button", { name: "Retry Secret access" }).click();
-        await page
-          .getByText(
-            "This Agent can use its saved Slack Secrets. Deploy the new version to deliver them.",
-          )
-          .waitFor();
+        await page.getByText(SLACK_RETRY_GRANTED, { exact: true }).waitFor();
         assert.deepEqual(
           accessBindingPostRequests(requests, namespace.id).map(
             (request) => request.body.resourceId,
