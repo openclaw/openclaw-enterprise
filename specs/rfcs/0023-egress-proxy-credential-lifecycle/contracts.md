@@ -20,15 +20,15 @@ both the admitted revision and the execution. The deployment selects the composi
 execution identity. Protection is explicit even with no plan or bindings. Fence readers that could
 ignore it, refuse missing or unsupported admission, and require a new execution to change protection.
 
-| Protection | What Compute may release |
-| --- | --- |
-| `unprotected` | An explicit no-op for local development or minimal CI. The Agent has a control-plane identity, but OCE does not govern its direct requests. Refuse managed routes, bindings, preparation or clone. Supply no managed or ambient substitute credential. |
+| Protection                         | What Compute may release                                                                                                                                                                                                                                                                          |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `unprotected`                      | An explicit no-op for local development or minimal CI. The Agent has a control-plane identity, but OCE does not govern its direct requests. Refuse managed routes, bindings, preparation or clone. Supply no managed or ambient substitute credential.                                            |
 | `protected {authority: execution}` | Sandbox prevents bypass. Every process in the execution shares its egress authority. A route may explicitly require no provider credential. Zero allowed routes means deny all. Carry forward narrower legacy authority only with evidence of equivalence or fresh consent to the wider boundary. |
 
 OCC validates closed, versioned schemas before reading a Secret or causing effects. A reference is
 an immutable ID and configuration generation. Recreating an object gives it a new ID. Changing
 policy, custody or approved material advances the affected generations. Routine material rotation
-changes a *value version*, not the admitted configuration. The minimum associations are:
+changes a _value version_, not the admitted configuration. The minimum associations are:
 
 ```text
 SourceKey = (OCE installation, namespace, source ref, backend ref, provider ref)
@@ -48,15 +48,74 @@ Its provider definition supplies `normalizeInput`, `normalizeGrant`, `classify`,
 absolute deadline, local cancellation signal and an OCC-issued permit binding principal, purpose,
 action, exact target generations, audience, input digest and expiry.
 
-| Owner and methods | Required result |
-| --- | --- |
-| OCC via Backend `CredentialSourceControl.describeTypes`, `applySource`, `sourceStatus`, `removeSource` | Admit the schema, source and custody. Project schema identity, kind and nonsecret routing fields to Credential Proxy, never a root or its Secret reference. Catalog withdrawal ends new admission, not responsibility for status, references or cleanup. |
-| Compute via `CredentialProxyDriver.capabilities`, `configureRevision`, `wiringStatus` | Configure the whole `ProxyPlan` or make none of it usable. Return authenticated `ProxyWiring` binding execution, plan, Sandbox, sender, audience, version 2, policy generation and exact route and binding sets. Qualify the actual composition at startup and admission. |
-| Sandbox via `sandbox.applyCredentialProxy(wiring, command)`, `credentialProxyStatus` | Verify and enforce that plan. Attest the wiring, execution, trusted gateway, immutable sandbox ID, runtime generation, supervisor installation, applied policy and effective sets. Reject a stale install. |
-
+| Owner and methods                                                                                      | Required result                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OCC via Backend `CredentialSourceControl.describeTypes`, `applySource`, `sourceStatus`, `removeSource` | Admit the schema, source and custody. Project schema identity, kind and nonsecret routing fields to Credential Proxy, never a root or its Secret reference. Catalog withdrawal ends new admission, not responsibility for status, references or cleanup.                  |
+| Compute via `CredentialProxyDriver.capabilities`, `configureRevision`, `wiringStatus`                  | Configure the whole `ProxyPlan` or make none of it usable. Return authenticated `ProxyWiring` binding execution, plan, Sandbox, sender, audience, version 2, policy generation and exact route and binding sets. Qualify the actual composition at startup and admission. |
+| Sandbox via `sandbox.applyCredentialProxy(wiring, command)`, `credentialProxyStatus`                   | Verify and enforce that plan. Attest the wiring, execution, trusted gateway, immutable sandbox ID, runtime generation, supervisor installation, applied policy and effective sets. Reject a stale install.                                                                |
 
 Compute builds the `ProxyPlan` from admitted routes, bindings and source projections. A Sandbox receipt records what was applied;
 wiring and receipts do not authorize requests.
+
+### Protected Codex artifact downloads
+
+Proposed amendment, submitted for review in [PR #4160](https://github.com/openclaw/openclaw-enterprise/pull/4160).
+This extends the admission contract; it does not qualify a deployed runtime.
+
+A dedicated Codex Agent with protected repository access can need HTTPS artifact
+downloads that carry no provider credential. Codex 0.164 fetches remote plugin
+bundles through this path. The current protected Git compiler excludes ordinary
+Sandbox defaults. Request-stage bundle failures were observed, but their exact
+peer and network cause remain unproven. The independent contract gap is that no
+explicit artifact authority survives protected admission.
+
+The Sandbox Driver qualifies an explicitly declared subset of its Installation
+rules. For OpenShell, `policy.codexArtifactRuleNames` selects named rules from
+`policy.networkPolicies`; omission grants no artifact access. Qualification must
+reject an unknown name, duplicate or reserved name, or any rule outside all of
+these limits:
+
+- Exact supported Codex runtime executable paths and literal approved DNS hosts.
+  Wildcards, numeric addresses, GitHub repository hosts and overlapping Git routes
+  are refused.
+- Port 443, REST inspection, verified TLS termination, enforced policy and the
+  `read_only` access preset. Uninspected, audit-only or write-capable rules are refused.
+- No credential binding, provider alias, header injection or additional policy
+  fields. Other defaults and Agent network additions do not join this authority.
+
+OCC requests this qualification only for the protected, dedicated Codex repository
+composition and freezes the result on the immutable `AgentRevision`. Reuse
+`SandboxPolicySnapshot`: its Driver-owned `defaults` contains only the qualified
+artifact map, and `additions` is empty. The existing protected execution, Harness
+and repository context distinguish this snapshot from ordinary Agent policy.
+Validate that context and the complete qualified map during rehydration and
+replay. Missing snapshots retain no artifact authority; they never import current
+defaults. Invalid declarations fail admission before Secret access or effects.
+
+Both paired policy compilers consume that same frozen revision authority through
+`ProxyRevisionContext`. No extra `ProxyPlan` member, endpoint, provider, profile,
+table or lifecycle is required. Compare the complete canonical compiled map in
+`wiringStatus`, provisioning and subsequent witness checks. A changed host,
+executable, method/access preset, TLS setting or extra rule must fail equality;
+an authenticated policy hash alone does not excuse different decoded policy.
+Installation edits require a new admission and cannot broaden a running revision.
+Protected snapshots must remain ineligible for live Agent policy apply, including
+the `canApply` view and the effect path.
+
+This reuse avoids a second immutable policy carrier and persistence path. It
+requires strict context checks because ordinary snapshots use the same type. A
+separate revision member would make the distinction explicit but duplicate that
+machinery. Neither choice permits merging ambient defaults or expanding the PAT
+provider profile. Git authority, mandatory request hooks, approval, custody,
+deadlines, renewal and uncertainty handling remain unchanged.
+
+Delivery must exercise the regular Agent admission and deployment callers.
+Cover frozen-subset persistence/replay, whole-map tampering, forbidden rules,
+nonempty additions, unchanged no-declaration behavior and protected live-apply
+refusal. Retain exact native binary/image qualification and run the actual remote
+plugin, Linear and Git renewal workflow; source or fixture checks do not replace
+that runtime proof. Preserve unresolved observations and confirmed retirement
+separately from successful installation.
 
 ### Select Sandbox and Credential Proxy from one Driver
 
@@ -76,11 +135,11 @@ the plan. Qualify the actual transport and [protection level](online-authorizati
 
 ## Request authorization and forwarding
 
-| Interface | Responsibility |
-| --- | --- |
-| `CredentialProxy.capture(peer, exchange, bounds)` | Bind and seal an exchange. |
-| `CredentialProxy.forward(operation)` | Own authorization, resolution, send and response protection. |
-| `RequestAuthorizer.check(before_access, operation)` | Authorize material access. |
+| Interface                                                   | Responsibility                                                                         |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `CredentialProxy.capture(peer, exchange, bounds)`           | Bind and seal an exchange.                                                             |
+| `CredentialProxy.forward(operation)`                        | Own authorization, resolution, send and response protection.                           |
+| `RequestAuthorizer.check(before_access, operation)`         | Authorize material access.                                                             |
 | `RequestAuthorizer.check(before_send, operation, evidence)` | Authorize the selected material or its absence; commit before releasing a send permit. |
 
 The [request protocol](protocol.md#capture-and-authorize-a-request) defines the
@@ -95,16 +154,16 @@ callback or diagnostic. Bind evidence to SourceKey, binding, grant hash, isolati
 identity, value version and `usableUntil`. Caller limits may tighten, never widen, admitted policy.
 Resolve neither contacts the provider nor signs, issues, refreshes or schedules work.
 
-| Interface | Responsibility |
-| --- | --- |
-| `SecretDriver.readCredentialInput(secret, material, permit, retention, bounds)` | Read the authorized static target with an immutable version, authoritative observation time and expiry where present. |
-| `WarmCredentialReader.readWarm` | Read eligible committed dynamic material for the exact grant and isolation; a cold or expired read starts no preparation. |
+| Interface                                                                       | Responsibility                                                                                                            |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `SecretDriver.readCredentialInput(secret, material, permit, retention, bounds)` | Read the authorized static target with an immutable version, authoritative observation time and expiry where present.     |
+| `WarmCredentialReader.readWarm`                                                 | Read eligible committed dynamic material for the exact grant and isolation; a cold or expired read starts no preparation. |
 
-| Lifecycle owner interface | Responsibility |
-| --- | --- |
-| `CredentialRefreshDriver.configureRefresh`, `refreshStatus` | Admit family, single owner, issuer, input authority, grant keys, renewal lead and minimum validity. Report configuration, eligibility, current attempt, activity, next renewal and required recovery separately. |
-| `prepare`, `removeRefresh` | Separately authorized management may ensure readiness or request rotation. Removal stops preparation and settles owned artifacts. Retain a family while another admitted source or grant depends on it. |
-| `CredentialIssuer.issue`, `inspect`, `retire` | Bind attempt, input version, grant, family, epoch and deadline. Distinguish known refusal, no dispatch, candidate and uncertain exchange. Inspect without repeating issuance. Retire exact custody and report provider revocation only where supported. |
+| Lifecycle owner interface                                   | Responsibility                                                                                                                                                                                                                                          |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CredentialRefreshDriver.configureRefresh`, `refreshStatus` | Admit family, single owner, issuer, input authority, grant keys, renewal lead and minimum validity. Report configuration, eligibility, current attempt, activity, next renewal and required recovery separately.                                        |
+| `prepare`, `removeRefresh`                                  | Separately authorized management may ensure readiness or request rotation. Removal stops preparation and settles owned artifacts. Retain a family while another admitted source or grant depends on it.                                                 |
+| `CredentialIssuer.issue`, `inspect`, `retire`               | Bind attempt, input version, grant, family, epoch and deadline. Distinguish known refusal, no dispatch, candidate and uncertain exchange. Inspect without repeating issuance. Retire exact custody and report provider revocation only where supported. |
 
 For OCE-managed dynamic credentials, the **Token Service** owns this lifecycle and the warm
 reader. Start with the worker's existing background preparation, encrypted custody and fenced
