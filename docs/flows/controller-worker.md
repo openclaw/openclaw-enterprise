@@ -159,11 +159,12 @@ rechecks each managed credential's frozen Backend binding; the
 [Backend-managed credential delivery flow](service-account-driver-credential-delivery.md#5-recheck-metadata-and-project-the-account-secret)
 owns these checks.
 
-Revocation and denial fail permanently before Compute. Older versions complete as
-superseded, on shared Compute also once the newest has a held runtime failure;
-selected versions enter finalization or maintenance. With exclusive replacement,
-a newer admission supersedes older active maintenance before Compute effects,
-even after candidate failure. Recovery uses a new version.
+Revocation and denial fail permanently before Compute. Selected versions enter
+finalization or maintenance. Older versions end superseded; without
+[exclusive replacement](../reference/drivers/compute.md#production-revision-stages),
+also once the newest, without Git, has a held runtime failure. With it, a newer
+admission supersedes older active maintenance before Compute effects, even after
+candidate failure. Recovery uses a new version.
 
 Agent-stop work rechecks current exact-Agent `operate`; superseded desired state
 completes without shutdown.

@@ -8,6 +8,7 @@ import {
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
+import { repositoryBoundary } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   assertWorkEnds,
   countingExclusiveCompute,
@@ -866,7 +867,7 @@ revisionTest(
   },
 );
 
-// The two controls below keep the older version's main behavior when the newer version ended
+// The three controls below keep the older version's main behavior when the newer version ended
 // without leaving its runtime in place. Superseding the older version there would leave its
 // running Gateway with no active version (findings 990 and 1016), or the Agent with nothing.
 revisionTest(
@@ -908,6 +909,43 @@ revisionTest(
       "the refused version's stop removed the Gateway",
     );
     // The older version writes the Gateway again and activates once it is ready.
+    driver.outcomes.set(older.id, "ready");
+    await fixture.work(older, "succeeded");
+    const active = await fixture.activePointer(owner);
+    assert.equal(active.rows[0].active_revision_id, older.id);
+    assert.equal(driver.gateway.get(owner.id), older.revision);
+  },
+);
+
+test(
+  "an older shared version still activates after a newer version with Git fails with a held code and is retired",
+  requiresPostgres,
+  async (context) => {
+    const repository = repositoryBoundary();
+    const fixture = await setup(context, { repoDriver: repository.driver });
+    const driver = sharedGatewayCompute(fixture);
+    await fixture.start(driver.compute);
+    const { owner, older } = await pendingOlderVersion(fixture, "shared-git-retired", driver);
+    // The newer version has repository credentials. It writes the Gateway and fails its startup
+    // model check, a held failure that the deployment itself keeps for diagnosis. Because it has
+    // repository credentials, the same failure also queues its runtime retirement, which stops
+    // it and, as on Kubernetes, deletes the Gateway it holds.
+    const newer = await fixture.revision(owner, 2, {
+      repositoryCredentials: repository.snapshot,
+    });
+    driver.outcomes.set(newer.id, "probe-failed");
+    await assertWorkEnds(fixture, newer, "failed_permanent", "RUNTIME_MODEL_PROBE_FAILED");
+    await waitFor("the newer version's retirement to remove the Gateway", async () =>
+      driver.removedBy.includes(newer.id) ? true : undefined,
+    );
+    assert.deepEqual(driver.removedBy, [newer.id]);
+    const retirement = await fixture.observerPool.query(
+      "SELECT state FROM occ.controller_work WHERE revision_id = $1 AND idempotency_key LIKE $2",
+      [newer.id, `agent_revision:${newer.id}:repository_cleanup:retire:%`],
+    );
+    assert.equal(retirement.rowCount, 1, "the held failure queued the runtime retirement");
+    // Superseding the older version here would leave the Agent with nothing running. Instead it
+    // writes the Gateway again and activates once it is ready, as on main.
     driver.outcomes.set(older.id, "ready");
     await fixture.work(older, "succeeded");
     const active = await fixture.activePointer(owner);

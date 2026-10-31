@@ -1104,8 +1104,10 @@ const HELD_RUNTIME_FAILURE_CODES: Readonly<Record<string, string>> = Object.free
   REPOSITORY_ROUTE_BLOCKED: "REPOSITORY_GIT_ROUTE_BLOCKED",
 });
 
-// The deployment failure codes of held runtime failures. `finalizeRevision` never stops their
-// runtime, so a later version's held failure shows that it still holds the Agent's runtime.
+// The deployment failure codes of held runtime failures. `finalizeRevision` does not stop their
+// runtime, but the failure of a version with repository credentials also queues its retirement
+// (`agent_revision:<id>:repository_cleanup:retire:<hash>`), which stops it: see
+// `heldRuntimeSuccessor`.
 const HELD_RUNTIME_DEPLOYMENT_CODES: ReadonlySet<string> = new Set(
   Object.values(HELD_RUNTIME_FAILURE_CODES),
 );
@@ -6904,19 +6906,22 @@ export class ControllerWorker {
   }
 
   /**
-   * The Agent's newest version, if it is later than this one, on this Compute, and its deployment
-   * failed with a held runtime failure; only for a version without exclusive replacement (finding
-   * 3066). Shared Compute keeps one runtime per Agent, the embedded Kubernetes Gateway: that
-   * version took it over, so Compute reports this version not ready, and `finalizeRevision` keeps
-   * a held failure's runtime for diagnosis instead of stopping it. This version could then only
-   * wait out the convergence deadline. No other outcome shows that the newest version's runtime
-   * is still in place: a refusal before Compute never wrote it, a refused candidate may have been
-   * stopped (on a first deploy that deletes the Gateway), a deadline or retry failure may have
-   * come before Compute, and a succeeded deployment activated (`previous` decides), was
-   * superseded or was stopped. After those, this version can still activate, so it keeps waiting.
-   * Only the newest version counts, as a newer one may have replaced or removed the runtime.
-   * Exclusive replacement keeps its own successor check, which first finishes this version's
-   * predecessor stops.
+   * The Agent's newest version, if it is later than this one, on this Compute, without repository
+   * credentials, and its deployment failed with a held runtime failure; only for a version without
+   * exclusive replacement (finding 3066). Compute without exclusive replacement keeps one runtime
+   * per Agent, the embedded Kubernetes Gateway: that version took it over, so Compute reports this
+   * version not ready, and `finalizeRevision` keeps a held failure's runtime for diagnosis instead
+   * of stopping it. This version could then only wait out the convergence deadline. No other
+   * outcome shows that the newest version's runtime is still in place: a refusal before Compute
+   * never wrote it, a refused candidate may have been stopped (on a first deploy that deletes the
+   * Gateway), a deadline or retry failure may have come before Compute, and a succeeded deployment
+   * activated (`previous` decides), was superseded or was stopped. A version with repository
+   * credentials is also excluded: its failure queues runtime retirement in the same transaction
+   * (`transferRepositoryCleanupSql`), and `processRepositoryCleanup` stops it, which deletes the
+   * Gateway it holds. After those, this version can still activate, so it keeps waiting. Only the
+   * newest version counts, as a newer one may have replaced or removed the runtime. Exclusive
+   * replacement keeps its own successor check, which first finishes this version's predecessor
+   * stops.
    */
   private async heldRuntimeSuccessor(
     revision: Readonly<AgentRevision>,
@@ -6945,6 +6950,7 @@ export class ControllerWorker {
       view.revisions.findRevision(newest.namespaceId, newest.agentId, newest.id),
     );
     return candidate !== undefined &&
+      candidate.repositoryCredentials === undefined &&
       candidate.compute.id === this.compute.id &&
       candidate.compute.implementation === this.compute.implementation
       ? candidate
