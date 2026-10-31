@@ -513,7 +513,8 @@
         "credential exchange cuts a cached stream lease after provider replacement",
         "an unbound source update keeps its admitted provider when same-type providers reorder",
         "a source update withholds resolved material after its provider or injector changes",
-        "live static registration does not require Gateway placement",
+        "live static registration does not require Compute placement",
+        "live static source validation does not consult backend Gateway placement",
         "live static registration losing to DELETE preserves its deleting row without Gateway cleanup"
       ]
     },
