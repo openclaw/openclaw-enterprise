@@ -35,6 +35,7 @@ import {
   unsubstitutedReferenceRefusal,
   codexApiKeyRefusal,
   codexRuntimeOffProvider,
+  keepRuntime,
   runtimeIdRequired,
   runtimeIdUnsupported,
   runtimePoliciesConflict,
@@ -1145,7 +1146,13 @@ test("Configuration save refuses a model policy whose settings conflict, with de
     [
       "a selected model policy and a provider policy that name different runtimes",
       { ...runtimeSelected, models: { providers: { openai: { agentRuntime: { id: "codex" } } } } },
-      runtimePoliciesConflict(defaultPolicy, "openclaw", "models.providers.openai", "codex"),
+      runtimePoliciesConflict(
+        defaultPolicy,
+        "openclaw",
+        "models.providers.openai",
+        "codex",
+        keepRuntime("openclaw", "codex"),
+      ),
     ],
     // The openai provider takes Codex only with the Codex plugin's WebSocket app server.
     [
