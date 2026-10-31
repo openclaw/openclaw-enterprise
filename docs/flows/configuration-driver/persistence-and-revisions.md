@@ -46,7 +46,8 @@ bundled Driver checks a stored document only against
 the credential-reference rules in force before 2026-10-12, and every write and
 deployment against all of them. Those include a `${NAME}` reference or SecretRef
 in every slot OpenClaw marks sensitive, channel and plugin secrets included
-([list](../../reference/configuration/secrets.md#secret-boundaries)), checked in
+([list](../../reference/configuration/secrets.md#secret-boundaries)), and in a
+plugin secret input also OpenClaw's whole `$NAME` shorthand, checked in
 [the credential rules](../../../apps/controller/src/drivers/configuration/model-auth.ts),
 which a Preset save runs too. The Driver owns backing document
 storage and checks storage-specific identity and ownership. When the bundled

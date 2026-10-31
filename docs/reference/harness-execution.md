@@ -204,13 +204,14 @@ When no model is selected at all, that refusal says so and names
 `agents.defaults.model` or an `agents.entries` model as the setting to set.
 Codex accepts its native `codex` provider, or `openai` with the
 Codex plugin explicitly enabled for WebSocket app-server transport.
-An embedded Gateway cannot start when an active plugin's startup secret input
-reads an unset variable: Codex `appServer.authToken` or `appServer.headers`, or
-Google `webSearch.headers`. Kubernetes sets the `APP_SERVER_` variables only for
-dedicated Codex, so deployment and Agent save refuse them there. Deployment also
-refuses another variable that no Configuration Secret binding sets, unless an
-Installation Driver adds launch variables. Bind a Secret to it, or remove or
-disable the plugin entry.
+An embedded or dedicated Gateway cannot start when an active plugin's startup
+secret input reads an unset variable: Codex `appServer.authToken` or
+`appServer.headers`, or Google `webSearch.headers`. Kubernetes sets the
+`APP_SERVER_` variables only in a dedicated Codex Gateway, so deployment and
+Agent save refuse them for other Agents. Deployment also refuses another
+variable that no Configuration Secret binding sets, unless an Installation
+Driver adds launch variables. Bind a Secret to it, or remove or disable the
+plugin entry.
 
 Configuration writes run these rules in deployment's order. They refuse settings
 that conflict, with deployment's message: an entry primary that differs, selectable

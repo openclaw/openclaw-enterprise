@@ -203,7 +203,7 @@ import {
   enabledChannelProviders,
   OPENCLAW_GATEWAY_PASSWORD,
   requireChannelTopology,
-  requireEmbeddedPluginSecretInputs,
+  requirePluginSecretInputs,
   type KubernetesHarnessTopology,
   kubernetesHarnessAuthMethods,
   providerWaitsOnVariable,
@@ -4809,12 +4809,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       },
       callerSettingError,
     );
-    // An embedded Gateway would exit at every start on a plugin secret input it cannot resolve,
-    // and the deployment would wait for its convergence deadline. The Agent's mode decides the
-    // APP_SERVER_ case, so Agent save refuses it too; the rest waits for the bindings.
-    if (embedded) {
-      this.requireEmbeddedPluginSecretInputs(configuration, secretBindings);
-    }
+    // Every topology's Gateway would exit at every start on a plugin secret input it cannot
+    // resolve, and the deployment would wait for its convergence deadline. The Agent's mode
+    // decides the APP_SERVER_ case, so Agent save refuses it too; the rest waits for the bindings.
+    this.requirePluginSecretInputs(configuration, topology, secretBindings);
     requireProviderApiKeys(configuration, openclaw, authentication);
     if (!agentSave) {
       this.validateChannelSecretBindings(configuration, secretBindings);
@@ -14745,16 +14743,18 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
   }
 
-  // An embedded Gateway's environment sets a name a Secret binding could set only from a binding
-  // or from what the Installation's Drivers add at launch (beforeWorkloadStart), whose names are
-  // unknown before then; null bindings (Agent save) check only what the Agent's mode decides.
-  private requireEmbeddedPluginSecretInputs(
+  // A Gateway's environment sets a name a Secret binding could set only from a binding or from
+  // what the Installation's Drivers add at launch (beforeWorkloadStart), whose names are unknown
+  // before then; null bindings (Agent save) check only what the Agent's mode decides.
+  private requirePluginSecretInputs(
     configuration: Readonly<OpenClawConfigurationDocument>,
+    topology: KubernetesHarnessTopology,
     secretBindings: SecretBindings | null | undefined,
   ): void {
     let bindings: ReturnType<typeof normalizeSecretBindings> | undefined;
-    requireEmbeddedPluginSecretInputs(
+    requirePluginSecretInputs(
       configuration,
+      topology,
       secretBindings === null
         ? undefined
         : (name) => {
