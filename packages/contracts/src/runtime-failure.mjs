@@ -43,6 +43,9 @@ export const RUNTIME_FAILURE_CHECKS = Object.freeze([
   // A dedicated Gateway cannot verify that an earlier process holding its state lock stopped
   // (finding 2864).
   "gateway-state-lock",
+  // A Kubernetes Gateway exited before it served, and OpenClaw's validator reports its
+  // configuration invalid, such as a plugin entry that fails its schema (finding 3043).
+  "gateway-config",
 ]);
 
 /**
