@@ -107,6 +107,12 @@ table or lifecycle is required. Compare the complete canonical compiled map in
 `wiringStatus`, provisioning and subsequent witness checks. A changed host,
 executable, method/access preset, TLS setting or extra rule must fail equality;
 an authenticated policy hash alone does not excuse different decoded policy.
+The Sandbox independently derives `workspace-node-enrollment` from the validated
+Agent setup binding and passes its exact rule through trusted
+`SandboxResourceRef.proxyWiring`. The proxy bounds that auxiliary rule alongside
+the exact frozen artifact map and requires complete loaded-source and effective
+policy equality. The auxiliary rule grants no artifact authority or arbitrary
+extra-rule exception.
 Installation edits require a new admission and cannot broaden a running revision.
 Protected snapshots must remain ineligible for live Agent policy apply, including
 the `canApply` view and the effect path.

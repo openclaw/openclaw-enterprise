@@ -151,8 +151,9 @@ not satisfy the per-Agent production requirement below.
 
 ### Protected Codex artifact rules
 
-For protected, dedicated Codex repository execution, select approved artifact
-rules with `policy.codexArtifactRuleNames`, for example
+For protected, dedicated Codex repository execution, select
+[approved artifact rules](../../assets/openshell-quickstart/plugin-network-policy.yaml)
+with `policy.codexArtifactRuleNames`, for example
 `codexArtifactRuleNames: [codex-plugin-artifacts]`. Each name must identify exactly
 one existing `policy.networkPolicies` rule. Omission grants no artifact access.
 
