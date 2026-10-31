@@ -329,6 +329,26 @@ export const EMBEDDED_API_KEY_REQUIRED =
   "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.";
 export const codexApiKeyRefusal = (setting) =>
   `Configuration setting ${setting} must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.`;
+// Model policy refusals at Configuration save and deploy (packages/occ/src/configured-harness.ts).
+// `policy` is the setting path of the object that holds agentRuntime, such as
+// agents.defaults.models["openai/gpt-4.1"] or models.providers.openai.models[0]; `parent` is
+// agents.defaults.models or agents.entries.<id>.models.
+export const runtimeIdUnsupported = (policy) =>
+  `Configuration setting ${policy}.agentRuntime.id must be openclaw or codex.`;
+export const runtimeIdRequired = (policy) =>
+  `Configuration setting ${policy}.agentRuntime.id is required for the selected model: set it to openclaw or codex.`;
+export const runtimePoliciesConflict = (first, firstId, second, secondId) =>
+  `Configuration settings ${first}.agentRuntime.id (${firstId}) and ${second}.agentRuntime.id (${secondId}) conflict: set both to openclaw or both to codex, or remove one.`;
+export const codexRuntimeOffProvider = (policy) =>
+  `Configuration setting ${policy}.agentRuntime.id selects codex for a model outside the codex provider: select a codex/<model> model, or set it to openclaw.`;
+export const selectableModelsNotObject = (parent) =>
+  `Configuration setting ${parent} must be an object keyed by model ref, such as {"openai/gpt-5.1": {"agentRuntime": {"id": "openclaw"}}}.`;
+export const selectablePrimaryRuntimeRequired = (primaryPolicy) =>
+  `Configuration setting ${primaryPolicy}.agentRuntime.id is required when other models are listed beside the primary model: set it to openclaw or codex.`;
+export const selectableModelOffProvider = (policy, provider) =>
+  `Configuration setting ${policy} is not on the primary model's provider, "${provider}": remove it, or list a model of that provider.`;
+export const selectableModelRuntimeMismatch = (policy, runtime) =>
+  `Configuration setting ${policy}.agentRuntime.id must be ${runtime}, the primary model's runtime: set it, or remove the model.`;
 // Deploy refused because the cluster denied the controller the RoleBindings for this Agent's
 // runtime credentials (RUNTIME_CREDENTIALS_CLUSTER_RBAC; agents/detail.mts).
 export const DEPLOY_CLUSTER_RBAC_REFUSED =

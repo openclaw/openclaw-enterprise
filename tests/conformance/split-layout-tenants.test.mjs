@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { PERMISSION_ACTIONS, RESOURCE_KINDS } from "../../packages/contracts/src/index.ts";
@@ -9,6 +8,7 @@ import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 import {
   createTenantReaderFixture,
   tenantRequest as request,
@@ -394,8 +394,7 @@ test("import command exits 4 while bindings need manual recovery, again on rerun
   const fixture = await createFixture();
   const seeded = await seedTenant(fixture);
   const exported = await exportTenants(fixture.api);
-  const directory = mkdtempSync(join(tmpdir(), "split-layout-tenants-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const directory = temporaryDirectorySync(t, "split-layout-tenants-");
   const key = "service-key-from-file";
   writeFileSync(join(directory, "key.json"), JSON.stringify({ data: { key } }));
   writeFileSync(join(directory, "values.json"), JSON.stringify({ "team-a": { "model-key": "v" } }));
