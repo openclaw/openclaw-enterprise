@@ -287,6 +287,33 @@ any workload it owns. Namespace cleanup follows revision cleanup.
   failure. The worker retries transient authentication failures within the
   attempt budget. Leave removal pending if the provider cannot confirm absence.
 
+## Configuration
+
+Sandbox selection is optional. When selecting one, set these fields under
+`drivers.sandbox` in the Installation startup YAML:
+
+| Setting         | Type   | Requirement | Value, default, and constraints                                                                                                        |
+| --------------- | ------ | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`            | string | Required    | Nonempty Driver identity. No default.                                                                                                  |
+| `configuration` | object | Required    | Settings validated by the selected implementation. No default; use `{}` only if its schema permits it.                                 |
+| `package`       | string | Optional    | Installed Driver package name. Omit for bundled OpenShell; see [package selection](selection.md#package-identity-and-factory-exports). |
+
+The base interface defines no common fields inside `configuration`; see the
+[OpenShell settings](openshell-sandbox.md#configuration) for that implementation.
+Both API and worker load these settings at startup; changes require a restart.
+See [configuration validation and discovery](selection.md#configuration-definitions-and-discovery).
+
+Per-Agent network additions use the `sandbox-network-policy` configuration
+contribution when the selected Driver declares network policy support. The
+[SandboxPolicy resource](../sandbox-policies.md) owns those settings and their
+application. Admission saves the policy used by a deployment; changing startup
+defaults does not rewrite that saved policy. See [network policy operations](#optional-network-policy-operations)
+for admission and live-update behavior.
+
+Compute supplies [provisioning inputs](#provisioning-inputs), including workload
+identity and credential references. Operators do not configure those method
+inputs as Sandbox startup fields.
+
 ## Limits
 
 - Sandbox selection is optional. Only dedicated execution with bundled Kubernetes Compute supports a Sandbox, including one from an installed package.

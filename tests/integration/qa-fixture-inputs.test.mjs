@@ -7,7 +7,12 @@ import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { protectedText, registerQaSecret } from "../helpers/qa-secrets.mjs";
+import {
+  protectedText,
+  protectedModelApiKey,
+  registerQaSecret,
+  redactQaError,
+} from "../helpers/qa-secrets.mjs";
 
 test("QA Agent reads the selected Preset in its Namespace", async (t) => {
   const { createQaAgent } = await import("../helpers/qa-installation.mjs");
@@ -79,6 +84,32 @@ test("QA credentials require a private regular file and reject symlink substitut
   await chmod(credential, 0o600);
   await writeFile(credential, " \n");
   await assert.rejects(protectedText(credential, "test credential"), /must not be empty/);
+});
+
+test("API-key QA injection stays in the consumer and its errors are redacted", async () => {
+  const secret = "synthetic-environment-model-credential";
+  const env = { OCC_TEST_QA_MODEL_API_KEY: secret };
+  assert.equal(await protectedModelApiKey(env), secret);
+  const failure = redactQaError(new Error("provider rejected " + secret));
+  assert.equal(failure.message, "provider rejected [REDACTED]");
+  await assert.rejects(
+    protectedModelApiKey({ OCC_TEST_QA_MODEL_API_KEY: "  " }),
+    /must not be empty/,
+  );
+  const helper = new URL("../helpers/qa-installation.mjs", import.meta.url).href;
+  const result = execFileSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `
+    import { launcherEnvironment } from ${JSON.stringify(helper)};
+    console.log(Object.hasOwn(launcherEnvironment(), "OCC_TEST_QA_MODEL_API_KEY"));
+  `,
+    ],
+    { encoding: "utf8", env: { ...process.env, OCC_TEST_QA_MODEL_API_KEY: secret } },
+  );
+  assert.equal(result.trim(), "false");
 });
 
 test(
@@ -180,12 +211,18 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     ],
   );
   assert.deepEqual(selected.cells[1].unselected, [
+    "codex-search-config",
     "console-secrets",
     "git-write",
     "git-push-denied",
     "slack",
   ]);
-  assert.deepEqual(selected.cells[0].notApplicable, ["calendar", "git-push-denied", "slack"]);
+  assert.deepEqual(selected.cells[0].notApplicable, [
+    "codex-search-config",
+    "calendar",
+    "git-push-denied",
+    "slack",
+  ]);
   assert.throws(() => validateQaInputs(selected, {}), /OPENAI_KEY_FILE is required/);
   assert.throws(
     () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,typo" }),
@@ -225,6 +262,32 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   assert.ok(
     sandbox.cells.every((cell) => cell.scenarios.length === 0),
     "OpenShell uses its prepared enforcement lane, not Sandbox-free installations",
+  );
+  const searchConfig = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "codex-search-config",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+  });
+  assert.deepEqual(searchConfig.requiredEnv, [
+    "OCC_TEST_QA_OPENAI_KEY_FILE",
+    "OCC_TEST_QA_CODEX_MODEL_BASE_URL",
+  ]);
+  assert.equal(searchConfig.browser, false);
+  const injectedSearch = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "codex-search-config",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_MODEL_API_KEY: "synthetic-key",
+  });
+  assert.deepEqual(injectedSearch.requiredEnv, [
+    "OCC_TEST_QA_MODEL_API_KEY",
+    "OCC_TEST_QA_CODEX_MODEL_BASE_URL",
+  ]);
+  assert.throws(
+    () =>
+      selectQaMatrix({
+        OCC_TEST_QA_SCENARIOS: "codex-search-config,model-ui",
+      }),
+    /exclusive QA selection/,
   );
   const full = selectQaMatrix({});
   assert.equal(full.scope, "full");

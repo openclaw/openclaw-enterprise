@@ -1,3 +1,4 @@
+import type { GitHubRepositoryGrant } from "./repository-grant.ts";
 import type { GitHubTokenProfile } from "./types.ts";
 import type {
   TokenAdmission,
@@ -20,6 +21,7 @@ export type GitHubInstallationGrant = GrantIdentity & Readonly<{ profile: "githu
 
 export interface GitHubPreparationAdmission extends TokenAdmission {
   readonly grant:
+    | GitHubRepositoryGrant
     | GitHubInstallationGrant
     | (GrantIdentity &
         Readonly<{

@@ -849,6 +849,32 @@ export function createChannelSecretsPanel({
     return revisionsLoaded && credentialsReady();
   }
 
+  // Deploy new version's reason while a saved Secret waits for the Agent's grant. The control is
+  // described by it on every tab, so it names the bindings whose Secrets wait, as the Credentials
+  // tab lists them, and where to grant access (finding 3017).
+  function grantDeployReason() {
+    const pending = new Set(pendingSecretGrants().map(({ id }) => id));
+    const names = slackBindingRows(state)
+      .filter(({ key }) => {
+        const id = secretIdForBinding(state.configuration.secretBindings?.[key]);
+        return id !== null && pending.has(id);
+      })
+      .map(({ label }) => label);
+    const secrets = names.length
+      ? `the ${names.length > 1 ? "Secrets" : "Secret"} bound to ${listed(names)}`
+      : SLACK_GRANT.bound;
+    const problem =
+      state.grantProblem === "missing"
+        ? `This Agent has no access to ${secrets}, so deploying it would be refused.`
+        : `This Agent's access to ${secrets} is not confirmed.`;
+    // A refused grant, or a reader this page offers no Retry, is granted by an administrator.
+    const step =
+      state.grantProblem === "refused" || readOnly()
+        ? `Granting access ${ADMINISTRATOR_STEP(SLACK_GRANT.administratorStep)}`
+        : `Open Credentials and select ${SLACK_GRANT.retry}.`;
+    return `${problem} ${step}`;
+  }
+
   function deployGateMessage() {
     if (state.saving) {
       return "Wait for the credential save to finish before deploying.";
@@ -866,7 +892,7 @@ export function createChannelSecretsPanel({
       return CHECKING_CREDENTIAL_ACCESS;
     }
     if (grantHoldsDeploy()) {
-      return "Resolve the saved Secret access grant before deploying.";
+      return grantDeployReason();
     }
     const blockReason = channelCredentialBlockReason(state.values);
     if (blockReason !== null) {

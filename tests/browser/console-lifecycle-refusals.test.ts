@@ -10,6 +10,7 @@ import {
   detailUrl,
   expectReachableReason,
   fileBrowser,
+  fulfillPatchedJson,
   grantMember,
   hasFocus,
   holdRequests,
@@ -38,6 +39,7 @@ import {
   AGENT_STOP_AND_DELETE_DENIED,
   GENERIC_DENIAL,
   SECRET_CREATE_DENIED,
+  callerDenied,
   deleteRefused,
   stopRefused,
 } from "../helpers/refusal-text.mjs";
@@ -95,9 +97,7 @@ for (const action of ["Stop", "Delete"] as const) {
     assert.equal(response.status(), 403);
     const { error, meta } = await response.json();
     const grant = stopping ? "operate" : "delete";
-    assert.ok(
-      error.message.startsWith(`Not authorized: this needs Agent ${grant} on Agent ${agent.id}`),
-    );
+    assert.equal(error.message, callerDenied(`Agent ${grant}`, `Agent ${agent.id}`));
     const alert = row.getByRole("alert");
     const text = stopping ? stopRefused(name) : deleteRefused(name);
     await alert.getByText(text, { exact: true }).waitFor();
@@ -295,6 +295,45 @@ test("a refocus reads no permission answer for an Agent page being deleted", asy
   await settlePageRequests(page);
   assert.equal(reads(), before);
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
+});
+
+// A Stop confirmed after another session requested deletion is answered with the deleting Agent.
+// The page then shows only its deletion row, and focus moves from the removed Stop row to that
+// row's Refresh, not to the page.
+test("a Stop that finds its Agent being deleted moves focus to the deletion row", async (t) => {
+  const name = "Stop meets deletion";
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
+  const agent = await fixture.createAgent(namespace.id, name, nativeValues("stop-deleting"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+  );
+  const stop = page
+    .getByRole("region", { name: "Stop Agent", exact: true })
+    .getByRole("button", { name: "Stop Agent", exact: true });
+  await waitForEnabled(stop);
+  await stop.click();
+  assert.equal((await fixture.request("DELETE", agentPath)).status, 202);
+  const answered = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${agentPath}/stop` &&
+      response.request().method() === "POST",
+  );
+  await page
+    .getByRole("dialog", { name: "Stop this Agent?" })
+    .getByRole("button", { name: "Stop Agent", exact: true })
+    .click();
+  const response = await answered;
+  assert.equal(response.status(), 202);
+  assert.equal((await response.json()).data.status, "deleting");
+  const refresh = page.getByRole("button", { name: "Refresh deletion status", exact: true });
+  await refresh.waitFor();
+  assert.equal(await stop.count(), 0);
+  assert.equal(await hasFocus(refresh), true);
 });
 
 // The page's first permission answer was requested before any Stop or Delete, so it never lifts a
@@ -824,7 +863,10 @@ test("a refused Request deletion again names the Agent, not the API's denial", a
     .click();
   const response = await refused;
   assert.equal(response.status(), 403);
-  assert.ok((await response.json()).error.message.startsWith("Not authorized: "));
+  assert.equal(
+    (await response.json()).error.message,
+    callerDenied("Agent delete", `Agent ${agent.id}`),
+  );
   const alert = row.getByRole("alert");
   await alert.getByText(deleteRefused(name), { exact: true }).waitFor();
   assert.equal(await row.getByText("Not authorized:").count(), 0);
@@ -885,14 +927,12 @@ test("a refused Create Secret explains Show value and the page's Create Secret",
   ]);
   const { page } = await newPage(t, fixture, { browser });
   // A permission answer that predates a revocation still offers creation; the API refuses it.
-  await page.route(`**/namespaces/${namespace.id}/permissions`, async (route) => {
-    const response = await route.fetch();
-    const body = await response.json();
-    await route.fulfill({
-      response,
-      json: { ...body, data: { ...body.data, secrets: { create: true } } },
-    });
-  });
+  await page.route(`**/namespaces/${namespace.id}/permissions`, (route) =>
+    fulfillPatchedJson(route, (body) => ({
+      ...body,
+      data: { ...body.data, secrets: { create: true } },
+    })),
+  );
   await login(page, fixture, `/console/secrets?namespace=${namespace.id}`, member.credentials);
   const create = page.getByRole("button", { name: "Create Secret", exact: true });
   await waitForEnabled(create);

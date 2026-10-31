@@ -126,7 +126,8 @@
     "tests/integration/egress-prepared-github-metadata.test.mjs",
     "tests/integration/protected-source-refusals.test.mjs",
     "tests/integration/refusal-answers.test.mjs",
-    "tests/integration/namespace-deletion-console-api.test.ts"
+    "tests/integration/namespace-deletion-console-api.test.ts",
+    "tests/integration/github-selected-repositories.test.ts"
   ],
   "files": [
     {
@@ -548,7 +549,9 @@
       "expectedTests": [
         "signed stock Git RPC admits discovery, fetch and push, then honors live denial",
         "stock Git admits gzip only on the upload-pack negotiation, which it never inspects",
-        "protected Git replies to this online decision before its authority deadline"
+        "protected Git replies to this online decision before its authority deadline",
+        "shipped gh metadata stays within selected-repository authority",
+        "bounded selected REST bodies retain transport and authority limits"
       ]
     },
     {
@@ -556,7 +559,9 @@
       "expectedTests": [
         "a gateway that does not answer closes the Git route and restores it without a tombstone",
         "the Git route tombstone stays for a replaced execution, an unknown write and withdrawal",
-        "the Git route reports bootstrap, material and binding states for Compute readiness"
+        "the Git route reports bootstrap, material and binding states for Compute readiness",
+        "an observed Git route (2) rotates only after its challenge in the original worker",
+        "an observed Git route (3) rotates only after its challenge in the original worker"
       ]
     },
     {
@@ -634,6 +639,14 @@
     },
     {
       "path": "tests/integration/namespace-deletion-console-api.test.ts"
+    },
+    {
+      "path": "tests/integration/github-selected-repositories.test.ts",
+      "expectedTests": [
+        "selected repository issuance sends every selected stable ID and explicit permissions",
+        "selected repository response requires exact IDs, names and permissions and refuses broader credentials",
+        "ordinary fresh selections resolve one or N repositories without broadening explicit historical grants"
+      ]
     }
   ]
 }

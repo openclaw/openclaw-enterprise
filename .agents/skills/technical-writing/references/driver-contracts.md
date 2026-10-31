@@ -6,7 +6,7 @@ backend. Inspect the exported interface and its actual callers before asserting
 behavior. Preserve existing guarantees and incoming anchors when reorganizing a
 page; update affected links when an anchor must change.
 
-Use these eight second-level sections in this order. Add third-level sections
+Use these second-level sections in this order. Add third-level sections
 for core operations and optional extensions. Answer the relevant prompts below;
 state unsupported behavior explicitly instead of inventing a method or guarantee.
 
@@ -51,6 +51,19 @@ activation, update, stop, retirement, and deletion stages, including callers and
 handoffs to other Drivers. Cover idempotency, retry ownership, cancellation,
 partial failures, compensation, and the evidence required before proceeding.
 State which identity/configuration is frozen and what remains live.
+
+## Configuration
+
+Explain the shared configuration boundary: who supplies the inputs, how they are
+validated, and when changes take effect. Distinguish Installation settings from
+per-resource configuration and runtime method inputs. Link shared selection and
+configuration discovery rules. If the contract defines no common settings, say
+so and omit the empty table. Otherwise, use the template's Setting, Type,
+Requirement, and Value, default, and constraints columns. Put required settings
+first and use only `Required` or `Optional` in the Requirement column. Describe
+defaults and omission behavior in the last column. Separate tables by
+configuration scope. Document implementation-specific fields and examples in a
+`reference/driver/impl` page using the [implementation template](../assets/reference-driver-impl.md).
 
 ## Limits
 

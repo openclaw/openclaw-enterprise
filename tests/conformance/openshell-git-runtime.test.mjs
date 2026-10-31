@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import {
   OpenShellGitRouteBlockedError,
@@ -2203,7 +2204,25 @@ test("protected material selection is serialized with the reservation fence at t
   assert.equal(f.runtime.route(revision.id).state, "installed");
 });
 
-test("an admitted preview rotates at its new fence only in the original worker", async () => {
+// Serialized with the released v0.1.5 proto/sandbox.proto SupervisorMiddlewareService.
+// v0.1.6's default dynamic policy deliberately emits the same bytes. Decode with the
+// product schema/options so missing fields are tested as they arrive from the gateway.
+const registrationLoader = createRequire(
+  new URL("../../apps/controller/package.json", import.meta.url),
+)("@grpc/proto-loader");
+const registrationWire = registrationLoader.loadSync(
+  new URL(
+    "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
+    import.meta.url,
+  ).pathname,
+  { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+)["openshell.v1.SupervisorMiddlewareService"];
+const legacyRegistrationBytes = Buffer.from(
+  "0a106f63652d70726570617265642d676974121f68747470733a2f2f6d6964646c65776172652e6578616d706c652e7465737418808040320770726576696577c206020805",
+  "hex",
+);
+
+async function observedGitRoute(mandatoryPolicy, legacy = false, removeBinding = false) {
   const previewRegistry = validateGitHubRepositoryRegistry(
     {
       version: 1,
@@ -2212,7 +2231,16 @@ test("an admitted preview rotates at its new fence only in the original worker",
       appId: registry.appId,
       githubInstallationId: registry.githubInstallationId,
       maximumDurationSeconds: 86400,
-      repositories: registry.repositories,
+      repositories: mandatoryPolicy
+        ? registry.repositories.map((r) => ({
+            ...r,
+            namespaces: r.namespaces.map((n) => ({
+              namespaceId: n.namespaceId,
+              profiles: ["github-repository"],
+              permissions: { metadata: "read", contents: "write" },
+            })),
+          }))
+        : registry.repositories,
       installationAccess: {
         repositoryRef: "installation",
         namespaces: [{ namespaceId: "namespace-a", accessMode: "installation" }],
@@ -2224,18 +2252,18 @@ test("an admitted preview rotates at its new fence only in the original worker",
   const f = fixture({ store: routeStore(), resolveDelivery: resolve });
   const binding = resolveGitHubRepositoryBinding(previewRegistry, {
     namespaceId: "namespace-a",
-    repositoryRef: "installation",
-    profile: "github-installation",
+    repositoryRef: mandatoryPolicy ? registry.repositories[0].repositoryRef : "installation",
+    profile: mandatoryPolicy ? "github-repository" : "github-installation",
   });
   const credentials = { ...f.revision.repositoryCredentials, bindings: [binding] };
   const revision = {
     ...f.revision,
     repositoryCredentials: credentials,
-    executionAdmission: { version: 6, mode: "protected" },
+    executionAdmission: { version: mandatoryPolicy ? 5 : 6, mode: "protected" },
     egressPlan: {
       driver: { id: "openshell" },
       execution: { executionId: f.entry.bindingId },
-      repositoryGitAuthorization: "request-hook-observed",
+      repositoryGitAuthorization: mandatoryPolicy ? "online-request" : "request-hook-observed",
       repositoryGit: credentials,
     },
   };
@@ -2244,7 +2272,11 @@ test("an admitted preview rotates at its new fence only in the original worker",
   f.runtime.configuration.protectedExecution = true;
   f.runtime.configuration.observedHookPreviewWorkspace = f.sandbox.workspace;
   f.runtime.configuration.authority.audience = "preview";
-  const preview = new ObservedHookPreview(f.sandbox.workspace, f.entry.bindingId);
+  const preview = new ObservedHookPreview(
+    f.sandbox.workspace,
+    f.entry.bindingId,
+    !!mandatoryPolicy,
+  );
   f.entry.preview = preview;
   f.store.rows.get(revision.id).workerInstance = f.runtime.instance;
   f.entry.continuity = { model: "openai", workload: async () => "original-pods" };
@@ -2254,6 +2286,7 @@ test("an admitted preview rotates at its new fence only in the original worker",
   const gitRule = { name: "git", endpoints: [{ host: "github.com", port: 443 }] };
   f.provider.previewNetworkRule = () => gitRule;
   f.provider.settlePreviewReceipt = async () => true;
+  let environment;
   const observe = f.provider.observe;
   f.provider.observe = async (...args) => {
     const result = await observe(...args);
@@ -2266,7 +2299,7 @@ test("an admitted preview rotates at its new fence only in the original worker",
         provider: f.entry.binding.provider,
         providerId: f.entry.binding.providerId,
         profileVersion: f.entry.binding.profileVersion,
-        providerEnvRevision: f.entry.binding.resourceVersion,
+        providerEnvRevision: environment ?? f.entry.binding.resourceVersion,
         configRevision: "1",
         policyHash: "original-policy",
       }
@@ -2283,13 +2316,16 @@ test("an admitted preview rotates at its new fence only in the original worker",
     policy_version: "1",
     policy_hash: "original-policy",
     config_revision: "1",
-    provider_env_revision: f.entry.binding.resourceVersion,
+    provider_env_revision: environment ?? f.entry.binding.resourceVersion,
   });
   const sandbox = f.client.getSandbox;
   f.client.getSandbox = async (...args) => ({
     ...(await sandbox(...args)),
     configurationAdmission: admission(),
   });
+  f.client.getGatewayInfo = async () => {
+    assert.fail("recipient proof must not fetch gateway release information");
+  };
   f.client.readExclusivePreviewWorkspace = async () => true;
   f.client.getSandboxConfig = async () => ({
     policy: {
@@ -2314,20 +2350,19 @@ test("an admitted preview rotates at its new fence only in the original worker",
     provider_attachment_epoch: f.supervisor.attachmentEpoch,
     policy_hash: "original-policy",
     config_revision: "1",
-    provider_env_revision: f.entry.binding.resourceVersion,
+    provider_env_revision: environment ?? f.entry.binding.resourceVersion,
     supervisor_middleware_services: [
       {
-        name: "oce-prepared-git",
-        audience: "preview",
-        request_timeout: { seconds: "5" },
-        grpc_endpoint: "https://middleware.example.test",
+        ...registrationWire.deserialize(legacyRegistrationBytes),
+        ...(!legacy && { binding_policy: mandatoryPolicy ?? 2, bindings: [1] }),
       },
     ],
   });
   f.owner.material = {
     ...binding.grant,
     value: "synthetic-installation-token",
-    scope: "github-installation",
+    scope: mandatoryPolicy ? "github-repository" : "github-installation",
+    ...(mandatoryPolicy && { repositories: resolve(revision).delivery.repositories }),
     installationId: registry.githubInstallationId,
     expiresAt: new Date(Date.now() + 600_000).toISOString(),
     sessionId: "preview-session",
@@ -2335,7 +2370,45 @@ test("an admitted preview rotates at its new fence only in the original worker",
     materialVersion: "preview-material",
     apiOrigin: "https://api.github.com",
   };
+  {
+    const config = f.client.getSandboxConfig;
+    for (const fields of [
+      ...(mandatoryPolicy ? [{}] : []),
+      { binding_policy: undefined },
+      { bindings: undefined },
+      { binding_policy: 2 },
+      { bindings: [1] },
+      { binding_policy: null, bindings: [1] },
+      { binding_policy: "2", bindings: [1] },
+      { binding_policy: 0, bindings: [] },
+      { binding_policy: 1, bindings: [1] },
+      { binding_policy: 2, bindings: undefined },
+      { binding_policy: 2, bindings: null },
+      { binding_policy: 2, bindings: "1" },
+      { binding_policy: 2, bindings: ["1"] },
+      { binding_policy: 2, bindings: [2] },
+      { binding_policy: 2, bindings: [1, 2] },
+      { binding_policy: 3, bindings: [1, 2] },
+      { binding_policy: 3, bindings: [] },
+    ]) {
+      f.client.getSandboxConfig = async () => {
+        const value = await config();
+        const service = value.supervisor_middleware_services[0];
+        delete service.binding_policy;
+        delete service.bindings;
+        Object.assign(service, fields);
+        return value;
+      };
+      await f.reconcile();
+      assert.equal(preview.recipient, undefined, "dynamic or response-only must not qualify");
+      assert.equal(f.calls.rotate, 0);
+      assert.equal(f.calls.material, 0, "unqualified binding must not read credential material");
+    }
+    f.client.getSandboxConfig = config;
+  }
   await f.reconcile();
+  assert.equal(f.calls.rotate, 0, "ACCEPTED and effective config cannot release material");
+  assert.equal(preview.hook, undefined);
   assert.ok(preview.recipient, "the original bootstrap observation qualifies the recipient");
   const startupId = randomUUID();
   const signal = AbortSignal.timeout(5000);
@@ -2361,6 +2434,35 @@ test("an admitted preview rotates at its new fence only in the original worker",
     ),
   });
   assert.equal(await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe), "held");
+  if (removeBinding) {
+    // Losing explicit mandatory fields after qualification changes the recipient fingerprint.
+    // Observed-only mode must not reinterpret this established recipient as a legacy one.
+    const config = f.client.getSandboxConfig;
+    f.client.getSandboxConfig = async () => {
+      const value = await config();
+      delete value.supervisor_middleware_services[0].binding_policy;
+      delete value.supervisor_middleware_services[0].bindings;
+      return value;
+    };
+    await f.reconcile();
+    assert.equal(f.calls.material, 0, "stripped bindings cannot reuse a witnessed recipient");
+    assert.equal(f.calls.rotate, 0);
+    if (!mandatoryPolicy) {
+      assert.equal(f.entry.blocked, "supervisor_replaced");
+    }
+    return;
+  }
+  // Even a witnessed launcher denial cannot authorize material after a binding downgrade.
+  const qualifiedConfig = f.client.getSandboxConfig;
+  f.client.getSandboxConfig = async () => {
+    const value = await qualifiedConfig();
+    value.supervisor_middleware_services[0].binding_policy = 1;
+    return value;
+  };
+  await f.reconcile();
+  assert.equal(f.calls.material, 0, "a post-challenge downgrade must precede material selection");
+  assert.equal(f.calls.rotate, 0);
+  f.client.getSandboxConfig = qualifiedConfig;
   // The controlled supervisor delays the post-write observation. The production runtime
   // must nevertheless cross its own pre-write observation at the new reservation fence.
   f.faults.observeAfterRotate = true;
@@ -2368,6 +2470,69 @@ test("an admitted preview rotates at its new fence only in the original worker",
   assert.equal(f.calls.rotate, 1);
   assert.equal(f.entry.fence, 2);
   assert.equal(f.store.rows.get(revision.id).writePending, undefined);
+
+  f.sandbox.annotations = { "openclaw.dev/revision-id": revision.id };
+  f.sandbox.labels = {};
+  f.sandbox.resourceVersion = "1";
+  const getProvider = f.client.getProvider;
+  f.client.getProvider = async (...args) => ({
+    ...(await getProvider(...args)),
+    id: "model-id",
+    name: "openai",
+    workspace: f.sandbox.workspace,
+  });
+  f.client.getSandboxProviderStatus = async () => {
+    const generation = {
+      attachmentEpoch: f.supervisor.attachmentEpoch,
+      providerEnvRevision: environment ?? f.entry.binding.resourceVersion,
+      configRevision: "1",
+      policyHash: "original-policy",
+    };
+    return {
+      state: "PROVIDER_READINESS_STATE_READY",
+      completedOperationId: "model-observe",
+      receipt: {
+        receiptId: "model-observe",
+        kind: "PROVIDER_MUTATION_KIND_OBSERVE",
+        workspace: f.sandbox.workspace,
+        provider: "openai",
+        desired: {
+          ...generation,
+          sandboxId: f.sandbox.id,
+          sandbox: f.sandbox.name,
+          providerId: "model-id",
+          providerResourceVersion: "1",
+        },
+      },
+      observed: {
+        ...generation,
+        sessionId: f.supervisor.supervisorSessionId,
+        processInstanceId: f.supervisor.processInstanceId,
+        sequence: "1",
+        credentialsInstalled: true,
+        policyActive: true,
+        launchEnvironmentInstalled: true,
+      },
+      networkInstanceId: f.supervisor.networkInstanceId,
+      observedTime: new Date().toISOString(),
+      evaluatedTime: new Date().toISOString(),
+    };
+  };
+  f.faults.observe = false;
+  await f.reconcile();
+  assert.ok(f.entry.installed, "active generation completes its original launch witness");
+  await f.runtime.releasePreview(revision.id, startupId, async () => true);
+  assert.ok(await f.lookup(), "first read after held launch ACK");
+  environment = "1001";
+  f.faults.observe = true;
+  await f.reconcile();
+  assert.equal(await f.lookup(), undefined, "an unverified aggregate environment denies use");
+  assert.equal(f.denials().at(-1).reason, "route_pending");
+  assert.equal(preview.release, "acknowledged", "refresh does not reset held launch ACK");
+  f.faults.observe = false;
+  await f.reconcile();
+  assert.ok(await f.lookup(), "later request uses the newly verified environment");
+  assert.equal(f.calls.rotate, 1, "observation recovery does not reinstall credentials");
 
   const replacement = new OpenShellGitRuntime(f.runtime.configuration, resolve);
   replacement.owner = f.owner;
@@ -2382,4 +2547,14 @@ test("an admitted preview rotates at its new fence only in the original worker",
   f.faults.observe = false;
   await f.reconcile();
   assert.equal(f.calls.rotate, 1, "neither the replacement nor the fenced original can replay");
-});
+}
+
+for (const policy of [undefined, 2, 3]) {
+  test(`an observed Git route (${policy ?? "preview"}) rotates only after its challenge in the original worker`, async () => {
+    if (policy === undefined) {
+      await observedGitRoute(policy, true);
+    }
+    await observedGitRoute(policy);
+    await observedGitRoute(policy, false, true);
+  });
+}

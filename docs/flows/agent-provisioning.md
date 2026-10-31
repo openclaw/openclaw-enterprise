@@ -8,9 +8,11 @@ last_updated_session: authoring-run/6e73ff4f-8905-4066-a81d-d629e40296e7
 
 ## Overview
 
-Console saves Slack and model Secrets, submits inline Configuration and credential references, and retains Preset bindings. OCC queues setup without placeholder resources. The worker creates Configuration and Agent, grants exact Secret or source access, provisions trusted-proxy credentials, and admits the first deployment.
-
-The original provisioning handle follows the first deployment to activation or failure. The [controller worker](controller-worker.md) and [Harness execution topology](harness-execution-topology.md) own runtime reconciliation; later deployments use separate handles.
+Console saves Slack/model Secrets and submits inline Configuration, credential references
+and retained Preset bindings. OCC queues setup without placeholders. The worker creates
+Configuration/Agent, grants exact credential access and admits the first deployment.
+Its handle follows activation or failure; later deployments use separate handles.
+See [worker reconciliation](controller-worker.md) and [Harness topology](harness-execution-topology.md).
 
 ## Entry Points
 
@@ -103,10 +105,18 @@ Source-backed provisioning records the canonical model source and grants only so
 Admission, replay, retry and execution recheck caller authority, source readiness and Gateway
 ownership. Queued or running work prevents source deletion.
 
-Compute prepares runtime credentials without loopback HTTP. Kubernetes owns trusted-proxy
-configuration and credential protection; provisioning supplies neither gateway token nor trust
-override. Losing the provisioning claim cancels outstanding Kubernetes Configuration requests,
-freeing the serial worker.
+Compute prepares runtime credentials without loopback HTTP. Kubernetes
+`kubernetesGatewayConfigurationDocument` renders trusted-proxy configuration
+and preserves explicit human identities/scopes alongside
+machine administration, defaulting to machine-only. Provisioning and deploy
+admission reject unknown or padded operator scopes, blank or padded identity keys,
+grants for identities outside `allowUsers`, malformed `requiredHeaders`, and human
+admission with admin device scopes, including whitespace; human allowlists render
+`x-openclaw-scopes` as required. These refusals precede workload replacement.
+Human ingress and its network policy remain operator-managed; no OCE human
+account is required. See [Gateway authentication](../reference/drivers/kubernetes-compute/gateway-authentication.md).
+Provisioning supplies no Gateway token or trust override. Losing its claim cancels
+Kubernetes Configuration requests, freeing the worker.
 
 ### 4. Deployment becomes the lifecycle owner
 
@@ -144,11 +154,17 @@ covers remaining limits and verification-only support.
 
 `packages/occ/src/state/postgres-state.ts:provisioning`
 
-Safe failed steps can retry under a fresh claim and authorization check. Completed resources are retained and reused. An unresolved external write keeps its exact target and ownership evidence; lease expiry or a not-found response alone does not justify dispatching it again, except a Configuration create still absent 90 seconds after it began, which is [resent](configuration-driver.md#2-resolve-singleton-state-and-select-drivers). Only a refusal before the Configuration record exists rolls back: it deletes the written Configuration, or marks it for a later attempt.
+Safe failures retry with a fresh claim/authorization, reusing completed resources.
+Unresolved writes retain target/ownership evidence; expiry or not-found alone
+does not permit redispatch. Exception: Configuration creates absent after 90 seconds
+are [resent](configuration-driver.md#2-resolve-singleton-state-and-select-drivers).
+Only pre-record Configuration refusals roll back, deleting the written Configuration
+or marking it for later cleanup.
 
 While initialization owns an Agent, conflicting edits and manual deployment are guarded. Stop/Delete invalidate provisioning, and stale workers cannot hand off a deployment afterward. Ordinary deletion retains its lifecycle and in-flight credential safety. A cancelled provisioning never runs again. Agent deletion settles an effect it left pending one worker lease after cancellation: it removes runtime credentials and records the receipt with its finalizer, deferring without spending attempts. Deploy, Agent update and runtime-credential requests settle it once the cancelled claim's stored lease expires, returning `409` until then. Namespace deletion waits for queued or running work and for any effect without a matching receipt, not for settled effects on terminal work. Namespace Secrets and completed Configurations remain available.
 
-No API deletes a provisioning request. Agent deletion removes the Agent's requests; a request that never created an Agent stays. To clear one that blocks migration `0049`, see [legacy bindings](../reference/settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
+Requests have no delete API; Agent deletion removes its requests. Agent-less requests
+remain; for migration `0049` blockers, see [legacy bindings](../reference/settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
 
 ## Debugging and Verification
 
@@ -179,8 +195,16 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 
 - 2026-10-29: Keep saved provisioning status readable after repository policy changes. Retry still checks current policy.
 
+- 2026-10-27 01:52: Preserve current provisioning lifecycle while integrating required human scope headers. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - d56aaf212)
+- 2026-10-25 16:40: Require human ingress scope headers and preserve current provisioning checks while rebasing. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - e1c6288c28b8dcc62926e44ba43f8edd945dfcd1)
+
 - 2026-10-25: Name Slack's whole `${NAME}` token reading; move older entries to the history page. (finding 2512)
 - 2026-10-25: Check Configuration rules before channel credentials. (finding 2506)
+
+- 2026-10-21 13:21: Validate native identity grants before rollout and clarify external human ingress; accompanying local changes. (authoring-run/aba975bf-8e97-4c9d-9e34-dc2c9c79d591 - 4accde87c)
+
+- 2026-10-20 14:57: Preserve human Gateway identities and reject malformed or automatic administrator grants; consolidate PR #2596 history. (PR #3049 - fd73e091f)
+
 - 2026-10-25: Refuse a taken Agent name at admission. (finding 2420)
 - 2026-10-25 03:30: Check a Secret binding's placement before the Compute plan check; Console runs the preflight first. (fix-postland-1025b - 2b1f510594)
 

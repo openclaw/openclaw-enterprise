@@ -13,6 +13,7 @@ import { grantQaRepositoryBranch } from "./qa-repository.mjs";
 import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
 import {
   protectedText,
+  protectedModelApiKey,
   registerQaSecret,
   grantQaSecret,
   qaCommandFailureDetail,
@@ -903,7 +904,13 @@ export async function prepareQaPreset(f, presetName) {
   }
 }
 
-export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "") {
+export async function createQaAgent(
+  f,
+  presetName,
+  browserOrigin,
+  nameSuffix = "",
+  { apiKeyAuth = false } = {},
+) {
   assert.ok(!f.retained, "unresolved repository cleanup prevents new Agent work");
   // The Preset list returns summaries; the exact Preset carries the template.
   const selected = f.presets.find((value) => value.name === `Standard ${presetName}`);
@@ -911,10 +918,15 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
   assert.equal(selected.namespaceId, f.namespace.id, "Preset must belong to the QA Namespace");
   const preset = await f.api("GET", `/namespaces/${selected.namespaceId}/presets/${selected.id}`);
   const codex = presetName === "Codex";
-  const credential = await protectedText(
-    process.env[codex ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE"],
-    "model credential",
-  );
+  const codexAccountLogin = codex && !apiKeyAuth;
+  const credential = apiKeyAuth
+    ? await protectedModelApiKey()
+    : await protectedText(
+        process.env[
+          codexAccountLogin ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE"
+        ],
+        "model credential",
+      );
   const model =
     process.env[codex ? "OCC_TEST_QA_CODEX_MODEL" : "OCC_TEST_QA_OPENAI_MODEL"] || "gpt-6-luna";
   const rendered = renderPresetTemplate(preset.template, {
@@ -943,7 +955,7 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
     value: credential,
   });
   const auth = {
-    method: codex ? "codex_pat" : "api_key",
+    method: codexAccountLogin ? "codex_pat" : "api_key",
     source: { kind: "secret", namespaceId: f.namespace.id, id: secret.id },
   };
   const agent = await f.api("POST", `/namespaces/${f.namespace.id}/agents`, {

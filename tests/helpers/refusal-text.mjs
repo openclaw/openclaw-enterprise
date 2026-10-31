@@ -564,9 +564,7 @@ export const CREDENTIAL_PROXY_GIT_ALONE =
 export const CREDENTIAL_PROXY_INSTALLATION_PREVIEW =
   "Installation-wide repository access (profile github-installation) needs the OpenShell Credential Proxy's observed-hook preview, which this Installation does not enable. Choose another profile, or ask an Installation administrator to enable the preview.";
 export const PROXY_REGISTRATION_UNAVAILABLE =
-  "The OpenShell gateway does not offer the protected egress middleware the Credential Proxy is configured to use. Ask an operator to check the gateway's middleware registration and version, then retry.";
-export const PREVIEW_GATEWAY_VERSION =
-  "Installation-wide repository access uses the observed-hook preview, which needs OpenShell gateway 0.1.5, and the gateway reports another version. Ask an operator to run 0.1.5 or turn the preview off, then retry.";
+  "The OpenShell gateway does not offer the protected egress middleware the Credential Proxy is configured to use. Ask an operator to check the gateway's middleware registration, protocol and capabilities, then retry.";
 export const storedCredentialSourceConfig = (field) =>
   `This credential source's saved ${field} no longer meets the OpenShell Credential Gateway's rules, so it cannot be used. Create a new source with a valid ${field}, bind it in place of this one, then delete this one.`;
 export const SERVICE_ACCOUNT_NO_BACKEND_BINDING =
@@ -729,3 +727,25 @@ export const NAMESPACE_DELETE_DENIED =
 // Namespace (finding 2861): administration cannot lift it.
 export const NAMESPACE_DELETE_RESTRICTED =
   "A Restriction denies deleting this Namespace, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it.";
+
+// Deploy new version's reason while saved Secrets wait for the Agent's grant names the bindings
+// whose Secrets wait, as the Credentials tab lists them, and where to grant access (finding 3017).
+// `missing`: an Installation administrator's console read no grant; otherwise a grant request left
+// it unconfirmed. `administrator`: the grant was refused, or the reader is offered no Retry.
+export const secretGrantDeployReason = (
+  bindings,
+  { missing = false, administrator = false } = {},
+) => {
+  const names =
+    bindings.length < 2
+      ? bindings.join("")
+      : `${bindings.slice(0, -1).join(", ")} and ${bindings.at(-1)}`;
+  const secrets = `the ${bindings.length > 1 ? "Secrets" : "Secret"} bound to ${names}`;
+  const problem = missing
+    ? `This Agent has no access to ${secrets}, so deploying it would be refused.`
+    : `This Agent's access to ${secrets} is not confirmed.`;
+  const step = administrator
+    ? "Granting access needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Retry Secret access."
+    : "Open Credentials and select Retry Secret access.";
+  return `${problem} ${step}`;
+};

@@ -175,6 +175,10 @@ the key. Private Gateway configuration qualifies parent and subagent selections
 (strings or primary/fallback objects), preserving native IDs and admitted values.
 Transport uses the authenticated app server and fail-closed HTTP. See [Harness execution](../harness-execution.md).
 
+`runtime.codexModelSupportsStandaloneWebSearch` declares an explicit endpoint's
+standalone-search capability. See [custom Codex provider capabilities](kubernetes-compute/managed-native-configuration.md#custom-codex-provider-capabilities)
+for defaults, restrictions, and deployment behavior.
+
 ### Authentication
 
 Choose exactly one Kubernetes authentication mode:

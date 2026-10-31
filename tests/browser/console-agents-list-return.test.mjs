@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   fileBrowser,
+  fulfillPatchedJson,
   hasFocus,
   holdRequests,
   login,
@@ -223,12 +224,10 @@ test("A return whose list read dropped an Agent never reveals that Agent, with r
       await route.fallback();
       return;
     }
-    const response = await route.fetch();
-    const body = await response.json();
-    await route.fulfill({
-      response,
-      json: { ...body, data: body.data.filter((item) => item.id !== removed.id) },
-    });
+    await fulfillPatchedJson(route, (body) => ({
+      ...body,
+      data: body.data.filter((item) => item.id !== removed.id),
+    }));
   });
   await startRecording(page);
   await page.goBack();
@@ -1338,15 +1337,12 @@ test("Agents list names the current version by number in the page's outcome word
   const activeId = (await active(newer)).activeRevisionId;
   const openWithout = async ({ olderPage, status, current }) => {
     const { page: opened } = await newPage(t, fixture, { browser });
-    await opened.route(
-      `**/namespaces/${namespace.id}/agents/${newer.id}/revisions`,
-      async (route) => {
-        const response = await route.fetch();
-        const body = await response.json();
+    await opened.route(`**/namespaces/${namespace.id}/agents/${newer.id}/revisions`, (route) =>
+      fulfillPatchedJson(route, (body) => {
         body.data = body.data.filter((revision) => revision.revision !== 1);
         body.meta.nextCursor = olderPage ? "older-page" : null;
-        await route.fulfill({ response, json: body });
-      },
+        return body;
+      }),
     );
     const reads = { count: 0 };
     await opened.route(`**/agents/${newer.id}/revisions/${activeId}`, (route) => {

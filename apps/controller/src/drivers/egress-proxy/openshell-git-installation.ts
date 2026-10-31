@@ -386,6 +386,7 @@ export async function observeOpenShellGitInstallation(
       return;
     }
     const recipient = await previewPolicyAndRecipient({
+      ...(preview.mandatory && { mandatory: true }),
       client: entry.client,
       sandbox,
       observed,
@@ -414,7 +415,7 @@ export async function observeOpenShellGitInstallation(
         "Observed Git recipient or policy changed.",
       );
     }
-    if (preview.hook) {
+    if (preview.hook && !preview.mandatory) {
       observed = Object.freeze({ ...observed, observedHook: preview.hook });
     }
   }

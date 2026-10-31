@@ -1201,6 +1201,7 @@ export class ControllerWorker {
   private installation: Readonly<Installation> | undefined;
   private loop: Promise<void> | undefined;
   private stopping = false;
+  private closing = false;
   private lastHealthAt = 0;
   private pendingHealth: Promise<void> | undefined;
   private lastProgressAt = 0;
@@ -1465,13 +1466,27 @@ export class ControllerWorker {
     this.loop = this.run();
   }
 
+  /**
+   * Stop claiming work and running health checks. Resolves once the pass and the health check
+   * in flight end, so shutdown closes the worker's other parts only after the loop that uses
+   * them (finding 2997). The database pool stays open until `stop()`.
+   */
+  async stopLoop(): Promise<void> {
+    if (!this.stopping) {
+      this.stopping = true;
+      this.abort.abort();
+    }
+    await this.loop;
+    // A claim's heartbeat starts health checks that the loop does not await.
+    await this.pendingHealth;
+  }
+
   async stop(): Promise<void> {
-    if (this.stopping) {
+    if (this.closing) {
       return;
     }
-    this.stopping = true;
-    this.abort.abort();
-    await this.loop;
+    this.closing = true;
+    await this.stopLoop();
     // A failed protected Driver close must not leave the database pool open.
     await closeResources(this.protectedDriver, this.state);
     this.emit({ event: "worker.stopped" });
@@ -1617,6 +1632,10 @@ export class ControllerWorker {
   }
 
   private async health(force: boolean): Promise<void> {
+    // A stopping worker starts no check, so none rewrites readiness after its removal.
+    if (this.stopping) {
+      return;
+    }
     if (this.pendingHealth !== undefined) {
       return this.pendingHealth;
     }
@@ -5218,10 +5237,13 @@ export class ControllerWorker {
       );
       // v6 needs its current active pointer to select credential material. Commit that pointer
       // only for the observed, still-held launcher; the ordinary active pass must later see
-      // the real Harness serving before it completes activation. No v4/v5 admission uses this.
+      // the real Harness serving before it completes activation. Mandatory online Git uses
+      // the same held challenge before releasing credentials.
       const held =
-        revision.executionAdmission.version === 6 &&
-        revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed" &&
+        ((revision.executionAdmission.version === 6 &&
+          revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed") ||
+          (revision.executionAdmission.version === 5 &&
+            revision.egressPlan?.repositoryGitAuthorization === "online-request")) &&
         this.compute.activationOrder !== "beforeCommit" &&
         !observation.ready &&
         observation.heldForRepositoryGitMaterial === true &&

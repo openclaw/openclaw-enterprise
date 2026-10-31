@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstat } from "node:fs/promises";
+import { lstat, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
@@ -24,8 +24,10 @@ function reach(path: string): Promise<string> {
 // Finding 2989: when the repository Git transport or the prepared Git owner failed to close,
 // worker shutdown skipped the receipt server. Its listener kept the worker process alive after
 // SIGTERM until the kubelet's SIGKILL. Every later step must still close, and the first failure
-// is the one worker.mjs reports as SHUTDOWN_FAILED.
+// is the one worker.mjs reports as SHUTDOWN_FAILED. A failed worker loop stop (finding 2997)
+// still removes readiness and closes every part.
 for (const failing of [
+  { first: "loop", also: ["transport"] },
   { first: "transport", also: ["prepared"] },
   { first: "prepared", also: [] },
 ]) {
@@ -34,6 +36,8 @@ for (const failing of [
       longest: "receipt.sock",
     });
     const receiptPath = join(directory, "receipt.sock");
+    const readinessPath = join(directory, "ready");
+    await writeFile(readinessPath, "");
     // The real receipt listener on its private socket, as worker.mjs starts it.
     const receipt = await startRepositoryReceiptServer({
       controlSocket: join(directory, "control.sock"),
@@ -59,6 +63,7 @@ for (const failing of [
     };
     await assert.rejects(
       closeWorkerComposition({
+        readinessPath,
         repositoryGitTransport: { close: step("transport") },
         preparedRepositoryGit: { close: step("prepared") },
         receiptServer: {
@@ -69,13 +74,22 @@ for (const failing of [
         },
         closeMetrics: step("metrics"),
         preparedGitHub: { close: step("github") },
-        worker: { stop: step("worker") },
+        worker: { stopLoop: step("loop"), stop: step("worker") },
       }),
       (error) => error === failures.get(failing.first),
     );
 
-    // Same order as before the fix, with no step skipped.
-    assert.deepEqual(events, ["transport", "prepared", "receipt", "metrics", "github", "worker"]);
+    // The loop stops first and the worker's database pool closes last, with no step skipped.
+    assert.deepEqual(events, [
+      "loop",
+      "transport",
+      "prepared",
+      "receipt",
+      "metrics",
+      "github",
+      "worker",
+    ]);
+    await assert.rejects(lstat(readinessPath), { code: "ENOENT" });
     // The listener is gone and its socket removed: nothing keeps the process alive.
     assert.equal(await reach(receiptPath), "ENOENT");
     await assert.rejects(lstat(receiptPath), { code: "ENOENT" });

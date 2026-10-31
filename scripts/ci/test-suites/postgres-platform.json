@@ -331,7 +331,12 @@
       "path": "tests/integration/postgres-protected-git-recipient-custody.test.ts",
       "expectedTests": [
         "only the installed Git recipient owner may use its material or retire its ended admission",
-        "changing between repository and installation scope waits for the previous owner to settle its token"
+        "changing between repository and installation scope waits for the previous owner to settle its token",
+        "selected repository set retires after B session across owner restart",
+        "selected repository set retires after B replacement across owner restart",
+        "selected repository set retires after B deadline across owner restart",
+        "selected repository set retires after NULL selection across owner restart",
+        "selected repository set retires after empty selection across owner restart"
       ]
     },
     {
@@ -392,7 +397,8 @@
     {
       "path": "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
       "expectedTests": [
-        "standing OpenShell installation grant crosses both expiries, serves two Git repositories and the API, then loses only GitHub"
+        "standing OpenShell installation grant crosses both expiries, serves two Git repositories and the API, then loses only GitHub",
+        "one deployed OpenShell Agent pushes A and B with one repository-scoped token and cannot push C"
       ]
     },
     {

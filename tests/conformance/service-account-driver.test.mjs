@@ -17,7 +17,10 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import {
+  createDevelopmentComputeDriver,
+  registerAndSelectDrivers,
+} from "../helpers/development.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const administrator = "service-account-driver-administrator";
@@ -130,15 +133,12 @@ async function fixture({
       externalAccounts.delete(account.id);
     },
   };
-  for (const selected of [
+  registerAndSelectDrivers(controller, [
     iam,
     compute,
     configuration,
     ...(selectServiceAccountDriver ? [driver] : []),
-  ]) {
-    controller.registerDriver(selected);
-    controller.selectDriver(selected.capability, selected.id);
-  }
+  ]);
   const namespace = await controller.createNamespace(administrator, {
     name: "ServiceAccount Driver conformance tenant",
   });
@@ -741,11 +741,7 @@ function fakeChatGPT(workspaceId) {
   const requests = [];
   const faults = [];
   let next = 0;
-  const json = (status, body) =>
-    new Response(JSON.stringify(body), {
-      status,
-      headers: { "content-type": "application/json" },
-    });
+  const json = (status, body) => Response.json(body, { status });
   const fetch = async (url, init) => {
     const path = new URL(url).pathname;
     const base = `/v1/manage/workspaces/${workspaceId}/service-accounts`;

@@ -263,10 +263,8 @@ try {
     }
     closing = true;
     try {
-      if (readinessPath !== undefined) {
-        await unlink(readinessPath).catch(() => {});
-      }
       await closeWorkerComposition({
+        readinessPath,
         repositoryGitTransport,
         preparedRepositoryGit,
         receiptServer,
