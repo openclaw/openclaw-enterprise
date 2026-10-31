@@ -84,7 +84,14 @@ these limits:
   fields. Other defaults and Agent network additions do not join this authority.
 
 OCC requests this qualification only for the protected, dedicated Codex repository
-composition and freezes the result on the immutable `AgentRevision`. Reuse
+composition through an explicit `admitProtectedCodexArtifactPolicy` producer.
+An absent producer is unsupported. Its result must acknowledge the
+`protected-codex-artifacts` purpose, identify the declared rule names and return
+exactly that subset. OCC rejects an ordinary policy result, an ignored purpose,
+duplicate names or a map that differs from the declared subset before effects.
+The acknowledgement is an admission result, not a new persisted policy carrier.
+
+OCC freezes the qualified result on the immutable `AgentRevision`. Reuse
 `SandboxPolicySnapshot`: its Driver-owned `defaults` contains only the qualified
 artifact map, and `additions` is empty. The existing protected execution, Harness
 and repository context distinguish this snapshot from ordinary Agent policy.
