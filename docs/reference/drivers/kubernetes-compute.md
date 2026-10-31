@@ -329,13 +329,8 @@ model turn.
   Native plugin startup, authentication, transport, and installation failures
   remain generic workload startup failures unless the Compute-owned runtime
   reports a verified current-startup warning for an admitted selected plugin.
-- **Deployment fails with check `gateway-config`:** The embedded or dedicated
-  Gateway exited before it served, and `openclaw config validate` reports its
-  configuration invalid, for example a plugin entry whose `config` fails the
-  plugin's schema, even when that plugin is disabled. The wrapper then holds the
-  failure instead of restarting, and the worker fails the deployment with
-  `RUNTIME_STARTUP_FAILED`. The Gateway log names up to five setting paths, never
-  values. Fix or remove those settings, then deploy a new version.
+- **Check `gateway-config` fails:** See
+  [configuration OpenClaw refuses](kubernetes-compute/managed-native-configuration.md#configuration-openclaw-refuses-at-startup).
 - **Gateway storage is pending or rejected:** Check the configured
   `runtime.gatewayStorageClassName`, available `10Gi` capacity, filesystem
   support, worker PVC permissions, and the PVC's exact ownership. Preserve
