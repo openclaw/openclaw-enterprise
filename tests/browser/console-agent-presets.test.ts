@@ -85,6 +85,7 @@ import {
   PLUGIN_CREDENTIALS_REJECTED,
 } from "../helpers/refusal-text.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
+import { within } from "../helpers/wait-for.mjs";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createBaseConsoleAppFixture>>;
 type FixtureResponse<Data> = Omit<Awaited<ReturnType<ConsoleFixture["request"]>>, "data"> & {
@@ -4165,17 +4166,7 @@ test("a delayed restored Preset list cannot read a selection after starting with
   } finally {
     releaseList();
     if (heldRequest) {
-      let timer;
-      try {
-        await Promise.race([
-          listHandled,
-          new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new Error("Held Preset route did not finish")), 10_000);
-          }),
-        ]);
-      } finally {
-        clearTimeout(timer);
-      }
+      await within(listHandled, "held Preset route did not finish", 10_000);
     }
     await page.unroute(listPath);
   }

@@ -22,6 +22,7 @@ import {
   registerAndSelectDrivers,
 } from "../helpers/development.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { within } from "../helpers/wait-for.mjs";
 
 const administrator = "service-account-driver-administrator";
 const reader = "service-account-driver-reader";
@@ -647,7 +648,6 @@ test("ChatGPT Backend releases rejected HTTPS responses for subsequent account c
           ),
       });
       let retry;
-      let timer;
       try {
         server.listen(0, "127.0.0.1");
         await once(server, "listening");
@@ -655,17 +655,12 @@ test("ChatGPT Backend releases rejected HTTPS responses for subsequent account c
         const client = new ChatGPTClient({ workspaceId, adminKey: "synthetic-test-key" });
         await assert.rejects(client.createServiceAccount({ name: "first" }), fault.reason);
         retry = client.createServiceAccount({ name: "retry" });
-        const account = await Promise.race([
+        // Shorter than the Backend's 30-second request timeout: cleanup must release capacity now.
+        const account = await within(
           retry,
-          new Promise((_, reject) => {
-            // Shorter than the Backend's 30-second request timeout: cleanup must release capacity now.
-            timer = setTimeout(
-              () =>
-                reject(new Error("The next account call stalled behind the rejected response.")),
-              5000,
-            );
-          }),
-        ]);
+          "the next account call stalled behind the rejected response",
+          5_000,
+        );
         assert.deepEqual(account, { id: "recovered-account" });
         assert.deepEqual(
           requests,
@@ -679,7 +674,6 @@ test("ChatGPT Backend releases rejected HTTPS responses for subsequent account c
           assert.ok(streamedBytes < 6 * 1024 * 1024, String(streamedBytes));
         }
       } finally {
-        clearTimeout(timer);
         clearInterval(streamTimer);
         setGlobalDispatcher(originalDispatcher);
         await agent.destroy();

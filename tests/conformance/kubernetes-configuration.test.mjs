@@ -22,6 +22,7 @@ import {
 import { READ_RETRY_PAUSES_MS, withRetryTimers } from "../helpers/kubernetes-request-retry.mjs";
 import { writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { within } from "../helpers/wait-for.mjs";
 
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const configuration = {
@@ -670,22 +671,12 @@ test("Kubernetes Configuration cancels an in-flight request when its provisionin
   const pending = withComputeAbortSignal(owner.signal, () => driver.read(configuration));
   await started;
   owner.abort(lost);
-  let timer;
   try {
     await assert.rejects(
-      Promise.race([
-        pending,
-        new Promise((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error("Configuration request ignored claim loss")),
-            1000,
-          );
-        }),
-      ]),
+      within(pending, "Configuration request ignored claim loss", 1_000),
       (error) => error === lost,
     );
   } finally {
-    clearTimeout(timer);
     finishTransport(lost);
     await pending.catch(() => {});
   }
