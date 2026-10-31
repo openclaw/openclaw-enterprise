@@ -34,10 +34,12 @@ before(async (t) => {
   const build = join(root, "build");
   await mkdir(join(build, "scripts"), { recursive: true });
   await mkdir(join(build, "apps/controller/dist"), { recursive: true });
-  await cp(
-    join(repository, "scripts/build-repository-credentials.mjs"),
-    join(build, "scripts/build-repository-credentials.mjs"),
-  );
+  for (const extension of ["mjs", "ts"]) {
+    await cp(
+      join(repository, `scripts/build-repository-credentials.${extension}`),
+      join(build, `scripts/build-repository-credentials.${extension}`),
+    );
+  }
   // Like the detached-package suite, use the real artifact builder and this
   // checkout's TypeScript output. A workspace build is a prerequisite.
   await cp(join(repository, "apps/controller/dist"), join(build, "apps/controller/dist"), {
