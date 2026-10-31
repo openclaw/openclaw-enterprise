@@ -492,7 +492,9 @@ test(
         // Simulate a grant rotation between the two policy resolutions.
         t.mock.method(policy, "resolve", (input: Parameters<typeof policy.resolve>[0]) => {
           const result = resolve(input);
-          if (++resolutions === 1) return result;
+          if (++resolutions === 1) {
+            return result;
+          }
           return {
             ...result,
             bindings: result.bindings.map((binding) => ({
