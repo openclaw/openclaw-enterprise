@@ -29,9 +29,12 @@ on:
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
       - scripts/*.mjs
+      - scripts/auth-maintain.ts
+      - scripts/build-repository-credentials.ts
       - scripts/ci/download-pinned.sh
       - scripts/ci/prepare.mjs
       - scripts/ci/resource-names.mjs
+      - scripts/ci/resource-names.ts
       - scripts/ci/test-suites/images-packaging.json
       - scripts/lib/**
       - tsconfig.base.json

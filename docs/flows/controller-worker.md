@@ -263,12 +263,12 @@ and production, after the claim-protected compare-and-set of
 `Agent.activeRevisionId`, and the first dedicated version stays inactive until
 commit. A changed pointer causes `ACTIVE_REVISION_CHANGED` and retry.
 
-After the pointer commit, the worker finishes activation and retires the
-predecessor. In a second transaction, `completeActivatedRevision()` rechecks the
-selected version and claim, appends evidence, and completes work. Infrastructure
-effects and database state are not atomic. Retried finalization rechecks the
-active candidate before effects, so a retained plugin failure cannot become
-success after claim loss.
+Committing `Agent.activeRevisionId` records selection. A v5 `online-request` or
+v6 `request-hook-observed` hold for Git material leaves the original work queued
+until that revision reports ready. The worker then activates it and retires its
+predecessor. In a separate transaction, `completeActivatedRevision()` rechecks
+selection and claim, appends evidence, and completes work. Retries recheck the
+active candidate before effects; claim loss cannot turn plugin failure into success.
 
 Stop finalization rechecks the live claim, Agent owner, and stopped desired state.
 After captured cleanup, it clears `activeRevisionId` only if it still identifies

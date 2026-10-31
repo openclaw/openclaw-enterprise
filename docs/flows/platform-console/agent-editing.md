@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-10-31
-last_updated_session: fix-3018
+last_updated_session: fix-3023
 ---
 
 # Console Agent editing and runtime requests
@@ -241,7 +241,10 @@ grant leaves Configuration saved; a 403 names the Installation administrator, wh
 says access was not verified until **Reload draft**. An administrator's console checks every
 bound Secret's grant, as deployment does, with Slack on or off; Deploy waits for those reads and
 rechecks before its POST, and a save or Retry during one reads again before naming Deploy. With
-Slack off, the section shows only while a bound Secret's grant waits, with only Retry (3018).
+Slack off, the section shows only while a bound Secret's grant waits, with only Retry (3018),
+whose success names the granted access. A Retry carries no Secret choices into **Reload draft** (3021).
+An unconfirmed Retry names only the grant, not a Configuration save; after **Reload draft** the
+section waits for its grant read instead of restating that outcome (3023).
 `agents/credentials.mjs:missingChannelCredentialGroups` reads token keys as the Slack Channel
 Driver does; pickers appear only for standard keys. A 400 that
 `agents/list.mjs:channelBindingRefusal` matches shows the API's message. An uncertain PATCH
@@ -341,16 +344,12 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-10-31 07:30: Word an unconfirmed Retry without a Configuration save; clear it on Reload draft. (fix-3023)
+
+- 2026-10-31 03:45: Say what a Slack-off Retry did and keep its focus. (fix-slackoff-copy)
+
 - 2026-10-31 01:00: Check and retry bound Secrets' grants with Slack off. (fix-3018)
 
 - 2026-10-30 23:30: Keep the version's record in place when deployment activity settles. (fix-3016)
-
-- 2026-10-29 12:43: Preserve overlapping overview and record reads. (authoring-run/22e56d10-b3c5-43f9-b088-c060fbfbe64f - 4af87e8139aafb7469b60cf38846935c1266baed)
-
-- 2026-10-29 12:23: Retire denied Save views. (authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25 - 5d8c060238a58)
-
-- 2026-10-29 11:50: Track terminal overview reconciliation. (terminal-regrant - 1a16ee6c8ff11aaa0b8ea2451aabbc5445d8a72c)
-
-- 2026-10-29 11:40: Share terminal overview refresh. (terminal-transition - 4f6e05487f336db326b46bd87fb3100ad99b660d)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

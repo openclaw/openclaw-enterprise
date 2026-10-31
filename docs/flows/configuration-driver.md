@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
-updated: 2026-10-29
-last_updated_session: authoring-run/74db2351-f5c1-4733-a3dc-a1ca653b29cf
+updated: 2026-10-31
+last_updated_session: fix-3023
 ---
 
 # Configuration Driver and Agent Revision Flow
@@ -218,6 +218,12 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31: With no model selected, the provider catalog refusal names the model setting instead of the row rule. (fix-3023)
+
+- 2026-10-31: Writes also refuse model and runtime settings that conflict (entry primary, selectable models, runtime policies and IDs, Codex provider), with deployment's text and order; drafts without a model or runtime still save. (fix-3020, finding 3020)
+
+- 2026-10-31: Writes refuse a provider model entry that no primary or fallback selects, with deployment's text; a stored row that keeps one is refused on its next write. (fix-3019, finding 3019)
 
 - 2026-10-29: Establish the temporary file mode before replacing a filesystem Configuration. (authoring-run/74db2351-f5c1-4733-a3dc-a1ca653b29cf)
 

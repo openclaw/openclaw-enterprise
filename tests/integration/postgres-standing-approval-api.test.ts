@@ -94,6 +94,7 @@ test(
       repositoryId: "790",
       repository: "example/another",
     });
+    let selectedPolicy!: GitHubRepositoryPolicy;
     let app!: ReturnType<typeof createFastifyApp>;
     let controllerTime: number | undefined;
     async function selectRepo(
@@ -123,6 +124,7 @@ test(
         validateGitHubRepositoryRegistry(input),
         { sessionDurationSeconds: 3600 },
       );
+      selectedPolicy = driver;
       // Keep scope resolution unchanged while varying the independent policy permission.
       if (eligibility !== "registry") {
         Object.defineProperty(driver, "allowsStandingApproval", {
@@ -480,6 +482,42 @@ test(
     assert.equal(
       revision.repositoryCredentials.standingApprovalScopeFingerprint,
       first.scopeFingerprint,
+    );
+    await t.test(
+      "deploy rejects a grant that changes during standing approval recheck",
+      async (t) => {
+        const policy = selectedPolicy;
+        const resolve = policy.resolve.bind(policy);
+        let resolutions = 0;
+        // Simulate a grant rotation between the two policy resolutions.
+        t.mock.method(policy, "resolve", (input: Parameters<typeof policy.resolve>[0]) => {
+          const result = resolve(input);
+          if (++resolutions === 1) {
+            return result;
+          }
+          return {
+            ...result,
+            bindings: result.bindings.map((binding) => ({
+              ...binding,
+              grant: { ...binding.grant, grantId: "rotated-grant" },
+            })),
+          };
+        });
+        const revisionIds = () =>
+          state.read(async (v) =>
+            (await v.revisions.listRevisions(namespaceId, agent.id)).map(({ id }) => id),
+          );
+        const approvals = () =>
+          state.read((v) => v.repositorySessions.listStandingApprovals(namespaceId, agent.id));
+        const beforeRevisionIds = await revisionIds();
+        const beforeApprovals = await approvals();
+        const denied = await request("POST", path + "/deploy");
+        assert.equal(resolutions, 2);
+        assert.equal(denied.statusCode, 409, denied.body);
+        assert.equal(denied.json().error.message, STANDING_APPROVAL_POLICY_CHANGED);
+        assert.deepEqual(await revisionIds(), beforeRevisionIds, "no revision was admitted");
+        assert.deepEqual(await approvals(), beforeApprovals, "approval remains intact");
+      },
     );
     const currentGeneration = async () =>
       (

@@ -5,10 +5,21 @@ import type {
 import { asRecord, isNonEmptyString, splitModelRef } from "@openclaw-enterprise/utils";
 
 import { canSpell } from "./configuration-settings.ts";
-import { agentEntryMessage, ConfigurationHarnessError, modelProviderMessage } from "./errors.ts";
+import {
+  agentEntryMessage,
+  ConfigurationHarnessError,
+  configurationSettingMessage,
+  configurationSettingsMessage,
+  keyedSettingPath,
+  modelProviderMessage,
+  quotedSettingKey,
+} from "./errors.ts";
 import { providerModelsListError } from "./model-provider-settings.ts";
 
-function configuredRuntime(value: unknown): string | undefined {
+// The runtime a model policy selects. `policy` gives the setting path of the object that holds
+// agentRuntime, such as agents.defaults.models["openai/gpt-5.1"]; it is built only for a refusal,
+// so a large policy map stays cheap to read (finding 1316).
+function configuredRuntime(value: unknown, policy: () => string): string | undefined {
   const runtimeValue = asRecord(value)?.agentRuntime;
   if (runtimeValue === undefined) {
     return undefined;
@@ -16,11 +27,16 @@ function configuredRuntime(value: unknown): string | undefined {
   const runtime = asRecord(runtimeValue);
   if (runtime === undefined || (runtime.id !== "openclaw" && runtime.id !== "codex")) {
     throw new ConfigurationHarnessError(
-      "The configured model Harness runtime identity is unsupported.",
+      configurationSettingMessage(`${policy()}.agentRuntime.id`, "must be openclaw or codex"),
     );
   }
   return runtime.id;
 }
+
+// The setting path of an agents.defaults.models or agents.entries.<id>.models policy for `model`.
+const defaultModelPolicy = (model: string) => keyedSettingPath("agents.defaults.models", model);
+
+const entryModelsPath = (key: string) => `${keyedSettingPath("agents.entries", key)}.models`;
 
 // Builds a refusal that names a model selection: agents.defaults.model or an agents.entries model.
 type SelectionMessage = (rest: string) => string;
@@ -211,11 +227,11 @@ export function requireFallbackProviders(
  * The model selection rules of resolveConfiguredHarnessId that hold for every topology, in its
  * order within each selection: its fallbacks are a list, each model a <provider>/<model>
  * reference, and each fallback on the primary model's provider. Every deployment refuses a
- * selection that breaks one, so Configuration save, Agent provisioning, Agent create preflight
- * and Preset save refuse it too, with the deployment's text (requireDeployableRoster; finding
- * 1828). On a Preset save, a model that waits on an unfilled variable, or a primary that a
- * variable key can supply, is checked as far as its written text goes, and in full on the
- * Configuration a launch creates.
+ * selection that breaks one, so Preset save refuses it too, with the deployment's text
+ * (requireDeployableRoster; finding 1828); the other saves run these rules within
+ * requireConsistentModelPolicy. On a Preset save, a model that waits on an unfilled variable, or
+ * a primary that a variable key can supply, is checked as far as its written text goes, and in
+ * full on the Configuration a launch creates.
  */
 export function requireModelSelections(
   values: Readonly<OpenClawConfigurationDocument>,
@@ -253,46 +269,74 @@ function configuredModels(value: unknown, setting: SelectionMessage): readonly s
   return models;
 }
 
-// The rule matchingSelectableModels enforces, for messages that name agents.*.models.
-const selectableRule =
-  "must be an object keyed by model ref: a model other than the primary needs the primary's provider and the same agentRuntime, set on both.";
-
-function matchingSelectableModels(
+/**
+ * The refusal for an agents.defaults.models or agents.entries.<id>.models setting (`parent`,
+ * holding `value`) that breaks the selectable rule, or undefined when it holds: an object keyed
+ * by model ref, where a model other than the primary needs the primary's provider and the same
+ * agentRuntime, set on both. The first model that breaks it, in document order, is named.
+ */
+function selectableModelsRefusal(
+  parent: string,
   value: Readonly<Record<string, unknown>> | undefined,
-  selectedModel: string | undefined,
-): boolean {
-  if (value === undefined || selectedModel === undefined) {
-    return false;
+  selectedModel: string,
+): string | undefined {
+  if (value === undefined) {
+    return configurationSettingMessage(
+      parent,
+      'must be an object keyed by model ref, such as {"openai/gpt-5.1": {"agentRuntime": {"id": "openclaw"}}}',
+    );
   }
-  const selectedRuntime = configuredRuntime(value[selectedModel]);
+  const selectedPolicy = () => keyedSettingPath(parent, selectedModel);
+  const selectedRuntime = configuredRuntime(value[selectedModel], selectedPolicy);
   const selectedProvider = splitModelRef(selectedModel).provider;
-  return Object.entries(value).every(
-    ([model, policy]) =>
-      model === selectedModel ||
-      (selectedRuntime !== undefined &&
-        splitModelRef(model).provider === selectedProvider &&
-        configuredRuntime(policy) === selectedRuntime),
-  );
+  for (const [model, policy] of Object.entries(value)) {
+    if (model === selectedModel) {
+      continue;
+    }
+    if (selectedRuntime === undefined) {
+      return configurationSettingMessage(
+        `${selectedPolicy()}.agentRuntime.id`,
+        "is required when other models are listed beside the primary model: set it to openclaw or codex",
+      );
+    }
+    const listed = () => keyedSettingPath(parent, model);
+    if (splitModelRef(model).provider !== selectedProvider) {
+      return configurationSettingMessage(
+        listed(),
+        `is not on the primary model's provider, ${quotedSettingKey(selectedProvider, 64)}: remove it, or list a model of that provider`,
+      );
+    }
+    if (configuredRuntime(policy, listed) !== selectedRuntime) {
+      return configurationSettingMessage(
+        `${listed()}.agentRuntime.id`,
+        `must be ${selectedRuntime}, the primary model's runtime: set it, or remove the model`,
+      );
+    }
+  }
+  return undefined;
 }
 
 // A provider catalog's rows keyed by id, built once per resolution so that looking up each
 // selected model costs the same however long the catalog is (finding 1316). A row names a model
 // by its complete ref or by the remainder after the provider (always shorter).
-type CatalogIndex = ReadonlyMap<string, readonly Readonly<Record<string, unknown>>[]>;
+// Each row keeps its position in the list, so a refusal can name it.
+type CatalogRow = readonly [row: Readonly<Record<string, unknown>>, position: number];
+
+type CatalogIndex = ReadonlyMap<string, readonly CatalogRow[]>;
 
 function catalogIndex(rows: readonly unknown[]): CatalogIndex {
-  const index = new Map<string, Readonly<Record<string, unknown>>[]>();
-  for (const value of rows) {
+  const index = new Map<string, CatalogRow[]>();
+  rows.forEach((value, position) => {
     const row = asRecord(value);
     if (typeof row?.id === "string") {
       const listed = index.get(row.id);
       if (listed === undefined) {
-        index.set(row.id, [row]);
+        index.set(row.id, [[row, position]]);
       } else {
-        listed.push(row);
+        listed.push([row, position]);
       }
     }
-  }
+  });
   return index;
 }
 
@@ -301,7 +345,7 @@ function providerModelEntry(
   provider: Readonly<Record<string, unknown>>,
   model: string,
   catalogs: Map<string, CatalogIndex>,
-): Readonly<Record<string, unknown>> | undefined {
+): CatalogRow | undefined {
   const configured = provider.models;
   if (configured === undefined) {
     return undefined;
@@ -327,6 +371,64 @@ function providerModelEntry(
     );
   }
   return complete[0] ?? remainder[0];
+}
+
+/**
+ * The provider catalog rule of resolveConfiguredHarnessId: each row of a
+ * models.providers.<provider>.models list names a primary or fallback model of `selections`, by
+ * its complete ref or the remainder after the provider. Deployment checks it on every Harness,
+ * before it resolves one, so Configuration save runs it too (requireConsistentModelPolicy;
+ * finding 3019).
+ */
+function requireSelectedCatalogRows(
+  providerConfigurations: Readonly<Record<string, unknown>> | undefined,
+  selections: Iterable<readonly string[]>,
+): void {
+  // The catalog ids that name each provider's candidates (complete ref or remainder), so each
+  // catalog row is checked in constant time.
+  const catalogIds = new Map<string, Set<string>>();
+  for (const models of new Set(selections)) {
+    for (const model of models) {
+      const { provider, id } = splitModelRef(model);
+      const ids = catalogIds.get(provider) ?? new Set<string>();
+      catalogIds.set(provider, ids.add(model).add(id!));
+    }
+  }
+
+  for (const [providerId, value] of Object.entries(providerConfigurations ?? {})) {
+    const provider = asRecord(value);
+    if (provider === undefined) {
+      throw new ConfigurationHarnessError(
+        modelProviderMessage(
+          providerId,
+          (path) => `Configuration setting ${path} must be an object.`,
+        ),
+      );
+    }
+    if (provider.models === undefined) {
+      continue;
+    }
+    if (!Array.isArray(provider.models)) {
+      throw providerModelsListError(providerId);
+    }
+    const ids = catalogIds.get(providerId);
+    if (
+      provider.models.some((value) => {
+        const id = asRecord(value)?.id;
+        return !(typeof id === "string" && ids?.has(id) === true);
+      })
+    ) {
+      // With no model selected at all, no row can name one: the setting to set is the model,
+      // not the row (dogfood-member-r67 catalog row 7).
+      throw new ConfigurationHarnessError(
+        modelProviderMessage(providerId, (path) =>
+          catalogIds.size === 0
+            ? `Configuration setting ${path}.models lists models, but no model is selected: set agents.defaults.model or an agents.entries model.`
+            : `Configuration setting ${path}.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.`,
+        ),
+      );
+    }
+  }
 }
 
 /**
@@ -363,10 +465,20 @@ export function requireAgentsShape(values: Readonly<OpenClawConfigurationDocumen
   }
 }
 
-/** Resolve native model policy without treating ignored whole-agent runtime pins as authoritative. */
-export function resolveConfiguredHarnessId(
+/**
+ * resolveConfiguredHarnessId's rules, in its order, for deployment and, as a `draft`, for
+ * Configuration save (requireConsistentModelPolicy). A draft skips only the rules that a document
+ * still missing a setting breaks: an agents.entries entry without a model while
+ * agents.defaults.model is unset, agents.defaults.models with no primary model, and a model
+ * without the explicit Harness runtime its provider needs. Deployment refuses those. Every other
+ * rule refuses a value the document sets, so a draft refuses it too, with deployment's text and in
+ * deployment's order (finding 3020). A draft resolves no Harness when it leaves one to
+ * deployment.
+ */
+function resolveModelPolicy(
   values: Readonly<OpenClawConfigurationDocument>,
-): string {
+  draft: boolean,
+): string | undefined {
   // Shape refusals come first.
   requireAgentsShape(values);
   const agents = asRecord(values.agents);
@@ -382,6 +494,7 @@ export function resolveConfiguredHarnessId(
   const selections: Array<{
     models: readonly string[];
     entry?: Readonly<Record<string, unknown>>;
+    key?: string;
   }> = [{ models: defaultSelection }];
   // The first candidate: every selection's primary must be this one.
   let primary = defaultSelection[0];
@@ -395,6 +508,10 @@ export function resolveConfiguredHarnessId(
         : configuredModels(entry.model, entryModelMessage(key));
     const model = selection[0];
     if (model === undefined) {
+      if (draft) {
+        // The draft selects no model for this entry yet: deployment names the missing one.
+        continue;
+      }
       throw new ConfigurationHarnessError(
         agentEntryMessage(
           key,
@@ -413,93 +530,84 @@ export function resolveConfiguredHarnessId(
       );
     }
     primary ??= model;
-    const models = asRecord(entry.models);
-    if (entry.models !== undefined && !matchingSelectableModels(models, model)) {
+    if (entry.models !== undefined) {
+      const refusal = selectableModelsRefusal(entryModelsPath(key), asRecord(entry.models), model);
+      if (refusal !== undefined) {
+        throw new ConfigurationHarnessError(refusal);
+      }
+    }
+    selections.push({ models: selection, entry, key });
+  }
+
+  if (defaults?.models !== undefined && !(draft && primary === undefined)) {
+    if (primary === undefined) {
       throw new ConfigurationHarnessError(
-        agentEntryMessage(key, (path) => `Configuration setting ${path}.models ${selectableRule}`),
+        "Configuration setting agents.defaults.models needs a primary model: set agents.defaults.model or an agents.entries model.",
       );
     }
-    selections.push({ models: selection, entry });
-  }
-
-  if (defaults?.models !== undefined && !matchingSelectableModels(defaultModels, primary)) {
-    throw new ConfigurationHarnessError(
-      primary === undefined
-        ? "Configuration setting agents.defaults.models needs a primary model: set agents.defaults.model or an agents.entries model."
-        : `Configuration setting agents.defaults.models ${selectableRule}`,
-    );
-  }
-
-  // The catalog ids that name each provider's candidates (complete ref or remainder), so each
-  // catalog row is checked in constant time.
-  const catalogIds = new Map<string, Set<string>>();
-  for (const models of new Set(selections.map(({ models }) => models))) {
-    for (const model of models) {
-      const { provider, id } = splitModelRef(model);
-      const ids = catalogIds.get(provider) ?? new Set<string>();
-      catalogIds.set(provider, ids.add(model).add(id!));
+    const refusal = selectableModelsRefusal("agents.defaults.models", defaultModels, primary);
+    if (refusal !== undefined) {
+      throw new ConfigurationHarnessError(refusal);
     }
   }
 
-  for (const [providerId, value] of Object.entries(providerConfigurations ?? {})) {
-    const provider = asRecord(value);
-    if (provider === undefined) {
-      throw new ConfigurationHarnessError(
-        modelProviderMessage(
-          providerId,
-          (path) => `Configuration setting ${path} must be an object.`,
-        ),
-      );
-    }
-    if (provider.models === undefined) {
-      continue;
-    }
-    if (!Array.isArray(provider.models)) {
-      throw providerModelsListError(providerId);
-    }
-    const ids = catalogIds.get(providerId);
-    if (
-      provider.models.some((value) => {
-        const id = asRecord(value)?.id;
-        return !(typeof id === "string" && ids?.has(id) === true);
-      })
-    ) {
-      throw new ConfigurationHarnessError(
-        modelProviderMessage(
-          providerId,
-          (path) =>
-            `Configuration setting ${path}.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.`,
-        ),
-      );
-    }
-  }
+  requireSelectedCatalogRows(
+    providerConfigurations,
+    selections.map(({ models }) => models),
+  );
 
   if (primary === undefined) {
-    return "openclaw";
+    return draft ? undefined : "openclaw";
   }
   const resolved = new Set<string>();
   const plugins = asRecord(asRecord(values.plugins)?.entries);
   const catalogs = new Map<string, CatalogIndex>();
 
-  // The Harness one candidate selects; refusals name no candidate.
-  const resolveCandidate = (model: string, entryPolicy: unknown): string => {
+  // The Harness one candidate selects. `entryKey` names the agents.entries entry whose `models`
+  // policy for the model is `entryPolicy`. Each refusal names the setting to change: the policy
+  // that selects the runtime, or, for a missing runtime, the entry's policy when it lists the
+  // model and the defaults' otherwise. A draft leaves a candidate without its required runtime to
+  // deployment (finding 3022).
+  const resolveCandidate = (
+    model: string,
+    entryPolicy: unknown,
+    entryKey: string | undefined,
+  ): string | undefined => {
     const providerId = splitModelRef(model).provider;
     const provider = asRecord(providerConfigurations?.[providerId]);
     const providerModel =
       provider === undefined
         ? undefined
         : providerModelEntry(providerId, provider, model, catalogs);
-    const policies = new Set(
-      [entryPolicy, defaultModels?.[model], providerModel, provider]
-        .map(configuredRuntime)
-        .filter((runtime): runtime is string => runtime !== undefined),
-    );
-    if (policies.size > 1) {
+    const providerPath = () => keyedSettingPath("models.providers", providerId);
+    const entryPolicyPath = () => keyedSettingPath(entryModelsPath(entryKey!), model);
+    // Each policy and its setting path, in precedence order. Every one is read before a conflict
+    // is refused, so an unsupported runtime id anywhere is named first.
+    const policies: Array<readonly [runtime: string, policy: () => string]> = [];
+    for (const [value, policy] of [
+      [entryPolicy, entryPolicyPath],
+      [defaultModels?.[model], () => defaultModelPolicy(model)],
+      [providerModel?.[0], () => `${providerPath()}.models[${providerModel![1]}]`],
+      [provider, providerPath],
+    ] as const) {
+      const runtime = configuredRuntime(value, policy);
+      if (runtime !== undefined) {
+        policies.push([runtime, policy]);
+      }
+    }
+    const [first, ...others] = policies;
+    const conflicting = others.find(([runtime]) => runtime !== first![0]);
+    if (conflicting !== undefined) {
       throw new ConfigurationHarnessError(
-        "The selected model has conflicting Harness runtime policies.",
+        configurationSettingsMessage(
+          `${first![1]()}.agentRuntime.id`,
+          `${conflicting[1]()}.agentRuntime.id`,
+          (one, other) =>
+            `Configuration settings ${one} (${first![0]}) and ${other} (${conflicting[0]}) conflict: set both to openclaw or both to codex, or remove one.`,
+        ),
       );
     }
-    const selected = [...policies][0];
+    const selected = first?.[0];
     if (
       selected === undefined &&
       (providerId === "openai" ||
@@ -507,8 +615,14 @@ export function resolveConfiguredHarnessId(
         provider !== undefined ||
         plugins?.[providerId] !== undefined)
     ) {
+      if (draft) {
+        return undefined;
+      }
       throw new ConfigurationHarnessError(
-        "The configured Agent model requires an explicit supported Harness runtime.",
+        configurationSettingMessage(
+          `${entryPolicy === undefined ? defaultModelPolicy(model) : entryPolicyPath()}.agentRuntime.id`,
+          "is required for the selected model: set it to openclaw or codex",
+        ),
       );
     }
     const codexPlugin = asRecord(plugins?.codex);
@@ -524,7 +638,10 @@ export function resolveConfiguredHarnessId(
       )
     ) {
       throw new ConfigurationHarnessError(
-        "The Codex Harness requires the native codex model provider.",
+        configurationSettingMessage(
+          `${first![1]()}.agentRuntime.id`,
+          "selects codex for a model outside the codex provider: select a codex/<model> model, or set it to openclaw",
+        ),
       );
     }
     return selected ?? "openclaw";
@@ -541,7 +658,7 @@ export function resolveConfiguredHarnessId(
     }
   });
   const resolvedModels = new Set<string>();
-  for (const { models, entry } of selections) {
+  for (const { models, entry, key } of selections) {
     const entryModels = asRecord(entry?.models);
     const candidates =
       entry !== undefined && models === defaultSelection
@@ -557,14 +674,42 @@ export function resolveConfiguredHarnessId(
         }
         resolvedModels.add(model);
       }
-      resolved.add(resolveCandidate(model, entryPolicy));
+      const harness = resolveCandidate(model, entryPolicy, key);
+      if (harness !== undefined) {
+        resolved.add(harness);
+      }
     }
   }
 
-  if (resolved.size !== 1) {
+  // Deployment resolves every candidate. A draft that left each one to deployment resolves none.
+  if (resolved.size > 1 || (!draft && resolved.size === 0)) {
     throw new ConfigurationHarnessError(
       "The configured Agent models select conflicting Harness runtimes.",
     );
   }
-  return [...resolved][0]!;
+  return [...resolved][0];
+}
+
+/** Resolve native model policy without treating ignored whole-agent runtime pins as authoritative. */
+export function resolveConfiguredHarnessId(
+  values: Readonly<OpenClawConfigurationDocument>,
+): string {
+  return resolveModelPolicy(values, false)!;
+}
+
+/**
+ * Refuses, when a Configuration is saved, a model policy that every deployment refuses because
+ * the document sets conflicting values, with deployment's text and in deployment's order: the
+ * agents shape, each selection's form and fallback provider, an entry primary other than the
+ * defaults', agents.*.models that break the selectable rule, a provider catalog row that names no
+ * selected model (finding 3019), a selected model listed twice in its catalog, conflicting runtime
+ * policies, an unsupported runtime id, a Codex runtime on another provider than codex, and models
+ * that select different runtimes (finding 3020). A draft without a model, or a model without its
+ * required runtime, still saves; deployment refuses it. None of these rules reads Installation or
+ * Harness state.
+ */
+export function requireConsistentModelPolicy(
+  values: Readonly<OpenClawConfigurationDocument>,
+): void {
+  resolveModelPolicy(values, true);
 }
