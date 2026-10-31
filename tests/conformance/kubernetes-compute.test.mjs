@@ -9700,7 +9700,8 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
   // Every form of an APP_SERVER_ reference, on an embedded Agent.
   for (const [configuration, setting, name] of [
     [withCodex({ enabled: true, config: { appServer } }), authToken, "APP_SERVER_TOKEN"],
-    // An entry without enabled is active, even beside an allowlist that does not list it.
+    // An entry without enabled is active, even beside an allowlist that does not list it: at
+    // startup OpenClaw adds every known plugin entry with config to a non-empty plugins.allow.
     [withCodex({ config: { appServer } }, { allow: ["browser"] }), authToken, "APP_SERVER_TOKEN"],
     [
       withCodex({ config: { appServer: { authToken: "$APP_SERVER_TOKEN" } } }),
@@ -9724,6 +9725,8 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       configuration,
       refusal(dedicatedCodexVariableRefusal(setting, name)),
     );
+    // Configuration save knows no Agent, so the execution mode that refuses it is not known yet.
+    driver.validateConfiguration(configuration);
   }
   // The other forms of an unbound reference, on an embedded Agent.
   for (const [configuration, ...refused] of [
@@ -9736,6 +9739,13 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
     // OpenClaw trims a secret-input value before it reads `${NAME}`, so padding still stops the
     // Gateway (finding 3046).
     [withSearchHeader(" ${RELAY_TOKEN}\n"), searchHeader, "RELAY_TOKEN", "google"],
+    // OpenClaw adds the google entry to a plugins.allow that omits it, so its input is read.
+    [
+      withSearchHeader("${RELAY_TOKEN}", {}, { allow: ["codex"] }),
+      searchHeader,
+      "RELAY_TOKEN",
+      "google",
+    ],
   ]) {
     refusedUntilBound(embeddedAdmission, configuration, refused);
   }
@@ -9793,6 +9803,13 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       withBeam({ ...envRef("RELAY_TOKEN"), provider: "vault" }),
       beamToken,
       "beam",
+      "provider",
+      "vault",
+    ],
+    [
+      withSearchHeader({ ...envRef("RELAY_TOKEN"), provider: "vault" }, {}, { allow: ["codex"] }),
+      searchHeader,
+      "google",
       "provider",
       "vault",
     ],
@@ -10025,6 +10042,7 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       refusal(appServerUnreadablePluginSecretRefusal(setting, plugin, agent, "allowlist", name)),
       JSON.stringify(configuration),
     );
+    driver.validateConfiguration(configuration);
   }
   for (const [admit, configuration] of [
     [embeddedAdmission, { ...withBeam("${APP_SERVER_TOKEN}"), ...allowlist(["APP_SERVER_TOKEN"]) }],
