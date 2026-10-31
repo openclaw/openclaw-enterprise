@@ -55,6 +55,8 @@ import {
   AGENT_NAME_CONFLICT,
   BROKER_PROXY_DISABLED,
   COMPUTE_REPOSITORY_UNSUPPORTED,
+  CODEX_MODEL_ONLY,
+  codexRuntimeOffProvider,
   COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
   CREDENTIAL_PROXY_INSTALLATION_ACCESS,
   DEPENDENCY_UNAVAILABLE,
@@ -3483,6 +3485,14 @@ test(
         undefined,
         409,
         dedicatedOpenClawSandboxRefusal(true),
+      ],
+      // Codex on an openai model without the Codex plugin: the next step is a codex/<model>
+      // model alone, as openclaw would only reach the 409.
+      [
+        { model: "openai/gpt-5", models: { "openai/gpt-5": { agentRuntime: { id: "codex" } } } },
+        undefined,
+        400,
+        codexRuntimeOffProvider('agents.defaults.models["openai/gpt-5"]', CODEX_MODEL_ONLY),
       ],
     ]) {
       const codexBody = provisioningBody(namespace.id, secrets);

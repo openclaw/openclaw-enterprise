@@ -383,8 +383,13 @@ export const runtimePoliciesConflict = (first, firstId, second, secondId, remedy
 export const BOTH_RUNTIMES = "set both to openclaw or both to codex, or remove one";
 export const keepRuntime = (runtime, other) =>
   `set both to ${runtime}, or remove the one set to ${other}`;
-export const codexRuntimeOffProvider = (policy) =>
-  `Configuration setting ${policy}.agentRuntime.id selects codex for a model outside the codex provider: select a codex/<model> model, or set it to openclaw.`;
+// `remedy` keeps only the step the deploying Agent can take: CODEX_MODEL_ONLY where it cannot run
+// OpenClaw (finding 3036), OPENCLAW_ONLY where it cannot run Codex (finding 3037).
+export const CODEX_MODEL_OR_OPENCLAW = "select a codex/<model> model, or set it to openclaw";
+export const CODEX_MODEL_ONLY = "select a codex/<model> model";
+export const OPENCLAW_ONLY = "set it to openclaw";
+export const codexRuntimeOffProvider = (policy, remedy = CODEX_MODEL_OR_OPENCLAW) =>
+  `Configuration setting ${policy}.agentRuntime.id selects codex for a model outside the codex provider: ${remedy}.`;
 export const selectableModelsNotObject = (parent) =>
   `Configuration setting ${parent} must be an object keyed by model ref, such as {"openai/gpt-5.1": {"agentRuntime": {"id": "openclaw"}}}.`;
 // `offer` as for runtimeIdRequired, or the runtime other settings or the listed models select.
