@@ -36,6 +36,7 @@ import {
   BOTH_RUNTIMES,
   CODEX_MODEL_ONLY,
   CODEX_NEEDS_DEDICATED,
+  configIncludeRefusal,
   dedicatedOpenClawSandboxRefusal,
   GATEWAY_MANAGED_MODE_DENIED,
   keepRuntime,
@@ -1377,6 +1378,47 @@ test("Configuration save refuses another spelling of the codex or acpx plugin en
     const values = { plugins: { entries } };
     assert.deepEqual((await save(values)).values, values, JSON.stringify(values));
   }
+});
+
+// The pinned OpenClaw replaces an object holding $include with the named files' settings, merged
+// under its other keys with arrays concatenated, and re-reads them when they change. Configuration
+// rules and Compute read the document as written, so $include is refused at any depth (finding
+// 3078). configuration-controller.test.mjs proves that each save path, Agent save and deployment
+// run it.
+test("Configuration save refuses OpenClaw's $include directive anywhere in the document", async () => {
+  const { controller, namespace } = await fixture();
+  const save = (values) =>
+    controller.createConfiguration(administrator, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values,
+    });
+  for (const [values, path] of [
+    // At the root, where its settings would sit under every rendered one.
+    [{ $include: "./workspace/extra.json", tools: { elevated: { enabled: false } } }, "$include"],
+    // Inside an object a Compute rule reads, where it would add a setting that rule refuses.
+    [{ gateway: { auth: { $include: ["./a.json", "./b.json"] } } }, "gateway.auth.$include"],
+    // Under a submitted key and inside a list.
+    [
+      { plugins: { entries: { "my plugin": { config: { $include: "./p.json" } } } } },
+      'plugins.entries["my plugin"].config.$include',
+    ],
+    [
+      { agents: { list: [{ id: "main" }, { $include: "./agent.json" }] } },
+      "agents.list[1].$include",
+    ],
+  ]) {
+    await assert.rejects(save(values), {
+      name: "ConfigurationHarnessError",
+      message: configIncludeRefusal(path),
+    });
+  }
+  // The text $include as a value, or in a longer key, is not the directive and saves.
+  const values = {
+    agents: { defaults: { skipBootstrap: true } },
+    plugins: { entries: { notes: { config: { note: "$include", $includes: [] } } } },
+  };
+  assert.deepEqual((await save(values)).values, values);
 });
 
 test("native selected-model policy explicitly chooses Codex or OpenClaw", () => {
