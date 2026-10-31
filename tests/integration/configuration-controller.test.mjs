@@ -1071,6 +1071,155 @@ test("Configuration save refuses a provider catalog row that no model selection 
   }
 });
 
+test("Configuration save refuses a model policy whose settings conflict, with deployment's text and order", async () => {
+  // Finding 3020. Every deployment resolves the Harness from the model policy first and refuses
+  // a document whose settings conflict. Save accepted these, so the draft looked ready until
+  // Deploy answered 400. A draft that still misses a model or a runtime saves (below).
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-model-policy-integration", "validateHarnessAuth"),
+  });
+  const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+    name: "Model policy consumer",
+    secretName: "model-policy-key",
+  });
+  const runtime = (model, id = "openclaw") => ({ [model]: { agentRuntime: { id } } });
+  const entryPrimary = setting(
+    "agents.entries.main.model",
+    "must select the same primary model as agents.defaults.model and the other agents.entries",
+  );
+  const selectableRule =
+    "must be an object keyed by model ref: a model other than the primary needs the primary's provider and the same agentRuntime, set on both";
+  const catalogRule = setting(
+    "models.providers.openai.models",
+    "may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries",
+  );
+  const conflictingPolicies = "The selected model has conflicting Harness runtime policies.";
+  const unselectedRow = { providers: { openai: { models: [{ id: "gpt-unselected" }] } } };
+  // Each document sets two values that cannot both hold. Create and update refuse it; a row an
+  // older release stored still reads, and deployment refuses it with the same text.
+  for (const [values, message] of [
+    // An Agent entry's primary differs from the defaults'.
+    [
+      {
+        agents: { defaults: runtimeDefaults, entries: { main: { model: "openai/gpt-4.1-mini" } } },
+      },
+      entryPrimary,
+    ],
+    // An entry's selectable models name another provider than its primary's.
+    [
+      {
+        agents: {
+          defaults: runtimeDefaults,
+          entries: {
+            main: {
+              model: "openai/gpt-4.1",
+              models: { ...runtime("openai/gpt-4.1"), ...runtime("anthropic/claude-x") },
+            },
+          },
+        },
+      },
+      setting("agents.entries.main.models", selectableRule),
+    ],
+    // The defaults' selectable models name another provider than the primary's.
+    [
+      {
+        agents: {
+          defaults: {
+            ...runtimeDefaults,
+            models: { ...runtimeDefaults.models, ...runtime("anthropic/claude-x") },
+          },
+        },
+      },
+      setting("agents.defaults.models", selectableRule),
+    ],
+    // The selected model's policy and its provider's name different runtimes.
+    [
+      { ...runtimeSelected, models: { providers: { openai: { agentRuntime: { id: "codex" } } } } },
+      conflictingPolicies,
+    ],
+    // A Codex runtime on the openai provider without the Codex plugin's WebSocket app server.
+    [
+      {
+        agents: {
+          defaults: { model: "openai/gpt-4.1", models: runtime("openai/gpt-4.1", "codex") },
+        },
+      },
+      "The Codex Harness requires the native codex model provider.",
+    ],
+    // A runtime id that no Harness implements.
+    [
+      {
+        agents: { defaults: { model: "openai/gpt-4.1", models: runtime("openai/gpt-4.1", "pi") } },
+      },
+      "The configured model Harness runtime identity is unsupported.",
+    ],
+  ]) {
+    await refusedAtSaveAndDeploy(context, agent, values, message);
+  }
+
+  // Save checks these rules in deployment's order, so a document that breaks two names the same
+  // one at save and deploy: the entry primary comes before the catalog rule, and the catalog rule
+  // before the runtime policies.
+  await refusedAtSaveAndDeploy(
+    context,
+    agent,
+    {
+      agents: { defaults: runtimeDefaults, entries: { main: { model: "openai/gpt-4.1-mini" } } },
+      models: unselectedRow,
+    },
+    entryPrimary,
+  );
+  await refusedAtSaveAndDeploy(
+    context,
+    agent,
+    {
+      ...runtimeSelected,
+      models: {
+        providers: { openai: { ...unselectedRow.providers.openai, agentRuntime: { id: "codex" } } },
+      },
+    },
+    catalogRule,
+  );
+
+  // An incomplete draft saves: no model at all, selectable models before any primary, an entry
+  // without a model while the defaults set none, or a model without the runtime its provider
+  // needs. Deployment still refuses it, naming what is missing.
+  for (const [values, deployMessage] of [
+    [
+      { agents: { defaults: { models: runtimeDefaults.models } } },
+      setting(
+        "agents.defaults.models",
+        "needs a primary model: set agents.defaults.model or an agents.entries model",
+      ),
+    ],
+    [
+      { agents: { entries: { main: {} } } },
+      setting(
+        "agents.entries.main.model",
+        "is required when agents.defaults.model is unset: set either one",
+      ),
+    ],
+    [
+      { agents: { defaults: { model: "openai/gpt-4.1" } } },
+      "The configured Agent model requires an explicit supported Harness runtime.",
+    ],
+  ]) {
+    const label = JSON.stringify(values);
+    const created = await request(context.app, "POST", context.collection, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(created.status, 201, `${label}: ${JSON.stringify(created.body)}`);
+    const saved = await request(context.app, "PATCH", agent.item, { body: { values } });
+    assert.equal(saved.status, 200, `${label}: ${JSON.stringify(saved.body)}`);
+    assert.deepEqual(saved.body.data.values, values, label);
+    const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
+    assertRefused(deployed, deployMessage, { label });
+    await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
+  }
+});
+
 test("Configuration save refuses a Gateway tool policy that every OpenClaw topology refuses, with deployment's text", async () => {
   // Findings 2688 and 2689. Save and deployment run the real Kubernetes Compute rules. The
   // Agent is embedded, the default: its Gateway applies the policy natively, so a policy only
@@ -3000,7 +3149,13 @@ test("Configuration and Preset saves refuse an OpenRouter compatibility selector
   // selection. Only the two selectors name openrouter there: another bare name is an alias.
   for (const [index, values] of [
     codexModel({ primary: codex.model, fallbacks: ["codex/gpt-5-mini"] }),
-    codexModel({ primary: "openrouter/meta/m", fallbacks: ["openrouter/meta/n"] }),
+    // The codex selectable models would name another provider than this primary's, which save
+    // refuses as deployment does (finding 3020).
+    {
+      agents: {
+        defaults: { model: { primary: "openrouter/meta/m", fallbacks: ["openrouter/meta/n"] } },
+      },
+    },
     {
       agents: {
         defaults: {

@@ -200,10 +200,15 @@ OpenClaw when there is no model candidate or an unambiguous built-in provider.
 OpenAI, Codex, custom providers, and plugin-routed providers require an explicit
 runtime policy. Catalog entries may use the full model reference or the ID after
 the first slash. Each listed provider model must be a selected primary or fallback.
-Configuration writes refuse any other entry with deployment's message; a Preset
-is checked when a launch creates its Configuration.
 Codex accepts its native `codex` provider, or `openai` with the
 Codex plugin explicitly enabled for WebSocket app-server transport.
+
+Configuration writes run these rules in deployment's order. They refuse settings
+that conflict, with deployment's message: an entry primary that differs, selectable
+models on another provider or runtime, an unselected catalog entry, conflicting
+runtime policies, an unsupported runtime ID, or Codex on another provider. A draft
+without a model, or a model without its required runtime, still saves; deployment
+refuses it. A Preset is checked when a launch creates its Configuration.
 
 ## Limits
 

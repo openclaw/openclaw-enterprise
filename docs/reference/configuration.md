@@ -195,7 +195,9 @@ naming the setting. A
 Preset value that waits on a variable
 is checked as far as its written text goes, and in full once filled. A
 Configuration saved before these checks still reads; deployment refuses it, and
-only a write that keeps the value is refused.
+only a write that keeps the value is refused. Writes also refuse model and runtime
+settings that conflict, as [native runtime selection](harness-execution.md#native-runtime-selection)
+describes.
 
 OCC also refuses `security.preset`. Remove it and [set the controls you need](../guides/console/configuration-plugins-and-files.md#configuration-tab).
 OpenClaw's `doctor --fix` removes the field without translating its restrictions.
