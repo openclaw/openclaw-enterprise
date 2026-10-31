@@ -2453,7 +2453,9 @@ function publishAgentPluginSkillPath() {
 // OpenClaw (validation-plugin-config.ts, validation-channel-rules.ts) and names only
 // schema terms and setting keys, so it is kept beside its path. Other messages can quote
 // a setting's value, which the configuration may hold as a secret, so they are dropped.
-const OPENCLAW_CONFIG_ISSUE_HELPER = String.raw`
+// invalidOpenClawConfigurationLine is the log line of a Gateway held as check gateway-config
+// (findings 3043, 3045): what happened, the settings, and the remedy.
+export const OPENCLAW_CONFIG_ISSUE_HELPER = String.raw`
 function openClawConfigIssues(issues) {
   const kept = new Map();
   for (const issue of Array.isArray(issues) ? issues : []) {
@@ -2471,6 +2473,14 @@ function openClawConfigIssues(issues) {
     if (kept.size === 5) break;
   }
   return [...kept].map(([path, message]) => (message === "" ? { path } : { path, message }));
+}
+function invalidOpenClawConfigurationLine(event, issues) {
+  const settings = openClawConfigIssues(issues)
+    .map((issue) => issue.path + (issue.message === undefined ? "" : ": " + issue.message));
+  return event + ", and OpenClaw reports its configuration invalid" +
+    (settings.length > 0 ? " (" + settings.join("; ") + ")" : "") +
+    ". It is held, not restarted: fix or remove the invalid settings in the Agent's Configuration, " +
+    "then deploy a new version.";
 }
 `;
 
@@ -3180,14 +3190,9 @@ function holdInvalidGatewayConfiguration(code, signal) {
   if (report?.valid !== false) return false;
   gatewayConfigurationHeld = true;
   publishRuntimeFailure("gateway-config", "UNAVAILABLE");
-  const issues = openClawConfigIssues(report.issues)
-    .map((issue) => issue.path + (issue.message === undefined ? "" : ": " + issue.message));
-  console.error(
-    "The OpenClaw Gateway exited (" + (signal ?? "exit-" + code) + ") before it served, and OpenClaw " +
-      "reports its configuration invalid" + (issues.length > 0 ? " (" + issues.join("; ") + ")" : "") +
-      ". It is held, not restarted: fix or remove the invalid settings in the Agent's Configuration, " +
-      "then deploy a new version.",
-  );
+  console.error(invalidOpenClawConfigurationLine(
+    "The OpenClaw Gateway exited (" + (signal ?? "exit-" + code) + ") before it served", report.issues,
+  ));
   setInterval(() => {}, 3600000);
   return true;
 }

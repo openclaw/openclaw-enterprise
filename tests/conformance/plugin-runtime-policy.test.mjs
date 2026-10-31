@@ -8,6 +8,12 @@ import {
   runOpenClawRuntimeHelper,
   workspaceNodeBinding,
 } from "../helpers/plugin-runtime.mjs";
+import {
+  invalidGatewayConfiguration,
+  invalidGatewayConfigurationLine,
+  invalidGatewayConfigurationSecret,
+  openClawConfigValidationRefusal,
+} from "../helpers/openclaw-config-validation.mjs";
 
 const OCC_DIFFS_DIGEST =
   "sha512-5VTDNEo7D3iOgRoL5C31JPTbA/EXQEFRuxOvLy67IMFmOajwroGsUMWeuKkmqzFbPNQxvn7GACDSr/5Vmpx3/g==";
@@ -1614,22 +1620,10 @@ test("a timed-out workspace binding probe releases the poll and can recover", as
 // `openclaw config validate --json` output for a configuration read OpenClaw refused,
 // as the pinned OpenClaw prints it (exit status 1).
 function configReadRefusal(error) {
-  const path = "/home/node/.openclaw/openclaw.json";
-  return {
-    status: 1,
-    stdout: JSON.stringify({
-      ok: false,
-      error: {
-        type: "cli_error",
-        message: "OpenClaw config is invalid: ~/.openclaw/openclaw.json",
-      },
-      repairHint: "Resolve the read error shown above, then retry.",
-      valid: false,
-      path,
-      issues: [{ path: "<root>", message: `read failed at ${path}: ${error}` }],
-    }),
-    stderr: "",
-  };
+  return openClawConfigValidationRefusal(
+    [{ path: "<root>", message: `read failed at /home/node/.openclaw/openclaw.json: ${error}` }],
+    "Resolve the read error shown above, then retry.",
+  );
 }
 const configReadPermissionDenied =
   "EACCES: permission denied, open '/home/node/.openclaw/openclaw.json'";
@@ -1763,6 +1757,12 @@ for (const launcher of dedicatedGatewayLaunchers) {
     );
   });
 
+  // A beam entry that fails its schema (finding 3045) beside an issue on a setting the tool
+  // policy step composes: either one alone decides which check is held.
+  const beamIssue = {
+    path: "plugins.entries.beam.config.mirror.endpoint",
+    message: "invalid config: must have required property 'endpoint'",
+  };
   for (const [failure, options, held = "gateway-tool-policy"] of [
     [
       "unknown runtime source",
@@ -1798,6 +1798,40 @@ for (const launcher of dedicatedGatewayLaunchers) {
       { configValidationResponse: configReadRefusal(gatewayLockNamespaceRefusal) },
       "gateway-state-lock",
     ],
+    // Settings outside the tool policy are the Agent's configuration, not the policy.
+    [
+      "invalid settings outside the tool policy",
+      { configValidationResponse: invalidGatewayConfiguration },
+      "gateway-config",
+    ],
+    [
+      "a refused key beside the settings the tool policy composes",
+      {
+        configValidationResponse: openClawConfigValidationRefusal([
+          { path: "agents.defaults", message: 'Unrecognized key: "thinkingBudget"' },
+        ]),
+      },
+      "gateway-config",
+    ],
+    [
+      "an invalid composed tool policy setting",
+      {
+        configValidationResponse: openClawConfigValidationRefusal([
+          beamIssue,
+          { path: "tools.gatewayPolicy.actions.sessions", message: "Invalid input" },
+        ]),
+      },
+    ],
+    // A runtime whose OpenClaw does not know a composed setting refuses its key one level up.
+    [
+      "a runtime that refuses a composed setting's key",
+      {
+        configValidationResponse: openClawConfigValidationRefusal([
+          { path: "cron.triggers", message: 'Unrecognized key: "enabled"' },
+          beamIssue,
+        ]),
+      },
+    ],
   ]) {
     test(`${launcher.name} holds ${failure} unready without starting model work`, async () => {
       const messages = [];
@@ -1816,13 +1850,12 @@ for (const launcher of dedicatedGatewayLaunchers) {
         calls.some(({ args }) => args?.[1] === "gateway"),
         false,
       );
-      const lock = held === "gateway-state-lock";
       assert.equal(
         messages.some((message) => message.includes("required tool policy")),
-        !lock,
+        held === "gateway-tool-policy",
         messages.join("\n"),
       );
-      if (lock) {
+      if (held === "gateway-state-lock") {
         // The operator reads the cause and OpenClaw's holder description, not a policy hint.
         assert.ok(
           messages.some(
@@ -1834,13 +1867,27 @@ for (const launcher of dedicatedGatewayLaunchers) {
           messages.join("\n"),
         );
       }
+      if (failure === "invalid settings outside the tool policy") {
+        // The same line an embedded Gateway's gateway-config hold writes: the settings and
+        // the remedy, never a configured value.
+        assert.deepEqual(messages, [
+          invalidGatewayConfigurationLine("The OpenClaw Gateway did not start"),
+        ]);
+        assert.equal(messages.join("\n").includes(invalidGatewayConfigurationSecret), false);
+      } else if (held === "gateway-config") {
+        assert.ok(
+          messages.some((message) => message.includes("configuration invalid (agents.defaults)")),
+          messages.join("\n"),
+        );
+      }
       if (launcher.launcher === "docker") {
         const published = vm.runInContext("runtimeStartupFailure", sandbox);
         assert.deepEqual(
           { check: published?.check, code: published?.code },
-          lock
-            ? { check: "gateway-state-lock", code: "UNAVAILABLE" }
-            : { check: "gateway-tool-policy", code: "INCOMPATIBLE_RESPONSE" },
+          {
+            check: held,
+            code: held === "gateway-tool-policy" ? "INCOMPATIBLE_RESPONSE" : "UNAVAILABLE",
+          },
         );
       }
       assert.ok(
