@@ -4813,7 +4813,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // and the deployment would wait for its convergence deadline. The Agent's mode decides the
     // APP_SERVER_ case, so Agent save refuses it too; the rest waits for the bindings.
     if (embedded) {
-      this.requireEmbeddedPluginSecretInputs(configuration, agentSave ? null : secretBindings);
+      this.requireEmbeddedPluginSecretInputs(configuration, secretBindings);
     }
     requireProviderApiKeys(configuration, openclaw, authentication);
     if (!agentSave) {

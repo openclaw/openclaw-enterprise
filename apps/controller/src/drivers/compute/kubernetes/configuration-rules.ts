@@ -129,9 +129,11 @@ const GATEWAY_REQUIRED_PLUGIN_SECRET_INPUTS: Readonly<
   google: [["webSearch", "headers", "*"]],
 };
 
-// Variables the container runtime or the runtime image set in every Gateway, which a Secret
-// binding may also name: the Pod's HOSTNAME, the image's YARN_VERSION and Kubernetes service links.
-const RUNTIME_VARIABLE = /^(?:HOSTNAME|YARN_VERSION)$|_SERVICE_(?:HOST|PORT)(?:_|$)|_PORT(?:_|$)/;
+// Variables an embedded Gateway may receive without a binding that a Secret binding may also name:
+// the Pod's HOSTNAME, the image's YARN_VERSION, Compute's repository broker GIT_SSL_CAINFO and
+// Kubernetes service links.
+const RUNTIME_VARIABLE =
+  /^(?:HOSTNAME|YARN_VERSION|GIT_SSL_CAINFO)$|_SERVICE_(?:HOST|PORT)(?:_|$)|_PORT(?:_|$)/;
 
 // The variable a secret-input value reads as an environment SecretRef, if any: a whole `${NAME}`
 // with no fallback, the `$NAME` shorthand or an env SecretRef object. OpenClaw keeps a reference
