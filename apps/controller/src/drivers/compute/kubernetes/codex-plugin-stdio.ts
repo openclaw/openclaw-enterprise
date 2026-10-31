@@ -35,7 +35,7 @@ async function withCodexPluginStdio(command, args, options, install) {
       : new Error("Codex plugin preparation failed: " + reason);
     error.preparation = {
       reason, method, rpcCode, ...observations,
-      catalogPending: [...pending.values()].some((request) => request.method === "plugin/list"),
+      catalogPending: [...pending.values()].some((request) => request.method === "plugin/search"),
     };
     return error;
   }
@@ -125,7 +125,7 @@ async function withCodexPluginStdio(command, args, options, install) {
     const id = ++nextId;
     return new Promise((resolve, reject) => {
       pending.set(id, { method, resolve, reject });
-      if (method === "plugin/list") {
+      if (method === "plugin/search") {
         catalogRequestId = id;
         observations.catalogQueued = true;
         observations.catalogWriteComplete = false;

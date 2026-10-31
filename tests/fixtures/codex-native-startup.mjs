@@ -518,9 +518,7 @@ function checkStartupDiagnostics(runtime, scenario) {
   const json = runtime.diagnostics.filter((line) => line.startsWith("{")).map(JSON.parse);
   const phases = json.filter(({ event }) => event === "runtime.startup_phase");
   const logins = json.filter(({ event }) => event === "codex.login");
-  const probes = json.filter(
-    ({ event }) => event !== "runtime.startup_phase" && event !== "codex.login",
-  );
+  const probes = json.filter(({ event }) => event === "codex.model_probe");
   // Each failed native login attempt logs its number, exit code and output class only.
   assert.deepEqual(
     logins.map(({ failureClass }) => failureClass),

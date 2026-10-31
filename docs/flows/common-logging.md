@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-10-26
-last_updated_session: wf-land-1707
+updated: 2026-10-31
+last_updated_session: authoring-run/71d9343b-72da-449a-8e8a-a55be95876c7
 ---
 
 # Common Operational Logging Flow
@@ -191,6 +191,10 @@ failed phase's cause as `occ.code`, such as `PLUGIN_NOT_IN_CATALOG`), and
 non-`READY` probe is WARN, so a startup failure's cause reaches the backend.
 `runtime.gateway_settings_overridden` is WARN with no attributes: the names of
 the replaced owner settings stay in `occ agent logs`.
+`runtime.protected_startup` is INFO and keeps its SHA-256 identity as `occ.startup.hash`.
+`worker.openshell-git-continuity-refused` keeps `occ.check`, a SHA-256
+`occ.continuity.key_hash`, and `occ.continuity.result`: a boolean, a count from
+0 to 2,147,483,647, or the fixed value `invalid`. Other values are discarded.
 Kubernetes resources drop the `latest` image tag that metadata extraction reports
 for a digest-only image. For retained records it keeps allowlisted
 attributes and replaces the body with the event name, stripping arbitrary content;
@@ -315,6 +319,8 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31 04:17: Export bounded continuity comparisons and startup hashes. (authoring-run/71d9343b-72da-449a-8e8a-a55be95876c7 - 370dc4d10297a81fbb18f850500dc945bc7925d5)
 
 - 2026-10-26 22:00: Export `native_admin.http_denial_audit_failed` and `native_admin.pending_work_unresolved` (bounded count only); both denial-audit failure events drop caller context. (wf-land-1707 - #1707)
 

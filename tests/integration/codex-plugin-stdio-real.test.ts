@@ -28,7 +28,7 @@ createInterface({ input: process.stdin }).on("line", line => {
   const { id, method } = JSON.parse(line);
   if (method === "initialize") {
     process.stdout.write(JSON.stringify({ id, result: {} }) + "\n");
-  } else if (method === "plugin/list") {
+  } else if (method === "plugin/search") {
     for (const unmatched of [String(id), null, true, id + 100]) {
       process.stdout.write(JSON.stringify({ id: unmatched, result: "do-not-export-native-payload" }) + "\n");
     }
@@ -52,14 +52,14 @@ createInterface({ input: process.stdin }).on("line", line => {
       [fixture],
       { cwd: directory, env: cleanEnvironment() },
       (request: (method: string, params: unknown) => Promise<unknown>) =>
-        request("plugin/list", {}),
+        request("plugin/search", { searchTerm: "fixture", scope: "global", limit: 100 }),
     ),
     (error) => {
       assert.ok(error instanceof Error && "preparation" in error);
       const diagnostic = error.preparation as Record<string, unknown>;
       assert.deepEqual(diagnostic, {
         reason: "rpc",
-        method: "plugin/list",
+        method: "plugin/search",
         rpcCode: -32000,
         catalogQueued: true,
         catalogWriteComplete: true,
@@ -86,7 +86,11 @@ createInterface({ input: process.stdin }).on("line", line => {
       [fixture, "pending"],
       { cwd: directory, env: cleanEnvironment() },
       async (request: (method: string, params: unknown) => Promise<unknown>) => {
-        const catalog = request("plugin/list", {});
+        const catalog = request("plugin/search", {
+          searchTerm: "fixture",
+          scope: "global",
+          limit: 100,
+        });
         await request("account/read", { refreshToken: false });
         process.emit("SIGTERM");
         return catalog;
