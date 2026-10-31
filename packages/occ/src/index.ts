@@ -597,14 +597,17 @@ export { admitGatewaySecurityDefaults } from "./gateway-security-defaults.ts";
 export { retiredOpenClawSettingMessage } from "./retired-openclaw-settings.ts";
 export type { DeploymentFailureStep } from "./deployment-failure-steps.ts";
 export {
+  activePluginSecretInputs,
   environmentReference,
   environmentReferenceNames,
   gatewayPasswordRequirement,
   generatedGatewayPasswordReference,
+  pluginSecretInputReference,
   secretInputReference,
   secretInputShorthandName,
   secretProviderDefaultsProblem,
   shownSecretName,
+  unreadablePluginSecretInput,
   unsubstitutedReference,
   wholeEnvironmentReferenceName,
 } from "./environment-references.ts";

@@ -76,6 +76,19 @@ function configurationValues(scenario) {
     // An env alias an older release saved in upper case, which OpenClaw's config check refuses.
     values.secrets = { defaults: { env: "BAD" } };
   }
+  if (scenario.pluginSecretInputProviderless) {
+    // A Google web search header an older release saved as a SecretRef without a provider, which
+    // OpenClaw cannot read, so the Gateway exits at startup.
+    values.plugins = {
+      entries: {
+        google: {
+          config: {
+            webSearch: { headers: { "X-Goog-User-Project": { source: "env", id: "GOOG_TOKEN" } } },
+          },
+        },
+      },
+    };
+  }
   if (scenario.gatewayPasswordAllowlistOmits) {
     // A default env alias on a configured env provider whose allowlist leaves out the generated
     // password, so OpenClaw cannot read the reference Enable gateway password access would write.

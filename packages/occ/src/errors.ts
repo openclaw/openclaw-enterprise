@@ -6,7 +6,12 @@ import type {
   SecretConsumers,
 } from "@openclaw-enterprise/contracts";
 
-import { quotedSettingKey, shownSettingKey as shownKey } from "./environment-references.ts";
+import {
+  configurationFieldMessage,
+  configurationSettingMessage,
+  keyedSettingPath,
+  quotedSettingKey,
+} from "./environment-references.ts";
 
 export class AuthorizationDeniedError extends Error {
   readonly evidence?: AuthorizationEvidence;
@@ -427,19 +432,6 @@ export class SecretBindingValidationError extends ScopeViolationError {
 }
 
 /**
- * Builds a message that names a Configuration field. The error contract caps messages at
- * 256 characters; a long provider name shortens the path. The cut counts code points, so it
- * never leaves half of a surrogate pair.
- */
-function configurationFieldMessage(path: string, message: (path: string) => string): string {
-  const budget = 256 - message("").length;
-  const characters = Array.from(path);
-  return message(
-    characters.length <= budget ? path : `${characters.slice(0, budget - 1).join("")}…`,
-  );
-}
-
-/**
  * Builds a message that names the Configuration setting `<parent>.<key>`. A submitted key can
  * hold any character: control, format, line and paragraph separator characters show as ?, a
  * key that is not a plain ID is quoted, and a long key shortens the path to fit the
@@ -453,30 +445,8 @@ function keyedSettingMessage(
   return configurationFieldMessage(keyedSettingPath(parent, key), message);
 }
 
-/**
- * The Configuration setting path `<parent>.<key>` for a submitted key: control, format, line
- * and paragraph separator characters show as ?, and a key that is not a plain ID is quoted.
- */
-export function keyedSettingPath(parent: string, key: string): string {
-  const shown = shownKey(key);
-  return /^[A-Za-z0-9_-]+$/.test(shown)
-    ? `${parent}.${shown}`
-    : `${parent}[${JSON.stringify(shown)}]`;
-}
-
 // The Console's secret reference reader shows names with these too (environment-references.ts).
-export { quotedSettingKey };
-
-/**
- * "Configuration setting <setting> <requirement>.", with a long setting path shortened to fit
- * the 256-character cap. Build a path that holds a submitted key with keyedSettingPath.
- */
-export function configurationSettingMessage(setting: string, requirement: string): string {
-  return configurationFieldMessage(
-    setting,
-    (path) => `Configuration setting ${path} ${requirement}.`,
-  );
-}
+export { configurationSettingMessage, keyedSettingPath, quotedSettingKey };
 
 /**
  * Builds a message that names two Configuration settings. When both paths do not fit the

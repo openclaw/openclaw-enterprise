@@ -68,6 +68,41 @@ export const shownSettingKey = (key: string): string =>
   key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
 
 /**
+ * Builds a message that names a Configuration field. The error contract caps messages at
+ * 256 characters; a long provider name shortens the path. The cut counts code points, so it
+ * never leaves half of a surrogate pair.
+ */
+export function configurationFieldMessage(path: string, message: (path: string) => string): string {
+  const budget = 256 - message("").length;
+  const characters = Array.from(path);
+  return message(
+    characters.length <= budget ? path : `${characters.slice(0, budget - 1).join("")}…`,
+  );
+}
+
+/**
+ * "Configuration setting <setting> <requirement>.", with a long setting path shortened to fit
+ * the 256-character cap. Build a path that holds a submitted key with keyedSettingPath.
+ */
+export function configurationSettingMessage(setting: string, requirement: string): string {
+  return configurationFieldMessage(
+    setting,
+    (path) => `Configuration setting ${path} ${requirement}.`,
+  );
+}
+
+/**
+ * The Configuration setting path `<parent>.<key>` for a submitted key: control, format, line
+ * and paragraph separator characters show as ?, and a key that is not a plain ID is quoted.
+ */
+export function keyedSettingPath(parent: string, key: string): string {
+  const shown = shownSettingKey(key);
+  return /^[A-Za-z0-9_-]+$/.test(shown)
+    ? `${parent}.${shown}`
+    : `${parent}[${JSON.stringify(shown)}]`;
+}
+
+/**
  * A submitted key a message names, such as a header name, in double quotes: characters
  * keyedSettingPath hides show as ?, and a key longer than `limit` code points is cut with …,
  * so the message keeps its cap (`limit` is at least 1). Use it only for keys that are not secrets.
@@ -352,6 +387,171 @@ export function secretInputReference(
     return readable(requirement);
   }
   return source === "env" ? { variable: id } : undefined;
+}
+
+/**
+ * The plugin secret inputs of each plugin the runtime image ships with any: the
+ * `configContracts.secretInputs` paths in `extensions/<id>/openclaw.plugin.json` at the commit in
+ * `deploy/runtime/openclaw-source.json` (`*` matches each key). OpenClaw resolves those of an
+ * active plugin at startup, and a reference it cannot read at all ends startup with "required
+ * secrets are unavailable" (`secretInputReference`). `required`: the inputs without an
+ * `ownerKind`, whose unset variable also ends startup; one with an `ownerKind` (beam, imap) then
+ * only makes its owner unavailable. `enabledByDefault: false` (the manifest's
+ * `bundledDefaultEnabled`): the plugin is active only when its entry sets `enabled: true`. The
+ * Gateway skips an entry for a plugin the image does not ship. Update this list when that pin or
+ * the image's plugins change.
+ */
+const PLUGIN_SECRET_INPUTS: Readonly<
+  Record<
+    string,
+    {
+      readonly paths: readonly (readonly string[])[];
+      readonly required: boolean;
+      readonly enabledByDefault: boolean;
+    }
+  >
+> = {
+  beam: { paths: [["mirror", "token"]], required: false, enabledByDefault: false },
+  codex: {
+    paths: [
+      ["appServer", "authToken"],
+      ["appServer", "headers", "*"],
+    ],
+    required: true,
+    enabledByDefault: true,
+  },
+  google: { paths: [["webSearch", "headers", "*"]], required: true, enabledByDefault: true },
+  imap: { paths: [["accounts", "*", "password"]], required: false, enabledByDefault: false },
+};
+
+// Each value at `keys` below `value`, with its setting path; `*` matches every key of an object.
+function settingValues(
+  value: unknown,
+  keys: readonly string[],
+  path: string,
+): (readonly [string, unknown])[] {
+  if (keys.length === 0) {
+    return [[path, value]];
+  }
+  const record = asObject(value);
+  const [key, ...rest] = keys;
+  if (record === undefined || key === undefined) {
+    return [];
+  }
+  return (key === "*" ? Object.keys(record) : [key])
+    .filter((name) => Object.hasOwn(record, name))
+    .flatMap((name) => settingValues(record[name], rest, keyedSettingPath(path, name)));
+}
+
+// The built-in plugin ID aliases of OpenClaw's normalizePluginId (`src/plugins/config-state.ts`).
+const PLUGIN_ID_ALIASES: Readonly<Record<string, string>> = {
+  "google-gemini-cli": "google",
+  "minimax-portal": "minimax",
+  "minimax-portal-auth": "minimax",
+};
+
+// The ID OpenClaw's policy lookups (plugins.deny and each entry's `enabled`) compare: trimmed,
+// lowercased, an alias replaced by its plugin.
+function pluginPolicyId(name: unknown): string | undefined {
+  if (typeof name !== "string") {
+    return undefined;
+  }
+  const id = name.trim().toLowerCase();
+  return Object.hasOwn(PLUGIN_ID_ALIASES, id) ? PLUGIN_ID_ALIASES[id] : id;
+}
+
+/**
+ * Each secret input of an active plugin (PLUGIN_SECRET_INPUTS) in the Configuration `values`, in
+ * Configuration order: its setting, its value, whether an unset variable there ends startup, and
+ * the step that disables the entry. OpenClaw reads secret inputs only in the entry keyed by the
+ * plugin's exact ID (`collectPluginConfigAssignments`): a `Google` or ` google` entry has none
+ * (finding 3072). It skips those of a denied plugin, of `plugins.enabled: false` and of a plugin
+ * whose `enabled` is false, both looked up by policy ID (pluginPolicyId). `plugins.allow` skips
+ * none: Gateway startup first adds every known plugin entry with config to a non-empty allowlist
+ * (plugin auto-enable), so these stay active (finding 3071).
+ */
+export function activePluginSecretInputs(values: unknown): {
+  readonly setting: string;
+  readonly value: unknown;
+  readonly required: boolean;
+  readonly disable: string;
+}[] {
+  const plugins = asObject(asObject(values)?.plugins);
+  const entries = asObject(plugins?.entries);
+  if (plugins?.enabled === false || entries === undefined) {
+    return [];
+  }
+  const denied = Array.isArray(plugins?.deny) ? plugins.deny.map(pluginPolicyId) : [];
+  // OpenClaw merges the entries whose keys share a policy ID in key order: the last boolean
+  // `enabled` wins and a value that is not an object clears it. Before that, startup auto-enable
+  // may set `enabled: true` on the exact entry of a default-on plugin that leaves it unset, so that
+  // entry counts as enabled.
+  const enabled = new Map<string | undefined, boolean | undefined>();
+  for (const [key, value] of Object.entries(entries)) {
+    const id = pluginPolicyId(key);
+    const entry = asObject(value);
+    let merged = enabled.get(id);
+    if (entry === undefined) {
+      merged = undefined;
+    } else if (typeof entry.enabled === "boolean") {
+      merged = entry.enabled;
+    } else if (key === id && Object.hasOwn(PLUGIN_SECRET_INPUTS, id)) {
+      merged = PLUGIN_SECRET_INPUTS[id]?.enabledByDefault || merged;
+    }
+    enabled.set(id, merged);
+  }
+  return Object.entries(entries).flatMap(([id, value]) => {
+    const entry = asObject(value);
+    const inputs = Object.hasOwn(PLUGIN_SECRET_INPUTS, id) ? PLUGIN_SECRET_INPUTS[id] : undefined;
+    if (
+      inputs === undefined ||
+      entry === undefined ||
+      (inputs.enabledByDefault ? enabled.get(id) === false : enabled.get(id) !== true) ||
+      denied.includes(id)
+    ) {
+      return [];
+    }
+    const path = keyedSettingPath("plugins.entries", id);
+    const disable = `remove ${path} or set its enabled to false`;
+    return inputs.paths
+      .flatMap((keys) => settingValues(entry.config, keys, `${path}.config`))
+      .map(([setting, input]) => ({ setting, value: input, required: inputs.required, disable }));
+  });
+}
+
+/**
+ * How OpenClaw reads the plugin secret input `value` (`secretInputReference`, with the
+ * Configuration's `secrets`). For one it cannot read at all, the requirement ends with the step
+ * that fixes it or `disable`, the step that turns its plugin off.
+ */
+export function pluginSecretInputReference(
+  value: unknown,
+  disable: string,
+  secrets: unknown,
+): SecretInputReference | undefined {
+  const reference = secretInputReference(value, secrets);
+  return reference !== undefined && "requirement" in reference
+    ? { ...reference, requirement: `${reference.requirement}, or ${disable}` }
+    : reference;
+}
+
+/**
+ * The first secret input of an active plugin in the Configuration `values` that OpenClaw cannot
+ * read at all, as its setting and why: the Gateway then exits at every start, whatever the
+ * bindings (findings 3056, 3069). Kubernetes Compute refuses it at Configuration save and deploy
+ * with this text, and the Console holds Deploy with it (finding 3076).
+ */
+export function unreadablePluginSecretInput(
+  values: unknown,
+): { readonly setting: string; readonly requirement: string } | undefined {
+  const secrets = asObject(values)?.secrets;
+  for (const { setting, value, disable } of activePluginSecretInputs(values)) {
+    const reference = pluginSecretInputReference(value, disable, secrets);
+    if (reference !== undefined && "requirement" in reference) {
+      return { setting, requirement: reference.requirement };
+    }
+  }
+  return undefined;
 }
 
 /**
