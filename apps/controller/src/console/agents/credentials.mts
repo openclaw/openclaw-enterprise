@@ -61,6 +61,11 @@ const SLACK_OFF_BOUND_HINT =
   "Slack is off, but this Configuration still binds the Secrets listed below. Deploying checks this Agent's access to each of them.";
 // A Retry with Slack off grants the Agent access to those Secrets; it saves nothing about Slack.
 const SLACK_OFF_RETRY_GRANTED = "Secret access granted. This Agent can use its bound Secrets.";
+// A grant read after Reload draft found the grants an earlier Retry left unconfirmed, as when the
+// Retry's answer was lost after the grant was made (finding 3030).
+const SLACK_ACCESS_CONFIRMED =
+  "Secret access confirmed. This Agent can use its saved Slack Secrets.";
+const SLACK_OFF_ACCESS_CONFIRMED = "Secret access confirmed. This Agent can use its bound Secrets.";
 function channelPolicy(values: unknown, provider: string) {
   return responseFields(responseFields(values).channels)[provider];
 }
@@ -968,15 +973,15 @@ export function createChannelSecretsPanel({
   // A save or Retry overtook a grant read, so the panel reads the grants again once it ends:
   // the dropped answer may have shown a bound Secret the save left ungranted (finding 2575).
   let grantRecheck = false;
-  // Whether the last save was a Retry, so a grant read that settles can restate its outcome.
-  let lastSaveRetry = false;
+  // What the shown outcome reports, so a grant read that settles can restate it.
+  let lastOutcome: "save" | "retry" | "confirmed" = "save";
 
   // A grant read settled: the save outcome names Deploy only if nothing now holds it.
   function restateSaveOutcome() {
     if (!state.saveMessage) {
       return;
     }
-    state.saveMessage = saveOutcomeText(lastSaveRetry);
+    state.saveMessage = saveOutcomeText(lastOutcome);
     if (shown.status && shown.status.textContent !== state.saveMessage) {
       shown.status.textContent = state.saveMessage;
     }
@@ -984,14 +989,15 @@ export function createChannelSecretsPanel({
 
   // A save's outcome points to Deploy only when no grant read is still to come and no bound
   // Secret waits for its grant: the read that follows may yet hold Deploy (#3686 review).
-  function saveOutcomeText(retry: boolean) {
-    lastSaveRetry = retry;
+  function saveOutcomeText(outcome: typeof lastOutcome) {
+    lastOutcome = outcome;
+    const slackOn = channelEnabled(state.values, "slack");
     let saved = "Channel Secret bindings saved.";
-    if (retry) {
+    if (outcome === "retry") {
       // With Slack off, Retry saved nothing about Slack: it granted the bound Secrets' access.
-      saved = channelEnabled(state.values, "slack")
-        ? "This Agent can use its saved Slack Secrets."
-        : SLACK_OFF_RETRY_GRANTED;
+      saved = slackOn ? "This Agent can use its saved Slack Secrets." : SLACK_OFF_RETRY_GRANTED;
+    } else if (outcome === "confirmed") {
+      saved = slackOn ? SLACK_ACCESS_CONFIRMED : SLACK_OFF_ACCESS_CONFIRMED;
     }
     return grantRecheck || state.checkingGrants || pendingSecretGrants().length
       ? saved
@@ -1307,7 +1313,7 @@ export function createChannelSecretsPanel({
         }
         state.outcomeUnknown = false;
         updateGrantWarning();
-        state.saveMessage = saveOutcomeText(retry);
+        state.saveMessage = saveOutcomeText(retry ? "retry" : "save");
         status.textContent = state.saveMessage;
       } catch (cause) {
         if (!context.isCurrent()) {
@@ -1571,12 +1577,28 @@ export function createChannelSecretsPanel({
       return;
     }
     updateGrantWarning();
+    // The read that decides restored grants found none outstanding: say that access is
+    // confirmed where a Retry's outcome shows, and keep the section with Slack off, as a Retry's
+    // outcome does. Without it the section vanished with Slack off, focus fell to the page and
+    // nothing said so (finding 3030).
+    const confirmed = holdRestoredOutcome && !pendingSecretGrants().length && !state.saveError;
+    if (confirmed) {
+      holdRestoredOutcome = false;
+      state.saveMessage = saveOutcomeText("confirmed");
+    }
+    const focusInSection = section.contains(document.activeElement);
     if (!channelEnabled(state.values, "slack")) {
       // No pickers hold choices with Slack off: show or hide the section (finding 3018). A
       // rebuilt Retry Secret access keeps the focus the replaced one had (finding 3021).
       const refocus = Boolean(shown.save) && document.activeElement === shown.save;
       render();
-      if (refocus && shown.save?.isConnected && document.activeElement === document.body) {
+      if (document.activeElement !== document.body) {
+        return;
+      }
+      if (confirmed && focusInSection) {
+        // Retry is gone with nothing to retry: the outcome takes focus, as after a Retry.
+        focusSaveOutcome(section, [shown.reload, shown.save], shown.outcome);
+      } else if (refocus && shown.save?.isConnected) {
         shown.save.focus();
       }
       return;
@@ -1588,6 +1610,14 @@ export function createChannelSecretsPanel({
     if (shown.error && (!state.saveError || state.saveError.step === "grant")) {
       setStatusTone(shown.error, saveErrorTone());
       shown.error.textContent = saveErrorText();
+    }
+    if (confirmed && shown.status) {
+      shown.status.textContent = state.saveMessage;
+      // Retry becomes an unavailable Save: the outcome takes focus, as after a Retry.
+      shown.updateControls?.();
+      if (focusInSection) {
+        focusSaveOutcome(section, [shown.reload, shown.save], shown.status);
+      }
     }
   }
 
