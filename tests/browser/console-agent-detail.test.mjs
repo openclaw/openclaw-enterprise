@@ -1357,7 +1357,7 @@ for (const viewport of [
     const values = nativeAdminValues("invalid-alias", "http://127.0.0.1:18789");
     const agent = await fixture.createAgent(namespace.id, "Invalid alias Agent", values);
     const invalid = { ...structuredClone(values), secrets: { defaults: { env: "BAD" } } };
-    const reason = invalidSecretProviderDefaultsRefusal("alias", "env", "BAD");
+    const reason = invalidSecretProviderDefaultsRefusal("alias", "env", "BAD", "bad");
     const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
     const refusedSave = await fixture.request("PATCH", configurationPath, {
       body: { values: invalid },
@@ -1465,7 +1465,7 @@ for (const viewport of [
     const agent = await fixture.createAgent(namespace.id, "Allowlist Agent", values);
     const generated = { source: "env", provider: "vault", id: "OPENCLAW_GATEWAY_PASSWORD" };
     const requirement =
-      "references OPENCLAW_GATEWAY_PASSWORD, which secrets.providers.vault.allowlist omits";
+      "references OPENCLAW_GATEWAY_PASSWORD, which secrets.providers.vault.allowlist omits: add it to that allowlist";
     // Save refuses the reference the button would write, with the reason the page shows.
     const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
     const withPassword = structuredClone(values);

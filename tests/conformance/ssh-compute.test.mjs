@@ -42,6 +42,7 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import {
   sshGatewayPasswordRefusal,
   unreadableGatewayPasswordRefusal,
+  unreadableSecretRefProblem,
 } from "../helpers/refusal-text.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -1052,7 +1053,7 @@ test("SSH renders a readable custom-alias gateway password and still tears down 
   await assert.rejects(f.driver.prepareRevision(unset), {
     message: sshGatewayPasswordRefusal.rendered(
       "custom",
-      "uses secret provider default, which secrets.providers does not configure for env",
+      unreadableSecretRefProblem("defaultAlias", "custom"),
     ),
   });
   assert.equal(f.calls.length, before);
@@ -1082,7 +1083,7 @@ test("SSH renders a readable custom-alias gateway password and still tears down 
   });
   bind(f.driver, legacy);
   await assert.rejects(f.driver.prepareRevision(legacy), {
-    message: unreadableGatewayPasswordRefusal("provider", "default"),
+    message: unreadableGatewayPasswordRefusal("defaultAlias", "custom"),
   });
   const configuration = expectedRuntimeConfiguration(legacy);
   await f.driver.execute(f.configured.hosts.stable, {

@@ -57,6 +57,7 @@ import {
   SLACK_ROUTE_NOT_CONFIGURED,
   sshGatewayPasswordRefusal,
   unboundReferenceRefusal,
+  unreadableSecretRefProblem,
   unsubstitutedReferenceRefusal,
   unsupportedChannelRefusal,
 } from "../helpers/refusal-text.mjs";
@@ -8328,7 +8329,7 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
       { auth: { mode: "password", ...(password === undefined ? {} : { password }) } },
       sshGatewayPasswordRefusal.rendered(
         "custom",
-        "uses secret provider default, which secrets.providers does not configure for env",
+        unreadableSecretRefProblem("defaultAlias", "custom"),
       ),
       { defaults: { env: "custom" } },
     ]),
@@ -8338,9 +8339,7 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
     [
       "unset-alias-allowlist",
       { auth: { mode: "password" } },
-      sshGatewayPasswordRefusal.unoffered(
-        "uses secret provider default, which secrets.providers does not configure for env",
-      ),
+      sshGatewayPasswordRefusal.unoffered(unreadableSecretRefProblem("defaultAlias", "vault")),
       {
         defaults: { env: "vault" },
         providers: { vault: { source: "env", allowlist: ["OTHER_SECRET"] } },
@@ -8350,7 +8349,7 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
       "unset-default-allowlist",
       { auth: { mode: "password" } },
       sshGatewayPasswordRefusal.unoffered(
-        "references OPENCLAW_GATEWAY_PASSWORD, which secrets.providers.default.allowlist omits",
+        unreadableSecretRefProblem("allowlist", "OPENCLAW_GATEWAY_PASSWORD"),
       ),
       { providers: { default: { source: "env", allowlist: ["OTHER_SECRET"] } } },
     ],
