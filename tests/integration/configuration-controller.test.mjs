@@ -751,8 +751,10 @@ test("Configuration HTTP names a model provider baseUrl or api the runtime canno
   await assertNothingStored(context, [`${created.body.data.id}.json`]);
   // Any API id the pinned runtime accepts, on a provider or a model, still saves, as do a
   // blank provider baseUrl (the runtime's built-in default) and `${VAR}` references the
-  // runtime resolves before it validates.
+  // runtime resolves before it validates. local/m is selected, so its catalog row is
+  // deployable (finding 3019).
   const local = {
+    agents: { defaults: { model: "local/m" } },
     models: {
       providers: {
         local: {
@@ -3395,7 +3397,11 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const item = `${context.collection}/${created.body.data.id}`;
   const sentinel = `synthetic-model-rule-credential-${randomUUID()}`;
-  const gateway = (settings) => ({ models: { providers: { gateway: settings } } });
+  // gateway/m is selected, so a catalog row for it is not refused first (finding 3019).
+  const gateway = (settings) => ({
+    agents: { defaults: { model: "gateway/m" } },
+    models: { providers: { gateway: settings } },
+  });
   const field = (path) => `/models/providers/gateway/${path}`;
   // Finding 1218: the refusal names the header up to its first invalid character, never past it.
   const invalidName = (name, path = "models.providers.gateway.headers") =>
@@ -4944,7 +4950,11 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const item = `${context.collection}/${created.body.data.id}`;
-  const gateway = (settings) => ({ models: { providers: { gateway: settings } } });
+  // gateway/m is selected, so a catalog row for it is not refused first (finding 3019).
+  const gateway = (settings) => ({
+    agents: { defaults: { model: "gateway/m" } },
+    models: { providers: { gateway: settings } },
+  });
   const baseUrl = (field = "baseUrl") => absoluteUrl(`/models/providers/gateway/${field}`);
   // Finding 1285: a scheme followed by one or no slash names the missing `//`.
   const slashes = (field = "baseUrl") =>
