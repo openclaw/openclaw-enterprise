@@ -2033,6 +2033,11 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
       { ...valid, secrets: { defaults: { env: 7 } } },
       invalidSecretProviderDefaultsRefusal("alias", "env"),
     ],
+    // A null reads as the text "null", which the grammar admits: the type check must refuse it.
+    [
+      { ...valid, secrets: { defaults: { env: null } } },
+      invalidSecretProviderDefaultsRefusal("alias", "env"),
+    ],
     [
       { ...valid, secrets: { defaults: { envv: "custom" } } },
       invalidSecretProviderDefaultsRefusal("key", '"envv"'),
