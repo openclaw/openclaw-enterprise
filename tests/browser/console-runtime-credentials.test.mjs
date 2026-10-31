@@ -844,13 +844,16 @@ async function retryConflictReload(t, { lost, slackOn, viewport }) {
     ungranted: "SLACK_APP_TOKEN",
   });
   const { page } = await newPage(t, fixture, { context: { viewport } });
-  // The focused control's name, or the element focus fell to with its text.
+  // The focused control's name, a focused status line's text, or the element focus fell to.
   const focused = () =>
     page.evaluate(() => {
       const active = globalThis.document.activeElement;
-      return active?.tagName === "BUTTON"
-        ? active.textContent
-        : `${active?.tagName}${active?.textContent ? `: ${active.textContent}` : ""}`;
+      if (active?.tagName === "BUTTON") {
+        return active.textContent;
+      }
+      return active?.getAttribute("role") === "status"
+        ? `status: ${active.textContent}`
+        : active?.tagName;
     });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
@@ -932,7 +935,7 @@ async function retryConflictReload(t, { lost, slackOn, viewport }) {
     // replaced Retry had, so the reader keeps their place.
     const confirmed = ACCESS_CONFIRMED[slackOn ? "on" : "off"];
     await section.getByText(confirmed, { exact: true }).waitFor();
-    assert.equal(await focused(), `P: ${confirmed}`);
+    assert.equal(await focused(), `status: ${confirmed}`);
     assert.equal(await section.getByRole("button", { name: "Retry Secret access" }).count(), 0);
     await expectNoText(page, /could not be confirmed|Agent access not confirmed/);
     // Only the lost Retry sent a grant: the read confirmed it, nothing granted it again.

@@ -8,6 +8,7 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 
 ## Changelog
 
+- 2026-10-31 03:45: Say what a Slack-off Retry did and keep its focus. (fix-slackoff-copy)
 - 2026-10-31 01:00: Check and retry bound Secrets' grants with Slack off. (fix-3018)
 - 2026-10-30 23:30: Keep the version's record in place when deployment activity settles. (fix-3016)
 - 2026-10-29 12:43: Preserve overlapping overview and record reads. (authoring-run/22e56d10-b3c5-43f9-b088-c060fbfbe64f - 4af87e8139aafb7469b60cf38846935c1266baed)

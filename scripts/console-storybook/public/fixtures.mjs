@@ -240,7 +240,8 @@ export function installFixture(scenario, evidence) {
   const nextId = (prefix) =>
     `${prefix}_00000000-0000-4000-8000-${String(serial++).padStart(12, "0")}`;
   const configs = new Map();
-  const configurationReads = new Set();
+  // Reads of each Configuration before another browser's save (configurationChangedElsewhere).
+  const configurationReads = new Map();
   let configurationChangedElsewhere = false;
   const agents = new Map();
   const revisions = new Map();
@@ -848,7 +849,7 @@ export function installFixture(scenario, evidence) {
       { status, headers: { "content-type": "application/json" } },
     );
   const error = (status, code, message) => response(null, status, code, {}, message);
-  window.fetch = async (input, options = {}) => {
+  const answer = async (input, options = {}, call = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url, location.origin);
     const path = url.pathname;
     const method = options.method ?? "GET";
@@ -872,6 +873,10 @@ export function installFixture(scenario, evidence) {
         continue;
       }
       rule.used = rule.once === true;
+      if (rule.lostAnswer) {
+        call.lost = true;
+        break;
+      }
       if (rule.delayMs) {
         await new Promise((resolve, reject) => {
           const finish = () => {
@@ -1473,15 +1478,17 @@ export function installFixture(scenario, evidence) {
           return error(404);
         }
         if (method === "GET") {
-          // Another browser saves this Configuration once the page has read it
-          // (configurationChangedElsewhere), so the next save preflight finds a newer generation.
+          // Another browser saves this Configuration once the page has read it `afterReads` times
+          // (configurationChangedElsewhere; 1 by default), so the next save preflight finds a
+          // newer generation.
           if (scenario.configurationChangedElsewhere && !configurationChangedElsewhere) {
-            if (configurationReads.has(saved.id)) {
+            const reads = configurationReads.get(saved.id) ?? 0;
+            if (reads >= (scenario.configurationChangedElsewhere.afterReads ?? 1)) {
               configurationChangedElsewhere = true;
               saved.generation += 1;
               mergeElsewhere(saved.values, scenario.configurationChangedElsewhere.values ?? {});
             }
-            configurationReads.add(saved.id);
+            configurationReads.set(saved.id, reads + 1);
           }
           return response(saved);
         }
@@ -2809,5 +2816,15 @@ export function installFixture(scenario, evidence) {
     evidence.unhandled.push({ method, path });
     console.error(`Unconfigured story request: ${method} ${path}`);
     return error(501);
+  };
+  // A rule with `lostAnswer` lets the simulated API apply the request, then loses its answer, as
+  // when the connection drops after a write lands.
+  window.fetch = async (input, options = {}) => {
+    const call = {};
+    const reply = await answer(input, options, call);
+    if (call.lost) {
+      throw new TypeError("Failed to fetch");
+    }
+    return reply;
   };
 }
