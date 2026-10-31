@@ -219,6 +219,10 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-10-31: Writes also refuse model and runtime settings that conflict (entry primary, selectable models, runtime policies and IDs, Codex provider), with deployment's text and order; drafts without a model or runtime still save. (fix-3020, finding 3020)
+
+- 2026-10-31: Writes refuse a provider model entry that no primary or fallback selects, with deployment's text; a stored row that keeps one is refused on its next write. (fix-3019, finding 3019)
+
 - 2026-10-29: Establish the temporary file mode before replacing a filesystem Configuration. (authoring-run/74db2351-f5c1-4733-a3dc-a1ca653b29cf)
 
 - 2026-10-25: Writes refuse a Slack token SecretRef the Slack Channel Driver cannot read. (finding 2514)

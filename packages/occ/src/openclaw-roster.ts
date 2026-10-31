@@ -5,7 +5,11 @@ import type {
 import { asRecord } from "@openclaw-enterprise/utils";
 
 import { canSpell } from "./configuration-settings.ts";
-import { requireAgentsShape, requireModelSelections } from "./configured-harness.ts";
+import {
+  requireAgentsShape,
+  requireConsistentModelPolicy,
+  requireModelSelections,
+} from "./configured-harness.ts";
 import { agentEntryMessage, ConfigurationHarnessError } from "./errors.ts";
 
 // Every Kubernetes topology (embedded OpenClaw, dedicated OpenClaw or Codex) runs the pinned
@@ -162,19 +166,27 @@ export function withAgentIdentityName(
 }
 
 /**
- * Refuses, when a Configuration is saved, an agents roster that every deployment refuses, with
- * the deployment's text: resolveConfiguredHarnessId's shape rules and its model selection rules
- * (each model a <provider>/<model> reference, each fallback on the primary's provider) first, as
- * deployment checks them first, then the OpenClaw Gateway's. Rules that depend on the
- * topology, such as dedicated OpenClaw serving the main Agent, stay at deployment because a
- * Configuration does not fix one. A Preset save runs them too (finding 1308), with `options`
- * locating its unfilled variables.
+ * Refuses, when a Configuration is saved, an agents roster and model policy that every deployment
+ * refuses, with the deployment's text. resolveConfiguredHarnessId's rules come first, in its order,
+ * as deployment checks them first (requireConsistentModelPolicy): the agents shape, each model
+ * selection's form and fallback provider, the rules for values the document sets that conflict
+ * (an entry primary, agents.*.models, provider catalog rows, runtime policies and ids; findings
+ * 3019 and 3020), then the OpenClaw Gateway's. A draft without a model, or a model without its
+ * required runtime, saves; deployment refuses it. Rules that depend on the topology, such as
+ * dedicated OpenClaw serving the main Agent, stay at deployment because a Configuration does not
+ * fix one. A Preset save runs the shape, selection and Gateway rules (finding 1308), with
+ * `options` locating its unfilled variables: a model, row or runtime that waits on a variable
+ * names no value yet, so the Configuration a launch creates gets the rest.
  */
 export function requireDeployableRoster(
   values: OpenClawConfigurationDocument,
   options?: ConfigurationValidationOptions,
 ): void {
-  requireAgentsShape(values);
-  requireModelSelections(values, options);
+  if (options?.unresolved === undefined) {
+    requireConsistentModelPolicy(values);
+  } else {
+    requireAgentsShape(values);
+    requireModelSelections(values, options);
+  }
   requireOpenClawRoster(values, options);
 }

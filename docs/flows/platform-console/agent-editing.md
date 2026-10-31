@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-10-31
-last_updated_session: fix-3018
+last_updated_session: fix-slackoff-copy
 ---
 
 # Console Agent editing and runtime requests
@@ -241,7 +241,8 @@ grant leaves Configuration saved; a 403 names the Installation administrator, wh
 says access was not verified until **Reload draft**. An administrator's console checks every
 bound Secret's grant, as deployment does, with Slack on or off; Deploy waits for those reads and
 rechecks before its POST, and a save or Retry during one reads again before naming Deploy. With
-Slack off, the section shows only while a bound Secret's grant waits, with only Retry (3018).
+Slack off, the section shows only while a bound Secret's grant waits, with only Retry (3018),
+whose success names the granted access. A Retry carries no Secret choices into **Reload draft** (3021).
 `agents/credentials.mjs:missingChannelCredentialGroups` reads token keys as the Slack Channel
 Driver does; pickers appear only for standard keys. A 400 that
 `agents/list.mjs:channelBindingRefusal` matches shows the API's message. An uncertain PATCH
@@ -340,6 +341,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31 03:45: Say what a Slack-off Retry did and keep its focus. (fix-slackoff-copy)
 
 - 2026-10-31 01:00: Check and retry bound Secrets' grants with Slack off. (fix-3018)
 
