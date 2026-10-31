@@ -31,6 +31,7 @@ import {
   referenceFormRefusal,
   dedicatedCodexVariableRefusal,
   unboundPluginSecretRefusal,
+  unreadablePluginSecretRefusal,
   unboundReferenceRefusal,
   unreadableSlackTokenRefusal,
   unsubstitutedFallbackRefusal,
@@ -2030,6 +2031,59 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
       400,
       unboundSearchHeader("X-Goog-User-Project"),
     ],
+    // A SecretRef OpenClaw cannot read at all stops the Gateway whatever the bindings, while its
+    // configuration still validates (finding 3056): one without a provider, an env id OpenClaw
+    // refuses, and a provider no secrets.providers entry configures, at an input with a runtime
+    // owner (beam, enabled) too. Save accepts each.
+    [
+      withPluginEntries(valid, {
+        codex: { config: { appServer: { authToken: { source: "env", id: "RELAY_TOKEN" } } } },
+      }),
+      400,
+      unreadablePluginSecretRefusal(
+        "plugins.entries.codex.config.appServer.authToken",
+        "codex",
+        "providerless",
+      ),
+    ],
+    [
+      withPluginEntries(
+        valid,
+        searchHeader("X-Goog-User-Project", {
+          source: "env",
+          provider: "default",
+          id: "search_header",
+        }),
+      ),
+      400,
+      unreadablePluginSecretRefusal(
+        "plugins.entries.google.config.webSearch.headers.X-Goog-User-Project",
+        "google",
+        "id",
+        "search_header",
+      ),
+    ],
+    [
+      withPluginEntries(valid, {
+        beam: {
+          enabled: true,
+          config: {
+            mirror: {
+              endpoint: "https://beam.example.test/mirror",
+              catalogs: ["main"],
+              token: { source: "env", provider: "vault", id: "BEAM_TOKEN" },
+            },
+          },
+        },
+      }),
+      400,
+      unreadablePluginSecretRefusal(
+        "plugins.entries.beam.config.mirror.token",
+        "beam",
+        "provider",
+        "vault",
+      ),
+    ],
   ]) {
     const label = JSON.stringify(values);
     const saved = await request(context.app, "PATCH", item, { body: { values } });
@@ -2063,6 +2117,27 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
   );
   const codexRevisions = await request(context.app, "GET", `${codexAgent.agentPath}/revisions`);
   assert.deepEqual(codexRevisions.body.data, []);
+  // A Dedicated Codex Agent whose env provider allowlist omits APP_SERVER_TOKEN (it keeps the
+  // Gateway password read on that alias) saves and deploys: OpenClaw substitutes its own entry's
+  // `${APP_SERVER_TOKEN}`, which Kubernetes Compute sets, before it reads SecretRefs, so the
+  // allowlist never applies to it (finding 3056 review).
+  const allowlistedCodex = await deployableAgent(context, context.namespace, {
+    values: {
+      ...createHarnessConfiguration("codex", "gpt-5"),
+      secrets: {
+        providers: { default: { source: "env", allowlist: ["OPENCLAW_GATEWAY_PASSWORD"] } },
+      },
+    },
+    name: "Dedicated Codex allowlist consumer",
+    secretName: "codex-allowlist-key",
+    executionMode: "dedicated",
+  });
+  const allowlistedDeploy = await request(
+    context.app,
+    "POST",
+    `${allowlistedCodex.agentPath}/deploy`,
+  );
+  assert.equal(allowlistedDeploy.status, 202, JSON.stringify(allowlistedDeploy.body));
 
   // Values every Gateway accepts still save.
   for (const values of [
