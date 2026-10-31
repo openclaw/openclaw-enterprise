@@ -85,6 +85,10 @@ Agent that fails a check still reads; its next update must fix the pair.
   or provider key whose provider waits on a variable, or an `apiKey` whose
   value or `secrets` source does: the launch checks them once filled. A draft
   whose model policy selects no Harness is left to deployment.
+- a reference OpenClaw cannot read in an active plugin's
+  [secret input](../harness-execution.md#native-runtime-selection), with the
+  deployment refusal's text. A Preset save leaves it to the launch when
+  `plugins` or `secrets` waits on a variable.
 
 This Compute delivers channel credentials only from Configuration Secret
 bindings. OCC, not a Driver member, refuses at Configuration create and update,

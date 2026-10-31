@@ -204,6 +204,7 @@ import {
   enabledChannelProviders,
   OPENCLAW_GATEWAY_PASSWORD,
   requireChannelTopology,
+  refuseUnreadablePluginSecretInputs,
   requirePluginSecretInputs,
   type KubernetesHarnessTopology,
   kubernetesHarnessAuthMethods,
@@ -4787,8 +4788,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       callerSettingError,
     );
     // Every topology's Gateway would exit at every start on a plugin secret input it cannot
-    // resolve, and the deployment would wait for its convergence deadline. The Agent's mode
-    // decides the APP_SERVER_ case, so Agent save refuses it too; the rest waits for the bindings.
+    // resolve, and the deployment would wait for its convergence deadline. Configuration save
+    // refuses a reference OpenClaw cannot read at all; the Agent's mode decides the APP_SERVER_
+    // case, so Agent save refuses it too; the rest waits for the bindings.
     this.requirePluginSecretInputs(configuration, topology, secretBindings);
     requireProviderApiKeys(configuration, openclaw, authentication);
     if (!agentSave) {
@@ -4828,7 +4830,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
    * Configuration rules every Kubernetes topology applies, so Configuration save, provisioning
    * and Preset defaults refuse the content where it is written: supported channel providers,
    * model credentials only through the Harness authentication binding, the Gateway tool policy,
-   * and model selections and provider apiKeys on the primary model's provider.
+   * model selections and provider apiKeys on the primary model's provider, and plugin secret
+   * inputs OpenClaw cannot read (finding 3069). Deployment admission applies each in its own
+   * order (validateAdmittedHarnessAuth).
    */
   validateConfiguration(
     configuration: Readonly<OpenClawConfigurationDocument>,
@@ -4836,6 +4840,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   ): void {
     this.validateConfigurationContent(configuration, options);
     requireConfiguredModelProviders(configuration, options);
+    refuseUnreadablePluginSecretInputs(configuration, callerSettingError, options);
   }
 
   // validateHarnessAuth runs these first and the model provider rules in its own order.

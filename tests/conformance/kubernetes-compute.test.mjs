@@ -9692,6 +9692,8 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
     }
     admit(configuration, { [name]: { source } });
     admit(configuration, null);
+    // Configuration save knows neither the Agent nor its bindings, so it leaves it to deployment.
+    driver.validateConfiguration(configuration);
   };
   const embeddedAdmission = admission(driver, embedded);
 
@@ -9740,7 +9742,7 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
   // References OpenClaw cannot read at all stop the Gateway whatever sets the variable, and its
   // configuration still validates, so the runtime hold does not catch them (finding 3056). That
   // holds for an input with a runtime owner too (beam, active only when enabled), so deployment,
-  // bound or not, and Agent save refuse them on every topology.
+  // bound or not, Agent save and Configuration save (finding 3069) refuse them on every topology.
   const beamToken = "plugins.entries.beam.config.mirror.token";
   const withBeam = (token, entry = { enabled: true }) =>
     withPlugin("beam", { ...entry, config: { mirror: { token } } });
@@ -9859,6 +9861,7 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
     const expected = refusal(unreadablePluginSecretRefusal(setting, plugin, held, ...shown));
     const label = JSON.stringify(configuration);
     refusedByMode(embeddedAdmission, configuration, expected, label);
+    assert.throws(() => driver.validateConfiguration(configuration), expected, label);
     assert.throws(
       () => embeddedAdmission(configuration, { RELAY_TOKEN: { source } }),
       expected,
