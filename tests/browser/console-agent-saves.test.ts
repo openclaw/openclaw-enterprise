@@ -503,6 +503,7 @@ const inPlaceCases: {
   viewport?: Viewport;
   beforeLogin?(page: Page, context: Draft): Promise<void>;
   prepare(page: Page, context: Draft): Promise<Locator>;
+  holdReloadGrants?: boolean;
   saved: string;
   focus: string;
   described?: boolean;
@@ -577,6 +578,7 @@ const inPlaceCases: {
   },
   {
     name: "Reload draft after a lost channel save updates the Agent page in place",
+    holdReloadGrants: true,
     setup: (t) => slackAgent(t, "Channel Reload In Place"),
     tab: "channels",
     // The API commits, but the browser cannot know that the response was lost.
@@ -645,6 +647,16 @@ for (const c of inPlaceCases) {
     });
     const control = await c.prepare(page, context);
     const place = await watchPlace(page, fixture, control);
+    // A reloaded draft is announced before its bound-Secret grant read settles. Hold the real
+    // response to exercise that ordering even when Slack has just been disabled.
+    const grants = c.holdReloadGrants
+      ? await holdRequests(
+          t,
+          page,
+          `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
+          { once: true, method: "GET", afterServer: true },
+        )
+      : undefined;
 
     await control.click();
     await page.getByRole("status").filter({ hasText: c.saved }).waitFor();
@@ -654,10 +666,18 @@ for (const c of inPlaceCases) {
     if (c.described) {
       assert.equal(await focusedDescription(page), c.description ?? c.saved);
     }
-    assert.equal(
-      await page.getByRole("button", { name: "Deploy new version" }).isEnabled(),
-      c.deployable ?? true,
-    );
+    if (grants) {
+      await grants.requested;
+      assert.equal(
+        await page.getByRole("button", { name: "Deploy new version" }).isDisabled(),
+        true,
+      );
+      grants.release();
+    }
+    // The saved status, generation, focus and placement do not synchronize the grant gate.
+    await page
+      .getByRole("button", { name: "Deploy new version", disabled: !(c.deployable ?? true) })
+      .waitFor();
     await c.verify?.(page, context, place.requests);
   });
 }

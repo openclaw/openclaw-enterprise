@@ -349,6 +349,12 @@ export const selectableModelOffProvider = (policy, provider) =>
   `Configuration setting ${policy} is not on the primary model's provider, "${provider}": remove it, or list a model of that provider.`;
 export const selectableModelRuntimeMismatch = (policy, runtime) =>
   `Configuration setting ${policy}.agentRuntime.id must be ${runtime}, the primary model's runtime: set it, or remove the model.`;
+// A provider catalog row (`provider` such as models.providers.openai) that names no selected
+// model; with no model selected at all, the refusal names the model setting instead.
+export const catalogRowUnselected = (provider) =>
+  `Configuration setting ${provider}.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.`;
+export const catalogRowNoModel = (provider) =>
+  `Configuration setting ${provider}.models lists models, but no model is selected: set agents.defaults.model or an agents.entries model.`;
 // Deploy refused because the cluster denied the controller the RoleBindings for this Agent's
 // runtime credentials (RUNTIME_CREDENTIALS_CLUSTER_RBAC; agents/detail.mts).
 export const DEPLOY_CLUSTER_RBAC_REFUSED =
