@@ -669,14 +669,12 @@ for (const c of inPlaceCases) {
     if (grants) {
       await grants.requested;
       assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
-      // Release only after the common deploy check has started, so the old one-shot assertion
-      // reliably observes the still-pending grant check.
-      t.after(() => grants.release());
+      grants.release();
     }
-    assert.equal(
-      await page.getByRole("button", { name: "Deploy new version" }).isEnabled(),
-      c.deployable ?? true,
-    );
+    // The saved status, generation, focus and placement do not synchronize the grant gate.
+    await page
+      .getByRole("button", { name: "Deploy new version", disabled: !(c.deployable ?? true) })
+      .waitFor();
     await c.verify?.(page, context, place.requests);
   });
 }
