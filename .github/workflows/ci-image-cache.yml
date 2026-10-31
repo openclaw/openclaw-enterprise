@@ -29,6 +29,7 @@ on:
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
       - scripts/*.mjs
+      - scripts/build-repository-credentials.ts
       - scripts/ci/download-pinned.sh
       - scripts/ci/prepare.mjs
       - scripts/ci/resource-names.mjs
