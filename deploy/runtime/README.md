@@ -44,7 +44,7 @@ profile revocation still stop dispatch. The OpenClaw build stage applies the
 checksum-verified `openclaw-required-worker-authority-regression.patch`
 and runs the real Gateway public-RPC cases without network access. The cases
 cover placement before and after acknowledgement, disconnect, and committed
-role, scope, and profile revocation. Test changes stay in the build stage.
+role, scope, and profile revocation.
 The build also applies `openclaw-codex-full-access-profile.patch`, which selects
 the native full-access Codex profile, and
 `openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation
@@ -59,13 +59,10 @@ Linux directory newly created with inherited setgid before private-store
 admission. This lets native setup create its control, client and state stores
 under the Sandbox workspace without changing existing parent permissions or
 relaxing ownership and symlink checks. The build runs the owning private-store
-regressions with the patched source. Remove this bridge after selecting an
-OpenClaw commit that contains the repair.
-`openclaw-plugin-config-startup-report.patch` carries upstream
-openclaw/openclaw#189392. When a plugin entry fails its config schema, Gateway
-startup now names each invalid setting and exits with status 78, as it does for
-core settings. Before, it exited with status 1 and logged only "config validity
-changed". Remove this bridge after selecting an OpenClaw commit that contains it.
+regressions with the patched source.
+`openclaw-plugin-config-startup-report.patch` (openclaw/openclaw#189392) makes
+startup name each invalid plugin setting and exit 78. Remove both bridges after
+selecting an OpenClaw commit that contains them.
 The source archive and patch hashes identify the resulting custom build.
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
