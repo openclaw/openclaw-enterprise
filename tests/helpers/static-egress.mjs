@@ -108,6 +108,14 @@ export async function staticEgressFixture(
       undefined
     ),
     credentialProxyCapacity,
+    createAuthorityController = /** @type {undefined | ((input: {
+      app: Awaited<ReturnType<typeof createConsoleAppFixture>>,
+      secret: Pick<import("../../packages/contracts/src/index.ts").Secret, "id" | "namespaceId">,
+      installedDriver: InstalledDriver,
+      catalog: OpenShellCredentialGatewayDriver,
+      driverConfigurations: readonly import("../../packages/occ/src/index.ts").DriverConfigurationRegistration[],
+      authentication: ConstructorParameters<typeof KubernetesSecretDriver>[0]["authentication"]
+    }) => Promise<import("../../packages/occ/src/index.ts").OpenClawController>)} */ (undefined),
   } = {},
 ) {
   const directory = await temporaryDirectory(t, "oce-egress-wire-");
@@ -470,20 +478,22 @@ export async function staticEgressFixture(
   const placement = createTestKubernetesComputeDriver("placement", {
     authentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
   });
+  /** @type {import("../../packages/occ/src/index.ts").DriverConfigurationRegistration[]} */
+  const configuredDrivers = [
+    {
+      capability: "sandbox",
+      driverId: sandbox.id,
+      implementation: sandbox.implementation,
+      definition: OpenShellSandboxDriver,
+    },
+    ...driverConfigurations,
+  ];
   const app = await appFactory(t, {
     now,
     provisionedPeople: [],
     preparedTokens,
     ...(credentialProxyCapacity === undefined ? {} : { credentialProxyCapacity }),
-    driverConfigurations: [
-      {
-        capability: "sandbox",
-        driverId: sandbox.id,
-        implementation: sandbox.implementation,
-        definition: OpenShellSandboxDriver,
-      },
-      ...driverConfigurations,
-    ],
+    driverConfigurations: configuredDrivers,
     preparedTokenProof: preparedGitHub && { current: (...args) => owner.current(...args) },
     secretDriver,
     computeDriver: {
@@ -699,12 +709,22 @@ export async function staticEgressFixture(
     publicKey: keys.publicKey.export({ format: "pem", type: "spki" }),
     sender: egress.sourceControl.sender,
   });
-  // The optional observer lets a test wait until queued work finishes *after* its
-  // actual duplex was closed. It cannot substitute an identity, owner or result.
+  // Compose a fresh authority on existing state after persisted Secret identities exist.
+  const runtimeController = createAuthorityController
+    ? await createAuthorityController({
+        app,
+        secret,
+        installedDriver,
+        catalog,
+        driverConfigurations: configuredDrivers,
+        authentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
+      })
+    : app.controller;
+  // The observer cannot substitute an identity, owner or result.
   const authorityController = resolutionFinished
     ? {
         createCredentialProxy(...args) {
-          const forwarder = app.controller.createCredentialProxy(...args);
+          const forwarder = runtimeController.createCredentialProxy(...args);
           const resolve = forwarder.resolve.bind(forwarder);
           forwarder.resolve = async (...input) => {
             const result = await resolve(...input);
@@ -714,7 +734,7 @@ export async function staticEgressFixture(
           return forwarder;
         },
       }
-    : app.controller;
+    : runtimeController;
   let authority = createOpenShellEgressAuthority(identity, authorityController);
   const authorityPort = await bindOpenShellEgressAuthority(authority, "127.0.0.1:0", cert, key);
   t.after(() => authority.forceShutdown());

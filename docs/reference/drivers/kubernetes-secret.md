@@ -78,6 +78,63 @@ ambient kubeconfig fallback, unverified TLS, caller-selected Kubernetes
 namespaces, or caller-selected Kubernetes Secret names. Backend identity is
 OCC-owned metadata.
 
+## Read a rotating AWS parameter for protected use
+
+An Installation operator can map an existing OCC Secret to one AWS Systems
+Manager Parameter Store `SecureString`. Add `awsParameterInputs` to the selected
+Kubernetes Secret Driver configuration. The default is no mappings. Each entry
+must contain exactly these fields:
+
+```yaml
+awsParameterInputs:
+  - namespaceId: ns_123e4567-e89b-42d3-a456-426614174000
+    secretId: sec_123e4567-e89b-42d3-a456-426614174001
+    backendUid: 123e4567-e89b-42d3-a456-426614174002
+    parameterArn: arn:aws:ssm:us-east-1:123456789012:parameter/oce/provider-access-token
+```
+
+Use the existing Secret's exact Namespace ID, Secret ID, and Kubernetes backend
+UID. Obtain the UID through authorized operator access to its backing object;
+public OCC metadata does not expose it. Duplicate Secret mappings and reuse of
+one parameter ARN across Namespaces are rejected. A recreated backend with a
+new UID does not inherit the mapping.
+
+The trusted controller must use EKS Pod Identity, with the standard credential
+endpoint and projected authorization-token file. Ambient AWS keys, profiles, and
+alternate credential endpoints are not supported. With default-deny egress, allow
+the trusted controller to reach the EKS Pod Identity endpoint on TCP 80 and the
+regional STS and SSM endpoints over verified HTTPS on TCP 443. Its role needs
+`ssm:GetParameter` on that exact ARN and `sts:GetCallerIdentity` access. The
+parameter must belong to the role's AWS account, use the commercial `aws`
+partition, and select a supported commercial region. Cross-account shared
+parameters are refused. For a customer managed KMS key, grant decryption through
+SSM with the exact parameter encryption context. The parameter must contain one
+nonempty distributable credential, not a credential bundle, refresh token, or
+signing key. The driver selects AWS region and endpoint from the full ARN;
+tenants cannot override them. Configure the API and worker consistently.
+
+For an authorized protected credential read, the driver checks live Kubernetes
+Namespace placement and exact Secret ownership, reads the current decrypted AWS
+value, then checks ownership again. It returns the AWS version and the time it
+validated the response. A failed AWS read, changed owner, cancellation, or elapsed
+deadline fails the operation without using the Kubernetes value. The next
+protected read queries AWS again; the driver neither caches nor writes AWS
+material.
+
+Mapped Secrets refuse local value updates, compare-and-swap, `withValue`, and
+backend resolution for environment delivery. Use them only with protected
+credential consumers that call `readCredentialInput`. Deleting the OCC Secret
+removes its owned Kubernetes record; it does not delete the AWS parameter.
+Withdraw active use before changing or removing a mapping. Configuration changes
+do not revoke credentials that were already delivered.
+
+Publishing an AWS version, observing it in a protected read, and the provider
+accepting it are separate outcomes. Verify the last outcome through the consuming
+application. A Credential Gateway that copied a value at source registration
+still needs its supported reconfiguration and activation; an AWS mapping does
+not make that existing project read credentials on each request. Unmapped
+Secrets keep their existing storage and delivery behavior.
+
 ## Create a Namespace-owned Secret
 
 Create the Secret after the OpenClaw Namespace is ready. An Agent does not need

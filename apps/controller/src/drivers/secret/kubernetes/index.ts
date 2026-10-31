@@ -37,10 +37,17 @@ import {
   type KubernetesAuthentication,
 } from "../../kubernetes/authentication.ts";
 
+import {
+  type AwsParameterInput,
+  parseAwsParameterArn,
+  readAwsParameter,
+} from "./aws-parameter-input.ts";
+
 type KubernetesRecord = Record<string, unknown>;
 
 export interface KubernetesSecretDriverOptions {
   readonly authentication: KubernetesAuthentication;
+  readonly awsParameterInputs?: readonly AwsParameterInput[];
 }
 
 interface KubernetesSecretDriverSelection {
@@ -71,6 +78,64 @@ function required(value: unknown, description: string): string {
     throw new SecretValidationError(`${description} must be a nonempty string.`);
   }
   return value;
+}
+
+const UUID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+
+function validateAwsParameterInputs(value: unknown): void {
+  if (value === undefined) {
+    return;
+  }
+  function invalid(path: string): never {
+    throw new ConfigurationValidationError([
+      {
+        path,
+        code: "INVALID_FORMAT",
+        message:
+          "AWS parameter bindings require unique exact Namespace, Secret, backend UID, and parameter ARN identities.",
+      },
+    ]);
+  }
+  if (!Array.isArray(value)) {
+    invalid("/awsParameterInputs");
+  }
+  const identities = new Set<string>();
+  const parameters = new Map<string, string>();
+  for (const [index, candidate] of value.entries()) {
+    const path = `/awsParameterInputs/${index}`;
+    const entry = asRecord(candidate);
+    if (
+      !entry ||
+      Object.keys(entry).length !== 4 ||
+      Object.keys(entry).some(
+        (key) => !["namespaceId", "secretId", "backendUid", "parameterArn"].includes(key),
+      ) ||
+      typeof entry.namespaceId !== "string" ||
+      !new RegExp(`^ns_${UUID}$`).test(entry.namespaceId) ||
+      typeof entry.secretId !== "string" ||
+      !new RegExp(`^sec_${UUID}$`).test(entry.secretId) ||
+      typeof entry.backendUid !== "string" ||
+      !new RegExp(`^${UUID}$`).test(entry.backendUid) ||
+      typeof entry.parameterArn !== "string"
+    ) {
+      invalid(path);
+    }
+    try {
+      parseAwsParameterArn(entry.parameterArn);
+    } catch {
+      invalid(`${path}/parameterArn`);
+    }
+    const identity = `${entry.namespaceId}/${entry.secretId}`;
+    if (identities.has(identity)) {
+      invalid(path);
+    }
+    identities.add(identity);
+    const tenant = parameters.get(entry.parameterArn);
+    if (tenant !== undefined && tenant !== entry.namespaceId) {
+      invalid(path);
+    }
+    parameters.set(entry.parameterArn, entry.namespaceId);
+  }
 }
 
 function kubernetesSecretName(identity: SecretIdentity): string {
@@ -167,7 +232,26 @@ function timeoutFailure(action: string): Error {
 }
 
 export class KubernetesSecretDriver implements SecretDriver {
-  static readonly configurationSchema: JSONSchema = createKubernetesAuthenticationOptionsSchema();
+  static readonly configurationSchema: JSONSchema = Object.freeze({
+    ...createKubernetesAuthenticationOptionsSchema(),
+    properties: {
+      ...asRecord(createKubernetesAuthenticationOptionsSchema().properties),
+      awsParameterInputs: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["namespaceId", "secretId", "backendUid", "parameterArn"],
+          properties: {
+            namespaceId: { type: "string", pattern: `^ns_${UUID}$` },
+            secretId: { type: "string", pattern: `^sec_${UUID}$` },
+            backendUid: { type: "string", pattern: `^${UUID}$` },
+            parameterArn: { type: "string", minLength: 1 },
+          },
+        },
+      },
+    },
+  });
 
   static validateConfiguration(
     configuration: Readonly<KubernetesSecretDriverOptions>,
@@ -179,6 +263,7 @@ export class KubernetesSecretDriver implements SecretDriver {
           new ConfigurationValidationError([{ path, code: "INVALID_FORMAT", message }]),
       );
 
+      validateAwsParameterInputs(configuration.awsParameterInputs);
       return [];
     } catch (error) {
       return error instanceof ConfigurationValidationError
@@ -211,11 +296,21 @@ export class KubernetesSecretDriver implements SecretDriver {
       throw new SecretValidationError("Unsupported Kubernetes Secret implementation.");
     }
     this.preprovisionedNamespace = selection.preprovisionedNamespace;
-    this.options = Object.freeze({ authentication: Object.freeze({ ...options.authentication }) });
+    this.options = Object.freeze({
+      authentication: Object.freeze({ ...options.authentication }),
+      ...(options.awsParameterInputs === undefined
+        ? {}
+        : {
+            awsParameterInputs: Object.freeze(
+              options.awsParameterInputs.map((entry) => Object.freeze({ ...entry })),
+            ),
+          }),
+    });
   }
 
   async create(identity: SecretIdentity, value: string): Promise<SecretBackendRef> {
     validateIdentity(identity);
+    this.refuseAwsValueDelivery(identity);
     validateValue(value);
     const client = await this.core();
     const namespace = await this.readyNamespace(client, identity.namespaceId);
@@ -352,12 +447,14 @@ export class KubernetesSecretDriver implements SecretDriver {
   }
 
   async update(secret: Secret, value: string): Promise<void> {
+    this.refuseAwsValueDelivery(secret);
     validateValue(value);
     const { observed } = await this.readOwnedSecret(secret);
     await this.replaceOwnedSecret(secret, observed, value);
   }
 
   async compareAndSwap(secret: Secret, expected: string, value: string): Promise<boolean> {
+    this.refuseAwsValueDelivery(secret);
     validateValue(expected);
     validateValue(value);
     const { observed } = await this.readOwnedSecret(secret);
@@ -442,6 +539,7 @@ export class KubernetesSecretDriver implements SecretDriver {
   }
 
   async resolve(secret: Secret): Promise<SecretBackendRef> {
+    this.refuseAwsValueDelivery(secret);
     const { reference } = await this.readOwnedSecret(secret);
     return reference;
   }
@@ -454,6 +552,32 @@ export class KubernetesSecretDriver implements SecretDriver {
     return withComputeOperationDeadline(input.lifetime, async (lifetime) => {
       const { observed } = await this.readOwnedSecret(input.secret);
       lifetime.signal.throwIfAborted();
+      const binding = this.awsParameterInput(input.secret);
+      if (binding !== undefined) {
+        if (lifetime.deadline <= Date.now()) {
+          throw new SecretBackendUnavailableError("The AWS parameter credential read expired.");
+        }
+        let material: { value: string; version: string };
+        try {
+          material = await readAwsParameter(binding, lifetime.signal);
+          validateValue(material.value);
+          if (!isNonEmptyString(material.version)) {
+            throw new Error("Missing parameter version.");
+          }
+        } catch {
+          throw new SecretBackendUnavailableError("The AWS parameter credential read failed.");
+        }
+        // Record material observation before the fresh ownership read, not after it.
+        const authoritativeObservedAt = new Date().toISOString();
+        lifetime.signal.throwIfAborted();
+        await this.readOwnedSecret(input.secret);
+        this.awsParameterInput(input.secret);
+        lifetime.signal.throwIfAborted();
+        if (lifetime.deadline <= Date.now()) {
+          throw new SecretBackendUnavailableError("The AWS parameter credential read expired.");
+        }
+        return { ...material, authoritativeObservedAt };
+      }
       const version = observed.metadata?.resourceVersion;
       if (!isNonEmptyString(version) || lifetime.deadline <= Date.now()) {
         throw new SecretOwnershipError("Versioned credential material is unavailable.");
@@ -467,8 +591,31 @@ export class KubernetesSecretDriver implements SecretDriver {
   }
 
   async withValue<T>(secret: Secret, use: (value: string) => Promise<T>): Promise<T> {
+    this.refuseAwsValueDelivery(secret);
     const { observed } = await this.readOwnedSecret(secret);
     return use(decodedValue(observed));
+  }
+
+  private awsParameterInput(secret: Secret): AwsParameterInput | undefined {
+    const binding = this.options.awsParameterInputs?.find(
+      (entry) => entry.namespaceId === secret.namespaceId && entry.secretId === secret.id,
+    );
+    if (binding !== undefined && binding.backendUid !== secret.backendRef.uid) {
+      throw new SecretOwnershipError("The AWS parameter binding backend identity changed.");
+    }
+    return binding;
+  }
+
+  private refuseAwsValueDelivery(identity: SecretIdentity): void {
+    if (
+      this.options.awsParameterInputs?.some(
+        (entry) => entry.namespaceId === identity.namespaceId && entry.secretId === identity.id,
+      )
+    ) {
+      throw new SecretOwnershipError(
+        "AWS parameter bindings support only protected credential reads; local value changes and environment delivery are unavailable.",
+      );
+    }
   }
 
   private async readOwnedSecret(
