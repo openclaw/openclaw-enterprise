@@ -8,6 +8,8 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 
 ## Changelog
 
+- 2026-10-31 01:00: Check and retry bound Secrets' grants with Slack off. (fix-3018)
+- 2026-10-30 23:30: Keep the version's record in place when deployment activity settles. (fix-3016)
 - 2026-10-29 12:43: Preserve overlapping overview and record reads. (authoring-run/22e56d10-b3c5-43f9-b088-c060fbfbe64f - 4af87e8139aafb7469b60cf38846935c1266baed)
 - 2026-10-29 12:23: Retire denied Save views. (authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25 - 5d8c060238a58)
 - 2026-10-29 11:50: Track terminal overview reconciliation. (terminal-regrant - 1a16ee6c8ff11aaa0b8ea2451aabbc5445d8a72c)
