@@ -138,6 +138,7 @@ the previous controller image after the check below.
 Before selecting an older controller or runtime image, verify it can read all
 state written by the candidate and restore compatible data if required. Never
 delete Agents, versions, PVCs, or the bootstrap volume to force recovery.
+After return, [check the original conversation](production-handoff.md#check-conversation-continuity).
 
 For stalled ReplicaSet creation, check [namespace object capacity](upgrade-checklist.md#check-replicaset-capacity).
 
