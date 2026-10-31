@@ -1272,10 +1272,18 @@ test("Configuration save refuses a model policy whose settings conflict, with de
     ),
   );
 
-  // An incomplete draft saves: selectable models before any primary, an entry without a model
-  // while the defaults set none, or a model without the runtime its provider needs. Deployment
-  // still refuses it, naming what is missing.
+  // An incomplete draft saves: no model at all, selectable models before any primary, an entry
+  // without a model while the defaults set none, or a model without the runtime its provider
+  // needs. Deployment still refuses it, naming the setting that is missing (finding 3022).
   for (const [name, values, deployMessage] of [
+    [
+      "no model",
+      {},
+      setting(
+        "agents.defaults.model",
+        "is required to deploy on Kubernetes: set it, or each agents.entries model, to a model such as openai/gpt-5.1",
+      ),
+    ],
     [
       "selectable models with no primary model",
       { agents: { defaults: { models: runtimeDefaults.models } } },
@@ -1295,7 +1303,10 @@ test("Configuration save refuses a model policy whose settings conflict, with de
     [
       "an openai model without a runtime",
       { agents: { defaults: { model: "openai/gpt-4.1" } } },
-      "The configured Agent model requires an explicit supported Harness runtime.",
+      setting(
+        'agents.defaults.models["openai/gpt-4.1"].agentRuntime.id',
+        "is required for the selected model: set it to openclaw or codex",
+      ),
     ],
   ]) {
     await t.test(`saves ${name}`, async () => {
@@ -3449,7 +3460,7 @@ test("Deploy rejects Configuration content that selects no supported Harness run
   assert.equal(deployed.body.error.code, "INVALID_REQUEST");
   assert.equal(
     deployed.body.error.message,
-    "The configured Agent model requires an explicit supported Harness runtime.",
+    'Configuration setting agents.defaults.models["openai/gpt-4.1"].agentRuntime.id is required for the selected model: set it to openclaw or codex.',
   );
   const unchanged = await request(context.app, "GET", agentPath);
   assert.equal(unchanged.status, 200);
