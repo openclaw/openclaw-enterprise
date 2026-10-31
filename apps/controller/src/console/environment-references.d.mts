@@ -10,6 +10,7 @@ export declare function secretInputShorthandName(text: string): string | undefin
 export declare function gatewayPasswordRequirement(
   password: unknown,
   secrets: unknown,
+  options?: { readonly step?: boolean },
 ): string | undefined;
 export declare function generatedGatewayPasswordReference(secrets: unknown): {
   readonly source: "env";

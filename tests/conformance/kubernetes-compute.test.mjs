@@ -9552,7 +9552,7 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
       "keys",
     ],
     [passwordRef("vault"), "provider", "vault"],
-    [passwordRef("default", { defaults: { env: "custom" } }), "provider", "default"],
+    [passwordRef("default", { defaults: { env: "custom" } }), "defaultAlias", "custom"],
     [passwordRef("vault", { providers: { vault: { source: "file" } } }), "provider", "vault"],
     [
       passwordRef("default", { providers: { default: envProvider(["OTHER"]) } }),
@@ -9802,7 +9802,7 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       },
       searchHeader,
       "google",
-      "provider",
+      "providerAlias",
       "Vault",
     ],
     // The default alias moves with secrets.defaults.env.
@@ -9810,19 +9810,36 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       { ...withSearchHeader(envRef("RELAY_TOKEN")), secrets: { defaults: { env: "custom" } } },
       searchHeader,
       "google",
-      "provider",
-      "default",
+      "defaultAlias",
+      "custom",
     ],
-    [withSearchHeader(envRef("relay_token")), searchHeader, "google", "id", "relay_token"],
+    // The step offers the id upper-cased, with other characters as _, when that is one OpenClaw
+    // reads.
+    [
+      withSearchHeader(envRef("relay_token")),
+      searchHeader,
+      "google",
+      "id",
+      "relay_token",
+      "RELAY_TOKEN",
+    ],
     [withSearchHeader(envRef("_RELAY")), searchHeader, "google", "id", "_RELAY"],
-    [withSearchHeader(envRef(" RELAY_TOKEN ")), searchHeader, "google", "id", '" RELAY_TOKEN "'],
-    [withBeam(envRef("relay-token")), beamToken, "beam", "id", '"relay-token"'],
+    [
+      withSearchHeader(envRef(" RELAY_TOKEN ")),
+      searchHeader,
+      "google",
+      "id",
+      '" RELAY_TOKEN "',
+      "RELAY_TOKEN",
+    ],
+    [withBeam(envRef("relay-token")), beamToken, "beam", "id", '"relay-token"', "RELAY_TOKEN"],
     [
       withCodex({ config: { appServer: { authToken: envRef("app_server_token") } } }),
       authToken,
       "codex",
       "id",
       "app_server_token",
+      "APP_SERVER_TOKEN",
     ],
     [
       { ...withSearchHeader("$RELAY_TOKEN"), ...allowlist(["OTHER"]) },
@@ -9857,6 +9874,44 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       };
       refusedByMode(codexDriverAdmission, dedicated, expected, label);
     }
+  }
+  // With the longest names (a 64-character provider and default alias, a 128-character id), each
+  // refusal keeps its whole next step within the 256-character cap; the setting path is cut
+  // instead (finding 3067).
+  const longAlias = `a${"-b".repeat(31)}c`;
+  const longProvider = `p${"q".repeat(63)}`;
+  const cut = (name) => `"${name.slice(0, 31)}…"`;
+  const withLongNames = (reference, secrets) => ({
+    ...withSearchHeader({ ...envRef("RELAY_TOKEN"), ...reference }),
+    secrets: { defaults: { env: longAlias }, ...secrets },
+  });
+  for (const [configuration, held, ...shown] of [
+    [withLongNames({ provider: longProvider }), "provider", cut(longProvider), "env", null],
+    [withLongNames({}), "defaultAlias", cut(longAlias), "env", null],
+    [withLongNames({ provider: "P".repeat(64) }), "providerAlias", cut("P".repeat(64)), null],
+    [withLongNames({ id: `i${"d".repeat(127)}` }), "id", cut(`i${"d".repeat(127)}`)],
+    [
+      withLongNames(
+        { provider: longProvider, id: `I${"D".repeat(127)}` },
+        { providers: { [longProvider]: { source: "env", allowlist: [] } } },
+      ),
+      "allowlist",
+      cut(`I${"D".repeat(127)}`),
+      cut(longProvider),
+    ],
+  ]) {
+    const [, expected] = unreadablePluginSecretRefusal("<path>", "google", held, ...shown).split(
+      "<path>",
+    );
+    assert.throws(
+      () => embeddedAdmission(configuration, null),
+      (error) =>
+        error.name === "ConfigurationHarnessError" &&
+        Array.from(error.message).length <= 256 &&
+        error.message.startsWith("Configuration setting plugins.entries.google") &&
+        error.message.endsWith(expected),
+      held,
+    );
   }
   // OpenClaw reads each of these, so the binding alone decides: an env SecretRef on the default
   // alias secrets.defaults.env names, one on a configured env provider whose allowlist lists it,

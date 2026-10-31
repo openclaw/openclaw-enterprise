@@ -296,11 +296,14 @@ function sshGatewayAuthentication(
   // Password mode renders an unset password and the expression as GATEWAY_PASSWORD_REFERENCE,
   // which a custom default env alias or an allowlist can leave unreadable: the Gateway would exit
   // at every start, so offer the reference on the default alias instead, only when OpenClaw reads
-  // it (an allowlist or another source on that alias refuses it too).
+  // it (an allowlist or another source on that alias refuses it too). The refusal states why
+  // OpenClaw cannot read the rendered reference; its own offer is the step.
   const rendered =
     teardown || auth.mode === "trusted-proxy" || !rendersGatewayPasswordReference(auth.password)
       ? undefined
-      : gatewayPasswordRequirement(GATEWAY_PASSWORD_REFERENCE, configuration.secrets);
+      : gatewayPasswordRequirement(GATEWAY_PASSWORD_REFERENCE, configuration.secrets, {
+          step: false,
+        });
   if (rendered !== undefined) {
     const generated = generatedGatewayPasswordReference(configuration.secrets);
     const offer =
