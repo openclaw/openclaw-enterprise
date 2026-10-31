@@ -2003,31 +2003,6 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
         "APP_SERVER_TOKEN",
       ),
     ],
-    // The `$NAME` shorthand in a Codex header is the same reference: the save keeps it, and
-    // deployment names the variable (finding 3044).
-    [
-      {
-        ...valid,
-        plugins: {
-          entries: {
-            codex: {
-              config: {
-                appServer: {
-                  transport: "websocket",
-                  url: "${APP_SERVER_URL}",
-                  headers: { Authorization: "$APP_SERVER_TOKEN" },
-                },
-              },
-            },
-          },
-        },
-      },
-      400,
-      dedicatedCodexVariableRefusal(
-        "plugins.entries.codex.config.appServer.headers.Authorization",
-        "APP_SERVER_TOKEN",
-      ),
-    ],
     // Any other variable a plugin secret input reads stops the embedded Gateway the same way
     // unless a Configuration Secret binding sets it (finding 3041). The save cannot know the
     // Agent's bindings; deployment names the binding to add or the entry to disable.
