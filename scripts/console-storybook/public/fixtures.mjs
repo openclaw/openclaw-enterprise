@@ -963,6 +963,12 @@ export function installFixture(scenario, evidence) {
       signedIn = false;
       return response({});
     }
+    const nativeReturn = path.match(/^\/native-admin\/return\/([0-9a-f]{32})$/);
+    if (nativeReturn && method === "GET") {
+      return scenario.nativeReturnKey === nativeReturn[1]
+        ? response({ namespaceId, agentId: agent.id })
+        : error(404);
+    }
     if (path === "/installation/driver-configurations" && method === "GET") {
       return response({
         configurations: [
