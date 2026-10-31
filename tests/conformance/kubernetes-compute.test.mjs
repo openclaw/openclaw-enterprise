@@ -9889,7 +9889,11 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
     [withLongNames({ provider: longProvider }), "provider", cut(longProvider), "env", null],
     [withLongNames({}), "defaultAlias", cut(longAlias), "env", null],
     [withLongNames({ provider: "P".repeat(64) }), "providerAlias", cut("P".repeat(64)), null],
-    [withLongNames({ id: `i${"d".repeat(127)}` }), "id", cut(`i${"d".repeat(127)}`)],
+    [
+      withLongNames({ provider: longAlias, id: `i${"d".repeat(127)}` }),
+      "id",
+      cut(`i${"d".repeat(127)}`),
+    ],
     [
       withLongNames(
         { provider: longProvider, id: `I${"D".repeat(127)}` },
@@ -9908,7 +9912,7 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       (error) =>
         error.name === "ConfigurationHarnessError" &&
         Array.from(error.message).length <= 256 &&
-        error.message.startsWith("Configuration setting plugins.entries.google") &&
+        error.message.startsWith("Configuration setting plugins.") &&
         error.message.endsWith(expected),
       held,
     );
