@@ -5287,6 +5287,41 @@ test("a credential reference that is not the whole value is refused with a messa
       otherText("plugins.entries.brave.config.webSearch.apiKey"),
     ],
     [{ gateway: { remote: { token: "$REMOTE_TOKEN" } } }, shorthand("gateway.remote.token")],
+    // A plugin setting OpenClaw does not resolve as a secret input keeps `$NAME` as written: a
+    // field only the manifest marks sensitive, and a key of a plugin that declares none
+    // (finding 3044).
+    [
+      {
+        plugins: {
+          entries: { "voice-call": { config: { telnyx: { publicKey: "$TELNYX_PUBLIC_KEY" } } } },
+        },
+      },
+      shorthand("plugins.entries.voice-call.config.telnyx.publicKey"),
+    ],
+    [
+      { plugins: { entries: { reader: { config: { apiKey: "$READER_API_KEY" } } } } },
+      shorthand("plugins.entries.reader.config.apiKey"),
+    ],
+    // A secret input holds one string: OpenClaw reads no list entry under it.
+    [
+      { plugins: { entries: { imap: { config: { accounts: { work: { password: ["$PW"] } } } } } } },
+      shorthand("plugins.entries.imap.config.accounts.work.password.0"),
+    ],
+    // voice-call declares its TTS providers' keys, not those of a persona's providers.
+    [
+      {
+        plugins: {
+          entries: {
+            "voice-call": {
+              config: {
+                tts: { personas: { calm: { providers: { openai: { apiKey: "$TTS_KEY" } } } } },
+              },
+            },
+          },
+        },
+      },
+      shorthand("plugins.entries.voice-call.config.tts.personas.calm.providers.openai.apiKey"),
+    ],
     // An escape renders literal text, so it is a literal credential, with that message. So is a
     // `$` before a name the runtime does not read as one (finding 2517).
     [slack("$${SLACK_BOT_TOKEN}"), referenceFormRefusal(bot, "inline")],
@@ -5295,6 +5330,53 @@ test("a credential reference that is not the whole value is refused with a messa
     await refusedOnSave(context, values, message, { item, sentinel });
   }
   await assertNothingStored(context, [`${created.body.data.id}.json`]);
+});
+
+test("a plugin secret input saves OpenClaw's whole $NAME shorthand as a reference", async (t) => {
+  // Finding 3044: OpenClaw resolves a plugin's secret inputs (manifest `secretInputs`, web search
+  // and fetch API keys) as SecretRefs and reads a whole `$NAME` there, trimmed, as the environment
+  // SecretRef to NAME, as it reads `${NAME}`. The save called it a credential value inline.
+  const context = await saveFixture(t);
+  await acceptedOnSave(context, {
+    plugins: {
+      entries: {
+        codex: {
+          config: {
+            appServer: {
+              authToken: "$APP_SERVER_TOKEN",
+              headers: { Authorization: "$APP_SERVER_TOKEN" },
+            },
+          },
+        },
+        google: {
+          config: { webSearch: { apiKey: "$GOOGLE_SEARCH_KEY", headers: { "X-Api-Key": "$KEY" } } },
+        },
+        brave: { config: { webSearch: { apiKey: " $BRAVE_API_KEY " } } },
+        firecrawl: { config: { webFetch: { apiKey: "$FIRECRAWL_API_KEY" } } },
+        imap: { config: { accounts: { work: { password: "$IMAP_WORK_PASSWORD" } } } },
+        "voice-call": {
+          config: {
+            twilio: { authToken: "$TWILIO_AUTH_TOKEN" },
+            numbers: { main: { tts: { providers: { openai: { apiKey: "$TTS_KEY" } } } } },
+          },
+        },
+      },
+    },
+  });
+  // Only the shorthand OpenClaw reads: an uppercase name, the whole value but for spaces.
+  const sentinel = `synthetic-${randomUUID()}`;
+  const brave = (apiKey) => ({
+    plugins: { entries: { brave: { config: { webSearch: { apiKey } } } } },
+  });
+  const literal = literalKey("/plugins/entries/brave/config/webSearch/apiKey");
+  for (const apiKey of [
+    `$${sentinel}`,
+    "$brave_api_key",
+    `$BRAVE_API_KEY ${sentinel}`,
+    "Bearer $BRAVE_API_KEY",
+  ]) {
+    await refusedOnSave(context, brave(apiKey), literal, { sentinel });
+  }
 });
 
 test("Preset and Configuration saves refuse a baseUrl or api that a variable fills with no host or no string", async (t) => {
