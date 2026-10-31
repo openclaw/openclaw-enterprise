@@ -1115,7 +1115,7 @@ test("Configuration save refuses a model policy whose settings conflict, with de
           entries: {
             main: {
               model: "openai/gpt-4.1",
-              models: { ...runtime("openai/gpt-4.1"), ...runtime("anthropic/claude-x") },
+              models: { ...runtime("openai/gpt-4.1"), ...runtime("gateway/model-x") },
             },
           },
         },
@@ -1128,7 +1128,7 @@ test("Configuration save refuses a model policy whose settings conflict, with de
         agents: {
           defaults: {
             ...runtimeDefaults,
-            models: { ...runtimeDefaults.models, ...runtime("anthropic/claude-x") },
+            models: { ...runtimeDefaults.models, ...runtime("gateway/model-x") },
           },
         },
       },
@@ -1189,7 +1189,7 @@ test("Configuration save refuses a model policy whose settings conflict, with de
           defaults: runtimeDefaults,
           entries: {
             main: { model: "openai/gpt-4.1-mini" },
-            other: { model: { primary: "openai/gpt-4.1", fallbacks: ["anthropic/claude-x"] } },
+            other: { model: { primary: "openai/gpt-4.1", fallbacks: ["gateway/model-x"] } },
           },
         },
       },
