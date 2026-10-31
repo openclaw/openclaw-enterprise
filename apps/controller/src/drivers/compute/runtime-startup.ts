@@ -2,6 +2,8 @@
 // returns program text that a wrapper embeds in its generated Node program.
 
 const STARTUP_PHASE_EVENT = "runtime.startup_phase";
+// Existing native configuration validation uses this bounded CLI phase.
+export const NATIVE_GATEWAY_COMMAND_TIMEOUT_MS = 30_000;
 
 // Apply the controls to the Gateway child, after OCE finishes configuration and plugin setup.
 export function gatewayManagedModeEnvironment(managedMode: boolean): string {

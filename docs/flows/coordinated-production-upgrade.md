@@ -262,10 +262,11 @@ evidence; only fresh sufficient readings admit Doctor within its own deadline.
 Failure reports separate Doctor's exit status from gateway restarts since Ready.
 Missing or incomparable counts or Pod identities report unknown; only a comparable
 increase with last termination `OOMKilled` names an OOM kill. A memory timeout
-starts no further Doctor. Then, also after a failed Doctor, `revision_pod_change_since_ready`
-fails the upgrade for any revision Pod the wait required (gateway or dedicated agent)
-missing, replaced, restarted, or unready; the readiness wait ignores ended Pods, so
-resume checks the replacement.
+starts no further Doctor. After timeout or Doctor exit, `revision_pod_change_since_ready`
+fails upgrades with a missing, replaced, restarted, or unready required Pod
+(gateway or dedicated agent). The wait ignores ended Pods. Resume checks replacements.
+
+See [native owner recovery](../reference/drivers/kubernetes-compute/native-owner-recovery.md).
 
 ### 6. Hand off application verification
 

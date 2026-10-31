@@ -334,6 +334,10 @@
                             "label": "Storage and Credentials"
                           },
                           {
+                            "page": "reference/drivers/kubernetes-compute/native-owner-recovery",
+                            "label": "Native Owner Recovery"
+                          },
+                          {
                             "page": "reference/drivers/kubernetes-compute/managed-native-configuration",
                             "label": "Managed Native Configuration"
                           },

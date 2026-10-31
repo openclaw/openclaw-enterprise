@@ -1915,5 +1915,5 @@ test("the embedded Docker launcher retains ordinary Gateway configuration", asyn
     calls.some(({ args }) => args?.[1] === "config"),
     false,
   );
-  assert.deepEqual(JSON.parse(files.get("/etc/openclaw/openclaw.json")), baseConfig);
+  assert.deepEqual(JSON.parse(files.get("/home/node/.openclaw/openclaw.json")), baseConfig);
 });

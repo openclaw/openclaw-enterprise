@@ -62,6 +62,7 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
       ? []
       : [[WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding(options.workspaceNodeId)]]),
   ]);
+  const directories = new Set();
   let temporaryDirectory = 0;
   const gatewayUnavailable = new Error("Gateway unavailable");
   const sandbox = {
@@ -71,7 +72,10 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
     files,
     process: {
       env: {
-        OPENCLAW_CONFIG_PATH: "/etc/openclaw/openclaw.json",
+        OPENCLAW_CONFIG_PATH:
+          options.launcher === "docker"
+            ? "/home/node/.openclaw/openclaw.json"
+            : "/etc/openclaw/openclaw.json",
         HOME: "/home/node",
         ...(options.launcher === "docker"
           ? { OPENCLAW_CONFIG_JSON: files.get("/etc/openclaw/openclaw.json") }
@@ -147,12 +151,24 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
           },
         };
       }
+      if (specifier === "node:http") {
+        return { createServer: () => ({ listen() {} }) };
+      }
       if (specifier === "node:fs") {
         return {
           existsSync(path) {
             return files.has(path);
           },
-          mkdirSync() {},
+          mkdirSync(path) {
+            directories.add(path);
+          },
+          lstatSync(path) {
+            return { isDirectory: () => directories.has(path) };
+          },
+          realpathSync(path) {
+            assert.ok(directories.has(path));
+            return path;
+          },
           chmodSync() {},
           mkdtempSync(prefix) {
             if (options.mkdtempError !== undefined) {
