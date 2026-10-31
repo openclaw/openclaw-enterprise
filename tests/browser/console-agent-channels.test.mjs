@@ -34,6 +34,7 @@ import {
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import {
+  ACCESS_TAB_UNAVAILABLE,
   BOUND_SECRET_UNLISTED,
   CONFIGURATION_SAVE_DENIED,
   SECRET_CREATE_DENIED,
@@ -45,6 +46,9 @@ import { restrict } from "../helpers/iam-grants.mjs";
 // The Agent's grant of a saved Slack Secret was refused, or the IAM policy shows none (finding 1920).
 const GRANT_REFUSED =
   "Configuration saved, but this Agent cannot use the saved Slack Secret until it is granted access. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Retry Secret access.";
+// A refused Retry Secret access saved no Configuration, so it names only the refusal (finding 3023).
+const RETRY_REFUSED =
+  "This Agent cannot use the saved Slack Secret until it is granted access. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Retry Secret access.";
 const GRANT_MISSING =
   "This Agent has no access to a bound Slack Secret, so deploying it would be refused. Select Retry Secret access to grant it.";
 // The same missing grant, read by a session that is offered no Retry.
@@ -1330,6 +1334,95 @@ describe("Agent channels", { concurrency: 3 }, () => {
     await expectNoText(page, GRANT_UNCONFIRMED);
     assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).count(), 0);
   });
+
+  // Finding 3029. An administrator's Retry Secret access is refused after her administration
+  // ends, and the page learns later that she is no administrator. She may still save the
+  // Configuration. Her next Save binds a new bot token and saves the Configuration, but sends no
+  // grant. The warning kept the Retry's words, which say nothing saved, and the status line was
+  // empty: nothing said the Configuration saved.
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    test(`A save after a refused Retry says the Configuration saved once administration ends (${viewport.width} px)`, async (t) => {
+      const { fixture, namespace } = await readyNamespace(t, `Refused Retry ${viewport.width}`);
+      const { agent } = await createSlackAgent(fixture, namespace, {
+        name: "Refused Retry Agent",
+        slug: "refused-retry",
+        secretBindings: await slackTokenBindings(fixture, namespace, "Refused Retry"),
+      });
+      // The Namespace's IAM policy lists no grant of the bound Slack Secrets to the Agent.
+      for (const { id } of await fixture.addedAccessBindings(namespace.id)) {
+        const removed = await fixture.request(
+          "DELETE",
+          `/namespaces/${namespace.id}/iam/access-bindings/${id}`,
+        );
+        assert.equal(removed.status, 204);
+      }
+      const botSecret = await fixture.createSecret(
+        namespace.id,
+        "Refused Retry new bot token",
+        "hidden-refused-retry-bot",
+      );
+      const account = await fixture.createNamespaceMember(
+        "refused-retry",
+        namespace.id,
+        MEMBER_WRITE,
+      );
+      const revoke = grantInstallationAdministration(fixture, account.principal);
+      const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+      await trackSettledFetches(page);
+      const requests = apiRequests(page, fixture.origin);
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
+        account.credentials,
+      );
+      await page.getByRole("heading", { name: "Refused Retry Agent" }).waitFor();
+      const panel = page.locator(".channel-secrets");
+      // The page load read the policy as an administrator: Retry grants the missing access.
+      await panel.getByText(GRANT_MISSING, { exact: true }).waitFor();
+
+      // Her administration ends. The Retry's IAM reads are refused, and a Retry saves nothing.
+      revoke();
+      await panel.getByRole("button", { name: "Retry Secret access" }).click();
+      await panel.getByText(RETRY_REFUSED, { exact: true }).waitFor();
+      // The Access tab reads the policy as only an administrator may: its refusal settles "not an
+      // administrator" for this tab.
+      await page.getByRole("tab", { name: "Access", exact: true }).click();
+      await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+      await waitForIdleFetches(page);
+      // The Agent page opened again takes that answer: it sends no grant the API would refuse.
+      if (viewport.width < 800) {
+        // On a phone the sidebar is behind the navigation toggle.
+        await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+      }
+      await page.getByRole("link", { name: "Agents", exact: true }).click();
+      await page.getByRole("link", { name: "Refused Retry Agent", exact: true }).click();
+      await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+      await panel.getByText(RETRY_REFUSED, { exact: true }).waitFor();
+      await waitForIdleFetches(page);
+      const iamWrites = accessBindingPostRequests(requests, namespace.id).length;
+
+      await selectSecret(panel, "Slack bot token", botSecret);
+      await panel.getByRole("button", { name: "Save channel Secrets" }).click();
+      // This Save saved the Configuration, so the warning says so before the grant still refused.
+      const warning = panel.getByText(GRANT_REFUSED, { exact: true });
+      await warning.waitFor();
+      assert.equal(await warning.getAttribute("data-tone"), "warning");
+      assert.equal(await page.getByText(RETRY_REFUSED, { exact: true }).count(), 0);
+      const configuration = await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+      );
+      assert.deepEqual(configuration.data.secretBindings.SLACK_BOT_TOKEN, {
+        source: botSecret.ref,
+        delivery: { type: "env" },
+      });
+      assert.equal(accessBindingPostRequests(requests, namespace.id).length, iamWrites);
+    });
+  }
 
   // Finding 2623. A member's channel card names bound Secrets from the view's readable Secret
   // list, read once per view (finding 2619): a Secret the list leaves out shows as unlisted. A

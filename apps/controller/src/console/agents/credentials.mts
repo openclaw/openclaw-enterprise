@@ -1282,8 +1282,10 @@ export function createChannelSecretsPanel({
           // 2259, 2263).
           if (!earlierProblem) {
             state.grantProblem = "unverified";
-            state.grantRetried = retry;
           }
+          // An earlier problem keeps its kind, but this request's words: a normal Save did save
+          // the Configuration, even after a Retry left that problem (finding 3029).
+          state.grantRetried = retry;
           state.outcomeUnknown = false;
           state.saveError = { ...requestFailure(undefined), step: "grant" };
           state.saveMessage = "";
