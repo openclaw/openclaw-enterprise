@@ -345,12 +345,15 @@ async function readyAgent(context, namespace, agentId, configurationId, secretNa
     namespaceId: namespace.id,
     agentId: admittedAgent.id,
   });
-  context.roles.push({
-    id: "model-consumer",
-    permissions: [{ action: "operate", resourceKind: "secret" }],
-  });
+  if (!context.roles.some(({ id }) => id === "model-consumer")) {
+    context.roles.push({
+      id: "model-consumer",
+      permissions: [{ action: "operate", resourceKind: "secret" }],
+    });
+  }
+  // One binding per Agent, so a second Agent in the fixture gets its own grant.
   bindRole(context, admittedAgent.servicePrincipalId, {
-    id: "model-consumer",
+    id: `model-consumer-${admittedAgent.id}`,
     roleId: "model-consumer",
     namespaceId: namespace.id,
     resource: { kind: "secret", id: harnessSecret.id },
@@ -358,7 +361,7 @@ async function readyAgent(context, namespace, agentId, configurationId, secretNa
 }
 
 // Creates a Configuration with `values` and a ready Agent that uses it.
-async function deployableAgent(context, namespace, { values, name, secretName }) {
+async function deployableAgent(context, namespace, { values, name, secretName, executionMode }) {
   const collection = `/namespaces/${namespace.id}/configurations`;
   const created = await request(context.app, "POST", collection, {
     body: { kind: "agent", values },
@@ -366,7 +369,7 @@ async function deployableAgent(context, namespace, { values, name, secretName })
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const configurationId = created.body.data.id;
   const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name, configurationId },
+    body: { name, configurationId, ...(executionMode === undefined ? {} : { executionMode }) },
   });
   assert.equal(agent.status, 201, JSON.stringify(agent.body));
   await readyAgent(context, namespace, agent.body.data.id, configurationId, secretName);
@@ -2034,6 +2037,38 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
   const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
   assert.equal(revisions.status, 200);
   assert.deepEqual(revisions.body.data, []);
+
+  // A Dedicated Codex Gateway keeps the caller's plugin entries and receives the same bindings, so
+  // it exits the same way and its deployment refuses the unbound reference too (finding 3042),
+  // before a revision would stop the running one. Its own entry reads APP_SERVER_TOKEN, which
+  // Kubernetes Compute sets in that Gateway, so it passes this rule.
+  const codexValues = createHarnessConfiguration("codex", "gpt-5");
+  const codexAgent = await deployableAgent(context, context.namespace, {
+    values: {
+      ...codexValues,
+      plugins: {
+        ...codexValues.plugins,
+        entries: {
+          ...codexValues.plugins.entries,
+          google: { config: { webSearch: { headers: { "X-Key": "${SEARCH_HEADER}" } } } },
+        },
+      },
+    },
+    name: "Dedicated Codex settings consumer",
+    secretName: "codex-settings-key",
+    executionMode: "dedicated",
+  });
+  assertRefused(
+    await request(context.app, "POST", `${codexAgent.agentPath}/deploy`),
+    unboundPluginSecretRefusal(
+      "plugins.entries.google.config.webSearch.headers.X-Key",
+      "SEARCH_HEADER",
+      "google",
+    ),
+    { label: "Dedicated Codex" },
+  );
+  const codexRevisions = await request(context.app, "GET", `${codexAgent.agentPath}/revisions`);
+  assert.deepEqual(codexRevisions.body.data, []);
 
   // Values every Gateway accepts still save.
   for (const values of [

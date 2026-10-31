@@ -9544,12 +9544,12 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   }
 });
 
-test("embedded admission refuses a plugin secret input whose unset variable stops the Gateway", () => {
+test("admission refuses a plugin secret input whose unset variable stops any Gateway", () => {
   // OpenClaw resolves an active plugin's Gateway-required secret inputs (no ownerKind in the
   // manifest: codex appServer.authToken and appServer.headers.*, google webSearch.headers.*) at
   // startup and exits when a referenced variable is unset ("required secrets are unavailable"), so
-  // such an embedded Agent was admitted and its Gateway restarted until the 15-minute convergence
-  // deadline (findings 3040, 3041). Kubernetes Compute sets the APP_SERVER_ variables only in a
+  // such an Agent was admitted and its Gateway restarted until the 15-minute convergence deadline
+  // (findings 3040, 3041, 3042). Kubernetes Compute sets the APP_SERVER_ variables only in a
   // Dedicated Codex Gateway; any other name a Secret binding could set is set only by a binding.
   const driver = new KubernetesComputeDriver(options());
   const embedded = { id: "openclaw", version: "1.0.0", mode: "embedded" };
@@ -9688,11 +9688,82 @@ test("embedded admission refuses a plugin secret input whose unset variable stop
       launch.validateHarnessAuth(embedded, apiKeyAuth, withCodex({ config: { appServer } }), {}),
     refusal(dedicatedCodexVariableRefusal(authToken, "APP_SERVER_TOKEN")),
   );
-  // A Dedicated Codex Gateway receives the variables.
-  driver.validateHarnessAuth(codex, apiKeyAuth, {
-    agents: { defaults: { model: "codex/gpt-5" } },
-    plugins: { allow: ["codex"], entries: { codex: { enabled: true, config: { appServer } } } },
+  // Dedicated Gateways keep the caller's plugin entries and receive its bindings too, and the
+  // runtime image's Gateway exited the same way as Dedicated OpenClaw and as Dedicated Codex
+  // (finding 3042). A Dedicated Codex Gateway receives the APP_SERVER_ variables; a Dedicated
+  // OpenClaw Gateway does not, and Agent save refuses that by the Agent's mode alone.
+  const native = { id: "openclaw", version: "1.0.0", mode: "dedicated" };
+  const nativeDriver = new KubernetesComputeDriver(options(), {
+    sandboxDriver: {
+      id: "sandbox-openshell",
+      capability: "sandbox",
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+      facets: ["networking", "filesystem", "process"],
+      provisionHarness() {},
+    },
   });
+  const withEntries = (base, entries) => ({
+    ...base,
+    plugins: { ...base.plugins, entries: { ...base.plugins?.entries, ...entries } },
+  });
+  for (const [topologyDriver, harness, base] of [
+    [nativeDriver, native, createHarnessConfiguration("openclaw", "gpt-4o-mini")],
+    [driver, codex, createHarnessConfiguration("codex", "gpt-5")],
+  ]) {
+    const label = `${harness.mode} ${harness.id}`;
+    // Dedicated Codex's own entry reads APP_SERVER_URL and APP_SERVER_TOKEN; it starts.
+    const relayEntry = (authToken) => {
+      const entry = base.plugins?.entries?.codex ?? { enabled: true, config: {} };
+      return {
+        codex: {
+          ...entry,
+          config: { ...entry.config, appServer: { ...entry.config.appServer, authToken } },
+        },
+      };
+    };
+    for (const [entries, setting, name, plugin] of [
+      [relayEntry("${RELAY_TOKEN}"), authToken, "RELAY_TOKEN", "codex"],
+      [
+        { google: { config: { webSearch: { headers: { "X-Key": "${SEARCH_HEADER}" } } } } },
+        searchHeader,
+        "SEARCH_HEADER",
+        "google",
+      ],
+    ]) {
+      const configuration = withEntries(base, entries);
+      assert.throws(
+        () => topologyDriver.validateHarnessAuth(harness, apiKeyAuth, configuration, {}),
+        refusal(unboundPluginSecretRefusal(setting, name, plugin)),
+        label,
+      );
+      topologyDriver.validateHarnessAuth(harness, apiKeyAuth, configuration, {
+        [name]: { source },
+      });
+      topologyDriver.validateHarnessAuth(harness, apiKeyAuth, configuration, null);
+    }
+    const appServerToken = withEntries(base, relayEntry("${APP_SERVER_TOKEN}"));
+    if (harness === native) {
+      const expected = refusal(
+        dedicatedCodexVariableRefusal(
+          authToken,
+          "APP_SERVER_TOKEN",
+          "codex",
+          "a Dedicated OpenClaw",
+        ),
+      );
+      assert.throws(
+        () => topologyDriver.validateHarnessAuth(harness, apiKeyAuth, appServerToken, {}),
+        expected,
+      );
+      assert.throws(
+        () => topologyDriver.validateHarnessAuth(harness, apiKeyAuth, appServerToken, null),
+        expected,
+      );
+    } else {
+      topologyDriver.validateHarnessAuth(harness, apiKeyAuth, appServerToken, {});
+      topologyDriver.validateHarnessAuth(harness, apiKeyAuth, appServerToken, null);
+    }
+  }
 });
 
 test("preparation still refuses a gateway password Compute does not generate", async () => {
