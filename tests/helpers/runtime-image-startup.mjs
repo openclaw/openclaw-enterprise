@@ -312,11 +312,15 @@ export function failureTail(output, limit = failureOutputLimit) {
   return `[... ${output.length - tail.length} earlier chars omitted ...]\n${tail}`;
 }
 
-export async function temporaryGatewayConfiguration(t, harnessId) {
+export async function temporaryGatewayConfiguration(
+  t,
+  harnessId,
+  configuration = createAdmittedRuntimeImageConfiguration(harnessId),
+) {
   const directory = await temporaryDirectory(t, "oce-runtime-image-config-");
 
   const path = join(directory, "openclaw.json");
-  await writeFile(path, JSON.stringify(createAdmittedRuntimeImageConfiguration(harnessId)));
+  await writeFile(path, JSON.stringify(configuration));
   return path;
 }
 

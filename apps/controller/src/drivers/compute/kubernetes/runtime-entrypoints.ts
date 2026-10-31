@@ -3177,8 +3177,8 @@ function watchFirstServe(spawned) {
 // deadline. So once a Gateway that never served exits non-zero, OpenClaw's own validator
 // checks the same configuration. An invalid one is held as check gateway-config, which ends
 // the deployment at once, and the log names the settings. Any other exit, or a validator
-// that fails or times out, restarts the container as before, as does a Gateway with no
-// Compute status port to serve the hold on.
+// that prints no report (it failed or timed out), restarts the container as before, as does
+// a Gateway with no Compute status port to serve the hold on.
 function holdInvalidGatewayConfiguration(code, signal) {
   if (runtimeStatusPort() === undefined) return false;
   const validation = pluginSpawnSync("node", ["/app/openclaw.mjs", "config", "validate", "--json"], {
@@ -3191,7 +3191,7 @@ function holdInvalidGatewayConfiguration(code, signal) {
   } catch {
     return false;
   }
-  if (validation.error !== undefined || report?.valid !== false) return false;
+  if (report?.valid !== false) return false;
   gatewayConfigurationHeld = true;
   publishRuntimeFailure("gateway-config", "UNAVAILABLE");
   const issues = openClawConfigIssues(report.issues)

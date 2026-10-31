@@ -4658,10 +4658,19 @@ const invalidGatewayConfiguration = {
 };
 
 test("Kubernetes Gateway holds a configuration OpenClaw refuses when its first start exits", async (t) => {
-  const gateway = await startCodexGatewaySupervisor(t, { runtimeStatus: true });
+  const gateway = await startCodexGatewaySupervisor(t, {
+    runtimeStatus: true,
+    bindingDeviceId: "a".repeat(64),
+  });
   gateway.validation = invalidGatewayConfiguration;
+  // OpenClaw exits at about 3 s, before its /readyz ever answers 200.
+  gateway.serving = false;
+  await waitForCondition(
+    "an unready /readyz answer",
+    () => gateway.readinessProbes.some(({ status }) => status === 503),
+    5_000,
+  );
   const validationsBefore = gateway.validations;
-  // OpenClaw exits at about 3 s, before it ever answers /readyz.
   gateway.children[0].exit(1, null);
 
   // The wrapper holds the failure instead of restarting the container into the same refusal.
@@ -4684,26 +4693,36 @@ test("Kubernetes Gateway holds a configuration OpenClaw refuses when its first s
   );
   assert.doesNotMatch(JSON.stringify(gateway.logs), /synthetic-configured-secret/);
 
-  // A held Gateway is not respawned for a changed Harness peer; a container stop ends it.
+  // A held Gateway is not respawned for a changed Harness peer, nor restarted for another
+  // workspace node; a container stop ends it.
   gateway.peerStatus = { ...gateway.peerStatus, startupId: "agent-startup-2" };
   await gateway.pollPeer();
+  gateway.files.set(
+    "/home/node/workspace-node-binding/workspace-node.json",
+    JSON.stringify({ revisionId: gateway.revisionId, deviceId: "b".repeat(64) }),
+  );
+  await gateway.intervals.find(({ delay }) => delay === 1_000).callback();
   assert.equal(gateway.children.length, 1);
+  assert.deepEqual(gateway.exits, []);
+  assert.equal(gateway.runtimeStatus().runtimeFailure.check, "gateway-config");
   gateway.signalHandlers.SIGTERM();
   assert.deepEqual(gateway.exits, [0]);
 });
 
 // Every other exit restarts the container as before; the hold covers only a Gateway that
 // never served, whose configuration OpenClaw's validator reports invalid.
-for (const { label, runtimeStatus = true, validation, served = false, validations } of [
+for (const {
+  label,
+  runtimeStatus = true,
+  validation,
+  served = false,
+  exitCode = 1,
+  validations,
+} of [
   { label: "a configuration the validator accepts", validation: undefined, validations: 1 },
   {
     label: "a validator that times out",
     validation: { status: null, error: new Error("spawnSync node ETIMEDOUT"), stdout: "" },
-    validations: 1,
-  },
-  {
-    label: "a validator that prints no report",
-    validation: { status: 1, stdout: "OpenClaw config is invalid" },
     validations: 1,
   },
   {
@@ -4718,6 +4737,7 @@ for (const { label, runtimeStatus = true, validation, served = false, validation
     served: true,
     validations: 0,
   },
+  { label: "status 0", validation: invalidGatewayConfiguration, exitCode: 0, validations: 0 },
 ]) {
   test(`Kubernetes Gateway restarts after an exit with ${label}`, async (t) => {
     const gateway = await startCodexGatewaySupervisor(t, { runtimeStatus });
@@ -4732,8 +4752,8 @@ for (const { label, runtimeStatus = true, validation, served = false, validation
       );
     }
     const validationsBefore = gateway.validations;
-    gateway.children[0].exit(1, null);
-    assert.deepEqual(gateway.exits, [1]);
+    gateway.children[0].exit(exitCode, null);
+    assert.deepEqual(gateway.exits, [exitCode]);
     assert.equal(gateway.validations - validationsBefore, validations);
     if (runtimeStatus) {
       assert.equal(gateway.runtimeStatus().runtimeFailure, undefined);
