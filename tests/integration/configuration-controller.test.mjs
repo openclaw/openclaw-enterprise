@@ -2028,15 +2028,15 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     // provider default the refusal names the alias, not the provider.
     [
       { ...password(generated), secrets: { defaults: { env: " custom " } } },
-      invalidSecretProviderDefaultsRefusal("alias", "env", '" custom "'),
+      invalidSecretProviderDefaultsRefusal("alias", "env", '" custom "', "custom"),
     ],
     [
       { ...password(generated), secrets: { defaults: { env: "BAD" } } },
-      invalidSecretProviderDefaultsRefusal("alias", "env", "BAD"),
+      invalidSecretProviderDefaultsRefusal("alias", "env", "BAD", "bad"),
     ],
     [
       { ...valid, secrets: { defaults: { file: "Vault" } } },
-      invalidSecretProviderDefaultsRefusal("alias", "file", "Vault"),
+      invalidSecretProviderDefaultsRefusal("alias", "file", "Vault", "vault"),
     ],
     [
       { ...valid, secrets: { defaults: { env: 7 } } },
@@ -2136,7 +2136,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
         },
       },
     }),
-    invalidSecretProviderDefaultsRefusal("alias", "env", "BAD"),
+    invalidSecretProviderDefaultsRefusal("alias", "env", "BAD", "bad"),
   );
 
   // Rules that depend on the Compute Driver or the topology save, and deployment refuses them.
@@ -2219,6 +2219,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
         "google",
         "id",
         "search_header",
+        "SEARCH_HEADER",
       ),
     ],
     [

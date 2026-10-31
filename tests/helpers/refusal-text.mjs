@@ -578,32 +578,67 @@ export const dedicatedCodexVariableRefusal = (
   `Configuration setting ${setting} references ${name}, which only a Dedicated Codex Agent receives: on ${agent} Agent, remove plugins.entries.${plugin} or set its enabled to false.`;
 export const unboundPluginSecretRefusal = (setting, name, plugin) =>
   `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
-// The plugin secret input rule's refusal of a reference OpenClaw cannot read, which stops the
-// Gateway at startup whatever the bindings (finding 3056); `alias` is the default env alias
-// (secrets.defaults.env, else "default"). `substitutedAlias`: that alias holds an environment
-// reference, which only the runtime resolves.
-const UNREADABLE_PLUGIN_SECRETS = {
-  providerless: (source = "env", alias = "default") =>
-    `is a SecretRef without a provider: add ${["env", "store"].includes(source) ? `provider ${alias}` : `a provider that secrets.providers configures for ${source}`}`,
-  substitutedAlias: (source = "env") =>
-    `is a SecretRef without a provider: add the provider secrets.defaults.${source} names`,
-  provider: (provider, source = "env") =>
-    `uses secret provider ${provider}, which secrets.providers does not configure for ${source}`,
-  id: (id) =>
-    `references ${id}, not an id OpenClaw reads in env SecretRefs (A-Z, 0-9 and _, from a letter)`,
-  allowlist: (id, provider = "default") =>
-    `references ${id}, which secrets.providers.${provider}.allowlist omits`,
+// Why OpenClaw cannot read a SecretRef, as [problem, step] (packages/occ/src/environment-
+// references.ts): every refusal names one next step (finding 3067). `alias` is the default alias
+// of the ref's source (secrets.defaults.<source>, else "default"). `substitutedAlias`: that alias
+// holds an environment reference, which only the runtime resolves. `provider`: a provider
+// secrets.providers does not configure for the source; `defaultAlias`: provider default while
+// secrets.defaults.<source> names `alias`; `providerAlias`: a provider outside the alias grammar;
+// `id`: an env id outside the grammar, with the `example` the step offers, if any. A null `alias`
+// is one too long to offer by name.
+const useDefaultAlias = (alias, source = "env") =>
+  alias === null ? `use the secrets.defaults.${source} alias` : `use provider ${alias}`;
+const UNREADABLE_SECRET_REFS = {
+  providerless: (source = "env", alias = "default") => [
+    "is a SecretRef without a provider",
+    ["env", "store"].includes(source)
+      ? `add provider ${alias}`
+      : `add a provider that secrets.providers configures for ${source}`,
+  ],
+  substitutedAlias: (source = "env") => [
+    "is a SecretRef without a provider",
+    `add the provider secrets.defaults.${source} names`,
+  ],
+  provider: (provider, source = "env", alias = "default") => [
+    `uses secret provider ${provider}, not configured for ${source}`,
+    `${["env", "store"].includes(source) ? `${useDefaultAlias(alias, source)}, or ` : ""}add it to secrets.providers`,
+  ],
+  defaultAlias: (alias, source = "env", offered = alias) => [
+    `uses secret provider default, but secrets.defaults.${source} names ${alias}`,
+    `use ${offered === null ? "that provider" : `provider ${offered}`}`,
+  ],
+  providerAlias: (provider, alias = "default") => [
+    `uses secret provider ${provider}, not a provider alias OpenClaw reads`,
+    useDefaultAlias(alias),
+  ],
+  id: (id, example) => [
+    `references ${id}, not an env id OpenClaw reads`,
+    `use ${example ?? "A-Z, 0-9 and _, from a letter"}`,
+  ],
+  // A long provider shows quoted and cut, as a key in brackets.
+  allowlist: (id, provider = "default") => [
+    `references ${id}, which secrets.providers${provider.startsWith('"') ? `[${provider}]` : `.${provider}`}.allowlist omits`,
+    "add it to that allowlist",
+  ],
 };
-export const unreadablePluginSecretRefusal = (setting, plugin, held, ...shown) =>
-  `Configuration setting ${setting} ${UNREADABLE_PLUGIN_SECRETS[held](...shown)}, or remove plugins.entries.${plugin} or set its enabled to false.`;
+// The problem alone, as SSH Compute states it for the reference it renders.
+export const unreadableSecretRefProblem = (held, ...shown) =>
+  UNREADABLE_SECRET_REFS[held](...shown)[0];
+// The plugin secret input rule's refusal of a reference OpenClaw cannot read, which stops the
+// Gateway at startup whatever the bindings (finding 3056).
+export const unreadablePluginSecretRefusal = (setting, plugin, held, ...shown) => {
+  const [problem, step] = UNREADABLE_SECRET_REFS[held](...shown);
+  return `Configuration setting ${setting} ${problem}: ${step}, or remove plugins.entries.${plugin} or set its enabled to false.`;
+};
 // The same refusal of a whole `${NAME}` at an input with a runtime owner (beam, imap): OpenClaw
 // reads it as a SecretRef only while NAME is unset, so deployment refuses it while unbound.
+// Binding NAME is the step it names.
 export const unboundUnreadablePluginSecretRefusal = (setting, plugin, name, held, ...shown) =>
-  `Configuration setting ${setting} ${UNREADABLE_PLUGIN_SECRETS[held](...shown)}: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
+  `Configuration setting ${setting} ${unreadableSecretRefProblem(held, ...shown)}: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
 // The same refusal of a whole `${APP_SERVER_*}` there on an embedded or Dedicated OpenClaw Agent
 // (`agent`: "an embedded" or "a Dedicated OpenClaw"), which never sets it (finding 3060).
 export const appServerUnreadablePluginSecretRefusal = (setting, plugin, agent, held, ...shown) =>
-  `Configuration setting ${setting} ${UNREADABLE_PLUGIN_SECRETS[held](...shown)}, and it is never set on ${agent} Agent: remove plugins.entries.${plugin} or set its enabled to false.`;
+  `Configuration setting ${setting} ${unreadableSecretRefProblem(held, ...shown)}, and it is never set on ${agent} Agent: remove plugins.entries.${plugin} or set its enabled to false.`;
 // The refusal of a gateway.auth.password object OpenClaw cannot read, which stops every start on
 // every Compute (findings 3057, 3061, 3062): Configuration save, Agent save and deployment
 // (packages/occ/src/configuration-settings.ts), and Kubernetes and Docker Compute admission and
@@ -611,22 +646,28 @@ export const appServerUnreadablePluginSecretRefusal = (setting, plugin, agent, h
 // `shape`: an object OpenClaw does not read as a SecretRef, offering the generated reference on the
 // default env alias.
 const UNREADABLE_GATEWAY_PASSWORDS = {
-  ...UNREADABLE_PLUGIN_SECRETS,
-  keys: () => "holds keys other than source, provider and id, which OpenClaw refuses: remove them",
-  shape: (alias = "default") =>
-    `is not a SecretRef OpenClaw reads: use {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}`,
+  ...UNREADABLE_SECRET_REFS,
+  keys: () => [
+    "holds keys other than source, provider and id, which OpenClaw refuses",
+    "remove them",
+  ],
+  shape: (alias = "default") => [
+    "is not a SecretRef OpenClaw reads",
+    `use {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}`,
+  ],
 };
 export const unreadableGatewayPasswordRefusal = (held, ...shown) =>
-  `Configuration setting gateway.auth.password ${UNREADABLE_GATEWAY_PASSWORDS[held](...shown)}.`;
+  `Configuration setting gateway.auth.password ${UNREADABLE_GATEWAY_PASSWORDS[held](...shown).join(": ")}.`;
 // The refusal of a secrets.defaults OpenClaw's configuration check refuses, which stops the
 // Gateway at every start on every Compute (finding 3064): Configuration save, Agent save and
 // deployment (`secretProviderDefaultsProblem`) and the console. `alias`: an alias outside the
-// grammar on `source` (`shown` as the message shows it, absent for one that is not text); `key`: a
-// key other than a source; `shape`: secrets.defaults that is not an object.
+// grammar on `source` (`shown` as the message shows it, absent for one that is not text; `fixed`:
+// the alias the step offers, if any); `key`: a key other than a source; `shape`: secrets.defaults
+// that is not an object.
 const INVALID_SECRET_PROVIDER_DEFAULTS = {
-  alias: (source, shown) => [
+  alias: (source, shown, fixed) => [
     `secrets.defaults.${source}`,
-    `${shown === undefined ? "is " : `is ${shown}, `}not a provider alias OpenClaw reads (a-z, 0-9, _ and -, from a lowercase letter, at most 64 characters)`,
+    `${shown === undefined ? "is " : `is ${shown}, `}not a provider alias OpenClaw reads (a-z, 0-9, _ and -, from a lowercase letter, at most 64 characters): ${fixed === undefined ? "" : `use ${fixed}, or `}remove it`,
   ],
   key: (shown) => [
     "secrets.defaults",

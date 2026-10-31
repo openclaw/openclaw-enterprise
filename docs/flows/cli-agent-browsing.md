@@ -1,7 +1,7 @@
 ---
 created: 2026-10-10
-updated: 2026-10-22
-last_updated_session: fix-2152a
+updated: 2026-10-31
+last_updated_session: bughunt-1031m
 ---
 
 # CLI Agent metadata browsing flow
@@ -23,8 +23,8 @@ strict operational failures retain their own error semantics.
 ## Entry Points
 
 - `internal/occcli/cli.go:agentCommand`: the `get`, `list`, and `revisions` commands.
-- `internal/occcli/cli.go:describeAgentRevisions`: selected version and deployment
-  status enrichment of authorized version metadata.
+- `internal/occcli/cli.go:describeAgentRevisions`: marks the selected version in
+  authorized version summaries.
 - `internal/occcli/output.go:printBrowsingItems`: conditional error columns for
   table output, with the API's typed fields preserved in JSON and YAML.
 
@@ -38,15 +38,10 @@ CLI presentation does not grant access or make unreadable fields usable.
 graph TD
   A["Read authorized Agent metadata"] --> B{"Version history?"}
   B -->|No| F["Render metadata and saved-settings error"]
-  B -->|Yes| C["Read Agent selected version and saved-settings error"]
-  C --> D{"Agent settings unreadable?"}
-  D -->|Yes| E["Keep metadata; leave deployment status null"]
-  D -->|No| G["Read strict deployment status"]
-  G -->|Readable| F
-  G -->|Forbidden or absent| E
-  G -->|Unavailable| N["Notice on stderr; status null"] --> F
-  G -->|Other failure| H["Return command error"]
-  E --> F
+  B -->|Yes| C["Read one page of version summaries with deployment status"]
+  C --> D["Read Agent selected version"]
+  D -->|Readable| E["Mark the active version; keep listed status"] --> F
+  D -->|Failure| H["Return command error"]
 ```
 
 ## Execution Trace
@@ -74,24 +69,19 @@ endpoints.
 
 <a id="2-enrich-revision-history-only-where-strict-reads-are-meaningful" class="anchor-alias"></a>
 
-### 2. Enrich version history only where strict reads are meaningful
+### 2. Mark the active version in version history
+
+Version history pages hold summaries, newest first (`--limit`, `--cursor`).
+They carry no saved settings and so no `configurationReadError`.
+`packages/occ/src/index.ts:listRevisions` adds each version's
+`deploymentStatus` and `deploymentErrorCode` from its deployment work record in
+the same read, so a version or Agent with unreadable saved settings keeps its
+status. A version without a deployment work record has `null` for both.
 
 `internal/occcli/cli.go:describeAgentRevisions` reads the Agent to determine its
-selected version, clones each version row, sets its `active` marker, and starts
-with `deploymentStatus: null`. A readable Agent and readable version can be
-enriched through `occclient.Client.GetAgentDeployment`. A missing deployment
-or one the caller cannot read leaves the status null. Other failures still end
-the command; browsing does not silently turn an outage into missing status.
-
-If the Agent has a saved-settings error, strict deployment reads cannot decode
-that Agent. The CLI skips deployment enrichment for the entire history and
-prints a notice on stderr naming the affected field. It preserves every
-readable version and metadata-only version returned by the browsing API.
-Version history pages hold summaries, newest first (`--limit`, `--cursor`),
-which carry no saved settings and so no `configurationReadError`. If the Agent
-is readable but one historical version is not, that row's status read answers
-`503`: the CLI prints a notice naming the version and leaves its status null.
-Healthy siblings retain their normal status reads. When a page is full,
+selected version, clones each summary, and sets its `active` marker. It keeps
+the listed status and sends no read for each version. A failed Agent read
+ends the command. When a page is full,
 a notice prints the next command with the resolved `--namespace`, the retained
 `--limit` when supplied, and the new `--cursor`. Explicit scope keeps that
 command on the selected Namespace even when `OCC_NAMESPACE` is unset or differs.
@@ -136,19 +126,19 @@ record nor retries deployment work.
 Run `occ agent get AGENT_ID`, `occ agent list`, and `occ agent revisions AGENT_ID`
 with the same Namespace. A saved-settings problem appears as
 `SAVED_CONFIGURATION_UNREADABLE (field)` in tables and as the typed object with
-`--output json` or `--output yaml`. A version-history notice explains skipped
-deployment status when the Agent's own settings are unreadable. Null status
-alone does not prove a deployment failed or succeeded.
+`--output json` or `--output yaml`. Version history shows the same
+`deploymentStatus` as the API list. Null status alone does not prove a
+deployment failed or succeeded.
 
 The PostgreSQL browsing case in
 `tests/integration/postgres-platform-state.test.mjs` creates healthy saved state,
 introduces a retired plugin enum using the same legacy-state fixture as the API
 contract, and exercises the compiled CLI through the shipped API listener. It
-checks list/detail/history output, structured errors, healthy sibling history,
-strict mutation refusal, and unchanged stored legacy settings. It does not run
-Gateway workloads or model turns. The focused Go command tests additionally
-check that healthy deployment enrichment still occurs beside an unreadable
-historical version, and that `--cursor` continues the history. See the PostgreSQL testing guide for owned database setup.
+checks list/detail/history output, structured errors, listed deployment status
+beside an unreadable historical version, strict mutation refusal, and unchanged
+stored legacy settings. It does not run Gateway workloads or model turns. The
+focused Go command tests additionally check that history sends no status read
+for each version, and that `--cursor` continues the history. See the PostgreSQL testing guide for owned database setup.
 
 ## Related docs
 
@@ -163,6 +153,8 @@ historical version, and that `--cursor` continues the history. See the PostgreSQ
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31: Version history keeps the deployment status of each OCC list summary instead of reading each version's status again. (bughunt-1031m)
 
 - 2026-10-22 02:40: `occ agent get` adds the Harness Sandbox line of a running dedicated Agent (finding 2152). (fix-2152a - 912a25bb9879)
 

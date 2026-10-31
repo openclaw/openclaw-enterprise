@@ -99,6 +99,11 @@ const asObject = (value: unknown): Readonly<Record<string, unknown>> | undefined
 export const shownSecretName = (name: string): string =>
   /^[A-Za-z0-9_]{1,32}$/.test(name) ? name : quotedSettingKey(name, 32);
 
+// Whether a refusal's step may offer `name` as a value to write: shownSecretName shows it whole,
+// and it is short enough that the message keeps its 256-character cap with the longest names
+// beside it.
+const offerable = (name: string): boolean => Array.from(name).length <= 20;
+
 // The provider alias OpenClaw reads a `source` SecretRef on by default: secrets.defaults.<source>
 // (trimmed), else "default". Only env and store have a built-in provider on it. Undefined when the
 // alias holds an environment reference: the runtime substitutes it before it reads the alias, so
@@ -145,33 +150,111 @@ export function secretProviderDefaultsProblem(
       continue;
     }
     if (typeof alias !== "string" || !SECRET_PROVIDER_ALIAS.test(alias)) {
+      // Offer the alias trimmed and lowercased when that fits the grammar and is offerable.
+      const fixed = typeof alias === "string" ? alias.trim().toLowerCase() : "";
+      const step =
+        SECRET_PROVIDER_ALIAS.test(fixed) && offerable(fixed)
+          ? `use ${shownSecretName(fixed)}, or remove it`
+          : "remove it";
       return {
         setting: `secrets.defaults.${source}`,
-        requirement: `${typeof alias === "string" ? `is ${shownSecretName(alias)}, ` : "is "}not a provider alias OpenClaw reads (a-z, 0-9, _ and -, from a lowercase letter, at most 64 characters)`,
+        requirement: `${typeof alias === "string" ? `is ${shownSecretName(alias)}, ` : "is "}not a provider alias OpenClaw reads (a-z, 0-9, _ and -, from a lowercase letter, at most 64 characters): ${step}`,
       };
     }
   }
   return undefined;
 }
 
-function providerlessRequirement(source: string, secrets: unknown): string {
+// Why OpenClaw cannot read a SecretRef, and the one next step that fixes it (finding 3067).
+interface Unreadable {
+  readonly problem: string;
+  readonly step: string;
+}
+
+const requirementText = ({ problem, step }: Unreadable): string => `${problem}: ${step}`;
+
+// The step that puts a `source` SecretRef on its default provider alias, `add` for a ref without
+// a provider: by name when the alias is known and offerable, else by the setting that names it.
+function defaultProviderStep(source: string, alias: string | undefined, add = false): string {
+  if (alias !== undefined && offerable(alias)) {
+    return `${add ? "add" : "use"} provider ${shownSecretName(alias)}`;
+  }
+  return add
+    ? `add the provider secrets.defaults.${source} names`
+    : `use the secrets.defaults.${source} alias`;
+}
+
+function providerlessUnreadable(source: string, secrets: unknown): Unreadable {
+  const problem = "is a SecretRef without a provider";
   if (!["env", "store"].includes(source)) {
-    return `is a SecretRef without a provider: add a provider that secrets.providers configures for ${source}`;
+    return { problem, step: `add a provider that secrets.providers configures for ${source}` };
   }
   const alias = defaultSecretProvider(secrets, source);
-  return `is a SecretRef without a provider: add ${
-    alias === undefined
-      ? `the provider secrets.defaults.${source} names`
-      : `provider ${shownSecretName(alias)}`
-  }`;
+  return { problem, step: defaultProviderStep(source, alias, true) };
+}
+
+/**
+ * Why OpenClaw cannot read a SecretRef on a `provider` that is not the source's built-in one
+ * (`builtIn` false) or that breaks the alias grammar, with the step that fixes it: the default
+ * alias, or configuring the provider for the source. A ref on provider "default" while
+ * secrets.defaults.<source> names another alias says so (finding 3067).
+ */
+function providerUnreadable(provider: string, source: string, secrets: unknown): Unreadable {
+  const shown = shownSecretName(provider);
+  const hasDefault = ["env", "store"].includes(source);
+  const alias = hasDefault ? defaultSecretProvider(secrets, source) : undefined;
+  if (!SECRET_PROVIDER_ALIAS.test(provider)) {
+    return {
+      problem: `uses secret provider ${shown}, not a provider alias OpenClaw reads`,
+      step: hasDefault
+        ? defaultProviderStep(source, alias)
+        : "use a-z, 0-9, _ and -, from a lowercase letter",
+    };
+  }
+  if (provider === "default" && alias !== undefined && alias !== "default") {
+    return {
+      problem: `uses secret provider default, but secrets.defaults.${source} names ${shownSecretName(alias)}`,
+      step: `use ${offerable(alias) ? `provider ${shownSecretName(alias)}` : "that provider"}`,
+    };
+  }
+  return {
+    problem: `uses secret provider ${shown}, not configured for ${source}`,
+    step: hasDefault
+      ? `${defaultProviderStep(source, alias)}, or add it to secrets.providers`
+      : "add it to secrets.providers",
+  };
+}
+
+// secrets.providers.<provider> as a refusal shows it: a long alias is quoted and cut, so the
+// message keeps its cap.
+const shownProviderSetting = (provider: string): string =>
+  Array.from(provider).length <= 32
+    ? `secrets.providers.${provider}`
+    : `secrets.providers[${quotedSettingKey(provider, 32)}]`;
+
+// The id example a refusal offers for an env or store id OpenClaw refuses: trimmed, upper-cased,
+// other characters as _, when that fits the grammar and is offerable.
+function secretIdExample(id: string): string | undefined {
+  const example = id
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]/g, "_");
+  return ENV_SECRET_REF_ID.test(example) && offerable(example) ? example : undefined;
 }
 
 export type SecretInputReference =
   // The variable the Gateway reads from its environment. `unset`: why OpenClaw cannot read a
-  // whole `${NAME}` that it keeps as an env SecretRef because NAME is unset at startup.
+  // whole `${NAME}` that it keeps as an env SecretRef because NAME is unset at startup, without a
+  // step: the caller names the binding that sets NAME.
   | { readonly variable: string; readonly unset?: string }
-  // Why OpenClaw cannot read the reference at all, which ends startup.
-  | { readonly requirement: string };
+  // Why OpenClaw cannot read the reference at all, which ends startup, then ": " and the step
+  // that fixes it (`problem` and `step` apart).
+  | ({ readonly requirement: string } & Unreadable);
+
+const readable = (unreadable: Unreadable): SecretInputReference => ({
+  requirement: requirementText(unreadable),
+  ...unreadable,
+});
 
 /**
  * How OpenClaw reads a secret-input value at startup, or undefined when it keeps the value as
@@ -218,7 +301,7 @@ export function secretInputReference(
     return { variable: template };
   }
   if (provider === undefined) {
-    return { requirement: providerlessRequirement(source, secrets) };
+    return readable(providerlessUnreadable(source, secrets));
   }
   if (
     (object !== undefined && Object.keys(object).length !== 3) ||
@@ -236,28 +319,37 @@ export function secretInputReference(
     const alias = defaultSecretProvider(secrets, source);
     builtIn = alias === undefined ? undefined : provider === alias;
   }
-  const unreadable = (): string | undefined => {
+  const unreadable = (): Unreadable | undefined => {
     if (
       !SECRET_PROVIDER_ALIAS.test(provider) ||
       (builtIn === false && configured?.source !== source)
     ) {
-      return `uses secret provider ${shownSecretName(provider)}, which secrets.providers does not configure for ${source}`;
+      return providerUnreadable(provider, source, secrets);
     }
     if (["env", "store"].includes(source) && !ENV_SECRET_REF_ID.test(id)) {
-      return `references ${shownSecretName(id)}, not an id OpenClaw reads in ${source} SecretRefs (A-Z, 0-9 and _, from a letter)`;
+      const example = secretIdExample(id);
+      return {
+        problem: `references ${shownSecretName(id)}, not ${source === "env" ? "an" : "a"} ${source} id OpenClaw reads`,
+        step: `use ${example ?? "A-Z, 0-9 and _, from a letter"}`,
+      };
     }
     const allowlist = builtIn === false ? configured?.allowlist : undefined;
     if (source === "env" && Array.isArray(allowlist) && !allowlist.includes(id)) {
-      return `references ${shownSecretName(id)}, which secrets.providers.${provider}.allowlist omits`;
+      return {
+        problem: `references ${shownSecretName(id)}, which ${shownProviderSetting(provider)}.allowlist omits`,
+        step: "add it to that allowlist",
+      };
     }
     return undefined;
   };
   const requirement = unreadable();
   if (substituted !== undefined) {
-    return requirement === undefined ? { variable: id } : { variable: id, unset: requirement };
+    return requirement === undefined
+      ? { variable: id }
+      : { variable: id, unset: requirement.problem };
   }
   if (requirement !== undefined) {
-    return { requirement };
+    return readable(requirement);
   }
   return source === "env" ? { variable: id } : undefined;
 }
@@ -289,11 +381,14 @@ export function generatedGatewayPasswordReference(secrets: unknown): {
  * config check takes only a string or a strict {source, provider, id} with a provider there
  * (`SecretInputSchema`), so any other object stops the Gateway with exit code 78 (findings 3061,
  * 3062); it exits on a SecretRef it cannot read while its configuration validates (finding 3057;
- * `secretInputReference`). A file or exec id is left to OpenClaw's own check.
+ * `secretInputReference`). A file or exec id is left to OpenClaw's own check. Each refusal ends
+ * with the step that fixes it; `step: false` leaves that step out of a reference OpenClaw would
+ * not read, for a caller that offers its own fix (SSH Compute's rendered reference).
  */
 export function gatewayPasswordRequirement(
   password: unknown,
   secrets: unknown,
+  { step = true }: { readonly step?: boolean } = {},
 ): string | undefined {
   const reference = asObject(password);
   if (reference === undefined) {
@@ -314,8 +409,11 @@ export function gatewayPasswordRequirement(
   }
   // A null, blank or non-text provider names none, as a missing one does.
   if (typeof provider !== "string" || provider.trim() === "") {
-    return providerlessRequirement(source, secrets);
+    return requirementText(providerlessUnreadable(source, secrets));
   }
   const read = secretInputReference(reference, secrets);
-  return read !== undefined && "requirement" in read ? read.requirement : undefined;
+  if (read === undefined || !("requirement" in read)) {
+    return undefined;
+  }
+  return step ? read.requirement : read.problem;
 }
