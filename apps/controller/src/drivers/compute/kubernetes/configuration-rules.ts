@@ -136,13 +136,14 @@ const RUNTIME_VARIABLE =
   /^(?:HOSTNAME|YARN_VERSION|GIT_SSL_CAINFO)$|_SERVICE_(?:HOST|PORT)(?:_|$)|_PORT(?:_|$)/;
 
 // The variable a secret-input value reads as an environment SecretRef, if any: a whole `${NAME}`
-// with no fallback, the `$NAME` shorthand or an env SecretRef object. OpenClaw keeps a reference
+// with no fallback, the `$NAME` shorthand or an env SecretRef object. OpenClaw trims the value
+// first (`parseEnvTemplateSecretRef`), so a padded `${NAME}` counts too. It keeps a reference
 // inside other text as written, and a fallback replaces an unset name, so neither stops it.
 function secretInputVariable(value: unknown): string | undefined {
   const reference = asRecord(value);
   const name =
     typeof value === "string"
-      ? (wholeEnvironmentReferenceName(value) ?? secretInputShorthandName(value))
+      ? (wholeEnvironmentReferenceName(value.trim()) ?? secretInputShorthandName(value))
       : reference?.source === "env"
         ? reference.id
         : undefined;

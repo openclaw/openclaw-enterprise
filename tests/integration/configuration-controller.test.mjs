@@ -2025,6 +2025,26 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
         "google",
       ),
     ],
+    // OpenClaw trims a secret-input value before it reads `${NAME}`, so a padded reference stops
+    // the Gateway too (finding 3046). Save accepts it here: the header name marks no credential.
+    [
+      {
+        ...valid,
+        plugins: {
+          entries: {
+            google: {
+              config: { webSearch: { headers: { "X-Goog-User-Project": " ${SEARCH_HEADER} " } } },
+            },
+          },
+        },
+      },
+      400,
+      unboundPluginSecretRefusal(
+        "plugins.entries.google.config.webSearch.headers.X-Goog-User-Project",
+        "SEARCH_HEADER",
+        "google",
+      ),
+    ],
   ]) {
     const label = JSON.stringify(values);
     const saved = await request(context.app, "PATCH", item, { body: { values } });
