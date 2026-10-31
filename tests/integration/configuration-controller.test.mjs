@@ -1003,6 +1003,72 @@ test("Configuration save refuses an agents roster every deployment refuses, with
   }
 });
 
+test("Configuration save refuses a provider catalog row that no model selection names, with deployment's text", async () => {
+  // Finding 3019. Every deployment resolves the Harness from the model policy and first refuses a
+  // models.providers.<p>.models row whose id names no primary or fallback model. Save accepted
+  // such a row, so the draft looked ready until Deploy answered 400.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-catalog-integration", "validateHarnessAuth"),
+  });
+  const withCatalog = (rows, agents = { defaults: runtimeDefaults }) => ({
+    agents,
+    models: { providers: { openai: { models: rows } } },
+  });
+  const selected = withCatalog([{ id: "gpt-4.1" }]);
+  const agent = await storedRowAgent(context, configurationDriver, selected, {
+    name: "Catalog consumer",
+    secretName: "catalog-key",
+  });
+  const catalogRule = setting(
+    "models.providers.openai.models",
+    "may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries",
+  );
+  // Create and update refuse the row. A row an older release stored still reads, deployment
+  // refuses it with the same text, and an update that keeps it is refused.
+  await refusedAtSaveAndDeploy(
+    context,
+    agent,
+    withCatalog([{ id: "gpt-4.1" }, { id: "gpt-unselected" }]),
+    catalogRule,
+  );
+
+  // Rows that name a selected model save: the primary by its id or its complete ref, a fallback,
+  // and an Agent entry's own model.
+  const fallback = { primary: "openai/gpt-4.1", fallbacks: ["openai/gpt-4.1-mini"] };
+  for (const values of [
+    withCatalog([{ id: "openai/gpt-4.1" }]),
+    withCatalog([{ id: "gpt-4.1" }, { id: "gpt-4.1-mini" }], {
+      defaults: { ...runtimeDefaults, model: fallback },
+    }),
+    withCatalog([{ id: "gpt-4.1" }], { entries: { main: { model: "openai/gpt-4.1" } } }),
+  ]) {
+    const saved = await request(context.app, "PATCH", agent.item, { body: { values } });
+    assert.equal(saved.status, 200, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
+    assert.deepEqual(saved.body.data.values, values);
+  }
+
+  // A Preset whose model or catalog row waits on a variable names no model yet: a launch can fill
+  // both with one model. It saves; the Configuration a launch creates gets Configuration save's
+  // check.
+  for (const [index, model] of ["openai/{{ vars.model }}", "{{ vars.model }}"].entries()) {
+    const waiting = await savePreset(
+      context,
+      {
+        variables: { model: { type: "string" }, row: { type: "string" } },
+        configuration: {
+          values: withCatalog([{ id: "{{ vars.row }}" }], {
+            defaults: { model, models: { [model]: { agentRuntime: { id: "openclaw" } } } },
+          }),
+        },
+      },
+      `Catalog-deferred-${index}`,
+    );
+    assert.equal(waiting.status, 201, `${model}: ${JSON.stringify(waiting.body)}`);
+  }
+});
+
 test("Configuration save refuses a Gateway tool policy that every OpenClaw topology refuses, with deployment's text", async () => {
   // Findings 2688 and 2689. Save and deployment run the real Kubernetes Compute rules. The
   // Agent is embedded, the default: its Gateway applies the policy natively, so a policy only
