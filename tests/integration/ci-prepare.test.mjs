@@ -1062,6 +1062,7 @@ describe("CI preparation", { concurrency }, () => {
     for (const input of [
       ".dockerignore",
       "scripts/ci/prepare.mjs",
+      "scripts/ci/resource-names.ts",
       "scripts/ci/test-suites/images-packaging.json",
       ".github/workflows/ci-image-cache.yml",
     ]) {
