@@ -8,6 +8,8 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 
 ## Changelog
 
+- 2026-10-31 09:00: Confirm access when the read after Reload draft finds no grant outstanding. (fix-3030)
+- 2026-10-31 08:00: Name the save after a refused Retry. (fix-offers-1031)
 - 2026-10-31 07:30: Word an unconfirmed Retry without a Configuration save; clear it on Reload draft. (fix-3023)
 - 2026-10-31 03:45: Say what a Slack-off Retry did and keep its focus. (fix-slackoff-copy)
 - 2026-10-31 01:00: Check and retry bound Secrets' grants with Slack off. (fix-3018)

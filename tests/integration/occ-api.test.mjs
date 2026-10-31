@@ -55,6 +55,7 @@ import {
   SERVICE_ACCOUNT_CROSS_NAMESPACE,
   SERVICE_ACCOUNT_NAME_CONFLICT,
   SLACK_ROUTE_NOT_CONFIGURED,
+  sshGatewayPasswordRefusal,
   unboundReferenceRefusal,
   unsubstitutedReferenceRefusal,
   unsupportedChannelRefusal,
@@ -8251,7 +8252,7 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
     assert.deepEqual(revisions.data, [], JSON.stringify(revisions.body));
   };
   const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
-  for (const [name, gateway, message] of [
+  for (const [name, gateway, message, secrets] of [
     [
       "token-mode",
       { auth: { mode: "token" } },
@@ -8274,10 +8275,19 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
           password: { source: "env", provider: "default", id: "SYNTHETIC_GATEWAY_PASSWORD" },
         },
       },
-      setting(
-        "gateway.auth.password",
-        'must be "${OPENCLAW_GATEWAY_PASSWORD}" or the default-provider environment SecretRef with id OPENCLAW_GATEWAY_PASSWORD, whose value SSH Compute generates',
-      ),
+      sshGatewayPasswordRefusal.reference(),
+    ],
+    // The refusal offers the reference on the default env alias.
+    [
+      "other-password-variable-custom-alias",
+      {
+        auth: {
+          mode: "password",
+          password: { source: "env", provider: "custom", id: "SYNTHETIC_GATEWAY_PASSWORD" },
+        },
+      },
+      sshGatewayPasswordRefusal.reference("custom"),
+      { defaults: { env: "custom" } },
     ],
     ["password", { auth: { mode: "password" } }],
     [
@@ -8285,10 +8295,70 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
       { auth: { mode: "password", password: "${OPENCLAW_GATEWAY_PASSWORD}" } },
     ],
     ["omitted", undefined],
+    // The unit's EnvironmentFile sets OPENCLAW_GATEWAY_PASSWORD, which every env provider reads,
+    // so a SecretRef to it on a custom default alias or a configured env provider deploys (finding
+    // 3065); SSH required provider default exactly before.
+    [
+      "custom-alias-reference",
+      {
+        auth: {
+          mode: "password",
+          password: { source: "env", provider: "custom", id: "OPENCLAW_GATEWAY_PASSWORD" },
+        },
+      },
+      undefined,
+      { defaults: { env: "custom" } },
+    ],
+    [
+      "env-provider-reference",
+      {
+        auth: {
+          mode: "password",
+          password: { source: "env", provider: "vault", id: "OPENCLAW_GATEWAY_PASSWORD" },
+        },
+      },
+      undefined,
+      { providers: { vault: { source: "env", allowlist: ["OPENCLAW_GATEWAY_PASSWORD"] } } },
+    ],
+    // Password mode renders an unset password and the expression on provider default, which a
+    // custom default alias leaves unconfigured: the Gateway would exit at every start, so deploy
+    // refuses and offers the reference on the alias.
+    ...[undefined, "${OPENCLAW_GATEWAY_PASSWORD}"].map((password) => [
+      `${password === undefined ? "unset" : "expression"}-custom-alias`,
+      { auth: { mode: "password", ...(password === undefined ? {} : { password }) } },
+      sshGatewayPasswordRefusal.rendered(
+        "custom",
+        "uses secret provider default, which secrets.providers does not configure for env",
+      ),
+      { defaults: { env: "custom" } },
+    ]),
+    // When OpenClaw cannot read the reference on the default alias either (an allowlist there
+    // omits the variable), the refusal states the requirement and offers no reference that the
+    // same rule would refuse.
+    [
+      "unset-alias-allowlist",
+      { auth: { mode: "password" } },
+      sshGatewayPasswordRefusal.unoffered(
+        "uses secret provider default, which secrets.providers does not configure for env",
+      ),
+      {
+        defaults: { env: "vault" },
+        providers: { vault: { source: "env", allowlist: ["OTHER_SECRET"] } },
+      },
+    ],
+    [
+      "unset-default-allowlist",
+      { auth: { mode: "password" } },
+      sshGatewayPasswordRefusal.unoffered(
+        "references OPENCLAW_GATEWAY_PASSWORD, which secrets.providers.default.allowlist omits",
+      ),
+      { providers: { default: { source: "env", allowlist: ["OTHER_SECRET"] } } },
+    ],
   ]) {
     const configuration = await createConfiguration(controller, namespace.id, {
       ...values,
       ...(gateway === undefined ? {} : { gateway: { ...values.gateway, ...gateway } }),
+      ...(secrets === undefined ? {} : { secrets }),
     });
     const agent = await createAgentFor(`gateway-${name}`, configuration);
     const deployed = await deploy(agent);

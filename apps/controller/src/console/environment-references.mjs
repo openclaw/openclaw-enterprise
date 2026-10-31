@@ -5,6 +5,7 @@ export {
   gatewayPasswordRequirement,
   generatedGatewayPasswordReference,
   secretInputShorthandName,
+  secretProviderDefaultsProblem,
   unsubstitutedReference,
   wholeEnvironmentReferenceName,
 } from "@openclaw-enterprise/occ";

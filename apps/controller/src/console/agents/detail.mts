@@ -19,6 +19,7 @@ import { retiredOpenClawSettingMessage } from "../retired-openclaw-settings.mjs"
 import {
   gatewayPasswordRequirement,
   generatedGatewayPasswordReference,
+  secretProviderDefaultsProblem,
 } from "../environment-references.mjs";
 import {
   button,
@@ -3396,10 +3397,18 @@ export async function renderAgentDetail(
         (!runtimeAuth && !credentials?.canDeploy())
       );
     }
-    // OCC refuses to deploy a saved Configuration with a gateway password reference OpenClaw
-    // cannot read (finding 3063) or a setting the pinned OpenClaw retired (finding 2810), in that
-    // order and with this message, so the draft says it before Deploy, with the Configuration step.
+    // OCC refuses to deploy a saved Configuration with a secrets.defaults alias OpenClaw refuses
+    // (finding 3064), a gateway password reference OpenClaw cannot read (finding 3063) or a setting
+    // the pinned OpenClaw retired (finding 2810), in that order and with this message, so the
+    // draft says it before Deploy, with the Configuration step.
     function configurationRefusal(): { readonly message: string; readonly step: string } | null {
+      const defaults = secretProviderDefaultsProblem(values.secrets);
+      if (defaults !== undefined) {
+        return {
+          message: `Configuration setting ${defaults.setting} ${defaults.requirement}.`,
+          step: "Fix the secret provider alias",
+        };
+      }
       const password = gatewayPasswordRequirement(
         responseFields(responseFields(values.gateway).auth).password,
         values.secrets,
@@ -5869,6 +5878,10 @@ export async function renderAgentDetail(
     // A saved reference OpenClaw cannot read (no provider, other keys, a provider or allowlist that
     // cannot serve it) stops the Gateway; Configuration save and deployment refuse it with this
     // text, so it does not count as enabled and the button that replaces it stays (finding 3063).
+    // A secrets.defaults alias OpenClaw refuses stops it whatever the password, and save refuses
+    // any reference the button could write, so the hint names the alias and the button goes
+    // (finding 3064).
+    const defaultsProblem = secretProviderDefaultsProblem(values.secrets);
     const passwordRequirement = gatewayPasswordRequirement(gatewayAuth.password, values.secrets);
     const usesGeneratedGatewayPassword =
       passwordRequirement === undefined &&
@@ -5880,6 +5893,27 @@ export async function renderAgentDetail(
         revision.configurationId === snapshot.id &&
         revision.configurationGeneration === snapshot.generation,
     );
+    // The reference the button writes, on the default env alias. An allowlist or another source
+    // on that alias can leave it unreadable, and save refuses it then, so the hint states why and
+    // the button goes.
+    const generatedReference = generatedGatewayPasswordReference(values.secrets);
+    const generatedRequirement = gatewayPasswordRequirement(generatedReference, values.secrets);
+    function gatewayPasswordHint(): string {
+      if (defaultsProblem !== undefined) {
+        return `Configuration setting ${defaultsProblem.setting} ${defaultsProblem.requirement}. Edit Configuration to fix it before you enable gateway password access.`;
+      }
+      if (usesGeneratedGatewayPassword) {
+        return gatewayPasswordRevision
+          ? `Gateway password access is enabled in the saved Configuration and included in v${gatewayPasswordRevision.revision}.`
+          : "Gateway password access is enabled in the saved Configuration. Deploy a new version to apply it.";
+      }
+      if (generatedRequirement !== undefined) {
+        return `The generated gateway password reference {source: "env", provider: "${generatedReference.provider}", id: "OPENCLAW_GATEWAY_PASSWORD"} ${generatedRequirement}. Edit Configuration to fix it before you enable gateway password access.`;
+      }
+      return passwordRequirement === undefined
+        ? "Use generated credentials for direct gateway password access. Enable access, save Configuration, then deploy a new version."
+        : `Configuration setting gateway.auth.password ${passwordRequirement}. Enable gateway password access to replace it, save Configuration, then deploy a new version.`;
+    }
     const enableGatewayPassword = button("Enable gateway password access", () => {
       // Stage the native reference through the same draft and save checks as JSON edits.
       // The Compute Driver delivers the generated value only after deployment.
@@ -5890,7 +5924,7 @@ export async function renderAgentDetail(
             ...gateway,
             auth: {
               ...gatewayAuth,
-              password: generatedGatewayPasswordReference(values.secrets),
+              password: generatedReference,
             },
           },
         },
@@ -6190,22 +6224,16 @@ export async function renderAgentDetail(
       }
       if (!editing) {
         body.replaceChildren(
-          element(
-            "p",
-            { className: "hint" },
-            usesGeneratedGatewayPassword
-              ? gatewayPasswordRevision
-                ? `Gateway password access is enabled in the saved Configuration and included in v${gatewayPasswordRevision.revision}.`
-                : "Gateway password access is enabled in the saved Configuration. Deploy a new version to apply it."
-              : passwordRequirement === undefined
-                ? "Use generated credentials for direct gateway password access. Enable access, save Configuration, then deploy a new version."
-                : `Configuration setting gateway.auth.password ${passwordRequirement}. Enable gateway password access to replace it, save Configuration, then deploy a new version.`,
-          ),
+          element("p", { className: "hint" }, gatewayPasswordHint()),
           element(
             "div",
             { className: "form-actions" },
             edit,
-            usesGeneratedGatewayPassword ? null : enableGatewayPassword,
+            usesGeneratedGatewayPassword ||
+              defaultsProblem !== undefined ||
+              generatedRequirement !== undefined
+              ? null
+              : enableGatewayPassword,
           ),
           nativeDocument(values, "View native Configuration"),
           ...(feedback.textContent ? [feedback] : []),

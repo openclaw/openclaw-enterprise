@@ -22,7 +22,11 @@ reference; authentication mode and proxy settings stay unchanged. The Compute
 Driver owns the password; the Console shows only its reference. If the saved
 reference is one OpenClaw cannot read, such as one without a provider, the page
 shows the refusal and **Deploy new version** stays disabled; use the button to
-replace it.
+replace it. If `secrets.defaults` holds an alias OpenClaw refuses, the page names
+that setting instead and hides the button: fix the alias in the editor first.
+If OpenClaw cannot read the generated reference on the default env alias, for
+example because that provider's `allowlist` omits `OPENCLAW_GATEWAY_PASSWORD`,
+the page states why and hides the button until you fix it.
 
 **Collaboration and safety** shows two Gateway settings as a deployment of the
 draft applies them, and whether each value is the default or set in the
