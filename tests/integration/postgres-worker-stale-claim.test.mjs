@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createServer, connect } from "node:net";
 import test from "node:test";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
-import { PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
+import { createPostgresPool, PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
@@ -280,9 +280,9 @@ test(
     const leaseDurationMs = 1_500;
     const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
     const relay = await startDatabaseRelay(databaseUrl);
-    // The production worker pool settings: a silent query is abandoned only after 60 s.
-    const workerPool = new Pool({
-      connectionString: relay.url,
+    // Use the actual worker pool, including its idle-client reset handling. The
+    // relay drops idle and active sockets when the expired lease is recovered.
+    const workerPool = await createPostgresPool(relay.url, {
       max: 4,
       ...workerDatabasePoolOptions(60_000),
     });

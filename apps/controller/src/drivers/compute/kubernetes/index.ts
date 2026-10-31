@@ -1,3 +1,9 @@
+import { readFile } from "node:fs/promises";
+import {
+  KubernetesNamespaceJournal,
+  KubernetesNamespaceLifecycleRefused,
+  namespaceCleanupResult,
+} from "./namespace-lifecycle.ts";
 import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
@@ -126,6 +132,9 @@ import type {
   SandboxHarnessStatus,
   SandboxEnvironmentVariable,
   SandboxNamespaceContext,
+  SandboxNamespaceLifecycleContext,
+  NamespaceLifecycleContext,
+  SandboxNamespaceCleanupResource,
   SandboxResourceRef,
   SandboxWorkloadFile,
   SandboxWorkspaceMount,
@@ -376,6 +385,7 @@ interface KubernetesApiClients {
   readonly objects: KubernetesObjectApi;
   /** The selected API server URL, named when the server is unreachable. */
   readonly server?: string;
+  readonly lifecycleTarget?: { readonly server: string; readonly trust: string };
 }
 
 export const MINIMUM_KUBERNETES_VERSION = "1.35.0";
@@ -558,6 +568,7 @@ interface ReconcilePrecondition {
 
 interface Ownership {
   readonly namespaceId: string;
+  readonly lifecycleId?: string;
   readonly agentId?: string;
   readonly serviceAccountId?: string;
   readonly servicePrincipalId?: string;
@@ -1584,6 +1595,7 @@ function retryAfterMilliseconds(error: unknown): number {
 
 function failure(error: unknown): "retryable" | "permanent" {
   return error instanceof OwnershipFailure ||
+    error instanceof KubernetesNamespaceLifecycleRefused ||
     error instanceof ConfigurationFailure ||
     error instanceof ConfigurationHarnessError ||
     error instanceof SandboxNamespaceRefusedError ||
@@ -5720,30 +5732,128 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
-  async ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult> {
+  private async openNamespaceJournal(
+    namespace: Namespace,
+    lifecycle: NamespaceLifecycleContext,
+    placement: { readonly name: KubernetesNamespaceAddress; readonly external: boolean },
+  ): Promise<KubernetesNamespaceJournal> {
+    const execution = (await this.clients("execution")).lifecycleTarget;
+    const control = (await this.clients("control")).lifecycleTarget;
+    if (execution === undefined || control === undefined) {
+      throw new OwnershipFailure("The Kubernetes lifecycle target identity is unavailable.");
+    }
+    if (lifecycle.target !== (namespace.status === "deleting" ? "deleted" : "ready")) {
+      throw new OwnershipFailure("The Namespace lifecycle target differs from its current state.");
+    }
+    return KubernetesNamespaceJournal.open(lifecycle, {
+      execution,
+      control,
+      placement: { ...placement.name, external: placement.external },
+      ...(this.sandboxDriver === undefined
+        ? {}
+        : {
+            sandbox: {
+              id: this.sandboxDriver.id,
+              implementation: this.sandboxDriver.implementation,
+            },
+          }),
+    });
+  }
+
+  private async sandboxLifecycleContext(
+    namespace: Namespace,
+    name: KubernetesNamespaceAddress,
+    journal: KubernetesNamespaceJournal,
+  ): Promise<SandboxNamespaceLifecycleContext> {
+    if (this.sandboxDriver === undefined) {
+      throw new ConfigurationFailure("The Namespace Sandbox Driver is unavailable.");
+    }
+    const kubernetesNamespaceUid = required(
+      (await journal.read()).data.namespace?.uid,
+      "Bound Namespace UID",
+    );
+    return {
+      ...(await this.sandboxNamespaceContext(namespace, name)),
+      kubernetesNamespaceUid,
+      lifecycle: journal.sandboxContext(this.sandboxDriver),
+    };
+  }
+
+  async ensureNamespace(
+    namespace: Namespace,
+    lifecycle: NamespaceLifecycleContext,
+  ): Promise<NamespaceEnsureResult> {
     this.lifecycleStarted = true;
     const result = { namespaceId: namespace.id, namespaceReady: false };
     let tenantAccessRequired = false;
     try {
-      const ownership = { namespaceId: namespace.id };
+      const ownership = { namespaceId: namespace.id, lifecycleId: lifecycle.lifecycleId };
       const selection = namespace.existingNamespace;
       const placement = await this.resolveNamespace(namespace.id, selection);
       const { name, external: externallyManaged } = placement;
+      const journal = await this.openNamespaceJournal(namespace, lifecycle, placement);
+      let stage = (await journal.read()).data.namespace;
+      const freshNamespaceAttempt = stage === undefined || stage.creationRefused === true;
+      if (stage?.creationRefused === true) {
+        if ((await this.getNamespace(name)) !== undefined) {
+          throw new OwnershipFailure("A refused Namespace creation has an unexpected object.");
+        }
+        stage = { nonce: stage.nonce };
+        await journal.save({ namespace: stage });
+      }
       if (externallyManaged && selection === undefined) {
         throw new OwnershipFailure(
           `Existing Kubernetes namespace ${name.name} was not explicitly selected.`,
         );
       }
-      if (!externallyManaged && !this.preprovisionedNamespace) {
-        const desired = this.manifest("v1", "Namespace", name.name, ownership);
-        desired.metadata.labels = {
-          ...desired.metadata.labels,
-          ...this.executionNamespaceGatewayLabels(ownership.namespaceId),
-          "pod-security.kubernetes.io/enforce": "restricted",
-          "pod-security.kubernetes.io/audit": "restricted",
-          "pod-security.kubernetes.io/warn": "restricted",
+      if (stage === undefined) {
+        const before = await this.getNamespace(name);
+        if (before !== undefined && !externallyManaged && !this.preprovisionedNamespace) {
+          throw new OwnershipFailure(
+            "A managed Namespace exists without a lifecycle creation binding.",
+          );
+        }
+        if (externallyManaged && before === undefined) {
+          throw new OwnershipFailure(`Existing Kubernetes namespace ${name.name} does not exist.`);
+        }
+        stage = {
+          nonce: lifecycle.lifecycleId,
+          ...(before === undefined ? {} : { uid: required(before.metadata.uid, "Namespace UID") }),
         };
-        await this.reconcile(desired, ownership, name);
+        await journal.save({ namespace: stage });
+      }
+      if (!externallyManaged && !this.preprovisionedNamespace) {
+        const before = await this.getNamespace(name);
+        if (before === undefined) {
+          if (stage.uid !== undefined) {
+            throw new OwnershipFailure("The bound Kubernetes Namespace disappeared.");
+          }
+          if (!freshNamespaceAttempt) {
+            throw new OwnershipFailure("The Namespace creation outcome remains unconfirmed.");
+          }
+          const desired = this.manifest("v1", "Namespace", name.name, ownership);
+          desired.metadata.labels = {
+            ...desired.metadata.labels,
+            ...this.executionNamespaceGatewayLabels(ownership.namespaceId),
+            "pod-security.kubernetes.io/enforce": "restricted",
+            "pod-security.kubernetes.io/audit": "restricted",
+            "pod-security.kubernetes.io/warn": "restricted",
+          };
+          const clients = await this.clients(name.plane);
+          try {
+            await this.request(() => clients.core.createNamespace({ body: desired }), {
+              mutating: true,
+            });
+          } catch (error) {
+            if (
+              freshNamespaceAttempt &&
+              [400, 401, 403, 422].includes(numericErrorStatus(error) ?? 0)
+            ) {
+              await journal.save({ namespace: { nonce: stage.nonce, creationRefused: true } });
+            }
+            throw error;
+          }
+        }
       }
       const observed = await this.getNamespace(name);
       if (observed === undefined) {
@@ -5751,6 +5861,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
           throw new OwnershipFailure(`Existing Kubernetes namespace ${name.name} does not exist.`);
         }
         return result;
+      }
+      if (stage.uid !== undefined && observed.metadata.uid !== stage.uid) {
+        throw new OwnershipFailure("The Kubernetes Namespace incarnation changed.");
       }
       if (externallyManaged) {
         this.verifyAdoptableNamespace(observed, ownership);
@@ -5770,12 +5883,34 @@ export class KubernetesComputeDriver implements ComputeDriver {
       tenantAccessRequired = true;
       if (externallyManaged) {
         await this.verifyExistingNetworkPolicies(name, ownership);
-        await this.claimExistingNamespace(observed, ownership);
+        const freshClaim = stage.claim === undefined || stage.claim === "refused";
+        if (freshClaim) {
+          stage = { ...stage, claim: "attempted" };
+          await journal.save({ namespace: stage });
+        }
+        await this.claimExistingNamespace(observed, ownership, { journal, fresh: freshClaim });
       } else if (this.preprovisionedNamespace) {
         await this.verifyExistingNetworkPolicies(name, ownership);
       }
+      const bound = await this.getNamespace(name);
+      if (
+        bound === undefined ||
+        (!this.preprovisionedNamespace &&
+          bound.metadata.annotations?.["openclaw.dev/lifecycle-id"] !== stage.nonce)
+      ) {
+        throw new OwnershipFailure("The Namespace creation attempt cannot be confirmed.");
+      }
+      if (stage.uid === undefined || (externallyManaged && stage.claim !== "complete")) {
+        await journal.save({
+          namespace: {
+            ...stage,
+            uid: required(bound.metadata.uid, "Namespace UID"),
+            ...(externallyManaged ? { claim: "complete" as const } : {}),
+          },
+        });
+      }
       try {
-        await this.prepareNamespaceInfrastructure(ownership, name);
+        await this.prepareNamespaceInfrastructure(ownership, name, journal);
       } catch (error) {
         // Only this call reconciles the tenant resources. The Gateway uses the same helper.
         if (
@@ -5786,12 +5921,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
         throw error;
       }
-      if (!(await this.ensureGatewayNamespace(ownership))) {
+      if (!(await this.ensureGatewayNamespace(ownership, journal))) {
         return result;
       }
       await this.lifecycle.afterNamespacePrepared(namespace);
       await this.sandboxDriver?.ensureNamespace?.(
-        await this.sandboxNamespaceContext(namespace, name),
+        await this.sandboxLifecycleContext(namespace, name, journal),
       );
       return { ...result, namespaceReady: true };
     } catch (error) {
@@ -5870,16 +6005,50 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
-  private async deleteGatewayNamespace(ownership: Ownership): Promise<boolean> {
+  private async gatewayNamespaceForCleanup(
+    ownership: Ownership,
+    journal: KubernetesNamespaceJournal,
+  ) {
     if (this.options.executionCluster === undefined) {
-      return true;
+      return undefined;
     }
     const name = await this.controlNamespace(ownership.namespaceId);
+    let stage = (await journal.read()).data.gateway;
     const existing = await this.getNamespace(name);
-    if (existing === undefined) {
+    if (stage === undefined || stage.creationRefused === true) {
+      if (existing !== undefined) {
+        throw new OwnershipFailure("The Gateway Namespace has no lifecycle binding.");
+      }
+      return { name, existing: undefined, uid: undefined };
+    }
+    if (existing !== undefined) {
+      this.verifyGatewayNamespace(existing, ownership);
+      if (
+        existing.metadata.annotations?.["openclaw.dev/lifecycle-id"] !== stage.nonce ||
+        (stage.uid !== undefined && existing.metadata.uid !== stage.uid)
+      ) {
+        throw new OwnershipFailure("The Gateway Namespace incarnation changed.");
+      }
+      if (stage.uid === undefined) {
+        stage = { ...stage, uid: required(existing.metadata.uid, "Gateway Namespace UID") };
+        await journal.save({ gateway: stage });
+      }
+    }
+    if (stage.uid === undefined) {
+      throw new OwnershipFailure("The Gateway Namespace creation outcome is unconfirmed.");
+    }
+    return { name, existing, uid: stage.uid };
+  }
+
+  private async deleteGatewayNamespace(
+    ownership: Ownership,
+    journal: KubernetesNamespaceJournal,
+  ): Promise<boolean> {
+    const current = await this.gatewayNamespaceForCleanup(ownership, journal);
+    if (current?.existing === undefined) {
       return true;
     }
-    this.verifyGatewayNamespace(existing, ownership);
+    const { name, existing, uid } = current;
     if (existing.metadata.deletionTimestamp !== undefined) {
       return false;
     }
@@ -5889,34 +6058,91 @@ export class KubernetesComputeDriver implements ComputeDriver {
         clients.core.deleteNamespace({
           name: name.name,
           body: {
-            preconditions: { uid: required(existing.metadata.uid, "Gateway namespace UID") },
+            preconditions: {
+              uid: required(uid, "Gateway Namespace UID"),
+              resourceVersion: required(
+                existing.metadata.resourceVersion,
+                "Gateway Namespace resourceVersion",
+              ),
+            },
           },
         }),
       { mutating: true },
     );
-    return (await this.getNamespace(name)) === undefined;
+    const remaining = await this.getNamespace(name);
+    if (remaining !== undefined && remaining.metadata.uid !== uid) {
+      throw new OwnershipFailure("The Gateway Namespace incarnation changed after deletion.");
+    }
+    return remaining === undefined;
   }
 
-  private async ensureGatewayNamespace(ownership: Ownership): Promise<boolean> {
+  private async ensureGatewayNamespace(
+    ownership: Ownership,
+    journal: KubernetesNamespaceJournal,
+  ): Promise<boolean> {
     if (this.options.executionCluster === undefined) {
       return true;
     }
     const desired = this.gatewayNamespaceManifest(ownership);
     const name = await this.controlNamespace(ownership.namespaceId);
-    const existing = await this.getNamespace(name);
-    if (existing !== undefined) {
-      this.verifyGatewayNamespace(existing, ownership);
+    let stage = (await journal.read()).data.gateway;
+    const freshAttempt = stage === undefined || stage.creationRefused === true;
+    if (stage?.creationRefused === true) {
+      if ((await this.getNamespace(name)) !== undefined) {
+        throw new OwnershipFailure(
+          "A refused Gateway Namespace creation has an unexpected object.",
+        );
+      }
+      stage = { nonce: stage.nonce };
+      await journal.save({ gateway: stage });
     }
-    // Namespace resources have a separate discovery label, so use their own exact metadata owner.
+    const existing = await this.getNamespace(name);
+    if (stage === undefined) {
+      if (existing !== undefined) {
+        throw new OwnershipFailure(
+          "A Gateway Namespace exists without a lifecycle creation binding.",
+        );
+      }
+      stage = { nonce: journal.lifecycle.lifecycleId };
+      await journal.save({ gateway: stage });
+    }
     if (existing === undefined) {
+      if (stage.uid !== undefined) {
+        throw new OwnershipFailure("The bound Gateway Namespace disappeared.");
+      }
+      if (!freshAttempt) {
+        throw new OwnershipFailure("The Gateway Namespace creation outcome remains unconfirmed.");
+      }
       const clients = await this.clients(name.plane);
-      await this.request(() => clients.core.createNamespace({ body: desired }), { mutating: true });
+      try {
+        await this.request(() => clients.core.createNamespace({ body: desired }), {
+          mutating: true,
+        });
+      } catch (error) {
+        if (freshAttempt && [400, 401, 403, 422].includes(numericErrorStatus(error) ?? 0)) {
+          await journal.save({ gateway: { nonce: stage.nonce, creationRefused: true } });
+        }
+        throw error;
+      }
     }
     const observed = await this.getNamespace(name);
     if (observed === undefined) {
       return false;
     }
     this.verifyGatewayNamespace(observed, ownership);
+    if (
+      observed.metadata.annotations?.["openclaw.dev/lifecycle-id"] !== stage.nonce ||
+      (stage.uid !== undefined && stage.uid !== observed.metadata.uid)
+    ) {
+      throw new OwnershipFailure(
+        "The Gateway Namespace incarnation differs from its creation intent.",
+      );
+    }
+    if (stage.uid === undefined) {
+      await journal.save({
+        gateway: { ...stage, uid: required(observed.metadata.uid, "Gateway Namespace UID") },
+      });
+    }
     if (observed.status?.phase !== "Active" || observed.metadata.deletionTimestamp !== undefined) {
       return false;
     }
@@ -5952,112 +6178,374 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private async prepareNamespaceInfrastructure(
     ownership: Ownership,
     name: KubernetesNamespaceAddress,
+    journal?: KubernetesNamespaceJournal,
   ): Promise<void> {
-    await this.reconcile(
-      {
-        ...this.manifest("v1", "ResourceQuota", "openclaw-quota", ownership, name),
-        spec: { hard: { ...this.options.resources.namespace.quota } },
+    const reconcile = async (
+      desired: ManagedKubernetesObject<"ResourceQuota" | "LimitRange" | "NetworkPolicy">,
+    ) => {
+      if (journal === undefined) {
+        return this.reconcile(desired, ownership, name);
+      }
+      let inventory = (await journal.read()).data.infrastructure ?? [];
+      let entry = inventory.find(
+        (item) => item.kind === desired.kind && item.name === desired.metadata.name,
+      );
+      const before = await this.getOwned(desired.kind, desired.metadata.name, name, ownership);
+      const freshAttempt = entry === undefined || entry.creationRefused === true;
+      if (entry === undefined || entry.creationRefused === true) {
+        if (before !== undefined) {
+          throw new OwnershipFailure("Namespace infrastructure exists without a creation binding.");
+        }
+        const next = { kind: desired.kind, name: desired.metadata.name };
+        inventory =
+          entry === undefined
+            ? [...inventory, next]
+            : inventory.map((item) => (item === entry ? next : item));
+        entry = next;
+        await journal.save({ infrastructure: inventory });
+      }
+      if (entry.uid !== undefined && before?.metadata.uid !== entry.uid) {
+        throw new OwnershipFailure("A Namespace infrastructure incarnation changed.");
+      }
+      if (!freshAttempt && entry.uid === undefined) {
+        if (
+          before === undefined ||
+          !(await this.namespaceCleanupPlacementCurrent(name, ownership, journal))
+        ) {
+          throw new OwnershipFailure("Namespace infrastructure creation remains unconfirmed.");
+        }
+        // A prior unknown create has one possible creator. Bind its validated
+        // late readback before updating, rather than issuing another create.
+        const recovered = {
+          ...entry,
+          uid: required(before.metadata.uid, "Namespace infrastructure UID"),
+        };
+        inventory = inventory.map((resource) => (resource === entry ? recovered : resource));
+        await journal.save({ infrastructure: inventory });
+        entry = recovered;
+      }
+      const conditional =
+        entry.uid === undefined
+          ? desired
+          : {
+              ...desired,
+              metadata: {
+                ...desired.metadata,
+                uid: entry.uid,
+                resourceVersion: required(
+                  before?.metadata.resourceVersion,
+                  "Namespace infrastructure resourceVersion",
+                ),
+              },
+            };
+      try {
+        await this.reconcile(conditional, ownership, name);
+      } catch (error) {
+        if (
+          freshAttempt &&
+          before === undefined &&
+          [400, 401, 403, 422].includes(numericErrorStatus(error) ?? 0)
+        ) {
+          // An authoritative rejection of this absent object's creation proves no
+          // effect. Timeouts, transport failures and server errors remain unknown.
+          await journal.save({
+            infrastructure: inventory.map((item) =>
+              item === entry ? { ...item, creationRefused: true } : item,
+            ),
+          });
+        }
+        throw error;
+      }
+      const observed = await this.getOwned(desired.kind, desired.metadata.name, name, ownership);
+      if (observed === undefined) {
+        throw new OwnershipFailure("Namespace infrastructure creation cannot be confirmed.");
+      }
+      const uid = required(observed.metadata.uid, "Namespace infrastructure UID");
+      if (entry.uid !== undefined && uid !== entry.uid) {
+        throw new OwnershipFailure("Namespace infrastructure changed after reconciliation.");
+      }
+      if (entry.uid === undefined) {
+        await journal.save({
+          infrastructure: inventory.map((item) => (item === entry ? { ...item, uid } : item)),
+        });
+      }
+    };
+    await reconcile({
+      ...this.manifest("v1", "ResourceQuota", "openclaw-quota", ownership, name),
+      spec: { hard: { ...this.options.resources.namespace.quota } },
+    });
+    await reconcile({
+      ...this.manifest("v1", "LimitRange", "openclaw-limits", ownership, name),
+      spec: {
+        limits: [
+          {
+            type: "Container",
+            default: { ...this.options.resources.namespace.containerDefaults.limits },
+            defaultRequest: { ...this.options.resources.namespace.containerDefaults.requests },
+          },
+        ],
       },
-      ownership,
-      name,
-    );
-    await this.reconcile(
-      {
-        ...this.manifest("v1", "LimitRange", "openclaw-limits", ownership, name),
-        spec: {
-          limits: [
-            {
-              type: "Container",
-              default: { ...this.options.resources.namespace.containerDefaults.limits },
-              defaultRequest: { ...this.options.resources.namespace.containerDefaults.requests },
-            },
-          ],
-        },
-      },
-      ownership,
-      name,
-    );
+    });
     for (const policy of this.networkPolicies(ownership, name)) {
-      await this.reconcile(policy, ownership, name);
+      await reconcile(policy);
     }
   }
 
-  async deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult> {
+  async deleteNamespace(
+    namespace: Namespace,
+    lifecycle: NamespaceLifecycleContext,
+  ): Promise<NamespaceDeleteResult> {
     this.lifecycleStarted = true;
     const result = { namespaceId: namespace.id, namespaceDeleted: false };
     try {
-      const clients = await this.clients("execution");
       if (this.preprovisionedNamespace) {
         throw new OwnershipFailure(
           "The operator retains the preprovisioned Namespace and owns its teardown.",
         );
       }
-      const { name, external } = await this.resolveNamespace(
-        namespace.id,
-        namespace.existingNamespace,
-      );
-      const ownership = { namespaceId: namespace.id };
-      const existing = await this.getNamespace(name);
-      if (
-        existing === undefined ||
-        (external &&
-          existing.metadata.labels?.["openclaw.dev/namespace"] === undefined &&
-          existing.metadata.annotations?.["openclaw.dev/namespace-id"] === undefined)
-      ) {
-        if (this.options.executionCluster !== undefined) {
-          const gateway = await this.getNamespace(await this.controlNamespace(namespace.id));
-          if (gateway !== undefined) {
-            this.verifyGatewayNamespace(gateway, ownership);
+      const placement = await this.resolveNamespace(namespace.id, namespace.existingNamespace);
+      const { name, external } = placement;
+      const journal = await this.openNamespaceJournal(namespace, lifecycle, placement);
+      const ownership = { namespaceId: namespace.id, lifecycleId: lifecycle.lifecycleId };
+      let stage = (await journal.read()).data.namespace;
+      let existing = await this.getNamespace(name);
+      if (stage === undefined) {
+        // The initial journal precedes dispatch: no Namespace, infrastructure or
+        // provider operation was attempted. An external placement stays untouched.
+        if (existing !== undefined) {
+          if (!external) {
+            throw new OwnershipFailure("A Namespace claim exists without a lifecycle binding.");
+          }
+          this.verifyAdoptableNamespace(existing, ownership);
+          if (
+            existing.metadata.labels?.["openclaw.dev/namespace"] !== undefined ||
+            existing.metadata.labels?.["openclaw.dev/gateway-namespace"] !== undefined ||
+            existing.metadata.annotations?.["openclaw.dev/namespace-id"] !== undefined ||
+            existing.metadata.annotations?.["openclaw.dev/lifecycle-id"] !== undefined
+          ) {
+            throw new OwnershipFailure("A Namespace claim exists without a lifecycle binding.");
           }
         }
-        await this.lifecycle.beforeNamespaceDelete(namespace);
-        return { ...result, namespaceDeleted: await this.deleteGatewayNamespace(ownership) };
+        return { ...result, namespaceDeleted: true };
       }
-      this.verifyNamespaceOwnership(existing, ownership, external);
+      if (stage.creationRefused === true) {
+        const current = (await journal.read()).data;
+        if (
+          existing !== undefined ||
+          current.gateway !== undefined ||
+          current.infrastructure !== undefined ||
+          Object.keys(current.sandbox).length !== 0
+        ) {
+          throw new OwnershipFailure("The refused Namespace creation has conflicting effects.");
+        }
+        return { ...result, namespaceDeleted: true };
+      }
+      if (stage.uid === undefined) {
+        if (
+          existing === undefined ||
+          existing.metadata.annotations?.["openclaw.dev/lifecycle-id"] !== stage.nonce
+        ) {
+          throw new OwnershipFailure("The Namespace creation outcome is unconfirmed.");
+        }
+        stage = { ...stage, uid: required(existing.metadata.uid, "Namespace UID") };
+        await journal.save({ namespace: stage });
+      }
+      if (existing !== undefined && existing.metadata.uid !== stage.uid) {
+        throw new OwnershipFailure("The bound Namespace incarnation changed.");
+      }
+      if (external && (stage.claim === undefined || stage.claim === "refused")) {
+        const saved = (await journal.read()).data;
+        if (
+          saved.gateway !== undefined ||
+          (saved.infrastructure?.length ?? 0) > 0 ||
+          Object.keys(saved.sandbox).length > 0 ||
+          saved.cleanup !== undefined ||
+          saved.latePolicy !== undefined
+        ) {
+          throw new OwnershipFailure(
+            "The unclaimed external Namespace has conflicting lifecycle effects.",
+          );
+        }
+        // Selection validation can fail before claiming. That durable no-effect
+        // stage permits cancellation without requiring the rejected prerequisites.
+        if (
+          existing !== undefined &&
+          (existing.metadata.labels?.["openclaw.dev/namespace"] !== undefined ||
+            existing.metadata.labels?.["openclaw.dev/gateway-namespace"] !== undefined ||
+            existing.metadata.annotations?.["openclaw.dev/namespace-id"] !== undefined ||
+            existing.metadata.annotations?.["openclaw.dev/lifecycle-id"] !== undefined)
+        ) {
+          throw new OwnershipFailure(
+            "The never-claimed external Namespace has an unexpected claim.",
+          );
+        }
+        return { ...result, namespaceDeleted: true };
+      }
+      const released =
+        external &&
+        existing !== undefined &&
+        this.namespaceClaimReleased(existing, lifecycle.lifecycleId);
+      if (existing !== undefined && !released) {
+        this.verifyNamespaceOwnership(existing, ownership, external);
+        if (existing.metadata.annotations?.["openclaw.dev/lifecycle-id"] !== stage.nonce) {
+          throw new OwnershipFailure("The Namespace lifecycle ownership changed.");
+        }
+      }
+      const release = (await journal.read()).data.release;
+      if (release === "complete" || (release === "attempted" && released)) {
+        if (!released) {
+          throw new OwnershipFailure("The external Namespace claim release cannot be confirmed.");
+        }
+        if (release !== "complete") {
+          await journal.save({ release: "complete" });
+        }
+        return { ...result, namespaceDeleted: true };
+      }
+      if (released) {
+        throw new OwnershipFailure("The external Namespace has no durable release intent.");
+      }
+      const terminating =
+        existing !== undefined &&
+        (existing.metadata.deletionTimestamp !== undefined ||
+          existing.status?.phase === "Terminating");
+      if (
+        terminating &&
+        (this.sandboxDriver === undefined || (await journal.read()).data.cleanup !== undefined)
+      ) {
+        // Namespace GC can remove the tenant RoleBinding before the Namespace.
+        // Child completion is already confirmed, or there is no selected child.
+        return result;
+      }
+      try {
+        if (existing !== undefined && !released) {
+          await this.verifyNamespaceInfrastructure(name, ownership, journal);
+        }
+        if (external && existing !== undefined) {
+          await this.captureLateNamespacePolicy(name, ownership, journal);
+        }
+      } catch (error) {
+        if (terminating && numericErrorStatus(error) === 403) {
+          // Keep an unconfirmed child retryable after loss of tenant access. Its
+          // cleanup must still run if access returns or placement becomes absent.
+          return result;
+        }
+        throw error;
+      }
+      await this.gatewayNamespaceForCleanup(ownership, journal);
+      await this.lifecycle.beforeNamespaceDelete(namespace);
+      if (existing !== undefined && !released) {
+        await this.reconcileRepositoryIngress({ namespace: name.name, namespaceId: namespace.id });
+      }
+      if (this.sandboxDriver !== undefined) {
+        const returned = await this.sandboxDriver.cleanup(
+          await this.sandboxLifecycleContext(namespace, name, journal),
+        );
+        const cleanup = namespaceCleanupResult(returned, name.name);
+        const saved = (await journal.read()).data.cleanup;
+        if (saved !== undefined && !isDeepStrictEqual(saved, cleanup)) {
+          throw new OwnershipFailure("The Sandbox Namespace cleanup ownership set changed.");
+        }
+        if (saved === undefined) {
+          await journal.save({ cleanup });
+        }
+      }
+      const retainedResourcesPresent = await this.verifySandboxCleanupResources(name, journal);
+      if (!external && retainedResourcesPresent) {
+        throw new OwnershipFailure("The Sandbox retains resources inside the managed Namespace.");
+      }
+      if (!(await this.deleteGatewayNamespace(ownership, journal))) {
+        return result;
+      }
+      if (existing === undefined) {
+        return { ...result, namespaceDeleted: true };
+      }
+      if (external) {
+        if (this.options.network.repositoryCredentials !== undefined) {
+          const references = await this.repositoryMaterialReferences(ownership, name);
+          if (
+            !(await (
+              await this.repositoryMaterialStore(name)
+            ).cleanup(ownership, references, () =>
+              this.namespaceCleanupPlacementCurrent(name, ownership, journal),
+            ))
+          ) {
+            return result;
+          }
+        }
+        if (!(await this.deleteOwnedNamespaceResources(name, ownership, journal))) {
+          return result;
+        }
+        existing = await this.getNamespace(name);
+        if (existing === undefined) {
+          throw new OwnershipFailure(
+            "The retained external Namespace disappeared during claim release.",
+          );
+        }
+        if (existing.metadata.uid !== stage.uid) {
+          throw new OwnershipFailure("The retained external Namespace incarnation changed.");
+        }
+        this.verifyNamespaceOwnership(existing, ownership, true);
+        await journal.save({ release: "attempted" });
+        const clients = await this.clients(name.plane);
+        await this.request(
+          () =>
+            clients.core.patchNamespace(
+              {
+                name: name.name,
+                body: {
+                  metadata: {
+                    uid: required(stage.uid, "Namespace UID"),
+                    resourceVersion: required(
+                      existing!.metadata.resourceVersion,
+                      "Namespace resourceVersion",
+                    ),
+                    labels: {
+                      "openclaw.dev/namespace": null,
+                      "openclaw.dev/gateway-namespace": null,
+                    },
+                    annotations: {
+                      "openclaw.dev/namespace-id": null,
+                      "openclaw.dev/lifecycle-id": null,
+                      "openclaw.dev/released-lifecycle": lifecycle.lifecycleId,
+                    },
+                  },
+                },
+              },
+              this.mergePatchOptions,
+            ),
+          { mutating: true },
+        );
+        const observed = await this.getNamespace(name);
+        if (
+          observed === undefined ||
+          observed.metadata.uid !== stage.uid ||
+          !this.namespaceClaimReleased(observed, lifecycle.lifecycleId)
+        ) {
+          throw new OwnershipFailure("The external Namespace claim release cannot be confirmed.");
+        }
+        await journal.save({ release: "complete" });
+        return { ...result, namespaceDeleted: true };
+      }
       if (
         existing.metadata.deletionTimestamp !== undefined ||
         existing.status?.phase === "Terminating"
       ) {
         return result;
       }
-      if (this.options.executionCluster !== undefined) {
-        const gateway = await this.getNamespace(await this.controlNamespace(namespace.id));
-        if (gateway !== undefined) {
-          this.verifyGatewayNamespace(gateway, ownership);
-        }
-      }
-      await this.lifecycle.beforeNamespaceDelete(namespace);
-      await this.reconcileRepositoryIngress({ namespace: name.name, namespaceId: namespace.id });
-      if (this.sandboxDriver !== undefined) {
-        await this.sandboxDriver.cleanup(await this.sandboxNamespaceContext(namespace, name));
-      }
-      if (!(await this.deleteGatewayNamespace(ownership))) {
-        return result;
-      }
-      if (external) {
-        if (this.options.network.repositoryCredentials !== undefined) {
-          const references = await this.repositoryMaterialReferences(ownership, name);
-          if (!(await (await this.repositoryMaterialStore(name)).cleanup(ownership, references))) {
-            return result;
-          }
-        }
-        const deleted = await this.deleteOwnedNamespaceResources(name, ownership);
-        if (!deleted) {
-          return result;
-        }
-        const remaining = await this.getNamespace(name);
-        if (remaining !== undefined) {
-          this.verifyNamespaceOwnership(remaining, ownership, true);
-        }
-        return { ...result, namespaceDeleted: true };
-      }
+      const clients = await this.clients(name.plane);
       await this.request(
         () =>
           clients.core.deleteNamespace({
             name: name.name,
-            ...(existing.metadata.uid === undefined
-              ? {}
-              : { body: { preconditions: { uid: existing.metadata.uid } } }),
+            body: {
+              preconditions: {
+                uid: required(stage.uid, "Namespace UID"),
+                resourceVersion: required(
+                  existing!.metadata.resourceVersion,
+                  "Namespace resourceVersion",
+                ),
+              },
+            },
           }),
         { mutating: true },
       );
@@ -6065,11 +6553,29 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (remaining === undefined) {
         return { ...result, namespaceDeleted: true };
       }
+      if (remaining.metadata.uid !== stage.uid) {
+        throw new OwnershipFailure("The bound Namespace incarnation changed after deletion.");
+      }
       this.verifyNamespaceOwnership(remaining, ownership, false);
       return result;
     } catch (error) {
       return { ...result, failure: failure(error) };
     }
+  }
+
+  private namespaceClaimReleased(
+    namespace: ManagedKubernetesObject<"Namespace">,
+    lifecycleId: string,
+  ): boolean {
+    const labels = namespace.metadata.labels ?? {};
+    const annotations = namespace.metadata.annotations ?? {};
+    return (
+      annotations["openclaw.dev/released-lifecycle"] === lifecycleId &&
+      labels["openclaw.dev/namespace"] === undefined &&
+      labels["openclaw.dev/gateway-namespace"] === undefined &&
+      annotations["openclaw.dev/namespace-id"] === undefined &&
+      annotations["openclaw.dev/lifecycle-id"] === undefined
+    );
   }
 
   async getRuntimeImages(revision: AgentRevision): Promise<readonly RuntimeImage[]> {
@@ -8578,6 +9084,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (existingNamespace === undefined) {
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeStoppedGateway(revision, namespace);
+      await this.cleanupRevisionSandbox(revision, namespace);
       return;
     }
     this.verifyNamespaceOwnership(
@@ -8639,6 +9146,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const existingNamespace = await this.getNamespace(namespace);
     if (existingNamespace === undefined) {
       await this.lifecycle.beforeWorkloadStop(revision);
+      await this.cleanupRevisionSandbox(revision, namespace);
       await this.removeRetiredGateway(revision, namespace);
       return;
     }
@@ -8665,6 +9173,27 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
       await this.removeRepositoryMaterial(revision, namespace);
     }
+  }
+
+  private async cleanupRevisionSandbox(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<void> {
+    const sandboxDriver = this.sandboxDriverForRevision(revision);
+    if (sandboxDriver === undefined) {
+      return;
+    }
+    if (revision.harness.mode !== "dedicated") {
+      throw new ConfigurationFailure("SandboxDriver support is limited to dedicated Harnesses.");
+    }
+    // Namespace or Pod absence does not confirm removal of provider-owned resources.
+    await sandboxDriver.cleanup({
+      ...(await this.sandboxNamespaceContext(
+        this.sandboxNamespaceForRevision(revision, namespace),
+        namespace,
+      )),
+      revision,
+    });
   }
 
   private async shutdownRevisionRuntime(
@@ -8704,15 +9233,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
       }
     }
-    if (sandboxDriver !== undefined) {
-      await sandboxDriver.cleanup({
-        ...(await this.sandboxNamespaceContext(
-          this.sandboxNamespaceForRevision(revision, namespace),
-          namespace,
-        )),
-        revision,
-      });
-    }
+    await this.cleanupRevisionSandbox(revision, namespace);
     if (!admittedReader && !computeOwnsWorkload) {
       await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
     }
@@ -10057,6 +10578,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private async claimExistingNamespace(
     namespace: ManagedKubernetesObject<"Namespace">,
     ownership: Ownership,
+    claimMutation?: { readonly journal: KubernetesNamespaceJournal; readonly fresh: boolean },
   ): Promise<void> {
     if (this.verifyAdoptableNamespace(namespace, ownership)) {
       return;
@@ -10079,12 +10601,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 kind: "Namespace",
                 metadata: {
                   name: namespace.metadata.name,
+                  uid: required(namespace.metadata.uid, "Namespace UID"),
                   resourceVersion,
                   labels: {
                     "openclaw.dev/namespace": ownership.namespaceId,
                     ...this.executionNamespaceGatewayLabels(ownership.namespaceId),
                   },
-                  annotations: { "openclaw.dev/namespace-id": ownership.namespaceId },
+                  annotations: {
+                    "openclaw.dev/namespace-id": ownership.namespaceId,
+                    ...(ownership.lifecycleId === undefined
+                      ? {}
+                      : { "openclaw.dev/lifecycle-id": ownership.lifecycleId }),
+                  },
                 },
               },
               fieldManager: FIELD_MANAGER,
@@ -10095,6 +10623,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
         { mutating: true },
       );
     } catch (error) {
+      if (claimMutation?.fresh && [400, 401, 403, 422].includes(numericErrorStatus(error) ?? 0)) {
+        // This catch covers only the PATCH. A forbidden verification GET after
+        // a successful mutation must retain the attempted/unknown claim.
+        const saved = (await claimMutation.journal.read()).data.namespace;
+        if (saved?.claim !== "attempted") {
+          throw new OwnershipFailure("The Namespace claim intent changed.");
+        }
+        await claimMutation.journal.save({ namespace: { ...saved, claim: "refused" } });
+      }
       if (numericErrorStatus(error) !== 409) {
         throw error;
       }
@@ -10141,6 +10678,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // This is the sealed Namespace initialization gate. If later reconciliation sees
     // Agent-specific policies, stop rather than infer their authority from labels.
     const approved = new Map<string, unknown>();
+    const operatorPolicyNames = new Set<string>();
     if (this.preprovisionedNamespace) {
       for (const policy of this.networkPolicies(ownership, namespace)) {
         approved.set(policy.metadata.name, policy.spec);
@@ -10150,6 +10688,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           throw new OwnershipFailure("Operator NetworkPolicy name duplicates an admitted policy.");
         }
         approved.set(policy.name, policy.spec);
+        operatorPolicyNames.add(policy.name);
       }
     }
     for (const item of observed.items) {
@@ -10187,7 +10726,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
             kind: "NetworkPolicy",
             metadata: { ...metadata, name: metadata.name },
           } as ManagedKubernetesObject<"NetworkPolicy">,
-          ownership,
+          // These configured operator policies predate OCC's creation intent.
+          // The selected Namespace UID and exact admitted policy content apply;
+          // generated Compute policies still require their lifecycle marker.
+          operatorPolicyNames.has(metadata.name)
+            ? { namespaceId: ownership.namespaceId }
+            : ownership,
         );
       } catch (error) {
         // A policy left by another tenant is named after that tenant's Agents: omit its name.
@@ -10201,28 +10745,231 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
+  private async verifySandboxCleanupResources(
+    namespace: KubernetesNamespaceAddress,
+    journal: KubernetesNamespaceJournal,
+  ): Promise<boolean> {
+    const result = (await journal.read()).data.cleanup;
+    if (result === undefined) {
+      return false;
+    }
+    let retainedResourcesPresent = false;
+    const clients = await this.clients(namespace.plane);
+    for (const reference of result.kubernetesResources) {
+      try {
+        const current = await this.request(() =>
+          clients.objects.read({
+            apiVersion: reference.apiVersion,
+            kind: reference.kind,
+            metadata: { namespace: reference.namespace, name: reference.name },
+          }),
+        );
+        this.verifySandboxCleanupReference(reference, current);
+        retainedResourcesPresent = true;
+      } catch (error) {
+        if (numericErrorStatus(error) !== 404) {
+          throw error;
+        }
+      }
+    }
+    return retainedResourcesPresent;
+  }
+
+  private verifySandboxCleanupReference(
+    reference: SandboxNamespaceCleanupResource,
+    current: KubernetesObject,
+  ): void {
+    if (
+      current.metadata?.name !== reference.name ||
+      current.metadata.namespace !== reference.namespace ||
+      current.kind !== reference.kind ||
+      current.apiVersion !== reference.apiVersion ||
+      reference.state === "absent" ||
+      current.metadata.uid !== reference.uid
+    ) {
+      throw new OwnershipFailure("A Sandbox Namespace resource reappeared or changed ownership.");
+    }
+  }
+
+  private async namespaceCleanupPlacementCurrent(
+    namespace: KubernetesNamespaceAddress,
+    ownership: Ownership,
+    journal: KubernetesNamespaceJournal,
+  ): Promise<boolean> {
+    const saved = (await journal.read()).data;
+    const observed = await this.getNamespace(namespace);
+    if (observed === undefined) {
+      return false;
+    }
+    if (saved.namespace?.uid === undefined || observed.metadata.uid !== saved.namespace.uid) {
+      throw new OwnershipFailure("The Namespace incarnation changed during cleanup enumeration.");
+    }
+    this.verifyNamespaceOwnership(observed, ownership, saved.binding.placement.external);
+    if (observed.metadata.annotations?.["openclaw.dev/lifecycle-id"] !== saved.namespace.nonce) {
+      throw new OwnershipFailure("The Namespace lifecycle claim changed during cleanup.");
+    }
+    return true;
+  }
+
+  private async verifyNamespaceInfrastructure(
+    namespace: KubernetesNamespaceAddress,
+    ownership: Ownership,
+    journal: KubernetesNamespaceJournal,
+  ): Promise<void> {
+    for (const item of (await journal.read()).data.infrastructure ?? []) {
+      const current = await this.getOwned(item.kind, item.name, namespace, ownership);
+      if (item.creationRefused === true && current === undefined) {
+        continue;
+      }
+      if (item.uid === undefined) {
+        // getOwned validates the saved lifecycle creation marker. Recover only
+        // in the original Namespace, before any provider or deletion effect.
+        if (
+          item.creationRefused === true ||
+          current === undefined ||
+          !(await this.namespaceCleanupPlacementCurrent(namespace, ownership, journal))
+        ) {
+          throw new OwnershipFailure("Namespace infrastructure creation outcome is unconfirmed.");
+        }
+        const saved = (await journal.read()).data;
+        const uid = required(current.metadata.uid, "Namespace infrastructure UID");
+        await journal.save({
+          infrastructure: saved.infrastructure!.map((resource) =>
+            resource.kind === item.kind && resource.name === item.name
+              ? { ...resource, uid }
+              : resource,
+          ),
+        });
+      } else if (current !== undefined && current.metadata.uid !== item.uid) {
+        throw new OwnershipFailure("A Namespace infrastructure incarnation changed.");
+      }
+    }
+  }
+
+  private async captureLateNamespacePolicy(
+    namespace: KubernetesNamespaceAddress,
+    ownership: Ownership,
+    journal: KubernetesNamespaceJournal,
+  ) {
+    const current = await this.getOwned("NetworkPolicy", "allow-node-gateway", namespace, {
+      namespaceId: ownership.namespaceId,
+    });
+    if (!(await this.namespaceCleanupPlacementCurrent(namespace, ownership, journal))) {
+      return undefined;
+    }
+    const saved = (await journal.read()).data.latePolicy;
+    if (saved === undefined) {
+      await journal.save({
+        latePolicy:
+          current === undefined
+            ? { state: "absent" }
+            : { state: "bound", uid: required(current.metadata.uid, "Namespace policy UID") },
+      });
+    } else if (
+      current !== undefined &&
+      (saved.state === "absent" || current.metadata.uid !== saved.uid)
+    ) {
+      throw new OwnershipFailure("The late Namespace policy reappeared or changed incarnation.");
+    }
+    return current;
+  }
+
+  private async deleteLateNamespacePolicy(
+    namespace: KubernetesNamespaceAddress,
+    ownership: Ownership,
+    journal: KubernetesNamespaceJournal,
+  ): Promise<boolean> {
+    const current = await this.captureLateNamespacePolicy(namespace, ownership, journal);
+    if (current === undefined) {
+      return true;
+    }
+    const protectedReference = (await journal.read()).data.cleanup?.kubernetesResources.find(
+      (reference) =>
+        reference.apiVersion === current.apiVersion &&
+        reference.kind === current.kind &&
+        reference.namespace === namespace.name &&
+        reference.name === current.metadata.name,
+    );
+    if (protectedReference !== undefined) {
+      this.verifySandboxCleanupReference(protectedReference, current);
+      return true;
+    }
+    const clients = await this.clients(namespace.plane);
+    try {
+      await this.request(
+        () =>
+          clients.networking.deleteNamespacedNetworkPolicy({
+            namespace: namespace.name,
+            name: current.metadata.name,
+            body: {
+              preconditions: {
+                uid: required(current.metadata.uid, "Namespace policy UID"),
+                resourceVersion: required(
+                  current.metadata.resourceVersion,
+                  "Namespace policy resourceVersion",
+                ),
+              },
+            },
+          }),
+        { mutating: true },
+      );
+    } catch (error) {
+      if (numericErrorStatus(error) !== 404) {
+        throw error;
+      }
+    }
+    const remaining = await this.getOwned("NetworkPolicy", current.metadata.name, namespace, {
+      namespaceId: ownership.namespaceId,
+    });
+    if (remaining !== undefined) {
+      if (remaining.metadata.uid !== current.metadata.uid) {
+        throw new OwnershipFailure("The late Namespace policy incarnation changed after deletion.");
+      }
+      return false;
+    }
+    await journal.save({ latePolicy: { state: "absent" } });
+    return true;
+  }
+
   private async deleteOwnedNamespaceResources(
     namespace: KubernetesNamespaceAddress,
     ownership: Ownership,
+    journal: KubernetesNamespaceJournal,
   ): Promise<boolean> {
-    if (!(await this.deleteOrphanedNamespaceObjects(namespace, ownership))) {
+    await this.verifyNamespaceInfrastructure(namespace, ownership, journal);
+    if (!(await this.namespaceCleanupPlacementCurrent(namespace, ownership, journal))) {
+      return false;
+    }
+    if (!(await this.deleteLateNamespacePolicy(namespace, ownership, journal))) {
+      return false;
+    }
+    if (!(await this.deleteOrphanedNamespaceObjects(namespace, ownership, journal))) {
       return false;
     }
     const clients = await this.clients(namespace.plane);
-    const infrastructure = [
-      ["ResourceQuota", "openclaw-quota"],
-      ["LimitRange", "openclaw-limits"],
-      ["NetworkPolicy", "allow-dns"],
-      ["NetworkPolicy", "allow-gateway-ingress"],
-      ["NetworkPolicy", "allow-node-gateway"],
-      ["NetworkPolicy", "default-deny"],
-    ] as const;
+    const protectedResources = (await journal.read()).data.cleanup?.kubernetesResources ?? [];
     const resources: ManagedKubernetesObject<"ResourceQuota" | "LimitRange" | "NetworkPolicy">[] =
       [];
-    for (const [kind, name] of infrastructure) {
-      const existing = await this.getOwned(kind, name, namespace, ownership);
-      if (existing !== undefined) {
-        resources.push(existing);
+    for (const item of (await journal.read()).data.infrastructure ?? []) {
+      const current = await this.getOwned(item.kind, item.name, namespace, ownership);
+      if (current !== undefined) {
+        if (current.metadata.uid !== item.uid) {
+          throw new OwnershipFailure(
+            "A Namespace infrastructure incarnation changed before deletion.",
+          );
+        }
+        const protectedReference = protectedResources.find(
+          (reference) =>
+            reference.kind === current.kind &&
+            reference.apiVersion === current.apiVersion &&
+            reference.namespace === namespace.name &&
+            reference.name === current.metadata.name,
+        );
+        if (protectedReference !== undefined) {
+          this.verifySandboxCleanupReference(protectedReference, current);
+          continue;
+        }
+        resources.push(current);
       }
     }
 
@@ -10230,9 +10977,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
       const request = {
         name: resource.metadata.name,
         namespace: namespace.name,
-        ...(resource.metadata.uid === undefined
-          ? {}
-          : { body: { preconditions: { uid: resource.metadata.uid } } }),
+        body: {
+          preconditions: {
+            uid: required(resource.metadata.uid, "Namespace resource UID"),
+            resourceVersion: required(
+              resource.metadata.resourceVersion,
+              "Namespace resourceVersion",
+            ),
+          },
+        },
       };
       try {
         await this.request(
@@ -10281,7 +11034,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private async deleteOrphanedNamespaceObjects(
     namespace: KubernetesNamespaceAddress,
     ownership: Ownership,
+    journal: KubernetesNamespaceJournal,
   ): Promise<boolean> {
+    const protectedResources = (await journal.read()).data.cleanup?.kubernetesResources ?? [];
     const clients = await this.clients(namespace.plane);
     const labelSelector = labelsToSelector({
       "app.kubernetes.io/managed-by": MANAGER,
@@ -10301,7 +11056,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
             : clients.core.listNamespacedServiceAccount(request),
       );
       const items = completeKubernetesList(listed as { items?: readonly unknown[] });
-      const objects: { readonly name: string; readonly uid: string }[] = [];
+      // Discard snapshots whose original placement disappeared; a replacement
+      // refuses. UID/RV preconditions fence any subsequent incarnation change.
+      if (!(await this.namespaceCleanupPlacementCurrent(namespace, ownership, journal))) {
+        return undefined;
+      }
+      const objects: {
+        readonly name: string;
+        readonly uid: string;
+        readonly resourceVersion: string;
+      }[] = [];
       // Check every object before deleting one: the selector is advisory to this code.
       for (const item of items) {
         const metadata = asRecord(asRecord(item)?.metadata);
@@ -10316,19 +11080,38 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ) {
           throw new OwnershipFailure(`The Kubernetes ${kind} list is invalid.`);
         }
+        const protectedReference = protectedResources.find(
+          (reference) =>
+            reference.kind === kind &&
+            reference.apiVersion === "v1" &&
+            reference.namespace === namespace.name &&
+            reference.name === metadata.name,
+        );
+        if (protectedReference !== undefined) {
+          this.verifySandboxCleanupReference(protectedReference, item as KubernetesObject);
+          continue;
+        }
         // OCE writes the Namespace-ID annotation with the labels; labels alone are not ownership.
         if (annotations?.["openclaw.dev/namespace-id"] === ownership.namespaceId) {
-          objects.push({ name: metadata.name, uid: metadata.uid });
+          objects.push({
+            name: metadata.name,
+            uid: metadata.uid,
+            resourceVersion: required(metadata.resourceVersion, "Namespace orphan resourceVersion"),
+          });
         }
       }
       return objects;
     };
     for (const kind of kinds) {
-      for (const { name, uid } of await owned(kind)) {
+      const snapshot = await owned(kind);
+      if (snapshot === undefined) {
+        return false;
+      }
+      for (const { name, uid, resourceVersion } of snapshot) {
         const request = {
           name,
           namespace: namespace.name,
-          body: { preconditions: { uid } },
+          body: { preconditions: { uid, resourceVersion } },
         };
         try {
           await this.request(
@@ -10349,7 +11132,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
           }
         }
       }
-      if ((await owned(kind)).length > 0) {
+      const remaining = await owned(kind);
+      if (remaining === undefined || remaining.length > 0) {
         return false;
       }
     }
@@ -10374,10 +11158,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private async createClients(
     authentication: KubernetesComputeDriverOptions["authentication"],
   ): Promise<KubernetesApiClients> {
-    const { sdk, clientConfiguration, server } = await createKubernetesClientConfiguration(
-      authentication,
-      (message) => new ConfigurationFailure(message),
-    );
+    const { sdk, clientConfiguration, server, kubeConfig } =
+      await createKubernetesClientConfiguration(
+        authentication,
+        (message) => new ConfigurationFailure(message),
+      );
+    const cluster = kubeConfig.getCurrentCluster();
+    const trust =
+      cluster?.caData !== undefined
+        ? Buffer.from(cluster.caData, "base64")
+        : cluster?.caFile !== undefined
+          ? await readFile(cluster.caFile)
+          : Buffer.from("system-trust-roots");
     this.patchOptions = sdk.setHeaderOptions("Content-Type", APPLY_CONTENT_TYPE);
     this.mergePatchOptions = sdk.setHeaderOptions("Content-Type", MERGE_PATCH_CONTENT_TYPE);
     return {
@@ -10390,6 +11182,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       networking: new sdk.NetworkingV1Api(clientConfiguration),
       objects: new sdk.KubernetesObjectApi(clientConfiguration),
       server,
+      lifecycleTarget: { server, trust: createHash("sha256").update(trust).digest("hex") },
     };
   }
 
@@ -12686,6 +13479,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const annotations: Record<string, string> = {
       "openclaw.dev/namespace-id": ownership.namespaceId,
     };
+    if (ownership.lifecycleId !== undefined) {
+      annotations["openclaw.dev/lifecycle-id"] = ownership.lifecycleId;
+    }
     if (ownership.agentId !== undefined) {
       labels["openclaw.dev/agent"] = ownership.agentId;
       annotations["openclaw.dev/agent-id"] = ownership.agentId;

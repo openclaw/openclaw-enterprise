@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
@@ -136,7 +137,29 @@ export interface PersistedNamespace extends Namespace {
   readonly deletedAt?: string;
 }
 
+export interface NamespaceLifecycleRecord {
+  readonly namespaceId: string;
+  readonly lifecycleId: string;
+  readonly computeDriverId?: string;
+  readonly computeImplementation?: string;
+  readonly revision: number;
+  readonly data: Readonly<Record<string, unknown>>;
+}
+
 export interface NamespaceRepository extends NamespaceReadRepository {
+  /** Call only while holding this Namespace's lifecycle authority in the same transaction. */
+  findLifecycle(namespaceId: string): Promise<Readonly<NamespaceLifecycleRecord> | undefined>;
+  bindLifecycle(
+    namespaceId: string,
+    lifecycleId: string,
+    compute: { readonly id: string; readonly implementation: string },
+  ): Promise<Readonly<NamespaceLifecycleRecord> | undefined>;
+  checkpointLifecycle(
+    namespaceId: string,
+    lifecycleId: string,
+    expectedRevision: number,
+    data: Readonly<Record<string, unknown>>,
+  ): Promise<Readonly<NamespaceLifecycleRecord> | undefined>;
   createNamespace(namespace: Namespace): Promise<Readonly<Namespace>>;
   lockNamespace(
     namespaceId: string,
@@ -1096,10 +1119,71 @@ interface IAMSubjectSource {
   readonly resolve: ((identityId: string) => Identity | undefined) | undefined;
 }
 
+/** Mirror PostgreSQL JSONB normalization and its Namespace checkpoint byte limit in memory State. */
+function namespaceLifecycleData(
+  data: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  const normalized: unknown = JSON.parse(JSON.stringify(data));
+  const jsonbText = (value: unknown): string => {
+    if (Array.isArray(value)) {
+      return `[${value.map(jsonbText).join(", ")}]`;
+    }
+    if (value !== null && typeof value === "object") {
+      return `{${Object.entries(value)
+        .map(([key, entry]) => `${jsonbText(key)}: ${jsonbText(entry)}`)
+        .join(", ")}}`;
+    }
+    if (typeof value === "string") {
+      if (
+        value.includes("\u0000") ||
+        Array.from(value).some(
+          (character) =>
+            character.length === 1 &&
+            character.charCodeAt(0) >= 0xd800 &&
+            character.charCodeAt(0) <= 0xdfff,
+        )
+      ) {
+        throw new ScopeViolationError(
+          "The Namespace lifecycle checkpoint contains invalid Unicode.",
+        );
+      }
+    }
+    const encoded = JSON.stringify(value);
+    if (typeof value !== "number" || !encoded.includes("e")) {
+      return encoded;
+    }
+    // JSONB prints the decimal numeric value, rather than JavaScript's exponent notation.
+    const [mantissa, exponent] = encoded.split("e");
+    const sign = mantissa!.startsWith("-") ? "-" : "";
+    const unsigned = mantissa!.replace("-", "");
+    const digits = unsigned.replace(".", "");
+    const position =
+      (unsigned.indexOf(".") < 0 ? unsigned.length : unsigned.indexOf(".")) + Number(exponent);
+    return (
+      sign +
+      (position <= 0
+        ? `0.${"0".repeat(-position)}${digits}`
+        : position >= digits.length
+          ? digits + "0".repeat(position - digits.length)
+          : `${digits.slice(0, position)}.${digits.slice(position)}`)
+    );
+  };
+  if (
+    normalized === null ||
+    typeof normalized !== "object" ||
+    Array.isArray(normalized) ||
+    Buffer.byteLength(jsonbText(normalized)) > 65536
+  ) {
+    throw new ScopeViolationError("The Namespace lifecycle checkpoint is invalid.");
+  }
+  return normalized as Readonly<Record<string, unknown>>;
+}
+
 interface PlatformSnapshot {
   readonly egressSendReceipts: Map<string, StoredSendReceipt>;
   installation: Readonly<Installation> | undefined;
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
+  readonly namespaceLifecycles: Map<string, Readonly<NamespaceLifecycleRecord>>;
   readonly configurations: Map<string, Readonly<ConfigurationOwnership>>;
   readonly presets: Map<string, Readonly<Preset>>;
   readonly secrets: Map<string, Readonly<Secret>>;
@@ -1214,6 +1298,9 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
       snapshot.installation === undefined ? undefined : storedCopy(snapshot.installation),
     namespaces: new Map(
       Array.from(snapshot.namespaces, ([key, namespace]) => [key, storedCopy(namespace)]),
+    ),
+    namespaceLifecycles: new Map(
+      Array.from(snapshot.namespaceLifecycles, ([key, lifecycle]) => [key, storedCopy(lifecycle)]),
     ),
     configurations: new Map(
       Array.from(snapshot.configurations, ([key, configuration]) => [
@@ -1645,6 +1732,54 @@ function repositories(
   };
 
   const namespaces: NamespaceRepository = {
+    findLifecycle: async (namespaceId) => {
+      const record = snapshot.namespaceLifecycles.get(namespaceId);
+      return record === undefined ? undefined : immutableCopy(record);
+    },
+    bindLifecycle: async (namespaceId, lifecycleId, compute) => {
+      const record = snapshot.namespaceLifecycles.get(namespaceId);
+      if (
+        record === undefined ||
+        record.lifecycleId !== lifecycleId ||
+        (record.computeDriverId !== undefined &&
+          (record.computeDriverId !== compute.id ||
+            record.computeImplementation !== compute.implementation))
+      ) {
+        return undefined;
+      }
+      if (
+        ![compute.id, compute.implementation].every(
+          (value) => value.trim().length >= 1 && value.trim().length <= 200,
+        )
+      ) {
+        throw new ScopeViolationError("The Namespace lifecycle Compute binding is invalid.");
+      }
+      const bound = immutableCopy({
+        ...record,
+        computeDriverId: compute.id,
+        computeImplementation: compute.implementation,
+      });
+      snapshot.namespaceLifecycles.set(namespaceId, bound);
+      return bound;
+    },
+    checkpointLifecycle: async (namespaceId, lifecycleId, expectedRevision, data) => {
+      const record = snapshot.namespaceLifecycles.get(namespaceId);
+      if (
+        record === undefined ||
+        record.lifecycleId !== lifecycleId ||
+        record.revision !== expectedRevision ||
+        record.computeDriverId === undefined
+      ) {
+        return undefined;
+      }
+      const saved = immutableCopy({
+        ...record,
+        revision: expectedRevision + 1,
+        data: namespaceLifecycleData(data),
+      });
+      snapshot.namespaceLifecycles.set(namespaceId, saved);
+      return saved;
+    },
     findNamespace: async (namespaceId) => {
       const namespace = snapshot.namespaces.get(namespaceId);
       return namespace !== undefined && namespace.deletedAt === undefined
@@ -1692,6 +1827,15 @@ function repositories(
       }
       const saved = immutableCopy(namespace);
       snapshot.namespaces.set(key, saved);
+      snapshot.namespaceLifecycles.set(
+        key,
+        immutableCopy({
+          namespaceId: key,
+          lifecycleId: randomUUID(),
+          revision: 0,
+          data: {},
+        }),
+      );
       return saved;
     },
     lockNamespace: async (namespaceId, options = {}) => {
@@ -3819,6 +3963,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
   private snapshot: PlatformSnapshot = {
     installation: undefined,
     namespaces: new Map(),
+    namespaceLifecycles: new Map(),
     configurations: new Map(),
     presets: new Map(),
     secrets: new Map(),

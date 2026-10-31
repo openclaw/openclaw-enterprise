@@ -85,16 +85,18 @@ Adding `--volumes` deletes all three, including the initial service-key JSON.
 
 ## Namespace lifecycle
 
-`ensureNamespace(namespace)` creates or verifies one Docker network for the
-exact Namespace. The network is labeled with the driver, Installation,
-Namespace, and ownership metadata. The method does not start a gateway or Agent
-workload.
+`ensureNamespace(namespace, lifecycle)` saves creation intent before creating an
+isolated, labeled network. It binds the original network ID and selected Engine
+identity in the [Namespace journal](compute-namespace-lifecycle.md). It starts no
+Agent or gateway. Deletion uses the saved network ID and refuses replacement or
+target drift; remaining owned containers and workspace volumes still require
+cleanup when the original network is absent.
 
-`deleteNamespace(namespace)` removes only driver-owned containers and the
-driver-owned network for that exact Namespace. It refuses to adopt or delete a
-foreign network with the same name but different ownership labels. If the network
-was removed externally, deletion still removes remaining owned containers and
-workspace volumes before reporting success.
+A lost commit acknowledgment can recover an ID that actually committed. An
+unconfirmed network create or uncommitted ID binding remains incomplete and
+retains the resource. The Driver neither repeats creation nor compensates by
+name: the [Engine API](https://docs.docker.com/reference/api/engine/version/v1.40.yaml)
+defines duplicate detection as best effort. No force-completion path exists.
 
 Each Namespace maps to one Docker network. Runtime containers for one
 Namespace join only that network; they do not join the control-plane management

@@ -14,6 +14,7 @@ import type {
   Namespace,
   NamespaceDeleteResult,
   NamespaceEnsureResult,
+  NamespaceLifecycleContext,
   LoggingLevel,
   OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
@@ -52,6 +53,13 @@ import {
   type EmbeddedContainerInspect,
   type ObservedEmbeddedGateway,
 } from "./embedded-gateway-recovery.ts";
+import {
+  DockerNamespaceJournal,
+  DockerNamespaceLifecycleRefused,
+  emptyDockerLifecycle,
+  fullDockerNetworkId,
+  requireDockerLifecycle,
+} from "./namespace-lifecycle.ts";
 import { embeddedGatewayRecoveryPreamble } from "../embedded-gateway-owner.ts";
 import {
   gatewayManagedModeEnvironment,
@@ -103,6 +111,8 @@ interface DockerContainerInspect extends EmbeddedContainerInspect {
 }
 
 interface DockerLabeledResourceInspect {
+  readonly Id?: string;
+  readonly Name?: string;
   readonly Labels?: Readonly<Record<string, string>>;
 }
 
@@ -151,6 +161,7 @@ const DRIVER_ID = "compute-docker-development";
 const DRIVER_IMPLEMENTATION = "docker-local";
 const MANAGED_LABEL = "org.openclaw.enterprise.managed";
 const COMPUTE_DRIVER_LABEL = "org.openclaw.enterprise.compute-driver";
+const NAMESPACE_NONCE_LABEL = "org.openclaw.enterprise.namespace-lifecycle-nonce";
 const NAMESPACE_LABEL = "org.openclaw.enterprise.namespace-id";
 const AGENT_LABEL = "org.openclaw.enterprise.agent-id";
 const REVISION_LABEL = "org.openclaw.enterprise.revision-id";
@@ -347,7 +358,8 @@ function slug(value: string): string {
 }
 
 function failure(error: unknown): "retryable" | "permanent" {
-  return error instanceof OwnershipFailure ||
+  return error instanceof DockerNamespaceLifecycleRefused ||
+    error instanceof OwnershipFailure ||
     error instanceof ConfigurationFailure ||
     [400, 401, 403, 404, 409, 422].includes(statusCode(error) ?? 0)
     ? "permanent"
@@ -521,66 +533,175 @@ export class DockerComputeDriver implements ComputeDriver {
     await this.image(this.options.images.agent);
   }
 
-  async ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult> {
+  async ensureNamespace(
+    namespace: Namespace,
+    lifecycle: NamespaceLifecycleContext,
+  ): Promise<NamespaceEnsureResult> {
     this.lifecycleStarted = true;
     const result = { namespaceId: namespace.id, namespaceReady: false };
-    const name = this.networkName(namespace.id);
-    let created = false;
     try {
-      const ownership = { namespaceId: namespace.id };
-      const existing = await this.network(name);
-      if (existing === undefined) {
-        await this.request(
-          "POST",
-          "/networks/create",
-          {
-            Name: name,
-            Driver: "bridge",
-            CheckDuplicate: true,
-            Labels: this.ownershipMetadata(ownership),
-          },
-          [201],
-        );
-        created = true;
-      } else {
-        this.verifyOwnership(existing.Labels, ownership, `network ${name}`);
-      }
-      const observed = await this.network(name);
-      if (observed === undefined) {
-        return result;
-      }
-      this.verifyOwnership(observed.Labels, ownership, `network ${name}`);
-      await this.lifecycle.afterNamespacePrepared(namespace);
-      return { ...result, namespaceReady: true };
+      requireDockerLifecycle(lifecycle, "ready");
+      return await withComputeAbortSignal(lifecycle.signal, async () => {
+        const journal = await this.namespaceJournal(namespace, lifecycle);
+        let current = await journal.read();
+        if (current.data.networkId === undefined) {
+          if (current.data.creation === "attempted") {
+            // Network names and CheckDuplicate are not uniqueness guarantees. An
+            // unknown earlier create must never be followed by a second POST.
+            throw new Error("The Docker network creation outcome is unconfirmed.");
+          }
+          if (current.data.creation === "refused") {
+            throw new DockerNamespaceLifecycleRefused("Docker network creation was refused.");
+          }
+          if ((await this.network(this.networkName(namespace.id))) !== undefined) {
+            throw new DockerNamespaceLifecycleRefused(
+              "The Docker network has no original binding.",
+            );
+          }
+          await journal.save({ creation: "attempted" });
+          let created: unknown;
+          try {
+            created = await this.request(
+              "POST",
+              "/networks/create",
+              {
+                Name: this.networkName(namespace.id),
+                Driver: "bridge",
+                CheckDuplicate: true,
+                Labels: {
+                  ...this.ownershipMetadata({ namespaceId: namespace.id }),
+                  [NAMESPACE_NONCE_LABEL]: current.data.nonce,
+                },
+              },
+              [201],
+            );
+          } catch (error) {
+            // Only this first request's definitive refusal settles its intent.
+            // A transport failure or server error leaves the attempt uncertain.
+            if ([400, 401, 403, 404, 409, 422].includes(statusCode(error) ?? 0)) {
+              await journal.save({ creation: "refused" });
+            }
+            throw error;
+          }
+          const networkId = asRecord(created)?.Id;
+          if (!fullDockerNetworkId(networkId)) {
+            throw new Error("Docker did not return a full network identity.");
+          }
+          await journal.save({ creation: "attempted", networkId });
+          current = await journal.read();
+        }
+        const networkId = current.data.networkId!;
+        const named = await this.network(this.networkName(namespace.id));
+        this.verifyNamespaceNetwork(namespace, current.data.nonce, networkId, named);
+        const observed = await this.network(networkId);
+        this.verifyNamespaceNetwork(namespace, current.data.nonce, networkId, observed);
+        if (named === undefined || observed === undefined) {
+          throw new DockerNamespaceLifecycleRefused("The original Docker network is missing.");
+        }
+        await journal.read();
+        await this.lifecycle.afterNamespacePrepared(namespace);
+        return { ...result, namespaceReady: true };
+      });
     } catch (error) {
-      if (created) {
-        await this.removeNetwork(name).catch(() => {});
-      }
+      // Keep an attempted or bound resource in durable custody. Compensating by
+      // name after a lost checkpoint acknowledgment could remove a replacement.
       return { ...result, failure: failure(error) };
     }
   }
 
-  async deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult> {
+  async deleteNamespace(
+    namespace: Namespace,
+    lifecycle: NamespaceLifecycleContext,
+  ): Promise<NamespaceDeleteResult> {
     this.lifecycleStarted = true;
     const result = { namespaceId: namespace.id, namespaceDeleted: false };
-    const name = this.networkName(namespace.id);
     try {
-      const existing = await this.network(name);
-      if (existing !== undefined) {
-        this.verifyOwnership(existing.Labels, { namespaceId: namespace.id }, `network ${name}`);
-      }
-      await this.lifecycle.beforeNamespaceDelete(namespace);
-      for (const containerId of await this.containerIdsForNamespace(namespace.id)) {
-        await this.removeContainer(containerId);
-      }
-      await this.removeWorkspaceVolumes({ namespaceId: namespace.id });
-      if (existing !== undefined) {
-        await this.removeNetwork(name);
-      }
-      return { ...result, namespaceDeleted: true };
+      requireDockerLifecycle(lifecycle, "deleted");
+      return await withComputeAbortSignal(lifecycle.signal, async () => {
+        // Namespace creation reserved this journal before any Driver dispatch.
+        // Cancellation before first ensure needs no Engine or hook effects.
+        if (emptyDockerLifecycle(await lifecycle.read())) {
+          return { ...result, namespaceDeleted: true };
+        }
+        const journal = await this.namespaceJournal(namespace, lifecycle);
+        const current = await journal.read();
+        const networkId = current.data.networkId;
+        if (networkId === undefined && current.data.creation === "attempted") {
+          throw new Error("The Docker network creation outcome is unconfirmed.");
+        }
+        const named = await this.network(this.networkName(namespace.id));
+        if (networkId === undefined) {
+          if (named !== undefined) {
+            throw new DockerNamespaceLifecycleRefused(
+              "The Docker network has no original binding.",
+            );
+          }
+          return { ...result, namespaceDeleted: true };
+        }
+        this.verifyNamespaceNetwork(namespace, current.data.nonce, networkId, named);
+        const original = await this.network(networkId);
+        this.verifyNamespaceNetwork(namespace, current.data.nonce, networkId, original);
+        await journal.read();
+        await this.lifecycle.beforeNamespaceDelete(namespace);
+        for (const containerId of await this.containerIdsForNamespace(namespace.id)) {
+          await journal.read();
+          await this.removeContainer(containerId);
+        }
+        await journal.read();
+        await this.removeWorkspaceVolumes({ namespaceId: namespace.id });
+        if (original !== undefined) {
+          await journal.read();
+          await this.removeNetwork(networkId);
+        }
+        if ((await this.network(networkId)) !== undefined) {
+          throw new Error("The original Docker network is still present.");
+        }
+        this.verifyNamespaceNetwork(
+          namespace,
+          current.data.nonce,
+          networkId,
+          await this.network(this.networkName(namespace.id)),
+        );
+        await journal.read();
+        return { ...result, namespaceDeleted: true };
+      });
     } catch (error) {
       return { ...result, failure: failure(error) };
     }
+  }
+
+  private async namespaceJournal(
+    namespace: Namespace,
+    lifecycle: NamespaceLifecycleContext,
+  ): Promise<DockerNamespaceJournal> {
+    const info = asRecord(await this.request("GET", "/info", undefined, [200]));
+    if (!isNonEmptyString(info?.ID) || info.ID.length > 200) {
+      throw new DockerNamespaceLifecycleRefused("Docker Engine identity is unavailable.");
+    }
+    return DockerNamespaceJournal.open(
+      lifecycle,
+      { engineId: info.ID, socketPath: SOCKET_PATH, networkName: this.networkName(namespace.id) },
+      randomBytes(16).toString("hex"),
+    );
+  }
+
+  private verifyNamespaceNetwork(
+    namespace: Namespace,
+    nonce: string,
+    networkId: string,
+    observed: DockerLabeledResourceInspect | undefined,
+  ): void {
+    if (observed === undefined) {
+      return;
+    }
+    if (
+      observed.Id !== networkId ||
+      observed.Name !== this.networkName(namespace.id) ||
+      observed.Labels?.[NAMESPACE_NONCE_LABEL] !== nonce
+    ) {
+      throw new DockerNamespaceLifecycleRefused("The original Docker network identity changed.");
+    }
+    this.verifyOwnership(observed.Labels, { namespaceId: namespace.id }, "Namespace network");
   }
 
   validateGatewaySettings(configuration: Readonly<OpenClawConfigurationDocument>): void {

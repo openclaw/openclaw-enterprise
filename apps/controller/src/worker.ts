@@ -49,6 +49,7 @@ import type {
   Namespace,
   NamespaceDeleteResult,
   NamespaceEnsureResult,
+  NamespaceLifecycleContext,
   BackendDefinition,
   SandboxDriver,
   SandboxHarnessObservation,
@@ -5753,11 +5754,130 @@ export class ControllerWorker {
     }
   }
 
+  private async namespaceLifecycle(
+    claim: ClaimedWork,
+    namespace: Readonly<Namespace>,
+    signal: AbortSignal,
+  ): Promise<NamespaceLifecycleContext> {
+    const target = claim.namespaceTarget;
+    if (target !== "ready" && target !== "deleted") {
+      throw new WorkClaimLostError();
+    }
+    const access = async (
+      lifecycleId?: string,
+      change?: {
+        readonly revision: number;
+        readonly data: Readonly<Record<string, unknown>>;
+      },
+    ) => {
+      signal.throwIfAborted();
+      return this.state.transactWithQueue(async (unit, queue) => {
+        // Match finalization's work-before-Namespace lock order. Recheck the
+        // database-clock lease after a potentially blocking Namespace lock.
+        const renewed = await queue.heartbeat(claim);
+        if (
+          renewed === undefined ||
+          renewed.namespaceId !== namespace.id ||
+          renewed.namespaceTarget !== target ||
+          renewed.agentId !== undefined
+        ) {
+          throw new WorkClaimLostError();
+        }
+        const current = await unit.namespaces.lockNamespace(namespace.id);
+        if ((await queue.heartbeat(claim)) === undefined) {
+          throw new WorkClaimLostError();
+        }
+        if (
+          current === undefined ||
+          current.status !== (target === "ready" ? "provisioning" : "deleting")
+        ) {
+          throw new WorkClaimLostError();
+        }
+        const record = await unit.namespaces.findLifecycle(namespace.id);
+        if (
+          record === undefined ||
+          (lifecycleId !== undefined && record.lifecycleId !== lifecycleId)
+        ) {
+          throw new Error("The Namespace has no supported lifecycle binding.");
+        }
+        const bound = await unit.namespaces.bindLifecycle(
+          namespace.id,
+          record.lifecycleId,
+          this.compute,
+        );
+        if (bound === undefined) {
+          throw new Error(
+            "The selected Compute Driver differs from the Namespace lifecycle binding.",
+          );
+        }
+        const appendCheckpoint = async (revision: number, operation: "bind" | "checkpoint") => {
+          if (this.installation === undefined) {
+            throw new Error("The worker Installation is unavailable.");
+          }
+          await unit.audit.append({
+            id: `aud_${randomUUID()}`,
+            installationId: this.installation.id,
+            namespaceId: namespace.id,
+            occurredAt: new Date().toISOString(),
+            kind: "mutation",
+            actorId: claim.actorId,
+            source: "occ",
+            action: "openclaw.namespaces.lifecycle.checkpoint",
+            resource: { kind: "namespace", id: namespace.id, namespaceId: namespace.id },
+            iamDriverId: this.iamDriverId,
+            outcome: "success",
+            details: {
+              workId: claim.idempotencyKey,
+              lifecycleId: record.lifecycleId,
+              revision,
+              operation,
+              target,
+              computeDriverId: this.compute.id,
+              computeImplementation: this.compute.implementation,
+            },
+          });
+        };
+        if (change === undefined) {
+          if (record.computeDriverId === undefined) {
+            await appendCheckpoint(bound.revision, "bind");
+          }
+          return bound;
+        }
+        const saved = await unit.namespaces.checkpointLifecycle(
+          namespace.id,
+          record.lifecycleId,
+          change.revision,
+          change.data,
+        );
+        if (saved === undefined) {
+          throw new Error("The Namespace lifecycle checkpoint revision changed.");
+        }
+        await appendCheckpoint(saved.revision, "checkpoint");
+        return saved;
+      }, this.queueOptions);
+    };
+    const initial = await access();
+    return Object.freeze({
+      lifecycleId: initial.lifecycleId,
+      target,
+      signal,
+      read: async () => {
+        const saved = await access(initial.lifecycleId);
+        return { revision: saved.revision, data: saved.data };
+      },
+      checkpoint: async (revision: number, data: Readonly<Record<string, unknown>>) => {
+        const saved = await access(initial.lifecycleId, { revision, data });
+        return { revision: saved.revision, data: saved.data };
+      },
+    });
+  }
+
   private async observe(
     claim: ClaimedWork,
     namespace: Readonly<Namespace>,
   ): Promise<DispatchResult> {
-    return this.withClaimHeartbeat(claim, async () => {
+    return this.withClaimHeartbeat(claim, async (signal) => {
+      const lifecycle = await this.namespaceLifecycle(claim, namespace, signal);
       if (claim.namespaceTarget === "deleted") {
         const attempts = await this.state.read((view) =>
           view.repositorySessions.listNamespaceAttempts(namespace.id),
@@ -5774,8 +5894,10 @@ export class ControllerWorker {
       }
       const observed =
         claim.namespaceTarget === "ready"
-          ? await captureNamespaceEnsureHint(() => this.compute.ensureNamespace(namespace))
-          : { observation: await this.compute.deleteNamespace(namespace) };
+          ? await captureNamespaceEnsureHint(() =>
+              this.compute.ensureNamespace(namespace, lifecycle),
+            )
+          : { observation: await this.compute.deleteNamespace(namespace, lifecycle) };
       const { observation } = observed;
       if (!validObservation(observation, namespace.id, claim.namespaceTarget ?? "ready")) {
         return { outcome: "permanent", code: "INVALID_DRIVER_OBSERVATION" };

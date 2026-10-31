@@ -119,6 +119,34 @@ export class OpenShellGateway {
       : serviceDnsPlacement(serviceName as string);
   }
 
+  /** Non-secret routing and server trust selectors retained by Namespace cleanup. */
+  lifecycleTarget(namespace: string): { readonly endpoint: string; readonly trust: string } {
+    const endpoint = this.clientOptions(namespace).endpoint;
+    const target = new URL(endpoint.includes("://") ? endpoint : `http://${endpoint}`);
+    if (
+      !["http:", "https:"].includes(target.protocol) ||
+      target.username ||
+      target.password ||
+      target.pathname !== "/" ||
+      target.search ||
+      target.hash
+    ) {
+      throw new OpenShellBackendConfigurationFailure(
+        "OpenShell lifecycle target must be an HTTP origin without credentials, path, query, or fragment.",
+      );
+    }
+    const root = this.publicRootCertificate();
+    return Object.freeze({
+      endpoint: target.toString(),
+      trust:
+        root === undefined
+          ? target.protocol === "https:"
+            ? "system"
+            : "network-policy"
+          : sha256Hex(root),
+    });
+  }
+
   close(): void {
     this.injectedClient?.close();
     for (const client of this.clients.values()) {

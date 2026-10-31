@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: 2026-10-23
-last_updated_session: authoring-run/ee7a6b77-c247-4a57-8aa7-cfc15eb650a5
+updated: 2026-10-30 13:51
+last_updated_session: authoring-run/20ee5e19-0126-4790-9781-3dfdc17d75f7
 ---
 
 # Existing Kubernetes Namespace Placement Flow
@@ -12,8 +12,9 @@ An Installation administrator explicitly selects an operator-owned Kubernetes
 namespace while creating its platform Namespace. The running worker verifies
 authorization and isolation, binds exact tenant identity, and preserves the
 namespace after deletion. Other tenants retain deterministic managed placement;
-existing managed namespaces created with the previous deterministic name remain
-in place when their tenant markers and OpenClaw manager label are exact.
+the lifecycle journal saves original placement and immutable resource identities
+across preparation, deletion, and worker restart. Unbound existing development
+state fails explicitly.
 
 ## Entry Points
 
@@ -32,17 +33,25 @@ in place when their tenant markers and OpenClaw manager label are exact.
 
 ```mermaid
 graph TD
-  A["Create platform Namespace"] --> B{"existingNamespace selected"}
-  B -->|no| C["Provision deterministic managed namespace"]
-  C --> J{"Tenant marker already exists"}
-  J -->|current or previous managed name| H
-  J -->|wrong name or ownership conflict| K["Fail closed"]
-  B -->|yes| D["Authorize administer and persist unique selection"]
-  D --> E["Running worker reauthorizes and verifies exact external namespace"]
-  E --> F["Bind generated tenant identity while preserving external manager"]
-  F --> G["Provision owned infrastructure and mark Namespace ready"]
-  G --> H["Place workloads and ConfigMaps in the bound namespace"]
-  H --> I["Delete orphans and owned infrastructure; retain external ownership"]
+  A["Authorize and create OCC Namespace<br/>Reserve lifecycle journal"] --> B{"External placement selected?"}
+  B -->|no| C["Save creation intent<br/>Create and bind Namespace UID"]
+  B -->|yes| D["Worker verifies external placement<br/>Save intent and original UID"]
+  C --> G["Bind infrastructure and provider identities"]
+  D --> G
+  C -->|unconfirmed or replacement| F["Refuse cleanup authority"]
+  D -->|unconfirmed or foreign claim| F
+  G --> H["Place workloads and ConfigMaps"]
+  H --> T{"Original Namespace terminating<br/>No child or full cleanup saved?"}
+  T -->|yes| W["Stay pending<br/>Await physical removal"]
+  T -->|no| I["Verify tenant scope and provider cleanup<br/>Commit child and resource result"]
+  I -->|terminating tenant 403| W
+  W -->|retry| T
+  I --> L["Finish protected Kubernetes cleanup<br/>UID and resourceVersion preconditions"]
+  L --> M{"External placement?"}
+  M -->|yes| N["Release original claim with witness<br/>Retain physical Namespace"]
+  M -->|no| O["Delete original Namespace UID<br/>Confirm physical removal"]
+  N --> P["Worker commits logical deletion"]
+  O --> P
 ```
 
 ## Execution Trace
@@ -69,6 +78,16 @@ Compute selections reject it with `409`. OCC persists the exact physical name
 with its generated platform Namespace ID before queuing worker provisioning.
 Partial database uniqueness prevents simultaneous active claims for the same name.
 
+`packages/occ/src/state/postgres-schema.ts:namespaceLifecycle` and
+`migrations/0066_namespace_lifecycle.sql:reserve_namespace_lifecycle` reserve a
+stable lifecycle UUID with the Namespace insertion, before any dispatch. The
+initial revision-zero record proves no effect was attempted. The worker's
+`ControllerWorker.namespaceLifecycle` locks work before Namespace, rechecks its
+PostgreSQL-clock lease after acquiring both, and validates the target and selected
+Compute identity. Journal CAS and sanitized checkpoint audit commit together.
+An expired claim cannot read or save confirmation. Unknown COMMIT acknowledgment
+stops effects; the next authorized read uses the committed record.
+
 ### 2. Reauthorize and bind the exact external namespace
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.ensureNamespace`
@@ -78,7 +97,7 @@ adoption. Compute reads the exact selected Kubernetes namespace and requires
 `Active` status, `openclaw.dev/namespace-lifecycle: external`, all three
 restricted Pod Security labels, and no foreign tenant markers or NetworkPolicies.
 It binds its full Namespace-ID label and matching Namespace-ID annotation
-together through a `resourceVersion`-guarded, non-forced patch; concurrent
+together through a UID/`resourceVersion`-guarded, non-forced patch; concurrent
 ownership changes fail safely while preserving the manager and unrelated
 metadata. Missing targets, termination, foreign ownership or additive policies,
 ambiguous identity, and revoked authorization fail closed without managed
@@ -90,6 +109,23 @@ worker pause, restart, or Installation setting is needed.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.networkPolicies`
 renders `allow-dns` with UDP and TCP ports `53` and `5353`, scoped to the
 [configured DNS peer](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
+
+`apps/controller/src/drivers/compute/kubernetes/namespace-lifecycle.ts:KubernetesNamespaceJournal`
+saves creation intent before effects and binds readback to its lifecycle nonce
+and original UID. Compute saves each infrastructure attempt separately, so
+cancellation before a later stage needs no nonexistent identity. A first,
+authoritatively rejected create can record no effect; a later refusal cannot
+settle an earlier unknown attempt. An unknown create with an absent read never
+issues another create; matching creation metadata can recover late original
+readback. Bound infrastructure updates carry the saved UID and observed resourceVersion.
+The selected Sandbox receives only its child
+journal and the saved physical Namespace UID, before it can mutate placement.
+
+For a preprovisioned Installation, configured operator policies require exact
+approved content and tenant ownership, not OCC's later creation nonce. The
+selected OpenShell Driver binds observed operator resource and Workspace IDs
+before readiness; repeated preparation refuses replacement. Automatic Namespace
+teardown remains refused. See [binding authority](../reference/drivers/compute-namespace-lifecycle.md#driver-owned-data).
 
 ### 3. Colocate Configuration and workload resources
 
@@ -125,32 +161,66 @@ gateway teardown removes the exact-owned private and shared claims by UID.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deleteNamespace`
 
-OCC first rejects deletion while Agents, Configurations, Secrets, service
-accounts, or other Namespace contents remain. Any object still carrying this Namespace's ownership (the
-`app.kubernetes.io/managed-by=openclaw-enterprise` and `openclaw.dev/namespace`
-labels plus the `openclaw.dev/namespace-id` annotation) is therefore an orphan,
-for example a Configuration ConfigMap whose create applied but whose transaction
-then failed. Compute deletes such ConfigMaps and ServiceAccounts by UID, and such
-Secrets too when repository credentials are enabled, the only setup in which the
-single-cluster chart lets the worker list Secrets. Two-cluster Compute keeps
-Secrets and Configurations in the control-plane namespace, which it deletes. A failed list or delete keeps the Namespace `deleting`.
-Compute then removes its owned `openclaw-quota`,
-`openclaw-limits`, `allow-dns`, `allow-gateway-ingress`, and `default-deny`
-objects, preserving default-deny until last. External namespace objects, their
-tenant markers, RoleBindings, the operator's Secrets, and unrelated resources
-remain untouched.
-Deleting a failed selection that was never bound to either tenant marker also
-leaves the external namespace untouched; partial or foreign markers fail
-closed. An already-missing namespace counts as deleted. After deleting an
-unclaimed failed tenant, an administrator can correct preparation and retry.
-Previously claimed namespaces cannot be readopted until an operator deliberately
-clears the old `openclaw.dev/namespace` label, `openclaw.dev/namespace-id`
-annotation and, in single-cluster Compute, `openclaw.dev/gateway-namespace`
-label. Deleting a failed selection whose namespace still carries another
-tenant's `openclaw.dev/namespace` label or `namespace-id` annotation fails
-permanently and leaves the Namespace `deleting`; clear those markers, then have
-the initiator repeat `DELETE`. Managed namespaces retain their existing
-complete-deletion lifecycle.
+OCC rejects deletion while Agents, Configurations, Secrets, service accounts,
+or other Namespace contents remain. Compute first checks the journal's selected
+targets and any observable physical Namespace UID and owner. A same-name
+replacement or foreign claim refuses before provider or Kubernetes teardown.
+Cancellation before the first ensure dispatch can complete without provider
+cleanup because the initial journal proves no effects were started. External
+selection saves its original UID separately from claim progress. Rejected
+validation before any claim attempt can cancel without changing operator resources;
+unknown claim attempts still require confirmation. Only the first authoritative
+PATCH refusal can record no claim effect; post-PATCH read errors do not.
+Current UID and foreign-claim
+checks remain required.
+
+For the original terminating Namespace, Compute waits before tenant reads if
+there is no Sandbox or its full cleanup result is saved. Otherwise cleanup can
+progress while access permits. A tenant-preflight `403` keeps deletion pending:
+Namespace GC can remove its RoleBinding before physical removal. After absence,
+the selected provider must still confirm cleanup. This does not resolve finalizers
+or restore revoked operator/provider grants.
+
+Compute calls Sandbox cleanup with its saved child context, including after the
+tenant Namespace disappears. The Sandbox confirms its original provider resource
+and commits provider completion before deleting configured Kubernetes resources
+or gateway access. Unknown provider outcomes remain blocked; tenant absence and
+bare missing claim labels do not establish cleanup.
+
+For retained external Namespaces, Compute also captures the later Agent-created
+`allow-node-gateway` policy's original UID or confirmed absence before provider
+effects. It fences that read against the original Namespace UID, deletes with
+UID/resourceVersion preconditions, and refuses replacement through finalizer retries.
+An attempted infrastructure binding can recover only from matching lifecycle
+creation metadata in the original Namespace, then checkpoint before cleanup.
+
+Compute checks saved infrastructure UIDs before
+provider effects and again in each deletion snapshot. Deletion uses UID and
+current resourceVersion preconditions, then reads back removal. A finalizer or
+failed API call keeps the logical Namespace deleting. Existing orphan cleanup
+removes exactly labelled ConfigMaps and ServiceAccounts; Secrets are included
+only where repository-credential permissions allow listing. Operator resources
+and RoleBindings remain. Sandbox returns generic confirmed-absent references or
+retained original UIDs, which Compute commits before parent teardown. Each actual
+sweep list checks these protected references and rechecks the saved Namespace UID
+before deleting unprotected snapshots with UID/resourceVersion preconditions.
+A reappearing or replaced protected object refuses instead of becoming an orphan.
+Namespace-scoped repository-material cleanup likewise checks placement after its
+Secret list before consuming UID/resourceVersion snapshots; missing placement
+discards effects, and a replacement refuses.
+
+After owned-resource removal, Compute checkpoints claim-release intent. An atomic
+UID/resourceVersion-conditional patch removes only this claim and writes
+`openclaw.dev/released-lifecycle`. If its reply is lost, the same UID, that witness,
+and no current claim confirm release on retry. Bare missing markers or a later
+foreign claim refuse. A committed release still requires a current ownership
+read; it grants no authority to mutate later resources. Managed Namespace cleanup
+instead deletes the saved physical UID and waits for actual removal. The worker
+then commits logical deletion, policy removal, audit, and queue completion.
+
+The [Namespace lifecycle contract](../reference/drivers/compute-namespace-lifecycle.md)
+defines authority and recovery. No force-completion or name-only reconstruction
+path exists for missing original identity or permanently lost provider evidence.
 
 ## Debugging and Verification
 
@@ -172,6 +242,12 @@ complete-deletion lifecycle.
   Secret outlives deletion. List Secrets labelled `openclaw.dev/namespace=<id>`
   and `app.kubernetes.io/managed-by=openclaw-enterprise` with `kubectl`, and
   delete those whose `openclaw.dev/namespace-id` annotation is also `<id>`.
+- Run `node --test tests/conformance/kubernetes-namespace-lifecycle.test.ts` for
+  cancellation, resource replacement, unknown creation, and claim-release retries.
+  Its controlled Kubernetes responses establish Driver protocol, not live cluster proof.
+- Run `node --test tests/integration/postgres-namespace-lifecycle.test.ts` with the
+  prepared disposable PostgreSQL fixture for claim takeover, concurrent finalization,
+  audit rollback, and loss of a real COMMIT reply.
 - Run `node --test tests/conformance/kubernetes-compute.test.mjs` for driver
   contract coverage, including current managed placement, previous managed-name
   discovery, duplicate-claim rejection, foreign ownership rejection, and cleanup
@@ -193,6 +269,16 @@ complete-deletion lifecycle.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 13:51: Trace initial operator-owned binding under selected preprovisioned authority and retained immutable IDs in the accompanying repair. (authoring-run/20ee5e19-0126-4790-9781-3dfdc17d75f7 - dc724484d59f5446e9cceea41f0b38192372b8dd)
+
+- 2026-10-30 13:30: Trace pending deletion while Namespace GC removes tenant RBAC, preserving selected Sandbox cleanup and original identity checks in the accompanying repair. (authoring-run/20ee5e19-0126-4790-9781-3dfdc17d75f7 - b5281d09e474f3a44310d3c27c1f45e93c57d7f9)
+
+- 2026-10-30 11:13: Correct the managed/external diagram and trace claim progress, partial binding recovery, late policy custody, and material-list placement checks in the accompanying repair. (authoring-run/80ea08bc-5b26-4327-bd7b-128cc7aaf0fd - 922a031ef91f6dc14329034f50964752757ec29b)
+
+- 2026-10-30 10:09: Trace the generic Sandbox cleanup result, parent sweep protection, and post-list Namespace identity fence in the accompanying implementation. (authoring-run/80ea08bc-5b26-4327-bd7b-128cc7aaf0fd - ef2cf007043819118c83fd8339496a92bcab9fb3)
+
+- 2026-10-30 09:21: Trace durable Namespace intent, claim-fenced checkpoints, original resource identity, and confirmed cleanup in the accompanying implementation. (authoring-run/8ec39c68-b73b-4524-b870-6aac72004d04 - 536e71d95bf39797f2b60048cb3677e879ed046b)
 
 - 2026-10-23 17:00: Deletion sweeps orphaned OCE-owned ConfigMaps, ServiceAccounts and, with repository credentials, Secrets. (fix-1400)
 - 2026-10-09 20:19: Refuse an explicitly empty CLI adoption flag before creating a client. (authoring-run/ee7a6b77-c247-4a57-8aa7-cfc15eb650a5 - c4cc1d9f23f9bebac8fd82881561cce48fb4fc6a)

@@ -210,9 +210,29 @@ function accountName(input) {
   ).slice(0, 12)}`;
 }
 
+function namespaceGeneration(input) {
+  const lifecycle = input.namespaceLifecycle;
+  const marker =
+    lifecycle === undefined
+      ? readJson(join(namespaceDirectory(input), "namespace.json"))
+      : { namespaceLifecycleId: lifecycle.lifecycleId, namespaceNonce: lifecycle.nonce };
+  if (
+    typeof marker.namespaceLifecycleId !== "string" ||
+    typeof marker.namespaceNonce !== "string" ||
+    !/^[a-f0-9]{32}$/.test(marker.namespaceNonce)
+  ) {
+    throw new OwnershipFailure("Namespace lifecycle marker is unavailable.");
+  }
+  return {
+    namespaceLifecycleId: marker.namespaceLifecycleId,
+    namespaceNonce: marker.namespaceNonce,
+  };
+}
+
 function accountOwnership(input, name = accountName(input)) {
   return {
     ...agentOwnership(input),
+    ...namespaceGeneration(input),
     runtimeUser: name,
     runtimeGroup: name,
   };
@@ -224,6 +244,121 @@ function accountMarker(input, name = accountName(input)) {
 
 function namespaceDirectory(input) {
   return join(input.runtime.root, "namespaces", hash(input.namespace.id).slice(0, 12));
+}
+
+const birthtimeDevices = new Set();
+
+async function verifyFilesystemBirthtime(path, device) {
+  const key = device.toString();
+  if (birthtimeDevices.has(key)) {
+    return;
+  }
+  const before = fs.lstatSync(path, { bigint: true });
+  if (before.dev !== device || before.birthtimeNs <= 0n) {
+    throw new ConfigurationFailure("Filesystem creation timestamps are unavailable.");
+  }
+  const deadline = performance.now() + 2_000;
+  while (performance.now() < deadline) {
+    await delay(10);
+    const probePath = temporary(join(path, ".birthtime-probe"));
+    const fd = fs.openSync(probePath, "wx", 0o600);
+    // Creating and removing our own entry changes this directory's ctime. Use the
+    // same lstat path as identity checks; no named probe remains across an await.
+    try {
+      fs.closeSync(fd);
+    } finally {
+      fs.unlinkSync(probePath);
+    }
+    const after = fs.lstatSync(path, { bigint: true });
+    if (after.dev !== before.dev || after.ino !== before.ino) {
+      throw new OwnershipFailure("Filesystem directory changed during timestamp verification.");
+    }
+    if (after.birthtimeNs !== before.birthtimeNs) {
+      throw new ConfigurationFailure("Filesystem creation timestamps track metadata changes.");
+    }
+    if (after.ctimeNs !== before.ctimeNs) {
+      birthtimeDevices.add(key);
+      return;
+    }
+  }
+  throw new ConfigurationFailure("Filesystem creation timestamp stability is unconfirmed.");
+}
+
+function filesystemIdentity(path) {
+  directory(path);
+  const info = fs.lstatSync(path, { bigint: true });
+  if (info.birthtimeNs <= 0n) {
+    throw new ConfigurationFailure("Filesystem creation timestamps are unavailable.");
+  }
+  return {
+    device: info.dev.toString(),
+    inode: info.ino.toString(),
+    birthtime: info.birthtimeNs.toString(),
+  };
+}
+
+async function verifyIdentityFilesystem(path, expected) {
+  verify(filesystemIdentity(path), expected);
+  // Node can substitute ctime for unavailable birthtime. Probe only an identity
+  // already admitted for this operation, never a mismatched replacement directory.
+  await verifyFilesystemBirthtime(path, BigInt(expected.device));
+  verify(filesystemIdentity(path), expected);
+}
+
+async function namespaceReceipt(input, allowCreate = false) {
+  const lifecycle = input.namespaceLifecycle;
+  if (typeof lifecycle?.lifecycleId !== "string" || !/^[a-f0-9]{32}$/.test(lifecycle.nonce)) {
+    throw new OwnershipFailure("Namespace lifecycle authority is required.");
+  }
+  const receipts = join(input.runtime.root, "namespace-lifecycles");
+  const receiptPath = join(receipts, `${hash(lifecycle.lifecycleId)}.json`);
+  const expected = {
+    version: 1,
+    ...ownership(input),
+    ...namespaceGeneration(input),
+    rootIdentity: filesystemIdentity(input.runtime.root),
+  };
+  if (inspect(receiptPath) === undefined) {
+    // The first dispatch alone can create. Absence after an uncertain reply is not permission.
+    if (!allowCreate || inspect(namespaceDirectory(input)) !== undefined) {
+      throw new OwnershipFailure("Namespace creation remains unconfirmed.");
+    }
+    await verifyIdentityFilesystem(input.runtime.root, expected.rootIdentity);
+    directory(receipts, true);
+    atomicWrite(receiptPath, JSON.stringify(expected));
+    atomicDirectory(namespaceDirectory(input), (pending) => {
+      atomicWrite(
+        join(pending, "namespace.json"),
+        JSON.stringify({
+          ...ownership(input),
+          ...namespaceGeneration(input),
+        }),
+      );
+      fs.mkdirSync(join(pending, "agents"), { mode: 0o755 });
+    });
+    const createdIdentity = filesystemIdentity(namespaceDirectory(input));
+    await verifyIdentityFilesystem(namespaceDirectory(input), createdIdentity);
+    atomicWrite(receiptPath, JSON.stringify({ ...expected, directoryIdentity: createdIdentity }));
+  }
+  directory(receipts);
+  const receipt = verify(readJson(receiptPath), expected);
+  if (receipt.directoryIdentity === undefined) {
+    throw new OwnershipFailure("Namespace creation remains unconfirmed.");
+  }
+  if (lifecycle.directoryIdentity !== undefined) {
+    verify(receipt.directoryIdentity, lifecycle.directoryIdentity);
+  }
+  if (inspect(namespaceDirectory(input)) !== undefined) {
+    verifyNamespaceMarker(input);
+    verify(filesystemIdentity(namespaceDirectory(input)), receipt.directoryIdentity);
+    verify(readJson(join(namespaceDirectory(input), "namespace.json")), namespaceGeneration(input));
+  }
+  // All existing marker and receipt comparisons precede even the temporary probe.
+  await verifyIdentityFilesystem(input.runtime.root, receipt.rootIdentity);
+  if (inspect(namespaceDirectory(input)) !== undefined) {
+    await verifyIdentityFilesystem(namespaceDirectory(input), receipt.directoryIdentity);
+  }
+  return receipt;
 }
 
 function unitName(agentId) {
@@ -247,11 +382,24 @@ function verifyUnit(input, agent) {
   return contents;
 }
 
-function verifyNamespace(input) {
+function verifyNamespaceMarker(input) {
   const path = namespaceDirectory(input);
   directory(join(input.runtime.root, "namespaces"));
   directory(path);
-  verify(readJson(join(path, "namespace.json")), ownership(input));
+  return verify(readJson(join(path, "namespace.json")), ownership(input));
+}
+
+async function verifyNamespace(input) {
+  const marker = verifyNamespaceMarker(input);
+  // Agent calls have their own authorization context. The host receipt still binds
+  // every operation to the Namespace generation and directory originally created.
+  await namespaceReceipt({
+    ...input,
+    namespaceLifecycle: {
+      lifecycleId: marker.namespaceLifecycleId,
+      nonce: marker.namespaceNonce,
+    },
+  });
 }
 
 function verifyAgent(input, path) {
@@ -468,6 +616,7 @@ async function removeNamespaceRuntimeIdentities(input, knownAgents) {
         typeof marker.agentId === "string" &&
         typeof marker.servicePrincipalId === "string"
       ) {
+        verify(marker, namespaceGeneration(input));
         agents.push(marker);
       }
     }
@@ -938,7 +1087,15 @@ async function removeAgent(input, nsDir) {
       if (marker.runtimeUser !== accountName(input)) {
         throw new OwnershipFailure("Runtime account marker is invalid.");
       }
-      await removeRuntimeIdentity(input, marker);
+      const scoped = {
+        ...input,
+        namespaceLifecycle: {
+          lifecycleId: marker.namespaceLifecycleId,
+          nonce: marker.namespaceNonce,
+        },
+      };
+      await namespaceReceipt(scoped);
+      await removeRuntimeIdentity(scoped, marker);
     }
     return {};
   }
@@ -963,31 +1120,36 @@ async function run(input) {
   const nsDir = namespaceDirectory(input);
   await acquireLock(input.runtime.root);
   try {
-    if (input.operation === "delete-namespace" && inspect(nsDir) === undefined) {
-      await removeNamespaceRuntimeIdentities(input, []);
-      return {};
+    if (["ensure-namespace", "observe-namespace", "delete-namespace"].includes(input.operation)) {
+      if (input.operation === "ensure-namespace") {
+        directory(join(input.runtime.root, "namespaces"), true);
+      }
+      const receipt = await namespaceReceipt(
+        input,
+        input.operation === "ensure-namespace" && input.allowCreate === true,
+      );
+      if (input.operation === "observe-namespace") {
+        return { directoryIdentity: receipt.directoryIdentity };
+      }
+      if (input.operation === "ensure-namespace") {
+        if (inspect(nsDir) === undefined) {
+          throw new OwnershipFailure("The bound Namespace directory is missing.");
+        }
+        return { directoryIdentity: receipt.directoryIdentity };
+      }
+      if (inspect(nsDir) === undefined) {
+        await removeNamespaceRuntimeIdentities(input, []);
+        return {};
+      }
+      return await removeNamespace(input, nsDir);
     }
     if (input.operation === "delete-agent") {
       if (inspect(nsDir) !== undefined) {
-        verifyNamespace(input);
+        await verifyNamespace(input);
       }
       return await removeAgent(input, nsDir);
     }
-    if (input.operation === "ensure-namespace") {
-      directory(join(input.runtime.root, "namespaces"), true);
-      if (inspect(nsDir) === undefined) {
-        atomicDirectory(nsDir, (pending) => {
-          atomicWrite(join(pending, "namespace.json"), JSON.stringify(ownership(input)));
-          fs.mkdirSync(join(pending, "agents"), { mode: 0o755 });
-        });
-      }
-      verifyNamespace(input);
-      return {};
-    }
-    verifyNamespace(input);
-    if (input.operation === "delete-namespace") {
-      return await removeNamespace(input, nsDir);
-    }
+    await verifyNamespace(input);
     if (input.operation === "prepare-revision") {
       return await prepare(input, nsDir);
     }

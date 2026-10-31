@@ -1,19 +1,12 @@
 # OpenShell SandboxDriver
 
-The OpenShell SandboxDriver pairs its Gateway, dedicated Codex/native OpenClaw
-Harnesses, and [Kubernetes Compute](kubernetes-compute.md). OCC owns Agents,
-Agent revisions, Namespaces, routing, credentials, and authorization.
-
-Development supports native OpenClaw and dedicated Codex with
-[`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6). The pinned
-OCE runtime declares native Dedicated support. The paired
-[Credential Gateway](openshell-credential-gateway.md) delivers model credentials;
-each Agent revision's providers supply node enrollment and Codex files. These experimental APIs are
-unqualified for production.
-
-Embedded OpenClaw is unsupported. The Driver supplies native OpenClaw's three
-containment facets; see
-[qualification](#qualification-contract).
+Use dedicated Codex/native OpenClaw with
+[Kubernetes Compute](kubernetes-compute.md) and the selected
+[Credential Gateway](openshell-credential-gateway.md). Development uses
+[`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6); APIs are
+unqualified for production. The pinned runtime declares native Dedicated support;
+see [qualification](#qualification-contract).
+Embedded OpenClaw is unsupported.
 
 ## Ownership model
 
@@ -27,30 +20,27 @@ routing, and the per-Agent Gateway. Sandbox owns:
 - `configureAgent` pins the main Agent workspace to the configured Sandbox data
   mount for both dedicated Harnesses before OCC saves the Agent revision. Codex retains
   app-server containment policy.
-- `validateWorkspaceSetup` admits initial files only for that projected workspace
-  with a single main Agent (or an omitted roster). Compute retains runtime-storage
-  and identity checks; the Sandbox privately initializes the same mount.
-- In `operator` mode, `ensureNamespace` applies configured labels, workspace
-  resources, and NetworkPolicies, then owns the exact active Workspace.
-- `provisionHarness` creates one Workspace Sandbox. Dedicated Codex exposes its
-  app-server. A native OpenClaw worker connects outbound and can expose a
-  temporary status endpoint until its workspace node enrolls. The Driver adds each
-  [credential attachment](openshell-sandbox/harness-providers.md#credential-attachments) and that Agent revision's Harness runtime provider
-  to the Sandbox's providers, validates any Codex route, and returns the stable Sandbox reference.
-  Private [workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution) completes before execution.
+- `validateWorkspaceSetup` admits initial files for the projected workspace and
+  a single main Agent or omitted roster; Compute retains storage/identity checks.
+- `ensureNamespace` saves preparation intent and immutable identities through
+  Compute's Namespace journal before reporting ready.
+- `provisionHarness` creates one Workspace Sandbox with its
+  [credential attachments and runtime provider](openshell-sandbox/harness-providers.md).
+  Dedicated Codex exposes its app-server; native OpenClaw connects outbound and
+  temporarily exposes status until node enrollment.
+  [Private workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution)
+  precedes execution.
 - OpenShell's controller creates and owns the Sandbox's Harness Pod.
-- `cleanup` derives the stable Sandbox identity during Agent revision retirement, even
-  without its Pod. Namespace cleanup verifies Workspace ownership and
-  removes the Workspace and configured resources before Compute deletes the
-  Kubernetes namespace.
+- `cleanup` derives the Agent revision's Sandbox identity even without its Pod.
+  [Namespace cleanup](#namespace-cleanup) saves provider confirmation before teardown.
 
-Compute trusts OpenShell to enforce its Pod, but requires workload readiness and
-routing matching the running Agent revision ID before serving traffic. Each Agent revision stores only
-`sandboxDriverId`; workers resolve it for provisioning and cleanup.
+Compute requires workload readiness and routing for the running Agent revision
+before serving traffic. Workers resolve its saved `sandboxDriverId` for
+provisioning and cleanup.
 
 ## OpenShell containment facets
 
-The Driver requests three [containment facets](sandbox.md#containment-facets):
+[Containment facets](sandbox.md#containment-facets):
 
 | Facet        | Current OpenShell behavior                                                                    |
 | ------------ | --------------------------------------------------------------------------------------------- |
@@ -179,7 +169,9 @@ disposable development cluster; never qualify this topology for production.
 `gateway.operatorWorkspaceResources` accepts the namespace-scoped
 ServiceAccount, Role, RoleBinding, and NetworkPolicy objects rendered from the
 workspace chart. The Driver injects the Compute-owned namespace and OCC
-ownership metadata before server-side apply. Only `operator` mode applies it;
+ownership metadata and a saved creation nonce. It binds the returned UID before
+ready; later reconciliation uses UID and `resourceVersion` preconditions. Only
+`operator` mode creates these objects;
 never include Secrets or cluster-scoped objects.
 
 `gateway.networkPolicyResources` accepts namespace-scoped Kubernetes objects
@@ -263,8 +255,6 @@ and this scoping. See the
 
 ## Qualification contract
 
-Local contracts are implemented; protected cluster proof remains.
-
 ### Workload identity
 
 The local profile disables the optional Harness workload credential. OpenShell
@@ -319,6 +309,32 @@ The proxy-mediated workspace-node enrollment above requires an exact k3d proof.
 Missing admission, node enrollment, or gateway guarantees must fail the Agent revision
 instead of launching a weakened Harness.
 
+## Namespace cleanup
+
+Compute's journal binds the selected Driver/Backend, endpoint/server trust,
+Namespace UID, Workspace ID, and configured resource UIDs. Missing or changed
+bindings refuse cleanup. Operator resources use
+[preprovisioned binding authority](compute-namespace-lifecycle.md#driver-owned-data)
+and remain retained.
+
+Cleanup checks ownership/UIDs before removing owned providers/profiles from the
+original Workspace. It confirms fresh `DeleteWorkspace` completion and removal,
+then commits its checkpoint before configured-resource or gateway teardown.
+No attempt or confirmed creation refusal needs no provider call. Accepted deletion,
+`ALREADY_ABSENT`, and `NOT_FOUND` are not completion receipts.
+
+Resource deletes use saved UID/current `resourceVersion` preconditions and removal
+readback; finalizers defer completion. Cleanup returns every configured reference
+as confirmed absent or retained with its saved UID. Compute persists this result
+before its orphan sweep. Reappearing absent references and replacement retained
+UIDs refuse cleanup; names alone cannot establish new ownership.
+
+Receipts survive worker/tenant-local gateway loss. Compute separately releases
+external Namespace claims. Unknown Workspace responses remain unconfirmed;
+see [recovery](#gateway-identity-and-removal). [Supplier replay](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/crates/openshell-server/src/grpc/mutation_replay.rs#L137-L375) expires and binds
+names, so it is not permanent generation authority. Workspace deletion has no
+atomic [precondition for the saved ID](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/proto/openshell.proto#L3784-L3835).
+
 ## Sandbox log reads
 
 `readSandboxLogs` calls only `GetSandboxLogs`. The OCC gateway identity needs
@@ -359,12 +375,10 @@ Errors include:
 
 ### Gateway identity and removal
 
-If stop, deletion, or credential withdrawal reports `SANDBOX_GATEWAY_UNAUTHORIZED`,
-check the worker's `sandbox-gateway-identity` hint. A missing Workspace role
-fails immediately. Restore the role, or deploy again to recreate an externally
-removed Workspace. If authentication fails, check the controller's token file
-and the gateway's signing-key refresh. The worker retries transient failures
-within its attempt budget. Retry the original operation after restoring access.
+For `SANDBOX_GATEWAY_UNAUTHORIZED`, check the worker's `sandbox-gateway-identity`
+hint. Restore the Workspace role, controller authentication, or gateway signing-key
+refresh before retrying the original operation. Transient failures retry within
+the worker's attempt budget.
 
 OpenShell can return `NOT_FOUND` for a resource hidden from the caller. To
 confirm absence, the Driver reads the Workspace with the controller's identity
@@ -372,6 +386,18 @@ and reads the resource again. If a delete returns `NOT_FOUND` immediately after
 a read found the target, removal is unconfirmed (`SANDBOX_DELETION_UNCONFIRMED`).
 The worker logs `worker.harness-exposure-withdrawal-unconfirmed` during the
 exposure sweep and retries.
+
+Revision cleanup checks the returned Sandbox name, Workspace, and Namespace,
+Agent, and revision annotations before deleting it. A same-name Sandbox assigned
+to another owner is refused; do not relabel it to force cleanup.
+
+If both Sandbox and Workspace records are missing, revision cleanup cannot confirm
+removal: stop, retirement and Agent deletion remain incomplete, including permanent
+provider loss. Unknown Workspace creation/deletion responses also remain blocked.
+Restore authoritative provider state/access before retrying; recreating an empty
+Workspace, relabeling a replacement, or deploying again does not prove earlier
+removal. There is no force-completion operation; retain the incomplete work for
+investigation.
 
 For Namespace setup or cleanup, `PERMISSION_DENIED` or `UNAUTHENTICATED`
 raises `SandboxNamespaceRefusedError`. Compute marks the Namespace step as
