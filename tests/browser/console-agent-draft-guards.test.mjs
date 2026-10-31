@@ -60,6 +60,7 @@ import {
   notIncluded,
   POLICY_EDITING_SETTING_REFUSED,
   GRANT_EXCEEDS_CEILING,
+  MODEL_CREDENTIAL_REJECTED_RECORDED,
   NO_SANDBOX_DRIVER_NETWORK_POLICY,
 } from "../helpers/refusal-text.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
@@ -2502,10 +2503,7 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   // The API's message carries the next step, so occ and HTTP clients get it too (finding
   // 1393); the console shows it once, in the failure's card, and adds only the link to
   // Credentials. The card folds Deployment details, which repeat it (finding 2094).
-  assert.match(
-    failure.message,
-    /^The model provider rejected this version's credential \(HTTP 401 or 403\)\. .*update or replace the Agent's model credential, then deploy a new version\.$/,
-  );
+  assert.equal(failure.message, MODEL_CREDENTIAL_REJECTED_RECORDED);
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.getByText(failure.message, { exact: false }).waitFor();
   assert.equal(

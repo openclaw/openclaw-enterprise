@@ -76,6 +76,7 @@ import {
   waitForLiveControls,
 } from "./console-agents-test-support.mjs";
 import {
+  AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
   AGENT_SAVE_DENIED,
   AGENT_SOURCES_DENIED,
@@ -4038,7 +4039,7 @@ test("a read-only principal sees Agent mutation controls disabled or absent befo
   const requests = apiRequests(page, fixture.origin);
 
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`, viewer.credentials);
-  await page.getByText("Your access does not include creating Agents in this Namespace.").waitFor();
+  await page.getByText(AGENT_CREATE_DENIED).waitFor();
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
 
   const current = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
@@ -4335,7 +4336,7 @@ for (const viewport of [
       }).observe(globalThis.document, { subtree: true, childList: true, attributes: true });
     });
     await page.reload();
-    const note = page.getByText("Your access does not include creating Agents in this Namespace.");
+    const note = page.getByText(AGENT_CREATE_DENIED);
     await note.waitFor();
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
     await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
@@ -4359,9 +4360,7 @@ for (const viewport of [
     // Create Agent by URL refuses up front instead of at submit.
     await page.goto(`${fixture.origin}/console/agents/new?namespace=${empty.id}`);
     await page.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
-    await page
-      .getByText(/Your access does not include creating Agents in this Namespace\./)
-      .waitFor();
+    await page.getByText(AGENT_CREATE_DENIED).waitFor();
     assert.equal(await page.getByRole("button", { name: "Start without Preset" }).count(), 0);
     assert.equal(await page.getByRole("link", { name: "← Agents" }).isVisible(), true);
   });

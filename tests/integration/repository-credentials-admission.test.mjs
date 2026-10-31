@@ -51,6 +51,8 @@ import {
   BROKER_PROXY_EMPTY_HOST,
   BROKER_PROXY_LOCAL_BINDING,
   BROKER_PROXY_MODE,
+  callerDenied,
+  CODEX_NEEDS_DEDICATED,
   COMPUTE_REPOSITORY_UNSUPPORTED,
   COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
   CREDENTIAL_PROXY_GIT_ALONE,
@@ -1098,7 +1100,7 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
       executionMode: "dedicated",
       status: 409,
       code: "RESOURCE_CONFLICT",
-      message: /cannot deliver repository credentials to this Harness topology/,
+      message: COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
       atSave: true,
     },
     // A Harness/mode mismatch names the execution mode the Configuration needs, at Agent save
@@ -1108,7 +1110,7 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
       executionMode: "embedded",
       status: 400,
       code: "INVALID_REQUEST",
-      message: /selects the Codex Harness, which needs dedicated execution/,
+      message: CODEX_NEEDS_DEDICATED,
       atSave: true,
     },
   ]) {
@@ -1127,7 +1129,7 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
         });
         assert.equal(refused.status, status, JSON.stringify(refused));
         assert.equal(refused.error.code, code);
-        assert.match(refused.error.message, message);
+        assert.equal(refused.error.message, message);
         assert.deepEqual((await f.request("GET", f.collection)).data, []);
         return;
       }
@@ -1146,11 +1148,7 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
       const denied = await f.request("POST", `${path}/deploy`);
       assert.equal(denied.status, status, JSON.stringify(denied));
       assert.equal(denied.error.code, code);
-      if (typeof message === "string") {
-        assert.equal(denied.error.message, message);
-      } else if (message) {
-        assert.match(denied.error.message, message);
-      }
+      assert.equal(denied.error.message, message);
       assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
     });
   }
@@ -1641,7 +1639,10 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
     repositoryBindings: selection,
   });
   assert.equal(hidden.status, 403, JSON.stringify(hidden));
-  assert.match(hidden.error.message, /needs SandboxPolicy read on /);
+  assert.equal(
+    hidden.error.message,
+    callerDenied("SandboxPolicy read", `SandboxPolicy ${granted.data.id}`),
+  );
   assert.doesNotMatch(JSON.stringify(hidden), /git-direct|github\.com/);
   // An Agent with no saved additions has nothing to name, so its binding saves without read.
   const plainBinding = await f.request("PATCH", `${f.collection}/${plain.id}`, {
