@@ -9,6 +9,8 @@ import {
   workspaceNodeBinding,
 } from "../helpers/plugin-runtime.mjs";
 import {
+  GATEWAY_DID_NOT_START,
+  gatewayConfigurationHoldLine,
   invalidGatewayConfiguration,
   invalidGatewayConfigurationLine,
   invalidGatewayConfigurationSecret,
@@ -1757,13 +1759,13 @@ for (const launcher of dedicatedGatewayLaunchers) {
     );
   });
 
-  // A beam entry that fails its schema (finding 3045) beside an issue on a setting the tool
-  // policy step composes: either one alone decides which check is held.
+  // A beam entry that fails its schema (finding 3045). Beside an issue on a setting the tool
+  // policy step composes, the tool policy hold wins.
   const beamIssue = {
     path: "plugins.entries.beam.config.mirror.endpoint",
     message: "invalid config: must have required property 'endpoint'",
   };
-  for (const [failure, options, held = "gateway-tool-policy"] of [
+  for (const [failure, options, held = "gateway-tool-policy", line] of [
     [
       "unknown runtime source",
       {
@@ -1798,11 +1800,14 @@ for (const launcher of dedicatedGatewayLaunchers) {
       { configValidationResponse: configReadRefusal(gatewayLockNamespaceRefusal) },
       "gateway-state-lock",
     ],
-    // Settings outside the tool policy are the Agent's configuration, not the policy.
+    // Settings outside the tool policy are the Agent's configuration, not the policy. The hold
+    // writes the line an embedded Gateway's gateway-config hold writes: the settings and the
+    // remedy, never a configured value.
     [
       "invalid settings outside the tool policy",
       { configValidationResponse: invalidGatewayConfiguration },
       "gateway-config",
+      invalidGatewayConfigurationLine(GATEWAY_DID_NOT_START),
     ],
     [
       "a refused key beside the settings the tool policy composes",
@@ -1812,6 +1817,7 @@ for (const launcher of dedicatedGatewayLaunchers) {
         ]),
       },
       "gateway-config",
+      gatewayConfigurationHoldLine(GATEWAY_DID_NOT_START, ["agents.defaults"]),
     ],
     // An issue on a setting the step composes keeps the tool policy hold, beside any other.
     [
@@ -1892,19 +1898,10 @@ for (const launcher of dedicatedGatewayLaunchers) {
           messages.join("\n"),
         );
       }
-      if (failure === "invalid settings outside the tool policy") {
-        // The same line an embedded Gateway's gateway-config hold writes: the settings and
-        // the remedy, never a configured value.
-        assert.deepEqual(messages, [
-          invalidGatewayConfigurationLine("The OpenClaw Gateway did not start"),
-        ]);
-        assert.equal(messages.join("\n").includes(invalidGatewayConfigurationSecret), false);
-      } else if (held === "gateway-config") {
-        assert.ok(
-          messages.some((message) => message.includes("configuration invalid (agents.defaults)")),
-          messages.join("\n"),
-        );
+      if (line !== undefined) {
+        assert.deepEqual(messages, [line]);
       }
+      assert.equal(messages.join("\n").includes(invalidGatewayConfigurationSecret), false);
       if (launcher.launcher === "docker") {
         const published = vm.runInContext("runtimeStartupFailure", sandbox);
         assert.deepEqual(

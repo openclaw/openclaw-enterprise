@@ -79,6 +79,8 @@ import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logg
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { conformanceKubeconfig } from "../helpers/kubernetes-compute.mjs";
 import {
+  KUBERNETES_GATEWAY_PASSWORD_REFUSAL,
+  KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT,
   dedicatedCodexVariableRefusal,
   unboundPluginSecretRefusal,
   unboundReferenceRefusal,
@@ -9470,8 +9472,7 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
     ...base,
     plugins: { entries: { codex: { config: { appServer: { approvalPolicy: policy } } } } },
   });
-  const passwordRule =
-    'must be the environment reference {source: "env", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates';
+  const passwordRule = KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT;
   const withPassword = (password) => ({ ...base, gateway: { auth: { password } } });
   for (const [configuration, setting, requirement] of [
     [withPolicy("always"), approvalPolicy, 'must be "never", "on-request" or "on-failure"'],
@@ -9759,8 +9760,7 @@ test("preparation still refuses a gateway password Compute does not generate", a
     revision.configuration = structuredClone(revision.configuration);
     revision.configuration.gateway.auth.password = password;
     await assert.rejects(driver.prepareRevision(revision, context), {
-      message:
-        'Configuration setting gateway.auth.password must be the environment reference {source: "env", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates.',
+      message: KUBERNETES_GATEWAY_PASSWORD_REFUSAL,
     });
   }
 });
