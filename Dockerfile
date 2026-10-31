@@ -80,7 +80,9 @@ COPY --chown=node:node scripts/migration-catalog.mjs scripts/migration-catalog.m
 COPY --chown=node:node scripts/bootstrap-installation.mjs scripts/bootstrap-installation.mjs
 COPY --chown=node:node scripts/lib/bootstrap-configuration.mjs scripts/lib/bootstrap-configuration.mjs
 COPY --chown=node:node scripts/auth-maintain.mjs scripts/auth-maintain.mjs
+COPY --chown=node:node scripts/auth-maintain.ts scripts/auth-maintain.ts
 COPY --chown=node:node scripts/lib/auth-maintain-arguments.mjs scripts/lib/auth-maintain-arguments.mjs
+COPY --chown=node:node scripts/lib/auth-maintain-arguments.ts scripts/lib/auth-maintain-arguments.ts
 COPY --chown=node:node deploy/presets deploy/presets
 COPY --chown=node:node scripts/production-healthcheck.mjs scripts/production-healthcheck.mjs
 # As in the development stage: precompiled route validators and serializers for this image.
