@@ -163,13 +163,14 @@ from an observed BEGIN through END, across follow polls in the same container
 view. Only ordered lines newer than the prior cursor position can close it (at
 END or the first line that is not base64, a PEM header or blank). PEM-shaped
 lines may stay masked for the rest of that view.
-A restart, Pod change, expired cursor or new view starts without that context,
-and a page that begins inside a block whose BEGIN it never saw cannot mask it.
+A restart, Pod change, expired cursor or new view starts without that context
+and cannot mask a block that began before it.
 Redaction is best-effort: an opaque token under 40 characters with no known
 prefix and no key name or `Bearer` next to it stays visible. Do not rely on
 redaction to make a runtime that prints secrets safe.
 Tabs, line breaks and cursor-forward escapes become spaces; other controls are
-removed. Messages are capped at 8 KiB.
+removed. In plain text, written `\n`, `\t` and `%3D` also separate words for
+redaction. Messages are capped at 8 KiB.
 
 Runtime status Event messages are redacted the same way; node names, image
 references and Secret and ConfigMap names are masked in the standard scheduler
@@ -268,7 +269,7 @@ source shares an ID with the sandbox. Each decision row carries the label
 **Gateway lines: inferred (time window)**: Gateway or Harness lines near that
 time may be related, but nothing links them.
 
-The logs cannot tell you, and you should not infer:
+Do not infer from the logs:
 
 - which Agent turn, session, user or prompt caused a sandbox decision;
 - which policy generation decided a line whose generation reads `unknown`

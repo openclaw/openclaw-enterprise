@@ -25,6 +25,20 @@ const HEADER_NAMES = "authorization|proxy-authorization|cookie|set-cookie|x-api-
 // An optional quote around a key or a value: `"`, `'`, or an escaped `\"` / `\'`, as in a
 // Python dict repr or JSON quoted inside a logfmt or JSON string value.
 const QUOTE = String.raw`(?:\\?["'])?`;
+// The letters of a literal two-character escape for a tab or a line break (`\n`, `\t`,
+// `\r`, `\f`, `\v`, and the `\u000a` / `\x0a` forms), as logfmt, Go `%q` and Python reprs
+// print one inside a quoted value. Plain-text lines keep the backslash and the letters.
+const ESCAPE_LETTERS = "(?:[ntrfv]|u000[9a-dA-D]|x0[9a-dA-D])";
+const ESCAPE = String.raw`\\${ESCAPE_LETTERS}`;
+// One separator between a keyword and its value: whitespace or a literal escape. The two
+// alternatives start with different characters, so a run of them cannot backtrack. A rule
+// lets the escape separate a keyword from its value but never end a value: a value runs
+// through an escape inside it, so no tail of a secret is cut off and shown.
+const GAP = `(?:\\s|${ESCAPE})`;
+// A keyword starts at a word boundary or right after a literal escape (`\nbearer ...`).
+const START = `(?:\\b|(?<=${ESCAPE}))`;
+// `=` or `:`, plain or percent-encoded (`password%3D...`, `Authorization%3A%20...`).
+const ASSIGN = "(?:[=:]|%3[aAdD])";
 
 interface Rule {
   readonly pattern: RegExp;
@@ -128,6 +142,27 @@ function hasLongRun(text: string): boolean {
   return false;
 }
 
+/**
+ * The replacement of a long-token match. A run that starts right after a backslash may
+ * start with the letters of a literal escape (`\n`, `\x0a`): they separate the run from
+ * the text before it, so the run without them is tested first and masked on its own
+ * (`\n[redacted:long-token]`). When only the whole match is token-shaped, the whole match
+ * is masked, as it was before escapes counted, so treating an escape as a boundary never
+ * shows text that was masked. `escape` is undefined when the run has no such letters, or
+ * when the run after them is under 40 characters.
+ */
+function maskLongRun(
+  match: string,
+  escape: string | undefined,
+  run: string,
+  tokenShaped: (value: string) => boolean,
+): string {
+  if (tokenShaped(run)) {
+    return `${escape ?? ""}${mark("long-token")}`;
+  }
+  return escape !== undefined && tokenShaped(match) ? mark("long-token") : match;
+}
+
 const RULES: readonly Rule[] = [
   {
     pattern: /-----BEGIN [A-Z0-9 ]{0,64}-----[\s\S]*?(?:-----END [A-Z0-9 ]{0,64}-----|$)/g,
@@ -137,7 +172,7 @@ const RULES: readonly Rule[] = [
     // Header values, including inside `-H '...'` and `--header "..."` arguments, JSON,
     // Python reprs (`'Authorization': '...'`) and escaped JSON (`\"Authorization\":\"...`).
     pattern: new RegExp(
-      `\\b(${HEADER_NAMES})(${QUOTE}\\s*[:=]\\s*${QUOTE})${notRedacted}[^"'\\r\\n]+`,
+      `${START}(${HEADER_NAMES})(${QUOTE}${GAP}*${ASSIGN}${GAP}*${QUOTE})${notRedacted}[^"'\\r\\n]+`,
       "gi",
     ),
     replace: (_match, name, separator) => `${name}${separator}${mark("header")}`,
@@ -145,13 +180,19 @@ const RULES: readonly Rule[] = [
   {
     // `Bearer <token>` and `bearer token <token>` outside a header, whatever the token's
     // length or prefix. Words without a digit (`bearer authentication failed`) stay.
-    pattern: /\b(bearer\s+(?:token\s+)?)(?!\[redacted:)([A-Za-z0-9._~+/-]{8,}=*)/gi,
+    pattern: new RegExp(
+      `${START}(bearer${GAP}+(?:token${GAP}+)?)${notRedacted}([A-Za-z0-9._~+/-]{8,}=*)`,
+      "gi",
+    ),
     replace: (match, prefix, value) => (/[0-9]/.test(value) ? `${prefix}${mark("bearer")}` : match),
   },
   {
     // `Basic <base64 of user:password>` outside a header. Only a value that decodes to a
     // `user:password` pair is masked, so prose such as `basic authentication` stays.
-    pattern: /\b(basic\s+)(?!\[redacted:)([A-Za-z0-9+/]{8,}={0,2})(?![A-Za-z0-9+/=])/gi,
+    pattern: new RegExp(
+      `${START}(basic${GAP}+)${notRedacted}([A-Za-z0-9+/]{8,}={0,2})(?![A-Za-z0-9+/=])`,
+      "gi",
+    ),
     replace: (match, prefix, value) =>
       Buffer.from(value, "base64").toString("latin1").includes(":")
         ? `${prefix}${mark("basic")}`
@@ -224,23 +265,28 @@ const RULES: readonly Rule[] = [
   {
     // `--password value`, `--token=value`.
     pattern: new RegExp(
-      `(?<![A-Za-z0-9_.-])(--${SECRET_KEY})(\\s+|=)(?!-)${notRedacted}("[^"]*"|'[^']*'|\\S+)`,
+      `(?:(?<![A-Za-z0-9_.-])|(?<=${ESCAPE}))(--${SECRET_KEY})(${GAP}+|=)(?!${GAP})(?!-)${notRedacted}("[^"]*"|'[^']*'|\\S+)`,
       "gi",
     ),
     replace: (_match, key, separator) => `${key}${separator}${mark("key-value")}`,
   },
   {
     // `password=value`, `token: value`, and keys whose closing quote comes before the
-    // separator: `{'password': 'value'}`, `{\"api_key\":\"value\"}`.
+    // separator: `{'password': 'value'}`, `{\"api_key\":\"value\"}`. A value may start
+    // with a backslash, so the lookahead after the gaps makes the separator take all of
+    // them: a value masked by an earlier rule is not masked again from inside the gap.
     pattern: new RegExp(
-      `(${SECRET_KEY_TAIL})(${QUOTE}\\s*[=:]\\s*)(?!${QUOTE}\\[redacted:)("[^"]*"|'[^']*'|\\\\"[^"]*"|[^\\s,;&"']+)`,
+      `(${SECRET_KEY_TAIL})(${QUOTE}${GAP}*${ASSIGN}${GAP}*)(?!${GAP})(?!${QUOTE}\\[redacted:)("[^"]*"|'[^']*'|\\\\"[^"]*"|[^\\s,;&"']+)`,
       "gi",
     ),
     replace: (_match, key, separator) => `${key}${separator}${mark("key-value")}`,
   },
   {
     // Upper-case environment assignments of a key: `MY_SERVICE_KEY=value`.
-    pattern: /\b([A-Z][A-Z0-9_]{0,63}_KEY)(\s*=\s*)(?!\[redacted:)("[^"]*"|'[^']*'|[^\s,;&"']+)/g,
+    pattern: new RegExp(
+      `${START}([A-Z][A-Z0-9_]{0,63}_KEY)(${GAP}*=${GAP}*)(?!${GAP})${notRedacted}("[^"]*"|'[^']*'|[^\\s,;&"']+)`,
+      "g",
+    ),
     replace: (_match, key, separator) => `${key}${separator}${mark("key-value")}`,
   },
   {
@@ -249,22 +295,33 @@ const RULES: readonly Rule[] = [
     // A match always starts a maximal run (a shorter run never matches, and a match
     // takes the rest of its run), so the lookbehind changes no match; it only stops
     // the scan from re-reading up to 40 characters at every position inside a run.
-    pattern: /(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}/g,
+    // The letters of a literal escape that starts a run (`\n<hex>`) are kept apart and
+    // tested without the rest; see `maskLongRun`.
+    pattern: new RegExp(
+      `(?<![A-Za-z0-9+/])((?<=\\\\)${ESCAPE_LETTERS})?([A-Za-z0-9+/]{40,}={0,2})`,
+      "g",
+    ),
     applies: hasLongRun,
-    replace: (match) =>
-      /^[0-9A-Fa-f]+$/.test(match) || (/[0-9+]/.test(match) && /[A-Z]/.test(match))
-        ? mark("long-token")
-        : match,
+    replace: (match, escape, run) =>
+      maskLongRun(
+        match,
+        escape,
+        run,
+        (value) => /^[0-9A-Fa-f]+$/.test(value) || (/[0-9+]/.test(value) && /[A-Z]/.test(value)),
+      ),
   },
   {
     // base64url runs of 40 or more characters that mix upper case, lower case and digits.
     // The lookbehind changes no match, as in the rule above.
-    pattern: /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{40,}/g,
+    pattern: new RegExp(`(?<![A-Za-z0-9_-])((?<=\\\\)${ESCAPE_LETTERS})?([A-Za-z0-9_-]{40,})`, "g"),
     applies: hasLongRun,
-    replace: (match) =>
-      /[A-Z]/.test(match) && /[a-z]/.test(match) && /[0-9]/.test(match)
-        ? mark("long-token")
-        : match,
+    replace: (match, escape, run) =>
+      maskLongRun(
+        match,
+        escape,
+        run,
+        (value) => /[A-Z]/.test(value) && /[a-z]/.test(value) && /[0-9]/.test(value),
+      ),
   },
 ];
 
@@ -481,6 +538,8 @@ const CLIENT_NAME = new RegExp(
 );
 // Path-shaped values after `-p` (`mkdir -p /work/dir`) are not credentials.
 const PATH_VALUE = /^(?:\/|~\/|\.\.?\/)/;
+// argv tokens are separated by whitespace or a literal escape (`--password\npw`).
+const ARGV_SEPARATOR = new RegExp(`(${GAP}+)`);
 
 function basename(token: string): string {
   const slash = token.lastIndexOf("/");
@@ -497,12 +556,20 @@ function basename(token: string): string {
  * token once; a value that opens a quote extends to the token that closes it.
  */
 export function redactArgvCredentials(value: string): string {
-  const parts = value.split(/(\s+)/);
+  const parts = value.split(ARGV_SEPARATOR);
   const tokens: number[] = [];
   for (let index = 0; index < parts.length; index += 2) {
     if (parts[index]!.length > 0) {
       tokens.push(index);
     }
+  }
+  // wordEnd[at]: the last token of the word that token `at` starts. Tokens joined only by
+  // literal escapes (`pa\nss`) form one word: an escape separates a flag from its value,
+  // but a value runs to whitespace, so no tail of a secret after an escape is shown.
+  const wordEnd = new Array<number>(tokens.length);
+  for (let at = tokens.length - 1; at >= 0; at -= 1) {
+    const joined = at + 1 < tokens.length && !/\s/.test(parts[tokens[at]! + 1]!);
+    wordEnd[at] = joined ? wordEnd[at + 1]! : at;
   }
   const namesClient = CLIENT_NAME.test(value);
   const mysql = namesClient && tokens.some((index) => MYSQL_CLIENTS.has(basename(parts[index]!)));
@@ -527,7 +594,17 @@ export function redactArgvCredentials(value: string): string {
   // Most lines carry no argv credential; they are returned as they came, not rejoined.
   let changed = false;
   const masked = mark("argv");
-  // Replaces the value starting at token position `at`, extending through a quoted span.
+  // Puts `replacement` in place of token `at` and clears every part through token `end`.
+  const replaceThrough = (at: number, end: number, replacement: string): number => {
+    parts[tokens[at]!] = replacement;
+    changed = true;
+    for (let index = tokens[at]! + 1; index <= tokens[end]!; index += 1) {
+      parts[index] = "";
+    }
+    return end;
+  };
+  // Replaces the value starting at token position `at`, extending through a quoted span
+  // and the rest of its word.
   const maskFrom = (at: number): number => {
     const first = parts[tokens[at]!]!;
     const quote = first[0] === '"' || first[0] === "'" ? first[0] : undefined;
@@ -540,12 +617,7 @@ export function redactArgvCredentials(value: string): string {
         }
       }
     }
-    parts[tokens[at]!] = masked;
-    changed = true;
-    for (let index = tokens[at]! + 1; index <= tokens[end]!; index += 1) {
-      parts[index] = "";
-    }
-    return end;
+    return replaceThrough(at, wordEnd[end]!, masked);
   };
   for (let at = 0; at < tokens.length; at += 1) {
     const token = parts[tokens[at]!]!;
@@ -567,20 +639,24 @@ export function redactArgvCredentials(value: string): string {
     const userinfo = ARGV_USERINFO_FLAGS.has(flag) || clientSeparators.has(flag);
     if (secret || userinfo) {
       if (attached !== undefined) {
+        // An attached value that runs on through an escape is masked whole: the part
+        // after the escape may hold the password.
         if (
           attached.length > 0 &&
           !attached.startsWith(MARK) &&
-          (secret || carriesPassword(flag, attached))
+          (secret || carriesPassword(flag, attached) || wordEnd[at] !== at)
         ) {
-          parts[tokens[at]!] = `${flag}=${masked}`;
-          changed = true;
+          at = replaceThrough(at, wordEnd[at]!, `${flag}=${masked}`);
         }
         continue;
       }
       const next = at + 1 < tokens.length ? parts[tokens[at + 1]!]! : undefined;
+      // A value joined to its flag by an escape alone (`-p\n-pw`) is masked even when it
+      // starts with `-`: the whole word was masked as an attached value before escapes
+      // separated tokens.
       if (
         next === undefined ||
-        next.startsWith("-") ||
+        (next.startsWith("-") && wordEnd[at] === at) ||
         next.startsWith(MARK) ||
         (userinfo && !secret && !carriesPassword(flag, next)) ||
         (flag === "-p" && PATH_VALUE.test(next))
@@ -594,13 +670,13 @@ export function redactArgvCredentials(value: string): string {
     if (token.length > 2 && token[1] !== "-") {
       const short = token.slice(0, 2);
       const rest = token.slice(2);
+      const runsOn = wordEnd[at] !== at;
       if (
-        (short === "-p" && (mysql || !/^[a-z]+$/.test(rest))) ||
-        ((short === "-u" || short === "-U") && carriesPassword(short, rest)) ||
+        (short === "-p" && (mysql || runsOn || !/^[a-z]+$/.test(rest))) ||
+        ((short === "-u" || short === "-U") && (runsOn || carriesPassword(short, rest))) ||
         clientSecrets.has(short)
       ) {
-        parts[tokens[at]!] = `${short}${masked}`;
-        changed = true;
+        at = replaceThrough(at, wordEnd[at]!, `${short}${masked}`);
       }
     }
   }
