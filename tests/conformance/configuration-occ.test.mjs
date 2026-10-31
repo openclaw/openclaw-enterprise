@@ -1569,6 +1569,9 @@ test("ambiguous and plugin-routed models require supported explicit native polic
   }
 });
 
+// A model policy that selects runtime `id`.
+const runtime = (id) => ({ agentRuntime: { id } });
+
 // Returns the refusal message after checking that every refusal is a ConfigurationHarnessError
 // within the 256-character cap.
 function configurationRefusal(values) {
@@ -1587,7 +1590,6 @@ function configurationRefusal(values) {
 // runtime another policy, an entry or an earlier selected model already selects, and a setting
 // where the runtime keeps the selectable rule.
 test("model policy refusals offer only what the next deployment accepts", () => {
-  const runtime = (id) => ({ agentRuntime: { id } });
   for (const [values, message, fixed] of [
     // The listed models use codex: openclaw for the primary would refuse them next.
     [
@@ -1888,7 +1890,6 @@ test("Agent roster refusals name the setting and the fix", () => {
 
 test("model policy refusals name the Configuration setting", () => {
   const catalog = { providers: { openai: { models: [{ id: "gpt-4.1" }] } } };
-  const runtime = (id) => ({ agentRuntime: { id } });
   const catalogRule = catalogRowUnselected("models.providers.openai");
   for (const [values, message] of [
     // Finding 888: a non-object agents read as an empty roster, so the provider catalog check
@@ -2712,10 +2713,7 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
       { namespaceId: namespace.id, agentId: agent.id },
       resolveApprovedDevelopmentHarness,
     ),
-    (error) =>
-      error instanceof ConfigurationHarnessError &&
-      error.message ===
-        "The Configuration selects the Codex Harness, which needs dedicated execution; this Agent uses embedded execution. Change the Agent's execution mode or its Configuration.",
+    mismatch,
   );
   await assert.rejects(
     controller.deployAgent(
