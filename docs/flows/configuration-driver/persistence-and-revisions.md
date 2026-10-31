@@ -19,9 +19,12 @@ bundled or installed Configuration Driver: model provider settings,
 `requireDeployableRoster` in
 [the roster rules](../../../packages/occ/src/openclaw-roster.ts), which refuses
 an `agents` roster, a model or fallback that is not `<provider>/<model>`
-(OpenClaw's `openrouter:auto` included), or a fallback on another provider than
-its primary's, all of which every deployment refuses, with deployment's own
-text, and [the settings rules](../../../packages/occ/src/configuration-settings.ts).
+(OpenClaw's `openrouter:auto` included), a fallback on another provider than
+its primary's, a `models.providers.<id>.models` entry that names no selected
+model, or model and runtime settings that conflict (`requireConsistentModelPolicy`,
+which runs the deployment resolver itself, in its order, and leaves a draft
+without a model or runtime to deployment), all of which every deployment refuses,
+with deployment's own text, and [the settings rules](../../../packages/occ/src/configuration-settings.ts).
 These rules reject unsupported Codex approval policies, a literal
 `gateway.auth.password`, and retired settings such as `security.preset`.
 OCC also calls the selected Compute Driver's optional
@@ -32,6 +35,7 @@ primary model's provider. Configuration create and update, Agent provisioning an
 Preset save run this one set (`validateConfigurationContent` in
 [OCC](../../../packages/occ/src/index.ts)); a Preset value that waits on a
 variable is checked as far as its written text goes, and in full once filled.
+Preset save skips the catalog and runtime checks; its launch's Configuration runs them.
 Create, update and provisioning first ask the Driver's optional
 [`validateSize`](../../reference/drivers/configuration.md#optional-validation)
 to refuse a document too large to store, so no content rule walks it. Its

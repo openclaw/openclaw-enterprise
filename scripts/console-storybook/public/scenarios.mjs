@@ -8721,7 +8721,7 @@ export const scenarios = {
       "Disable Slack kept both token bindings, and the app token Secret has no Agent grant. Deploy checks every bound Secret, so with Slack off the tab still lists the bound keys as read by no Slack setting, marks the app token, blocks Deploy, and offers Retry Secret access (finding 3018).",
     steps: [
       "SLACK_APP_TOKEN reads Bound · not read by the Slack settings · Agent access not confirmed; Deploy new version names SLACK_APP_TOKEN and says to select Retry Secret access.",
-      "Select Retry Secret access. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy.",
+      "Select Retry Secret access. The section says Secret access granted. This Agent can use its bound Secrets. Deploy the new version to deliver them. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy (finding 3021).",
     ],
   },
   credentialsSlackGrantReadPending: {

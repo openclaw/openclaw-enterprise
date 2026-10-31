@@ -61,6 +61,7 @@ import {
   REPOSITORY_ACCESS_OR_BINDINGS,
   REPOSITORY_SELECTION_NOT_APPROVED,
   REPOSITORY_SETTINGS_MISSING,
+  runtimeIdUnsupported,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
@@ -1078,9 +1079,18 @@ test("Unsupported Compute refuses repository deployment while ordinary deploymen
 });
 
 test("Repository admission retains unknown Harness and execution-mode rejection", async (t) => {
-  for (const { harness, executionMode, status, code, message, atSave } of [
+  for (const { harness, executionMode, status, code, message, atSave, storedPastSave } of [
     // An unsupported runtime identity is Configuration content, not a missing resource.
-    { harness: "unknown", executionMode: "embedded", status: 400, code: "INVALID_REQUEST" },
+    // Configuration save refuses it (finding 3020), so only a row an older release stored
+    // reaches deployment.
+    {
+      harness: "unknown",
+      executionMode: "embedded",
+      status: 400,
+      code: "INVALID_REQUEST",
+      message: runtimeIdUnsupported('agents.defaults.models["openai/gpt-5.1"]'),
+      storedPastSave: true,
+    },
     // Kubernetes cannot deliver repository credentials to dedicated OpenClaw, so Agent save
     // refuses this Harness/mode pair before deployment admission.
     {
@@ -1103,7 +1113,11 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
     },
   ]) {
     await t.test(`${harness}/${executionMode}`, async (t) => {
-      const f = await fixture(t, { harness });
+      const configurationDriver = createTestConfigurationDriver();
+      const f = await fixture(t, {
+        harness: storedPastSave ? "openclaw" : harness,
+        configurationDriver,
+      });
       if (atSave) {
         const refused = await f.request("POST", f.collection, {
           name: `Repository Agent ${randomUUID()}`,
@@ -1119,11 +1133,22 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
       }
       const agent = await f.createAgent({ executionMode, repositoryBindings: selection });
       await f.prepareDeployment(agent);
+      if (storedPastSave) {
+        // Written past OCC, as an older release's Configuration save stored it.
+        const values = createHarnessConfiguration(harness, "gpt-5.1");
+        delete values.gateway.auth;
+        await configurationDriver.update({
+          ...configurationDriver.stored({ namespaceId: f.namespace.id, id: f.configuration.id }),
+          values,
+        });
+      }
       const path = `${f.collection}/${agent.id}`;
       const denied = await f.request("POST", `${path}/deploy`);
       assert.equal(denied.status, status, JSON.stringify(denied));
       assert.equal(denied.error.code, code);
-      if (message) {
+      if (typeof message === "string") {
+        assert.equal(denied.error.message, message);
+      } else if (message) {
         assert.match(denied.error.message, message);
       }
       assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
