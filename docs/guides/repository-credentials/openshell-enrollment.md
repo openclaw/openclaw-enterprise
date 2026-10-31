@@ -130,8 +130,9 @@ Mount the edited registry as `registry.json` in an immutable versioned ConfigMap
 In the OCE Helm values set `repositoryCredentials.registryConfigMapName` to that
 ConfigMap, `backendId: repository-backend`, `authority: prepared-git`, and
 `enabled: false`. Set `appKeySecretName` and `preparedCustodySecretName` to the
-operator-managed worker-only Secrets, and `upstreamCidrs` to the approved provider
-endpoints. Preserve the custody key across restarts. Never put keys in Agent JSON.
+operator-managed worker-only Secrets, and `upstreamCidrs` to the
+[approved provider endpoints](../deploy/installation-profiles.md#required-environment-checks).
+Preserve the custody key across restarts. Never put keys in Agent JSON.
 
 Complete [the request-phase service setup](../../reference/repository-credentials/protected-openshell-git.md#prepare-the-request-phase-service):
 set `openshellGit.enabled: true`, `mode: protected`, its TLS Secret, public issuer
@@ -199,6 +200,9 @@ registry. Set `WORKER_POD` to the current worker Pod and `PLATFORM_NS`
 to its Kubernetes namespace, then run from the matching release checkout:
 
 ```bash
+kubectl --context "$CONTEXT" -n "$PLATFORM_NS" get pod "$WORKER_POD" \
+  -o jsonpath='{.metadata.uid}{"\n"}{.spec.containers[?(@.name=="worker")].image}{"\n"}{.status.containerStatuses[?(@.name=="worker")].imageID}{"\n"}'
+
 kubectl --context "$CONTEXT" -n "$PLATFORM_NS" exec -i "$WORKER_POD" -c worker -- \
   node --input-type=module - "$NAMESPACE_ID" application "${ISSUER_CA_PATH:-}" \
   < docs/assets/openshell-quickstart/verify-github-installation.mjs
@@ -206,6 +210,11 @@ kubectl --context "$CONTEXT" -n "$PLATFORM_NS" exec -i "$WORKER_POD" -c worker -
 
 Require `success: true`: HTTP 200, verified TLS and matching App and installation
 IDs. The helper keeps the key, JWT, headers and response body inside the worker.
+Save the context, Pod UID, selected image, runtime image ID and result together.
+Check the result's `connection` addresses against the worker's enforced egress
+rule and approved provider inventory. The helper records at most four DNS
+addresses and four connection errors, plus TCP, verified TLS and request-end
+stages. A DNS snapshot from another Pod or workstation does not verify this path.
 If it fails, keep the Agent stopped and correct the observed prerequisite before
 deployment. A successful GET does not prove token issuance or Git access. If an
 issuance is already uncertain, preserve its original recovery bound and follow

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createPrivateKey } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { request } from "node:https";
 import { createGitHubKeyOwner } from "/app/apps/controller/src/drivers/repo/github/credentials/material.ts";
 import { createSystemClock } from "/app/apps/controller/src/drivers/repo/credentials/clock.ts";
@@ -13,6 +14,13 @@ import {
   prepareProviderScope,
   providerRequestOptions,
 } from "/app/apps/controller/src/drivers/repo/github/credentials/provider-transport/request-options.ts";
+
+const connection = {
+  lookup: [],
+  tcpConnected: false,
+  tlsConnected: false,
+  requestEndCalled: false,
+};
 
 async function verify() {
   const [namespaceId, repositoryRef, issuerCaPath] = process.argv.slice(2);
@@ -94,6 +102,7 @@ async function verify() {
             resolve({
               method: "GET",
               installationAccessTokenMintRequested: false,
+              connection,
               statusCode: res.statusCode,
               tlsVerified,
               appMatches,
@@ -104,8 +113,49 @@ async function verify() {
         });
         const timer = setTimeout(() => req.destroy(new Error("request-timeout")), 10000);
         req.on("close", () => clearTimeout(timer));
-        req.on("error", reject);
-        req.end();
+        req.on("error", (error) => {
+          connection.errors = [error, ...(Array.isArray(error.errors) ? error.errors : [])]
+            .slice(0, 4)
+            .map((failure) => ({
+              code: /^[A-Z0-9_]{1,64}$/.test(failure?.code ?? "") ? failure.code : "request_error",
+              address: isIP(failure?.address ?? "") ? failure.address : undefined,
+              port:
+                Number.isInteger(failure?.port) && failure.port > 0 && failure.port < 65536
+                  ? failure.port
+                  : undefined,
+            }));
+          reject(error);
+        });
+        req.once("socket", (socket) => {
+          socket.on("lookup", (_error, address) => {
+            const family = typeof address === "string" ? isIP(address) : 0;
+            if (family && connection.lookup.length < 4) {
+              connection.lookup.push({ address, family });
+            }
+          });
+          socket.once("connect", () => {
+            connection.tcpConnected = true;
+            if (isIP(socket.remoteAddress ?? "")) {
+              connection.peerAddress = socket.remoteAddress;
+            }
+          });
+          const send = () => {
+            try {
+              connection.tlsConnected = socket.authorized === true;
+              assert.equal(socket.authorized, true);
+              assertCurrent();
+              connection.requestEndCalled = true;
+              req.end();
+            } catch (error) {
+              req.destroy(error);
+            }
+          };
+          if (socket.connecting) {
+            socket.once("secureConnect", send);
+          } else {
+            send();
+          }
+        });
       });
     });
   } finally {
@@ -120,6 +170,6 @@ try {
 } catch (error) {
   // Do not export the JWT, key, response body, headers or arbitrary error text.
   const code = /^[A-Z0-9_]{1,64}$/.test(error?.code ?? "") ? error.code : "preflight_failed";
-  console.log(JSON.stringify({ success: false, errorClass: code }));
+  console.log(JSON.stringify({ success: false, errorClass: code, connection }));
   process.exitCode = 1;
 }
