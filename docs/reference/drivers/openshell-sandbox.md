@@ -159,7 +159,8 @@ accepts `operator` or `managed`; deferred managed mode fails before Kubernetes
 mutations or Gateway calls. Configure the Gateway's Kubernetes driver with `workspaceMode: operator`, a
 namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels`
 listing `openclaw.dev/*`, `app.kubernetes.io/name`, and
-`app.kubernetes.io/managed-by`; it rejects other labels. An OpenShell Workspace
+`app.kubernetes.io/managed-by`; otherwise deployment fails with
+`SANDBOX_POD_LABELS_NOT_PERMITTED`. An OpenShell Workspace
 name must equal its pre-provisioned Kubernetes namespace: `oce-` plus a
 15-character digest, within the 19-character limit.
 
