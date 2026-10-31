@@ -306,7 +306,7 @@ function sshGatewayAuthentication(
     const offer =
       gatewayPasswordRequirement(generated, configuration.secrets) === undefined
         ? `{source: "env", provider: "${generated.provider}", id: "${OPENCLAW_GATEWAY_PASSWORD}"}`
-        : `an environment SecretRef to ${OPENCLAW_GATEWAY_PASSWORD} on a provider that reads it`;
+        : `an env SecretRef to ${OPENCLAW_GATEWAY_PASSWORD} that OpenClaw reads`;
     throw createError(
       "gateway.auth.password",
       `must be set to ${offer}: SSH Compute's default reference ${rendered}`,

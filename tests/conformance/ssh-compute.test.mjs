@@ -1107,8 +1107,9 @@ test("SSH renders a readable custom-alias gateway password and still tears down 
   // Teardown checks only the password's shape, never whether OpenClaw reads it: a revision admitted
   // under a reader that a later OpenClaw pin tightens must still stop and retire. The current reader
   // refuses this one (the allowlist omits the variable), standing in for that later reader; seed its
-  // as-written snapshot through the real host helper.
-  const tightened = revision(f.driver, 1, "agent-ssh-tightened-reference", {
+  // as-written snapshot through the real host helper, as the legacy Agent's next version (the
+  // fixture's port range holds three Agents).
+  const tightened = revision(f.driver, 2, "agent-ssh-legacy-reference", {
     gateway: {
       tls: { enabled: false },
       auth: { mode: "password", password: { ...custom, provider: "vault" } },

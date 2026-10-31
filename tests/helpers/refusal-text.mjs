@@ -649,7 +649,7 @@ export const invalidSecretProviderDefaultsRefusal = (held, ...shown) => {
 // that reference either, so no reference is offered.
 export const sshGatewayPasswordRefusal = {
   unoffered: (requirement) =>
-    `Configuration setting gateway.auth.password must be set to an environment SecretRef to OPENCLAW_GATEWAY_PASSWORD on a provider that reads it: SSH Compute's default reference ${requirement}.`,
+    `Configuration setting gateway.auth.password must be set to an env SecretRef to OPENCLAW_GATEWAY_PASSWORD that OpenClaw reads: SSH Compute's default reference ${requirement}.`,
   reference: (alias = "default") =>
     `Configuration setting gateway.auth.password must be "\${OPENCLAW_GATEWAY_PASSWORD}" or the environment SecretRef {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value SSH Compute generates.`,
   rendered: (alias, requirement) =>
