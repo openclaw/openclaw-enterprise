@@ -8876,6 +8876,7 @@ export class OpenClawController {
       canSave &&
       driver.networkPolicy.live &&
       agent.desiredRuntimeState === "running" &&
+      revision?.executionAdmission.mode === "unprotected" &&
       revision?.sandboxPolicy !== undefined &&
       revision.sandboxDriverId === driver.id;
     const href = `/namespaces/${encodeURIComponent(agent.namespaceId)}/agents/${encodeURIComponent(agent.id)}/sandbox-policy/${facet}`;
@@ -9147,6 +9148,7 @@ export class OpenClawController {
     version: number,
     defaults?: SandboxPolicySnapshot["defaults"],
     scope?: { readonly repositoryCredentials: boolean },
+    producer?: () => SandboxPolicySnapshot,
   ): SandboxPolicySnapshot {
     const refused = () =>
       new ResourceStateConflictError(
@@ -9161,7 +9163,10 @@ export class OpenClawController {
       );
     let returned: SandboxPolicySnapshot;
     try {
-      returned = driver.admitNetworkPolicy!(immutableCopy(additions), version, defaults, scope);
+      returned =
+        producer === undefined
+          ? driver.admitNetworkPolicy!(immutableCopy(additions), version, defaults, scope)
+          : producer();
     } catch (error) {
       // Preserve structured producer diagnostics; unknown exceptions (including null)
       // fail immediately, without retrying or inspecting their contents.
@@ -9191,6 +9196,45 @@ export class OpenClawController {
       // Never include unknown Driver-returned values or exceptions in diagnostics.
       throw refused();
     }
+  }
+
+  private checkedProtectedCodexArtifactPolicy(
+    driver: SandboxDriver | undefined,
+    version: number,
+  ): SandboxPolicySnapshot {
+    if (driver?.admitProtectedCodexArtifactPolicy === undefined) {
+      throw new ResourceStateConflictError(
+        "The selected Sandbox Driver cannot qualify protected Codex artifact policy.",
+      );
+    }
+    return this.checkedSandboxPolicySnapshot(driver, [], version, undefined, undefined, () => {
+      const result = immutableCopy(driver.admitProtectedCodexArtifactPolicy!(version));
+      const names = result?.declaredRuleNames;
+      if (
+        result?.purpose !== "protected-codex-artifacts" ||
+        !isDeepStrictEqual(Object.keys(result).sort(), [
+          "declaredRuleNames",
+          "purpose",
+          "snapshot",
+        ]) ||
+        !Array.isArray(names) ||
+        names.some((name) => typeof name !== "string" || name.length === 0) ||
+        new Set(names).size !== names.length ||
+        !isDeepStrictEqual(Object.keys(result.snapshot).sort(), [
+          "additions",
+          "defaults",
+          "driverId",
+          "implementation",
+          "version",
+        ]) ||
+        !isDeepStrictEqual([...names].sort(), Object.keys(result.snapshot.defaults).sort())
+      ) {
+        throw new ResourceStateConflictError(
+          "The Sandbox Driver did not acknowledge the exact artifact declaration.",
+        );
+      }
+      return result.snapshot;
+    });
   }
 
   /**
@@ -9334,7 +9378,7 @@ export class OpenClawController {
       }
       const driver = this.sandboxDriver();
       const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
-      // A protected revision carries no Agent policy snapshot; name the rule, not the gap.
+      // Qualified artifact snapshots do not make protected revisions eligible for live apply.
       if (revision?.executionAdmission.mode === "protected") {
         throw new ProtectedExecutionNetworkPolicyError("apply");
       }
@@ -10532,47 +10576,6 @@ export class OpenClawController {
           };
         }
       }
-      if (compute.requiresAgentRuntimeCredentials === true) {
-        if (
-          compute.getAgentRuntimeCredentialStatus === undefined ||
-          compute.provisionAgentRuntimeCredentials === undefined
-        ) {
-          throw new DependencyUnavailableError(
-            "The selected Compute Driver cannot manage required Agent runtime credentials.",
-          );
-        }
-        const binding = { namespace, agent: lockedAgent };
-        const status = this.runtimeCredentialStatus(
-          await this.runtimeCredentialOperation(() =>
-            compute.getAgentRuntimeCredentialStatus!(binding),
-          ),
-        );
-        if (!status.transportConfigured) {
-          if (previous.length > 0) {
-            throw new ResourceStateConflictError(
-              "Agent runtime credentials are missing after a historical revision. Ask an operator to restore them before deploying.",
-            );
-          }
-          for (const action of ["read", "operate"] as const) {
-            await this.authorize(principalId, action, {
-              kind: "agent",
-              id: lockedAgent.id,
-              namespaceId: namespace.id,
-            });
-          }
-          // The Driver creates only missing owned Secrets; a failed admission can reuse them.
-          const provisioned = this.runtimeCredentialStatus(
-            await this.runtimeCredentialOperation(() =>
-              compute.provisionAgentRuntimeCredentials!(binding, {}),
-            ),
-          );
-          if (!provisioned.transportConfigured) {
-            throw new DependencyUnavailableError(
-              "The selected Compute Driver did not confirm Agent runtime credentials.",
-            );
-          }
-        }
-      }
       // PostgreSQL restamps createdAt on its own clock; the response carries the stored value.
       // The repository credential deadline above stays on this controller's clock.
       const revisionId = this.nextIdentifier("agent_revision");
@@ -10619,9 +10622,9 @@ export class OpenClawController {
       }
       const policy = await state.sandboxPolicies.find(namespace.id, lockedAgent.id);
       const policyScope = { repositoryCredentials: repositoryCredentials !== undefined };
-      // Finding 2053: a protected execution keeps only its protected egress policy. It admits
-      // no Agent policy snapshot, and the Agent's network policy additions are refused, never
-      // dropped. The caller learns of them only with SandboxPolicy read access.
+      // Finding 2053: protected execution refuses Agent additions, never drops them. Only an
+      // explicitly acknowledged artifact snapshot can accompany dedicated Codex repository
+      // execution. The caller learns of saved additions only with SandboxPolicy read access.
       // Finding 2151: every refusal below that names saved additions (protected execution, the
       // ceiling, the Driver) comes after SandboxPolicy read, so a deployer without it learns nothing.
       const protectedExecution = execution.executionAdmission.mode === "protected";
@@ -10635,23 +10638,76 @@ export class OpenClawController {
           throw new ProtectedExecutionNetworkPolicyError("deploy");
         }
       }
-      const sandboxPolicy = protectedExecution
-        ? undefined
-        : (policy?.additions.length ?? 0) > 0
-          ? this.admitAgentNetworkPolicy(policy!.additions, policy!.version, undefined, policyScope)
-          : sandbox?.admitNetworkPolicy === undefined
-            ? undefined
-            : this.checkedSandboxPolicySnapshot(
-                sandbox,
-                [],
-                policy?.version ?? 1,
-                undefined,
-                policyScope,
-              );
+      let sandboxPolicy: SandboxPolicySnapshot | undefined;
+      if (protectedExecution) {
+        if (
+          revisionHarness.id === "codex" &&
+          revisionHarness.mode === "dedicated" &&
+          repositoryCredentials !== undefined
+        ) {
+          sandboxPolicy = this.checkedProtectedCodexArtifactPolicy(sandbox, policy?.version ?? 1);
+        }
+      } else if ((policy?.additions.length ?? 0) > 0) {
+        sandboxPolicy = this.admitAgentNetworkPolicy(
+          policy!.additions,
+          policy!.version,
+          undefined,
+          policyScope,
+        );
+      } else if (sandbox?.admitNetworkPolicy !== undefined) {
+        sandboxPolicy = this.checkedSandboxPolicySnapshot(
+          sandbox,
+          [],
+          policy?.version ?? 1,
+          undefined,
+          policyScope,
+        );
+      }
       if ((policy?.additions.length ?? 0) > 0 && sandboxPolicy === undefined) {
         throw new ResourceStateConflictError(
           "The selected Sandbox Driver cannot enforce this Agent's network policy.",
         );
+      }
+      if (compute.requiresAgentRuntimeCredentials === true) {
+        if (
+          compute.getAgentRuntimeCredentialStatus === undefined ||
+          compute.provisionAgentRuntimeCredentials === undefined
+        ) {
+          throw new DependencyUnavailableError(
+            "The selected Compute Driver cannot manage required Agent runtime credentials.",
+          );
+        }
+        const binding = { namespace, agent: lockedAgent };
+        const status = this.runtimeCredentialStatus(
+          await this.runtimeCredentialOperation(() =>
+            compute.getAgentRuntimeCredentialStatus!(binding),
+          ),
+        );
+        if (!status.transportConfigured) {
+          if (previous.length > 0) {
+            throw new ResourceStateConflictError(
+              "Agent runtime credentials are missing after a historical revision. Ask an operator to restore them before deploying.",
+            );
+          }
+          for (const action of ["read", "operate"] as const) {
+            await this.authorize(principalId, action, {
+              kind: "agent",
+              id: lockedAgent.id,
+              namespaceId: namespace.id,
+            });
+          }
+          // The Driver creates only missing owned Secrets; a failed admission can reuse them.
+          const provisioned = this.runtimeCredentialStatus(
+            await this.runtimeCredentialOperation(() =>
+              compute.provisionAgentRuntimeCredentials!(binding, {}),
+            ),
+          );
+          if (!provisioned.transportConfigured) {
+            throw new DependencyUnavailableError(
+              "The selected Compute Driver did not confirm Agent runtime credentials.",
+            );
+          }
+        }
       }
       const revisionDraft: AgentRevision = {
         id: revisionId,

@@ -54,7 +54,7 @@ test("native container preparation summaries", async (t) => {
         code: "ERR_ASSERTION",
         message:
           "Codex seccomp profile verification is limited to reviewed Codex versions: " +
-          "0.152.1, 0.154.0, 0.156.0, 0.158.0, 0.160.0, 0.163.0-alpha.1, 0.163.0-alpha.2.",
+          "0.152.1, 0.154.0, 0.156.0, 0.158.0, 0.160.0, 0.163.0-alpha.1, 0.163.0-alpha.2, 0.164.0.",
       });
       await assert.rejects(stat(commands.statePath), { code: "ENOENT" });
       const text = await readFile(summary, "utf8");

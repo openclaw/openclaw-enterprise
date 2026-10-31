@@ -263,6 +263,35 @@ test(
     const currentChallenge = await getChallenge();
     await reservation.release();
     assert.notEqual(currentChallenge.startupId, oldChallenge.startupId);
+    // The real generated listeners report correlatable startup hashes, never the signed
+    // challenge identity itself. A restart remains a new release owner.
+    for (const [runtime, challenge] of [
+      [first, oldChallenge],
+      [second, currentChallenge],
+    ]) {
+      const observed = await waitFor(
+        "hashed startup diagnostic",
+        () =>
+          runtime
+            .diagnostics()
+            .split("\n")
+            .flatMap((line) => {
+              try {
+                const event = JSON.parse(line);
+                return event.event === "runtime.protected_startup" ? [event] : [];
+              } catch {
+                return [];
+              }
+            })[0],
+        2000,
+      );
+      assert.equal(
+        observed.startupHash,
+        createHash("sha256").update(challenge.startupId).digest("hex"),
+      );
+      assert.equal(runtime.diagnostics().includes(challenge.startupId), false);
+      assert.equal(JSON.stringify(observed).includes(token), false);
+    }
     assert.equal((await post(oldChallenge)).status, 409);
     assert.equal(businessRequests, 0);
 

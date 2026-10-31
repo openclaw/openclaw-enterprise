@@ -19,6 +19,7 @@ import type {
   CredentialProxyDriver,
   ProxyRevisionContext,
   SandboxDriver,
+  AgentRevision,
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialProxyAdmissionError,
@@ -39,6 +40,8 @@ import {
   openShellExchangeCapabilities as capabilities,
 } from "./openshell-exchange-capabilities.ts";
 import { openAiStaticProvider } from "./openai-provider.ts";
+import { openShellProtectedCodexArtifacts } from "../sandbox/openshell-codex-artifacts.ts";
+import { assertBoundedWorkspaceNodeRule } from "../sandbox/openshell-workspace-node-policy.ts";
 
 /** Whether `registration` is a registered supervisor middleware advertising no execution capability. */
 function registeredWithoutExecution(extensions: unknown, registration: string): boolean {
@@ -190,7 +193,9 @@ function enforcementEvidence(
 export function openShellEgressConfiguration(
   plan: ProxyPlan,
   options: OpenShellProxyOptions,
+  revision?: Readonly<AgentRevision>,
 ): Readonly<Record<string, unknown>> {
+  const artifacts = openShellProtectedCodexArtifacts(revision);
   if (new Set(plan.routes.map((route) => route.binding.binding.id)).size > 1) {
     throw new Error("The protected execution permits at most one binding.");
   }
@@ -213,7 +218,7 @@ export function openShellEgressConfiguration(
     // The prepared provider supplies the endpoints for the admitted GitHub scope. No generic exchange
     // authority, broad Git network rule or second credential-bearing sender accompanies it.
     return immutableCopy({
-      network_policies: {},
+      network_policies: artifacts,
       network_middlewares: openShellGitMiddleware(
         options.repositoryMiddlewareName,
         plan.execution.executionId,
@@ -442,6 +447,11 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
 
   async configureRevision(context: ProxyRevisionContext): Promise<ProxyWiring> {
     this.assertPlan(context);
+    const configuration = openShellEgressConfiguration(
+      context.plan,
+      this.options,
+      context.revision,
+    );
     const profile = repositoryGitDeliveryProfile(context.plan.repositoryGit);
     if (context.plan.repositoryGit !== undefined && profile === undefined) {
       // Finding 2204: never check a Git plan's counterpart as an ordinary egress plan. Deploy
@@ -451,7 +461,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     await this.sourceControl.assertAvailable(context.signal, profile);
     return immutableCopy({
       plan: context.plan,
-      configuration: openShellEgressConfiguration(context.plan, this.options),
+      configuration,
     });
   }
 
@@ -463,6 +473,34 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     if (!isDeepStrictEqual(prepared.plan, context.plan)) {
       throw new Error("The prepared Sandbox policy has a different admitted plan.");
     }
+    const protectedConfiguration = openShellEgressConfiguration(
+      context.plan,
+      this.options,
+      context.revision,
+    );
+    const expected = prepared.configuration;
+    const expectedPolicies = asRecord(expected.network_policies);
+    if (expectedPolicies && Object.hasOwn(expectedPolicies, "workspace-node-enrollment")) {
+      assertBoundedWorkspaceNodeRule(expectedPolicies["workspace-node-enrollment"]);
+    }
+    // SandboxResourceRef carries the paired Sandbox's exact WorkspaceNodeBinding-derived
+    // auxiliary rule. It grants no artifact authority: every other rule comes from admission.
+    const canonicalPolicies = {
+      ...asRecord(protectedConfiguration.network_policies),
+      ...(expectedPolicies && Object.hasOwn(expectedPolicies, "workspace-node-enrollment")
+        ? { "workspace-node-enrollment": expectedPolicies["workspace-node-enrollment"] }
+        : {}),
+    };
+    if (
+      !expectedPolicies ||
+      !isDeepStrictEqual(
+        wirePolicy(expected.network_middlewares),
+        wirePolicy(protectedConfiguration.network_middlewares),
+      ) ||
+      !isDeepStrictEqual(wirePolicy(expectedPolicies), wirePolicy(canonicalPolicies))
+    ) {
+      throw new Error("The prepared Sandbox policy changed protected egress routes.");
+    }
     const observed = await this.loadedPolicy(context);
     if (!observed) {
       return undefined;
@@ -470,29 +508,6 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     const { status, sandboxId } = observed;
     const revision = asRecord(status.revision);
     const policy = asRecord(revision?.policy);
-    const protectedConfiguration = openShellEgressConfiguration(context.plan, this.options);
-    const expected = prepared.configuration;
-    const expectedPolicies = asRecord(expected.network_policies);
-    if (
-      !expectedPolicies ||
-      Object.keys(expectedPolicies).some(
-        (key) => !key.startsWith("oce-egress-") && key !== "workspace-node-enrollment",
-      ) ||
-      !isDeepStrictEqual(
-        wirePolicy(expected.network_middlewares),
-        wirePolicy(protectedConfiguration.network_middlewares),
-      ) ||
-      !isDeepStrictEqual(
-        wirePolicy(
-          Object.fromEntries(
-            Object.entries(expectedPolicies).filter(([name]) => name.startsWith("oce-egress-")),
-          ),
-        ),
-        wirePolicy(protectedConfiguration.network_policies),
-      )
-    ) {
-      throw new Error("The prepared Sandbox policy changed protected egress routes.");
-    }
     const policies = asRecord(policy?.network_policies);
     // The authenticated supervisor must report loading the exact policy. A desired spec,
     // provider name or running Pod alone is not installation evidence.

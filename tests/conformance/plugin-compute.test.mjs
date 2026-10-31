@@ -380,7 +380,7 @@ async function runCodexRuntimeHelper(runtime, handler, options = {}) {
     Buffer,
     Date: options.Date ?? Date,
     WebSocket: FakeWebSocket,
-    setTimeout,
+    setTimeout: options.setTimeout ?? setTimeout,
     clearTimeout,
     process: {
       env: {
@@ -785,6 +785,14 @@ enabled = false
 });
 
 test("Codex runtime helper installs a plugin with skills and applies write action approval without tool inventory", async () => {
+  // Count fixture timer waits against this policy case's 25 ms budget so host
+  // scheduling cannot expire a successful RPC. Expiry cases advance their own clocks.
+  let now = 0;
+  class FixtureDate extends Date {
+    static now() {
+      return now;
+    }
+  }
   const state = codexLinearPluginState({
     toolDefaults: { approval: "write_actions", reviewer: "auto" },
   });
@@ -792,7 +800,7 @@ test("Codex runtime helper installs a plugin with skills and applies write actio
     manifest: pluginRuntimeSpecForRevision(revision({ plugins: state })),
   };
   let readCount = 0;
-  const { requests, sockets } = await runCodexRuntimeHelper(runtime, (method, params) => {
+  const handleRequest = (method, params) => {
     if (method === "initialize") {
       return { serverInfo: { name: "codex", version: "0.149.0" } };
     }
@@ -887,6 +895,15 @@ test("Codex runtime helper installs a plugin with skills and applies write actio
       return { requirements: null };
     }
     throw new Error(`unexpected request ${method}`);
+  };
+  const { requests, sockets } = await runCodexRuntimeHelper(runtime, handleRequest, {
+    Date: FixtureDate,
+    setTimeout(callback, delay, ...args) {
+      return setTimeout(() => {
+        now += delay;
+        callback(...args);
+      }, delay);
+    },
   });
 
   assert.deepEqual(
@@ -1248,6 +1265,14 @@ test("Codex runtime helper rejects incomplete or unbounded tool discovery before
     ],
   ]) {
     await t.test(name, async () => {
+      // Keep startup time deterministic until the intended discovery failure.
+      // Advancing there prevents a retry without racing the fixture's 25 ms budget.
+      let now = 0;
+      class FixtureDate extends Date {
+        static now() {
+          return now;
+        }
+      }
       const state = codexLinearPluginState({
         tools: { [CODEX_LINEAR_APP_ID + "/list_issues"]: { enabled: false } },
       });
@@ -1272,11 +1297,12 @@ test("Codex runtime helper rejects incomplete or unbounded tool discovery before
             return { status: "ok", version: "selected-plugins" };
           }
           if (method === "mcpServerStatus/list") {
+            now = 25;
             return response(page++);
           }
           throw new Error(`unexpected request ${method}`);
         },
-        { captureError: true },
+        { captureError: true, Date: FixtureDate },
       );
       assert.match(result.error?.message ?? "", expected);
       assert.equal(
@@ -1684,34 +1710,44 @@ test("Codex runtime cannot report installation success when its deadline expires
   assert.deepEqual(result.requests, []);
 });
 
-test("Codex selected-plugin search stops paging when the installation budget expires", async () => {
-  let now = 0;
-  class FixtureDate extends Date {
-    static now() {
-      return now;
-    }
-  }
-  let pages = 0;
-  const result = await runCodexRuntimeHelper(
-    { manifest: pluginRuntimeSpecForRevision(revision({ plugins: codexLinearPluginState() })) },
-    (method) => {
-      if (method === "initialize") {
-        return {};
+test("Codex selected-plugin search stops before writes or continuation when its budget expires", async (t) => {
+  for (const matching of [false, true]) {
+    await t.test(matching ? "late exact match" : "late continuation", async () => {
+      let now = 0;
+      class FixtureDate extends Date {
+        static now() {
+          return now;
+        }
       }
-      assert.equal(method, "plugin/search", "expired search must not reach installation or writes");
-      assert.equal(++pages, 1, "the client must not fetch a continuation after expiry");
-      now = 25;
-      // A fuzzy result can omit the selected ID while offering another page.
-      return {
-        ...codexSearchResponse({ nativeId: "other@openai-curated-remote", name: "other" }),
-        nextCursor: "continuation",
-      };
-    },
-    { captureError: true, Date: FixtureDate },
-  );
-  assert.match(result.error?.message ?? "", /search deadline expired/);
-  assert.equal(result.value, undefined);
-  assert.equal(pages, 1);
+      let pages = 0;
+      const result = await runCodexRuntimeHelper(
+        { manifest: pluginRuntimeSpecForRevision(revision({ plugins: codexLinearPluginState() })) },
+        (method) => {
+          if (method === "initialize") {
+            return {};
+          }
+          assert.equal(
+            method,
+            "plugin/search",
+            "expired search must not reach installation or writes",
+          );
+          assert.equal(++pages, 1, "the client must not fetch a continuation after expiry");
+          now = 25;
+          // Neither a late exact match nor another page may outlive the installation budget.
+          return matching
+            ? codexSearchResponse()
+            : {
+                ...codexSearchResponse({ nativeId: "other@openai-curated-remote", name: "other" }),
+                nextCursor: "continuation",
+              };
+        },
+        { captureError: true, Date: FixtureDate },
+      );
+      assert.match(result.error?.message ?? "", /search deadline expired/);
+      assert.equal(result.value, undefined);
+      assert.equal(pages, 1);
+    });
+  }
 });
 
 test("Codex runtime helper keeps pre-install native uncertainty generic", async () => {

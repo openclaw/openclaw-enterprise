@@ -31,15 +31,28 @@
                 ]
               },
               {
-                "group": "Quickstart",
+                "group": "Quickstart (Local)",
                 "pages": [
                   {
-                    "page": "guides/quickstart",
-                    "label": "Local Setup"
+                    "page": "guides/deploy/local-openshell-setup",
+                    "label": "Setup OCE"
                   },
                   {
+                    "page": "guides/repository-credentials/openshell-git-push",
+                    "label": "Add Git Support"
+                  },
+                  {
+                    "page": "guides/integrations/codex-plugins",
+                    "label": "Add Codex Plugins"
+                  }
+                ]
+              },
+              {
+                "group": "Quickstart (K8)",
+                "pages": [
+                  {
                     "page": "guides/kubernetes-setup",
-                    "label": "Kubernetes Setup"
+                    "label": "Setup OCE"
                   }
                 ]
               },
@@ -439,10 +452,6 @@
                         "label": "OpenShell Enrollment"
                       },
                       {
-                        "page": "guides/repository-credentials/team-runbook",
-                        "label": "Team Runbook"
-                      },
-                      {
                         "page": "reference/repository-credentials",
                         "label": "Credential Lifecycle"
                       },
@@ -494,6 +503,7 @@
               }
             ],
             "hidden": [
+              "guides/repository-credentials/team-runbook",
               "guides/repository-credentials/standalone-service",
               "guides/repository-credentials/development-token",
               "reference/repository-credentials/development-token",
@@ -528,6 +538,10 @@
                   {
                     "page": "guides/deploy/eks",
                     "label": "Amazon EKS"
+                  },
+                  {
+                    "page": "guides/quickstart",
+                    "label": "Local Setup Without OpenShell"
                   },
                   {
                     "page": "guides/deploy/production-installation",
@@ -1030,6 +1044,7 @@
               "guides/deploy/local-sandbox-network-policy",
               "guides/deploy/openshell-credential-sources",
               "guides/deploy/local-openshell-images",
+              "guides/deploy/local-kubernetes-tools",
               "guides/deploy/protected-egress-development",
               "reference/settings/development",
               "design/resources",

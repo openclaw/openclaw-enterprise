@@ -147,6 +147,8 @@ for the retry conditions and terminal codes.
 
 ### Runtime logging
 
+Dedicated Codex disables native log and metrics export before startup.
+
 For platform-owned logging, admission stamps the runtime log settings after
 Sandbox configuration. Kubernetes sends gateway JSON console output and Codex
 stderr to the Collector. Codex stdout carries protocol messages. A trusted

@@ -149,6 +149,26 @@ express, so startup refuses them. `gatewayConfigured` is the only ServiceAccount
 gateway's configured sandbox ServiceAccount applies to every Sandbox and does
 not satisfy the per-Agent production requirement below.
 
+### Protected Codex artifact rules
+
+For protected, dedicated Codex repository execution, select
+[approved artifact rules](../../assets/openshell-quickstart/plugin-network-policy.yaml)
+with `policy.codexArtifactRuleNames`, for example
+`codexArtifactRuleNames: [codex-plugin-artifacts]`. Each name must identify exactly
+one existing `policy.networkPolicies` rule. Omission grants no artifact access.
+
+Selected rules require the bundled Codex executable paths, exact DNS hosts,
+port 443, `protocol: rest`, `enforcement: enforce` and `access: read_only`.
+Omit `tls`: stock OpenShell 0.1.6 verifies and inspects REST TLS by default;
+explicit skip and deprecated termination modes are refused. Wildcards, numeric
+addresses, GitHub repository hosts, reserved names and credential/provider fields are refused.
+
+Admission freezes only that qualified map with empty Agent additions. Preparation
+and replay use the revision, even if Installation defaults change. Select a new
+revision to change artifact authority. Live Agent policy apply remains unavailable.
+
+### Gateway readiness and workspace
+
 Optional readiness observes a Service and Pods in the OCC namespace (a paired
 Gateway normally uses a Backend `endpoint`). It needs a positive `timeoutMs`;
 `pollIntervalMs` (default 1000) is at most `2147483647`. Development retains

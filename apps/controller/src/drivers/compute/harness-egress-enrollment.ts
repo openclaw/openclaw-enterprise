@@ -36,6 +36,11 @@ function waitForHarnessEgressEnrollment(enrollment) {
   }
   const expected = Buffer.from(verifier, "hex");
   const challenge = { profile: "oce-compute-execution-release-v1", ...enrollment, startupId: randomUUID() };
+  try {
+    console.error(JSON.stringify({event: "runtime.protected_startup", startupHash: createHash("sha256").update(challenge.startupId).digest("hex")}));
+  } catch {
+    // A diagnostic failure must not change startup or release ownership.
+  }
   const deadline = performance.now() + 180000;
   return new Promise((resolve, reject) => {
     let settled = false;

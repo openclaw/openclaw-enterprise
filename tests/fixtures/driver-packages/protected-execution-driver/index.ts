@@ -122,6 +122,14 @@ export function createDriver({
         id,
         implementation,
         capability: "sandbox",
+        admitProtectedCodexArtifactPolicy(version) {
+          // This external fixture declares no artifact rules; explicit support grants none.
+          return {
+            purpose: "protected-codex-artifacts",
+            declaredRuleNames: [],
+            snapshot: { driverId: id, implementation, version, defaults: {}, additions: [] },
+          };
+        },
         supportsHarnessExecutionMode: Object.freeze({
           openclaw: Object.freeze({
             embedded: Object.freeze({ supported: false }),
