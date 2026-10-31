@@ -1933,6 +1933,9 @@ test("API-key Presets keep their credential provider fixed while allowing model 
   assert.equal(dedicated.agents.defaults.model, "codex/gpt-5.1");
   // Existing dedicated Presets may also use the supported OpenAI model prefix.
   dedicated.agents.defaults.model = "openai/gpt-5.1";
+  // A codex catalog row names no selected model once the primary is openai/, and save refuses
+  // it as deployment does (finding 3019).
+  delete dedicated.models.providers.codex.models;
   await configuration.fill(JSON.stringify(dedicated));
   const created = await createAgentThroughForm(page, fixture, namespace.id);
   assert.deepEqual(created.harnessAuth, harnessAuth);

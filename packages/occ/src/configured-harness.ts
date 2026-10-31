@@ -330,6 +330,78 @@ function providerModelEntry(
 }
 
 /**
+ * The provider catalog rule of resolveConfiguredHarnessId: each row of a
+ * models.providers.<provider>.models list names a primary or fallback model of `selections`, by
+ * its complete ref or the remainder after the provider. Deployment checks it on every Harness,
+ * before it resolves one, so Configuration save runs it too (requireSelectedProviderModels;
+ * finding 3019).
+ */
+function requireSelectedCatalogRows(
+  providerConfigurations: Readonly<Record<string, unknown>> | undefined,
+  selections: Iterable<readonly string[]>,
+): void {
+  // The catalog ids that name each provider's candidates (complete ref or remainder), so each
+  // catalog row is checked in constant time.
+  const catalogIds = new Map<string, Set<string>>();
+  for (const models of new Set(selections)) {
+    for (const model of models) {
+      const { provider, id } = splitModelRef(model);
+      const ids = catalogIds.get(provider) ?? new Set<string>();
+      catalogIds.set(provider, ids.add(model).add(id!));
+    }
+  }
+
+  for (const [providerId, value] of Object.entries(providerConfigurations ?? {})) {
+    const provider = asRecord(value);
+    if (provider === undefined) {
+      throw new ConfigurationHarnessError(
+        modelProviderMessage(
+          providerId,
+          (path) => `Configuration setting ${path} must be an object.`,
+        ),
+      );
+    }
+    if (provider.models === undefined) {
+      continue;
+    }
+    if (!Array.isArray(provider.models)) {
+      throw providerModelsListError(providerId);
+    }
+    const ids = catalogIds.get(providerId);
+    if (
+      provider.models.some((value) => {
+        const id = asRecord(value)?.id;
+        return !(typeof id === "string" && ids?.has(id) === true);
+      })
+    ) {
+      throw new ConfigurationHarnessError(
+        modelProviderMessage(
+          providerId,
+          (path) =>
+            `Configuration setting ${path}.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.`,
+        ),
+      );
+    }
+  }
+}
+
+/**
+ * requireSelectedCatalogRows over every model selection, so Configuration save
+ * (requireDeployableRoster) refuses a catalog row that names no selected model with the
+ * deployment's text (finding 3019). An entry without its own model selects the defaults' models,
+ * which the defaults' selection already names. requireModelSelections runs first and refuses a
+ * malformed selection with the deployment's text.
+ */
+export function requireSelectedProviderModels(
+  values: Readonly<OpenClawConfigurationDocument>,
+): void {
+  requireSelectedCatalogRows(
+    asRecord(asRecord(values.models)?.providers),
+    modelSelections(values).map(([value, , setting]) => configuredModels(value, setting)),
+  );
+}
+
+/**
  * The agents shape rules resolveConfiguredHarnessId checks first. They hold for every topology,
  * so Configuration create and update check them too (requireDeployableRoster).
  */
@@ -430,49 +502,10 @@ export function resolveConfiguredHarnessId(
     );
   }
 
-  // The catalog ids that name each provider's candidates (complete ref or remainder), so each
-  // catalog row is checked in constant time.
-  const catalogIds = new Map<string, Set<string>>();
-  for (const models of new Set(selections.map(({ models }) => models))) {
-    for (const model of models) {
-      const { provider, id } = splitModelRef(model);
-      const ids = catalogIds.get(provider) ?? new Set<string>();
-      catalogIds.set(provider, ids.add(model).add(id!));
-    }
-  }
-
-  for (const [providerId, value] of Object.entries(providerConfigurations ?? {})) {
-    const provider = asRecord(value);
-    if (provider === undefined) {
-      throw new ConfigurationHarnessError(
-        modelProviderMessage(
-          providerId,
-          (path) => `Configuration setting ${path} must be an object.`,
-        ),
-      );
-    }
-    if (provider.models === undefined) {
-      continue;
-    }
-    if (!Array.isArray(provider.models)) {
-      throw providerModelsListError(providerId);
-    }
-    const ids = catalogIds.get(providerId);
-    if (
-      provider.models.some((value) => {
-        const id = asRecord(value)?.id;
-        return !(typeof id === "string" && ids?.has(id) === true);
-      })
-    ) {
-      throw new ConfigurationHarnessError(
-        modelProviderMessage(
-          providerId,
-          (path) =>
-            `Configuration setting ${path}.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.`,
-        ),
-      );
-    }
-  }
+  requireSelectedCatalogRows(
+    providerConfigurations,
+    selections.map(({ models }) => models),
+  );
 
   if (primary === undefined) {
     return "openclaw";
