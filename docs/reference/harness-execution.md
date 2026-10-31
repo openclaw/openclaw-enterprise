@@ -221,7 +221,9 @@ or an id that the env provider's `allowlist` omits. The allowlist applies to
 allowlist applies to it only when the variable is unset. Deployment then refuses an
 unbound `${NAME}` that the allowlist omits at an enabled Beam or IMAP entry.
 Deployment and Agent save refuse such a `${APP_SERVER_*}` there for Agents other
-than dedicated Codex, because it is always unset on them.
+than dedicated Codex, because it is always unset on them. Kubernetes deployment
+applies the same provider and allowlist rules to the `gateway.auth.password`
+reference.
 
 Configuration writes run these rules in deployment's order. They refuse settings
 that conflict, with deployment's message: an entry primary that differs, selectable
