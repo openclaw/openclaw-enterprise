@@ -590,6 +590,11 @@ export const CHANNEL_BINDING_CREDENTIALS_REMEDY = `To fix it, ${CHANNEL_BINDING_
 // The Slack card of an Embedded Agent, on Create Agent and the Agent page's Channels tab.
 export const CHANNELS_NEED_DEDICATED =
   "Channels require Dedicated execution. Embedded Agents can only keep channels disabled.";
+// Kubernetes Compute's Configuration rule for a channel other than Slack or Microsoft Teams, at
+// Configuration and Preset save and at deployment (apps/controller/src/drivers/compute/kubernetes/
+// configuration-rules.ts). `setting` is channels.<name>.
+export const unsupportedChannelRefusal = (setting) =>
+  `Configuration setting ${setting} is not a supported channel: use slack or msteams, or set its enabled to false.`;
 // The Slack card's setup step, shown until both token Secrets are bound (finding 2438), and never
 // on an Embedded Agent, which cannot have channels (finding D708).
 export const SLACK_SETUP_HINT =

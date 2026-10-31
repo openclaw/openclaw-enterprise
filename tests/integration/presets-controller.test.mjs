@@ -30,7 +30,7 @@ import {
   partialWrite,
 } from "../helpers/partial-write-authorization.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { callerDenied, createDenied } from "../helpers/refusal-text.mjs";
+import { callerDenied, createDenied, unsupportedChannelRefusal } from "../helpers/refusal-text.mjs";
 
 async function createFixture(t, options = {}) {
   const root = await temporaryDirectory(t, "occ-presets-");
@@ -827,7 +827,7 @@ describe("Presets", { concurrency: 2 }, () => {
             values: { ...openaiModel, channels: { discord: { enabled: true } } },
           },
         },
-        "Configuration setting channels.discord is not a supported channel: use slack or msteams, or set its enabled to false.",
+        unsupportedChannelRefusal("channels.discord"),
       ],
       [
         {

@@ -41,16 +41,21 @@ import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  AGENT_DELETING,
   AGENT_NAME_CONFLICT,
   BINDING_SUBJECT_EMAIL,
   BINDING_SUBJECT_INELIGIBLE,
   callerDenied,
   DEPLOYMENT_FAILED,
+  MODEL_CREDENTIAL_REJECTED_RECORDED,
+  NAMESPACE_NAME_CONFLICT,
   referenceFormRefusal,
+  SECRET_NAME_CONFLICT,
   SERVICE_ACCOUNT_CROSS_NAMESPACE,
   SLACK_ROUTE_NOT_CONFIGURED,
   unboundReferenceRefusal,
   unsubstitutedReferenceRefusal,
+  unsupportedChannelRefusal,
 } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -1536,10 +1541,7 @@ test("a duplicate Secret name answers 409 naming the taken Secret name", async (
     body: { name: "Model API key", value: "second-value" },
   });
   assertApiError(duplicate, 409, "RESOURCE_CONFLICT");
-  assert.equal(
-    duplicate.body.error.message,
-    "A Secret with this name already exists in this Namespace. Choose a different name.",
-  );
+  assert.equal(duplicate.body.error.message, SECRET_NAME_CONFLICT);
 });
 
 test("Secret values with an unpaired surrogate are refused as an invalid value", async () => {
@@ -2662,7 +2664,7 @@ test("Agent deletion closes every synchronous mutation boundary before teardown"
   ]) {
     const rejected = await mutation();
     assertApiError(rejected, 409, "AGENT_DELETING");
-    assert.equal(rejected.body.error.message, "The requested Agent is being deleted.");
+    assert.equal(rejected.body.error.message, AGENT_DELETING);
   }
 
   // Credential provisioning and workspace routing are intentionally absent
@@ -3135,8 +3137,7 @@ test("a refused deployment's status names its cause and remedy without naming pr
       "The controller worker stopped or lost its claim during this deployment's last attempt. Deploy again.",
     // Finding 1393: held runtime failures name the next step too, so occ and HTTP clients get
     // the guidance the console used to add on its own.
-    RUNTIME_AUTHENTICATION_FAILED:
-      "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.",
+    RUNTIME_AUTHENTICATION_FAILED: MODEL_CREDENTIAL_REJECTED_RECORDED,
     RUNTIME_CPU_STARVED: DEPLOYMENT_FAILED.RUNTIME_CPU_STARVED,
     RUNTIME_MODEL_PROBE_TIMEOUT:
       "The startup model check got no reply from the provider in time. With OpenClaw this includes an unreachable provider (refused connection or unknown host). Check egress, proxy or a custom baseUrl and that the provider responds, then deploy a new version.",
@@ -5706,10 +5707,7 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
     body: { name: "validated" },
   });
   assertApiError(duplicateNamespace, 409, "RESOURCE_CONFLICT");
-  assert.equal(
-    duplicateNamespace.body.error.message,
-    "A Namespace with this name already exists. Choose a different name.",
-  );
+  assert.equal(duplicateNamespace.body.error.message, NAMESPACE_NAME_CONFLICT);
 
   const invalidAgent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: { name: "" },
@@ -6373,7 +6371,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   for (const [values, message] of [
     [
       { ...model, channels: { discord: { enabled: true } } },
-      "Configuration setting channels.discord is not a supported channel: use slack or msteams, or set its enabled to false.",
+      unsupportedChannelRefusal("channels.discord"),
     ],
     [
       { ...model, env: { OPENAI_API_KEY: "${OPENAI_API_KEY}" } },

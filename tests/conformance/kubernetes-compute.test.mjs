@@ -79,6 +79,11 @@ import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logg
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { conformanceKubeconfig } from "../helpers/kubernetes-compute.mjs";
 import {
+  CODEX_PLACEMENT_REFUSAL,
+  DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
+  EMBEDDED_API_KEY_REQUIRED,
+  codexApiKeyRefusal,
+  unsupportedChannelRefusal,
   KUBERNETES_GATEWAY_PASSWORD_REFUSAL,
   KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT,
   dedicatedCodexVariableRefusal,
@@ -5742,7 +5747,7 @@ test("deployment admission refuses the Compute-rendered settings preparation ref
           runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
         }),
       ).validateHarnessAuth(codex, apiKeyAuth, previews, {}),
-    /Dedicated Agents need gateway routing and node enrollment/,
+    { message: CODEX_PLACEMENT_REFUSAL },
   );
   // Compute relays native hooks only for Codex: a dedicated OpenClaw document keeps the key.
   const openclaw = {
@@ -9011,7 +9016,7 @@ test("direct service account token is confined to the model container and exact 
         revision.harnessAuth,
         revision.configuration,
       ),
-    /Agent setting harnessAuth\.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode\./,
+    { message: EMBEDDED_API_KEY_REQUIRED },
   );
   assert.throws(
     () =>
@@ -9977,7 +9982,7 @@ test("credential-source authentication renders no model Secret and requires the 
         {},
         sourceType,
       ),
-    /Agent setting harnessAuth\.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode\./,
+    { message: EMBEDDED_API_KEY_REQUIRED },
   );
 });
 
@@ -10176,7 +10181,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
         revision.harnessAuth,
         revision.configuration,
       ),
-    /requires a provisioning SandboxDriver with networking, filesystem, and process containment/,
+    { message: DEDICATED_OPENCLAW_SANDBOX_REQUIRED },
   );
   // Agent save (null bindings) leaves the Installation's Sandbox Driver to deployment. Node
   // enrollment keeps the placement rule, which save also applies, satisfied.
@@ -11058,7 +11063,7 @@ test("native channel providers require Secret bindings and project them only to 
         diagnostics: { otel: { logs: false } },
       },
     }),
-    /Configuration setting channels\.discord is not a supported channel: use slack or msteams, or set its enabled to false\./,
+    { message: unsupportedChannelRefusal("channels.discord") },
   );
   assert.throws(
     () =>
@@ -12815,10 +12820,10 @@ test("every model selection uses the Harness binding's provider (finding 1291)",
         },
       },
     },
-    refused(
-      "models.providers.anthropic.apiKey",
-      "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
-    ),
+    {
+      name: "ConfigurationHarnessError",
+      message: codexApiKeyRefusal("models.providers.anthropic.apiKey"),
+    },
     "C: unselected provider key",
   );
   // OpenClaw accepts an apiKey only on the binding's provider: a bare model name can still reach
@@ -15287,7 +15292,7 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       ...accessTokenRevision,
       harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     }),
-    /Agent setting harnessAuth\.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode\./,
+    { message: EMBEDDED_API_KEY_REQUIRED },
   );
   for (const secretRef of [
     { ...serviceAccount.credential.secretRef, name: "service-account-another" },
