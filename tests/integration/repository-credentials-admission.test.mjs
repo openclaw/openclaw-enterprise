@@ -66,6 +66,7 @@ import {
 } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 import { protectedSourceInputs } from "../helpers/protected-source-refusals.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 
 const driverId = "repository-credentials";
 const backendId = "repository-provider";
@@ -78,12 +79,17 @@ const sandboxRegistration = (driverId) => ({
   definition: OpenShellSandboxDriver,
 });
 
-function repositorySandbox(registry, id = "repository-admission-openshell") {
+function repositorySandbox(
+  registry,
+  id = "repository-admission-openshell",
+  { native = false, gitRuntime } = {},
+) {
   return new OpenShellSandboxDriver(
     {
       gateway: { workspaceMode: "operator" },
       kubernetes: {
         runtimeClassName: "openshell-sandbox",
+        ...(native && { userNamespaces: false }),
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {
           subPath: "workspace",
@@ -114,12 +120,14 @@ function repositorySandbox(registry, id = "repository-admission-openshell") {
         ? {}
         : {
             // Admission reads only the route's host check; nothing starts it.
-            openShellGit: new OpenShellGitRuntime(
-              {},
-              createGitHubRepositoryDeliveryResolver(
-                validateGitHubRepositoryRegistry(registry, backendId),
+            openShellGit:
+              gitRuntime ??
+              new OpenShellGitRuntime(
+                {},
+                createGitHubRepositoryDeliveryResolver(
+                  validateGitHubRepositoryRegistry(registry, backendId),
+                ),
               ),
-            ),
           }),
     },
   );
@@ -1721,7 +1729,8 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
 // registration; `credentialGateway` also selects the bundled OpenShell Credential Gateway;
 // `installationAccess` offers github-installation and composes the Proxy with its Git transport,
 // as repository.openShell does; `preview` opts in to the observed-hook preview, and
-// `gatewayVersion` replaces the version the gateway reports.
+// `gatewayVersion` replaces the version the gateway reports. Native OpenClaw uses
+// production Compute admission with the paired Sandbox, Proxy and model Gateway.
 async function protectedOpenShellComposition(
   t,
   {
@@ -1734,6 +1743,8 @@ async function protectedOpenShellComposition(
     installationAccess = false,
     preview = false,
     gatewayVersion = "0.1.5",
+    harness = "codex",
+    protectedExecution = true,
   } = {},
 ) {
   class ProtectedGitComputeDriver extends OpenShellGitComputeDriver {
@@ -1749,10 +1760,13 @@ async function protectedOpenShellComposition(
     validateHarnessAuth() {}
   }
   const f = await fixture(t, {
-    harness: "codex",
-    compute: kubernetesCompute(
-      credentialGateway ? GatewayHarnessComputeDriver : ProtectedGitComputeDriver,
-    ),
+    harness,
+    compute:
+      harness === "openclaw"
+        ? kubernetesCompute()
+        : kubernetesCompute(
+            credentialGateway ? GatewayHarnessComputeDriver : ProtectedGitComputeDriver,
+          ),
     controllerOptions: {
       driverConfigurations: [sandboxRegistration("repository-admission-openshell")],
     },
@@ -1762,7 +1776,21 @@ async function protectedOpenShellComposition(
       .filter((repositoryRef) => repositoryRef !== "project" && repositoryRef !== "installation"),
     installationAccess,
   });
-  const sandbox = repositorySandbox(f.registry);
+  const git =
+    (installationAccess || harness === "openclaw") &&
+    new OpenShellGitRuntime(
+      {
+        protectedExecution,
+        ...(preview && { observedHookPreviewWorkspace: "preview-1" }),
+      },
+      createGitHubRepositoryDeliveryResolver(
+        validateGitHubRepositoryRegistry(f.registry, backendId),
+      ),
+    );
+  const sandbox = repositorySandbox(f.registry, "repository-admission-openshell", {
+    native: harness === "openclaw",
+    ...(git && { gitRuntime: git }),
+  });
   const registration = "oce-prepared-git";
   let gatewayReads = 0;
   const gateway = {
@@ -1796,19 +1824,14 @@ async function protectedOpenShellComposition(
   };
   const backend = {
     id: "openshell",
-    drivers: credentialGateway ? { credential_gateway: "openshell-credentials" } : {},
+    drivers:
+      credentialGateway || harness === "openclaw"
+        ? { credential_gateway: "openshell-credentials" }
+        : {},
     client: { clientForNamespace: () => gateway, placement: () => undefined },
   };
   // Production composes the Proxy with the Git runtime's transport whenever repository Git is
   // protected; admission only checks that it is there.
-  const git =
-    installationAccess &&
-    new OpenShellGitRuntime(
-      { protectedExecution: true },
-      createGitHubRepositoryDeliveryResolver(
-        validateGitHubRepositoryRegistry(f.registry, backendId),
-      ),
-    );
   const proxy = new OpenShellCredentialProxyDriver(options, {
     id: sandbox.id,
     sandbox,
@@ -1822,16 +1845,31 @@ async function protectedOpenShellComposition(
     { id: sandbox.id, implementation: sandbox.implementation, configuration: options },
     { capabilities: { sandbox, credential_proxy: proxy } },
   );
-  f.controller.registerDriver(owner);
+  f.controller.registerDriver(protectedExecution ? owner : sandbox);
   f.controller.selectDriver("sandbox", sandbox.id);
-  f.controller.selectDriver("credential_proxy", proxy.id);
-  if (credentialGateway) {
+  if (protectedExecution) {
+    f.controller.selectDriver("credential_proxy", proxy.id);
+  }
+  if (credentialGateway || harness === "openclaw") {
     const catalog = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/bin/codex"] },
+      { binaries: [harness === "openclaw" ? "/usr/bin/node" : "/usr/bin/codex"] },
       { id: "openshell-credentials", backend },
     );
     f.controller.registerDriver(catalog);
     f.controller.selectDriver(catalog.capability, catalog.id);
+    if (harness === "openclaw") {
+      // Exercise production topology/authentication/release admission, rather than
+      // the Codex-only stand-ins above. Only the external transport Secret read is
+      // supplied: no Kubernetes provisioning or model execution is claimed.
+      const compute = createTestKubernetesComputeDriver("native-repository-admission", {
+        gatewayRuntime: true,
+        ...(protectedExecution ? { protectedDriver: owner } : { sandboxDriver: sandbox }),
+        credentialGatewayDriver: catalog,
+      });
+      compute.getAgentRuntimeCredentialStatus = async () => ({ transportConfigured: true });
+      f.controller.registerDriver(compute);
+      f.controller.selectDriver("compute", compute.id);
+    }
   }
   return { ...f, gatewayReads: () => gatewayReads };
 }
@@ -1911,6 +1949,171 @@ test("Deploy names what installation-wide access needs from the OpenShell Proxy 
       [agent.id, `agt_${randomUUID()}`],
       { label },
     );
+  }
+});
+
+// The model source predates selection of the Git-only Proxy, as in the supported
+// installation. Model custody remains with Credential Gateway, not Credential Proxy.
+async function nativeOpenShellAgent(t, bindings, options) {
+  const f = await protectedOpenShellComposition(t, {
+    ...options,
+    harness: "openclaw",
+    bindings,
+    installationAccess: true,
+  });
+  const namespaceId = f.namespace.id;
+  await f.state.transact((unit) =>
+    unit.namespaces.transitionNamespaceStatus(namespaceId, "provisioning", "ready"),
+  );
+  const secret = await f.request("POST", "/namespaces/" + namespaceId + "/secrets", {
+    name: "native-model-key",
+    value: "synthetic-native-admission-model-key",
+  });
+  assert.equal(secret.status, 201, JSON.stringify(secret));
+  const sourceId = "cs_" + randomUUID();
+  await f.state.transact((unit) =>
+    unit.credentialSources.createCredentialSource({
+      id: sourceId,
+      namespaceId,
+      name: "native-model",
+      type: "openai",
+      config: {},
+      secrets: { api_key: secret.data.ref },
+      ownerCapability: "credential_gateway",
+      driverId: "openshell-credentials",
+      state: "ready",
+      createdAt: new Date().toISOString(),
+    }),
+  );
+  const agent = await f.createAgent({
+    executionMode: "dedicated",
+    repositoryBindings: bindings,
+    harnessAuth: { method: "credential_source", sourceId },
+    credentialSources: [{ sourceId }],
+  });
+  const internal = await f.controller.getAgent(f.actorId, namespaceId, agent.id);
+  f.iamState.identities.push({
+    kind: "service_principal",
+    id: internal.servicePrincipalId,
+    namespaceId,
+  });
+  grantRole(f.iamState, internal.servicePrincipalId, {
+    id: "native-source-" + agent.id,
+    namespaceId,
+    permissions: { credential_source: ["operate"] },
+    resource: { kind: "credential_source", id: sourceId },
+  });
+  return { ...f, agent };
+}
+
+test("Native OpenClaw repository access refuses installation authority before save or deployment", async (t) => {
+  // Native workers must not exercise the GitHub App installation's wider
+  // authority by changing a local remote. Reject every repository binding at
+  // the API, including an Agent persisted before this restriction, before any
+  // revision, deployment work, or gateway request can grant that authority.
+  const installation = [{ repositoryRef: "installation", profile: "github-installation" }];
+  const cases = [
+    {
+      name: "unprotected repository Git",
+      bindings: selection,
+      options: { protectedExecution: false },
+    },
+    {
+      name: "unprotected installation access",
+      bindings: installation,
+      options: { protectedExecution: false },
+    },
+    { name: "installation access with preview off", bindings: installation, options: {} },
+    {
+      name: "installation access with preview on",
+      bindings: installation,
+      options: { preview: true },
+    },
+    {
+      name: "installation preview on another gateway",
+      bindings: installation,
+      options: { preview: true, gatewayVersion: "0.1.6" },
+    },
+    ...["git-read", "git-write", "git-full"].map((profile) => ({
+      name: profile + " does not grant native repository access",
+      bindings: [{ repositoryRef: "project", profile }],
+      options: { preview: true },
+    })),
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (subtest) => {
+      // A native Agent without repository credentials is still a valid draft.
+      // Model custody stays with the real Credential Gateway, not a Git helper.
+      const f = await nativeOpenShellAgent(subtest, [], scenario.options);
+      const path = f.collection + "/" + f.agent.id;
+      const before = await f.request("GET", f.collection);
+      const pendingBefore = f.state.pendingOperations();
+      for (const [method, target, input] of [
+        [
+          "POST",
+          f.collection,
+          {
+            name: "Refused native repository authority",
+            configurationId: f.configuration.id,
+            executionMode: "dedicated",
+            harnessAuth: f.agent.harnessAuth,
+            credentialSources: f.agent.credentialSources,
+            repositoryBindings: scenario.bindings,
+          },
+        ],
+        [
+          "PATCH",
+          path,
+          { configurationId: f.configuration.id, repositoryBindings: scenario.bindings },
+        ],
+      ]) {
+        const response = await f.request(method, target, input);
+        assert.equal(response.status, 409, JSON.stringify(response));
+        assert.equal(response.error.code, "RESOURCE_CONFLICT");
+        assert.equal(response.error.message, COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED);
+      }
+      assert.deepEqual((await f.request("GET", f.collection)).data, before.data);
+      assert.deepEqual(f.state.pendingOperations(), pendingBefore);
+
+      // An existing saved binding must not bypass the same deployment check.
+      await f.state.transact((unit) =>
+        unit.agents.updateConfiguration(
+          f.namespace.id,
+          f.agent.id,
+          f.configuration.id,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          scenario.bindings,
+        ),
+      );
+      const stored = await f.controller.getAgent(f.actorId, f.namespace.id, f.agent.id);
+      const response = await f.request("POST", path + "/deploy");
+      assert.equal(response.status, 409, JSON.stringify(response));
+      assert.equal(response.error.code, "RESOURCE_CONFLICT");
+      assert.equal(response.error.message, COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED);
+      assert.deepEqual((await f.request("GET", path + "/revisions")).data, []);
+      assert.deepEqual(f.state.pendingOperations(), pendingBefore);
+      const after = await f.controller.getAgent(f.actorId, f.namespace.id, f.agent.id);
+      assert.equal(after.desiredRuntimeState, stored.desiredRuntimeState);
+      assert.equal(after.activeRevisionId, stored.activeRevisionId);
+      assert.equal(f.gatewayReads(), 0, "refusal does not consult or authenticate at the gateway");
+      const outsider = await f.requestWithoutGrants(f.app);
+      for (const [method, suffix, body] of [
+        [
+          "PATCH",
+          "",
+          { configurationId: f.configuration.id, repositoryBindings: scenario.bindings },
+        ],
+        ["POST", "/deploy", undefined],
+      ]) {
+        await assertSameAnswer(
+          (id) => outsider(method, f.collection + "/" + id + suffix, body),
+          [f.agent.id, "agt_" + randomUUID()],
+        );
+      }
+    });
   }
 });
 

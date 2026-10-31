@@ -479,7 +479,10 @@
       "path": "tests/conformance/repository-sessions-memory.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-admission.test.mjs"
+      "path": "tests/integration/repository-credentials-admission.test.mjs",
+      "expectedTests": [
+        "Native OpenClaw repository access refuses installation authority before save or deployment"
+      ]
     },
     {
       "path": "tests/integration/repository-native-cutover.test.ts",
