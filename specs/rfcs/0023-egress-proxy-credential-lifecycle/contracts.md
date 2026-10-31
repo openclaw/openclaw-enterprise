@@ -78,8 +78,10 @@ these limits:
 - Exact supported Codex runtime executable paths and literal approved DNS hosts.
   Wildcards, numeric addresses, GitHub repository hosts and overlapping Git routes
   are refused.
-- Port 443, REST inspection, verified TLS termination, enforced policy and the
-  `read_only` access preset. Uninspected, audit-only or write-capable rules are refused.
+- Port 443, verified REST TLS inspection, enforced policy and the `read_only`
+  access preset. Stock OpenShell 0.1.6 uses its inspected TLS default with `tls`
+  omitted. Explicit skip, passthrough, unsupported termination modes, audit-only
+  or write-capable rules are refused.
 - No credential binding, provider alias, header injection or additional policy
   fields. Other defaults and Agent network additions do not join this authority.
 

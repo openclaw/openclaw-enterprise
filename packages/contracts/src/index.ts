@@ -121,6 +121,7 @@ export { SandboxPolicyDecisionSchema, validSandboxPolicyDecision } from "./sandb
 import type { SandboxPolicySnapshot } from "./sandbox-policy.ts";
 
 export type {
+  ProtectedCodexArtifactPolicyAdmission,
   SandboxNetworkGrant,
   SandboxPolicy,
   SandboxPolicySnapshot,
