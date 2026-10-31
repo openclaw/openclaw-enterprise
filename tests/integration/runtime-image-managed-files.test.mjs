@@ -352,10 +352,20 @@ test(
     // on one line that runtime logs keep.
     const logs = await runDocker(["logs", containerName]);
     const output = `${logs.stdout}\n${logs.stderr}`;
-    // OpenClaw's own refusal names the plugin setting; it no longer reports a config change.
-    assert.match(
-      output,
-      /^\s+- (?:\S+ — )?plugins\.entries\.beam\.config\.mirror\.endpoint: invalid config: must have required property 'endpoint'$/m,
+    // OpenClaw's own refusal, in its JSON console records, names the plugin setting; it no
+    // longer reports a config change.
+    const openClawLines = output.split("\n").flatMap((line) => {
+      try {
+        const { message } = JSON.parse(line);
+        return typeof message === "string" ? message.split("\n") : [];
+      } catch {
+        return [];
+      }
+    });
+    assert.ok(
+      openClawLines.includes(
+        "  - plugins.entries.beam.config.mirror.endpoint: invalid config: must have required property 'endpoint'",
+      ),
       output,
     );
     assert.doesNotMatch(output, /config validity changed/);
