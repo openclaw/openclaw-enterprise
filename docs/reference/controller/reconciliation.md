@@ -103,9 +103,15 @@ See the
 full placement, runtime, and recovery sequence.
 
 A recovered older operation never replaces a newer selected version: the worker
-marks it superseded without calling Compute. A stop or deletion owns the
-versions admitted before it was requested. PostgreSQL stamps both times on
-its own clock, so controller clock skew cannot exempt a running version.
+marks it superseded without calling Compute. Without exclusive replacement, an
+older candidate also ends superseded once the newest version, on the same Compute
+and without repository credentials, failed with a held runtime failure: Compute
+keeps that runtime, so the older one cannot become ready. The failure of a version
+with repository credentials queues retirement of its runtime, so the older one
+keeps waiting.
+A stop or deletion owns the versions admitted before it was requested. PostgreSQL
+stamps both times on its own clock, so controller clock skew cannot exempt a
+running version.
 Sibling Agents have independent
 queue lanes, while versions for the same Agent serialize. The default
 PostgreSQL-backed development Compute Driver provisions Docker Namespace resources
