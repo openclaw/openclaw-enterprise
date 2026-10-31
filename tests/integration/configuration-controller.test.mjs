@@ -2423,6 +2423,26 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
   );
   assert.equal(allowlistedDeploy.status, 202, JSON.stringify(allowlistedDeploy.body));
 
+  // OpenClaw reads plugin secret inputs only in the entry keyed by the plugin's exact ID, so it
+  // reads no reference in a `Google` entry and its Gateway starts (finding 3072): an unreadable
+  // reference there saves, and an unbound variable there deploys.
+  const caseVariant = (value) => ({ Google: searchHeader("X-Key", value).google });
+  const unreadableVariant = withPluginEntries(
+    valid,
+    caseVariant({ source: "env", provider: "vault", id: "SEARCH_HEADER" }),
+  );
+  const variantSaved = await request(context.app, "PATCH", item, {
+    body: { values: unreadableVariant },
+  });
+  assert.equal(variantSaved.status, 200, JSON.stringify(variantSaved.body));
+  const variantAgent = await deployableAgent(context, context.namespace, {
+    values: withPluginEntries(valid, caseVariant("${SEARCH_HEADER}")),
+    name: "Plugin key variant consumer",
+    secretName: "plugin-variant-key",
+  });
+  const variantDeploy = await request(context.app, "POST", `${variantAgent.agentPath}/deploy`);
+  assert.equal(variantDeploy.status, 202, JSON.stringify(variantDeploy.body));
+
   // Values every Gateway accepts still save.
   for (const values of [
     approvalPolicy("never"),
