@@ -116,7 +116,7 @@ A focused, disabled **Save Configuration** moves focus to **Checking Configurati
 Success focuses **Edit Configuration** unless the reader moved focus.
 
 **Enable gateway password access** and **Collaboration and safety**
-(`agents/gateway-safety.mts`) stage edits here; **Cancel** discards them. Password access sets `gateway.auth.password` to reference `OPENCLAW_GATEWAY_PASSWORD` on the default env alias; an unreadable saved reference holds **Deploy** with OCC's refusal. Compute supplies the password. The button is hidden when save would refuse what it writes: a `secrets.defaults` alias OpenClaw refuses (the hint names it and **Deploy** is held), or a generated reference that `gatewayPasswordRequirement` cannot read on that alias, such as an `allowlist` that omits the variable (the hint states why).
+(`agents/gateway-safety.mts`) stage edits here; **Cancel** discards them. Password access writes an env SecretRef to `OPENCLAW_GATEWAY_PASSWORD`, which Compute supplies, on the default env alias. An unreadable saved reference or a refused alias holds **Deploy** with OCC's refusal. The hint replaces the button when save would refuse its reference.
 
 Saves preserve scroll, focus and admitted snapshots. Rejected edits stay. Unsaved edits block deployment; pending saves block tab and version changes.
 A refused write lists required grants without guessing which; a refused preflight read names read
@@ -344,10 +344,6 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
-- 2026-10-31 21:30: Hide Enable gateway password access when save would refuse its reference: a refused alias or an unreadable generated reference. (fix-3064)
-
-- 2026-10-31 09:00: Confirm access when the read after Reload draft finds no grant outstanding. (fix-3030)
-
-- 2026-10-31 08:00: Name the save after a refused Retry. (fix-offers-1031)
+- 2026-10-31 21:30: Hide the password button when save would refuse it. (fix-3064)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.
