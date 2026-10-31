@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repository = await realpath(resolve(import.meta.dirname, "../.."));
 const script = join(repository, "scripts", "prepare-development-codex-seccomp.mjs");
@@ -14,8 +14,7 @@ const dockerHost = "unix:///tmp/dev-codex-seccomp-failure.sock";
 // development state directory. Only the external kubectl binary is a stand-in,
 // so this proves the failure report, not behavior on a real node.
 async function prepare(t, kubectlSource) {
-  const directory = await mkdtemp(join(await realpath(tmpdir()), "oce-dev-codex-seccomp-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await realpath(await temporaryDirectory(t, "oce-dev-codex-seccomp-"));
   const state = join(directory, "state");
   const tools = join(directory, "tools");
   await mkdir(state, { mode: 0o700 });
