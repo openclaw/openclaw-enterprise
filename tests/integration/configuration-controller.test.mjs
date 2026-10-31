@@ -1951,6 +1951,19 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     "gateway.auth.password",
     'must be the environment reference {source: "env", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates',
   );
+  const withPluginEntries = (base, entries) => ({
+    ...base,
+    plugins: { ...base.plugins, entries: { ...base.plugins?.entries, ...entries } },
+  });
+  const searchHeader = (header, value) => ({
+    google: { config: { webSearch: { headers: { [header]: value } } } },
+  });
+  const unboundSearchHeader = (header) =>
+    unboundPluginSecretRefusal(
+      `plugins.entries.google.config.webSearch.headers.${header}`,
+      "SEARCH_HEADER",
+      "google",
+    );
 
   // Topology-independent rules: the save refuses with a 400 naming the setting; an existing row
   // still reads, and deployment refuses it before any revision is admitted.
@@ -1983,23 +1996,18 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     // A dedicated Codex plugin entry on this embedded Agent: its Gateway would exit at every start
     // on the unset APP_SERVER_TOKEN and the deployment wait for the convergence deadline.
     [
-      {
-        ...valid,
-        plugins: {
-          entries: {
-            codex: {
-              enabled: true,
-              config: {
-                appServer: {
-                  transport: "websocket",
-                  url: "${APP_SERVER_URL}",
-                  authToken: "${APP_SERVER_TOKEN}",
-                },
-              },
+      withPluginEntries(valid, {
+        codex: {
+          enabled: true,
+          config: {
+            appServer: {
+              transport: "websocket",
+              url: "${APP_SERVER_URL}",
+              authToken: "${APP_SERVER_TOKEN}",
             },
           },
         },
-      },
+      }),
       400,
       dedicatedCodexVariableRefusal(
         "plugins.entries.codex.config.appServer.authToken",
@@ -2010,40 +2018,16 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     // unless a Configuration Secret binding sets it (finding 3041). The save cannot know the
     // Agent's bindings; deployment names the binding to add or the entry to disable.
     [
-      {
-        ...valid,
-        plugins: {
-          entries: {
-            google: { config: { webSearch: { headers: { "X-Key": "${SEARCH_HEADER}" } } } },
-          },
-        },
-      },
+      withPluginEntries(valid, searchHeader("X-Key", "${SEARCH_HEADER}")),
       400,
-      unboundPluginSecretRefusal(
-        "plugins.entries.google.config.webSearch.headers.X-Key",
-        "SEARCH_HEADER",
-        "google",
-      ),
+      unboundSearchHeader("X-Key"),
     ],
     // OpenClaw trims a secret-input value before it reads `${NAME}`, so a padded reference stops
     // the Gateway too (finding 3046). Save accepts it here: the header name marks no credential.
     [
-      {
-        ...valid,
-        plugins: {
-          entries: {
-            google: {
-              config: { webSearch: { headers: { "X-Goog-User-Project": " ${SEARCH_HEADER} " } } },
-            },
-          },
-        },
-      },
+      withPluginEntries(valid, searchHeader("X-Goog-User-Project", " ${SEARCH_HEADER} ")),
       400,
-      unboundPluginSecretRefusal(
-        "plugins.entries.google.config.webSearch.headers.X-Goog-User-Project",
-        "SEARCH_HEADER",
-        "google",
-      ),
+      unboundSearchHeader("X-Goog-User-Project"),
     ],
   ]) {
     const label = JSON.stringify(values);
@@ -2062,29 +2046,18 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
   // it exits the same way and its deployment refuses the unbound reference too (finding 3042),
   // before a revision would stop the running one. Its own entry reads APP_SERVER_TOKEN, which
   // Kubernetes Compute sets in that Gateway, so it passes this rule.
-  const codexValues = createHarnessConfiguration("codex", "gpt-5");
   const codexAgent = await deployableAgent(context, context.namespace, {
-    values: {
-      ...codexValues,
-      plugins: {
-        ...codexValues.plugins,
-        entries: {
-          ...codexValues.plugins.entries,
-          google: { config: { webSearch: { headers: { "X-Key": "${SEARCH_HEADER}" } } } },
-        },
-      },
-    },
+    values: withPluginEntries(
+      createHarnessConfiguration("codex", "gpt-5"),
+      searchHeader("X-Key", "${SEARCH_HEADER}"),
+    ),
     name: "Dedicated Codex settings consumer",
     secretName: "codex-settings-key",
     executionMode: "dedicated",
   });
   assertRefused(
     await request(context.app, "POST", `${codexAgent.agentPath}/deploy`),
-    unboundPluginSecretRefusal(
-      "plugins.entries.google.config.webSearch.headers.X-Key",
-      "SEARCH_HEADER",
-      "google",
-    ),
+    unboundSearchHeader("X-Key"),
     { label: "Dedicated Codex" },
   );
   const codexRevisions = await request(context.app, "GET", `${codexAgent.agentPath}/revisions`);
