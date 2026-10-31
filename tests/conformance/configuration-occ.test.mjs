@@ -41,6 +41,7 @@ import {
   keepRuntime,
   noRunnableRuntime,
   OPENCLAW_ONLY,
+  pluginEntryKeyVariantRefusal,
   runtimeIdRequired,
   runtimeIdRequiredNextStep,
   runtimeOfEntries,
@@ -1332,6 +1333,50 @@ test("Configuration save refuses OpenClaw's sandbox and keeps the values the OCE
   }
   const values = { agents: { defaults: { sandbox: { mode: "off", scope: "session" } } } };
   assert.deepEqual((await save(values)).values, values);
+});
+
+// The pinned OpenClaw merges plugins.entries keys that match trimmed and lowercased, and the last
+// entry with a `config` replaces the plugin's whole config. OCE checks and renders codex and acpx
+// settings only at their exact key, so another spelling of either is refused (finding 3073).
+// configuration-controller.test.mjs proves that each save path, Agent save and deployment run it.
+test("Configuration save refuses another spelling of the codex or acpx plugin entry key", async () => {
+  const { controller, namespace } = await fixture();
+  const save = (values) =>
+    controller.createConfiguration(administrator, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values,
+    });
+  const codex = { config: { appServer: { approvalPolicy: "on-request" } } };
+  for (const [entries, path, id] of [
+    // A later entry would replace the codex config OCE checked at the exact key.
+    [
+      { codex, Codex: { config: { appServer: { approvalPolicy: "never" } } } },
+      "plugins.entries.Codex",
+      "codex",
+    ],
+    // Alone, too: a later exact entry could still be added beside it.
+    [{ " codex": codex }, 'plugins.entries[" codex"]', "codex"],
+    [{ CODEX: { enabled: true } }, "plugins.entries.CODEX", "codex"],
+    [
+      { acpx: { config: {} }, ACPX: { config: { mcpServers: {} } } },
+      "plugins.entries.ACPX",
+      "acpx",
+    ],
+  ]) {
+    await assert.rejects(save({ plugins: { entries } }), {
+      name: "ConfigurationHarnessError",
+      message: pluginEntryKeyVariantRefusal(path, id),
+    });
+  }
+  // The exact keys, and other spellings of plugins OCE reads no settings for (finding 3072), save.
+  for (const entries of [
+    { codex, acpx: { config: {} } },
+    { Google: { config: { webSearch: {} } }, " slack": { enabled: false }, codexx: {} },
+  ]) {
+    const values = { plugins: { entries } };
+    assert.deepEqual((await save(values)).values, values, JSON.stringify(values));
+  }
 });
 
 test("native selected-model policy explicitly chooses Codex or OpenClaw", () => {

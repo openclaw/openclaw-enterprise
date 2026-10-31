@@ -232,7 +232,10 @@ is not an object, that holds a key other than `env`, `file`, `exec` or `store`,
 or that holds an alias outside OpenClaw's alias grammar, such as `" custom "` or
 `"BAD"`, so the same steps refuse these too. OpenClaw substitutes an alias written
 as `${NAME}` or `${NAME:-fallback}` before that check, so OCE leaves such an alias,
-and any SecretRef rule that depends on it, to OpenClaw.
+and any SecretRef rule that depends on it, to OpenClaw. Configuration save, Agent
+save and deployment refuse another spelling of a `codex` or `acpx` key in
+`plugins.entries`, such as `Codex`: OpenClaw merges it into that plugin's entry,
+which OCE checks only at the exact key.
 
 Configuration writes run these rules in deployment's order. They refuse settings
 that conflict, with deployment's message: an entry primary that differs, selectable

@@ -13,6 +13,7 @@ import {
   configurationSettingMessage,
   ConfigurationHarnessError,
   GatewayPasswordValueError,
+  keyedSettingPath,
 } from "./errors.ts";
 import { validateModelProviderSettings } from "./model-provider-settings.ts";
 import { retiredOpenClawSettingMessage } from "./retired-openclaw-settings.ts";
@@ -201,6 +202,36 @@ export function refuseRetiredOpenClawSettings(
   }
 }
 
+// The plugins whose plugins.entries entry OCE reads or writes at its exact key: Configuration rules
+// check codex and acpx settings there (the codex approval policy, proxy URLs, acpx MCP server
+// environments), and Compute renders codex settings there (the Gateway-local tool exclusions, the
+// native hook relay, the OpenShell app-server policy).
+const EXACT_KEY_PLUGINS: readonly string[] = ["codex", "acpx"];
+
+/**
+ * Refuses a plugins.entries key that names a plugin of EXACT_KEY_PLUGINS in another spelling, such
+ * as `Codex` or ` codex`. The pinned OpenClaw (`normalizePluginEntries` in
+ * `src/plugins/config-normalization-shared.ts`) merges entries whose keys match trimmed and
+ * lowercased, and the last one with a `config` replaces the plugin's whole config: a `Codex` entry
+ * after `codex` would replace the settings OCE checked and Compute rendered (finding 3073). Its
+ * built-in plugin ID aliases name neither plugin. Other plugins' keys stay accepted: OCE reads no
+ * settings at their exact key (finding 3072). Configuration save runs it with the other content
+ * rules; Agent save and deploy admission run it on the stored Configuration.
+ */
+function refusePluginEntryKeyVariants(values: Readonly<OpenClawConfigurationDocument>): void {
+  for (const key of Object.keys(asRecord(asRecord(values.plugins)?.entries) ?? {})) {
+    const id = key.trim().toLowerCase();
+    if (key !== id && EXACT_KEY_PLUGINS.includes(id)) {
+      throw new ConfigurationHarnessError(
+        configurationSettingMessage(
+          keyedSettingPath("plugins.entries", key),
+          `must be named ${id}: OpenClaw applies it to the ${id} plugin, whose settings OCE checks only under plugins.entries.${id}. Rename it to ${id}, or merge it into that entry`,
+        ),
+      );
+    }
+  }
+}
+
 const OPENCLAW_SANDBOX_UNSUPPORTED =
   "OCE runs each Agent in its own isolated runtime and does not support OpenClaw's sandbox";
 
@@ -292,6 +323,7 @@ function isCredentialReference(value: unknown): boolean {
  * - The workspace bootstrap settings (validateWorkspaceBootstrapSettings).
  * - Settings the pinned OpenClaw retired (refuseRetiredOpenClawSettings).
  * - OpenClaw's own sandbox (refuseOpenClawSandbox).
+ * - Another spelling of the codex or acpx plugin entry key (refusePluginEntryKeyVariants).
  */
 export function validateConfigurationSettings(
   values: OpenClawConfigurationDocument,
@@ -309,12 +341,13 @@ export function validateConfigurationSettings(
   validateWorkspaceBootstrapSettings(values, options);
   refuseRetiredOpenClawSettings(values);
   refuseOpenClawSandbox(values, options);
+  refusePluginEntryKeyVariants(values);
 }
 
 /**
  * The rules above that Agent save and deploy admission run again on a stored Configuration, so
  * one saved before a rule existed gets the message its next save would (findings 2699, 2709,
- * 2767, 3063, 3064).
+ * 2767, 3063, 3064, 3073).
  */
 export function refuseStoredConfigurationSettings(values: OpenClawConfigurationDocument): void {
   refuseInvalidSecretProviderDefaults(values);
@@ -322,6 +355,7 @@ export function refuseStoredConfigurationSettings(values: OpenClawConfigurationD
   validateWorkspaceBootstrapSettings(values);
   refuseRetiredOpenClawSettings(values);
   refuseOpenClawSandbox(values);
+  refusePluginEntryKeyVariants(values);
 }
 
 /**
