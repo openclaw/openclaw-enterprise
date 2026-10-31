@@ -8742,6 +8742,31 @@ export const scenarios = {
       "Select Retry Secret access again. The section says Secret access granted and Deploy new version is available; do not deploy.",
     ],
   },
+  credentialsSlackOffRetryAnswerLost: {
+    group: "Components/Credentials",
+    name: "Slack off Retry whose answer is lost",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackOff: true,
+    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    rules: [{ suffix: "/iam/access-bindings", method: "POST", lostAnswer: true, once: true }],
+    // Another browser saves the Configuration after the first Retry, so the second one asks for
+    // Reload draft.
+    configurationChangedElsewhere: {
+      afterReads: 2,
+      values: { channels: { slack: { allowFrom: ["UOTHER99"] } } },
+    },
+    actions: [click("Retry Secret access")],
+    description:
+      "With Slack off, Retry Secret access makes the app token Secret's grant, but its answer is lost, so the grant is not confirmed. Reload draft rebuilds the section, and its grant read finds the grant: the section says that access is confirmed and takes focus, instead of disappearing (finding 3030).",
+    gap: "The lost answer and the other browser's save are simulated; the simulated API keeps the grant.",
+    steps: [
+      "The section says Secret access grants could not be confirmed. Select Retry Secret access again; if it is refused, ask an Installation administrator.",
+      "Select Retry Secret access: another browser changed the Configuration, so the section asks for Reload draft.",
+      "Select Reload draft. Once the grant read lands, the section says Secret access confirmed. This Agent can use its bound Secrets. Deploy the new version to deliver them. Focus is on that message, and Deploy new version is available; do not deploy.",
+    ],
+  },
   credentialsSlackGrantReadPending: {
     group: "Components/Credentials",
     name: "Slack grant read in progress",
