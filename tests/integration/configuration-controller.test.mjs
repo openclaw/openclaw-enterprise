@@ -37,6 +37,7 @@ import {
   unsubstitutedReferenceRefusal,
   codexApiKeyRefusal,
   codexRuntimeOffProvider,
+  KUBERNETES_GATEWAY_PASSWORD_REFUSAL,
   keepRuntime,
   runtimeIdRequired,
   runtimeIdUnsupported,
@@ -1947,10 +1948,6 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
   });
   const { item, agentPath } = agent;
   const password = (value) => ({ ...valid, gateway: { auth: { password: value } } });
-  const kubernetesPassword = setting(
-    "gateway.auth.password",
-    'must be the environment reference {source: "env", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates',
-  );
   const withPluginEntries = (base, entries) => ({
     ...base,
     plugins: { ...base.plugins, entries: { ...base.plugins?.entries, ...entries } },
@@ -1970,7 +1967,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
   for (const [values, message, deployMessage = message] of [
     [approvalPolicy("always"), policyEnum],
     [approvalPolicy("untrusted"), policyRetired],
-    [password("literal-gateway-password"), gatewayPassword, kubernetesPassword],
+    [password("literal-gateway-password"), gatewayPassword, KUBERNETES_GATEWAY_PASSWORD_REFUSAL],
   ]) {
     await refusedAtSaveAndDeploy(context, agent, values, message, {
       status: 409,
@@ -1984,10 +1981,10 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     [
       password({ source: "env", provider: "default", id: "MY_GATEWAY_PASSWORD" }),
       409,
-      kubernetesPassword,
+      KUBERNETES_GATEWAY_PASSWORD_REFUSAL,
     ],
     // An explicit null is unset to the save rule, as for model credentials; Kubernetes refuses it.
-    [password(null), 409, kubernetesPassword],
+    [password(null), 409, KUBERNETES_GATEWAY_PASSWORD_REFUSAL],
     [
       { ...valid, channels: { slack: { enabled: true } } },
       400,
