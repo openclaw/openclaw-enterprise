@@ -84,6 +84,7 @@ import {
   dedicatedCodexVariableRefusal,
   unboundPluginSecretRefusal,
   unreadablePluginSecretRefusal,
+  unboundUnreadablePluginSecretRefusal,
   unboundReferenceRefusal,
   unreadableSlackTokenRefusal,
   unsubstitutedFallbackRefusal,
@@ -9664,8 +9665,13 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
   const beamToken = "plugins.entries.beam.config.mirror.token";
   const withBeam = (token, entry = { enabled: true }) =>
     withPlugin("beam", { ...entry, config: { mirror: { token } } });
+  // An allowlist on the default env alias that keeps the Gateway password OpenClaw reads there.
   const allowlist = (ids) => ({
-    secrets: { providers: { default: { source: "env", allowlist: ids } } },
+    secrets: {
+      providers: {
+        default: { source: "env", allowlist: ["OPENCLAW_GATEWAY_PASSWORD", ...ids] },
+      },
+    },
   });
   const codexDriverAdmission = admission(driver, codex);
   const codexBase = createHarnessConfiguration("codex", "gpt-5");
@@ -9683,6 +9689,8 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       "providerless",
     ],
     [withBeam({ source: "env", id: "RELAY_TOKEN" }), beamToken, "beam", "providerless"],
+    // A file ref has no built-in provider to add.
+    [withBeam({ source: "file", id: "/token" }), beamToken, "beam", "providerless", "file"],
     [
       withCodex({
         config: { appServer: { authToken: { ...envRef("RELAY_TOKEN"), provider: "vault" } } },
@@ -9707,7 +9715,6 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       "provider",
       "vault",
     ],
-    // The default alias moves with secrets.defaults.env.
     // An alias outside OpenClaw's provider grammar, even a configured one.
     [
       {
@@ -9719,6 +9726,7 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       "provider",
       "Vault",
     ],
+    // The default alias moves with secrets.defaults.env.
     [
       { ...withSearchHeader(envRef("RELAY_TOKEN")), secrets: { defaults: { env: "custom" } } },
       searchHeader,
@@ -9745,13 +9753,6 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       "RELAY_TOKEN",
     ],
     [
-      { ...withSearchHeader(" ${RELAY_TOKEN} "), ...allowlist(["OTHER"]) },
-      searchHeader,
-      "google",
-      "allowlist",
-      "RELAY_TOKEN",
-    ],
-    [
       { ...withBeam("$RELAY_TOKEN"), ...allowlist([]) },
       beamToken,
       "beam",
@@ -9767,9 +9768,9 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       expected,
       label,
     );
-    // A Dedicated Codex Gateway keeps the same entries beside its own codex entry (whose
-    // APP_SERVER_TOKEN an allowlist would omit too).
-    if (plugin !== "codex" && held !== "allowlist") {
+    // A Dedicated Codex Gateway keeps the same entries beside its own codex entry, whose
+    // `${APP_SERVER_TOKEN}` Compute sets, so an allowlist that omits it does not apply there.
+    if (plugin !== "codex") {
       const dedicated = {
         ...configuration,
         ...codexBase,
@@ -9783,6 +9784,10 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
   // the $NAME shorthand there, and a `${_NAME}`, which OpenClaw only substitutes.
   for (const [configuration, name = "RELAY_TOKEN"] of [
     [{ ...withSearchHeader(envRef("RELAY_TOKEN")), ...allowlist(["RELAY_TOKEN"]) }],
+    [{ ...withSearchHeader("$RELAY_TOKEN"), ...allowlist(["RELAY_TOKEN"]) }],
+    // OpenClaw substitutes a set `${NAME}` (padded too) before it reads SecretRefs, so an
+    // allowlist that omits NAME never applies to it; unset, it stops the Gateway as before.
+    [{ ...withSearchHeader(" ${RELAY_TOKEN} "), ...allowlist(["OTHER"]) }],
     [
       {
         ...withSearchHeader({ ...envRef("RELAY_TOKEN"), provider: "custom" }),
@@ -9800,6 +9805,62 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
   ]) {
     refusedUntilBound(embeddedAdmission, configuration, [searchHeader, name, "google"]);
   }
+  // At an input with a runtime owner an unset variable only makes the owner unavailable, but
+  // OpenClaw keeps an unset `${NAME}` as a SecretRef, and an allowlist's denial of it is not
+  // isolated to the owner: it stops the Gateway. So deployment refuses it while unbound; bound,
+  // OpenClaw substitutes it. Agent save does not know the bindings and leaves it to deployment.
+  const imapPassword = "plugins.entries.imap.config.accounts.main.password";
+  for (const [configuration, setting, plugin] of [
+    [{ ...withBeam("${RELAY_TOKEN}"), ...allowlist(["OTHER"]) }, beamToken, "beam"],
+    [
+      {
+        ...withPlugin("imap", {
+          enabled: true,
+          config: { accounts: { main: { password: "${RELAY_TOKEN}" } } },
+        }),
+        ...allowlist([]),
+      },
+      imapPassword,
+      "imap",
+    ],
+  ]) {
+    const expected = refusal(
+      unboundUnreadablePluginSecretRefusal(
+        setting,
+        plugin,
+        "RELAY_TOKEN",
+        "allowlist",
+        "RELAY_TOKEN",
+      ),
+    );
+    for (const bindings of [undefined, {}]) {
+      assert.throws(() => embeddedAdmission(configuration, bindings), expected);
+    }
+    embeddedAdmission(configuration, { RELAY_TOKEN: { source } });
+    embeddedAdmission(configuration, null);
+  }
+  // An allowlist that lists the unset name leaves only the owner unavailable.
+  embeddedAdmission({ ...withBeam("${RELAY_TOKEN}"), ...allowlist(["RELAY_TOKEN"]) }, {});
+  // A Dedicated Codex Agent whose allowlist omits APP_SERVER_TOKEN: its own codex entry reads
+  // `${APP_SERVER_TOKEN}`, which Compute sets, so OpenClaw substitutes it and the Gateway starts.
+  // `$APP_SERVER_TOKEN` stays a SecretRef, which that allowlist denies.
+  const codexAllowlisted = { ...codexBase, ...allowlist([]) };
+  codexDriverAdmission(codexAllowlisted, {});
+  codexDriverAdmission(codexAllowlisted, null);
+  const codexEntry = codexBase.plugins.entries.codex;
+  refusedByMode(
+    codexDriverAdmission,
+    withEntries(codexAllowlisted, {
+      codex: {
+        ...codexEntry,
+        config: {
+          ...codexEntry.config,
+          appServer: { ...codexEntry.config.appServer, authToken: "$APP_SERVER_TOKEN" },
+        },
+      },
+    }),
+    refusal(unreadablePluginSecretRefusal(authToken, "codex", "allowlist", "APP_SERVER_TOKEN")),
+  );
   // Each of these embedded Gateways starts: OpenClaw skips an inactive plugin's secret inputs, a
   // fallback replaces the unset name, a reference inside other text and the URL are not read as
   // secrets, a name no binding may set is left to Compute and the image, and a plugin input with

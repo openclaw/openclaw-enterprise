@@ -2113,6 +2113,27 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
   );
   const codexRevisions = await request(context.app, "GET", `${codexAgent.agentPath}/revisions`);
   assert.deepEqual(codexRevisions.body.data, []);
+  // A Dedicated Codex Agent whose env provider allowlist omits APP_SERVER_TOKEN (it keeps the
+  // Gateway password read on that alias) saves and deploys: OpenClaw substitutes its own entry's
+  // `${APP_SERVER_TOKEN}`, which Kubernetes Compute sets, before it reads SecretRefs, so the
+  // allowlist never applies to it (finding 3056 review).
+  const allowlistedCodex = await deployableAgent(context, context.namespace, {
+    values: {
+      ...createHarnessConfiguration("codex", "gpt-5"),
+      secrets: {
+        providers: { default: { source: "env", allowlist: ["OPENCLAW_GATEWAY_PASSWORD"] } },
+      },
+    },
+    name: "Dedicated Codex allowlist consumer",
+    secretName: "codex-allowlist-key",
+    executionMode: "dedicated",
+  });
+  const allowlistedDeploy = await request(
+    context.app,
+    "POST",
+    `${allowlistedCodex.agentPath}/deploy`,
+  );
+  assert.equal(allowlistedDeploy.status, 202, JSON.stringify(allowlistedDeploy.body));
 
   // Values every Gateway accepts still save.
   for (const values of [

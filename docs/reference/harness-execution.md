@@ -214,8 +214,12 @@ Driver adds launch variables. Bind a Secret to it, or remove or disable the
 plugin entry. Deployment and Agent save also refuse a reference OpenClaw cannot
 read in any active plugin's secret input, including an enabled Beam or IMAP
 entry: a SecretRef without a provider, a provider that `secrets.providers` does
-not configure, an env id that is not uppercase (`A-Z`, `0-9`, `_`), or an id that
-the env provider's `allowlist` omits.
+not configure (the default env alias needs no entry), an env id that does not
+start with a letter and use only `A-Z`, `0-9` and `_` (at most 128 characters),
+or an id that the env provider's `allowlist` omits. The allowlist applies to
+`$NAME` and SecretRef objects. OpenClaw substitutes a set `${NAME}` first, so the
+allowlist applies to it only when the variable is unset. Deployment then refuses an
+unbound `${NAME}` that the allowlist omits at an enabled Beam or IMAP entry.
 
 Configuration writes run these rules in deployment's order. They refuse settings
 that conflict, with deployment's message: an entry primary that differs, selectable

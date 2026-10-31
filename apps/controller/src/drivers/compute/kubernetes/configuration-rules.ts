@@ -158,22 +158,25 @@ const SECRET_PROVIDER_ALIAS = /^[a-z][a-z0-9_-]{0,63}$/;
 const ENV_SECRET_REF_ID = /^[A-Z][A-Z0-9_]{0,127}$/;
 
 type SecretInputReference =
-  // The variable the Gateway reads from its environment.
-  | { readonly variable: string }
+  // The variable the Gateway reads from its environment. `unset`: why OpenClaw cannot read a
+  // whole `${NAME}` that it keeps as an env SecretRef because NAME is unset at startup.
+  | { readonly variable: string; readonly unset?: string }
   // Why OpenClaw cannot read the reference at all, which ends startup.
   | { readonly requirement: string };
 
 /**
  * How OpenClaw reads a secret-input value at startup, or undefined when it keeps the value as
- * written (a reference inside other text, a `${NAME:-fallback}`, any other object). A whole
- * `${NAME}` with no fallback (padded too, finding 3046) and the `$NAME` shorthand are env
- * SecretRefs on the default env provider alias (`secrets.defaults.env`, else "default";
- * `parseEnvTemplateSecretRef`); a `${_NAME}` is only substituted from the environment. OpenClaw
- * refuses a SecretRef object without a provider (`collectCanonicalSecretInputAssignment`), a
- * provider alias that breaks its grammar or that `secrets.providers` does not configure for the
- * ref's source (only env and store have a built-in default alias: `resolveConfiguredProvider`),
- * an env or store id that breaks its grammar (`normalizeAndGroupSecretRefs`, which also refuses
- * padding) and an id a configured env provider's `allowlist` omits.
+ * written (a reference inside other text, a `${NAME:-fallback}`, any other object). The `$NAME`
+ * shorthand is an env SecretRef on the default env provider alias (`secrets.defaults.env`, else
+ * "default"; `parseEnvTemplateSecretRef`). A whole `${NAME}` with no fallback (padded too, finding
+ * 3046) is one only while NAME is unset: config loading substitutes a set NAME first and records
+ * the path as resolved, so no SecretRef is read there (`substituteString`,
+ * `getAuthoredConfigSecretRef`); a `${_NAME}` is only substituted. OpenClaw refuses a SecretRef
+ * object without a provider (`collectCanonicalSecretInputAssignment`), a provider alias that breaks
+ * its grammar or that `secrets.providers` does not configure for the ref's source (only env and
+ * store have a built-in default alias: `resolveConfiguredProvider`), an env or store id that
+ * breaks its grammar (`normalizeAndGroupSecretRefs` trims the id, so a padded one then fails as
+ * "Secret resolution made no progress") and an id a configured env provider's `allowlist` omits.
  */
 function secretInputReference(
   value: unknown,
@@ -204,9 +207,11 @@ function secretInputReference(
   };
   const provider = template === undefined ? object?.provider : defaultAlias("env");
   if (provider === undefined) {
-    return {
-      requirement: `is a SecretRef without a provider: add provider "${defaultAlias("env")}" for an env SecretRef`,
-    };
+    // Only env and store refs have a built-in provider on their default alias.
+    const add = ["env", "store"].includes(source)
+      ? `provider ${shownName(defaultAlias(source))}`
+      : `a provider that secrets.providers configures for ${source}`;
+    return { requirement: `is a SecretRef without a provider: add ${add}` };
   }
   if (
     (object !== undefined && Object.keys(object).length !== 3) ||
@@ -220,21 +225,25 @@ function secretInputReference(
     configured?.source !== source &&
     ["env", "store"].includes(source) &&
     provider === defaultAlias(source);
-  if (!SECRET_PROVIDER_ALIAS.test(provider) || (!builtIn && configured?.source !== source)) {
-    return {
-      requirement: `uses secret provider ${shownName(provider)}, which secrets.providers does not configure for ${source}`,
-    };
+  const unreadable = (): string | undefined => {
+    if (!SECRET_PROVIDER_ALIAS.test(provider) || (!builtIn && configured?.source !== source)) {
+      return `uses secret provider ${shownName(provider)}, which secrets.providers does not configure for ${source}`;
+    }
+    if (["env", "store"].includes(source) && !ENV_SECRET_REF_ID.test(id)) {
+      return `references ${shownName(id)}, not an id OpenClaw reads in ${source} SecretRefs (A-Z, 0-9 and _, from a letter)`;
+    }
+    const allowlist = builtIn ? undefined : configured?.allowlist;
+    if (source === "env" && Array.isArray(allowlist) && !allowlist.includes(id)) {
+      return `references ${shownName(id)}, which secrets.providers.${provider}.allowlist omits`;
+    }
+    return undefined;
+  };
+  const requirement = unreadable();
+  if (substituted !== undefined) {
+    return requirement === undefined ? { variable: id } : { variable: id, unset: requirement };
   }
-  if (["env", "store"].includes(source) && !ENV_SECRET_REF_ID.test(id)) {
-    return {
-      requirement: `references ${shownName(id)}, not an id OpenClaw reads in ${source} SecretRefs (A-Z, 0-9 and _, from a letter)`,
-    };
-  }
-  const allowlist = builtIn ? undefined : configured?.allowlist;
-  if (source === "env" && Array.isArray(allowlist) && !allowlist.includes(id)) {
-    return {
-      requirement: `references ${shownName(id)}, which secrets.providers.${provider}.allowlist omits`,
-    };
+  if (requirement !== undefined) {
+    return { requirement };
   }
   return source === "env" ? { variable: id } : undefined;
 }
@@ -266,7 +275,8 @@ function settingValues(
  * Refuses the first reference OpenClaw cannot read (`secretInputReference`), then the first
  * required one to a variable the Gateway would lack: an APP_SERVER_ variable, which only a
  * Dedicated Codex Gateway receives, and, when `bound` is given, a name a Secret binding could set
- * but `bound` says nothing sets. `bound` answers for the Configuration's bindings and what the
+ * but `bound` says nothing sets. At an input with an owner, it refuses such an unset name only
+ * when OpenClaw cannot read the `${NAME}` it then keeps. `bound` answers for the Configuration's bindings and what the
  * Installation adds at launch; Agent save, which knows neither, passes none. Other reserved names
  * pass: Compute or the image may set them. OpenClaw skips the secret inputs of an entry whose
  * `enabled` is false, of a denied plugin and of `plugins.enabled: false`, and so does this rule.
@@ -310,11 +320,28 @@ export function requirePluginSecretInputs(
       if (reference !== undefined && "requirement" in reference) {
         throw createError(setting, `${reference.requirement}, or ${disable}`);
       }
-      if (reference === undefined || !inputs.required) {
+      if (reference === undefined) {
         continue;
       }
       const name = reference.variable;
       const shown = shownName(name);
+      const unbound =
+        bound !== undefined &&
+        isAllowedSecretBindingDestination(name) &&
+        !RUNTIME_VARIABLE.test(name) &&
+        !bound(name);
+      if (!inputs.required) {
+        // An unset variable here only makes the input's owner unavailable, unless OpenClaw cannot
+        // read the `${NAME}` it then keeps: that failure (an allowlist's policy denial) is not one
+        // it isolates to the owner (`assertOwnerCanBeIsolated`), so it ends startup.
+        if (reference.unset !== undefined && unbound) {
+          throw createError(
+            setting,
+            `${reference.unset}: bind ${shown} in secretBindings, or ${disable}`,
+          );
+        }
+        continue;
+      }
       if (topology !== "Dedicated Codex" && CODEX_APP_SERVER_VARIABLE.test(name)) {
         const agent = topology === "embedded OpenClaw" ? "an embedded" : "a Dedicated OpenClaw";
         throw createError(
@@ -322,12 +349,7 @@ export function requirePluginSecretInputs(
           `references ${shown}, which only a Dedicated Codex Agent receives: on ${agent} Agent, ${disable}`,
         );
       }
-      if (
-        bound !== undefined &&
-        isAllowedSecretBindingDestination(name) &&
-        !RUNTIME_VARIABLE.test(name) &&
-        !bound(name)
-      ) {
+      if (unbound) {
         throw createError(
           setting,
           `references ${shown} without a Configuration Secret binding: bind ${shown} in secretBindings, or ${disable}`,
