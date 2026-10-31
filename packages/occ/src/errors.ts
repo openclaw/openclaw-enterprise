@@ -979,13 +979,21 @@ export const DEDICATED_OPENCLAW_SANDBOX_REQUIRED =
  * Dedicated native OpenClaw needs a provisioning SandboxDriver with networking, filesystem and
  * process containment, and the Installation selects none. The Installation's shape refuses
  * every new attempt the same way, so a new provisioning request or deploy answers the 409 other
- * plan refusals use, with this fixed message (finding 1609). Stored provisioning work never
- * throws this: it stays a retryable DependencyUnavailableError (503) carrying the same message,
- * and resumes once a qualifying Driver is selected.
+ * plan refusals use, with this message (finding 1609). It names what makes the Agent deployable:
+ * codex for the selected models when Codex runs them (`codexRuns`), else a Codex model, or a
+ * qualifying Driver (finding 3036). Stored provisioning work never throws this: it stays a
+ * retryable DependencyUnavailableError (503) with DEDICATED_OPENCLAW_SANDBOX_REQUIRED, and resumes
+ * once a qualifying Driver is selected.
  */
 export class DedicatedOpenClawSandboxError extends ResourceStateConflictError {
-  constructor() {
-    super(DEDICATED_OPENCLAW_SANDBOX_REQUIRED);
+  constructor(codexRuns = false) {
+    super(
+      `${DEDICATED_OPENCLAW_SANDBOX_REQUIRED} ${
+        codexRuns
+          ? "Set agentRuntime.id to codex for the selected models"
+          : "Select a codex/<model> model with agentRuntime.id codex"
+      }, or ask an Installation administrator for such a SandboxDriver.`,
+    );
     this.name = "DedicatedOpenClawSandboxError";
   }
 }

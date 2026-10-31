@@ -6,6 +6,7 @@ import { asRecord } from "@openclaw-enterprise/utils";
 
 import { canSpell } from "./configuration-settings.ts";
 import {
+  type ModelPolicyAgent,
   requireAgentsShape,
   requireConsistentModelPolicy,
   requireModelSelections,
@@ -176,14 +177,16 @@ export function withAgentIdentityName(
  * dedicated OpenClaw serving the main Agent, stay at deployment because a Configuration does not
  * fix one. A Preset save runs the shape, selection and Gateway rules (finding 1308), with
  * `options` locating its unfilled variables: a model, row or runtime that waits on a variable
- * names no value yet, so the Configuration a launch creates gets the rest.
+ * names no value yet, so the Configuration a launch creates gets the rest. `agent` is the one Agent
+ * the Configuration serves, when the write knows it (requireConsistentModelPolicy).
  */
 export function requireDeployableRoster(
   values: OpenClawConfigurationDocument,
   options?: ConfigurationValidationOptions,
+  agent?: ModelPolicyAgent,
 ): void {
   if (options?.unresolved === undefined) {
-    requireConsistentModelPolicy(values);
+    requireConsistentModelPolicy(values, agent);
   } else {
     requireAgentsShape(values);
     requireModelSelections(values, options);

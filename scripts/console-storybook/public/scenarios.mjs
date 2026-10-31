@@ -4544,7 +4544,7 @@ export const scenarios = {
         status: 409,
         code: "RESOURCE_CONFLICT",
         message:
-          "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
+          "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment. Select a codex/<model> model with agentRuntime.id codex, or ask an Installation administrator for such a SandboxDriver.",
         once: true,
       },
     ],

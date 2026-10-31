@@ -34,6 +34,7 @@ import {
   catalogRowUnselected,
   codexRuntimeOffProvider,
   BOTH_RUNTIMES,
+  dedicatedOpenClawSandboxRefusal,
   GATEWAY_MANAGED_MODE_DENIED,
   keepRuntime,
   runtimeIdRequired,
@@ -2813,15 +2814,15 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
   );
 });
 
-// The fixed refusal for dedicated OpenClaw without a provisioning Sandbox Driver: a permanent
-// conflict (409) naming the Driver, not a dependency outage (503) with generic text (finding 1609).
-function dedicatedSandboxRefusal(error) {
+// The refusal for dedicated OpenClaw without a provisioning Sandbox Driver: a permanent conflict
+// (409) naming the Driver and the next step, not a dependency outage (503) with generic text
+// (finding 1609). These Configurations select no model, so it offers a Codex model (finding 3036).
+function dedicatedSandboxRefusal(error, codexRuns = false) {
   return (
     error instanceof DedicatedOpenClawSandboxError &&
     error instanceof ResourceStateConflictError &&
     !(error instanceof DependencyUnavailableError) &&
-    error.message ===
-      "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment."
+    error.message === dedicatedOpenClawSandboxRefusal(codexRuns)
   );
 }
 
@@ -2916,6 +2917,82 @@ function openclawModeRefusal(error) {
       error.message === "The selected Sandbox Driver is unavailable.")
   );
 }
+
+// D832: on an Installation that cannot run dedicated OpenClaw, a dedicated Agent's deploy offered
+// openclaw, which then failed with a 409 that named no next step (finding 3036).
+test("a dedicated Agent's runtime refusals offer only what the Installation runs, and the Dedicated OpenClaw refusal names the next step", async () => {
+  const { bindHarnessAuth, controller, namespace } = await fixture();
+  const model = "codex/gpt-5.1";
+  const policy = `agents.defaults.models["${model}"]`;
+  const configurations = {};
+  for (const runtime of [undefined, "codex", "openclaw"]) {
+    configurations[runtime ?? "none"] = await controller.createConfiguration(administrator, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values: {
+        agents: {
+          defaults: {
+            model,
+            ...(runtime === undefined
+              ? {}
+              : { models: { [model]: { agentRuntime: { id: runtime } } } }),
+          },
+        },
+      },
+    });
+  }
+  const agentFor = async (executionMode) => {
+    const created = await controller.createAgent(administrator, {
+      namespaceId: namespace.id,
+      name: `Codex model ${executionMode}`,
+      // Configuration save and Agent save accept a model without its runtime: deploy refuses it.
+      configurationId: configurations.none.id,
+      executionMode,
+    });
+    await bindHarnessAuth(created);
+    return created;
+  };
+  const dedicated = await agentFor("dedicated");
+  const embedded = await agentFor("embedded");
+  const deploy = (agentId) =>
+    controller.deployAgent(
+      administrator,
+      { namespaceId: namespace.id, agentId },
+      resolveApprovedProductionHarness,
+    );
+  const use = (agentId, runtime) =>
+    controller.updateAgent(administrator, {
+      namespaceId: namespace.id,
+      agentId,
+      configurationId: configurations[runtime].id,
+    });
+  const runtimeRequired = (offer) => (error) =>
+    error instanceof ConfigurationHarnessError &&
+    error.message === runtimeIdRequired(policy, offer);
+
+  // Without a provisioning Sandbox Driver the dedicated Agent cannot run OpenClaw, so the missing
+  // runtime offers codex alone. The embedded Agent of the same Configuration can: both stay.
+  await assert.rejects(deploy(dedicated.id), runtimeRequired("codex"));
+  await assert.rejects(deploy(embedded.id), runtimeRequired("openclaw or codex"));
+  // The offered value deploys.
+  await use(dedicated.id, "codex");
+  assert.deepEqual((await deploy(dedicated.id)).harness, {
+    id: "codex",
+    version: "1.0.0",
+    mode: "dedicated",
+  });
+  // openclaw, which the refusal no longer offers, gets the 409; Codex runs this model, so the
+  // refusal names codex as the next step.
+  await use(dedicated.id, "openclaw");
+  await assert.rejects(deploy(dedicated.id), (error) => dedicatedSandboxRefusal(error, true));
+
+  // A qualifying Sandbox Driver runs dedicated OpenClaw: both offers stay.
+  registerAndSelectDrivers(controller, [
+    conformanceSandbox("full", ["networking", "filesystem", "process"]),
+  ]);
+  await use(dedicated.id, "none");
+  await assert.rejects(deploy(dedicated.id), runtimeRequired("openclaw or codex"));
+});
 
 test("The Installation lists exactly the OpenClaw execution modes Agent save and deploy admit", async () => {
   const facets = ["networking", "filesystem", "process"];

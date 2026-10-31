@@ -58,8 +58,13 @@ import {
   COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
   CREDENTIAL_PROXY_INSTALLATION_ACCESS,
   DEPENDENCY_UNAVAILABLE,
+  dedicatedOpenClawSandboxRefusal,
+  keepRuntime,
   PROVISIONING_NOT_COMPLETED,
+  runtimeIdRequired,
+  runtimePoliciesConflict,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
+  selectablePrimaryRuntimeRequired,
 } from "../helpers/refusal-text.mjs";
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
@@ -3432,8 +3437,9 @@ test(
       model: "openai/gpt-5",
       models: { "openai/gpt-5": { agentRuntime: { id: "openclaw" } } },
     };
-    // A fixed Installation shape refuses every attempt the same way: a 409 with the reason,
-    // not a 503 the Console reads as an unknown outcome (finding 1609).
+    // A fixed Installation shape refuses every attempt the same way: a 409 with the reason and
+    // the next step, not a 503 the Console reads as an unknown outcome (findings 1609, 3036).
+    // Codex does not run this openai model without its plugin, so it offers a Codex model.
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const refused = await fixture.request(
         "POST",
@@ -3443,11 +3449,56 @@ test(
       assert.equal(refused.status, 409, JSON.stringify(refused.body));
       assert.deepEqual(refused.body.error, {
         code: "RESOURCE_CONFLICT",
-        message:
-          "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
+        message: dedicatedOpenClawSandboxRefusal(false),
       });
     }
-    // The refusal stored nothing: no provisioning job or Agent.
+    // D832: this dedicated Agent cannot run OpenClaw here, so a refusal for a model Codex runs
+    // offers codex alone, at the request's Configuration rules and its admission alike. openclaw
+    // would only reach the 409, which then names codex (finding 3036).
+    const model = "codex/gpt-5.1";
+    const policy = `agents.defaults.models["${model}"]`;
+    const provider = "models.providers.codex";
+    for (const [defaults, providers, status, message] of [
+      [{ model }, undefined, 400, runtimeIdRequired(policy, "codex")],
+      [
+        { model, models: { [`${model}-mini`]: {} } },
+        undefined,
+        400,
+        selectablePrimaryRuntimeRequired(policy, "codex"),
+      ],
+      [
+        { model, models: { [model]: { agentRuntime: { id: "openclaw" } } } },
+        { codex: { agentRuntime: { id: "codex" } } },
+        400,
+        runtimePoliciesConflict(
+          policy,
+          "openclaw",
+          provider,
+          "codex",
+          keepRuntime("codex", "openclaw"),
+        ),
+      ],
+      [
+        { model, models: { [model]: { agentRuntime: { id: "openclaw" } } } },
+        undefined,
+        409,
+        dedicatedOpenClawSandboxRefusal(true),
+      ],
+    ]) {
+      const codexBody = provisioningBody(namespace.id, secrets);
+      codexBody.configuration.values.agents.defaults = defaults;
+      if (providers !== undefined) {
+        codexBody.configuration.values.models = { providers };
+      }
+      const refused = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/provision`,
+        { body: codexBody },
+      );
+      assert.equal(refused.status, status, JSON.stringify(refused.body));
+      assert.equal(refused.body.error.message, message);
+    }
+    // The refusals stored nothing: no provisioning job or Agent.
     assert.deepEqual(await storedProvisioningCounts(fixture.pool, namespace.id), {
       jobs: 0,
       agents: 0,
