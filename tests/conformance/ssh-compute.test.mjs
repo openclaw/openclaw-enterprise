@@ -1031,7 +1031,7 @@ test("SSH trusted-proxy can opt into direct loopback password authentication", a
 test("SSH renders a readable custom-alias gateway password and still tears down older snapshots", async (t) => {
   const f = await fixture(t);
   const custom = { source: "env", provider: "custom", id: "OPENCLAW_GATEWAY_PASSWORD" };
-  const rev = revision(f.driver, 1, "agent-ssh-custom-password", {
+  const rev = revision(f.driver, 1, "agent-ssh-custom-reference", {
     gateway: { tls: { enabled: false }, auth: { mode: "password", password: custom } },
     secrets: { defaults: { env: "custom" } },
   });
@@ -1042,7 +1042,7 @@ test("SSH renders a readable custom-alias gateway password and still tears down 
   );
   assert.deepEqual(await json(join(f.revisionDir(rev), "openclaw.json")), rev.configuration);
 
-  const unset = revision(f.driver, 1, "agent-ssh-unset-password", {
+  const unset = revision(f.driver, 1, "agent-ssh-unset-reference", {
     gateway: { tls: { enabled: false } },
     secrets: { defaults: { env: "custom" } },
   });
@@ -1073,7 +1073,7 @@ test("SSH renders a readable custom-alias gateway password and still tears down 
 
   // The old producer admitted the default-provider reference under a custom alias and rendered it
   // as written; seed that snapshot through the real host helper.
-  const legacy = revision(f.driver, 1, "agent-ssh-legacy-password", {
+  const legacy = revision(f.driver, 1, "agent-ssh-legacy-reference", {
     gateway: {
       tls: { enabled: false },
       auth: { password: { ...custom, provider: "default" } },
