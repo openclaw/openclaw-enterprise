@@ -545,11 +545,17 @@ export const referenceFormRefusal = (setting, form) =>
 // (packages/occ/src/channel-secret-bindings.ts).
 export const unboundReferenceRefusal = (setting, name) =>
   `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings to an environment-backed Secret, or remove the reference.`;
-// Kubernetes Compute admission of an embedded Agent's plugin secret input whose unset variable stops
-// its Gateway at startup (findings 3040, 3041): an APP_SERVER_ variable at Agent save and
-// deployment, any other unbound name a binding could set at deployment.
-export const dedicatedCodexVariableRefusal = (setting, name, plugin = "codex") =>
-  `Configuration setting ${setting} references ${name}, which only a Dedicated Codex Agent receives: on an embedded Agent, remove plugins.entries.${plugin} or set its enabled to false.`;
+// Kubernetes Compute admission of an Agent's plugin secret input whose unset variable stops its
+// Gateway at startup (findings 3040, 3041, 3042): an APP_SERVER_ variable on an embedded or
+// Dedicated OpenClaw Agent at Agent save and deployment, any other unbound name a binding could
+// set at deployment.
+export const dedicatedCodexVariableRefusal = (
+  setting,
+  name,
+  plugin = "codex",
+  agent = "an embedded",
+) =>
+  `Configuration setting ${setting} references ${name}, which only a Dedicated Codex Agent receives: on ${agent} Agent, remove plugins.entries.${plugin} or set its enabled to false.`;
 export const unboundPluginSecretRefusal = (setting, name, plugin) =>
   `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
 const USE_UPPERCASE =
