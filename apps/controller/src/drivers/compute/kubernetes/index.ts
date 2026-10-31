@@ -203,6 +203,7 @@ import {
   enabledChannelProviders,
   OPENCLAW_GATEWAY_PASSWORD,
   requireChannelTopology,
+  requireEmbeddedCodexPluginCredentials,
   type KubernetesHarnessTopology,
   kubernetesHarnessAuthMethods,
   providerWaitsOnVariable,
@@ -4808,6 +4809,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       },
       callerSettingError,
     );
+    // An embedded Gateway would exit at every start on such a Codex plugin entry, and the
+    // deployment would wait for its convergence deadline. The Agent's mode decides it, so Agent
+    // save refuses it too.
+    if (embedded) {
+      requireEmbeddedCodexPluginCredentials(configuration, callerSettingError);
+    }
     requireProviderApiKeys(configuration, openclaw, authentication);
     if (!agentSave) {
       this.validateChannelSecretBindings(configuration, secretBindings);

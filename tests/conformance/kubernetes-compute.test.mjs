@@ -9542,6 +9542,85 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   }
 });
 
+test("embedded admission refuses a Codex plugin credential only a Dedicated Codex Gateway receives", () => {
+  // Kubernetes Compute sets the APP_SERVER_ variables only in a Dedicated Codex Gateway, and a
+  // Secret binding cannot target that reserved prefix. OpenClaw resolves an active plugin's secret
+  // inputs at startup and exits when one is unset ("required secrets are unavailable"), so an
+  // embedded Agent with the dedicated Codex plugin entry was admitted and its Gateway restarted
+  // until the 15-minute convergence deadline. Deployment admission and Agent save name the setting.
+  const driver = new KubernetesComputeDriver(options());
+  const embedded = { id: "openclaw", version: "1.0.0", mode: "embedded" };
+  const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  const appServer = {
+    transport: "websocket",
+    url: "${APP_SERVER_URL}",
+    authToken: "${APP_SERVER_TOKEN}",
+  };
+  const withCodex = (entry, plugins = {}) => ({
+    agents: { defaults: { model: "openai/gpt-5" } },
+    plugins: { ...plugins, entries: { codex: entry } },
+  });
+  const authToken = "plugins.entries.codex.config.appServer.authToken";
+  const refusal = (setting, name) => ({
+    name: "ConfigurationHarnessError",
+    message: `Configuration setting ${setting} references ${name}, which only a Dedicated Codex Agent receives: on an embedded Agent, remove plugins.entries.codex or set its enabled to false.`,
+  });
+  const envRef = (id) => ({ source: "env", provider: "default", id });
+  const longName = `APP_SERVER_${"X".repeat(30)}`;
+  for (const [configuration, setting, name] of [
+    [withCodex({ enabled: true, config: { appServer } }), authToken, "APP_SERVER_TOKEN"],
+    // An entry without enabled is active, even beside an allowlist that does not list it.
+    [withCodex({ config: { appServer } }, { allow: ["browser"] }), authToken, "APP_SERVER_TOKEN"],
+    [
+      withCodex({ config: { appServer: { authToken: "$APP_SERVER_TOKEN" } } }),
+      authToken,
+      "APP_SERVER_TOKEN",
+    ],
+    [
+      withCodex({ config: { appServer: { authToken: envRef("app_server_token") } } }),
+      authToken,
+      "app_server_token",
+    ],
+    [
+      withCodex({ config: { appServer: { headers: { "X-Relay": "${APP_SERVER_RELAY}" } } } }),
+      "plugins.entries.codex.config.appServer.headers.X-Relay",
+      "APP_SERVER_RELAY",
+    ],
+    // A long name is cut, so the message keeps its cap.
+    [
+      withCodex({ config: { appServer: { authToken: envRef(longName) } } }),
+      authToken,
+      `"${longName.slice(0, 31)}…"`,
+    ],
+  ]) {
+    const expected = refusal(setting, name);
+    assert.throws(() => driver.validateHarnessAuth(embedded, apiKeyAuth, configuration), expected);
+    // Agent save (null bindings): the Agent's own execution mode decides it.
+    assert.throws(
+      () => driver.validateHarnessAuth(embedded, apiKeyAuth, configuration, null),
+      expected,
+    );
+  }
+  // Each of these embedded Gateways starts: OpenClaw skips an inactive plugin's secret inputs, a
+  // fallback replaces the unset name, a reference inside other text and the URL are not read as
+  // secrets.
+  for (const configuration of [
+    withCodex({ enabled: false, config: { appServer } }),
+    withCodex({ enabled: true, config: { appServer } }, { enabled: false }),
+    withCodex({ enabled: true, config: { appServer } }, { deny: ["codex"] }),
+    withCodex({ config: { appServer: { authToken: "${APP_SERVER_TOKEN:-unset}" } } }),
+    withCodex({ config: { appServer: { headers: { "X-Relay": "Bearer ${APP_SERVER_TOKEN}" } } } }),
+    withCodex({ config: { appServer: { url: "${APP_SERVER_URL}" } } }),
+  ]) {
+    driver.validateHarnessAuth(embedded, apiKeyAuth, configuration);
+  }
+  // A Dedicated Codex Gateway receives the variables.
+  driver.validateHarnessAuth(codex, apiKeyAuth, {
+    agents: { defaults: { model: "codex/gpt-5" } },
+    plugins: { allow: ["codex"], entries: { codex: { enabled: true, config: { appServer } } } },
+  });
+});
+
 test("preparation still refuses a gateway password Compute does not generate", async () => {
   // Admission refuses it first; preparation runs the same rule on the revision it renders.
   for (const password of ["literal-gateway-password", { source: "env", id: "OTHER" }]) {

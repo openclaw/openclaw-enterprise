@@ -1975,6 +1975,32 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
       400,
       setting("channels.slack", "is enabled, but channels require a dedicated Agent workload"),
     ],
+    // A dedicated Codex plugin entry on this embedded Agent: its Gateway would exit at every start
+    // on the unset APP_SERVER_TOKEN and the deployment wait for the convergence deadline.
+    [
+      {
+        ...valid,
+        plugins: {
+          entries: {
+            codex: {
+              enabled: true,
+              config: {
+                appServer: {
+                  transport: "websocket",
+                  url: "${APP_SERVER_URL}",
+                  authToken: "${APP_SERVER_TOKEN}",
+                },
+              },
+            },
+          },
+        },
+      },
+      400,
+      setting(
+        "plugins.entries.codex.config.appServer.authToken",
+        "references APP_SERVER_TOKEN, which only a Dedicated Codex Agent receives: on an embedded Agent, remove plugins.entries.codex or set its enabled to false",
+      ),
+    ],
   ]) {
     const label = JSON.stringify(values);
     const saved = await request(context.app, "PATCH", item, { body: { values } });

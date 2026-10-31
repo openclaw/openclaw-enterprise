@@ -10,6 +10,8 @@ import {
   keyedSettingPath,
   PROVIDER_MODELS_LIST,
   quotedSettingKey,
+  secretInputShorthandName,
+  wholeEnvironmentReferenceName,
 } from "@openclaw-enterprise/occ";
 import { asRecord, splitModelRef } from "@openclaw-enterprise/utils";
 import type { HarnessAuthMethodRule } from "../harness-auth-method.ts";
@@ -100,6 +102,66 @@ export function requireChannelTopology(
       `channels.${provider}`,
       "is enabled, but this Installation has no channel runtime: enabled channels require isolated credentials and a reviewed proxy",
     );
+  }
+}
+
+// Kubernetes Compute sets the APP_SERVER_ variables only in a Dedicated Codex Gateway, and a
+// Secret binding cannot target them (a reserved prefix).
+const CODEX_APP_SERVER_VARIABLE = /^APP_SERVER_/i;
+
+// The APP_SERVER_ variable a secret-input value reads as an environment SecretRef, if any: a
+// whole `${NAME}` with no fallback, the `$NAME` shorthand or an env SecretRef object. OpenClaw
+// keeps a reference inside other text as written, which does not stop the Gateway.
+function codexAppServerVariable(value: unknown): string | undefined {
+  const reference = asRecord(value);
+  const name =
+    typeof value === "string"
+      ? (wholeEnvironmentReferenceName(value) ?? secretInputShorthandName(value))
+      : reference?.source === "env"
+        ? reference.id
+        : undefined;
+  return typeof name === "string" && CODEX_APP_SERVER_VARIABLE.test(name) ? name : undefined;
+}
+
+/**
+ * An embedded Gateway has no Codex app server credential. OpenClaw resolves an active plugin's
+ * secret inputs when the Gateway starts and exits when one is unset, so an embedded Agent whose
+ * Codex plugin entry reads an APP_SERVER_ variable in `appServer.authToken` or
+ * `appServer.headers.*` (the plugin's secret inputs at the pinned commit) restarts until the
+ * deployment's convergence deadline. OpenClaw skips the secret inputs of a disabled entry, of a
+ * denied plugin and of `plugins.enabled: false`, and so does this rule.
+ */
+export function requireEmbeddedCodexPluginCredentials(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  createError: SettingError,
+): void {
+  const plugins = asRecord(configuration.plugins);
+  const codex = asRecord(asRecord(plugins?.entries)?.codex);
+  if (
+    codex === undefined ||
+    codex.enabled === false ||
+    plugins?.enabled === false ||
+    (Array.isArray(plugins?.deny) && plugins.deny.includes("codex"))
+  ) {
+    return;
+  }
+  const appServer = asRecord(asRecord(codex.config)?.appServer);
+  const path = "plugins.entries.codex.config.appServer";
+  const inputs: [string, unknown][] = [
+    [`${path}.authToken`, appServer?.authToken],
+    ...Object.entries(asRecord(appServer?.headers) ?? {}).map(
+      ([name, value]): [string, unknown] => [keyedSettingPath(`${path}.headers`, name), value],
+    ),
+  ];
+  for (const [setting, value] of inputs) {
+    const name = codexAppServerVariable(value);
+    if (name !== undefined) {
+      const shown = /^[A-Za-z0-9_]{1,32}$/.test(name) ? name : quotedSettingKey(name, 32);
+      throw createError(
+        setting,
+        `references ${shown}, which only a Dedicated Codex Agent receives: on an embedded Agent, remove plugins.entries.codex or set its enabled to false`,
+      );
+    }
   }
 }
 
