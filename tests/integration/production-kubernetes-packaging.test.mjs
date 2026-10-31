@@ -2355,7 +2355,7 @@ test(
           image: repositoryCredentialValues["repositoryCredentials.image"],
           serviceName: "broker",
           hostname: "broker.openclaw-system.svc",
-          backendId: "github-primary",
+          backendId: "github-$$(BACKEND)",
           registryConfigMapName: "repository-registry-v1",
           serviceConfigSecretName: "repository-config",
           appKeySecretName: "repository-app-key",
@@ -2389,7 +2389,7 @@ test(
       serviceName: "broker",
       namespace: "openclaw-system",
       release: "oce",
-      backendId: "github-primary",
+      backendId: "github-$$(BACKEND)",
     });
   },
 );
@@ -2850,7 +2850,14 @@ test("the chart refuses repository backend IDs the controller refuses", tooling,
     /repositoryCredentials\.backendId must fit in 200 UTF-16 code units for a GitHub Backend, because repository bindings store it under that bound/,
     "101 emoji",
   );
-  for (const backendId of ["github-primary", "😀".repeat(100)]) {
+  for (const [backendId, argument] of [
+    ["github-primary", "github-primary"],
+    ["😀".repeat(100), "😀".repeat(100)],
+    ["github-$", "github-$$"],
+    ["github-$$", "github-$$$$"],
+    ["github-$(BACKEND)", "github-$$(BACKEND)"],
+    ["github-$$(BACKEND)", "github-$$$$(BACKEND)"],
+  ]) {
     const objects = await resources(
       (
         await render(repositoryCredentialValues, {
@@ -2864,7 +2871,7 @@ test("the chart refuses repository backend IDs the controller refuses", tooling,
           kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "worker",
       )
       .spec.template.spec.containers.find(({ name }) => name === "repository-credentials");
-    assert.equal(broker.args[broker.args.indexOf("--backend-id") + 1], backendId, backendId);
+    assert.equal(broker.args[broker.args.indexOf("--backend-id") + 1], argument, backendId);
   }
 });
 

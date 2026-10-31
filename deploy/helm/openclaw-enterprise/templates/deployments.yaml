@@ -664,7 +664,7 @@ spec:
             - --public-origin
             - {{ include "openclaw.repositoryCredentials.origin" $ | quote }}
             - --backend-id
-            - {{ $.Values.repositoryCredentials.backendId | quote }}
+            - {{ $.Values.repositoryCredentials.backendId | replace "$" "$$" | quote }}
             {{- if eq $.Values.repositoryCredentials.authority "prepared-git" }}
             - --authority
             - prepared-git
