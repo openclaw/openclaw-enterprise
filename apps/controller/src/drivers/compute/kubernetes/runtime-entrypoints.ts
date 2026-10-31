@@ -2519,15 +2519,16 @@ function nativeGatewayAnswers(path) {
   });
 }
 
+// Whether a native Gateway this wrapper started has answered its /readyz, which the
+// kubelet's readiness probe asks every 2 s. Until one has, an exit may be OpenClaw refusing
+// its configuration at startup.
+let gatewayServed = false;
+
 // OpenClaw's /readyz admits a Gateway whose agent databases are still in
 // background startup inspection, and a chat turn then gets HTTP 500 until it
 // finishes (19.6 s after start in finding 2185). /startupz stays 503 until
 // every agent's inspection settles; /readyz adds channel, state database,
 // failed agent database and plugin reload health.
-// Whether a native Gateway this wrapper started has answered its /readyz, which the
-// kubelet's readiness probe asks every 2 s. Until one has, an exit may be OpenClaw refusing
-// its configuration at startup.
-let gatewayServed = false;
 async function gatewayRuntimeReady() {
   if (pluginRuntimeStatusPort() !== undefined && pluginStatusReport.phase !== "ready") {
     return false;
