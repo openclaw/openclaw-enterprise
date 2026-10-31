@@ -2020,6 +2020,8 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
     {
       name: "provider model catalogs cannot expose alternate runtime overrides",
       executionMode: "embedded",
+      saveRefusal:
+        "Configuration setting models.providers.openai.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.",
       values: {
         agents: {
           defaults: selectedModelDefaults("openai/gpt-4.1", "openclaw"),
@@ -2103,8 +2105,9 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
   for (const { name, executionMode, values, saveRefusal } of scenarios) {
     const { agent, controller, namespace } = await fixture();
     if (saveRefusal !== undefined) {
-      // Every deployment refuses a fallback on another provider or a malformed selection, so
-      // Configuration save refuses it first, naming the setting (findings 1298 and 1828).
+      // Every deployment refuses a fallback on another provider, a malformed selection or a
+      // provider catalog row no selection names, so Configuration save refuses it first, naming
+      // the setting (findings 1298, 1828 and 3019).
       await assert.rejects(
         controller.createConfiguration(administrator, {
           namespaceId: namespace.id,
