@@ -39,6 +39,7 @@ import {
   codexRuntimeOffProvider,
   KUBERNETES_GATEWAY_PASSWORD_REFUSAL,
   keepRuntime,
+  OPENCLAW_ONLY,
   runtimeIdRequired,
   runtimeIdUnsupported,
   runtimePoliciesConflict,
@@ -1154,7 +1155,9 @@ test("Configuration save refuses a model policy whose settings conflict, with de
         keepRuntime("openclaw", "codex"),
       ),
     ],
-    // The openai provider takes Codex only with the Codex plugin's WebSocket app server.
+    // The openai provider takes Codex only with the Codex plugin's WebSocket app server. Save
+    // serves any Agent and offers both steps; this embedded Agent's deploy, where Codex runs only
+    // dedicated, offers only openclaw (finding 3058).
     [
       "a Codex runtime on the openai provider",
       {
@@ -1163,6 +1166,7 @@ test("Configuration save refuses a model policy whose settings conflict, with de
         },
       },
       codexRuntimeOffProvider(defaultPolicy),
+      { message: codexRuntimeOffProvider(defaultPolicy, OPENCLAW_ONLY) },
     ],
     [
       "a runtime id that no Harness implements",
