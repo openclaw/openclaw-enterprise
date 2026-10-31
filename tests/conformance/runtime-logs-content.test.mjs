@@ -784,6 +784,64 @@ test("a PEM block printed over several lines is masked on every line", () => {
   }
 });
 
+test("a multi-line message stays one record with its line breaks as spaces (3048)", async () => {
+  const token = `Ab1${randomString(29)}`;
+  const password = `pw${randomString(14)}`;
+  const digest = randomBytes(20).toString("hex");
+  const pemBody = randomBytes(48).toString("base64");
+  const openclaw = (message) => JSON.stringify({ level: "error", message });
+  const route = await logsRoute();
+  route.state.lines = [
+    // OpenClaw's config report as an embedded Gateway printed it (dogfood finding 3048):
+    // one JSON record per paragraph, with `\n` between the lines of a paragraph.
+    openclaw(
+      "  - plugins.entries.beam.config.mirror.endpoint: invalid config: must have required property 'endpoint'\n  - plugins.entries.beam.config.mirror.catalogs: invalid config: must have required property 'catalogs'",
+    ),
+    openclaw(
+      "Fix: Config is externally managed (`OPENCLAW_CONFIG_READONLY=1`), so OpenClaw treats openclaw.json as immutable.\nConfig path: /etc/openclaw/openclaw.json\nEdit the config in your external deployment source, then redeploy or restart OpenClaw as needed.",
+    ),
+    // A credential next to a line break. Deleting the break glued the keyword to its
+    // value and the digest to the next word, so no redaction rule matched them.
+    openclaw(`upstream refused; retry with bearer\n${token}`),
+    openclaw(`login failed: --password\n${password}`),
+    openclaw(`fetched sha1 ${digest}\nnext step`),
+    openclaw(`key:\n-----BEGIN PRIVATE KEY-----\n${pemBody}\n-----END PRIVATE KEY-----\ndone`),
+    // A CRLF-terminated container line keeps no trailing space.
+    "plain text from a CRLF writer\r",
+  ].map((raw, index) => ({ time: lineTime(index), raw }));
+
+  const logs = await route.read({ tailLines: 100 });
+  assert.equal(logs.status, 200, logs.text);
+  const expected = [
+    "  - plugins.entries.beam.config.mirror.endpoint: invalid config: must have required property 'endpoint'   - plugins.entries.beam.config.mirror.catalogs: invalid config: must have required property 'catalogs'",
+    "Fix: Config is externally managed (`OPENCLAW_CONFIG_READONLY=1`), so OpenClaw treats openclaw.json as immutable. Config path: /etc/openclaw/openclaw.json Edit the config in your external deployment source, then redeploy or restart OpenClaw as needed.",
+    "upstream refused; retry with bearer [redacted:bearer]",
+    "login failed: --password [redacted:argv]",
+    "fetched sha1 [redacted:long-token] next step",
+    "key: [redacted:pem] done",
+    "plain text from a CRLF writer",
+  ];
+  assert.deepEqual(
+    logs.data.records.map((record) => record.message),
+    expected,
+  );
+  // The download prints one record per line: a message cannot start a forged record.
+  const download = await route.read({ download: true });
+  assert.equal(download.status, 200, download.text);
+  assert.deepEqual(
+    download.text
+      .trimEnd()
+      .split("\n")
+      .slice(1)
+      .map((line) => line.replace(/^\S+ ERROR openclaw /, "").replace(/^\S+ UNKNOWN text /, "")),
+    expected,
+  );
+  for (const value of [token, password, digest, pemBody]) {
+    assert.equal(logs.text.includes(value), false, `${value.slice(0, 4)}... leaked`);
+    assert.equal(download.text.includes(value), false, `${value.slice(0, 4)}... leaked`);
+  }
+});
+
 test("the sanitizer keeps bracket-tagged text lines but withholds malformed JSON arrays", () => {
   const canary = `array-canary-${randomUUID()}`;
   const tagged = [
@@ -983,6 +1041,8 @@ test("rule prefilters skip only text a rule cannot change", () => {
     ),
     "a bcdefg\u00a0h🙂\ud800\u2028",
   );
+  // A line break is one space, CRLF included; breaks that end the value are dropped.
+  assert.equal(stripRuntimeLogControls("a\nb\r\nc\rd\n\ne\r\n\n"), "a b c d  e");
   for (const [input, expected] of [
     ["/usr/local/bin/redis-cli -a pw1", "/usr/local/bin/redis-cli -a [redacted:argv]"],
     // A client name inside a longer token names no client.

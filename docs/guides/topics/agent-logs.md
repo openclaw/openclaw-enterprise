@@ -168,7 +168,8 @@ and a page that begins inside a block whose BEGIN it never saw cannot mask it.
 Redaction is best-effort: an opaque token under 40 characters with no known
 prefix and no key name or `Bearer` next to it stays visible. Do not rely on
 redaction to make a runtime that prints secrets safe.
-Control characters are removed and messages are capped at 8 KiB.
+Control characters are removed; a tab or line break inside a message becomes
+one space, so a multi-line message reads as one line. Messages are capped at 8 KiB.
 
 Runtime status Event messages are redacted the same way; node names, image
 references and Secret and ConfigMap names are masked in the standard scheduler
