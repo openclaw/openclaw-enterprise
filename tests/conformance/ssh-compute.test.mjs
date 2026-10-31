@@ -1130,6 +1130,20 @@ test("SSH renders a readable custom-alias gateway password and still tears down 
   await access(f.revisionDir(tightened));
   await f.driver.retireRevision(tightened);
   await missing(f.revisionDir(tightened));
+  // Teardown still checks the shape: a reference to another variable never named the password
+  // SSH Compute generates, so stop refuses it before any host call.
+  const misshapen = revision(f.driver, 1, "agent-ssh-misshapen-reference", {
+    gateway: {
+      tls: { enabled: false },
+      auth: { mode: "password", password: { ...custom, provider: "default", id: "OTHER_SECRET" } },
+    },
+  });
+  bind(f.driver, misshapen);
+  const beforeStop = f.calls.length;
+  await assert.rejects(f.driver.stopRevision(misshapen), {
+    message: sshGatewayPasswordRefusal.reference(),
+  });
+  assert.equal(f.calls.length, beforeStop);
 });
 
 test("SSH activation invokes lifecycle start hooks and cleans them up after activation failure", async (t) => {
