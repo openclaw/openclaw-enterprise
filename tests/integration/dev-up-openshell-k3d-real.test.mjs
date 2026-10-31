@@ -271,29 +271,49 @@ test(
       "--context",
       `k3d-${cluster}`,
     ];
-    const releases = JSON.parse(
-      (
-        await execute(
-          "helm",
-          [
-            "list",
-            "--kubeconfig",
-            join(stateDirectory, "kubeconfig"),
-            "--kube-context",
-            `k3d-${cluster}`,
-            "--namespace",
-            "oce-system",
-            "--output",
-            "json",
-          ],
-          { cwd: repository, env: environment, maxBuffer: 4 * 1024 * 1024 },
-        )
-      ).stdout,
+    const { stdout: helmList } = await execute(
+      "helm",
+      [
+        "list",
+        "--kubeconfig",
+        join(stateDirectory, "kubeconfig"),
+        "--kube-context",
+        `k3d-${cluster}`,
+        "--namespace",
+        "oce-system",
+        "--output",
+        "json",
+      ],
+      { cwd: repository, env: environment, maxBuffer: 4 * 1024 * 1024 },
     );
-    assert.match(
-      releases.find(({ name }) => name === "openshell-gateway")?.chart ?? "",
-      /-0\.1\.6$/,
-      "the default development profile must install the documented OpenShell chart",
+    const stockChartVersion = "0.1.6";
+    const chartMetadataError = `Unexpected chart package or metadata for openshell-gateway. Check for helm-chart-${stockChartVersion}.`;
+    let releases;
+    try {
+      releases = JSON.parse(helmList);
+    } catch {
+      assert.fail(chartMetadataError);
+    }
+    assert.ok(Array.isArray(releases), chartMetadataError);
+    const release = releases.find((entry) => entry?.name === "openshell-gateway");
+    if (!release) {
+      assert.ok(
+        releases.every((entry) => typeof entry?.name === "string" && entry.name !== ""),
+        chartMetadataError,
+      );
+      assert.fail(
+        "The openshell-gateway Helm release is missing. Check the default profile install in oce-system.",
+      );
+    }
+    // Only a bounded numeric stock version can enter the failure message.
+    const version =
+      typeof release.chart === "string"
+        ? /^helm-chart-((?:0|[1-9]\d{0,3})(?:\.(?:0|[1-9]\d{0,3})){2})$/u.exec(release.chart)?.[1]
+        : undefined;
+    assert.ok(version, chartMetadataError);
+    assert.ok(
+      version === stockChartVersion,
+      `Stock OpenShell chart version ${version} does not match ${stockChartVersion}. Compare the release with the expected chart pin.`,
     );
     const namespaceList = JSON.parse(
       (
