@@ -10112,6 +10112,42 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
   ]) {
     embeddedAdmission(configuration, {});
   }
+  // OpenClaw reads plugin secret inputs only in the entry keyed by the plugin's exact ID, so a
+  // case or padding variant of `google` has none and its Gateway starts (finding 3072). Its deny
+  // list and each entry's `enabled` match a trimmed, lowercased ID with aliases resolved
+  // (google-gemini-cli is google). Configuration save accepts these too.
+  const unreadableHeader = { ...envRef("RELAY_TOKEN"), provider: "vault" };
+  const variant = (id, value, plugins) => withPlugin(id, searchHeaderEntry(value).google, plugins);
+  for (const configuration of [
+    variant("Google", "${RELAY_TOKEN}"),
+    variant(" google", "${RELAY_TOKEN}"),
+    variant("GOOGLE", "${RELAY_TOKEN}", { allow: ["codex"] }),
+    variant("Google", unreadableHeader),
+    withSearchHeader("${RELAY_TOKEN}", {}, { deny: ["GOOGLE"] }),
+    withSearchHeader(unreadableHeader, {}, { deny: [" google "] }),
+    withSearchHeader("${RELAY_TOKEN}", {}, { deny: ["google-gemini-cli"] }),
+    // A later entry for the same plugin with enabled: false disables it.
+    withEntries(withSearchHeader("${RELAY_TOKEN}"), { GOOGLE: { enabled: false } }),
+  ]) {
+    embeddedAdmission(configuration, {});
+    driver.validateConfiguration(configuration);
+  }
+  // A later `enabled: true` for the same plugin enables a disabled google entry. Startup
+  // auto-enable sets `enabled: true` on a google entry that leaves it unset, so an earlier
+  // `enabled: false` for the same plugin does not disable it.
+  for (const configuration of [
+    withEntries(withSearchHeader("${RELAY_TOKEN}", { enabled: false }), {
+      GOOGLE: { enabled: true },
+    }),
+    {
+      ...embeddedBase,
+      plugins: {
+        entries: { GOOGLE: { enabled: false }, ...searchHeaderEntry("${RELAY_TOKEN}") },
+      },
+    },
+  ]) {
+    refusedUntilBound(embeddedAdmission, configuration, [searchHeader, "RELAY_TOKEN", "google"]);
+  }
   // A Driver the Installation selects may add launch variables whose names deployment cannot
   // know, so an unbound name is left to the Gateway; the APP_SERVER_ rule still holds.
   const launch = new KubernetesComputeDriver(options(), {
