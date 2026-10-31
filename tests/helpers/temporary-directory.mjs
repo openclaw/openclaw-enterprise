@@ -32,3 +32,10 @@ export async function temporaryDirectory(t, prefix) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
+
+// temporaryDirectory for synchronous tests and helpers: the same directory and cleanup.
+export function temporaryDirectorySync(t, prefix) {
+  const directory = mkdtempSync(join(tmpdir(), prefix));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  return directory;
+}
