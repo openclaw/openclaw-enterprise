@@ -127,7 +127,8 @@
     "tests/integration/protected-source-refusals.test.mjs",
     "tests/integration/refusal-answers.test.mjs",
     "tests/integration/namespace-deletion-console-api.test.ts",
-    "tests/integration/github-selected-repositories.test.ts"
+    "tests/integration/github-selected-repositories.test.ts",
+    "tests/integration/aws-secrets-manager.test.ts"
   ],
   "files": [
     {
@@ -647,6 +648,9 @@
         "selected repository response requires exact IDs, names and permissions and refuses broader credentials",
         "ordinary fresh selections resolve one or N repositories without broadening explicit historical grants"
       ]
+    },
+    {
+      "path": "tests/integration/aws-secrets-manager.test.ts"
     }
   ]
 }
