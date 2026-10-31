@@ -655,13 +655,26 @@ export function maskRuntimeEventText(value: string): string {
   return text;
 }
 
-// C0 controls, DEL and C1 controls: U+0000-U+001F and U+007F-U+009F.
+// A CRLF pair, then any one C0 control, DEL or C1 control: U+0000-U+001F and U+007F-U+009F.
 // eslint-disable-next-line no-control-regex -- matching control characters is the point
-const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
+const CONTROL_CHARACTERS = /\r\n|[\u0000-\u001f\u007f-\u009f]/g;
+const SPACED_CONTROLS: ReadonlySet<string> = new Set(["\t", "\n", "\r", "\r\n"]);
 
-/** Removes ANSI escape sequences and C0/C1 control characters; tabs become spaces. */
+/**
+ * Removes ANSI escape sequences and C0/C1 control characters. A tab or a line break
+ * inside the value (a multi-line message printed as one JSON string) becomes one space,
+ * so its words stay apart on the record's single line; line breaks at the end are dropped.
+ */
 export function stripRuntimeLogControls(value: string): string {
-  return stripVTControlCharacters(value).replace(CONTROL_CHARACTERS, (character) =>
-    character === "\t" ? " " : "",
-  );
+  const text = stripVTControlCharacters(value);
+  // Drop trailing CR/LF, such as the CR of a CRLF-terminated container line. A scan, not
+  // a regex: `[\r\n]+$` retries at every position of a long break run that does not end
+  // the value, which is quadratic on a 32 KiB line.
+  let end = text.length;
+  while (end > 0 && (text[end - 1] === "\n" || text[end - 1] === "\r")) {
+    end -= 1;
+  }
+  return text
+    .slice(0, end)
+    .replace(CONTROL_CHARACTERS, (character) => (SPACED_CONTROLS.has(character) ? " " : ""));
 }
