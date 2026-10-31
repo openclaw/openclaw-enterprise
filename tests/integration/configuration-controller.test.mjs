@@ -1964,6 +1964,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
   const searchHeader = (header, value) => ({
     google: { config: { webSearch: { headers: { [header]: value } } } },
   });
+  const withPluginAllow = (base, allow) => ({ ...base, plugins: { ...base.plugins, allow } });
   const unboundSearchHeader = (header) =>
     unboundPluginSecretRefusal(
       `plugins.entries.google.config.webSearch.headers.${header}`,
@@ -2208,6 +2209,23 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
         "SEARCH_HEADER",
       ),
     ],
+    // A plugins.allow that omits google does not make its entry inactive: at startup OpenClaw adds
+    // every known plugin entry with config to a non-empty plugins.allow, then resolves its inputs.
+    [
+      withPluginAllow(
+        withPluginEntries(
+          valid,
+          searchHeader("X-Key", { source: "env", provider: "vault", id: "SEARCH_HEADER" }),
+        ),
+        ["codex"],
+      ),
+      unreadablePluginSecretRefusal(
+        "plugins.entries.google.config.webSearch.headers.X-Key",
+        "google",
+        "provider",
+        "vault",
+      ),
+    ],
   ];
   for (const [values, message] of unreadablePluginInputs) {
     await refusedAtSaveAndDeploy(context, agent, values, message);
@@ -2233,6 +2251,11 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     "Plugin-input-deferred",
   );
   assert.equal(waitingPluginInput.status, 201, JSON.stringify(waitingPluginInput.body));
+  // A stored unreadable row does not strand its Configuration: save checks only the new values,
+  // so an edit to a document without the reference saves.
+  await writePastOcc(configurationDriver, agent.configurationId, unreadableValues);
+  const fixed = await request(context.app, "PATCH", item, { body: { values: valid } });
+  assert.equal(fixed.status, 200, JSON.stringify(fixed.body));
   // References OpenClaw reads still save: an env SecretRef on the default alias, the same id on a
   // configured env provider whose allowlist lists it, and the `$NAME` shorthand there.
   for (const value of [
@@ -2306,6 +2329,15 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
       withPluginEntries(valid, searchHeader("X-Goog-User-Project", " ${SEARCH_HEADER} ")),
       400,
       unboundSearchHeader("X-Goog-User-Project"),
+    ],
+    // OpenClaw adds the google entry to a plugins.allow that omits it, so the unbound variable
+    // still stops the Gateway.
+    [
+      withPluginAllow(withPluginEntries(valid, searchHeader("X-Key", "${SEARCH_HEADER}")), [
+        "codex",
+      ]),
+      400,
+      unboundSearchHeader("X-Key"),
     ],
     // An APP_SERVER_ name at an enabled Beam is never set on this embedded Agent, and the
     // allowlist's denial of the SecretRef OpenClaw then keeps stops the Gateway (finding 3060).

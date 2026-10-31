@@ -185,7 +185,9 @@ function settingValues(
 // Each secret input of an active plugin (PLUGIN_SECRET_INPUTS), in Configuration order: its
 // setting, its value, whether an unset variable there ends startup, and the step that disables the
 // entry. OpenClaw skips the secret inputs of an entry whose `enabled` is false, of a denied plugin
-// and of `plugins.enabled: false`.
+// and of `plugins.enabled: false`. `plugins.allow` skips none: Gateway startup first adds every
+// known plugin entry with config to a non-empty allowlist (plugin auto-enable), so these stay
+// active (finding 3071).
 function activePluginSecretInputs(configuration: Readonly<OpenClawConfigurationDocument>): {
   readonly setting: string;
   readonly value: unknown;
