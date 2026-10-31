@@ -37,7 +37,7 @@ import {
   secretGrantDeployReason,
   unreadableSlackTokenRefusal,
 } from "../helpers/refusal-text.mjs";
-import { liftRestriction } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
 const slack = {
   enabled: true,
@@ -941,6 +941,44 @@ test("Deploy waits for the Agent's Secret grant read and sends no deploy it woul
     .waitFor();
   await waitForEnabled(deploy);
   assert.equal(deployRequests, 0);
+});
+
+// Finding 3017's read-only branch. An Installation administrator's console finds a bound Slack
+// Secret without the Agent's grant and offers Retry Secret access. A Restriction then denies her
+// Configuration update, which the Channel Secrets form needs, so the newer permission answer takes
+// Retry away. Deploy new version keeps naming the token whose Secret waits, and its step now names
+// who grants the access instead of the Retry this page no longer offers.
+test("Deploy's grant reason names the administrator once Configuration update is denied", async (t) => {
+  const { fixture, namespace, agent } = await agentWithoutGrant(t, {
+    name: "Read only reason",
+    slackValues: {},
+    bindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    ungranted: "SLACK_APP_TOKEN",
+  });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  const retry = page.getByRole("button", { name: "Retry Secret access" });
+  const withRetry = secretGrantDeployReason(["Slack app token"], { missing: true });
+  await page.getByText(withRetry, { exact: true }).waitFor();
+  await waitForEnabled(retry);
+  assert.equal(await accessibleDescription(deploy), withRetry);
+
+  restrict(fixture.policy, "update", "configuration", {
+    namespaceId: namespace.id,
+    resourceId: agent.configurationId,
+  });
+  const askAdministrator = secretGrantDeployReason(["Slack app token"], {
+    missing: true,
+    administrator: true,
+  });
+  // Returning to the window reads the permission answer again.
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await page.getByText(askAdministrator, { exact: true }).waitFor();
+  assert.equal(await accessibleDescription(deploy), askAdministrator);
+  // The step it names is not on this page any more, and Deploy stays held: the grant is missing.
+  assert.equal(await retry.count(), 0);
+  assert.equal(await deploy.isDisabled(), true);
 });
 
 // A channel Secrets save that overtakes the grant read must not drop what that read would show.
