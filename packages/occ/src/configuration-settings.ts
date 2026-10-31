@@ -4,7 +4,10 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
-import { gatewayPasswordRequirement } from "./environment-references.ts";
+import {
+  gatewayPasswordRequirement,
+  secretProviderDefaultsProblem,
+} from "./environment-references.ts";
 import {
   agentEntryMessage,
   configurationSettingMessage,
@@ -284,6 +287,7 @@ function isCredentialReference(value: unknown): boolean {
  * - The Codex session approval policy (codexApprovalPolicy).
  * - A literal gateway.auth.password would be stored in plain text, as a model credential
  *   would; every Compute Driver accepts only an environment reference there.
+ * - A secrets.defaults alias OpenClaw's config check refuses (refuseInvalidSecretProviderDefaults).
  * - A gateway.auth.password reference OpenClaw cannot read (refuseUnreadableGatewayPassword).
  * - The workspace bootstrap settings (validateWorkspaceBootstrapSettings).
  * - Settings the pinned OpenClaw retired (refuseRetiredOpenClawSettings).
@@ -300,6 +304,7 @@ export function validateConfigurationSettings(
     options,
   );
   refuseLiteralGatewayPassword(values);
+  refuseInvalidSecretProviderDefaults(values, options);
   refuseUnreadableGatewayPassword(values, options);
   validateWorkspaceBootstrapSettings(values, options);
   refuseRetiredOpenClawSettings(values);
@@ -309,9 +314,10 @@ export function validateConfigurationSettings(
 /**
  * The rules above that Agent save and deploy admission run again on a stored Configuration, so
  * one saved before a rule existed gets the message its next save would (findings 2699, 2709,
- * 2767, 3063).
+ * 2767, 3063, 3064).
  */
 export function refuseStoredConfigurationSettings(values: OpenClawConfigurationDocument): void {
+  refuseInvalidSecretProviderDefaults(values);
   refuseUnreadableGatewayPassword(values);
   validateWorkspaceBootstrapSettings(values);
   refuseRetiredOpenClawSettings(values);
@@ -341,6 +347,29 @@ export function refuseLiteralGatewayPassword(values: OpenClawConfigurationDocume
   const password = asRecord(asRecord(values.gateway)?.auth)?.password;
   if (password !== undefined && password !== null && !isCredentialReference(password)) {
     throw new GatewayPasswordValueError("/gateway/auth/password");
+  }
+}
+
+/**
+ * A secrets.defaults alias OpenClaw's config check refuses (`secretProviderDefaultsProblem`), such
+ * as a padded or upper-case one: the Gateway then stops at every start on every Compute, so saves
+ * refuse it whatever the Compute (finding 3064). It runs before the gateway password rule, which
+ * reads SecretRefs on that alias, so the refusal names the alias. On a Preset save, an alias that
+ * waits on a variable is checked once filled.
+ */
+export function refuseInvalidSecretProviderDefaults(
+  values: OpenClawConfigurationDocument,
+  options?: ConfigurationValidationOptions,
+): void {
+  const defaults = asRecord(values.secrets)?.defaults;
+  if (waitsOnVariable(defaults, ["secrets", "defaults"], options)) {
+    return;
+  }
+  const problem = secretProviderDefaultsProblem(values.secrets);
+  if (problem !== undefined) {
+    throw new ConfigurationHarnessError(
+      configurationSettingMessage(problem.setting, problem.requirement),
+    );
   }
 }
 

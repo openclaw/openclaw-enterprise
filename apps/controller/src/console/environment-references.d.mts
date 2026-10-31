@@ -16,3 +16,6 @@ export declare function generatedGatewayPasswordReference(secrets: unknown): {
   readonly provider: string;
   readonly id: "OPENCLAW_GATEWAY_PASSWORD";
 };
+export declare function secretProviderDefaultsProblem(
+  secrets: unknown,
+): { readonly setting: string; readonly requirement: string } | undefined;
