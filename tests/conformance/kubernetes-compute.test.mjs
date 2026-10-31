@@ -90,6 +90,8 @@ import {
   unboundPluginSecretRefusal,
   unreadablePluginSecretRefusal,
   unboundUnreadablePluginSecretRefusal,
+  appServerUnreadablePluginSecretRefusal,
+  unreadableGatewayPasswordRefusal,
   unboundReferenceRefusal,
   unreadableSlackTokenRefusal,
   unsubstitutedFallbackRefusal,
@@ -9512,6 +9514,52 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
       );
     }
   }
+  // Finding 3057: the password surface is always active (Compute admits no token), so OpenClaw
+  // reads the reference at every start and exits on one it cannot read from the environment,
+  // while its configuration still validates: no provider, a provider no secrets.providers entry
+  // configures for env (the built-in alias moves with secrets.defaults.env), an allowlist that
+  // omits the name.
+  const passwordRef = (provider, secrets) => ({
+    ...withPassword(
+      provider === undefined
+        ? { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" }
+        : { source: "env", provider, id: "OPENCLAW_GATEWAY_PASSWORD" },
+    ),
+    ...(secrets === undefined ? {} : { secrets }),
+  });
+  const envProvider = (allowlist) => ({ source: "env", ...(allowlist ? { allowlist } : {}) });
+  for (const [configuration, ...refused] of [
+    [passwordRef(undefined), "providerless"],
+    [passwordRef(undefined, { defaults: { env: "custom" } }), "providerless", "custom"],
+    [passwordRef("vault"), "provider", "vault"],
+    [passwordRef("default", { defaults: { env: "custom" } }), "provider", "default"],
+    [passwordRef("vault", { providers: { vault: { source: "file" } } }), "provider", "vault"],
+    [
+      passwordRef("default", { providers: { default: envProvider(["OTHER"]) } }),
+      "allowlist",
+      "OPENCLAW_GATEWAY_PASSWORD",
+    ],
+    [
+      passwordRef("vault", { providers: { vault: envProvider([]) } }),
+      "allowlist",
+      "OPENCLAW_GATEWAY_PASSWORD",
+      "vault",
+    ],
+  ]) {
+    const label = JSON.stringify(configuration);
+    for (const validate of [
+      () => routed.validateGatewaySettings(configuration),
+      () => routed.validateAgentProvisioning({ executionMode: "dedicated", configuration }),
+    ]) {
+      assert.throws(
+        validate,
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.message === unreadableGatewayPasswordRefusal(...refused),
+        label,
+      );
+    }
+  }
   for (const configuration of [
     withPolicy("never"),
     withPolicy("on-request"),
@@ -9519,6 +9567,12 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
     // The Gateway entrypoint replaces a null plugin config.
     { ...base, plugins: { entries: { codex: { config: null } } } },
     withPassword({ source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" }),
+    // OpenClaw reads each of these from the environment: the alias secrets.defaults.env names,
+    // and a configured env provider with no allowlist or one that lists the name.
+    passwordRef("custom", { defaults: { env: "custom" } }),
+    passwordRef("vault", { providers: { vault: envProvider() } }),
+    passwordRef("default", { providers: { default: envProvider(["OPENCLAW_GATEWAY_PASSWORD"]) } }),
+    passwordRef("vault", { providers: { vault: envProvider(["OPENCLAW_GATEWAY_PASSWORD"]) } }),
   ]) {
     routed.validateGatewaySettings(configuration);
     routed.validateAgentProvisioning({ executionMode: "dedicated", configuration });
@@ -9848,6 +9902,55 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
   // an unset `${_NAME}` as written, never as a SecretRef.
   embeddedAdmission({ ...withBeam("${RELAY_TOKEN}"), ...allowlist(["RELAY_TOKEN"]) }, {});
   embeddedAdmission({ ...withBeam("${_RELAY}"), ...allowlist([]) }, {});
+  // An APP_SERVER_ name there is never set on an embedded or Dedicated OpenClaw Agent, and no
+  // binding can set it, so the Agent's mode alone decides: deployment and Agent save refuse it
+  // under an allowlist that omits it (finding 3060). A Dedicated Codex Gateway sets
+  // APP_SERVER_TOKEN, so OpenClaw substitutes it there; an allowlist that lists the name, or none,
+  // leaves only the owner unavailable.
+  const imapEntry = (password) => ({
+    imap: { enabled: true, config: { accounts: { main: { password } } } },
+  });
+  const nativeBase = createHarnessConfiguration("openclaw", "gpt-4o-mini");
+  for (const [admit, configuration, setting, plugin, agent] of [
+    [
+      embeddedAdmission,
+      { ...withBeam("${APP_SERVER_TOKEN}"), ...allowlist(["OTHER"]) },
+      beamToken,
+      "beam",
+      "an embedded",
+    ],
+    [
+      admission(nativeDriver, native),
+      { ...withEntries(nativeBase, imapEntry(" ${APP_SERVER_URL} ")), ...allowlist([]) },
+      imapPassword,
+      "imap",
+      "a Dedicated OpenClaw",
+    ],
+  ]) {
+    const name = plugin === "beam" ? "APP_SERVER_TOKEN" : "APP_SERVER_URL";
+    refusedByMode(
+      admit,
+      configuration,
+      refusal(appServerUnreadablePluginSecretRefusal(setting, plugin, agent, "allowlist", name)),
+      JSON.stringify(configuration),
+    );
+  }
+  for (const [admit, configuration] of [
+    [embeddedAdmission, { ...withBeam("${APP_SERVER_TOKEN}"), ...allowlist(["APP_SERVER_TOKEN"]) }],
+    [embeddedAdmission, withBeam("${APP_SERVER_TOKEN}")],
+    [
+      codexDriverAdmission,
+      {
+        ...withEntries(codexBase, {
+          beam: { enabled: true, config: { mirror: { token: "${APP_SERVER_TOKEN}" } } },
+        }),
+        ...allowlist([]),
+      },
+    ],
+  ]) {
+    admit(configuration, {});
+    admit(configuration, null);
+  }
   // A Dedicated Codex Agent whose allowlist omits APP_SERVER_TOKEN: its own codex entry reads
   // `${APP_SERVER_TOKEN}`, which Compute sets, so OpenClaw substitutes it and the Gateway starts.
   // `$APP_SERVER_TOKEN` stays a SecretRef, which that allowlist denies.
@@ -9963,14 +10066,20 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
 });
 
 test("preparation still refuses a gateway password Compute does not generate", async () => {
-  // Admission refuses it first; preparation runs the same rule on the revision it renders.
-  for (const password of ["literal-gateway-password", { source: "env", id: "OTHER" }]) {
+  // Admission refuses it first; preparation runs the same rule on the revision it renders,
+  // with the revision's own secrets settings (finding 3057).
+  for (const [password, message] of [
+    ["literal-gateway-password", KUBERNETES_GATEWAY_PASSWORD_REFUSAL],
+    [{ source: "env", id: "OTHER" }, KUBERNETES_GATEWAY_PASSWORD_REFUSAL],
+    [
+      { source: "env", provider: "vault", id: "OPENCLAW_GATEWAY_PASSWORD" },
+      unreadableGatewayPasswordRefusal("provider", "vault"),
+    ],
+  ]) {
     const { driver, revision, context } = workspaceSetupFixture(false);
     revision.configuration = structuredClone(revision.configuration);
     revision.configuration.gateway.auth.password = password;
-    await assert.rejects(driver.prepareRevision(revision, context), {
-      message: KUBERNETES_GATEWAY_PASSWORD_REFUSAL,
-    });
+    await assert.rejects(driver.prepareRevision(revision, context), { message });
   }
 });
 

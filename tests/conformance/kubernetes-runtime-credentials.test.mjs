@@ -784,7 +784,7 @@ test("embedded Gateway uses the separate canonical password source", () => {
   assert.deepEqual(
     gatewayEnvironment({
       gateway: {
-        auth: { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } },
+        auth: { password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" } },
       },
     }).OPENCLAW_GATEWAY_PASSWORD.valueFrom.secretKeyRef,
     { name: `gateway-password-${suffix}`, key: "gateway-password" },

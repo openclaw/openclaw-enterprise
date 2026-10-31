@@ -35,10 +35,14 @@ export const OPENCLAW_GATEWAY_PASSWORD = "OPENCLAW_GATEWAY_PASSWORD";
 /**
  * Whether `gateway.auth` uses the Gateway password Compute generates. Any other password,
  * a literal or another environment variable, is refused: the Gateway reads only
- * OPENCLAW_GATEWAY_PASSWORD from its transport Secret.
+ * OPENCLAW_GATEWAY_PASSWORD from its transport Secret. `secrets` is the Configuration's: the
+ * password surface is always active (Compute admits no token), so OpenClaw resolves the reference
+ * at every start and exits on one it cannot read from the process environment, while its
+ * configuration still validates (finding 3057; `secretInputReference`).
  */
 export function usesGatewayPasswordEnvironment(
   auth: Readonly<Record<string, unknown>>,
+  secrets: Readonly<Record<string, unknown>> | undefined,
   createError: SettingError,
 ): boolean {
   if (auth.password === undefined) {
@@ -48,7 +52,14 @@ export function usesGatewayPasswordEnvironment(
   if (reference?.source !== "env" || reference.id !== OPENCLAW_GATEWAY_PASSWORD) {
     throw createError(
       "gateway.auth.password",
-      `must be the environment reference {source: "env", id: "${OPENCLAW_GATEWAY_PASSWORD}"}, whose value Kubernetes Compute generates`,
+      `must be the environment reference {source: "env", provider: "default", id: "${OPENCLAW_GATEWAY_PASSWORD}"}, whose value Kubernetes Compute generates`,
+    );
+  }
+  const read = secretInputReference(reference, secrets);
+  if (read !== undefined && "requirement" in read) {
+    throw createError(
+      "gateway.auth.password",
+      `${read.requirement}, so the Gateway cannot read the password Kubernetes Compute generates`,
     );
   }
   return true;
@@ -157,6 +168,11 @@ const SECRET_REF_SOURCES = ["env", "file", "exec", "store"];
 const SECRET_PROVIDER_ALIAS = /^[a-z][a-z0-9_-]{0,63}$/;
 const ENV_SECRET_REF_ID = /^[A-Z][A-Z0-9_]{0,127}$/;
 
+// A variable, id or provider alias as a refusal shows it: as written when short and plain, else
+// quoted and cut, so a message keeps its cap and never echoes control characters.
+const shownSecretName = (name: string): string =>
+  /^[A-Za-z0-9_]{1,32}$/.test(name) ? name : quotedSettingKey(name, 32);
+
 type SecretInputReference =
   // The variable the Gateway reads from its environment. `unset`: why OpenClaw cannot read a
   // whole `${NAME}` that it keeps as an env SecretRef because NAME is unset at startup.
@@ -181,7 +197,6 @@ type SecretInputReference =
 function secretInputReference(
   value: unknown,
   secrets: Readonly<Record<string, unknown>> | undefined,
-  shownName: (name: string) => string,
 ): SecretInputReference | undefined {
   const text = typeof value === "string" ? value : undefined;
   const substituted = text === undefined ? undefined : wholeEnvironmentReferenceName(text.trim());
@@ -209,7 +224,7 @@ function secretInputReference(
   if (provider === undefined) {
     // Only env and store refs have a built-in provider on their default alias.
     const add = ["env", "store"].includes(source)
-      ? `provider ${shownName(defaultAlias(source))}`
+      ? `provider ${shownSecretName(defaultAlias(source))}`
       : `a provider that secrets.providers configures for ${source}`;
     return { requirement: `is a SecretRef without a provider: add ${add}` };
   }
@@ -227,14 +242,14 @@ function secretInputReference(
     provider === defaultAlias(source);
   const unreadable = (): string | undefined => {
     if (!SECRET_PROVIDER_ALIAS.test(provider) || (!builtIn && configured?.source !== source)) {
-      return `uses secret provider ${shownName(provider)}, which secrets.providers does not configure for ${source}`;
+      return `uses secret provider ${shownSecretName(provider)}, which secrets.providers does not configure for ${source}`;
     }
     if (["env", "store"].includes(source) && !ENV_SECRET_REF_ID.test(id)) {
-      return `references ${shownName(id)}, not an id OpenClaw reads in ${source} SecretRefs (A-Z, 0-9 and _, from a letter)`;
+      return `references ${shownSecretName(id)}, not an id OpenClaw reads in ${source} SecretRefs (A-Z, 0-9 and _, from a letter)`;
     }
     const allowlist = builtIn ? undefined : configured?.allowlist;
     if (source === "env" && Array.isArray(allowlist) && !allowlist.includes(id)) {
-      return `references ${shownName(id)}, which secrets.providers.${provider}.allowlist omits`;
+      return `references ${shownSecretName(id)}, which secrets.providers.${provider}.allowlist omits`;
     }
     return undefined;
   };
@@ -297,8 +312,6 @@ export function requirePluginSecretInputs(
     typeof name === "string" ? name.trim().toLowerCase() : undefined;
   const denied = Array.isArray(plugins?.deny) ? plugins.deny.map(policyId) : [];
   const secrets = asRecord(configuration.secrets);
-  const shownName = (name: string): string =>
-    /^[A-Za-z0-9_]{1,32}$/.test(name) ? name : quotedSettingKey(name, 32);
   for (const [key, value] of Object.entries(entries)) {
     const id = policyId(key)!;
     const entry = asRecord(value);
@@ -316,7 +329,7 @@ export function requirePluginSecretInputs(
     for (const [setting, value] of inputs.paths.flatMap((keys) =>
       settingValues(entry.config, keys, `${path}.config`),
     )) {
-      const reference = secretInputReference(value, secrets, shownName);
+      const reference = secretInputReference(value, secrets);
       if (reference !== undefined && "requirement" in reference) {
         throw createError(setting, `${reference.requirement}, or ${disable}`);
       }
@@ -324,16 +337,26 @@ export function requirePluginSecretInputs(
         continue;
       }
       const name = reference.variable;
-      const shown = shownName(name);
+      const shown = shownSecretName(name);
       const unbound =
         bound !== undefined &&
         isAllowedSecretBindingDestination(name) &&
         !RUNTIME_VARIABLE.test(name) &&
         !bound(name);
+      // An APP_SERVER_ variable is never set outside a Dedicated Codex Gateway, whatever binds.
+      const appServerUnset = topology !== "Dedicated Codex" && CODEX_APP_SERVER_VARIABLE.test(name);
+      const agent = topology === "embedded OpenClaw" ? "an embedded" : "a Dedicated OpenClaw";
       if (!inputs.required) {
         // An unset variable here only makes the input's owner unavailable, unless OpenClaw cannot
         // read the `${NAME}` it then keeps: that failure (an allowlist's policy denial) is not one
-        // it isolates to the owner (`assertOwnerCanBeIsolated`), so it ends startup.
+        // it isolates to the owner (`assertOwnerCanBeIsolated`), so it ends startup (finding 3060
+        // for an APP_SERVER_ name, which no binding can set).
+        if (reference.unset !== undefined && appServerUnset) {
+          throw createError(
+            setting,
+            `${reference.unset}, and it is never set on ${agent} Agent: ${disable}`,
+          );
+        }
         if (reference.unset !== undefined && unbound) {
           throw createError(
             setting,
@@ -342,8 +365,7 @@ export function requirePluginSecretInputs(
         }
         continue;
       }
-      if (topology !== "Dedicated Codex" && CODEX_APP_SERVER_VARIABLE.test(name)) {
-        const agent = topology === "embedded OpenClaw" ? "an embedded" : "a Dedicated OpenClaw";
+      if (appServerUnset) {
         throw createError(
           setting,
           `references ${shown}, which only a Dedicated Codex Agent receives: on ${agent} Agent, ${disable}`,
