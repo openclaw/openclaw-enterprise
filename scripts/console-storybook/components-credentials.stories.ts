@@ -106,6 +106,10 @@ export const CredentialsSlackLeftoverGrantMissing = {
   ...story("credentialsSlackLeftoverGrantMissing"),
   name: "Slack key left bound without an Agent grant",
 };
+export const CredentialsSlackOffGrantMissing = {
+  ...story("credentialsSlackOffGrantMissing"),
+  name: "Slack off with a bound Secret without an Agent grant",
+};
 export const CredentialsSlackGrantReadPending = {
   ...story("credentialsSlackGrantReadPending"),
   name: "Slack grant read in progress",
