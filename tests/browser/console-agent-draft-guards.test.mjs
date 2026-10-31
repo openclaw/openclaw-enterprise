@@ -11,6 +11,7 @@ import {
   accessBindingPostRequests,
   AGENT_READ,
   apiRequests,
+  CHANNEL_SECRETS_SAVED_DEPLOY,
   detailUrl,
   expectNoText,
   grantMember,
@@ -2463,9 +2464,7 @@ test("Agent credentials block tab changes until Slack Secret grants finish", asy
     () => accessBindingPostRequests(requests, namespace.id).length === 2,
     "expected saved Slack Secret grants to finish",
   );
-  await page
-    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
-    .waitFor();
+  await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
   await channelsTab.click();
   await page.getByRole("button", { name: "Edit Slack", exact: true }).waitFor();
 

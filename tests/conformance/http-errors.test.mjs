@@ -80,6 +80,7 @@ import {
   StoredCredentialSourceConfigError,
 } from "../../packages/occ/src/index.ts";
 import {
+  AGENT_DELETING,
   AGENT_NAME_CONFLICT,
   agentPrincipalDenied,
   AUTHORIZATION_HEADER_REFUSED,
@@ -166,7 +167,7 @@ const cases = [
   [
     "an Agent being deleted",
     new AgentDeletingError(INTERNAL),
-    { status: 409, code: "AGENT_DELETING", message: "The requested Agent is being deleted." },
+    { status: 409, code: "AGENT_DELETING", message: AGENT_DELETING },
   ],
   [
     "a Namespace that is not ready",

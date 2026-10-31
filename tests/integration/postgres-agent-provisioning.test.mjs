@@ -60,6 +60,7 @@ import {
   COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
   CREDENTIAL_PROXY_INSTALLATION_ACCESS,
   DEPENDENCY_UNAVAILABLE,
+  DEDICATED_STORAGE_ROUTING_REQUIRED,
   dedicatedOpenClawSandboxRefusal,
   keepRuntime,
   PROVISIONING_NOT_COMPLETED,
@@ -4320,7 +4321,7 @@ test(
       [
         {
           outcome: "permanent",
-          reason: "Dedicated Harness storage requires gateway routing and node enrollment.",
+          reason: DEDICATED_STORAGE_ROUTING_REQUIRED,
         },
       ],
     );

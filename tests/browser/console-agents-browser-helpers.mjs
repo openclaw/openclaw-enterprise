@@ -66,6 +66,11 @@ export const AGENT_READ = [
   ["read", "configuration"],
 ];
 
+// The Credentials tab's Channel Secrets save outcome (agents/credentials.mts saveOutcomeText). It
+// points to Deploy only once no grant read is still to come and every bound Secret is granted.
+export const CHANNEL_SECRETS_SAVED = "Channel Secret bindings saved.";
+export const CHANNEL_SECRETS_SAVED_DEPLOY = `${CHANNEL_SECRETS_SAVED} Deploy the new version to deliver them.`;
+
 /**
  * Removes one [action, resourceKind] grant from member `label`'s Role, which must hold it.
  * Returns a function that restores the grants the Role held before.
