@@ -3156,14 +3156,15 @@ function gatewayEnvironment() {
 
 let gatewayConfigurationHeld = false;
 
-// OpenClaw exits at startup when any setting fails its schema, including a plugin entry's
-// config when that plugin is disabled or denied, and for a plugin setting logs only "config
-// validity changed" (finding 3043). Each restart fails the same way, until the convergence
-// deadline. So once a Gateway that never served exits non-zero, OpenClaw's own validator
-// checks the same configuration. An invalid one is held as check gateway-config, which ends
-// the deployment at once, and the log names the settings. Any other exit, or a validator
-// that prints no report (it failed or timed out), restarts the container as before, as does
-// a Gateway with no Compute status port to serve the hold on.
+// OpenClaw exits at startup (status 78) when any setting fails its schema, including a plugin
+// entry's config when that plugin is disabled or denied (finding 3043; the runtime image carries
+// openclaw/openclaw#189392, so OpenClaw's own log names a failing plugin setting too). Each
+// restart fails the same way, until the convergence deadline. So once a Gateway that never
+// served exits non-zero, OpenClaw's own validator checks the same configuration. An invalid
+// one is held as check gateway-config, which ends the deployment at once, and the log names
+// the settings. Any other exit, or a validator that prints no report (it failed or timed
+// out), restarts the container as before, as does a Gateway with no Compute status port to
+// serve the hold on.
 function holdInvalidGatewayConfiguration(code, signal) {
   if (runtimeStatusPort() === undefined) return false;
   const validation = pluginSpawnSync("node", ["/app/openclaw.mjs", "config", "validate", "--json"], {
