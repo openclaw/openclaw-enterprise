@@ -14,8 +14,7 @@ the dedicated Harness while Compute retains the gateway and routing.
 
 ## Interface
 
-The [exported TypeScript interface](../../../packages/contracts/src/drivers/compute/index.ts)
-defines each member.
+See the [exported interface](../../../packages/contracts/src/drivers/compute/index.ts).
 
 ### Properties
 
@@ -259,6 +258,21 @@ A ready revision may report `PLUGIN_INSTALL_FAILED` or `PLUGIN_AUTH_REQUIRED`
 for an approved plugin only after disabling it and confirming the rest of the
 runtime is ready. The worker records warnings on successful deployment. See
 [Kubernetes startup status](kubernetes-compute.md#plugin-startup-status).
+
+## Configuration
+
+Select Compute under `drivers.compute` in Installation startup YAML. Restart API and worker after changes.
+
+| Setting         | Type   | Requirement | Value, default, and constraints                                  |
+| --------------- | ------ | ----------- | ---------------------------------------------------------------- |
+| `id`            | string | Required    | Nonempty Driver identity; no default.                            |
+| `configuration` | object | Required    | Implementation-defined settings; no shared fields or default.    |
+| `package`       | string | Optional    | Installed package. Omit for bundled Kubernetes or SSH selection. |
+
+See [selection and validation](selection.md#configuration-definitions-and-discovery)
+and the [implementation references](#implementations). Docker uses development
+environment settings instead. Agent Configuration and Harness bindings are
+separate inputs saved with each revision.
 
 ## Limits
 

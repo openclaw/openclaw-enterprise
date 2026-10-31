@@ -1,4 +1,12 @@
+---
+kind: reference/driver/impl
+---
+
 # Docker Compute Driver
+
+## Overview
+
+This implementation follows the [ComputeDriver contract](compute.md).
 
 `DockerComputeDriver` is the default Compute Driver for local control-plane
 development. Compose runs PostgreSQL, migrations, the initializer, the OCC API,
@@ -14,76 +22,9 @@ Use [Kubernetes](kubernetes-compute.md) to deploy Agents locally with OCC-manage
 credentials, or [SSH](ssh-compute.md) for embedded OpenClaw with operator-managed
 host credentials. Docker Compute cannot be selected for production.
 
-## Requirements
+## Lifecycle
 
-- Docker Engine with Docker Compose, or Podman with `podman-compose` and `yq` v4.
-- The full Compose development stack, not a process-local controller.
-- Existing production-equivalent runtime images:
-  `OCC_DOCKER_GATEWAY_IMAGE` and `OCC_DOCKER_AGENT_IMAGE`, or one shared
-  `OCC_DOCKER_RUNTIME_IMAGE` containing both runtime entrypoints.
-- Explicit `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` when the Compose bridge range
-  must be admitted as local development traffic.
-- The controller-only `OCC_DEVELOPMENT_CONFIGURATION_ROOT`, which Compose sets
-  to `/app/.development/configurations` from the `occ_configuration_data` named
-  volume.
-
-`scripts/dev-up` is the supported Podman entry point. It auto-detects Podman
-without a `docker` alias, requires and pins the standalone `podman-compose`
-provider, and `occ dev down` stops the stack with that same provider. It mounts
-the reported API socket through `compose.podman.yaml`, and preserves the
-driver's existing `/var/run/docker.sock` contract inside the worker. The
-Docker Compute worker disables SELinux process labeling because relabeling the
-host engine socket could disrupt the engine; the API, database, initializer,
-and migration services remain confined. Rootful Podman on Linux must expose its
-API socket (for example, `systemctl enable --now podman.socket`); the Compose
-provider reaches Podman through the `DOCKER_HOST` endpoint startup pins. The prior verified
-baseline is Podman client 6.1.0, server 5.7.1, and podman-compose 1.6.0. Prior
-Podman runtime proof covered control-plane startup, worker API preflight,
-authenticated Installation access, isolated Namespace networks, embedded and
-dedicated model responses, recovery after worker interruption, and exact test
-cleanup. That proof predates required harness bindings; current Agent admission
-prevents reaching those model and recovery scenarios. Interactive TUI execution
-remains unverified on Podman. `compose.logging.yaml` remains Docker-only because this Podman baseline
-does not provide the required Fluentd log driver.
-
-## Development configuration and persistence
-
-The [deployment guide](../../guides/deploy.md) owns the Compose startup
-procedure. [Settings](../settings.md) owns the environment-variable reference;
-[the development flow](../../flows/docker-compose-development.md) traces API,
-worker, and container startup.
-
-Compose publishes the OCC API on host
-`127.0.0.1:${OPENCLAW_DEV_PORT:-3000}`. PostgreSQL remains on a loopback host
-port. The API and worker share the same application-role database connection
-and select `compute-docker-development` with implementation `docker-local`
-unless `OCC_CONFIG_PATH` explicitly selects another trusted Driver set.
-
-Engine requests have a 10-second deadline and observe the current Compute
-cancellation signal. If the connection closes before the response body is
-complete, the operation fails rather than staying pending. The Driver does
-not automatically retry an interrupted request; an already-sent engine
-operation may still have taken effect.
-
-Engine response bodies have a 4 MiB budget. A larger declared content length
-is rejected before the body is read, and a response without that header is
-stopped when its received bytes cross the same limit. This fixed development
-boundary applies to all shared Driver requests, including image inspection and
-resource lists; unusually large legitimate metadata fails explicitly.
-
-Compose runs the shared initializer after migration and before the API or
-worker. Fresh setup creates the configured human administrator, service
-administrator, and singleton Installation; existing state is retained. Only
-the initializer mounts the protected initial-key output volume. The
-[authentication reference](../authentication.md#installation-and-account-ownership)
-owns credential creation and recovery; the
-[Compose development flow](../../flows/docker-compose-development.md) traces ordering.
-
-The cleanup command printed by `dev-up` keeps `occ_postgres_data`,
-`occ_configuration_data`, and the bootstrap-only `occ_bootstrap_data` volume.
-Adding `--volumes` deletes all three, including the initial service-key JSON.
-
-## Namespace lifecycle
+### Namespace lifecycle
 
 `ensureNamespace(namespace)` creates or verifies one Docker network for the
 exact Namespace. The network is labeled with the driver, Installation,
@@ -100,7 +41,7 @@ Each Namespace maps to one Docker network. Runtime containers for one
 Namespace join only that network; they do not join the control-plane management
 network or another Namespace network.
 
-## AgentRevision lifecycle
+### AgentRevision lifecycle
 
 `prepareRevision(revision)` validates the immutable Namespace, Agent, and `AgentRevision`,
 Harness identity, execution mode, and selected Compute implementation before it
@@ -182,7 +123,74 @@ The Driver then removes the container, so Doctor's output survives only
 through the Docker logging address. A slow migration can also outlast the
 Driver's 120-second readiness budget; deploying again retries it.
 
-## Gateway authentication
+### Initial workspace storage
+
+When an Agent has [initial workspace contents](../agents.md#initial-contents-at-creation),
+the Driver creates two named volumes owned by its exact Namespace and Agent:
+one for native state at `/home/node/.openclaw` and one for workspace files. The
+same workspace volume is mounted at both `/home/node/.openclaw/workspace` and
+`/home/node/workspace`, so the native default and dedicated Harness directory
+refer to the same files. Initial setup accepts either path; other workspace
+locations and disabled native bootstrap are rejected.
+
+A separate setup container runs native initialization and writes the supplied
+files and completion marker before execution starts. Later startup checks the
+marker without replaying the original text. Missing initialized storage blocks
+startup. Stop, container replacement, and redeployment retain both volumes;
+Agent or Namespace deletion removes them after the owned runtimes are removed.
+These Driver-created volumes are separate from Compose's control-plane volumes
+and are not removed by `compose down --volumes`.
+
+Agents without initial inputs retain the existing tmpfs storage behavior.
+[Workspace setup](../../flows/workspace-files.md) owns the initialization and
+retry contract. The Agent admission limitation above still applies to these
+Driver capabilities.
+
+## Configuration
+
+The [environment factory](../../../apps/controller/src/drivers/compute/docker/index.ts)
+reads these settings at process startup. Restart API and worker after changing
+them. Docker is the default development selection, not a bundled YAML selection.
+
+| Setting                      | Type   | Requirement | Value, default, and constraints                                            |
+| ---------------------------- | ------ | ----------- | -------------------------------------------------------------------------- |
+| `OCC_DOCKER_GATEWAY_IMAGE`   | string | Optional    | Gateway image; falls back to `OCC_DOCKER_RUNTIME_IMAGE`. One must be set.  |
+| `OCC_DOCKER_AGENT_IMAGE`     | string | Optional    | Codex image; falls back to `OCC_DOCKER_RUNTIME_IMAGE`. One must be set.    |
+| `OCC_DOCKER_RUNTIME_IMAGE`   | string | Optional    | Shared image containing both entrypoints; no default.                      |
+| `OCC_DOCKER_LOGGING_ADDRESS` | string | Optional    | Loopback Fluentd host and port, `1`–`65535`. Omission disables forwarding. |
+
+For example, with an image already loaded in the engine:
+
+```bash
+OCC_DOCKER_RUNTIME_IMAGE=oce-runtime:local scripts/dev-up
+```
+
+### Development configuration and persistence
+
+The [deployment guide](../../guides/deploy.md) owns the Compose startup
+procedure. [Settings](../settings.md) owns the environment-variable reference;
+[the development flow](../../flows/docker-compose-development.md) traces API,
+worker, and container startup.
+
+Compose publishes the OCC API on host
+`127.0.0.1:${OPENCLAW_DEV_PORT:-3000}`. PostgreSQL remains on a loopback host
+port. The API and worker share the same application-role database connection
+and select `compute-docker-development` with implementation `docker-local`
+unless `OCC_CONFIG_PATH` explicitly selects another trusted Driver set.
+
+Compose runs the shared initializer after migration and before the API or
+worker. Fresh setup creates the configured human administrator, service
+administrator, and singleton Installation; existing state is retained. Only
+the initializer mounts the protected initial-key output volume. The
+[authentication reference](../authentication.md#installation-and-account-ownership)
+owns credential creation and recovery; the
+[Compose development flow](../../flows/docker-compose-development.md) traces ordering.
+
+The cleanup command printed by `dev-up` keeps `occ_postgres_data`,
+`occ_configuration_data`, and the bootstrap-only `occ_bootstrap_data` volume.
+Adding `--volumes` deletes all three, including the initial service-key JSON.
+
+### Gateway authentication
 
 The native listener must serve HTTP for readiness and private traffic.
 `gateway.tls.enabled` must be omitted or false; native TLS enablement is refused
@@ -210,30 +218,53 @@ still apply. Trusted proxy without a password reference receives no managed
 password. The dedicated Codex `APP_SERVER_TOKEN` remains a separate transport
 credential with its existing recovery checks.
 
-## Initial workspace storage
+## Limits
 
-When an Agent has [initial workspace contents](../agents.md#initial-contents-at-creation),
-the Driver creates two named volumes owned by its exact Namespace and Agent:
-one for native state at `/home/node/.openclaw` and one for workspace files. The
-same workspace volume is mounted at both `/home/node/.openclaw/workspace` and
-`/home/node/workspace`, so the native default and dedicated Harness directory
-refer to the same files. Initial setup accepts either path; other workspace
-locations and disabled native bootstrap are rejected.
+### Requirements
 
-A separate setup container runs native initialization and writes the supplied
-files and completion marker before execution starts. Later startup checks the
-marker without replaying the original text. Missing initialized storage blocks
-startup. Stop, container replacement, and redeployment retain both volumes;
-Agent or Namespace deletion removes them after the owned runtimes are removed.
-These Driver-created volumes are separate from Compose's control-plane volumes
-and are not removed by `compose down --volumes`.
+- Docker Engine with Docker Compose, or Podman with `podman-compose` and `yq` v4.
+- The full Compose development stack, not a process-local controller.
+- Existing production-equivalent runtime images:
+  `OCC_DOCKER_GATEWAY_IMAGE` and `OCC_DOCKER_AGENT_IMAGE`, or one shared
+  `OCC_DOCKER_RUNTIME_IMAGE` containing both runtime entrypoints.
+- Explicit `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` when the Compose bridge range
+  must be admitted as local development traffic.
+- The controller-only `OCC_DEVELOPMENT_CONFIGURATION_ROOT`, which Compose sets
+  to `/app/.development/configurations` from the `occ_configuration_data` named
+  volume.
 
-Agents without initial inputs retain the existing tmpfs storage behavior.
-[Workspace setup](../../flows/workspace-files.md) owns the initialization and
-retry contract. The Agent admission limitation above still applies to these
-Driver capabilities.
+`scripts/dev-up` is the supported Podman entry point. It auto-detects Podman
+without a `docker` alias, requires and pins the standalone `podman-compose`
+provider, and `occ dev down` stops the stack with that same provider. It mounts
+the reported API socket through `compose.podman.yaml`, and preserves the
+driver's existing `/var/run/docker.sock` contract inside the worker. The
+Docker Compute worker disables SELinux process labeling because relabeling the
+host engine socket could disrupt the engine; the API, database, initializer,
+and migration services remain confined. Rootful Podman on Linux must expose its
+API socket (for example, `systemctl enable --now podman.socket`); the Compose
+provider reaches Podman through the `DOCKER_HOST` endpoint startup pins. The prior verified
+baseline is Podman client 6.1.0, server 5.7.1, and podman-compose 1.6.0. Prior
+Podman runtime proof covered control-plane startup, worker API preflight,
+authenticated Installation access, isolated Namespace networks, embedded and
+dedicated model responses, recovery after worker interruption, and exact test
+cleanup. That proof predates required harness bindings; current Agent admission
+prevents reaching those model and recovery scenarios. Interactive TUI execution
+remains unverified on Podman. `compose.logging.yaml` remains Docker-only because this Podman baseline
+does not provide the required Fluentd log driver.
 
-## Credential and container-engine boundaries
+Engine requests have a 10-second deadline and observe the current Compute
+cancellation signal. If the connection closes before the response body is
+complete, the operation fails rather than staying pending. The Driver does
+not automatically retry an interrupted request; an already-sent engine
+operation may still have taken effect.
+
+Engine response bodies have a 4 MiB budget. A larger declared content length
+is rejected before the body is read, and a response without that header is
+stopped when its received bytes cross the same limit. This fixed development
+boundary applies to all shared Driver requests, including image inspection and
+resource lists; unusually large legitimate metadata fails explicitly.
+
+### Credential and container-engine boundaries
 
 Only the worker container receives Docker-compatible engine access. The OCC API,
 PostgreSQL, the migration job, gateway containers, and Codex containers do
@@ -261,23 +292,6 @@ supported mount options. The non-root runtime creates its `.openclaw` and worksp
 `0700` before writing configuration or state. For Agents with initial inputs,
 the setup container prepares ownership and permissions on the named volumes.
 
-## Inspect owned resources
-
-Owned resources can be observed through the selected engine using the same
-driver labels:
-
-```bash
-docker network ls --filter label=org.openclaw.enterprise.compute-driver=docker
-docker ps --filter label=org.openclaw.enterprise.compute-driver=docker
-docker volume ls --filter label=org.openclaw.enterprise.compute-driver=docker
-```
-
-Replace `docker` with `podman` for a Podman-backed development stack.
-
-After deleting a Namespace, its matching network, containers, and Agent workspace
-volumes should be gone while other Namespaces remain. Agent deletion removes only
-that Agent's runtimes and volumes.
-
 ## Troubleshooting
 
 - **Worker starts with the wrong Compute Driver:** unset `OCC_CONFIG_PATH` for
@@ -299,7 +313,24 @@ that Agent's runtimes and volumes.
 - **Namespace cleanup leaves resources:** inspect ownership labels before
   deleting anything manually. The driver removes only exact owned resources.
 
-## Related
+### Inspect owned resources
+
+Owned resources can be observed through the selected engine using the same
+driver labels:
+
+```bash
+docker network ls --filter label=org.openclaw.enterprise.compute-driver=docker
+docker ps --filter label=org.openclaw.enterprise.compute-driver=docker
+docker volume ls --filter label=org.openclaw.enterprise.compute-driver=docker
+```
+
+Replace `docker` with `podman` for a Podman-backed development stack.
+
+After deleting a Namespace, its matching network, containers, and Agent workspace
+volumes should be gone while other Namespaces remain. Agent deletion removes only
+that Agent's runtimes and volumes.
+
+### Related
 
 - [Development and production deployment](../../guides/deploy.md)
 
