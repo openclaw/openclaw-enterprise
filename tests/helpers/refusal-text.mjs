@@ -335,8 +335,12 @@ export const codexApiKeyRefusal = (setting) =>
 // agents.defaults.models or agents.entries.<id>.models.
 export const runtimeIdUnsupported = (policy) =>
   `Configuration setting ${policy}.agentRuntime.id must be openclaw or codex.`;
-export const runtimeIdRequired = (policy) =>
-  `Configuration setting ${policy}.agentRuntime.id is required for the selected model: set it to openclaw or codex.`;
+// `offer` lists only values deployment then accepts: "openclaw", "openclaw or codex" where Codex
+// runs the model, or the runtime the other selected models use.
+export const runtimeIdRequired = (policy, offer) =>
+  `Configuration setting ${policy}.agentRuntime.id is required for the selected model: set it to ${offer}.`;
+export const runtimeOfOtherModels = (runtime) =>
+  `${runtime}, the runtime the other selected models use`;
 export const runtimePoliciesConflict = (first, firstId, second, secondId) =>
   `Configuration settings ${first}.agentRuntime.id (${firstId}) and ${second}.agentRuntime.id (${secondId}) conflict: set both to openclaw or both to codex, or remove one.`;
 export const codexRuntimeOffProvider = (policy) =>

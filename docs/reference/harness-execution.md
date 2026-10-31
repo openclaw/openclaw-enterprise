@@ -213,8 +213,10 @@ message names the settings to change and, for a runtime, the allowed values `ope
 and `codex`. A draft without a model, or a model without its required runtime, still
 saves; deployment refuses it and names the setting to add:
 `agents.defaults.models["<ref>"].agentRuntime.id` for a missing runtime (the entry's
-`agents.entries.<id>.models` policy when it lists the model), and on Kubernetes Compute
-`agents.defaults.model` for a missing model. A Preset is checked when a launch creates
+`agents.entries.<id>.models` policy when it lists the model or the entry's primary), and on
+Kubernetes Compute `agents.defaults.model` for a missing model. A missing runtime offers only
+values that deployment accepts: the runtime of the other selected models, or `openclaw`, and
+`codex` where Codex accepts the model. A Preset is checked when a launch creates
 its Configuration.
 
 ## Limits
