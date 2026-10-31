@@ -137,6 +137,11 @@ test("QA repository inputs start the controller, worker owner and repository ser
   });
   assert.ok(loaded?.repositoryOwner && loaded.repositoryPolicy && loaded.preparedRepositoryGit);
   assert.equal(loaded.repositoryGitDriver, undefined);
+  assert.equal("authorityIdentity" in loaded ? loaded.authorityIdentity : undefined, undefined);
+  assert.equal(
+    "resolveRepositoryDelivery" in loaded ? loaded.resolveRepositoryDelivery : undefined,
+    undefined,
+  );
   assert.equal(typeof loaded.nativeRepositorySender, "object");
   assert.equal(loaded.repositoryOwner.backendId, "github-qa");
   assert.equal(

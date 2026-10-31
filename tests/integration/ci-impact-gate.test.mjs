@@ -1,16 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
 const gate = resolve("scripts/ci/impact-gate.mjs");
 
 function runGate(t, mode, needs, extra = []) {
-  const dir = mkdtempSync(join(tmpdir(), "ci-impact-gate-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const dir = temporaryDirectorySync(t, "ci-impact-gate-");
   const input = join(dir, "needs.json");
   const output = join(dir, "expanded.json");
   writeFileSync(input, typeof needs === "string" ? needs : JSON.stringify(needs));

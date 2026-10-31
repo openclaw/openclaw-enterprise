@@ -59,6 +59,8 @@ const SLACK_EXTRA_KEYS_HINT =
 // Deploy checks each bound Secret, so the tab lists them with Retry Secret access (finding 3018).
 const SLACK_OFF_BOUND_HINT =
   "Slack is off, but this Configuration still binds the Secrets listed below. Deploying checks this Agent's access to each of them.";
+// A Retry with Slack off grants the Agent access to those Secrets; it saves nothing about Slack.
+const SLACK_OFF_RETRY_GRANTED = "Secret access granted. This Agent can use its bound Secrets.";
 function channelPolicy(values: unknown, provider: string) {
   return responseFields(responseFields(values).channels)[provider];
 }
@@ -966,9 +968,13 @@ export function createChannelSecretsPanel({
   // Secret waits for its grant: the read that follows may yet hold Deploy (#3686 review).
   function saveOutcomeText(retry: boolean) {
     lastSaveRetry = retry;
-    const saved = retry
-      ? "This Agent can use its saved Slack Secrets."
-      : "Channel Secret bindings saved.";
+    let saved = "Channel Secret bindings saved.";
+    if (retry) {
+      // With Slack off, Retry saved nothing about Slack: it granted the bound Secrets' access.
+      saved = channelEnabled(state.values, "slack")
+        ? "This Agent can use its saved Slack Secrets."
+        : SLACK_OFF_RETRY_GRANTED;
+    }
     return grantRecheck || state.checkingGrants || pendingSecretGrants().length
       ? saved
       : `${saved}${DELIVER_ON_DEPLOY}`;
@@ -1173,14 +1179,18 @@ export function createChannelSecretsPanel({
       let configurationSaved = false;
       let failedRead: "Agent" | "Configuration" | undefined;
       // A conflict keeps these choices for Reload draft instead of dropping them (finding 1512).
+      // A Retry makes no choices, so Reload draft has none to reapply or to name as not
+      // reapplied: it says only that the draft reloaded (finding 3021).
       const carryChoices = () => {
         state.reloadRequired = true;
         state.draftSeed = structuredClone(draft);
-        state.carried = {
-          configurationId: state.configuration.id,
-          initialSecretBindings: structuredClone(state.configuration.secretBindings ?? {}),
-          ...structuredClone(draft),
-        };
+        state.carried = retry
+          ? null
+          : {
+              configurationId: state.configuration.id,
+              initialSecretBindings: structuredClone(state.configuration.secretBindings ?? {}),
+              ...structuredClone(draft),
+            };
       };
       try {
         const configurationPath = `${namespacePath(context.namespaceId)}/configurations/${encodeURIComponent(state.configuration.id)}`;
@@ -1524,8 +1534,13 @@ export function createChannelSecretsPanel({
     }
     updateGrantWarning();
     if (!channelEnabled(state.values, "slack")) {
-      // No pickers hold choices with Slack off: show or hide the section (finding 3018).
+      // No pickers hold choices with Slack off: show or hide the section (finding 3018). A
+      // rebuilt Retry Secret access keeps the focus the replaced one had (finding 3021).
+      const refocus = Boolean(shown.save) && document.activeElement === shown.save;
       render();
+      if (refocus && shown.save?.isConnected && document.activeElement === document.body) {
+        shown.save.focus();
+      }
       return;
     }
     // Update in place: a rebuilt form would drop Secret choices made meanwhile and the focus.
