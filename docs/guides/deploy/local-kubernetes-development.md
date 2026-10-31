@@ -59,7 +59,7 @@ This profile uses the pinned K3s image, installs PostgreSQL and OCE (not
 OpenShell) in `oce-system`, and writes a generated administrator password and
 service key to the private state directory.
 
-Before bootstrapping, startup checks the Codex `0.163.0-alpha.2` sandbox with
+Before bootstrapping, startup checks the Codex `0.164.0` sandbox with
 its exact imported runtime image. If the node's `RuntimeDefault` blocks it, the
 launcher derives a [reviewed profile](codex-sandbox.md) from the node's actual
 policy and installs it only on the owned k3d node. Only dedicated Codex
