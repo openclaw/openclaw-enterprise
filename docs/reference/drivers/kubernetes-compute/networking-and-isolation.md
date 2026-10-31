@@ -17,10 +17,10 @@ characters, DNS prefixes 253.
 
 Each tenant starts with default-deny ingress and egress. Explicit policies allow
 DNS (UDP/TCP ports `53` and `5353` through `allow-dns`), approved gateway clients,
-and required communication between an Agent's gateway and dedicated Harness.
+and required gateway-Harness communication.
 Cross-tenant traffic, traffic between different Agents, Kubernetes API access,
 and cloud metadata access remain denied where those addresses fall inside the
-model egress exclusions below.
+model egress exclusions.
 
 A provisioning Sandbox Driver may own the dedicated Harness endpoint. Configure
 `network.providerHarness` with its namespace, Pod labels, Service ClusterIP in
@@ -29,6 +29,17 @@ limits Gateway egress to the peer, and disables its direct Harness route.
 This ClusterIP bridge supports only owned k3d profiles advertising
 `*.openshell.localhost`; production cannot use it. Drivers without
 the endpoint capability retain ordinary Service or private routing.
+
+When the provider serves Harness endpoints from a cluster Compute cannot
+reach with Pod selection, configure `{ remote: true, address, port }`.
+The `address` is one exact IP address, bare
+or with an explicit `/32` or `/128` prefix; range, all-address, unspecified
+and IPv4-mapped addresses fail startup. Gateway egress admits only that
+address and port. The advertised endpoint must use WSS; only the local bridge may use WS. The tenant
+`allow-gateway-ingress` policy then also admits namespaces labeled
+`openshell.ai/managed-by: openshell` on the Gateway port. That admission is
+namespace-wide, so the remote form is not production-supported; its callback
+isolation contract is under review.
 
 For startup, plugin and deployment diagnostics, set
 `network.pluginStatusProxySourceCidrs` to the API server's Pod-proxy source
@@ -43,9 +54,8 @@ nor Kubernetes API access.
 With private Agent routing, Compute derives its Gateway ingress peer
 from `gatewayRouting`: the Envoy namespace and the Gateway's exact owning name
 and namespace labels. Omit `network.gatewayClients`; startup rejects explicit
-clients in routed mode. The native gateway trusts
-the proxy's source range; NetworkPolicy distinguishes the authenticated proxy
-from other Pods in that range. Remove direct API or tenant-workload access to
+clients in routed mode. NetworkPolicy distinguishes the authenticated proxy
+from other Pods in the trusted range. Remove direct API or tenant-workload access to
 the native gateway port in this mode.
 
 ### Gateway authentication
@@ -64,7 +74,7 @@ both Agent ID and Agent revision ID labels. Each peer also requires the tenant n
 label. These selectors permit transport; the credential service still validates
 the session and repository grant.
 
-Compute projects repository broker policy to the actual Codex consumer: the
+Compute projects repository broker policy to the Codex consumer: the
 Agent Pod for dedicated Codex, or the gateway for embedded OpenClaw with
 `plugins.driver.implementation: occ/codex-plugin`. Embedded OpenClaw using
 `occ/openclaw-plugin` or no PluginDriver selection receives no Codex projection.
@@ -75,27 +85,23 @@ Selected Codex plugins get filesystem-only, read-only access to
 networking, repository credential paths nor whole-filesystem reads, and leaves
 project write permissions unchanged.
 
-For Codex consumers with repository bindings, Compute also adds the exact broker
-hostname from admitted session material to the tool proxy's domain allowlist and
-sets stock Codex `allow_local_binding = true` and `mode = "full"`. An explicit
-deny matching the broker hostname fails closed. The repository-bound filesystem
+For Codex consumers with repository bindings, Compute adds the exact broker
+hostname from admitted session material to the whole tool proxy's domain
+allowlist, with stock `allow_local_binding = true` and `mode = "full"`; an
+explicit deny matching that hostname fails closed. The
+[repository credential reference](../../repository-credentials.md) owns those
+settings and their authorization boundaries. The repository-bound filesystem
 profile additionally grants read-only access to the repository client at
 `/opt/oce/repository-credentials` and admitted session material at
 `/run/oce/repository-credentials`. Dedicated Codex with an enabled proxy also
-reads `/home/node/.codex/skills/.system`, even without a binding. Embedded
-Codex uses another home; a disabled proxy stays disabled.
+reads `/home/node/.codex/skills/.system`, even without a binding; embedded
+Codex uses another home, and a disabled proxy stays disabled. Domain rules
+match hostnames, not ports: an allowed host is reachable on any port the lower
+network layers permit. Managed requirements that forbid local binding or
+require limited mode reject the conflicting configuration. The workspace
+sandbox remains enabled.
 
-These settings apply to the Agent's whole tool proxy: local binding is allowed,
-Codex's additional private-address guard is disabled, and every HTTP method is
-allowed at otherwise allowed destinations. Domain rules match hostnames, not
-ports: an allowed host is reachable on any port permitted by the lower network
-layers. Managed requirements
-that forbid local binding or require limited mode reject the conflicting
-configuration. Domain allowlisting, explicit denies, Kubernetes NetworkPolicy,
-TLS verification, and broker session/repository authorization remain separate
-boundaries. The workspace sandbox remains enabled.
-
-Compute supplies the broker's public CA to that consumer before Codex starts. Stock full mode
+Compute supplies the broker's public CA before Codex starts. Stock full mode
 normally tunnels HTTPS, so Git verifies the broker certificate directly. If
 Codex separately requires HTTPS interception, it retains platform and startup
 roots upstream and supplies child tools with its managed CA bundle. Preserve
@@ -173,8 +179,8 @@ See [gateway routing with Envoy](../../gateway-routing.md) for shared infrastruc
 service-key bootstrap, TLS, and network enforcement.
 
 Runtime-enabled dedicated Harnesses require private routing and node enrollment
-before Compute can prepare or activate them. Missing wiring raises a configuration
-error before changing workloads; there is no Gateway-local workspace fallback.
+before Compute can prepare or activate them; missing wiring raises a configuration
+error before changing workloads, with no Gateway-local workspace fallback.
 Embedded Harnesses can still use direct access.
 
 Installation Compute settings enable stable Agent routes:
@@ -221,8 +227,7 @@ route-specific SecurityPolicy for native device authentication. The
 [routing reference](../../gateway-routing.md#native-node-endpoint) owns its
 credential boundary and the remaining Harness lifecycle requirements.
 
-The Service and route stay stable across versions; see
-[endpoint and route](../../gateway-routing.md#endpoint-and-route). Missing CRDs
+The Service and route stay stable across versions. Missing CRDs
 or denied worker permissions fail reconciliation rather than disabling routing
 silently.
 
@@ -283,13 +288,10 @@ Kubernetes namespace when creating the OpenClaw Namespace:
 }
 ```
 
-Prepare the namespace by annotating
-`openclaw.dev/namespace-lifecycle=external`, applying
-`pod-security.kubernetes.io/enforce=restricted`,
-`pod-security.kubernetes.io/audit=restricted`, and
-`pod-security.kubernetes.io/warn=restricted`, and granting the tenant-local
-[worker and API RoleBindings](../../../guides/deploy/production-agents.md#grant-tenant-rolebindings).
-The worker rechecks
+Prepare the namespace and its tenant-local
+[worker and API RoleBindings](../../../guides/deploy/production-agents.md#grant-tenant-rolebindings)
+first; the [placement flow](../../../flows/kubernetes-existing-namespace-placement.md)
+owns the exact steps and required annotations. The worker rechecks
 [administrator authorization and foreign ownership](../../security.md#namespace-admission-and-resource-isolation)
 before binding the tenant identity; no pause or restart is required.
 Missing worker permissions keep provisioning pending; missing API permissions
@@ -299,7 +301,7 @@ existing-namespace selection with `409`.
 Workload Pods use the restricted
 [Pod and container hardening](../../security.md#pod-and-container-hardening),
 including the optional `runtime.codexSeccompProfile`, which applies only to the
-dedicated Codex Agent container. Agents get identity from an
+dedicated Codex container. Agents get identity from an
 audience-scoped, short-lived projected ServiceAccount token. Workloads never
 receive controller credentials.
 
