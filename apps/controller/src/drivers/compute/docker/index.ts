@@ -43,9 +43,9 @@ import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-
 import {
   AGENT_READINESS_ENTRYPOINT,
   AGENT_RUNTIME_ENTRYPOINT,
-  OPENCLAW_CONFIG_ISSUE_HELPER,
   PLUGIN_RUNTIME_HELPERS,
 } from "../kubernetes/runtime-entrypoints.ts";
+import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import {
   embeddedGatewayVolumeInstance,
   observeEmbeddedGateway,
