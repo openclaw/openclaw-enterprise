@@ -44,7 +44,7 @@ const repositorySetPermissions = {
 } as const;
 import { gitExpiryGateway } from "./openshell-online-git-journey.mjs";
 import { harnessTlsFixture } from "./harness-tls.mjs";
-import { availablePort } from "./available-port.mjs";
+import { bindReservedPortInProcess, reservePort } from "./available-port.mjs";
 import { invoke, token, openShellMiddlewareClient } from "./openshell-online-wire.mjs";
 import { exerciseNativeRepositorySet } from "./native-repository-set.ts";
 import { CREDENTIAL_GATEWAY_FIXTURE_ID } from "./postgres-worker-revision-fixture.mjs";
@@ -125,7 +125,12 @@ async function repositoryGitJourney(
   const keys = generateKeyPairSync("ed25519");
   const issuerPublicKeyPath = join(tls.directory, "issuer.pem");
   await writeFile(issuerPublicKeyPath, keys.publicKey.export({ type: "spki", format: "pem" }));
-  const port = await availablePort();
+  // The Git runtime binds its authority on this port in-process, well after its configuration
+  // names it. Hold the port until then, so a test running in parallel cannot take it.
+  const authorityPort = await reservePort();
+  t.after(() => authorityPort.release());
+  await bindReservedPortInProcess(authorityPort);
+  const { port } = authorityPort;
   const middleware = openShellMiddlewareClient(t, port, tls.caBundle);
   const order: string[] = [];
   const id = "selected-stock-openshell";
@@ -253,6 +258,9 @@ async function repositoryGitJourney(
   runtime["routes"] = new PostgresOpenShellGitRouteStore(f.observerPool);
   const bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
   t.after(() => bound.close());
+  // The authority listens now. Release the hold before the first request: while both listen, the
+  // kernel may hand a connection to the hold, which resets it.
+  await authorityPort.release();
   await runtime["running"];
   const driver = new GitHubRepositoryPolicy(
     { driverId: peer.registry.backendId, backendId: peer.registry.backendId },
