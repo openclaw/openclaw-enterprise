@@ -195,6 +195,9 @@ inherit this declaration, and `providerTools: none` still disables search.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:writeCodexConfigToml`
 writes the generated file into `CODEX_HOME` before native startup. The capability
 therefore belongs to Codex's user configuration, not a workspace override.
+Native CLI launch passes explicit log and metrics exporter overrides for login,
+the authentication probe and the app-server.
+[Runtime logging](../reference/harness-execution.md#runtime-logging) defines the export defaults.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:probeCodexAuthentication`
 uses CLI overrides because the probe ignores user configuration. Account login and
 other Harnesses keep their endpoints; only the Harness holds model credentials.

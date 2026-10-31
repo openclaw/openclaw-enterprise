@@ -3831,7 +3831,14 @@ if (providerManagedPat) {
     JSON.stringify({ personal_access_token: accessToken }), { mode: 0o600 });
 }
 const loginFlag = loginMode === "api_key" ? "--with-api-key" : "--with-access-token";
+// Native metrics have a separate upstream exporter default from logs.
+const nativeTelemetryArguments = [
+  "-c", "otel.exporter=\"none\"",
+  "-c", "otel.metrics_exporter=\"none\"",
+  "-c", "otel.log_user_prompt=false",
+];
 const loginArguments = [
+  ...nativeTelemetryArguments,
   "-c", "cli_auth_credentials_store=file", "login", providerManagedPat ? "status" : loginFlag,
 ];
 function codexChildEnvironment() {
@@ -4062,6 +4069,7 @@ function probeCodexAuthentication(timeout) {
       "skill_mcp_dependency_install", "tool_suggest", "recommended_plugins", "request_permissions_tool",
     ];
     result = spawnSync(codexExecutable(), [
+      ...nativeTelemetryArguments,
 ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,
@@ -4268,13 +4276,10 @@ if (digest === undefined) {
   digest = createHash("sha256").update(process.env.APP_SERVER_TOKEN).digest("hex");
 }
 const nativeArguments = [
+    ...nativeTelemetryArguments,
     // Preserve the admitted model selection for native policy readback.
     "-c",
     "model=" + JSON.stringify(process.env.OPENCLAW_HARNESS_MODEL.slice(process.env.OPENCLAW_HARNESS_MODEL.indexOf("/") + 1)),
-    "-c",
-    "otel.exporter=\"none\"",
-    "-c",
-    "otel.log_user_prompt=false",
     // Managed container tools must retain the runtime PATH, including Skill dependencies.
     // Login profiles otherwise replace it with the image's system-only PATH.
     "-c",

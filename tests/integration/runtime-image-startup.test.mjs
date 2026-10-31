@@ -586,6 +586,8 @@ const timeout = setTimeout(() => { native.kill("SIGKILL"); process.exitCode = 1;
     await rpc("initialize", { clientInfo: { name: "repository-runtime-smoke", version: "1.0.0" }, capabilities: { experimentalApi: true } });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\\n");
     const { config } = await rpc("config/read", {});
+    // Native metrics have a separate upstream exporter default from logs.
+    assert.equal(config.otel.metrics_exporter, "none");
     assert.equal(config.allow_login_shell, false);
     assert.equal(config.shell_environment_policy.set.PATH, environment.PATH);
     assert.equal(config.shell_environment_policy.set.NODE_EXTRA_CA_CERTS, environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS);
