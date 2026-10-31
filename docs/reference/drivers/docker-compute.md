@@ -4,6 +4,14 @@ kind: reference/driver/impl
 
 # Docker Compute Driver
 
+**Contents**
+
+- [Overview](#overview)
+- [Lifecycle](#lifecycle)
+- [Configuration](#configuration)
+- [Limits](#limits)
+- [Troubleshooting](#troubleshooting)
+
 ## Overview
 
 This implementation follows the [ComputeDriver contract](compute.md).

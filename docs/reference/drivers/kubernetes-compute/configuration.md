@@ -1,5 +1,16 @@
 # Kubernetes Compute configuration
 
+**Contents**
+
+- [Authentication](#authentication)
+- [Images and resources](#images-and-resources)
+- [Network](#network)
+- [Workload identity](#workload-identity)
+- [Runtime](#runtime)
+- [Private routing](#private-routing)
+- [Experimental execution cluster](#experimental-execution-cluster)
+- [Example](#example)
+
 Set these fields under `drivers.compute.configuration` in the Installation
 startup YAML. Both API and worker load the file at `OCC_CONFIG_PATH`; restart
 both after changes. The [schema and validator](../../../../apps/controller/src/drivers/compute/kubernetes/index.ts)
