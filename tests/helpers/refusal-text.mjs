@@ -350,14 +350,30 @@ export const runtimeIdUnsupported = (policy) =>
   `Configuration setting ${policy}.agentRuntime.id must be openclaw or codex.`;
 // `offer` lists only values deployment then accepts: "openclaw", "openclaw or codex" where Codex
 // runs the model ("codex" alone for a dedicated Agent on an Installation that cannot run
-// dedicated OpenClaw, finding 3036), or the runtime the other selected models use.
+// dedicated OpenClaw, finding 3036; "openclaw" alone for an embedded Agent where the Installation
+// approves Codex only for dedicated execution, finding 3037), or the runtime the other selected
+// models use.
 export const runtimeIdRequired = (policy, offer) =>
   `Configuration setting ${policy}.agentRuntime.id is required for the selected model: set it to ${offer}.`;
+// Where the deploying Agent runs neither runtime for the model (an embedded Agent with a
+// codex/<model> model, where the Installation approves Codex only for dedicated execution and
+// embedded OpenClaw runs no codex/<model> model), deploy names this next step instead of an offer
+// (finding 3037). `target` is "it" for one setting, or "both" for two that conflict.
+export const noRunnableRuntime = (target) =>
+  `set ${target} to codex on a dedicated Agent, or select a model of another provider`;
+export const runtimeIdRequiredNextStep = (policy) =>
+  `Configuration setting ${policy}.agentRuntime.id is required for the selected model: ${noRunnableRuntime("it")}.`;
+// Deploy, and Agent save given the deploy route's Harness resolver, of an embedded Agent whose
+// Configuration selects the Codex Harness, which the Installation approves only for dedicated
+// execution.
+export const CODEX_NEEDS_DEDICATED =
+  "The Configuration selects the Codex Harness, which needs dedicated execution; this Agent uses embedded execution. Change the Agent's execution mode or its Configuration.";
 export const runtimeOfOtherModels = (runtime) =>
   `${runtime}, the runtime the other selected models use`;
 // `remedy` offers only values deployment then accepts: BOTH_RUNTIMES, or keepRuntime(...) when
 // only one runtime is accepted (Codex does not run the model, another policy or an earlier
-// selected model already selects it, or the Agent is dedicated where dedicated OpenClaw is not).
+// selected model already selects it, or the deploying Agent cannot run the other one), or
+// noRunnableRuntime("both") where the deploying Agent runs neither (finding 3037).
 export const runtimePoliciesConflict = (first, firstId, second, secondId, remedy) =>
   `Configuration settings ${first}.agentRuntime.id (${firstId}) and ${second}.agentRuntime.id (${secondId}) conflict: ${remedy}.`;
 export const BOTH_RUNTIMES = "set both to openclaw or both to codex, or remove one";
@@ -370,6 +386,8 @@ export const selectableModelsNotObject = (parent) =>
 // `offer` as for runtimeIdRequired, or the runtime other settings or the listed models select.
 export const selectablePrimaryRuntimeRequired = (primaryPolicy, offer) =>
   `Configuration setting ${primaryPolicy}.agentRuntime.id is required when other models are listed beside the primary model: set it to ${offer}.`;
+export const selectablePrimaryRuntimeNextStep = (primaryPolicy) =>
+  `Configuration setting ${primaryPolicy}.agentRuntime.id is required when other models are listed beside the primary model: ${noRunnableRuntime("it")}.`;
 export const runtimeOfPrimaryElsewhere = (runtime) =>
   `${runtime}, the runtime other settings select for the primary model`;
 export const runtimeOfListedModels = (runtime) => `${runtime}, the runtime the listed models use`;
