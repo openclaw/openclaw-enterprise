@@ -47,6 +47,20 @@ const ALLOWED_FIELDS = new Set([
   "activationMs",
   "agentId",
   "attempt",
+  "attemptId",
+  "admissionCurrent",
+  "inBounds",
+  "stale",
+  "clockTolerance",
+  "stage",
+  "firstFailureStage",
+  "httpStatus",
+  "responseComplete",
+  "candidateIdentified",
+  "requestEndCalled",
+  "validationKind",
+  "validationCode",
+  "publication",
   "candidatePreparationReached",
   "cause",
   "cleanupCause",
@@ -261,6 +275,29 @@ function safeNumber(key: string, value: number): number | undefined {
 }
 
 function safeScalar(key: string, value: unknown): string | number | boolean | undefined {
+  if (
+    [
+      "admissionCurrent",
+      "inBounds",
+      "stale",
+      "clockTolerance",
+      "responseComplete",
+      "candidateIdentified",
+      "requestEndCalled",
+    ].includes(key)
+  ) {
+    return typeof value === "boolean" ? value : undefined;
+  }
+  if (key === "httpStatus") {
+    return typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599
+      ? value
+      : undefined;
+  }
+  if (
+    ["stage", "firstFailureStage", "validationKind", "validationCode", "publication"].includes(key)
+  ) {
+    return safeCode(value);
+  }
   if (key === "stopYields") {
     return typeof value === "number" && value >= 0 ? safeNumber(key, value) : undefined;
   }

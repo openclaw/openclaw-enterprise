@@ -1,0 +1,51 @@
+# Permit read-only plugin package downloads from the pinned Codex executables.
+networkPolicies:
+  - name: codex-plugin-artifacts
+    # Match the native Codex executable on either supported architecture.
+    binaries:
+      - path: /app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex
+      - path: /app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex
+    # Allow inspected, read-only requests to the approved package hosts on port 443.
+    endpoints:
+      - {
+          host: sdmntprsouthcentralus.oaiusercontent.com,
+          ports: [443],
+          protocol: rest,
+          enforcement: enforce,
+          access: read_only,
+        }
+      - {
+          host: sdmntprwestcentralus.oaiusercontent.com,
+          ports: [443],
+          protocol: rest,
+          enforcement: enforce,
+          access: read_only,
+        }
+      - {
+          host: sdmntprcentralus.oaiusercontent.com,
+          ports: [443],
+          protocol: rest,
+          enforcement: enforce,
+          access: read_only,
+        }
+      - {
+          host: sdmntprwestus.oaiusercontent.com,
+          ports: [443],
+          protocol: rest,
+          enforcement: enforce,
+          access: read_only,
+        }
+      - {
+          host: sdmntprbrazilsouth.oaiusercontent.com,
+          ports: [443],
+          protocol: rest,
+          enforcement: enforce,
+          access: read_only,
+        }
+      - {
+          host: sdmntprwestus2.oaiusercontent.com,
+          ports: [443],
+          protocol: rest,
+          enforcement: enforce,
+          access: read_only,
+        }
