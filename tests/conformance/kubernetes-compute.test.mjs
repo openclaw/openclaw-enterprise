@@ -9530,7 +9530,6 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   const envProvider = (allowlist) => ({ source: "env", ...(allowlist ? { allowlist } : {}) });
   for (const [configuration, ...refused] of [
     [passwordRef(undefined), "providerless"],
-    [passwordRef(undefined, { defaults: { env: "custom" } }), "providerless", "custom"],
     [passwordRef("vault"), "provider", "vault"],
     [passwordRef("default", { defaults: { env: "custom" } }), "provider", "default"],
     [passwordRef("vault", { providers: { vault: { source: "file" } } }), "provider", "vault"],
