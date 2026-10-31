@@ -39,26 +39,9 @@ selection at `AgentRevision.harness`. All three properties are required.
 
 <a id="resolver"></a>
 
-| Operation                                                                       | Requirement | Caller and result                                                                                                                                                                                                                                                                                                              |
+| Method                                                                          | Requirement | Caller and result                                                                                                                                                                                                                                                                                                              |
 | ------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | <a id="method-harness-resolver"></a>`HarnessResolver(harnessId, executionMode)` | Required    | At deployment, OCC asks the [resolver](../../packages/occ/src/index.ts) for an approved descriptor. The [bundled implementation](../../apps/controller/src/composition/production-harness.ts) returns an ID and version for a recognized pair, or `undefined` otherwise. OCC rejects an unapproved pair before it queues work. |
-
-### Native runtime selection
-
-Set `executionMode` on the Agent. Creation defaults to `embedded`, and an update
-that omits the field keeps the current mode. In the Configuration, select a
-primary model as `provider/model`. The model ID can contain slashes. An
-explicit `agentRuntime.id` selects `openclaw` or `codex`. Agent entries must
-agree on the primary model and Harness. Fallbacks must use the same provider and
-resolve to the same Harness. Admission preserves their order.
-
-The [model policy resolver](../../packages/occ/src/configured-harness.ts) selects
-OpenClaw when there is no model candidate or an unambiguous built-in provider.
-OpenAI, Codex, custom providers, and plugin-routed providers require an explicit
-runtime policy. Catalog entries may use the full model reference or the ID after
-the first slash. Each listed provider model must be a selected primary or fallback.
-Codex accepts its native `codex` provider, or `openai` with the
-Codex plugin explicitly enabled for WebSocket app-server transport.
 
 ### Supported topology
 
@@ -75,14 +58,6 @@ A selected Sandbox requires dedicated execution. For dedicated native OpenClaw,
 it must also support that mode, provision the Harness, and enforce all three
 [containment facets](drivers/sandbox.md#containment-facets): networking,
 filesystem, and process. Compute still owns gateway identity and routing.
-
-### Native worker support
-
-Dedicated native OpenClaw requires a runtime that enforces worker placement
-and supports inference on the node. The [bundled image](../../deploy/runtime/README.md)
-reports `capabilities.nativeWorkers.support` as `pinned-runtime` on a qualifying
-Installation. For a custom image, check
-[`runtime.nativeWorkerSupport`](configuration.md#installation-startup-configuration).
 
 ## IAM
 
@@ -181,6 +156,56 @@ Sandbox configuration. Kubernetes sends gateway JSON console output and Codex
 stderr to the Collector. Codex stdout carries protocol messages. A trusted
 Compute Driver can instead declare [Driver-managed logging](drivers/compute.md#runtime-logging-ownership).
 See [observability](../guides/observability.md) for collection settings.
+
+## Configuration
+
+### Installation settings
+
+The Harness has no Driver registration settings. The Installation selects Compute
+and, optionally, Sandbox. Their capabilities determine which execution modes an
+Agent can use. See [Driver selection and configuration discovery](drivers/selection.md#configuration-definitions-and-discovery).
+
+#### Native worker support
+
+Dedicated native OpenClaw requires enforced worker placement and inference on the
+node. The [bundled image](../../deploy/runtime/README.md) supplies these capabilities.
+For a custom image, the operator can declare support in the
+[Installation startup configuration](configuration.md#installation-startup-configuration).
+The API and worker read this setting at startup. On a qualifying Installation,
+`GET /installation` reports `capabilities.nativeWorkers.support` as
+`pinned-runtime` when the pinned runtime supplies support, or `custom-image`
+when OCC relies on the operator declaration.
+
+| Setting                       | Type   | Requirement | Value, default, and constraints                                                                                                                                                        |
+| ----------------------------- | ------ | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `runtime.nativeWorkerSupport` | string | Optional    | `custom-image` declares that the operator's image supports native workers. Omit the setting to rely on built-in support for the pinned runtime. A qualifying Sandbox is also required. |
+
+### Agent settings
+
+Set these fields when creating or updating an Agent. Deployment saves the
+resolved settings in a new AgentRevision. An edit to the Agent or its
+Configuration takes effect on the next deployment.
+
+| Setting           | Type           | Requirement | Value, default, and constraints                                                                                                                                                                                          |
+| ----------------- | -------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `configurationId` | string         | Required    | On creation, supply the ID of an Agent Configuration in the same Namespace. An update that omits the field keeps the current Configuration.                                                                              |
+| `executionMode`   | string         | Optional    | `embedded` (default on creation) or `dedicated`. An update that omits the field keeps the current mode.                                                                                                                  |
+| `harnessAuth`     | object or null | Optional    | A new draft can omit the binding. An update that omits it keeps the current binding. Deployment requires a binding compatible with the selected runtime and mode. See [Harness authentication](#harness-authentication). |
+
+### Native runtime selection
+
+In the Configuration, select a primary model as `provider/model`. The model ID can contain slashes. An
+explicit `agentRuntime.id` selects `openclaw` or `codex`. Agent entries must
+agree on the primary model and Harness. Fallbacks must use the same provider and
+resolve to the same Harness. Admission preserves their order.
+
+The [model policy resolver](../../packages/occ/src/configured-harness.ts) selects
+OpenClaw when there is no model candidate or an unambiguous built-in provider.
+OpenAI, Codex, custom providers, and plugin-routed providers require an explicit
+runtime policy. Catalog entries may use the full model reference or the ID after
+the first slash. Each listed provider model must be a selected primary or fallback.
+Codex accepts its native `codex` provider, or `openai` with the
+Codex plugin explicitly enabled for WebSocket app-server transport.
 
 ## Limits
 
