@@ -1,6 +1,7 @@
-import type {
-  ConfigurationValidationOptions,
-  OpenClawConfigurationDocument,
+import {
+  type ConfigurationValidationOptions,
+  isAllowedSecretBindingDestination,
+  type OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import {
   enabledChannelEntries,
@@ -109,10 +110,33 @@ export function requireChannelTopology(
 // Secret binding cannot target them (a reserved prefix).
 const CODEX_APP_SERVER_VARIABLE = /^APP_SERVER_/i;
 
-// The APP_SERVER_ variable a secret-input value reads as an environment SecretRef, if any: a
-// whole `${NAME}` with no fallback, the `$NAME` shorthand or an env SecretRef object. OpenClaw
-// keeps a reference inside other text as written, which does not stop the Gateway.
-function codexAppServerVariable(value: unknown): string | undefined {
+/**
+ * The plugin secret inputs that stop the OpenClaw Gateway at startup when their reference is
+ * unset, for each plugin the runtime image ships with any: the `configContracts.secretInputs`
+ * paths without an `ownerKind` in `extensions/<id>/openclaw.plugin.json` at the commit in
+ * `deploy/runtime/openclaw-source.json` (`*` matches each key). OpenClaw resolves those for no
+ * runtime owner and ends startup with "required secrets are unavailable". An input with an
+ * `ownerKind` (beam, imap) only makes its owner unavailable, and the Gateway skips an entry for a
+ * plugin the image does not ship. Update this list when that pin or the image's plugins change.
+ */
+const GATEWAY_REQUIRED_PLUGIN_SECRET_INPUTS: Readonly<
+  Record<string, readonly (readonly string[])[]>
+> = {
+  codex: [
+    ["appServer", "authToken"],
+    ["appServer", "headers", "*"],
+  ],
+  google: [["webSearch", "headers", "*"]],
+};
+
+// Variables the container runtime or the runtime image set in every Gateway, which a Secret
+// binding may also name: the Pod's HOSTNAME, the image's YARN_VERSION and Kubernetes service links.
+const RUNTIME_VARIABLE = /^(?:HOSTNAME|YARN_VERSION)$|_SERVICE_(?:HOST|PORT)(?:_|$)|_PORT(?:_|$)/;
+
+// The variable a secret-input value reads as an environment SecretRef, if any: a whole `${NAME}`
+// with no fallback, the `$NAME` shorthand or an env SecretRef object. OpenClaw keeps a reference
+// inside other text as written, and a fallback replaces an unset name, so neither stops it.
+function secretInputVariable(value: unknown): string | undefined {
   const reference = asRecord(value);
   const name =
     typeof value === "string"
@@ -120,47 +144,91 @@ function codexAppServerVariable(value: unknown): string | undefined {
       : reference?.source === "env"
         ? reference.id
         : undefined;
-  return typeof name === "string" && CODEX_APP_SERVER_VARIABLE.test(name) ? name : undefined;
+  return typeof name === "string" && name.length > 0 ? name : undefined;
+}
+
+// Each value at `keys` below `value`, with its setting path; `*` matches every key of an object.
+function settingValues(
+  value: unknown,
+  keys: readonly string[],
+  path: string,
+): (readonly [string, unknown])[] {
+  if (keys.length === 0) {
+    return [[path, value]];
+  }
+  const record = asRecord(value);
+  const [key, ...rest] = keys;
+  if (record === undefined) {
+    return [];
+  }
+  return (key === "*" ? Object.keys(record) : [key!])
+    .filter((name) => Object.hasOwn(record, name))
+    .flatMap((name) => settingValues(record[name], rest, keyedSettingPath(path, name)));
 }
 
 /**
- * An embedded Gateway has no Codex app server credential. OpenClaw resolves an active plugin's
- * secret inputs when the Gateway starts and exits when one is unset, so an embedded Agent whose
- * Codex plugin entry reads an APP_SERVER_ variable in `appServer.authToken` or
- * `appServer.headers.*` (the plugin's secret inputs at the pinned commit) restarts until the
- * deployment's convergence deadline. OpenClaw skips the secret inputs of a disabled entry, of a
- * denied plugin and of `plugins.enabled: false`, and so does this rule.
+ * An embedded Gateway starts only if every Gateway-required secret input of an active plugin
+ * (`GATEWAY_REQUIRED_PLUGIN_SECRET_INPUTS`) resolves; otherwise it exits at every start and the
+ * deployment waits for its convergence deadline (findings 3040, 3041). Refuses the first such
+ * reference to a variable the Gateway would lack: an APP_SERVER_ variable, which only a Dedicated
+ * Codex Gateway receives, and, when `bound` is given, a name a Secret binding could set but
+ * `bound` says nothing sets. `bound` answers for the Configuration's bindings and what the
+ * Installation adds at launch; Agent save, which knows neither, passes none. Other reserved names
+ * pass: Compute or the image may set them. OpenClaw skips the secret inputs of an entry whose
+ * `enabled` is false, of a denied plugin and of `plugins.enabled: false`, and so does this rule.
  */
-export function requireEmbeddedCodexPluginCredentials(
+export function requireEmbeddedPluginSecretInputs(
   configuration: Readonly<OpenClawConfigurationDocument>,
+  bound: ((name: string) => boolean) | undefined,
   createError: SettingError,
 ): void {
   const plugins = asRecord(configuration.plugins);
-  const codex = asRecord(asRecord(plugins?.entries)?.codex);
-  if (
-    codex === undefined ||
-    codex.enabled === false ||
-    plugins?.enabled === false ||
-    (Array.isArray(plugins?.deny) && plugins.deny.includes("codex"))
-  ) {
+  const entries = asRecord(plugins?.entries);
+  if (plugins?.enabled === false || entries === undefined) {
     return;
   }
-  const appServer = asRecord(asRecord(codex.config)?.appServer);
-  const path = "plugins.entries.codex.config.appServer";
-  const inputs: [string, unknown][] = [
-    [`${path}.authToken`, appServer?.authToken],
-    ...Object.entries(asRecord(appServer?.headers) ?? {}).map(
-      ([name, value]): [string, unknown] => [keyedSettingPath(`${path}.headers`, name), value],
-    ),
-  ];
-  for (const [setting, value] of inputs) {
-    const name = codexAppServerVariable(value);
-    if (name !== undefined) {
+  // OpenClaw matches plugin IDs in entries and deny trimmed and lowercased.
+  const policyId = (name: unknown): string | undefined =>
+    typeof name === "string" ? name.trim().toLowerCase() : undefined;
+  const denied = Array.isArray(plugins?.deny) ? plugins.deny.map(policyId) : [];
+  for (const [key, value] of Object.entries(entries)) {
+    const id = policyId(key)!;
+    const entry = asRecord(value);
+    if (
+      !Object.hasOwn(GATEWAY_REQUIRED_PLUGIN_SECRET_INPUTS, id) ||
+      entry === undefined ||
+      entry.enabled === false ||
+      denied.includes(id)
+    ) {
+      continue;
+    }
+    const path = keyedSettingPath("plugins.entries", key);
+    const disable = `remove ${path} or set its enabled to false`;
+    for (const [setting, value] of GATEWAY_REQUIRED_PLUGIN_SECRET_INPUTS[id]!.flatMap((keys) =>
+      settingValues(entry.config, keys, `${path}.config`),
+    )) {
+      const name = secretInputVariable(value);
+      if (name === undefined) {
+        continue;
+      }
       const shown = /^[A-Za-z0-9_]{1,32}$/.test(name) ? name : quotedSettingKey(name, 32);
-      throw createError(
-        setting,
-        `references ${shown}, which only a Dedicated Codex Agent receives: on an embedded Agent, remove plugins.entries.codex or set its enabled to false`,
-      );
+      if (CODEX_APP_SERVER_VARIABLE.test(name)) {
+        throw createError(
+          setting,
+          `references ${shown}, which only a Dedicated Codex Agent receives: on an embedded Agent, ${disable}`,
+        );
+      }
+      if (
+        bound !== undefined &&
+        isAllowedSecretBindingDestination(name) &&
+        !RUNTIME_VARIABLE.test(name) &&
+        !bound(name)
+      ) {
+        throw createError(
+          setting,
+          `references ${shown} without a Configuration Secret binding: bind ${shown} in secretBindings, or ${disable}`,
+        );
+      }
     }
   }
 }

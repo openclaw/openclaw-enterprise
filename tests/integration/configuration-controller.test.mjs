@@ -29,6 +29,8 @@ import {
   catalogRowNoModel,
   catalogRowUnselected,
   referenceFormRefusal,
+  dedicatedCodexVariableRefusal,
+  unboundPluginSecretRefusal,
   unboundReferenceRefusal,
   unreadableSlackTokenRefusal,
   unsubstitutedFallbackRefusal,
@@ -1996,9 +1998,28 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
         },
       },
       400,
-      setting(
+      dedicatedCodexVariableRefusal(
         "plugins.entries.codex.config.appServer.authToken",
-        "references APP_SERVER_TOKEN, which only a Dedicated Codex Agent receives: on an embedded Agent, remove plugins.entries.codex or set its enabled to false",
+        "APP_SERVER_TOKEN",
+      ),
+    ],
+    // Any other variable a plugin secret input reads stops the embedded Gateway the same way
+    // unless a Configuration Secret binding sets it (finding 3041). The save cannot know the
+    // Agent's bindings; deployment names the binding to add or the entry to disable.
+    [
+      {
+        ...valid,
+        plugins: {
+          entries: {
+            google: { config: { webSearch: { headers: { "X-Key": "${SEARCH_HEADER}" } } } },
+          },
+        },
+      },
+      400,
+      unboundPluginSecretRefusal(
+        "plugins.entries.google.config.webSearch.headers.X-Key",
+        "SEARCH_HEADER",
+        "google",
       ),
     ],
   ]) {
