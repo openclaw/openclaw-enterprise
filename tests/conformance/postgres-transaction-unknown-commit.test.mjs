@@ -4,6 +4,7 @@ import {
   PostgresPlatformState,
   PostgresCommitOutcomeUnknownError,
 } from "../../packages/occ/src/state/postgres-state.ts";
+import { within } from "../helpers/wait-for.mjs";
 
 // This is a protocol fault at the actual transaction owner, not a database test.
 test("lost COMMIT response returns unknown without waiting for a hung rollback", async () => {
@@ -35,20 +36,16 @@ test("lost COMMIT response returns unknown without waiting for a hung rollback",
     },
     async end() {},
   });
-  let timer;
-  const deadline = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error("unknown outcome did not settle")), 1000);
-  });
-  try {
-    await assert.rejects(
-      Promise.race([state.transact(async () => 1), deadline]),
-      PostgresCommitOutcomeUnknownError,
-    );
-    assert.deepEqual(calls, ["BEGIN", "COMMIT"]);
-    assert.deepEqual(releases, [true]);
-  } finally {
-    clearTimeout(timer);
-  }
+  await assert.rejects(
+    within(
+      state.transact(async () => 1),
+      "unknown outcome did not settle",
+      1_000,
+    ),
+    PostgresCommitOutcomeUnknownError,
+  );
+  assert.deepEqual(calls, ["BEGIN", "COMMIT"]);
+  assert.deepEqual(releases, [true]);
 });
 
 for (const outcome of ["commit", "rollback", "unknown"]) {
@@ -137,22 +134,15 @@ for (const abandonedStatement of ["BEGIN", "SELECT"]) {
       },
       async end() {},
     });
-    let timer;
-    const deadline = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error("the abandoned statement did not settle")), 1000);
-    });
-    try {
-      await assert.rejects(
-        Promise.race([
-          state.transact((unit) => state.queryInTransaction(unit, "SELECT")),
-          deadline,
-        ]),
-        (error) => !(error instanceof PostgresCommitOutcomeUnknownError),
-      );
-      assert.deepEqual(calls, abandonedStatement === "BEGIN" ? ["BEGIN"] : ["BEGIN", "SELECT"]);
-      assert.deepEqual(releases, [true]);
-    } finally {
-      clearTimeout(timer);
-    }
+    await assert.rejects(
+      within(
+        state.transact((unit) => state.queryInTransaction(unit, "SELECT")),
+        "the abandoned statement did not settle",
+        1_000,
+      ),
+      (error) => !(error instanceof PostgresCommitOutcomeUnknownError),
+    );
+    assert.deepEqual(calls, abandonedStatement === "BEGIN" ? ["BEGIN"] : ["BEGIN", "SELECT"]);
+    assert.deepEqual(releases, [true]);
   });
 }

@@ -67,3 +67,31 @@ export function waitForResult(description, read, options) {
     options,
   );
 }
+
+/**
+ * Returns `promise`'s outcome, or rejects with `Timed out after <timeoutMs> ms: <message>` if
+ * it has not settled by then, so a stalled step fails with its own message instead of running
+ * into the test timeout. The timer is cleared as soon as `promise` settles. `message` may be a
+ * function, called at the deadline, to report state gathered while waiting.
+ * @template T
+ * @param {Promise<T>} promise
+ * @param {string | (() => string)} message
+ * @param {number} [timeoutMs]
+ * @returns {Promise<T>}
+ */
+export async function within(promise, message, timeoutMs = 10_000) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const text = typeof message === "function" ? message() : message;
+          reject(new Error(`Timed out after ${timeoutMs} ms: ${text}`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
