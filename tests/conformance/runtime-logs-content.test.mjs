@@ -842,7 +842,7 @@ test("a multi-line message stays one record with its line breaks as spaces (3048
   }
 });
 
-test("a credential is masked when a spacing control or a quoted key separates it from its key", async () => {
+test("a credential is masked when a spacing control, a literal escape, a quoted key or a percent-encoded separator separates it from its key", async () => {
   const token = `Ab1${randomString(29)}`;
   const password = `pw${randomString(14)}`;
   const apiKey = `key${randomString(21)}`;
@@ -861,6 +861,22 @@ test("a credential is masked when a spacing control or a quoted key separates it
     `ERROR request failed: {'Authorization': 'token ${token}', 'password': '${password}'}`,
     `level=error msg="token refresh failed" body="{\\"api_key\\":\\"${apiKey}\\"}"`,
     openclaw(`upstream body: ${JSON.stringify(JSON.stringify({ client_secret: password }))}`),
+    // Plain-text lines (logfmt, Go %q, Python reprs) keep a line break or tab inside a
+    // quoted value as a two-character escape. It separates a keyword from its value,
+    // before or after the keyword, and starts a new long-token run.
+    `level=error msg="retry with bearer\\n${token}"`,
+    `level=error msg="login failed: --password\\t${password}"`,
+    `level=info msg="fetched sha1\\n${digest}"`,
+    `ERROR retry: 'bearer\\x0a${token}'`,
+    `ERROR request failed: {'Authorization':\\u000a'token ${token}'}`,
+    `level=warn msg="env:\\nMY_SERVICE_KEY=${apiKey}"`,
+    // An escape inside a value does not end it: no tail after the escape is shown.
+    `level=error msg="cli: --token=${apiKey.slice(0, 12)}\\n${apiKey.slice(12)}"`,
+    // Ordinary text around escapes stays.
+    `level=info msg="line one\\nline two\\tthe token\\nwas refreshed"`,
+    // Percent-encoded separators outside a URL query.
+    `level=error body=password%3D${password}&next=1`,
+    `level=error header=Authorization%3A%20Bearer%20${token}`,
   ].map((raw, index) => ({ time: lineTime(index), raw }));
 
   const logs = await route.read({ tailLines: 100 });
@@ -875,11 +891,24 @@ test("a credential is masked when a spacing control or a quoted key separates it
       "ERROR request failed: {'Authorization': '[redacted:header]', 'password': [redacted:key-value]}",
       'level=error msg="token refresh failed" body="{\\"api_key\\":[redacted:key-value]}"',
       'upstream body: "{\\"client_secret\\":[redacted:key-value]}"',
+      'level=error msg="retry with bearer\\n[redacted:bearer]"',
+      'level=error msg="login failed: --password\\t[redacted:argv]',
+      'level=info msg="fetched sha1\\n[redacted:long-token]"',
+      "ERROR retry: 'bearer\\x0a[redacted:bearer]'",
+      "ERROR request failed: {'Authorization':\\u000a'[redacted:header]'}",
+      'level=warn msg="env:\\nMY_SERVICE_KEY=[redacted:key-value]"',
+      'level=error msg="cli: --token=[redacted:argv]',
+      'level=info msg="line one\\nline two\\tthe token\\nwas refreshed"',
+      "level=error body=password%3D[redacted:key-value]&next=1",
+      "level=error header=Authorization%3A[redacted:header]",
     ],
   );
   const download = await route.read({ download: true });
   assert.equal(download.status, 200, download.text);
-  for (const value of [token, password, apiKey, digest]) {
+  for (const message of logs.data.records.map((record) => record.message)) {
+    assert.ok(download.text.includes(message), `download lacks ${message}`);
+  }
+  for (const value of [token, password, apiKey, digest, apiKey.slice(12)]) {
     assert.equal(logs.text.includes(value), false, `${value.slice(0, 4)}... leaked`);
     assert.equal(download.text.includes(value), false, `${value.slice(0, 4)}... leaked`);
   }
@@ -922,6 +951,7 @@ function redactionCpuMs(input, budgetMs) {
   return cpuTimeMs(
     () => {
       stripRuntimeLogControls(input);
+      redactArgvCredentials(input);
       redactRuntimeLogText(input);
       maskRuntimeEventText(input);
     },
@@ -941,6 +971,11 @@ test("redaction stays linear on hostile 32 KiB lines", () => {
   units.push("\r\n", "\n", "\r", "\r\r\n");
   // Spacing controls and quoted keys (keys whose closing quote precedes the separator).
   units.push("\u001b[1C", "\u001b[", "\v", "token': ", 'token\\":', "'token'='", "cookie':'");
+  // Literal escapes (runs that do not end the line, doubled backslashes, escapes next to
+  // keywords, flags and long-token runs) and percent-encoded separators.
+  units.push("\\n", "\\t", "\\u000a", "\\x0a", "\\\\n", "\\u000", "bearer\\n", "\\nbearer");
+  units.push("--token\\n", "\\n--token", "token=\\n", "Authorization:\\n", "\\nA_KEY=", "-p\\n");
+  units.push("--password=a\\n", "a\\n0", "%3D", "token%3D", "Authorization%3A");
   for (const unit of units) {
     for (const suffix of ["", "?", "token", "=x"]) {
       const elapsed = redactionCpuMs(line(unit, suffix), budgetMs);
@@ -963,7 +998,7 @@ test("redaction stays linear on a generated sweep of short repeated units", () =
   // pattern delimiters and prefix letters, every 3-character unit over a smaller one, and
   // each delimiter ahead of the JWT, token and bearer prefixes.
   const budgetMs = 100;
-  const alphabet = [...'a-.=/?":_+@eyJtokn '];
+  const alphabet = [...'a-.=/?":_+@eyJtokn \\'];
   const short = [...'a-.=/"_eJ '];
   const units = [];
   for (const x of alphabet) {
@@ -1014,6 +1049,8 @@ test("the jwt rule masks tokens in every delimiter context but not inside a long
   // `-` and `.` are word boundaries inside a run; a word character ahead of `eyJ` is not.
   for (const [input, expected] of [
     [`x-token-${jwt} next`, "x-token-[redacted:jwt] next"],
+    // A literal escape before `eyJ` is a boundary too.
+    [`a\\n${jwt}`, "a\\n[redacted:jwt]"],
     [`a.${jwt}.b`, "a.[redacted:jwt].b"],
     [`${jwt}.${jwt}`, "[redacted:jwt].[redacted:jwt]"],
     ["xeyJabcd.efgh.ij", "xeyJabcd.efgh.ij"],
@@ -1058,6 +1095,21 @@ test("bounded key and path patterns still mask the shapes they did before", () =
     ["see /a#b?c", "see /a#b?c"],
     [`bearer token ${value} for upstream`, "bearer token [redacted:bearer] for upstream"],
     ["bearer authentication failed", "bearer authentication failed"],
+    // A flag only the text rules know, right after a literal escape.
+    [`log\\n--db-password ${value}`, "log\\n--db-password [redacted:key-value]"],
+    // A run that starts with the letters of a literal escape is still masked whole when
+    // only the whole run is token-shaped (here the upper-case `A` of `\u000A`).
+    [`x\\u000A${"xy1z".repeat(10)}`, "x\\[redacted:long-token]"],
+    // Otherwise the escape stays and only the run after it is masked.
+    [`id\\n${"a1B_".repeat(10)}`, "id\\n[redacted:long-token]"],
+    // A known token prefix right after a literal escape.
+    [`list\\nghp_${value}`, "list\\n[redacted:token]"],
+    [`list\\nhf_${"a1".repeat(17)}`, "list\\n[redacted:token]"],
+    [`list\\nAKIA${"A2".repeat(8)}`, "list\\n[redacted:aws-key]"],
+    [`list\\nAIza${"b3".repeat(16)}`, "list\\n[redacted:google-key]"],
+    // A value an earlier rule masked keeps its mark: the gap before it is not a value.
+    [`--github-token\\n\\nghp_${value}`, "--github-token\\n\\n[redacted:token]"],
+    [`MY_SERVICE_KEY=\\nghp_${value}`, "MY_SERVICE_KEY=\\n[redacted:token]"],
   ]) {
     assert.equal(redactRuntimeLogText(input), expected, input);
   }
@@ -1099,6 +1151,12 @@ test("rule prefilters skip only text a rule cannot change", () => {
     ["redis-cli-wrapper -a pw2", "redis-cli-wrapper -a pw2"],
     ["echo mysql; ls -pfoo", "echo mysql; ls -pfoo"],
     ["sudo mysql -uroot -ppw3", "sudo mysql -uroot -p[redacted:argv]"],
+    // A literal escape separates a flag from its value but does not end the value, and a
+    // value joined to its flag by an escape alone is masked as an attached value was.
+    ["mysql -uroot -p\\n-pw4", "mysql -uroot -p\\n[redacted:argv]"],
+    ["cmd --password pw5\\nrest next", "cmd --password [redacted:argv] next"],
+    ["curl --user=alice\\n:pw6 next", "curl --user=[redacted:argv] next"],
+    ["cmd -pab\\ncd next", "cmd -p[redacted:argv] next"],
   ]) {
     assert.equal(redactArgvCredentials(input), expected, input);
   }
