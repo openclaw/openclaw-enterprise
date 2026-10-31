@@ -311,7 +311,6 @@ test(
       },
     };
     const configurationPath = await temporaryGatewayConfiguration(t, "openclaw", configuration);
-    const statusPort = 18791;
     const startedAt = Date.now();
     const { containerName } = await runGatewaySmoke(t, "openclaw", {
       configurationPath: "/etc/openclaw/openclaw.json",
@@ -320,18 +319,19 @@ test(
       withAppServer: false,
       waitUntilReady: false,
       extraEnvironment: [
-        `OPENCLAW_RUNTIME_STATUS_PORT=${statusPort}`,
+        "OPENCLAW_RUNTIME_STATUS_PORT=18791",
         "OPENCLAW_RUNTIME_STATUS_CONTAINER=gateway",
         "OPENCLAW_AGENT_REVISION_ID=rev_gateway-config",
         "OPENCLAW_POD_UID=pod_gateway-config",
       ],
     });
     // The wrapper keeps running, so the container is not restarted into the same refusal,
-    // and serves the held check on the status port Compute reads.
-    const statusUrl = `http://127.0.0.1:${statusPort}/openclaw/runtime/status`;
+    // and serves the held check on the status port Compute reads. Commands run in the
+    // container read that port from the container's own environment.
     await waitForContainerReady(containerName, {
       label: "Held Gateway configuration failure",
-      request: `() => fetch(${JSON.stringify(statusUrl)}, { signal: AbortSignal.timeout(5000) }).then((response) => response.json()).then((status) => (status.runtimeFailure === undefined ? 503 : 200))`,
+      request:
+        '() => fetch("http://127.0.0.1:" + process.env.OPENCLAW_RUNTIME_STATUS_PORT + "/openclaw/runtime/status", { signal: AbortSignal.timeout(5000) }).then((response) => response.json()).then((status) => (status.runtimeFailure === undefined ? 503 : 200))',
       timeoutMs: 120_000 * imageSmokeTimeoutMultiplier,
     });
     t.diagnostic(`held ${Date.now() - startedAt} ms after the container started`);
@@ -340,7 +340,7 @@ test(
       containerName,
       "node",
       "-e",
-      `Promise.all([fetch(${JSON.stringify(statusUrl)}).then((response) => response.json()), fetch("http://127.0.0.1:${statusPort}/readyz").then((response) => response.status)]).then(([status, ready]) => process.stdout.write(JSON.stringify({ status, ready })))`,
+      'const status = "http://127.0.0.1:" + process.env.OPENCLAW_RUNTIME_STATUS_PORT; Promise.all([fetch(status + "/openclaw/runtime/status").then((response) => response.json()), fetch(status + "/readyz").then((response) => response.status)]).then(([held, ready]) => process.stdout.write(JSON.stringify({ status: held, ready })))',
     ]);
     const { status, ready } = JSON.parse(stdout);
     const { checkedAt, ...held } = status.runtimeFailure;
