@@ -2459,7 +2459,7 @@ function openClawConfigIssues(issues) {
   for (const issue of Array.isArray(issues) ? issues : []) {
     const path = issue?.path;
     if (
-      typeof path !== "string" || path.length > 128 || kept.has(path) ||
+      typeof path !== "string" || path.length > 64 || kept.has(path) ||
       !/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(path)
     ) {
       continue;
