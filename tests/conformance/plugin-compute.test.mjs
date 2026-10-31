@@ -42,6 +42,7 @@ import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { listen as listenServer } from "../helpers/listen.mjs";
 import {
+  gatewayExitedBeforeServing,
   invalidGatewayConfiguration,
   invalidGatewayConfigurationLine,
   invalidGatewayConfigurationSecret,
@@ -4655,15 +4656,14 @@ test("Kubernetes Gateway holds a configuration OpenClaw refuses when its first s
   // One log line names up to five settings. Only JSON Schema messages, which carry no
   // setting value, stay beside their paths: the configuration may hold secrets.
   assert.ok(
-    gateway.logs.includes(
-      invalidGatewayConfigurationLine("The OpenClaw Gateway exited (exit-78) before it served"),
-    ),
+    gateway.logs.includes(invalidGatewayConfigurationLine(gatewayExitedBeforeServing("exit-78"))),
     JSON.stringify(gateway.logs),
   );
   assert.equal(JSON.stringify(gateway.logs).includes(invalidGatewayConfigurationSecret), false);
 
   // A held Gateway is not respawned for a changed Harness peer, nor restarted for another
-  // workspace node; a container stop ends it.
+  // workspace node; a container stop ends it. A respawn would validate again and hold anew,
+  // so the validator count tells a skipped poll from a repeated hold.
   gateway.peerStatus = { ...gateway.peerStatus, startupId: "agent-startup-2" };
   await gateway.pollPeer();
   gateway.files.set(
@@ -4673,6 +4673,7 @@ test("Kubernetes Gateway holds a configuration OpenClaw refuses when its first s
   await gateway.intervals.find(({ delay }) => delay === 1_000).callback();
   assert.equal(gateway.children.length, 1);
   assert.deepEqual(gateway.exits, []);
+  assert.equal(gateway.validations - validationsBefore, 1);
   assert.equal(gateway.runtimeStatus().runtimeFailure.check, "gateway-config");
   gateway.signalHandlers.SIGTERM();
   assert.deepEqual(gateway.exits, [0]);

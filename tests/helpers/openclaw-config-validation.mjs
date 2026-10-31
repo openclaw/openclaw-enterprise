@@ -49,14 +49,25 @@ export const invalidGatewayConfiguration = openClawConfigValidationRefusal([
 // The value a message above quotes; no log line may contain it.
 export const invalidGatewayConfigurationSecret = "synthetic-configured-secret";
 
-// The held Gateway's log line after `event` (what the wrapper saw): up to five settings, and
-// only JSON Schema messages, which carry no setting value, beside their paths.
-export function invalidGatewayConfigurationLine(event) {
-  return (
-    `${event}, and OpenClaw reports its configuration invalid (` +
-    "plugins.entries.beam.config.mirror.endpoint: must have required property 'endpoint'; " +
-    'plugins.entries.google.config.webSearch: must not have additional properties: "region"; ' +
-    "tools.web.search.provider; plugins.entries.beam.config.mirror.catalogs: x; logging.level). " +
-    "It is held, not restarted: fix or remove the invalid settings in the Agent's Configuration, then deploy a new version."
-  );
-}
+// What the wrapper saw before it validated: an embedded Gateway that exited before its first
+// /readyz answer, or a dedicated Gateway whose tool policy step validated before OpenClaw started.
+export const gatewayExitedBeforeServing = (exit) =>
+  `The OpenClaw Gateway exited (${exit}) before it served`;
+export const GATEWAY_DID_NOT_START = "The OpenClaw Gateway did not start";
+
+// A Gateway held as check gateway-config logs one line: `event`, the settings it names and the
+// remedy.
+export const gatewayConfigurationHoldLine = (event, settings) =>
+  `${event}, and OpenClaw reports its configuration invalid (${settings.join("; ")}). ` +
+  "It is held, not restarted: fix or remove the invalid settings in the Agent's Configuration, then deploy a new version.";
+
+// The line for invalidGatewayConfiguration: up to five settings, and only JSON Schema messages,
+// which carry no setting value, beside their paths.
+export const invalidGatewayConfigurationLine = (event) =>
+  gatewayConfigurationHoldLine(event, [
+    "plugins.entries.beam.config.mirror.endpoint: must have required property 'endpoint'",
+    'plugins.entries.google.config.webSearch: must not have additional properties: "region"',
+    "tools.web.search.provider",
+    "plugins.entries.beam.config.mirror.catalogs: x",
+    "logging.level",
+  ]);

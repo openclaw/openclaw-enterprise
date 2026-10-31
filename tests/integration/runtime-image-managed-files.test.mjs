@@ -11,6 +11,11 @@ import {
 } from "../../packages/occ/src/configuration-settings.ts";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import {
+  GATEWAY_DID_NOT_START,
+  gatewayConfigurationHoldLine,
+  gatewayExitedBeforeServing,
+} from "../helpers/openclaw-config-validation.mjs";
+import {
   AGENT_WITH_NODE_ENTRYPOINT,
   gatewayRuntimeEntrypoint,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -294,22 +299,21 @@ test(
 );
 
 // An embedded Gateway's OpenClaw exits at startup on the invalid entry with status 78 and names
-// each failing setting (finding 3043; the image carries openclaw/openclaw#189392, before which
-// it exited 1 with "config validity changed"). A dedicated Codex Gateway's tool policy step
-// validates the composed configuration before OpenClaw starts, and holds the same check, not
-// a tool policy failure (finding 3045).
+// each failing setting (finding 3043; the image's openclaw/openclaw#189392 patch). A dedicated
+// Codex Gateway's tool policy step validates the composed configuration before OpenClaw starts,
+// and holds the same check, not a tool policy failure (finding 3045).
 for (const { topology, harnessId, withAppServer, event } of [
   {
     topology: "an embedded",
     harnessId: "openclaw",
     withAppServer: false,
-    event: "The OpenClaw Gateway exited (exit-78) before it served",
+    event: gatewayExitedBeforeServing("exit-78"),
   },
   {
     topology: "a dedicated Codex",
     harnessId: "codex",
     withAppServer: true,
-    event: "The OpenClaw Gateway did not start",
+    event: GATEWAY_DID_NOT_START,
   },
 ]) {
   test(
@@ -374,8 +378,8 @@ for (const { topology, harnessId, withAppServer, event } of [
       const logs = await runDocker(["logs", containerName]);
       const output = `${logs.stdout}\n${logs.stderr}`;
       if (!withAppServer) {
-        // OpenClaw's own refusal, in its JSON console records, names the plugin setting; it
-        // no longer reports a config change.
+        // OpenClaw's own refusal, in its JSON console records, names the plugin setting instead
+        // of reporting a config change.
         const openClawLines = output.split("\n").flatMap((line) => {
           try {
             const { message } = JSON.parse(line);
@@ -391,11 +395,10 @@ for (const { topology, harnessId, withAppServer, event } of [
           output,
         );
       }
-      const line =
-        `${event}, and OpenClaw reports its configuration invalid (` +
-        "plugins.entries.beam.config.mirror.endpoint: must have required property 'endpoint'; " +
-        "plugins.entries.beam.config.mirror.catalogs: must have required property 'catalogs'). " +
-        "It is held, not restarted: fix or remove the invalid settings in the Agent's Configuration, then deploy a new version.";
+      const line = gatewayConfigurationHoldLine(event, [
+        "plugins.entries.beam.config.mirror.endpoint: must have required property 'endpoint'",
+        "plugins.entries.beam.config.mirror.catalogs: must have required property 'catalogs'",
+      ]);
       assert.ok(output.split("\n").includes(line), output);
       assert.doesNotMatch(
         output,
