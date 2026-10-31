@@ -4,6 +4,16 @@ kind: reference/driver/impl
 
 # [Implementation name] [Driver name]
 
+**Contents**
+
+- [Overview](#overview)
+- [Lifecycle](#lifecycle)
+- [Configuration](#configuration)
+- [Limits](#limits)
+- [Troubleshooting](#troubleshooting)
+
+<!-- Keep this list aligned with the page headings. -->
+
 ## Overview
 
 [Explain what this implementation does, which provider it uses, and the

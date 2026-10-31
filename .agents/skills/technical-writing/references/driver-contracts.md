@@ -6,6 +6,13 @@ backend. Inspect the exported interface and its actual callers before asserting
 behavior. Preserve existing guarantees and incoming anchors when reorganizing a
 page; update affected links when an anchor must change.
 
+Put **Interface contents** below the title, before Overview. Link Properties and
+Methods, then nest a link to each member in table order. Add a stable
+`property-<name>` or `method-<name>` HTML anchor in the member's table cell, using
+lowercase names with hyphens. Keep separate anchors and links for members that
+share a row. Implementation pages use **Contents** with links to their sections.
+Update the list when headings or members change.
+
 Use these second-level sections in this order. Add third-level sections
 for core operations and optional extensions. Answer the relevant prompts below;
 state unsupported behavior explicitly instead of inventing a method or guarantee.

@@ -112,6 +112,7 @@ page. When updating an existing page, preserve its links and heading anchors.
 
 For a Driver contract, keep the template's sections in order and use the
 [Driver authoring guidance](./references/driver-contracts.md) to check coverage.
+Keep the template's contents list below the title and update its links with the page.
 Put implementation-specific setup and settings in the linked implementation page.
 When adding a template, add its kind, selection criteria, and asset link to this
 table and the documentation taxonomy in the same change.
