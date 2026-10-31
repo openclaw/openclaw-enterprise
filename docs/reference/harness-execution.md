@@ -204,6 +204,9 @@ When no model is selected at all, that refusal says so and names
 `agents.defaults.model` or an `agents.entries` model as the setting to set.
 Codex accepts its native `codex` provider, or `openai` with the
 Codex plugin explicitly enabled for WebSocket app-server transport.
+Kubernetes sets the `APP_SERVER_` variables only for dedicated Codex. Deployment
+and Agent save refuse an embedded Agent whose active Codex plugin reads one in
+`appServer.authToken` or `appServer.headers`: its Gateway cannot start.
 
 Configuration writes run these rules in deployment's order. They refuse settings
 that conflict, with deployment's message: an entry primary that differs, selectable
