@@ -878,6 +878,7 @@ test("the sanitizer keeps bracket-tagged text lines but withholds malformed JSON
 function redactionCpuMs(input, budgetMs) {
   return cpuTimeMs(
     () => {
+      stripRuntimeLogControls(input);
       redactRuntimeLogText(input);
       maskRuntimeEventText(input);
     },
@@ -893,6 +894,8 @@ test("redaction stays linear on hostile 32 KiB lines", () => {
   maskRuntimeEventText(line("warm-up "));
   const units = ["a-", "a.", "-", "--a-", "=/", "(/", '"a-', "a0a", "tokena-", "bearer "];
   units.push("-eyJa", "-eyJ_", "_eyJa", "-eyJa-", "-eyJaaaa");
+  // Line-break runs that do not end the line (3048: CR/LF become spaces, trailing ones go).
+  units.push("\r\n", "\n", "\r", "\r\r\n");
   for (const unit of units) {
     for (const suffix of ["", "?", "token", "=x"]) {
       const elapsed = redactionCpuMs(line(unit, suffix), budgetMs);
