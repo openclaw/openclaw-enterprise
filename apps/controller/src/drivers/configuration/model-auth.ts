@@ -154,6 +154,53 @@ const SENSITIVE_MANIFEST_SETTINGS: Readonly<Record<string, readonly string[]>> =
     "accounts.*.webhookUrl",
   ],
 };
+// The plugin settings the pinned OpenClaw resolves as secret inputs, as dotted paths under
+// `plugins.entries.<id>.config` (`*` for any key or list index): each bundled manifest's
+// `configContracts.secretInputs` paths, and the `webSearch.apiKey` and `webFetch.apiKey` of a
+// web search or fetch provider that marks it sensitive (`src/secrets/target-registry-data.ts`).
+// OpenClaw reads a whole `$NAME` value there (trimmed) as an environment SecretRef, as it reads
+// `${NAME}` (`parseEnvTemplateSecretRef` in `src/config/types.secrets.ts`); elsewhere it keeps
+// the text as written (finding 3044). acpx's `mcpServers.*.env.*` is an environment map, which
+// keeps its own rules. Update this list when that pin changes.
+const PLUGIN_SECRET_INPUTS: Readonly<Record<string, readonly string[]>> = {
+  beam: ["mirror.token"],
+  brave: ["webSearch.apiKey"],
+  codex: ["appServer.authToken", "appServer.headers.*"],
+  comfy: ["headers.*"],
+  deepseek: ["webSearch.apiKey"],
+  exa: ["webSearch.apiKey"],
+  facetime: ["realtime.providers.*.apiKey"],
+  firecrawl: ["webSearch.apiKey", "webFetch.apiKey"],
+  google: ["webSearch.apiKey", "webSearch.headers.*"],
+  "google-meet": ["realtime.providers.*.apiKey"],
+  imap: ["accounts.*.password"],
+  minimax: ["webSearch.apiKey"],
+  moonshot: ["webSearch.apiKey"],
+  parallel: ["webSearch.apiKey"],
+  perplexity: ["webSearch.apiKey"],
+  subq: ["apiKey"],
+  tavily: ["webSearch.apiKey"],
+  "team-reports": ["github.token", "discord.token"],
+  typesafe: ["apiKey"],
+  "voice-call": [
+    "twilio.authToken",
+    "realtime.providers.*.apiKey",
+    "streaming.providers.*.apiKey",
+    "tts.providers.*.apiKey",
+    "numbers.*.tts.providers.*.apiKey",
+  ],
+  xai: ["webSearch.apiKey"],
+};
+
+// Whether the setting at `relative` matches one of the dotted `fields` (`*` for any key).
+const matchesField = (fields: readonly string[], relative: SettingPath): boolean =>
+  fields.some((field) => {
+    const segments = field.split(".");
+    return (
+      segments.length === relative.length &&
+      segments.every((segment, index) => segment === "*" || segment === relative[index])
+    );
+  });
 
 const isSecretRef = (value: unknown): boolean => {
   const reference = asRecord(value);
@@ -198,11 +245,16 @@ export function validateModelCredentialReferences(
     path: string,
     authorizationHeader = false,
     message?: (path: string) => string,
+    secretInput = false,
   ): void => {
     if (value === undefined || value === null) {
       return;
     }
     if (typeof value === "string" && /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value)) {
+      return;
+    }
+    // A secret input OpenClaw resolves also takes its `$NAME` shorthand (finding 3044).
+    if (secretInput && typeof value === "string" && secretInputShorthandName(value) !== undefined) {
       return;
     }
     if (
@@ -256,6 +308,7 @@ export function validateModelCredentialReferences(
     headersPath: SettingPath,
     headers: unknown,
     message?: (path: string) => string,
+    secretInput?: (name: string) => boolean,
   ): void => {
     for (const [name, value] of Object.entries(asRecord(headers) ?? {})) {
       if (message && !isAdmittedHeaderName(name, options, headersPath)) {
@@ -270,7 +323,13 @@ export function validateModelCredentialReferences(
       }
       const credential = credentialHeader(headersPath, name);
       if (credential) {
-        validateReference(value, pointer(...headersPath, name), credential.authorization, message);
+        validateReference(
+          value,
+          pointer(...headersPath, name),
+          credential.authorization,
+          message,
+          secretInput?.(name),
+        );
       }
     }
   };
@@ -330,16 +389,15 @@ export function validateModelCredentialReferences(
   // by key, each child judged by its own name, except a service account, refused whole. OpenClaw
   // refuses other shapes there, so it never reads them. A `headers` map follows the credential
   // header rule, and an `env` map keeps the environment rules above. A number or boolean
-  // (`requireToken: true`) passes.
-  const refuseSensitiveSettings = (root: SettingPath, settings: unknown, owner: string): void => {
-    const manifest = (SENSITIVE_MANIFEST_SETTINGS[owner] ?? []).map((field) => field.split("."));
+  // (`requireToken: true`) passes. A plugin's secret input (`secretInputs`) also takes `$NAME`.
+  const refuseSensitiveSettings = (
+    root: SettingPath,
+    settings: unknown,
+    owner: string,
+    secretInputs: readonly string[] = [],
+  ): void => {
+    const manifest = SENSITIVE_MANIFEST_SETTINGS[owner] ?? [];
     const keyMessage = root[0] === "channels" ? channelCredentialKeyMessage : credentialKeyMessage;
-    const marked = (relative: SettingPath): boolean =>
-      manifest.some(
-        (field) =>
-          field.length === relative.length &&
-          field.every((segment, index) => segment === "*" || segment === relative[index]),
-      );
     const pending: [SettingPath, unknown, boolean][] = [[[], settings, false]];
     for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
       const [relative, value, sensitive] = next;
@@ -347,7 +405,13 @@ export function validateModelCredentialReferences(
       const key = relative.at(-1);
       if (typeof value === "string") {
         if (sensitive) {
-          validateReference(value, pointer(...path), false, keyMessage);
+          validateReference(
+            value,
+            pointer(...path),
+            false,
+            keyMessage,
+            matchesField(secretInputs, relative),
+          );
         }
         continue;
       }
@@ -366,7 +430,9 @@ export function validateModelCredentialReferences(
         validateReference(record, pointer(...path), false, keyMessage);
       }
       if (key === "headers") {
-        refuseCredentialHeaders(path, record, credentialHeaderMessage);
+        refuseCredentialHeaders(path, record, credentialHeaderMessage, (name) =>
+          matchesField(secretInputs, [...relative, name]),
+        );
         continue;
       }
       if (key === "env") {
@@ -377,7 +443,8 @@ export function validateModelCredentialReferences(
         pending.push([
           at,
           child,
-          (SENSITIVE_SETTING.test(name) && !CREDENTIAL_LOCATION_SETTING.test(name)) || marked(at),
+          (SENSITIVE_SETTING.test(name) && !CREDENTIAL_LOCATION_SETTING.test(name)) ||
+            matchesField(manifest, at),
         ]);
       }
     }
@@ -635,6 +702,7 @@ export function validateModelCredentialReferences(
         ["plugins", "entries", plugin, "config"],
         asRecord(settings)?.config,
         `plugins/${plugin}`,
+        Object.hasOwn(PLUGIN_SECRET_INPUTS, plugin) ? PLUGIN_SECRET_INPUTS[plugin] : undefined,
       );
     }
     // Every other environment map OpenClaw starts a process with (findings 1260, 1261): a
