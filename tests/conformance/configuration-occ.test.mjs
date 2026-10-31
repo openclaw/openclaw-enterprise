@@ -34,11 +34,13 @@ import {
   catalogRowUnselected,
   codexRuntimeOffProvider,
   BOTH_RUNTIMES,
+  CODEX_MODEL_ONLY,
   CODEX_NEEDS_DEDICATED,
   dedicatedOpenClawSandboxRefusal,
   GATEWAY_MANAGED_MODE_DENIED,
   keepRuntime,
   noRunnableRuntime,
+  OPENCLAW_ONLY,
   runtimeIdRequired,
   runtimeIdRequiredNextStep,
   runtimeOfEntries,
@@ -2923,7 +2925,7 @@ function openclawModeRefusal(error) {
 // D832: on an Installation that cannot run dedicated OpenClaw, a dedicated Agent's deploy offered
 // openclaw, which then failed with a 409 that named no next step (finding 3036).
 test("a dedicated Agent's runtime refusals offer only what the Installation runs, and the Dedicated OpenClaw refusal names the next step", async () => {
-  const { bindHarnessAuth, controller, namespace } = await fixture();
+  const { bindHarnessAuth, configurationDriver, controller, namespace } = await fixture();
   const model = "codex/gpt-5.1";
   const policy = `agents.defaults.models["${model}"]`;
   const configurations = {};
@@ -2993,11 +2995,32 @@ test("a dedicated Agent's runtime refusals offer only what the Installation runs
   // refusal names codex as the next step.
   await use(dedicated.id, "openclaw");
   await assert.rejects(deploy(dedicated.id), (error) => dedicatedSandboxRefusal(error, true));
+  // Codex on an openai model without the Codex plugin's WebSocket app server. Configuration save
+  // refuses it, so deploy meets it only on a Configuration stored before that rule: write the row
+  // to the Configuration Driver's storage. The refusal offers no openclaw, which this Agent
+  // cannot run (finding 3036).
+  const openaiPolicy = 'agents.defaults.models["openai/gpt-5.1"]';
+  await configurationDriver.update({
+    ...configurationDriver.stored(configurations.openclaw),
+    values: {
+      agents: {
+        defaults: {
+          model: "openai/gpt-5.1",
+          models: { "openai/gpt-5.1": { agentRuntime: { id: "codex" } } },
+        },
+      },
+    },
+  });
+  const offProvider = (remedy) => (error) =>
+    error instanceof ConfigurationHarnessError &&
+    error.message === codexRuntimeOffProvider(openaiPolicy, remedy);
+  await assert.rejects(deploy(dedicated.id), offProvider(CODEX_MODEL_ONLY));
 
   // A qualifying Sandbox Driver runs dedicated OpenClaw: both offers stay.
   registerAndSelectDrivers(controller, [
     conformanceSandbox("full", ["networking", "filesystem", "process"]),
   ]);
+  await assert.rejects(deploy(dedicated.id), offProvider());
   await use(dedicated.id, "none");
   await assert.rejects(deploy(dedicated.id), runtimeRequired("openclaw or codex"));
 });
@@ -3143,6 +3166,20 @@ test("an embedded Agent's runtime refusals offer only what it runs, and name the
       ),
     );
   }
+  // Codex on the openai model without the Codex plugin's WebSocket app server: a codex/<model>
+  // model, which this embedded Agent cannot run either, is not offered. Configuration save keeps
+  // both steps.
+  const offProvider = cases.openai.values("codex");
+  delete offProvider.plugins;
+  await storeValues(cases.openai.configurations.none, offProvider);
+  await assert.rejects(
+    deploy(),
+    refusedWith(codexRuntimeOffProvider(cases.openai.policy, OPENCLAW_ONLY)),
+  );
+  await assert.rejects(
+    create(offProvider),
+    refusedWith(codexRuntimeOffProvider(cases.openai.policy)),
+  );
 });
 
 test("The Installation lists exactly the OpenClaw execution modes Agent save and deploy admit", async () => {

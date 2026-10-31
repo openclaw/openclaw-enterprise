@@ -232,7 +232,9 @@ Installation does not list dedicated OpenClaw, the refusal offers only `codex` w
 accepts the model. Deployment of an embedded Agent, where the Installation approves Codex only
 for dedicated execution, offers only `openclaw`. For a `codex/<model>` model, embedded OpenClaw
 cannot run it either, so the refusal tells you to set `codex` on a dedicated Agent or to select
-a model of another provider. Configuration save can serve any Agent, so it offers both values.
+a model of another provider. For Codex on another provider, the refusal offers only the step that
+the Agent can take: a `codex/<model>` model or `openclaw`. Configuration save can serve any
+Agent, so it offers both values.
 A Preset is checked when a launch creates its Configuration.
 
 ## Limits

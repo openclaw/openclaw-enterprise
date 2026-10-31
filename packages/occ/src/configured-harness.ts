@@ -825,10 +825,18 @@ function resolveModelPolicy(
       );
     }
     if (selected === "codex" && !codexRuns(providerId)) {
+      // Offer only a next step the deploying Agent can take: a codex/<model> model where it
+      // cannot run OpenClaw (finding 3036), openclaw where it cannot run Codex (finding 3037).
+      let remedy = "select a codex/<model> model, or set it to openclaw";
+      if (agent?.openclawRuns() === false) {
+        remedy = "select a codex/<model> model";
+      } else if (agent?.codexRuns() === false) {
+        remedy = "set it to openclaw";
+      }
       throw new ConfigurationHarnessError(
         configurationSettingMessage(
           `${first![1]()}.agentRuntime.id`,
-          "selects codex for a model outside the codex provider: select a codex/<model> model, or set it to openclaw",
+          `selects codex for a model outside the codex provider: ${remedy}`,
         ),
       );
     }
