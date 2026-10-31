@@ -250,17 +250,16 @@ export function requirePluginSecretInputs(
         // read the `${NAME}` it then keeps: that failure (an allowlist's policy denial) is not one
         // it isolates to the owner (`assertOwnerCanBeIsolated`), so it ends startup (finding 3060
         // for an APP_SERVER_ name, which no binding can set).
-        const { unset } = reference;
-        if (unset !== undefined && appServerUnset) {
+        if (reference.unset !== undefined && appServerUnset) {
           throw createError(
             setting,
-            `${unset.problem}, and it is never set on ${agent} Agent: ${unset.step}, or ${disable}`,
+            `${reference.unset}, and it is never set on ${agent} Agent: ${disable}`,
           );
         }
-        if (unset !== undefined && unbound) {
+        if (reference.unset !== undefined && unbound) {
           throw createError(
             setting,
-            `${unset.problem}: ${unset.step}, bind ${shown} in secretBindings, or ${disable}`,
+            `${reference.unset}: bind ${shown} in secretBindings, or ${disable}`,
           );
         }
         continue;

@@ -600,20 +600,20 @@ const UNREADABLE_SECRET_REFS = {
     `add the provider secrets.defaults.${source} names`,
   ],
   provider: (provider, source = "env", alias = "default") => [
-    `uses secret provider ${provider}, not configured for ${source} in secrets.providers`,
-    `${["env", "store"].includes(source) ? `${useDefaultAlias(alias, source)}, or ` : ""}configure it there`,
+    `uses secret provider ${provider}, not configured for ${source}`,
+    `${["env", "store"].includes(source) ? `${useDefaultAlias(alias, source)}, or ` : ""}add it to secrets.providers`,
   ],
   defaultAlias: (alias, source = "env", offered = alias) => [
     `uses secret provider default, but secrets.defaults.${source} names ${alias}`,
-    `use ${offered === null ? "that provider" : `provider ${offered}`}, or remove secrets.defaults.${source}`,
+    `use ${offered === null ? "that provider" : `provider ${offered}`}`,
   ],
   providerAlias: (provider, alias = "default") => [
     `uses secret provider ${provider}, not a provider alias OpenClaw reads`,
     useDefaultAlias(alias),
   ],
   id: (id, example) => [
-    `references ${id}, not an id OpenClaw reads in env SecretRefs`,
-    `use A-Z, 0-9 and _, from a letter${example === undefined ? "" : `, such as ${example}`}`,
+    `references ${id}, not an env id OpenClaw reads`,
+    `use ${example ?? "A-Z, 0-9 and _, from a letter"}`,
   ],
   // A long provider shows quoted and cut, as a key in brackets.
   allowlist: (id, provider = "default") => [
@@ -632,16 +632,13 @@ export const unreadablePluginSecretRefusal = (setting, plugin, held, ...shown) =
 };
 // The same refusal of a whole `${NAME}` at an input with a runtime owner (beam, imap): OpenClaw
 // reads it as a SecretRef only while NAME is unset, so deployment refuses it while unbound.
-export const unboundUnreadablePluginSecretRefusal = (setting, plugin, name, held, ...shown) => {
-  const [problem, step] = UNREADABLE_SECRET_REFS[held](...shown);
-  return `Configuration setting ${setting} ${problem}: ${step}, bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
-};
+// Binding NAME is the step it names.
+export const unboundUnreadablePluginSecretRefusal = (setting, plugin, name, held, ...shown) =>
+  `Configuration setting ${setting} ${unreadableSecretRefProblem(held, ...shown)}: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
 // The same refusal of a whole `${APP_SERVER_*}` there on an embedded or Dedicated OpenClaw Agent
 // (`agent`: "an embedded" or "a Dedicated OpenClaw"), which never sets it (finding 3060).
-export const appServerUnreadablePluginSecretRefusal = (setting, plugin, agent, held, ...shown) => {
-  const [problem, step] = UNREADABLE_SECRET_REFS[held](...shown);
-  return `Configuration setting ${setting} ${problem}, and it is never set on ${agent} Agent: ${step}, or remove plugins.entries.${plugin} or set its enabled to false.`;
-};
+export const appServerUnreadablePluginSecretRefusal = (setting, plugin, agent, held, ...shown) =>
+  `Configuration setting ${setting} ${unreadableSecretRefProblem(held, ...shown)}, and it is never set on ${agent} Agent: remove plugins.entries.${plugin} or set its enabled to false.`;
 // The refusal of a gateway.auth.password object OpenClaw cannot read, which stops every start on
 // every Compute (findings 3057, 3061, 3062): Configuration save, Agent save and deployment
 // (packages/occ/src/configuration-settings.ts), and Kubernetes and Docker Compute admission and
