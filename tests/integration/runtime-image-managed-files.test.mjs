@@ -15,9 +15,11 @@ import {
   gatewayRuntimeEntrypoint,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
+  createAdmittedRuntimeImageConfiguration,
   image,
   imageTestOptions,
   runDocker,
+  waitForContainerReady,
   waitForDockerLog,
   temporaryGatewayConfiguration,
   runGatewaySmoke,
@@ -287,6 +289,80 @@ test(
       (await gatewayProcessEnvironment(managed.containerName)).includes(
         "OPENCLAW_CONFIG_READONLY_NOTICE=OpenClaw Enterprise manages this Gateway’s configuration. In the OCE Console, edit and save the Agent’s draft Configuration, then select Deploy new version. https://docs-enterprise.openclaw.org/reference/agents/gateway-managed-mode/",
       ),
+    );
+  },
+);
+
+test(
+  "runtime image holds a Kubernetes Gateway whose plugin configuration fails its schema",
+  imageTestOptions,
+  async (t) => {
+    // A beam plugin entry without its required mirror settings. OpenClaw exits at startup,
+    // and for a plugin setting it logs only "config validity changed" (finding 3043).
+    const admitted = createAdmittedRuntimeImageConfiguration("openclaw");
+    const configuration = {
+      ...admitted,
+      plugins: {
+        ...admitted.plugins,
+        entries: {
+          ...admitted.plugins?.entries,
+          beam: { enabled: true, config: { mirror: { token: "synthetic-beam-token-value" } } },
+        },
+      },
+    };
+    const configurationPath = await temporaryGatewayConfiguration(t, "openclaw", configuration);
+    const startedAt = Date.now();
+    const { containerName } = await runGatewaySmoke(t, "openclaw", {
+      configurationPath: "/etc/openclaw/openclaw.json",
+      entrypoint: gatewayRuntimeEntrypoint(false),
+      volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
+      withAppServer: false,
+      waitUntilReady: false,
+      extraEnvironment: [
+        "OPENCLAW_RUNTIME_STATUS_PORT=18791",
+        "OPENCLAW_RUNTIME_STATUS_CONTAINER=gateway",
+        "OPENCLAW_AGENT_REVISION_ID=rev_gateway-config",
+        "OPENCLAW_POD_UID=pod_gateway-config",
+      ],
+    });
+    // The wrapper keeps running, so the container is not restarted into the same refusal,
+    // and serves the held check on the status port Compute reads. Commands run in the
+    // container read that port from the container's own environment.
+    await waitForContainerReady(containerName, {
+      label: "Held Gateway configuration failure",
+      request:
+        '() => fetch("http://127.0.0.1:" + process.env.OPENCLAW_RUNTIME_STATUS_PORT + "/openclaw/runtime/status", { signal: AbortSignal.timeout(5000) }).then((response) => response.json()).then((status) => (status.runtimeFailure === undefined ? 503 : 200))',
+      timeoutMs: 120_000 * imageSmokeTimeoutMultiplier,
+    });
+    t.diagnostic(`held ${Date.now() - startedAt} ms after the container started`);
+    const { stdout } = await runDocker([
+      "exec",
+      containerName,
+      "node",
+      "-e",
+      'const status = "http://127.0.0.1:" + process.env.OPENCLAW_RUNTIME_STATUS_PORT; Promise.all([fetch(status + "/openclaw/runtime/status").then((response) => response.json()), fetch(status + "/readyz").then((response) => response.status)]).then(([held, ready]) => process.stdout.write(JSON.stringify({ status: held, ready })))',
+    ]);
+    const { status, ready } = JSON.parse(stdout);
+    const { checkedAt, ...held } = status.runtimeFailure;
+    assert.ok(!Number.isNaN(Date.parse(checkedAt)));
+    assert.deepEqual(held, { component: "gateway", check: "gateway-config", code: "UNAVAILABLE" });
+    assert.equal(ready, 503);
+    // The log names the failing settings with OpenClaw's schema messages, never their values,
+    // on one line that runtime logs keep.
+    const logs = await runDocker(["logs", containerName]);
+    const output = `${logs.stdout}\n${logs.stderr}`;
+    const summary =
+      /^The OpenClaw Gateway exited \(exit-1\) before it served, and OpenClaw reports its configuration invalid \(plugins\.entries\.beam\.config\.mirror\.endpoint: must have required property 'endpoint'; plugins\.entries\.beam\.config\.mirror\.catalogs: must have required property 'catalogs'\)\. It is held, not restarted: fix or remove the invalid settings in the Agent's Configuration, then deploy a new version\.$/m;
+    assert.match(output, summary, output);
+    assert.doesNotMatch(output, /synthetic-beam-token-value/);
+    const { records } = sanitizeRuntimeLogChunk({
+      stream: { source: "gateway", pod: "gateway-0", container: "gateway" },
+      truncated: false,
+      lines: logs.stderr.split("\n").map((raw) => ({ time: null, raw })),
+    });
+    assert.ok(
+      records.some((record) => record.type === "line" && summary.test(record.message)),
+      JSON.stringify(records.slice(-5)),
     );
   },
 );
