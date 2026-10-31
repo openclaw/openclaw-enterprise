@@ -380,7 +380,7 @@ async function runCodexRuntimeHelper(runtime, handler, options = {}) {
     Buffer,
     Date: options.Date ?? Date,
     WebSocket: FakeWebSocket,
-    setTimeout,
+    setTimeout: options.setTimeout ?? setTimeout,
     clearTimeout,
     process: {
       env: {
@@ -785,6 +785,14 @@ enabled = false
 });
 
 test("Codex runtime helper installs a plugin with skills and applies write action approval without tool inventory", async () => {
+  // Count fixture timer waits against this policy case's 25 ms budget so host
+  // scheduling cannot expire a successful RPC. Expiry cases advance their own clocks.
+  let now = 0;
+  class FixtureDate extends Date {
+    static now() {
+      return now;
+    }
+  }
   const state = codexLinearPluginState({
     toolDefaults: { approval: "write_actions", reviewer: "auto" },
   });
@@ -792,7 +800,7 @@ test("Codex runtime helper installs a plugin with skills and applies write actio
     manifest: pluginRuntimeSpecForRevision(revision({ plugins: state })),
   };
   let readCount = 0;
-  const { requests, sockets } = await runCodexRuntimeHelper(runtime, (method, params) => {
+  const handleRequest = (method, params) => {
     if (method === "initialize") {
       return { serverInfo: { name: "codex", version: "0.149.0" } };
     }
@@ -887,6 +895,15 @@ test("Codex runtime helper installs a plugin with skills and applies write actio
       return { requirements: null };
     }
     throw new Error(`unexpected request ${method}`);
+  };
+  const { requests, sockets } = await runCodexRuntimeHelper(runtime, handleRequest, {
+    Date: FixtureDate,
+    setTimeout(callback, delay, ...args) {
+      return setTimeout(() => {
+        now += delay;
+        callback(...args);
+      }, delay);
+    },
   });
 
   assert.deepEqual(
