@@ -49,6 +49,8 @@ export async function composeRepositoryAccess(input: {
   );
   return Object.freeze({
     ...policy,
+    authorityIdentity: undefined,
+    resolveRepositoryDelivery: undefined,
     repositoryOwner: Object.freeze({
       controlSocket: configuration.controlSocket,
       ...policy.repositoryOwner,
