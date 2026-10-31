@@ -211,11 +211,11 @@ export function requireFallbackProviders(
  * The model selection rules of resolveConfiguredHarnessId that hold for every topology, in its
  * order within each selection: its fallbacks are a list, each model a <provider>/<model>
  * reference, and each fallback on the primary model's provider. Every deployment refuses a
- * selection that breaks one, so Configuration save, Agent provisioning, Agent create preflight
- * and Preset save refuse it too, with the deployment's text (requireDeployableRoster; finding
- * 1828). On a Preset save, a model that waits on an unfilled variable, or a primary that a
- * variable key can supply, is checked as far as its written text goes, and in full on the
- * Configuration a launch creates.
+ * selection that breaks one, so Preset save refuses it too, with the deployment's text
+ * (requireDeployableRoster; finding 1828); the other saves run these rules within
+ * requireConsistentModelPolicy. On a Preset save, a model that waits on an unfilled variable, or
+ * a primary that a variable key can supply, is checked as far as its written text goes, and in
+ * full on the Configuration a launch creates.
  */
 export function requireModelSelections(
   values: Readonly<OpenClawConfigurationDocument>,
@@ -333,7 +333,7 @@ function providerModelEntry(
  * The provider catalog rule of resolveConfiguredHarnessId: each row of a
  * models.providers.<provider>.models list names a primary or fallback model of `selections`, by
  * its complete ref or the remainder after the provider. Deployment checks it on every Harness,
- * before it resolves one, so Configuration save runs it too (requireSelectedProviderModels;
+ * before it resolves one, so Configuration save runs it too (requireConsistentModelPolicy;
  * finding 3019).
  */
 function requireSelectedCatalogRows(
@@ -386,22 +386,6 @@ function requireSelectedCatalogRows(
 }
 
 /**
- * requireSelectedCatalogRows over every model selection, so Configuration save
- * (requireDeployableRoster) refuses a catalog row that names no selected model with the
- * deployment's text (finding 3019). An entry without its own model selects the defaults' models,
- * which the defaults' selection already names. requireModelSelections runs first and refuses a
- * malformed selection with the deployment's text.
- */
-export function requireSelectedProviderModels(
-  values: Readonly<OpenClawConfigurationDocument>,
-): void {
-  requireSelectedCatalogRows(
-    asRecord(asRecord(values.models)?.providers),
-    modelSelections(values).map(([value, , setting]) => configuredModels(value, setting)),
-  );
-}
-
-/**
  * The agents shape rules resolveConfiguredHarnessId checks first. They hold for every topology,
  * so Configuration create and update check them too (requireDeployableRoster).
  */
@@ -435,10 +419,20 @@ export function requireAgentsShape(values: Readonly<OpenClawConfigurationDocumen
   }
 }
 
-/** Resolve native model policy without treating ignored whole-agent runtime pins as authoritative. */
-export function resolveConfiguredHarnessId(
+/**
+ * resolveConfiguredHarnessId's rules, in its order, for deployment and, as a `draft`, for
+ * Configuration save (requireConsistentModelPolicy). A draft skips only the rules that a document
+ * still missing a setting breaks: an agents.entries entry without a model while
+ * agents.defaults.model is unset, agents.defaults.models with no primary model, and a model
+ * without the explicit Harness runtime its provider needs. Deployment refuses those. Every other
+ * rule refuses a value the document sets, so a draft refuses it too, with deployment's text and in
+ * deployment's order (finding 3020). A draft resolves no Harness when it leaves one to
+ * deployment.
+ */
+function resolveModelPolicy(
   values: Readonly<OpenClawConfigurationDocument>,
-): string {
+  draft: boolean,
+): string | undefined {
   // Shape refusals come first.
   requireAgentsShape(values);
   const agents = asRecord(values.agents);
@@ -467,6 +461,10 @@ export function resolveConfiguredHarnessId(
         : configuredModels(entry.model, entryModelMessage(key));
     const model = selection[0];
     if (model === undefined) {
+      if (draft) {
+        // The draft selects no model for this entry yet: deployment names the missing one.
+        continue;
+      }
       throw new ConfigurationHarnessError(
         agentEntryMessage(
           key,
@@ -494,7 +492,11 @@ export function resolveConfiguredHarnessId(
     selections.push({ models: selection, entry });
   }
 
-  if (defaults?.models !== undefined && !matchingSelectableModels(defaultModels, primary)) {
+  if (
+    defaults?.models !== undefined &&
+    !(draft && primary === undefined) &&
+    !matchingSelectableModels(defaultModels, primary)
+  ) {
     throw new ConfigurationHarnessError(
       primary === undefined
         ? "Configuration setting agents.defaults.models needs a primary model: set agents.defaults.model or an agents.entries model."
@@ -508,14 +510,15 @@ export function resolveConfiguredHarnessId(
   );
 
   if (primary === undefined) {
-    return "openclaw";
+    return draft ? undefined : "openclaw";
   }
   const resolved = new Set<string>();
   const plugins = asRecord(asRecord(values.plugins)?.entries);
   const catalogs = new Map<string, CatalogIndex>();
 
-  // The Harness one candidate selects; refusals name no candidate.
-  const resolveCandidate = (model: string, entryPolicy: unknown): string => {
+  // The Harness one candidate selects; refusals name no candidate. A draft leaves a candidate
+  // without its required runtime to deployment.
+  const resolveCandidate = (model: string, entryPolicy: unknown): string | undefined => {
     const providerId = splitModelRef(model).provider;
     const provider = asRecord(providerConfigurations?.[providerId]);
     const providerModel =
@@ -540,6 +543,9 @@ export function resolveConfiguredHarnessId(
         provider !== undefined ||
         plugins?.[providerId] !== undefined)
     ) {
+      if (draft) {
+        return undefined;
+      }
       throw new ConfigurationHarnessError(
         "The configured Agent model requires an explicit supported Harness runtime.",
       );
@@ -590,14 +596,42 @@ export function resolveConfiguredHarnessId(
         }
         resolvedModels.add(model);
       }
-      resolved.add(resolveCandidate(model, entryPolicy));
+      const harness = resolveCandidate(model, entryPolicy);
+      if (harness !== undefined) {
+        resolved.add(harness);
+      }
     }
   }
 
-  if (resolved.size !== 1) {
+  // Deployment resolves every candidate. A draft that left each one to deployment resolves none.
+  if (resolved.size > 1 || (!draft && resolved.size === 0)) {
     throw new ConfigurationHarnessError(
       "The configured Agent models select conflicting Harness runtimes.",
     );
   }
-  return [...resolved][0]!;
+  return [...resolved][0];
+}
+
+/** Resolve native model policy without treating ignored whole-agent runtime pins as authoritative. */
+export function resolveConfiguredHarnessId(
+  values: Readonly<OpenClawConfigurationDocument>,
+): string {
+  return resolveModelPolicy(values, false)!;
+}
+
+/**
+ * Refuses, when a Configuration is saved, a model policy that every deployment refuses because
+ * the document sets conflicting values, with deployment's text and in deployment's order: the
+ * agents shape, each selection's form and fallback provider, an entry primary other than the
+ * defaults', agents.*.models that break the selectable rule, a provider catalog row that names no
+ * selected model (finding 3019), a selected model listed twice in its catalog, conflicting runtime
+ * policies, an unsupported runtime id, a Codex runtime on another provider than codex, and models
+ * that select different runtimes (finding 3020). A draft without a model, or a model without its
+ * required runtime, still saves; deployment refuses it. None of these rules reads Installation or
+ * Harness state.
+ */
+export function requireConsistentModelPolicy(
+  values: Readonly<OpenClawConfigurationDocument>,
+): void {
+  resolveModelPolicy(values, true);
 }
