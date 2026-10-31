@@ -41,7 +41,10 @@ reports the configuration invalid, the wrapper holds the failed check
 the deployment with `RUNTIME_STARTUP_FAILED` within seconds. The Gateway log
 names up to five setting paths, with OpenClaw's schema message where it gives
 one, and never their values. Fix or remove those settings, then deploy a new
-version.
+version. A dedicated Gateway validates its configuration before OpenClaw starts.
+It holds `gateway-config` the same way when no invalid setting belongs to its
+[Gateway tool policy](../../configuration.md#gateway-tool-policy), and
+`gateway-tool-policy` otherwise.
 
 ## Custom Codex provider capabilities
 

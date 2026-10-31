@@ -45,6 +45,7 @@ import {
   AGENT_RUNTIME_ENTRYPOINT,
   PLUGIN_RUNTIME_HELPERS,
 } from "../kubernetes/runtime-entrypoints.ts";
+import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import {
   embeddedGatewayVolumeInstance,
   observeEmbeddedGateway,
@@ -264,6 +265,7 @@ process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
 
 ${PLUGIN_RUNTIME_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
+${OPENCLAW_CONFIG_ISSUE_HELPER}
 ${startupPhaseHelper("gateway")}
 ${openClawStateMigrationHelper("Gateway", "deploy the Agent again")}
 

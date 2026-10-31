@@ -41,6 +41,11 @@ import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { listen as listenServer } from "../helpers/listen.mjs";
+import {
+  invalidGatewayConfiguration,
+  invalidGatewayConfigurationLine,
+  invalidGatewayConfigurationSecret,
+} from "../helpers/openclaw-config-validation.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { waitForResult } from "../helpers/wait-for.mjs";
@@ -4627,38 +4632,6 @@ test("Codex gateway supervisor stops respawning a Gateway whose Harness keeps ch
   assert.equal(gateway.children.length, 6);
 });
 
-// OpenClaw's validator report for a configuration it refuses at startup: a beam plugin entry
-// without its required settings (finding 3043), a core setting whose message quotes the
-// configured value, and more issues than the log line names.
-const invalidGatewayConfiguration = {
-  status: 1,
-  stdout: JSON.stringify({
-    ok: false,
-    valid: false,
-    issues: [
-      {
-        path: "plugins.entries.beam.config.mirror.endpoint",
-        message: "invalid config: must have required property 'endpoint'",
-      },
-      {
-        path: "plugins.entries.beam.config.mirror.endpoint",
-        message: "invalid config: must be string",
-      },
-      {
-        path: "plugins.entries.google.config.webSearch",
-        message: 'invalid config: must not have additional properties: "region"',
-      },
-      {
-        path: "tools.web.search.provider",
-        message: "unknown web_search provider: synthetic-configured-secret",
-      },
-      { path: "plugins.entries.beam.config.mirror.catalogs", message: "invalid config: x" },
-      { path: "logging.level", message: "Invalid input" },
-      { path: "agents.defaults.model", message: "Invalid input" },
-    ],
-  }),
-};
-
 test("Kubernetes Gateway holds a configuration OpenClaw refuses when its first start exits", async (t) => {
   const gateway = await startCodexGatewaySupervisor(t, {
     runtimeStatus: true,
@@ -4683,15 +4656,11 @@ test("Kubernetes Gateway holds a configuration OpenClaw refuses when its first s
   // setting value, stay beside their paths: the configuration may hold secrets.
   assert.ok(
     gateway.logs.includes(
-      "The OpenClaw Gateway exited (exit-78) before it served, and OpenClaw reports its configuration invalid (" +
-        "plugins.entries.beam.config.mirror.endpoint: must have required property 'endpoint'; " +
-        'plugins.entries.google.config.webSearch: must not have additional properties: "region"; ' +
-        "tools.web.search.provider; plugins.entries.beam.config.mirror.catalogs: x; logging.level). " +
-        "It is held, not restarted: fix or remove the invalid settings in the Agent's Configuration, then deploy a new version.",
+      invalidGatewayConfigurationLine("The OpenClaw Gateway exited (exit-78) before it served"),
     ),
     JSON.stringify(gateway.logs),
   );
-  assert.doesNotMatch(JSON.stringify(gateway.logs), /synthetic-configured-secret/);
+  assert.equal(JSON.stringify(gateway.logs).includes(invalidGatewayConfigurationSecret), false);
 
   // A held Gateway is not respawned for a changed Harness peer, nor restarted for another
   // workspace node; a container stop ends it.
