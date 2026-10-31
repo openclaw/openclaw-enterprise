@@ -6,6 +6,8 @@ import type {
   SecretConsumers,
 } from "@openclaw-enterprise/contracts";
 
+import { quotedSettingKey, shownSettingKey as shownKey } from "./environment-references.ts";
+
 export class AuthorizationDeniedError extends Error {
   readonly evidence?: AuthorizationEvidence;
   readonly authorization?: {
@@ -462,22 +464,8 @@ export function keyedSettingPath(parent: string, key: string): string {
     : `${parent}[${JSON.stringify(shown)}]`;
 }
 
-// Control, format, line and paragraph separator characters and lone surrogates show as ?.
-const shownKey = (key: string): string => key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
-
-/**
- * A submitted key a message names, such as a header name, in double quotes: characters
- * keyedSettingPath hides show as ?, and a key longer than `limit` code points is cut with …,
- * so the message keeps its cap (`limit` is at least 1). Use it only for keys that are not secrets.
- */
-export function quotedSettingKey(key: string, limit: number): string {
-  const characters = Array.from(shownKey(key));
-  return JSON.stringify(
-    characters.length <= limit
-      ? characters.join("")
-      : `${characters.slice(0, limit - 1).join("")}…`,
-  );
-}
+// The Console's secret reference reader shows names with these too (environment-references.ts).
+export { quotedSettingKey };
 
 /**
  * "Configuration setting <setting> <requirement>.", with a long setting path shortened to fit

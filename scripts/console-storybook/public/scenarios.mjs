@@ -5102,6 +5102,21 @@ export const scenarios = {
     description:
       "The saved Configuration uses the generated password; deployment is still required to apply edits.",
   },
+  gatewayPasswordUnreadable: {
+    group: "Pages/Agent detail",
+    name: "Gateway password reference OpenClaw cannot read",
+    path: draft,
+    deployed: true,
+    gatewayPasswordProviderless: true,
+    description:
+      "An older release saved gateway.auth.password without a provider. OpenClaw cannot read it and OCC refuses to save or deploy it, so the page shows OCC's refusal and keeps Enable gateway password access.",
+    steps: [
+      "On Configuration the hint reads Configuration setting gateway.auth.password is a SecretRef without a provider: add provider default, then says to enable access, save and deploy.",
+      "In Prepare this version, the first step reads Fix the gateway password and Deploy new version is disabled with the same refusal.",
+      "Select Enable gateway password access and Save Configuration: the hint says access is enabled and the status returns to Ready to deploy.",
+    ],
+    gap: "The stored reference is simulated; this story does not call OCC's save or deploy admission or start a Gateway.",
+  },
   gatewayPasswordSaveDenied: {
     group: "Pages/Agent detail",
     name: "Gateway password save denied",

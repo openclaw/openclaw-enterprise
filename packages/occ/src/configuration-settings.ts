@@ -4,8 +4,10 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
+import { gatewayPasswordRequirement } from "./environment-references.ts";
 import {
   agentEntryMessage,
+  configurationSettingMessage,
   ConfigurationHarnessError,
   GatewayPasswordValueError,
 } from "./errors.ts";
@@ -282,6 +284,7 @@ function isCredentialReference(value: unknown): boolean {
  * - The Codex session approval policy (codexApprovalPolicy).
  * - A literal gateway.auth.password would be stored in plain text, as a model credential
  *   would; every Compute Driver accepts only an environment reference there.
+ * - A gateway.auth.password reference OpenClaw cannot read (refuseUnreadableGatewayPassword).
  * - The workspace bootstrap settings (validateWorkspaceBootstrapSettings).
  * - Settings the pinned OpenClaw retired (refuseRetiredOpenClawSettings).
  * - OpenClaw's own sandbox (refuseOpenClawSandbox).
@@ -297,6 +300,7 @@ export function validateConfigurationSettings(
     options,
   );
   refuseLiteralGatewayPassword(values);
+  refuseUnreadableGatewayPassword(values, options);
   validateWorkspaceBootstrapSettings(values, options);
   refuseRetiredOpenClawSettings(values);
   refuseOpenClawSandbox(values, options);
@@ -305,9 +309,10 @@ export function validateConfigurationSettings(
 /**
  * The rules above that Agent save and deploy admission run again on a stored Configuration, so
  * one saved before a rule existed gets the message its next save would (findings 2699, 2709,
- * 2767).
+ * 2767, 3063).
  */
 export function refuseStoredConfigurationSettings(values: OpenClawConfigurationDocument): void {
+  refuseUnreadableGatewayPassword(values);
   validateWorkspaceBootstrapSettings(values);
   refuseRetiredOpenClawSettings(values);
   refuseOpenClawSandbox(values);
@@ -337,4 +342,56 @@ export function refuseLiteralGatewayPassword(values: OpenClawConfigurationDocume
   if (password !== undefined && password !== null && !isCredentialReference(password)) {
     throw new GatewayPasswordValueError("/gateway/auth/password");
   }
+}
+
+/**
+ * A gateway.auth.password object OpenClaw cannot read (`gatewayPasswordRequirement`): without a
+ * provider, with other keys or on a provider or allowlist that cannot serve it. The Gateway then
+ * stops at every start on every Compute, so saves refuse it whatever the Compute (findings 3061,
+ * 3062, 3063); a stored one still reads and can be replaced or deleted, and deploy refuses it. On a
+ * Preset save, a password or `secrets` that waits on a variable is checked once filled.
+ */
+export function refuseUnreadableGatewayPassword(
+  values: OpenClawConfigurationDocument,
+  options?: ConfigurationValidationOptions,
+): void {
+  const password = asRecord(asRecord(values.gateway)?.auth)?.password;
+  if (
+    waitsOnVariable(password, ["gateway", "auth", "password"], options) ||
+    waitsOnVariable(values.secrets, ["secrets"], options)
+  ) {
+    return;
+  }
+  const requirement = gatewayPasswordRequirement(password, values.secrets);
+  if (requirement !== undefined) {
+    throw new ConfigurationHarnessError(
+      configurationSettingMessage("gateway.auth.password", requirement),
+    );
+  }
+}
+
+/**
+ * Whether a Preset variable without a value fills any text (a string or an object key) in `value`,
+ * which sits at `path` in the Configuration document.
+ */
+export function waitsOnVariable(
+  value: unknown,
+  path: readonly (string | number)[],
+  options: ConfigurationValidationOptions | undefined,
+): boolean {
+  const unresolved = options?.unresolved;
+  if (unresolved === undefined) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return unresolved(path) !== undefined;
+  }
+  const entries = Array.isArray(value)
+    ? [...value.entries()]
+    : Object.entries(asRecord(value) ?? {});
+  return entries.some(
+    ([key, child]) =>
+      (typeof key === "string" && unresolved([...path, key], true) !== undefined) ||
+      waitsOnVariable(child, [...path, key], options),
+  );
 }

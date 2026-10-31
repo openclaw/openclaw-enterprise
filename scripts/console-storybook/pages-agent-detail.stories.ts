@@ -21,6 +21,7 @@ export const ConfigurationSaveRefused = story("configurationSaveRefused");
 export const ConfigurationSaveUnconfirmed = story("configurationSaveUnconfirmed");
 export const GatewayPasswordAccess = story("gatewayPasswordAccess");
 export const GatewayPasswordEnabled = story("gatewayPasswordEnabled");
+export const GatewayPasswordUnreadable = story("gatewayPasswordUnreadable");
 export const GatewayPasswordSaveDenied = story("gatewayPasswordSaveDenied");
 export const GatewayPasswordSaving = story("gatewayPasswordSaving");
 export const GatewaySafety = story("gatewaySafety");

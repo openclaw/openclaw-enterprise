@@ -219,6 +219,7 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-10-31: Writes, Agent save and deployment refuse a `gateway.auth.password` object OpenClaw cannot read on every Compute (no provider, other keys, a provider or allowlist that cannot serve it); Docker and Kubernetes Compute use the same reader, and a stored row still reads and deletes. (fix-3061, findings 3061-3063)
 - 2026-10-31: With no model selected, the provider catalog refusal names the model setting instead of the row rule. (fix-3023)
 
 - 2026-10-31: Writes also refuse model and runtime settings that conflict (entry primary, selectable models, runtime policies and IDs, Codex provider), with deployment's text and order; drafts without a model or runtime still save. (fix-3020, finding 3020)

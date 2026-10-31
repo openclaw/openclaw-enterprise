@@ -26,7 +26,8 @@ which runs the deployment resolver itself, in its order, and leaves a draft
 without a model or runtime to deployment), all of which every deployment refuses,
 with deployment's own text, and [the settings rules](../../../packages/occ/src/configuration-settings.ts).
 These rules reject unsupported Codex approval policies, a literal
-`gateway.auth.password`, and retired settings such as `security.preset`.
+`gateway.auth.password` or a password SecretRef OpenClaw cannot read
+(`gatewayPasswordRequirement`), and retired settings such as `security.preset`.
 OCC also calls the selected Compute Driver's optional
 [`validateConfiguration`](../../reference/drivers/compute-admission.md). On
 Kubernetes, this check refuses unsupported channels, model credentials outside the Harness

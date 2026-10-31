@@ -206,7 +206,8 @@ selects a managed password, including optional loopback access with trusted prox
 For either mode, a new container receives a new managed password; a reused healthy
 container keeps its value. Other explicit password settings are preserved and
 receive no Driver-generated password. Configuration API secret-reference rules
-still apply. Trusted proxy without a password reference receives no managed
+still apply: save and deployment refuse a password SecretRef that OpenClaw cannot
+read, such as one without a provider. Trusted proxy without a password reference receives no managed
 password. The dedicated Codex `APP_SERVER_TOKEN` remains a separate transport
 credential with its existing recovery checks.
 

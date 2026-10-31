@@ -17,6 +17,10 @@ import type { AgentRecheck, ConsolePageContext } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import { retiredOpenClawSettingMessage } from "../retired-openclaw-settings.mjs";
 import {
+  gatewayPasswordRequirement,
+  generatedGatewayPasswordReference,
+} from "../environment-references.mjs";
+import {
   button,
   element,
   fieldError,
@@ -3388,14 +3392,26 @@ export async function renderAgentDetail(
         pluginEditorState.reloadRequired ||
         !agent.harnessAuth ||
         revisionResult.status !== "fulfilled" ||
-        retiredSetting() !== null ||
+        configurationRefusal() !== null ||
         (!runtimeAuth && !credentials?.canDeploy())
       );
     }
-    // OCC refuses to deploy a saved Configuration that keeps a setting the pinned OpenClaw
-    // retired, with this message, so the draft says it before Deploy (finding 2810).
-    function retiredSetting() {
-      return retiredOpenClawSettingMessage(values);
+    // OCC refuses to deploy a saved Configuration with a gateway password reference OpenClaw
+    // cannot read (finding 3063) or a setting the pinned OpenClaw retired (finding 2810), in that
+    // order and with this message, so the draft says it before Deploy, with the Configuration step.
+    function configurationRefusal(): { readonly message: string; readonly step: string } | null {
+      const password = gatewayPasswordRequirement(
+        responseFields(responseFields(values.gateway).auth).password,
+        values.secrets,
+      );
+      if (password !== undefined) {
+        return {
+          message: `Configuration setting gateway.auth.password ${password}.`,
+          step: "Fix the gateway password",
+        };
+      }
+      const retired = retiredOpenClawSettingMessage(values);
+      return retired === null ? null : { message: retired, step: "Remove the retired setting" };
     }
     function updateDeployControls() {
       authenticationForm?.toggleAttribute("inert", Boolean(credentials?.mutationPending()));
@@ -3481,8 +3497,8 @@ export async function renderAgentDetail(
           deployStatus.textContent = "Save or discard plugin changes before deploying.";
         } else if (deployFeedback?.textContent) {
           deployStatus.textContent = "";
-        } else if (retiredSetting() !== null) {
-          deployStatus.textContent = retiredSetting();
+        } else if (configurationRefusal() !== null) {
+          deployStatus.textContent = configurationRefusal()?.message ?? "";
         } else if (revisionResult.status !== "fulfilled") {
           deployStatus.textContent =
             "Version history is required before deploying this new version.";
@@ -3600,11 +3616,11 @@ export async function renderAgentDetail(
         Boolean(deployReloadMessage);
       const unsaved =
         draftEditorState.dirty || pluginEditorState.dirty || retainedConfiguration.dirty;
-      const retired = retiredSetting() !== null;
+      const refusal = configurationRefusal();
       setStep(
         checklistSteps[0],
-        !saving && !reload && !unsaved && !retired,
-        `${saving ? "Saving…" : reload ? "Reload this draft" : unsaved ? "Unsaved changes" : retired ? "Remove the retired setting" : "Saved"} · Configuration ${snapshot.id} · generation ${snapshot.generation}`,
+        !saving && !reload && !unsaved && refusal === null,
+        `${saving ? "Saving…" : reload ? "Reload this draft" : unsaved ? "Unsaved changes" : (refusal?.step ?? "Saved")} · Configuration ${snapshot.id} · generation ${snapshot.generation}`,
       );
       const rejected = credentialRejected();
       const authenticationReady =
@@ -5850,9 +5866,13 @@ export async function renderAgentDetail(
     const gateway = responseFields(values.gateway);
     const gatewayAuth = responseFields(gateway.auth);
     const password = responseFields(gatewayAuth.password);
+    // A saved reference OpenClaw cannot read (no provider, other keys, a provider or allowlist that
+    // cannot serve it) stops the Gateway; Configuration save and deployment refuse it with this
+    // text, so it does not count as enabled and the button that replaces it stays (finding 3063).
+    const passwordRequirement = gatewayPasswordRequirement(gatewayAuth.password, values.secrets);
     const usesGeneratedGatewayPassword =
-      password?.source === "env" &&
-      (password.provider === undefined || password.provider === "default") &&
+      passwordRequirement === undefined &&
+      password.source === "env" &&
       password.id === "OPENCLAW_GATEWAY_PASSWORD";
     // A version admitted from this exact Configuration generation already carries the reference.
     const gatewayPasswordRevision = visibleRevisions.find(
@@ -5870,7 +5890,7 @@ export async function renderAgentDetail(
             ...gateway,
             auth: {
               ...gatewayAuth,
-              password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
+              password: generatedGatewayPasswordReference(values.secrets),
             },
           },
         },
@@ -6177,7 +6197,9 @@ export async function renderAgentDetail(
               ? gatewayPasswordRevision
                 ? `Gateway password access is enabled in the saved Configuration and included in v${gatewayPasswordRevision.revision}.`
                 : "Gateway password access is enabled in the saved Configuration. Deploy a new version to apply it."
-              : "Use generated credentials for direct gateway password access. Enable access, save Configuration, then deploy a new version.",
+              : passwordRequirement === undefined
+                ? "Use generated credentials for direct gateway password access. Enable access, save Configuration, then deploy a new version."
+                : `Configuration setting gateway.auth.password ${passwordRequirement}. Enable gateway password access to replace it, save Configuration, then deploy a new version.`,
           ),
           element(
             "div",
