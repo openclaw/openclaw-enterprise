@@ -8,7 +8,7 @@ import type {
   ErrorDetail,
   EgressInstallation,
   ProxyRevisionContext,
-} from "../../../../packages/contracts/src/index.ts";
+} from "@openclaw-enterprise/contracts";
 
 export const calls = { validate: 0, create: 0, lifecycle: 0, close: 0 };
 export const exchangeProbe = {

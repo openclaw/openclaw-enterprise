@@ -184,8 +184,8 @@ For separate stacks, select distinct state directories, cluster names, bridge
 subnets and published ports. Compose also needs a distinct `OCC_POSTGRES_PORT`;
 changing the API port alone leaves PostgreSQL on port 55432. Each Agent Gateway
 requests 2560 MiB with a 4 GiB limit, and each dedicated Codex Harness requests
-768 MiB with a 6 GiB limit, so a dedicated Codex Agent reserves 3.25 GiB; size
-the local engine VM for OCC plus the Agents you run
+768 MiB with a 6 GiB limit, so a dedicated Codex Agent reserves 3.25 GiB, or
+5 GiB with initial workspace files; size the local engine VM for OCC plus the Agents you run
 ([measurements](installation-profiles.md)). Keep each stack's resources under the helper's lifecycle until cleanup.
 
 ## Require both proxies before enabling Slack

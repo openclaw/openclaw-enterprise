@@ -10464,17 +10464,18 @@ export class OpenClawController {
           binding.repositoryRef,
         );
         if (approval) {
-          const driver = this.resolveRepositoryBindings(
+          const resolved = this.resolveRepositoryBindings(
             namespace.id,
             [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
             "saved",
-          )!.driver;
-          const scope = eligibleRepositoryApprovalScope(driver, {
+          )!;
+          const scope = eligibleRepositoryApprovalScope(resolved.driver, {
             namespaceId: namespace.id,
             binding,
           });
           if (
             !scope ||
+            !isDeepStrictEqual(resolved.resolution.bindings[0], binding) ||
             !isDeepStrictEqual(approval.binding, binding) ||
             !isDeepStrictEqual(approval.scope, scope)
           ) {
