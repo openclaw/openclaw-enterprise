@@ -2524,11 +2524,16 @@ function nativeGatewayAnswers(path) {
 // finishes (19.6 s after start in finding 2185). /startupz stays 503 until
 // every agent's inspection settles; /readyz adds channel, state database,
 // failed agent database and plugin reload health.
+// Whether a native Gateway this wrapper started has answered its /readyz, which the
+// kubelet's readiness probe asks every 2 s. Until one has, an exit may be OpenClaw refusing
+// its configuration at startup.
+let gatewayServed = false;
 async function gatewayRuntimeReady() {
   if (pluginRuntimeStatusPort() !== undefined && pluginStatusReport.phase !== "ready") {
     return false;
   }
   const answers = await Promise.all([nativeGatewayAnswers("/startupz"), nativeGatewayAnswers("/readyz")]);
+  if (answers[1]) gatewayServed = true;
   return answers.every((ready) => ready);
 }
 
@@ -3148,28 +3153,7 @@ function gatewayEnvironment() {
   }
 }
 
-// Whether a native Gateway this wrapper started has answered its /readyz. Until one has,
-// an exit may be OpenClaw refusing its configuration at startup.
-let gatewayServed = false;
 let gatewayConfigurationHeld = false;
-
-function watchFirstServe(spawned) {
-  const poll = async () => {
-    if (gatewayServed || spawned !== child || !childRunning) return;
-    try {
-      const response = await fetch(
-        "http://127.0.0.1:" + process.env.OPENCLAW_GATEWAY_PORT + "/readyz",
-        { signal: AbortSignal.timeout(2_000), redirect: "error" },
-      );
-      if (response.status === 200) {
-        gatewayServed = true;
-        return;
-      }
-    } catch {}
-    setTimeout(poll, 1_000).unref?.();
-  };
-  setTimeout(poll, 1_000).unref?.();
-}
 
 // OpenClaw exits at startup when any setting fails its schema, including a plugin entry's
 // config when that plugin is disabled or denied, and for a plugin setting logs only "config
@@ -3231,7 +3215,6 @@ function startGatewayProcess() {
       }
     });
   });
-  if (!gatewayServed) watchFirstServe(spawned);
   return Date.now();
 }
 

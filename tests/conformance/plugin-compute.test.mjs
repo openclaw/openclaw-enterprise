@@ -3712,9 +3712,9 @@ async function startCodexGatewaySupervisor(
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(fixture.peerStatus));
   });
-  // The native Gateway's own readiness endpoint, answered only while serving.
+  // The native Gateway's own readiness endpoints, answered only while serving.
   const gatewayPort = await listen((request, response) => {
-    assert.equal(request.url, "/readyz");
+    assert.ok(["/readyz", "/startupz"].includes(request.url), request.url);
     const live = fixture.children.at(-1);
     const status = fixture.serving && live?.exited === undefined ? 200 : 503;
     fixture.readinessProbes.push({ child: fixture.children.length, status });
@@ -3786,6 +3786,8 @@ async function startCodexGatewaySupervisor(
             fixture.statusHandler = handler;
             return { listen() {} };
           },
+          // Readiness reaches the fixture's native Gateway port.
+          get: peerHttp.get,
         };
       }
       if (specifier === "node:fs") {
@@ -4663,13 +4665,10 @@ test("Kubernetes Gateway holds a configuration OpenClaw refuses when its first s
     bindingDeviceId: "a".repeat(64),
   });
   gateway.validation = invalidGatewayConfiguration;
-  // OpenClaw exits at about 3 s, before its /readyz ever answers 200.
+  // The kubelet's readiness probe finds OpenClaw unready; it exits at about 3 s, before
+  // its /readyz ever answers 200.
   gateway.serving = false;
-  await waitForCondition(
-    "an unready /readyz answer",
-    () => gateway.readinessProbes.some(({ status }) => status === 503),
-    5_000,
-  );
+  assert.equal((await readReadyStatusFromHandler(gateway.statusHandler)).status, 503);
   const validationsBefore = gateway.validations;
   gateway.children[0].exit(1, null);
 
@@ -4745,11 +4744,8 @@ for (const {
       gateway.validation = validation;
     }
     if (served) {
-      await waitForCondition(
-        "the Gateway's first /readyz answer",
-        () => gateway.readinessProbes.some(({ status }) => status === 200),
-        5_000,
-      );
+      // The kubelet's readiness probe saw OpenClaw serve.
+      assert.equal((await readReadyStatusFromHandler(gateway.statusHandler)).status, 200);
     }
     const validationsBefore = gateway.validations;
     gateway.children[0].exit(exitCode, null);
