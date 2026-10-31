@@ -695,30 +695,37 @@ test(
 );
 
 // Finding 3066: shared Compute keeps one runtime per Agent (the embedded Kubernetes Gateway
-// Deployment, an SSH unit). A newer candidate takes it over, and the Kubernetes Driver then
-// reports the older version not ready: it never rolls the Deployment back. The older version
-// was superseded only once the newer one activated. When the newer one failed (a double Deploy
-// whose second version fails its startup model check), the older one polled for the whole
-// convergence deadline and failed CONVERGENCE_DEADLINE_EXCEEDED, though its runtime was gone.
-// This Compute models that Gateway: a version writes it unless it carries a later version.
-// `outcomes` sets a version's readiness once it holds the Gateway: "pending" (the default),
-// "ready" or "probe-failed" (a held model-probe failure).
+// Deployment). A newer candidate takes it over, and the Kubernetes Driver then reports the older
+// version not ready: it never rolls the Deployment back. The older version was superseded only
+// once the newer one activated. When the newer one failed (a double Deploy whose second version
+// fails its startup model check), the older one polled for the whole convergence deadline and
+// failed CONVERGENCE_DEADLINE_EXCEEDED, though its runtime was gone.
+// This Compute models that Gateway: a version writes it unless it carries a later version, and,
+// as on Kubernetes, stopping a version deletes it only while that version holds it. `outcomes`
+// sets a version's readiness once it holds the Gateway: "pending" (the default), "ready",
+// "probe-failed" (a held model-probe failure), or "refused" (Compute refuses every pass after
+// the first, which wrote the Gateway).
 function sharedGatewayCompute(fixture) {
   const gateway = new Map();
   const passes = new Map();
   const outcomes = new Map();
+  const removedBy = [];
   const compute = {
     ...fixture.compute,
     // Kubernetes declares exclusive replacement only for dedicated Harnesses.
     requiresStoppedPredecessors: (revision) => revision.harness.mode === "dedicated",
     async prepareRevision(revision) {
-      passes.set(revision.id, (passes.get(revision.id) ?? 0) + 1);
+      const pass = (passes.get(revision.id) ?? 0) + 1;
+      passes.set(revision.id, pass);
       const observed = await fixture.compute.prepareRevision(revision);
+      const outcome = outcomes.get(revision.id) ?? "pending";
+      if (outcome === "refused" && pass > 1) {
+        throw new SandboxRevisionUnsupportedError("SANDBOX_HARNESS_UNSUPPORTED", "test");
+      }
       if (revision.revision < (gateway.get(revision.agentId) ?? 0)) {
         return { ...observed, ready: false };
       }
       gateway.set(revision.agentId, revision.revision);
-      const outcome = outcomes.get(revision.id) ?? "pending";
       if (outcome === "ready") {
         return observed;
       }
@@ -738,8 +745,21 @@ function sharedGatewayCompute(fixture) {
           : {}),
       };
     },
+    async stopRevision(revision) {
+      await fixture.compute.stopRevision(revision);
+      if (gateway.get(revision.agentId) === revision.revision) {
+        gateway.delete(revision.agentId);
+        removedBy.push(revision.id);
+      }
+    },
   };
-  return { compute, gateway, outcomes, passes: (revision) => passes.get(revision.id) ?? 0 };
+  return {
+    compute,
+    gateway,
+    outcomes,
+    removedBy,
+    passes: (revision) => passes.get(revision.id) ?? 0,
+  };
 }
 
 async function workState(fixture, work) {
@@ -843,5 +863,55 @@ revisionTest(
     driver.outcomes.set(newer.id, "probe-failed");
     await assertWorkEnds(fixture, newer, "failed_permanent", "RUNTIME_MODEL_PROBE_FAILED");
     await assertWorkEnds(fixture, older, "failed_permanent", "CONVERGENCE_DEADLINE_EXCEEDED");
+  },
+);
+
+// The two controls below keep the older version's main behavior when the newer version ended
+// without leaving its runtime in place. Superseding the older version there would leave its
+// running Gateway with no active version (findings 990 and 1016), or the Agent with nothing.
+revisionTest(
+  "an older shared version still activates after a newer version is refused before Compute",
+  async (fixture) => {
+    const driver = sharedGatewayCompute(fixture);
+    await fixture.start(driver.compute);
+    const { owner, older } = await pendingOlderVersion(fixture, "shared-refused-early", driver);
+    // The newer version's deployer lacks `deploy`, so the worker refuses it before Compute. It
+    // never writes the Gateway, and with no preparation there is nothing to stop.
+    const requester = `refused-early-requester-${randomUUID()}`;
+    await fixture.copyActorGrants(requester, { withoutActions: ["deploy"] });
+    const newer = await fixture.revision(owner, 2, { actorId: requester });
+    await assertWorkEnds(fixture, newer, "failed_permanent", "AUTHORIZATION_DENIED");
+    assert.equal(driver.passes(newer), 0, "the refused version never reached Compute");
+    assert.equal(driver.gateway.get(owner.id), older.revision);
+    // The older version still holds the Gateway and activates once it is ready.
+    driver.outcomes.set(older.id, "ready");
+    await fixture.work(older, "succeeded");
+    const active = await fixture.activePointer(owner);
+    assert.equal(active.rows[0].active_revision_id, older.id);
+  },
+);
+
+revisionTest(
+  "an older shared version still activates after a newer first deployment is refused and stopped",
+  async (fixture) => {
+    const driver = sharedGatewayCompute(fixture);
+    await fixture.start(driver.compute);
+    const { owner, older } = await pendingOlderVersion(fixture, "shared-refused-stopped", driver);
+    // The newer version writes the Gateway on its first pass, then Compute refuses it. No
+    // version is active, so the worker stops the refused candidate, which deletes the Gateway.
+    const newer = await fixture.revision(owner, 2);
+    driver.outcomes.set(newer.id, "refused");
+    await assertWorkEnds(fixture, newer, "failed_permanent", "SANDBOX_HARNESS_UNSUPPORTED");
+    assert.deepEqual(
+      driver.removedBy,
+      [newer.id],
+      "the refused version's stop removed the Gateway",
+    );
+    // The older version writes the Gateway again and activates once it is ready.
+    driver.outcomes.set(older.id, "ready");
+    await fixture.work(older, "succeeded");
+    const active = await fixture.activePointer(owner);
+    assert.equal(active.rows[0].active_revision_id, older.id);
+    assert.equal(driver.gateway.get(owner.id), older.revision);
   },
 );

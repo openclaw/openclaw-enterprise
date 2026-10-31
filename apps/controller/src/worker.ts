@@ -1104,6 +1104,12 @@ const HELD_RUNTIME_FAILURE_CODES: Readonly<Record<string, string>> = Object.free
   REPOSITORY_ROUTE_BLOCKED: "REPOSITORY_GIT_ROUTE_BLOCKED",
 });
 
+// The deployment failure codes of held runtime failures. `finalizeRevision` never stops their
+// runtime, so a later version's held failure shows that it still holds the Agent's runtime.
+const HELD_RUNTIME_DEPLOYMENT_CODES: ReadonlySet<string> = new Set(
+  Object.values(HELD_RUNTIME_FAILURE_CODES),
+);
+
 function heldRuntimeFailureCode(code: string): string | undefined {
   return Object.hasOwn(HELD_RUNTIME_FAILURE_CODES, code)
     ? HELD_RUNTIME_FAILURE_CODES[code]
@@ -4712,12 +4718,12 @@ export class ControllerWorker {
         });
         return;
       }
-      const ended = await this.endedSharedSuccessor(revision);
-      if (ended !== undefined) {
+      const holder = await this.heldRuntimeSuccessor(revision);
+      if (holder !== undefined) {
         await this.finalizeRevision(claim, {
           outcome: "success",
           code: "REVISION_SUPERSEDED",
-          supersededBy: ended,
+          supersededBy: holder,
         });
         return;
       }
@@ -6898,46 +6904,51 @@ export class ControllerWorker {
   }
 
   /**
-   * The newest later version of this Agent on this Compute whose deployment has ended (succeeded
-   * or failed), for a version without exclusive replacement (finding 3066). Shared Compute keeps
-   * one runtime per Agent: an embedded Kubernetes Gateway or an SSH unit. A newer candidate takes
-   * it over, and Compute then reports this version not ready, so it could only wait out the
-   * convergence deadline. A newer version that is still pending or that activated is decided
-   * elsewhere: this version keeps waiting, or `previous` supersedes it. Exclusive replacement
-   * keeps its own successor check, which first finishes this version's predecessor stops.
+   * The Agent's newest version, if it is later than this one, on this Compute, and its deployment
+   * failed with a held runtime failure; only for a version without exclusive replacement (finding
+   * 3066). Shared Compute keeps one runtime per Agent, the embedded Kubernetes Gateway: that
+   * version took it over, so Compute reports this version not ready, and `finalizeRevision` keeps
+   * a held failure's runtime for diagnosis instead of stopping it. This version could then only
+   * wait out the convergence deadline. No other outcome shows that the newest version's runtime
+   * is still in place: a refusal before Compute never wrote it, a refused candidate may have been
+   * stopped (on a first deploy that deletes the Gateway), a deadline or retry failure may have
+   * come before Compute, and a succeeded deployment activated (`previous` decides), was
+   * superseded or was stopped. After those, this version can still activate, so it keeps waiting.
+   * Only the newest version counts, as a newer one may have replaced or removed the runtime.
+   * Exclusive replacement keeps its own successor check, which first finishes this version's
+   * predecessor stops.
    */
-  private async endedSharedSuccessor(
+  private async heldRuntimeSuccessor(
     revision: Readonly<AgentRevision>,
   ): Promise<Readonly<AgentRevision> | undefined> {
     if (this.compute.requiresStoppedPredecessors?.(revision) === true) {
       return undefined;
     }
-    const later = (
+    const newest = (
       await this.state.read((view) =>
         view.revisions.listRevisionMetadata(revision.namespaceId, revision.agentId),
       )
-    ).filter((candidate) => candidate.revision > revision.revision);
-    for (const listed of later.reverse()) {
-      const deployment = await this.queue.findWork(`agent_revision:${listed.id}:reconcile`);
-      if (
-        deployment === undefined ||
-        deployment.revisionId !== listed.id ||
-        (deployment.state !== "succeeded" && deployment.state !== "failed_permanent")
-      ) {
-        continue;
-      }
-      const candidate = await this.state.read((view) =>
-        view.revisions.findRevision(listed.namespaceId, listed.agentId, listed.id),
-      );
-      if (
-        candidate !== undefined &&
-        candidate.compute.id === this.compute.id &&
-        candidate.compute.implementation === this.compute.implementation
-      ) {
-        return candidate;
-      }
+    ).at(-1);
+    if (newest === undefined || newest.revision <= revision.revision) {
+      return undefined;
     }
-    return undefined;
+    const deployment = await this.queue.findWork(`agent_revision:${newest.id}:reconcile`);
+    if (
+      deployment?.revisionId !== newest.id ||
+      deployment.state !== "failed_permanent" ||
+      deployment.reasonCode === undefined ||
+      !HELD_RUNTIME_DEPLOYMENT_CODES.has(deployment.reasonCode)
+    ) {
+      return undefined;
+    }
+    const candidate = await this.state.read((view) =>
+      view.revisions.findRevision(newest.namespaceId, newest.agentId, newest.id),
+    );
+    return candidate !== undefined &&
+      candidate.compute.id === this.compute.id &&
+      candidate.compute.implementation === this.compute.implementation
+      ? candidate
+      : undefined;
   }
 
   /**

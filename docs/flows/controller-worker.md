@@ -155,16 +155,15 @@ Version work reloads its Namespace, Agent, saved version, and selected version.
 Agent Principal, a changed Harness descriptor, or a different Compute Driver.
 `authorizeRevision()` rechecks current `deploy` and, for a ServiceAccount
 snapshot, `read` on that exact ServiceAccount. Before Compute effects, the worker
-rechecks each managed credential's frozen Backend binding without a Backend
-client or admin key; the
+rechecks each managed credential's frozen Backend binding; the
 [Backend-managed credential delivery flow](service-account-driver-credential-delivery.md#5-recheck-metadata-and-project-the-account-secret)
 owns these checks.
 
-Revocation and denial fail permanently before the pass prepares a runtime. Older versions
-complete as superseded; selected versions enter finalization or maintenance.
-When Compute requires stopped predecessors, a newer admission supersedes older
-active maintenance before Compute effects, even after candidate failure.
-Recovery uses a new version.
+Revocation and denial fail permanently before Compute. Older versions complete as
+superseded, on shared Compute also once the newest has a held runtime failure;
+selected versions enter finalization or maintenance. With exclusive replacement,
+a newer admission supersedes older active maintenance before Compute effects,
+even after candidate failure. Recovery uses a new version.
 
 Agent-stop work rechecks current exact-Agent `operate`; superseded desired state
 completes without shutdown.
