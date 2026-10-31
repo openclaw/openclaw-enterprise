@@ -14,6 +14,15 @@ async function withCodexPluginStdio(command, args, options, install) {
   let closing = false;
   let exit;
   let rejectFailure;
+  let catalogRequestId;
+  const observations = {
+    catalogQueued: false, catalogWriteComplete: false, catalogReplyMatched: false,
+    stdoutMessages: 0, matchedReplyEnvelopes: 0,
+    unmatchedNumberIds: 0, unmatchedStringIds: 0, unmatchedNullIds: 0, unmatchedOtherIds: 0,
+  };
+  function countObservation(key) {
+    observations[key] = Math.min(observations[key] + 1, 2_147_483_647);
+  }
   const failed = new Promise((_, reject) => { rejectFailure = reject; });
   const close = new Promise((resolve) => child.once("close", (code, signal) => {
     exit = { code, signal };
@@ -24,7 +33,10 @@ async function withCodexPluginStdio(command, args, options, install) {
     const error = reason === "rpc"
       ? new CodexAppServerRequestError(method, "Codex plugin preparation RPC failed.")
       : new Error("Codex plugin preparation failed: " + reason);
-    error.preparation = { reason, method, rpcCode };
+    error.preparation = {
+      reason, method, rpcCode, ...observations,
+      catalogPending: [...pending.values()].some((request) => request.method === "plugin/list"),
+    };
     return error;
   }
   function fail(error) {
@@ -69,12 +81,28 @@ async function withCodexPluginStdio(command, args, options, install) {
         fail(preparationError("invalid-json"));
         return;
       }
+      countObservation("stdoutMessages");
       const request = pending.get(message?.id);
       if (request === undefined) {
+        if (message?.id !== undefined) {
+          if (typeof message.id === "number") {
+            countObservation("unmatchedNumberIds");
+          } else if (typeof message.id === "string") {
+            countObservation("unmatchedStringIds");
+          } else if (message.id === null) {
+            countObservation("unmatchedNullIds");
+          } else {
+            countObservation("unmatchedOtherIds");
+          }
+        }
         if (message?.id !== undefined && message?.method !== undefined) {
           fail(preparationError("server-request"));
         }
         continue;
+      }
+      countObservation("matchedReplyEnvelopes");
+      if (message.id === catalogRequestId) {
+        observations.catalogReplyMatched = true;
       }
       if (Object.hasOwn(message, "result") === Object.hasOwn(message, "error")) {
         fail(preparationError("invalid-response", request.method));
@@ -97,7 +125,17 @@ async function withCodexPluginStdio(command, args, options, install) {
     const id = ++nextId;
     return new Promise((resolve, reject) => {
       pending.set(id, { method, resolve, reject });
-      child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
+      if (method === "plugin/list") {
+        catalogRequestId = id;
+        observations.catalogQueued = true;
+        observations.catalogWriteComplete = false;
+        observations.catalogReplyMatched = false;
+      }
+      child.stdin.write(JSON.stringify({ id, method, params }) + "\n", (error) => {
+        if (id === catalogRequestId && (error === undefined || error === null)) {
+          observations.catalogWriteComplete = true;
+        }
+      });
     });
   }
   try {

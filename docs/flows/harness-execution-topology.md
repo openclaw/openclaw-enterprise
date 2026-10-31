@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
 updated: 2026-10-31
-last_updated_session: authoring-run/c1b37e4b-0ce0-4d5a-b087-b9833636f11e
+last_updated_session: authoring-run/afb5c72a-ef2b-4983-990c-427173225f65
 ---
 
 # Harness Execution Topology Flow
@@ -296,6 +296,10 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
   exit/signal or spawn-error metadata. Collect these while Pods exist; stop can
   remove their logs. Reporting failures preserve the guard and restart decisions.
   A changed startup still requires a new supported lifecycle; never replay its release.
+- `codex-plugin-stdio.ts:CODEX_PLUGIN_STDIO_HELPER` reports catalog queue, pipe-write,
+  pending and matched-reply flags, plus bounded message and unmatched-ID-type counts.
+  Pipe-write completion does not establish native acceptance. Counts retain no ID
+  values or payloads; stderr suppression and deadlines remain.
 
 - Check placement, immutable policy, and conflicts:
   `node --test tests/conformance/configuration-occ.test.mjs`.
@@ -336,6 +340,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31 03:41: Observe catalog pipe writes and reply counts. (authoring-run/afb5c72a-ef2b-4983-990c-427173225f65 - fbe295286b26132acf6330c87710231324afd5b1)
 
 - 2026-10-31 02:28: Trace continuity comparisons and wrapper exits. (authoring-run/c1b37e4b-0ce0-4d5a-b087-b9833636f11e - 4dc71d4678df0f9dc49bcbeaa654819d76e3ebb0)
 

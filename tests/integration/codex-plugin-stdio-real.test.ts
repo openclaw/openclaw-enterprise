@@ -4,9 +4,109 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import test from "node:test";
 import { promisify } from "node:util";
+import { createRequire } from "node:module";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { CODEX_PLUGIN_STDIO_HELPER } from "../../apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  cleanEnvironment,
+  temporaryDirectory,
+} from "../fixtures/repository-credentials/process.mjs";
+
+test("stdio failure diagnostics count reply IDs without exporting native payloads", async (t) => {
+  const directory = await temporaryDirectory(t, "oce-stdio-observations-");
+  const fixture = join(directory, "protocol-fixture.cjs");
+  // This process is a malformed-peer protocol fixture, not native catalog proof.
+  // Valid but unmatched IDs must remain visible by type without retaining values.
+  await writeFile(
+    fixture,
+    String.raw`
+const { createInterface } = require("node:readline");
+createInterface({ input: process.stdin }).on("line", line => {
+  const { id, method } = JSON.parse(line);
+  if (method === "initialize") {
+    process.stdout.write(JSON.stringify({ id, result: {} }) + "\n");
+  } else if (method === "plugin/list") {
+    for (const unmatched of [String(id), null, true, id + 100]) {
+      process.stdout.write(JSON.stringify({ id: unmatched, result: "do-not-export-native-payload" }) + "\n");
+    }
+    if (process.argv[2] !== "pending") {
+      process.stderr.write("do-not-export-native-stderr\n");
+      process.stdout.write(JSON.stringify({ id, error: { code: -32000, message: "do-not-export-native-error" } }) + "\n");
+    }
+  } else if (method === "account/read") {
+    process.stdout.write(JSON.stringify({ id, result: { account: null } }) + "\n");
+  }
+});
+`,
+  );
+  const prepare = new Function(
+    "require",
+    `${PLUGIN_RUNTIME_HELPERS}\n${CODEX_PLUGIN_STDIO_HELPER}\nreturn withCodexPluginStdio;`,
+  )(createRequire(import.meta.url));
+  await assert.rejects(
+    prepare(
+      process.execPath,
+      [fixture],
+      { cwd: directory, env: cleanEnvironment() },
+      (request: (method: string, params: unknown) => Promise<unknown>) =>
+        request("plugin/list", {}),
+    ),
+    (error) => {
+      assert.ok(error instanceof Error && "preparation" in error);
+      const diagnostic = error.preparation as Record<string, unknown>;
+      assert.deepEqual(diagnostic, {
+        reason: "rpc",
+        method: "plugin/list",
+        rpcCode: -32000,
+        catalogQueued: true,
+        catalogWriteComplete: true,
+        catalogReplyMatched: true,
+        stdoutMessages: 6,
+        matchedReplyEnvelopes: 2,
+        unmatchedNumberIds: 1,
+        unmatchedStringIds: 1,
+        unmatchedNullIds: 1,
+        unmatchedOtherIds: 1,
+        catalogPending: false,
+        exitCode: undefined,
+        signal: "SIGTERM",
+      });
+      assert.doesNotMatch(JSON.stringify(diagnostic), /do-not-export-native/);
+      return true;
+    },
+  );
+  // A later matched read drains the earlier fixture messages without answering
+  // the catalog request. Cancellation must retain that pending distinction.
+  await assert.rejects(
+    prepare(
+      process.execPath,
+      [fixture, "pending"],
+      { cwd: directory, env: cleanEnvironment() },
+      async (request: (method: string, params: unknown) => Promise<unknown>) => {
+        const catalog = request("plugin/list", {});
+        await request("account/read", { refreshToken: false });
+        process.emit("SIGTERM");
+        return catalog;
+      },
+    ),
+    (error) => {
+      assert.ok(error instanceof Error && "preparation" in error);
+      const diagnostic = error.preparation as Record<string, unknown>;
+      assert.equal(diagnostic.reason, "cancelled");
+      assert.equal(diagnostic.catalogQueued, true);
+      assert.equal(diagnostic.catalogWriteComplete, true);
+      assert.equal(diagnostic.catalogReplyMatched, false);
+      assert.equal(diagnostic.catalogPending, true);
+      assert.equal(diagnostic.stdoutMessages, 6);
+      assert.equal(diagnostic.matchedReplyEnvelopes, 2);
+      assert.doesNotMatch(JSON.stringify(diagnostic), /do-not-export-native/);
+      return true;
+    },
+  );
+});
 
 test(
   "native stdio plugin preparation survives WebSocket replacement and drains failed installation",
