@@ -23,6 +23,7 @@ export const GatewayPasswordAccess = story("gatewayPasswordAccess");
 export const GatewayPasswordEnabled = story("gatewayPasswordEnabled");
 export const GatewayPasswordUnreadable = story("gatewayPasswordUnreadable");
 export const SecretProviderAliasRefused = story("secretProviderAliasRefused");
+export const GatewayPasswordAllowlistOmits = story("gatewayPasswordAllowlistOmits");
 export const GatewayPasswordSaveDenied = story("gatewayPasswordSaveDenied");
 export const GatewayPasswordSaving = story("gatewayPasswordSaving");
 export const GatewaySafety = story("gatewaySafety");

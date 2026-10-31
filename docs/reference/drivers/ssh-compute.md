@@ -226,10 +226,17 @@ environment SecretRef to that variable that OpenClaw reads, on any env provider:
 the systemd unit sets the variable, and the Driver renders such a SecretRef as
 written. Trusted proxy can opt into the same loopback password. If
 `secrets.defaults.env` or `secrets.providers` makes the managed `default`
-reference unreadable, password mode needs that explicit SecretRef. Deployment
-refuses any other mode, an unsupported authentication field, another password
-reference, or a `gateway` or `gateway.auth` that is not an object, with `409`
-naming the setting, before admitting a revision.
+reference unreadable, password mode needs that explicit SecretRef. The refusal
+offers it on the default env alias only when OpenClaw can read it there.
+Otherwise, it states the requirement, for example an `allowlist` to extend.
+
+Deployment refuses settings in two steps, before it admits a revision. First,
+the shared Configuration rules refuse an environment SecretRef that OpenClaw
+cannot read with `400`, as on every Compute. Then this Driver refuses, with `409`
+naming the setting, any other mode, an unsupported authentication field, another
+password reference, or a `gateway` or `gateway.auth` that is not an object. Stop
+and retire check only the password's shape and render it as at admission, so a
+later OpenClaw reader change cannot block teardown.
 
 The helper creates a private per-Agent `gateway-password.env` when the managed
 password is needed. Later versions reuse that file; the Driver does not rotate

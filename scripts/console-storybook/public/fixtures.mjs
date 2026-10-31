@@ -76,6 +76,14 @@ function configurationValues(scenario) {
     // An env alias an older release saved in upper case, which OpenClaw's config check refuses.
     values.secrets = { defaults: { env: "BAD" } };
   }
+  if (scenario.gatewayPasswordAllowlistOmits) {
+    // A default env alias on a configured env provider whose allowlist leaves out the generated
+    // password, so OpenClaw cannot read the reference Enable gateway password access would write.
+    values.secrets = {
+      defaults: { env: "vault" },
+      providers: { vault: { source: "env", allowlist: ["OTHER_SECRET"] } },
+    };
+  }
   if (scenario.messageQueue !== undefined) {
     values.messages = { queue: structuredClone(scenario.messageQueue) };
   }

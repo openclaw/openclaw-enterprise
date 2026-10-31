@@ -226,7 +226,8 @@ and save-in-progress stories; none proves credential delivery or login. The
 unreadable-reference story shows a saved reference without a provider: the
 refusal, the button and a disabled **Deploy new version**. The refused-alias
 story shows an upper-case `secrets.defaults.env`: the alias refusal, no button
-and a disabled **Deploy new version**.
+and a disabled **Deploy new version**. The allowlist story shows a default env
+alias whose `allowlist` omits the variable: the reason and no button.
 
 ## Stop
 

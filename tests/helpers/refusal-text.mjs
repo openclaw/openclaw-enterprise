@@ -580,10 +580,13 @@ export const unboundPluginSecretRefusal = (setting, name, plugin) =>
   `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
 // The plugin secret input rule's refusal of a reference OpenClaw cannot read, which stops the
 // Gateway at startup whatever the bindings (finding 3056); `alias` is the default env alias
-// (secrets.defaults.env, else "default").
+// (secrets.defaults.env, else "default"). `substitutedAlias`: that alias holds an environment
+// reference, which only the runtime resolves.
 const UNREADABLE_PLUGIN_SECRETS = {
   providerless: (source = "env", alias = "default") =>
     `is a SecretRef without a provider: add ${["env", "store"].includes(source) ? `provider ${alias}` : `a provider that secrets.providers configures for ${source}`}`,
+  substitutedAlias: (source = "env") =>
+    `is a SecretRef without a provider: add the provider secrets.defaults.${source} names`,
   provider: (provider, source = "env") =>
     `uses secret provider ${provider}, which secrets.providers does not configure for ${source}`,
   id: (id) =>
@@ -641,8 +644,12 @@ export const invalidSecretProviderDefaultsRefusal = (held, ...shown) => {
 // SSH Compute's refusals of a gateway.auth.password it cannot deliver (finding 3065): `reference`,
 // a password other than the expression or an env SecretRef to the generated password, offering it
 // on the default env alias; `rendered`, an unset password or the expression in password mode when
-// the default-provider reference SSH Compute renders then is unreadable (`requirement` says why).
+// the default-provider reference SSH Compute renders then is unreadable (`requirement` says why),
+// offering the reference on the default env alias; `unoffered`, the same when OpenClaw cannot read
+// that reference either, so no reference is offered.
 export const sshGatewayPasswordRefusal = {
+  unoffered: (requirement) =>
+    `Configuration setting gateway.auth.password must be set to an environment SecretRef to OPENCLAW_GATEWAY_PASSWORD on a provider that reads it: SSH Compute's default reference ${requirement}.`,
   reference: (alias = "default") =>
     `Configuration setting gateway.auth.password must be "\${OPENCLAW_GATEWAY_PASSWORD}" or the environment SecretRef {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value SSH Compute generates.`,
   rendered: (alias, requirement) =>

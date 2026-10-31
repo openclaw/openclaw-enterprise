@@ -100,10 +100,15 @@ export const shownSecretName = (name: string): string =>
   /^[A-Za-z0-9_]{1,32}$/.test(name) ? name : quotedSettingKey(name, 32);
 
 // The provider alias OpenClaw reads a `source` SecretRef on by default: secrets.defaults.<source>
-// (trimmed), else "default". Only env and store have a built-in provider on it.
-const defaultSecretProvider = (secrets: unknown, source: string): string => {
+// (trimmed), else "default". Only env and store have a built-in provider on it. Undefined when the
+// alias holds an environment reference: the runtime substitutes it before it reads the alias, so
+// the alias is not known until then and readers leave what depends on it to the runtime.
+const defaultSecretProvider = (secrets: unknown, source: string): string | undefined => {
   const alias = asObject(asObject(secrets)?.defaults)?.[source];
-  return typeof alias === "string" && alias.trim() !== "" ? alias.trim() : "default";
+  if (typeof alias !== "string" || alias.trim() === "") {
+    return "default";
+  }
+  return environmentReferenceNames(alias).length > 0 ? undefined : alias.trim();
 };
 
 /**
@@ -111,7 +116,8 @@ const defaultSecretProvider = (secrets: unknown, source: string): string => {
  * undefined. Its schema (`SecretsConfigSchema` in `src/config/zod-schema.core.ts`) takes
  * secrets.defaults only as an object of env, file, exec and store aliases, each in the provider
  * alias grammar (no padding, no upper case), so the Gateway exits with code 78 at every start on
- * anything else, whatever the Compute (finding 3064). The schema sets no grammar on
+ * anything else, whatever the Compute (finding 3064). An alias that holds an environment reference
+ * is left to the runtime, which substitutes it before that check. The schema sets no grammar on
  * secrets.providers keys: a SecretRef cannot name one that breaks it (`secretInputReference`).
  */
 export function secretProviderDefaultsProblem(
@@ -135,6 +141,9 @@ export function secretProviderDefaultsProblem(
         requirement: `holds ${quotedSettingKey(source, 32)}, which OpenClaw refuses: name only env, file, exec or store`,
       };
     }
+    if (typeof alias === "string" && environmentReferenceNames(alias).length > 0) {
+      continue;
+    }
     if (typeof alias !== "string" || !SECRET_PROVIDER_ALIAS.test(alias)) {
       return {
         setting: `secrets.defaults.${source}`,
@@ -145,12 +154,17 @@ export function secretProviderDefaultsProblem(
   return undefined;
 }
 
-const providerlessRequirement = (source: string, secrets: unknown): string =>
-  `is a SecretRef without a provider: add ${
-    ["env", "store"].includes(source)
-      ? `provider ${shownSecretName(defaultSecretProvider(secrets, source))}`
-      : `a provider that secrets.providers configures for ${source}`
+function providerlessRequirement(source: string, secrets: unknown): string {
+  if (!["env", "store"].includes(source)) {
+    return `is a SecretRef without a provider: add a provider that secrets.providers configures for ${source}`;
+  }
+  const alias = defaultSecretProvider(secrets, source);
+  return `is a SecretRef without a provider: add ${
+    alias === undefined
+      ? `the provider secrets.defaults.${source} names`
+      : `provider ${shownSecretName(alias)}`
   }`;
+}
 
 export type SecretInputReference =
   // The variable the Gateway reads from its environment. `unset`: why OpenClaw cannot read a
@@ -172,7 +186,8 @@ export type SecretInputReference =
  * ref's source (only env and store have a built-in default alias: `resolveConfiguredProvider`), an
  * env or store id that breaks its grammar (`normalizeAndGroupSecretRefs` trims the id, so a padded
  * one then fails as "Secret resolution made no progress") and an id a configured env provider's
- * `allowlist` omits.
+ * `allowlist` omits. A default alias that holds an environment reference is known only once the
+ * runtime substitutes it, so what depends on it is left to the runtime.
  */
 export function secretInputReference(
   value: unknown,
@@ -197,6 +212,11 @@ export function secretInputReference(
   }
   const provider =
     template === undefined ? object?.provider : defaultSecretProvider(secrets, "env");
+  // A template on a default env alias the runtime substitutes reads the variable on an alias
+  // known only then.
+  if (template !== undefined && provider === undefined) {
+    return { variable: template };
+  }
   if (provider === undefined) {
     return { requirement: providerlessRequirement(source, secrets) };
   }
@@ -208,18 +228,25 @@ export function secretInputReference(
     return undefined;
   }
   const configured = asObject(asObject(asObject(secrets)?.providers)?.[provider]);
-  const builtIn =
-    configured?.source !== source &&
-    ["env", "store"].includes(source) &&
-    provider === defaultSecretProvider(secrets, source);
+  // Whether the provider is the source's built-in one; undefined when the default alias that
+  // decides it holds an environment reference, so its provider and allowlist checks are left to
+  // the runtime.
+  let builtIn: boolean | undefined = false;
+  if (configured?.source !== source && ["env", "store"].includes(source)) {
+    const alias = defaultSecretProvider(secrets, source);
+    builtIn = alias === undefined ? undefined : provider === alias;
+  }
   const unreadable = (): string | undefined => {
-    if (!SECRET_PROVIDER_ALIAS.test(provider) || (!builtIn && configured?.source !== source)) {
+    if (
+      !SECRET_PROVIDER_ALIAS.test(provider) ||
+      (builtIn === false && configured?.source !== source)
+    ) {
       return `uses secret provider ${shownSecretName(provider)}, which secrets.providers does not configure for ${source}`;
     }
     if (["env", "store"].includes(source) && !ENV_SECRET_REF_ID.test(id)) {
       return `references ${shownSecretName(id)}, not an id OpenClaw reads in ${source} SecretRefs (A-Z, 0-9 and _, from a letter)`;
     }
-    const allowlist = builtIn ? undefined : configured?.allowlist;
+    const allowlist = builtIn === false ? configured?.allowlist : undefined;
     if (source === "env" && Array.isArray(allowlist) && !allowlist.includes(id)) {
       return `references ${shownSecretName(id)}, which secrets.providers.${provider}.allowlist omits`;
     }
@@ -248,7 +275,7 @@ export function generatedGatewayPasswordReference(secrets: unknown): {
   const alias = defaultSecretProvider(secrets, "env");
   return {
     source: "env",
-    provider: SECRET_PROVIDER_ALIAS.test(alias) ? alias : "default",
+    provider: alias !== undefined && SECRET_PROVIDER_ALIAS.test(alias) ? alias : "default",
     id: "OPENCLAW_GATEWAY_PASSWORD",
   };
 }

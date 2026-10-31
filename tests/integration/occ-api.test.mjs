@@ -8332,6 +8332,28 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
       ),
       { defaults: { env: "custom" } },
     ]),
+    // When OpenClaw cannot read the reference on the default alias either (an allowlist there
+    // omits the variable), the refusal states the requirement and offers no reference that the
+    // same rule would refuse.
+    [
+      "unset-alias-allowlist",
+      { auth: { mode: "password" } },
+      sshGatewayPasswordRefusal.unoffered(
+        "uses secret provider default, which secrets.providers does not configure for env",
+      ),
+      {
+        defaults: { env: "vault" },
+        providers: { vault: { source: "env", allowlist: ["OTHER_SECRET"] } },
+      },
+    ],
+    [
+      "unset-default-allowlist",
+      { auth: { mode: "password" } },
+      sshGatewayPasswordRefusal.unoffered(
+        "references OPENCLAW_GATEWAY_PASSWORD, which secrets.providers.default.allowlist omits",
+      ),
+      { providers: { default: { source: "env", allowlist: ["OTHER_SECRET"] } } },
+    ],
   ]) {
     const configuration = await createConfiguration(controller, namespace.id, {
       ...values,

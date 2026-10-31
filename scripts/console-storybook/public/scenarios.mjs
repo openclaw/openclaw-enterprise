@@ -5131,6 +5131,19 @@ export const scenarios = {
     ],
     gap: "The stored alias is simulated; this story does not call OCC's save or deploy admission or start a Gateway.",
   },
+  gatewayPasswordAllowlistOmits: {
+    group: "Pages/Agent detail",
+    name: "Gateway password reference an allowlist omits",
+    path: draft,
+    deployed: true,
+    gatewayPasswordAllowlistOmits: true,
+    description:
+      "The default env alias is vault, a configured env provider whose allowlist leaves out OPENCLAW_GATEWAY_PASSWORD. OpenClaw cannot read the generated reference on that alias and OCC refuses to save it, so the page states why and offers no Enable gateway password access.",
+    steps: [
+      'On Configuration the hint reads The generated gateway password reference {source: "env", provider: "vault", id: "OPENCLAW_GATEWAY_PASSWORD"} references OPENCLAW_GATEWAY_PASSWORD, which secrets.providers.vault.allowlist omits, then says to edit the Configuration before you enable gateway password access; the button is absent.',
+    ],
+    gap: "The stored secrets are simulated; this story does not call OCC's save or deploy admission or start a Gateway.",
+  },
   gatewayPasswordSaveDenied: {
     group: "Pages/Agent detail",
     name: "Gateway password save denied",

@@ -116,7 +116,7 @@ A focused, disabled **Save Configuration** moves focus to **Checking Configurati
 Success focuses **Edit Configuration** unless the reader moved focus.
 
 **Enable gateway password access** and **Collaboration and safety**
-(`agents/gateway-safety.mts`) stage edits here; **Cancel** discards them. Password access sets `gateway.auth.password` to reference `OPENCLAW_GATEWAY_PASSWORD` on the default env alias; an unreadable saved reference holds **Deploy** with OCC's refusal. Compute supplies the password.
+(`agents/gateway-safety.mts`) stage edits here; **Cancel** discards them. Password access sets `gateway.auth.password` to reference `OPENCLAW_GATEWAY_PASSWORD` on the default env alias; an unreadable saved reference holds **Deploy** with OCC's refusal. Compute supplies the password. The button is hidden when save would refuse what it writes: a `secrets.defaults` alias OpenClaw refuses (the hint names it and **Deploy** is held), or a generated reference that `gatewayPasswordRequirement` cannot read on that alias, such as an `allowlist` that omits the variable (the hint states why).
 
 Saves preserve scroll, focus and admitted snapshots. Rejected edits stay. Unsaved edits block deployment; pending saves block tab and version changes.
 A refused write lists required grants without guessing which; a refused preflight read names read
@@ -343,6 +343,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31 21:30: Hide Enable gateway password access when save would refuse its reference: a refused alias or an unreadable generated reference. (fix-3064)
 
 - 2026-10-31 09:00: Confirm access when the read after Reload draft finds no grant outstanding. (fix-3030)
 

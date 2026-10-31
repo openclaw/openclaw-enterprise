@@ -224,9 +224,13 @@ Deployment and Agent save refuse such a `${APP_SERVER_*}` there for Agents other
 than dedicated Codex, because it is always unset on them. On every Compute,
 Configuration save, Agent save and deployment apply the same provider and
 allowlist rules to a `gateway.auth.password` SecretRef. They also refuse one
-with keys other than `source`, `provider` and `id`, or a `secrets.defaults`
-alias outside OpenClaw's alias grammar, such as `" custom "` or `"BAD"`, because
-OpenClaw's configuration check then fails.
+with keys other than `source`, `provider` and `id`, because OpenClaw's
+configuration check then fails. The same check fails on a `secrets.defaults` that
+is not an object, that holds a key other than `env`, `file`, `exec` or `store`,
+or that holds an alias outside OpenClaw's alias grammar, such as `" custom "` or
+`"BAD"`, so the same steps refuse these too. OpenClaw substitutes an alias written
+as `${NAME}` or `${NAME:-fallback}` before that check, so OCE leaves such an alias,
+and any SecretRef rule that depends on it, to OpenClaw.
 
 Configuration writes run these rules in deployment's order. They refuse settings
 that conflict, with deployment's message: an entry primary that differs, selectable

@@ -2006,6 +2006,15 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
       },
       unreadableGatewayPasswordRefusal("providerless", "env", "custom"),
     ],
+    // An alias written as an environment reference is known only to the runtime, so the refusal
+    // names the setting instead of an alias.
+    [
+      {
+        ...password({ source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" }),
+        secrets: { defaults: { env: "${ALIAS:-custom}" } },
+      },
+      unreadableGatewayPasswordRefusal("substitutedAlias"),
+    ],
     [
       {
         ...password(generated),
@@ -2043,8 +2052,32 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
       invalidSecretProviderDefaultsRefusal("key", '"envv"'),
     ],
     [{ ...valid, secrets: { defaults: "custom" } }, invalidSecretProviderDefaultsRefusal("shape")],
+    // `$${NAME}` is an escape the runtime renders as the literal `${NAME}`, so it is checked as
+    // written.
+    [
+      { ...valid, secrets: { defaults: { env: "$${ALIAS}" } } },
+      invalidSecretProviderDefaultsRefusal("alias", "env", '"$${ALIAS}"'),
+    ],
   ]) {
     await refusedAtSaveAndDeploy(context, agent, values, message);
+  }
+  assert.equal(configurationDriver.storedConfigurations().length, 1);
+  // OpenClaw substitutes `${VAR}` and `${VAR:-fallback}` in an alias before its configuration check
+  // and before it reads SecretRefs on that alias, so the alias rule and the password reader leave
+  // such an alias to the runtime: a password on provider default or on another provider saves.
+  for (const values of [
+    { ...password(generated), secrets: { defaults: { env: "${ALIAS:-custom}" } } },
+    {
+      ...password({ ...generated, provider: "custom" }),
+      secrets: { defaults: { env: "${ALIAS:-custom}", file: "${FILE_ALIAS}" } },
+    },
+  ]) {
+    const saved = await request(context.app, "POST", context.collection, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    const savedItem = `${context.collection}/${saved.body.data.id}`;
+    assert.equal((await request(context.app, "DELETE", savedItem)).status, 204);
   }
   assert.equal(configurationDriver.storedConfigurations().length, 1);
   // A stored Configuration the password rule now refuses still reads and deletes.

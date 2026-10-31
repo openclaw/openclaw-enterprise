@@ -5893,6 +5893,27 @@ export async function renderAgentDetail(
         revision.configurationId === snapshot.id &&
         revision.configurationGeneration === snapshot.generation,
     );
+    // The reference the button writes, on the default env alias. An allowlist or another source
+    // on that alias can leave it unreadable, and save refuses it then, so the hint states why and
+    // the button goes.
+    const generatedReference = generatedGatewayPasswordReference(values.secrets);
+    const generatedRequirement = gatewayPasswordRequirement(generatedReference, values.secrets);
+    function gatewayPasswordHint(): string {
+      if (defaultsProblem !== undefined) {
+        return `Configuration setting ${defaultsProblem.setting} ${defaultsProblem.requirement}. Edit Configuration to fix it before you enable gateway password access.`;
+      }
+      if (usesGeneratedGatewayPassword) {
+        return gatewayPasswordRevision
+          ? `Gateway password access is enabled in the saved Configuration and included in v${gatewayPasswordRevision.revision}.`
+          : "Gateway password access is enabled in the saved Configuration. Deploy a new version to apply it.";
+      }
+      if (generatedRequirement !== undefined) {
+        return `The generated gateway password reference {source: "env", provider: "${generatedReference.provider}", id: "OPENCLAW_GATEWAY_PASSWORD"} ${generatedRequirement}. Edit Configuration to fix it before you enable gateway password access.`;
+      }
+      return passwordRequirement === undefined
+        ? "Use generated credentials for direct gateway password access. Enable access, save Configuration, then deploy a new version."
+        : `Configuration setting gateway.auth.password ${passwordRequirement}. Enable gateway password access to replace it, save Configuration, then deploy a new version.`;
+    }
     const enableGatewayPassword = button("Enable gateway password access", () => {
       // Stage the native reference through the same draft and save checks as JSON edits.
       // The Compute Driver delivers the generated value only after deployment.
@@ -5903,7 +5924,7 @@ export async function renderAgentDetail(
             ...gateway,
             auth: {
               ...gatewayAuth,
-              password: generatedGatewayPasswordReference(values.secrets),
+              password: generatedReference,
             },
           },
         },
@@ -6203,24 +6224,14 @@ export async function renderAgentDetail(
       }
       if (!editing) {
         body.replaceChildren(
-          element(
-            "p",
-            { className: "hint" },
-            defaultsProblem !== undefined
-              ? `Configuration setting ${defaultsProblem.setting} ${defaultsProblem.requirement}. Edit Configuration to fix it before you enable gateway password access.`
-              : usesGeneratedGatewayPassword
-                ? gatewayPasswordRevision
-                  ? `Gateway password access is enabled in the saved Configuration and included in v${gatewayPasswordRevision.revision}.`
-                  : "Gateway password access is enabled in the saved Configuration. Deploy a new version to apply it."
-                : passwordRequirement === undefined
-                  ? "Use generated credentials for direct gateway password access. Enable access, save Configuration, then deploy a new version."
-                  : `Configuration setting gateway.auth.password ${passwordRequirement}. Enable gateway password access to replace it, save Configuration, then deploy a new version.`,
-          ),
+          element("p", { className: "hint" }, gatewayPasswordHint()),
           element(
             "div",
             { className: "form-actions" },
             edit,
-            usesGeneratedGatewayPassword || defaultsProblem !== undefined
+            usesGeneratedGatewayPassword ||
+              defaultsProblem !== undefined ||
+              generatedRequirement !== undefined
               ? null
               : enableGatewayPassword,
           ),

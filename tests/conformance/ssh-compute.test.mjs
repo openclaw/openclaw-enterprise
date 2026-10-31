@@ -1096,6 +1096,40 @@ test("SSH renders a readable custom-alias gateway password and still tears down 
   await access(f.revisionDir(legacy));
   await f.driver.retireRevision(legacy);
   await missing(f.revisionDir(legacy));
+
+  // A revision admitted with a custom-provider reference also tears down: teardown renders it as
+  // written again, so its snapshot hash matches.
+  await f.driver.deactivateRevision(rev);
+  await f.driver.stopRevision(rev);
+  await f.driver.retireRevision(rev);
+  await missing(f.revisionDir(rev));
+
+  // Teardown checks only the password's shape, never whether OpenClaw reads it: a revision admitted
+  // under a reader that a later OpenClaw pin tightens must still stop and retire. The current reader
+  // refuses this one (the allowlist omits the variable), standing in for that later reader; seed its
+  // as-written snapshot through the real host helper.
+  const tightened = revision(f.driver, 1, "agent-ssh-tightened-reference", {
+    gateway: {
+      tls: { enabled: false },
+      auth: { mode: "password", password: { ...custom, provider: "vault" } },
+    },
+    secrets: { providers: { vault: { source: "env", allowlist: ["OTHER_SECRET"] } } },
+  });
+  bind(f.driver, tightened);
+  await assert.rejects(f.driver.prepareRevision(tightened), {
+    message: unreadableGatewayPasswordRefusal("allowlist", "OPENCLAW_GATEWAY_PASSWORD", "vault"),
+  });
+  await f.driver.execute(f.configured.hosts.stable, {
+    operation: "prepare-revision",
+    namespace: tenant,
+    revision: tightened,
+    configurationHash: digest(JSON.stringify(tightened.configuration)),
+  });
+  await f.driver.deactivateRevision(tightened);
+  await f.driver.stopRevision(tightened);
+  await access(f.revisionDir(tightened));
+  await f.driver.retireRevision(tightened);
+  await missing(f.revisionDir(tightened));
 });
 
 test("SSH activation invokes lifecycle start hooks and cleans them up after activation failure", async (t) => {

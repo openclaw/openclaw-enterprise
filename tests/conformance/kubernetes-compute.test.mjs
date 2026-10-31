@@ -9880,6 +9880,15 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       },
     ],
     [{ ...withSearchHeader("$RELAY_TOKEN"), secrets: { defaults: { env: "custom" } } }],
+    // OpenClaw substitutes an alias written as an environment reference before it reads the ref,
+    // so the alias, and whether the ref's provider is the built-in one, is left to it.
+    [{ ...withSearchHeader("$RELAY_TOKEN"), secrets: { defaults: { env: "${ALIAS:-custom}" } } }],
+    [
+      {
+        ...withSearchHeader(envRef("RELAY_TOKEN")),
+        secrets: { defaults: { env: "${ALIAS:-custom}" } },
+      },
+    ],
     [withSearchHeader("${_RELAY}"), "_RELAY"],
   ]) {
     refusedUntilBound(embeddedAdmission, configuration, [searchHeader, name, "google"]);
