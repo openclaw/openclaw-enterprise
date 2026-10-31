@@ -12,7 +12,7 @@ import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
   githubInstallationProfile,
   resolveGitHubRepositoryBinding,
-  resolveSelectedRepositoryGrant,
+  resolveSelectedRepositoryScope,
   resolveGitHubStandingApprovalScope,
   validateGitHubRepositoryRegistry,
   type GitHubRepositoryRegistry,
@@ -151,12 +151,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
         sessionDurationSeconds: this.#duration,
       });
       if (resolved.bindings.some((b) => b.profile === "github-repository")) {
-        resolveSelectedRepositoryGrant(
-          this.#registry,
-          input.namespaceId,
-          "admission",
-          resolved.bindings,
-        );
+        resolveSelectedRepositoryScope(this.#registry, input.namespaceId, resolved.bindings);
       }
       return resolved;
     } catch {
