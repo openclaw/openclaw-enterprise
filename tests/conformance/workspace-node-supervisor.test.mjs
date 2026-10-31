@@ -218,7 +218,13 @@ test(
         'if (kind === "codex") spawn(process.execPath, [__filename, events, "grandchild"], { stdio: "inherit" });',
         "setInterval(() => {}, 1_000);",
       ],
-      stubs: pendingIdentityProbe,
+      stubs: [
+        ...pendingIdentityProbe,
+        // Simulate a broken sink for node-exit diagnostics while preserving real supervision.
+        "const savedConsoleError = console.error; console.error = (line) => {",
+        '  if (typeof line === "string" && line.includes("runtime.process_exit") && line.includes("workspace-node")) throw new Error("sentinel-private-exit-log-secret");',
+        "  savedConsoleError(line); };",
+      ],
       env: {
         OPENCLAW_NODE_SETUP_ENVELOPE: setupEnvelopePath,
         OPENCLAW_NODE_CA_PEM: "gateway-public-ca",
@@ -254,6 +260,33 @@ test(
       (rows) => rows.filter(({ kind }) => kind === "codex").length === 2,
     );
     assert.equal(afterCodex.filter(({ kind }) => kind === "node").length, 1);
+    const exitEvents = output()
+      .split("\n")
+      .flatMap((line) => {
+        try {
+          const value = JSON.parse(line);
+          return value.event === "runtime.process_exit" ? [value] : [];
+        } catch {
+          return [];
+        }
+      });
+    assert.deepEqual(
+      exitEvents.find((e) => e.component === "codex-wrapper"),
+      {
+        event: "runtime.process_exit",
+        component: "codex-wrapper",
+        exitCode: null,
+        signal: "SIGKILL",
+        stopping: false,
+      },
+    );
+    for (const secret of [
+      "synthetic-model-key",
+      "synthetic-transport-token",
+      "sentinel-private-exit-log-secret",
+    ]) {
+      assert.equal(JSON.stringify(exitEvents).includes(secret), false);
+    }
     process.kill(node.pid, 0);
     const descendant = initial.find(({ kind }) => kind === "grandchild");
     await waitFor("old Codex descendant exited", () => pidGone(descendant.pid));

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-26
-last_updated_session: authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba
+updated: 2026-10-31
+last_updated_session: authoring-run/c1b37e4b-0ce0-4d5a-b087-b9833636f11e
 ---
 
 # Harness Execution Topology Flow
@@ -279,6 +279,17 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 
 ## Debugging and Verification
 
+- `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:observeHeldPreview`
+  reports `worker.openshell-git-continuity-refused` with the failed comparison.
+  Held-startup comparisons expose SHA-256 hashes through `keyHash`.
+  Sandbox comparisons report restart count, Never-policy result and ID-change result.
+- `apps/controller/src/drivers/compute/harness-egress-enrollment.ts:HARNESS_EGRESS_ENROLLMENT_HELPER`
+  logs `runtime.protected_startup` with the same startup hash.
+  `runtime.process_exit` and `runtime.process_error` report fixed component,
+  exit/signal or spawn-error metadata. Collect these while Pods exist; stop can
+  remove their logs. Reporting failures preserve the guard and restart decisions.
+  A changed startup still requires a new supported lifecycle; never replay its release.
+
 - Check placement, immutable policy, and conflicts:
   `node --test tests/conformance/configuration-occ.test.mjs`.
 - Check guarded activation and recovery:
@@ -318,6 +329,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31 02:28: Trace continuity comparisons and wrapper exits. (authoring-run/c1b37e4b-0ce0-4d5a-b087-b9833636f11e - 4dc71d4678df0f9dc49bcbeaa654819d76e3ebb0)
 
 - 2026-10-26 23:35: Trace the model tool policy in both Gateway administration modes and recovery after a forced stop. (authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba - fac7d121c3c582afb53ca49c7d4579e04b5e5ea5)
 

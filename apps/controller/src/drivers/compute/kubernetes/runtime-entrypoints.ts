@@ -4730,11 +4730,33 @@ function start(slot) {
       slot.timer = setTimeout(() => start(slot), 1_000);
     }
   }
-  child.on("error", () => {
+  child.on("error", (error) => {
+    try {
+      const codes = ["ENOENT", "EACCES", "ENOMEM", "E2BIG", "EMFILE", "ENFILE"];
+      console.error(JSON.stringify({ event: "runtime.process_error", component: slot.name === "Codex" ? "codex-wrapper" : "workspace-node", code: codes.includes(error?.code) ? error.code : "OTHER" }));
+    } catch {
+      // A diagnostic failure cannot change the existing start-error recovery.
+    }
     console.error(slot.name + " failed to start.");
     finish();
   });
-  child.on("exit", () => {
+  child.on("exit", (code, signal) => {
+    try {
+      const signals = ["SIGINT", "SIGTERM", "SIGKILL", "SIGSEGV", "SIGABRT", "SIGHUP", "SIGBUS", "SIGPIPE"];
+      let observedSignal = null;
+      if (signal !== null) {
+        observedSignal = signals.includes(signal) ? signal : "OTHER";
+      }
+      console.error(JSON.stringify({
+        event: "runtime.process_exit",
+        component: slot.name === "Codex" ? "codex-wrapper" : "workspace-node",
+        exitCode: Number.isInteger(code) && code >= 0 && code <= 255 ? code : null,
+        signal: observedSignal,
+        stopping,
+      }));
+    } catch {
+      // Reporting must not change the existing group retirement or restart schedule.
+    }
     // The Codex wrapper may exit after plugin failure while its app-server is
     // still shutting down. Retire that group before starting another wrapper.
     killGroup(child, "SIGKILL");
