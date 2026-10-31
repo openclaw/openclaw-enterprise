@@ -1071,7 +1071,7 @@ test("Configuration save refuses a provider catalog row that no model selection 
   }
 });
 
-test("Configuration save refuses a model policy whose settings conflict, with deployment's text and order", async () => {
+test("Configuration save refuses a model policy whose settings conflict, with deployment's text and order", async (t) => {
   // Finding 3020. Every deployment resolves the Harness from the model policy first and refuses
   // a document whose settings conflict. Save accepted these, so the draft looked ready until
   // Deploy answered 400. A draft that still misses a model or a runtime saves (below).
@@ -1099,16 +1099,16 @@ test("Configuration save refuses a model policy whose settings conflict, with de
   const unselectedRow = { providers: { openai: { models: [{ id: "gpt-unselected" }] } } };
   // Each document sets two values that cannot both hold. Create and update refuse it; a row an
   // older release stored still reads, and deployment refuses it with the same text.
-  for (const [values, message] of [
-    // An Agent entry's primary differs from the defaults'.
+  for (const [name, values, message] of [
     [
+      "an Agent entry's primary that differs from the defaults'",
       {
         agents: { defaults: runtimeDefaults, entries: { main: { model: "openai/gpt-4.1-mini" } } },
       },
       entryPrimary,
     ],
-    // An entry's selectable models name another provider than its primary's.
     [
+      "an entry's selectable models on another provider than its primary's",
       {
         agents: {
           defaults: runtimeDefaults,
@@ -1122,8 +1122,8 @@ test("Configuration save refuses a model policy whose settings conflict, with de
       },
       setting("agents.entries.main.models", selectableRule),
     ],
-    // The defaults' selectable models name another provider than the primary's.
     [
+      "the defaults' selectable models on another provider than the primary's",
       {
         agents: {
           defaults: {
@@ -1134,13 +1134,14 @@ test("Configuration save refuses a model policy whose settings conflict, with de
       },
       setting("agents.defaults.models", selectableRule),
     ],
-    // The selected model's policy and its provider's name different runtimes.
     [
+      "a selected model policy and a provider policy that name different runtimes",
       { ...runtimeSelected, models: { providers: { openai: { agentRuntime: { id: "codex" } } } } },
       conflictingPolicies,
     ],
-    // A Codex runtime on the openai provider without the Codex plugin's WebSocket app server.
+    // The openai provider takes Codex only with the Codex plugin's WebSocket app server.
     [
+      "a Codex runtime on the openai provider",
       {
         agents: {
           defaults: { model: "openai/gpt-4.1", models: runtime("openai/gpt-4.1", "codex") },
@@ -1148,46 +1149,75 @@ test("Configuration save refuses a model policy whose settings conflict, with de
       },
       "The Codex Harness requires the native codex model provider.",
     ],
-    // A runtime id that no Harness implements.
     [
+      "a runtime id that no Harness implements",
       {
         agents: { defaults: { model: "openai/gpt-4.1", models: runtime("openai/gpt-4.1", "pi") } },
       },
       "The configured model Harness runtime identity is unsupported.",
     ],
+    [
+      "a provider runtime id that no Harness implements",
+      { ...runtimeSelected, models: { providers: { openai: { agentRuntime: { id: "pi" } } } } },
+      "The configured model Harness runtime identity is unsupported.",
+    ],
   ]) {
-    await refusedAtSaveAndDeploy(context, agent, values, message);
+    await t.test(`refuses ${name}`, () => refusedAtSaveAndDeploy(context, agent, values, message));
   }
 
   // Save checks these rules in deployment's order, so a document that breaks two names the same
-  // one at save and deploy: the entry primary comes before the catalog rule, and the catalog rule
-  // before the runtime policies.
-  await refusedAtSaveAndDeploy(
-    context,
-    agent,
-    {
-      agents: { defaults: runtimeDefaults, entries: { main: { model: "openai/gpt-4.1-mini" } } },
-      models: unselectedRow,
-    },
-    entryPrimary,
-  );
-  await refusedAtSaveAndDeploy(
-    context,
-    agent,
-    {
-      ...runtimeSelected,
-      models: {
-        providers: { openai: { ...unselectedRow.providers.openai, agentRuntime: { id: "codex" } } },
+  // one at save and deploy: each entry's rules come before the next entry's, the entries' before
+  // the catalog rule, and the catalog rule before the runtime policies.
+  await t.test("names the entry primary before an unselected catalog row", () =>
+    refusedAtSaveAndDeploy(
+      context,
+      agent,
+      {
+        agents: { defaults: runtimeDefaults, entries: { main: { model: "openai/gpt-4.1-mini" } } },
+        models: unselectedRow,
       },
-    },
-    catalogRule,
+      entryPrimary,
+    ),
+  );
+  await t.test("names an entry primary before a later entry's fallback on another provider", () =>
+    refusedAtSaveAndDeploy(
+      context,
+      agent,
+      {
+        agents: {
+          ownership: "explicit",
+          defaults: runtimeDefaults,
+          entries: {
+            main: { model: "openai/gpt-4.1-mini" },
+            other: { model: { primary: "openai/gpt-4.1", fallbacks: ["anthropic/claude-x"] } },
+          },
+        },
+      },
+      entryPrimary,
+    ),
+  );
+  await t.test("names an unselected catalog row before conflicting runtime policies", () =>
+    refusedAtSaveAndDeploy(
+      context,
+      agent,
+      {
+        ...runtimeSelected,
+        models: {
+          providers: {
+            openai: { ...unselectedRow.providers.openai, agentRuntime: { id: "codex" } },
+          },
+        },
+      },
+      catalogRule,
+    ),
   );
 
-  // An incomplete draft saves: no model at all, selectable models before any primary, an entry
-  // without a model while the defaults set none, or a model without the runtime its provider
-  // needs. Deployment still refuses it, naming what is missing.
-  for (const [values, deployMessage] of [
+  // An incomplete draft saves: selectable models before any primary, an entry without a model
+  // while the defaults set none, or a model without the runtime its provider needs. Deployment
+  // still refuses it, naming what is missing.
+  for (const [name, values, deployMessage] of [
     [
+      "selectable models with no primary model",
       { agents: { defaults: { models: runtimeDefaults.models } } },
       setting(
         "agents.defaults.models",
@@ -1195,6 +1225,7 @@ test("Configuration save refuses a model policy whose settings conflict, with de
       ),
     ],
     [
+      "an entry without a model while the defaults set none",
       { agents: { entries: { main: {} } } },
       setting(
         "agents.entries.main.model",
@@ -1202,21 +1233,24 @@ test("Configuration save refuses a model policy whose settings conflict, with de
       ),
     ],
     [
+      "an openai model without a runtime",
       { agents: { defaults: { model: "openai/gpt-4.1" } } },
       "The configured Agent model requires an explicit supported Harness runtime.",
     ],
   ]) {
-    const label = JSON.stringify(values);
-    const created = await request(context.app, "POST", context.collection, {
-      body: { kind: "agent", values },
+    await t.test(`saves ${name}`, async () => {
+      const label = JSON.stringify(values);
+      const created = await request(context.app, "POST", context.collection, {
+        body: { kind: "agent", values },
+      });
+      assert.equal(created.status, 201, `${label}: ${JSON.stringify(created.body)}`);
+      const saved = await request(context.app, "PATCH", agent.item, { body: { values } });
+      assert.equal(saved.status, 200, `${label}: ${JSON.stringify(saved.body)}`);
+      assert.deepEqual(saved.body.data.values, values, label);
+      const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
+      assertRefused(deployed, deployMessage, { label });
+      await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
     });
-    assert.equal(created.status, 201, `${label}: ${JSON.stringify(created.body)}`);
-    const saved = await request(context.app, "PATCH", agent.item, { body: { values } });
-    assert.equal(saved.status, 200, `${label}: ${JSON.stringify(saved.body)}`);
-    assert.deepEqual(saved.body.data.values, values, label);
-    const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
-    assertRefused(deployed, deployMessage, { label });
-    await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
   }
 });
 
