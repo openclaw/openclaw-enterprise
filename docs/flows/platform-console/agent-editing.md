@@ -116,7 +116,7 @@ A focused, disabled **Save Configuration** moves focus to **Checking Configurati
 Success focuses **Edit Configuration** unless the reader moved focus.
 
 **Enable gateway password access** and **Collaboration and safety**
-(`agents/gateway-safety.mts`) stage edits here; **Cancel** discards them. Password access sets `gateway.auth.password` to reference `OPENCLAW_GATEWAY_PASSWORD`, changing nothing else. Kubernetes
+(`agents/gateway-safety.mts`) stage edits here; **Cancel** discards them. Password access sets `gateway.auth.password` to reference `OPENCLAW_GATEWAY_PASSWORD` on the default env provider alias, changing nothing else. A saved reference OpenClaw cannot read is not shown as enabled: the page shows OCC's refusal, keeps the button and holds **Deploy**. Kubernetes
 `gatewayConfiguration` recognizes the reference; `deployment` supplies the password.
 
 Saves preserve scroll, focus and admitted snapshots. Rejected edits stay. Unsaved edits block deployment; pending saves block tab and version changes.

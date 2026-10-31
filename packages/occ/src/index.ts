@@ -599,10 +599,15 @@ export type { DeploymentFailureStep } from "./deployment-failure-steps.ts";
 export {
   environmentReference,
   environmentReferenceNames,
+  gatewayPasswordRequirement,
+  generatedGatewayPasswordReference,
+  secretInputReference,
   secretInputShorthandName,
+  shownSecretName,
   unsubstitutedReference,
   wholeEnvironmentReferenceName,
 } from "./environment-references.ts";
+export type { SecretInputReference } from "./environment-references.ts";
 export {
   invalidHeaderNameRequirement,
   isAdmittedHeaderName,
@@ -622,6 +627,7 @@ export {
   CODEX_APPROVAL_POLICY_SETTING,
   codexApprovalPolicy,
   refuseLiteralGatewayPassword,
+  waitsOnVariable,
 } from "./configuration-settings.ts";
 export { PostgresCommitOutcomeUnknownError };
 export {

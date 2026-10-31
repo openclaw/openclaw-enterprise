@@ -25,6 +25,7 @@ import {
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
   configurationSettingMessage,
+  gatewayPasswordRequirement,
   keyedSettingPath,
 } from "@openclaw-enterprise/occ";
 import {
@@ -207,6 +208,12 @@ function dockerGatewayConfigurationDocument(
       keyedSettingPath("gateway.auth", unsupported[0]!),
       "is not a supported native gateway authentication field",
     );
+  }
+  // OpenClaw resolves the password in both modes Docker Compute admits, with the Configuration's
+  // own secrets; Configuration save refuses the same objects (finding 3061).
+  const passwordRequirement = gatewayPasswordRequirement(auth.password, configuration.secrets);
+  if (passwordRequirement !== undefined) {
+    throw createError("gateway.auth.password", passwordRequirement);
   }
   const passwordReference =
     auth.password === undefined ? undefined : gatewayPasswordEnvironmentReference(auth.password);

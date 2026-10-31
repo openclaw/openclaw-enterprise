@@ -87,6 +87,7 @@ import {
   unsupportedChannelRefusal,
   KUBERNETES_GATEWAY_PASSWORD_REFUSAL,
   KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT,
+  kubernetesGatewayPasswordRequirement,
   dedicatedCodexVariableRefusal,
   unboundPluginSecretRefusal,
   unreadablePluginSecretRefusal,
@@ -9499,6 +9500,12 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
       passwordRule,
     ],
     [withPassword("${OPENCLAW_GATEWAY_PASSWORD}"), "gateway.auth.password", passwordRule],
+    // The offered reference names the alias OpenClaw reads from the environment by default.
+    [
+      { ...withPassword("${OPENCLAW_GATEWAY_PASSWORD}"), secrets: { defaults: { env: "custom" } } },
+      "gateway.auth.password",
+      kubernetesGatewayPasswordRequirement("custom"),
+    ],
   ]) {
     const label = JSON.stringify(configuration);
     for (const validate of [
@@ -9516,9 +9523,10 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   }
   // Finding 3057: the password surface is always active (Compute admits no token), so OpenClaw
   // reads the reference at every start and exits on one it cannot read from the environment,
-  // while its configuration still validates: no provider, a provider no secrets.providers entry
-  // configures for env (the built-in alias moves with secrets.defaults.env), an allowlist that
-  // omits the name.
+  // while its configuration still validates: a provider no secrets.providers entry configures for
+  // env (the built-in alias moves with secrets.defaults.env), an allowlist that omits the name.
+  // Finding 3062: its strict config schema refuses an object with other keys or without a text
+  // provider (null, blank, a number), and the Gateway exits 78; the fix names the default alias.
   const passwordRef = (provider, secrets) => ({
     ...withPassword(
       provider === undefined
@@ -9530,6 +9538,19 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   const envProvider = (allowlist) => ({ source: "env", ...(allowlist ? { allowlist } : {}) });
   for (const [configuration, ...refused] of [
     [passwordRef(undefined), "providerless"],
+    [passwordRef(undefined, { defaults: { env: "custom" } }), "providerless", "env", "custom"],
+    [passwordRef(null), "providerless"],
+    [passwordRef(" "), "providerless"],
+    [passwordRef(7), "providerless"],
+    [
+      withPassword({
+        source: "env",
+        provider: "default",
+        id: "OPENCLAW_GATEWAY_PASSWORD",
+        description: "generated",
+      }),
+      "keys",
+    ],
     [passwordRef("vault"), "provider", "vault"],
     [passwordRef("default", { defaults: { env: "custom" } }), "provider", "default"],
     [passwordRef("vault", { providers: { vault: { source: "file" } } }), "provider", "vault"],

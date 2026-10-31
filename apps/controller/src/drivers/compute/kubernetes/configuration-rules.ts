@@ -5,14 +5,16 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   enabledChannelEntries,
+  gatewayPasswordRequirement,
+  generatedGatewayPasswordReference,
   invalidHeaderNameRequirement,
   isAdmittedHeaderName,
   isCredentialHeaderName,
   keyedSettingPath,
   PROVIDER_MODELS_LIST,
   quotedSettingKey,
-  secretInputShorthandName,
-  wholeEnvironmentReferenceName,
+  secretInputReference,
+  shownSecretName,
 } from "@openclaw-enterprise/occ";
 import { asRecord, splitModelRef } from "@openclaw-enterprise/utils";
 import type { HarnessAuthMethodRule } from "../harness-auth-method.ts";
@@ -37,8 +39,8 @@ export const OPENCLAW_GATEWAY_PASSWORD = "OPENCLAW_GATEWAY_PASSWORD";
  * a literal or another environment variable, is refused: the Gateway reads only
  * OPENCLAW_GATEWAY_PASSWORD from its transport Secret. `secrets` is the Configuration's: the
  * password surface is always active (Compute admits no token), so OpenClaw resolves the reference
- * at every start and exits on one it cannot read from the process environment, while its
- * configuration still validates (finding 3057; `secretInputReference`).
+ * at every start and stops on one it cannot read (`gatewayPasswordRequirement`, which Configuration
+ * save also applies; findings 3057, 3062). Refusals offer the reference on the default env alias.
  */
 export function usesGatewayPasswordEnvironment(
   auth: Readonly<Record<string, unknown>>,
@@ -50,17 +52,15 @@ export function usesGatewayPasswordEnvironment(
   }
   const reference = asRecord(auth.password);
   if (reference?.source !== "env" || reference.id !== OPENCLAW_GATEWAY_PASSWORD) {
+    const generated = generatedGatewayPasswordReference(secrets);
     throw createError(
       "gateway.auth.password",
-      `must be the environment reference {source: "env", provider: "default", id: "${OPENCLAW_GATEWAY_PASSWORD}"}, whose value Kubernetes Compute generates`,
+      `must be the environment reference {source: "env", provider: "${generated.provider}", id: "${OPENCLAW_GATEWAY_PASSWORD}"}, whose value Kubernetes Compute generates`,
     );
   }
-  const read = secretInputReference(reference, secrets);
-  if (read !== undefined && "requirement" in read) {
-    throw createError(
-      "gateway.auth.password",
-      `${read.requirement}, so the Gateway cannot read the password Kubernetes Compute generates`,
-    );
+  const requirement = gatewayPasswordRequirement(reference, secrets);
+  if (requirement !== undefined) {
+    throw createError("gateway.auth.password", requirement);
   }
   return true;
 }
@@ -161,107 +161,6 @@ const PLUGIN_SECRET_INPUTS: Readonly<
 // only) and Kubernetes service links.
 const RUNTIME_VARIABLE =
   /^(?:HOSTNAME|YARN_VERSION|GIT_SSL_CAINFO)$|_SERVICE_(?:HOST|PORT)(?:_|$)|_PORT(?:_|$)/;
-
-// OpenClaw's SecretRef grammar at the pin (`src/secrets/ref-contract.ts`): the sources, the
-// provider alias and the id of an env or store SecretRef.
-const SECRET_REF_SOURCES = ["env", "file", "exec", "store"];
-const SECRET_PROVIDER_ALIAS = /^[a-z][a-z0-9_-]{0,63}$/;
-const ENV_SECRET_REF_ID = /^[A-Z][A-Z0-9_]{0,127}$/;
-
-// A variable, id or provider alias as a refusal shows it: as written when short and plain, else
-// quoted and cut, so a message keeps its cap and never echoes control characters.
-const shownSecretName = (name: string): string =>
-  /^[A-Za-z0-9_]{1,32}$/.test(name) ? name : quotedSettingKey(name, 32);
-
-type SecretInputReference =
-  // The variable the Gateway reads from its environment. `unset`: why OpenClaw cannot read a
-  // whole `${NAME}` that it keeps as an env SecretRef because NAME is unset at startup.
-  | { readonly variable: string; readonly unset?: string }
-  // Why OpenClaw cannot read the reference at all, which ends startup.
-  | { readonly requirement: string };
-
-/**
- * How OpenClaw reads a secret-input value at startup, or undefined when it keeps the value as
- * written (a reference inside other text, a `${NAME:-fallback}`, any other object). The `$NAME`
- * shorthand is an env SecretRef on the default env provider alias (`secrets.defaults.env`, else
- * "default"; `parseEnvTemplateSecretRef`). A whole `${NAME}` with no fallback (padded too, finding
- * 3046) is one only while NAME is unset: config loading substitutes a set NAME first and records
- * the path as resolved, so no SecretRef is read there (`substituteString`,
- * `getAuthoredConfigSecretRef`); a `${_NAME}` is only substituted. OpenClaw refuses a SecretRef
- * object without a provider (`collectCanonicalSecretInputAssignment`), a provider alias that breaks
- * its grammar or that `secrets.providers` does not configure for the ref's source (only env and
- * store have a built-in default alias: `resolveConfiguredProvider`), an env or store id that
- * breaks its grammar (`normalizeAndGroupSecretRefs` trims the id, so a padded one then fails as
- * "Secret resolution made no progress") and an id a configured env provider's `allowlist` omits.
- */
-function secretInputReference(
-  value: unknown,
-  secrets: Readonly<Record<string, unknown>> | undefined,
-): SecretInputReference | undefined {
-  const text = typeof value === "string" ? value : undefined;
-  const substituted = text === undefined ? undefined : wholeEnvironmentReferenceName(text.trim());
-  if (substituted !== undefined && !ENV_SECRET_REF_ID.test(substituted)) {
-    return { variable: substituted };
-  }
-  const template = substituted ?? (text === undefined ? undefined : secretInputShorthandName(text));
-  const object = template === undefined ? asRecord(value) : undefined;
-  const source = template === undefined ? object?.source : "env";
-  const id = template ?? object?.id;
-  if (
-    typeof source !== "string" ||
-    !SECRET_REF_SOURCES.includes(source) ||
-    typeof id !== "string" ||
-    id.trim() === ""
-  ) {
-    return undefined;
-  }
-  const defaults = asRecord(secrets?.defaults);
-  const defaultAlias = (refSource: string): string => {
-    const alias = defaults?.[refSource];
-    return typeof alias === "string" && alias.trim() !== "" ? alias.trim() : "default";
-  };
-  const provider = template === undefined ? object?.provider : defaultAlias("env");
-  if (provider === undefined) {
-    // Only env and store refs have a built-in provider on their default alias.
-    const add = ["env", "store"].includes(source)
-      ? `provider ${shownSecretName(defaultAlias(source))}`
-      : `a provider that secrets.providers configures for ${source}`;
-    return { requirement: `is a SecretRef without a provider: add ${add}` };
-  }
-  if (
-    (object !== undefined && Object.keys(object).length !== 3) ||
-    typeof provider !== "string" ||
-    provider.trim() === ""
-  ) {
-    return undefined;
-  }
-  const configured = asRecord(asRecord(secrets?.providers)?.[provider]);
-  const builtIn =
-    configured?.source !== source &&
-    ["env", "store"].includes(source) &&
-    provider === defaultAlias(source);
-  const unreadable = (): string | undefined => {
-    if (!SECRET_PROVIDER_ALIAS.test(provider) || (!builtIn && configured?.source !== source)) {
-      return `uses secret provider ${shownSecretName(provider)}, which secrets.providers does not configure for ${source}`;
-    }
-    if (["env", "store"].includes(source) && !ENV_SECRET_REF_ID.test(id)) {
-      return `references ${shownSecretName(id)}, not an id OpenClaw reads in ${source} SecretRefs (A-Z, 0-9 and _, from a letter)`;
-    }
-    const allowlist = builtIn ? undefined : configured?.allowlist;
-    if (source === "env" && Array.isArray(allowlist) && !allowlist.includes(id)) {
-      return `references ${shownSecretName(id)}, which secrets.providers.${provider}.allowlist omits`;
-    }
-    return undefined;
-  };
-  const requirement = unreadable();
-  if (substituted !== undefined) {
-    return requirement === undefined ? { variable: id } : { variable: id, unset: requirement };
-  }
-  if (requirement !== undefined) {
-    return { requirement };
-  }
-  return source === "env" ? { variable: id } : undefined;
-}
 
 // Each value at `keys` below `value`, with its setting path; `*` matches every key of an object.
 function settingValues(

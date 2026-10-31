@@ -68,6 +68,10 @@ function configurationValues(scenario) {
       password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
     };
   }
+  if (scenario.gatewayPasswordProviderless) {
+    // A reference an older release saved without a provider, which OpenClaw cannot read.
+    values.gateway.auth = { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } };
+  }
   if (scenario.messageQueue !== undefined) {
     values.messages = { queue: structuredClone(scenario.messageQueue) };
   }

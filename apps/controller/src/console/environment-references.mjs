@@ -2,6 +2,8 @@
 // (console-assets.ts); browsers never load this file.
 export {
   environmentReferenceNames,
+  gatewayPasswordRequirement,
+  generatedGatewayPasswordReference,
   secretInputShorthandName,
   unsubstitutedReference,
   wholeEnvironmentReferenceName,

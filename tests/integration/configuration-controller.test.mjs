@@ -1972,10 +1972,38 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
 
   // Topology-independent rules: the save refuses with a 400 naming the setting; an existing row
   // still reads, and deployment refuses it before any revision is admitted.
+  const generated = { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" };
   for (const [values, message, deployMessage = message] of [
     [approvalPolicy("always"), policyEnum],
     [approvalPolicy("untrusted"), policyRetired],
     [password("literal-gateway-password"), gatewayPassword, KUBERNETES_GATEWAY_PASSWORD_REFUSAL],
+    // A password object OpenClaw cannot read stops the Gateway at every start on every Compute
+    // (findings 3057, 3061, 3062, 3063): one its schema refuses (no provider, a null provider,
+    // other keys; exit 78) and one on a provider or allowlist that cannot serve it.
+    [
+      password({ source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" }),
+      unreadableGatewayPasswordRefusal("providerless"),
+    ],
+    [password({ ...generated, provider: null }), unreadableGatewayPasswordRefusal("providerless")],
+    [password({ ...generated, note: "generated" }), unreadableGatewayPasswordRefusal("keys")],
+    [
+      password({ ...generated, provider: "vault" }),
+      unreadableGatewayPasswordRefusal("provider", "vault"),
+    ],
+    [
+      {
+        ...password({ source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" }),
+        secrets: { defaults: { env: "custom" } },
+      },
+      unreadableGatewayPasswordRefusal("providerless", "env", "custom"),
+    ],
+    [
+      {
+        ...password(generated),
+        secrets: { providers: { default: { source: "env", allowlist: ["OTHER"] } } },
+      },
+      unreadableGatewayPasswordRefusal("allowlist", "OPENCLAW_GATEWAY_PASSWORD"),
+    ],
   ]) {
     await refusedAtSaveAndDeploy(context, agent, values, message, {
       status: 409,
@@ -1983,6 +2011,36 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     });
   }
   assert.equal(configurationDriver.storedConfigurations().length, 1);
+  // A stored Configuration the password rule now refuses still reads and deletes.
+  const unused = await request(context.app, "POST", context.collection, {
+    body: { kind: "agent", values: valid },
+  });
+  assert.equal(unused.status, 201, JSON.stringify(unused.body));
+  await writePastOcc(
+    configurationDriver,
+    unused.body.data.id,
+    password({ source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" }),
+  );
+  const unusedItem = `${context.collection}/${unused.body.data.id}`;
+  assert.equal((await request(context.app, "GET", unusedItem)).status, 200);
+  assert.equal((await request(context.app, "DELETE", unusedItem)).status, 204);
+  assert.equal(configurationDriver.storedConfigurations().length, 1);
+  // A Preset whose password provider waits on a variable is checked once filled; a default fills
+  // it at Preset save.
+  const waitingProvider = password({ ...generated, provider: "{{ vars.alias }}" });
+  assertRefused(
+    await savePreset(context, {
+      variables: { alias: { type: "string", default: "vault" } },
+      configuration: { values: waitingProvider },
+    }),
+    unreadableGatewayPasswordRefusal("provider", "vault"),
+  );
+  const deferredProvider = await savePreset(
+    context,
+    { variables: { alias: { type: "string" } }, configuration: { values: waitingProvider } },
+    "Password-provider-deferred",
+  );
+  assert.equal(deferredProvider.status, 201, JSON.stringify(deferredProvider.body));
 
   // Rules that depend on the Compute Driver or the topology save, and deployment refuses them.
   for (const [values, deployStatus, deployMessage] of [
@@ -1993,19 +2051,6 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     ],
     // An explicit null is unset to the save rule, as for model credentials; Kubernetes refuses it.
     [password(null), 409, KUBERNETES_GATEWAY_PASSWORD_REFUSAL],
-    // The right name on a provider OpenClaw does not read from the Gateway's environment stops
-    // every start while its configuration validates (finding 3057), and one without a provider
-    // fails OpenClaw's schema: Kubernetes refuses both.
-    [
-      password({ source: "env", provider: "vault", id: "OPENCLAW_GATEWAY_PASSWORD" }),
-      409,
-      unreadableGatewayPasswordRefusal("provider", "vault"),
-    ],
-    [
-      password({ source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" }),
-      409,
-      unreadableGatewayPasswordRefusal("providerless"),
-    ],
     [
       { ...valid, channels: { slack: { enabled: true } } },
       400,

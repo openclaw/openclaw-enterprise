@@ -666,10 +666,10 @@ export function validateModelCredentialReferences(
     // OpenClaw reads a `${NAME}` reference in every one, and a SecretRef where the slot takes one.
     // A hook mapping's `sessionKey`, also registered, is a routing key (often a template), not a
     // credential, and stays as written. Each slot that takes a SecretRef takes OpenClaw's, whose
-    // provider is required; Kubernetes Compute's deployment refuses a Gateway password reference
-    // OpenClaw cannot read (`usesGatewayPasswordEnvironment`). Saves refuse a
-    // literal password first (validateConfigurationSettings), but deployment does not run that:
-    // this call is what refuses a stored document that predates the rule, with the same message.
+    // provider is required; saves and deployment refuse a Gateway password reference OpenClaw
+    // cannot read (refuseUnreadableGatewayPassword). Saves refuse a literal password first
+    // (validateConfigurationSettings), but deployment does not run that: this call is what refuses
+    // a stored document that predates the rule, with the same message.
     refuseLiteralGatewayPassword(values);
     const sensitiveSlots: [SettingPath, unknown][] = [
       ...[

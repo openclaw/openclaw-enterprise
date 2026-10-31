@@ -338,9 +338,11 @@ export const EMBEDDED_API_KEY_REQUIRED =
   "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.";
 export const codexApiKeyRefusal = (setting) =>
   `Configuration setting ${setting} must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.`;
-// Kubernetes Compute generates the Gateway password, so gateway.auth.password may only reference it.
-export const KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT =
-  'must be the environment reference {source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates';
+// Kubernetes Compute generates the Gateway password, so gateway.auth.password may only reference it,
+// on the default env provider alias (secrets.defaults.env, else "default").
+export const kubernetesGatewayPasswordRequirement = (alias = "default") =>
+  `must be the environment reference {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates`;
+export const KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT = kubernetesGatewayPasswordRequirement();
 export const KUBERNETES_GATEWAY_PASSWORD_REFUSAL = `Configuration setting gateway.auth.password ${KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT}.`;
 // Deploy and Agent provisioning of dedicated OpenClaw where the Installation selects no
 // provisioning SandboxDriver with all three containment facets (409 RESOURCE_CONFLICT). It names
@@ -577,10 +579,11 @@ export const dedicatedCodexVariableRefusal = (
 export const unboundPluginSecretRefusal = (setting, name, plugin) =>
   `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
 // The plugin secret input rule's refusal of a reference OpenClaw cannot read, which stops the
-// Gateway at startup whatever the bindings (finding 3056), on the default env alias "default".
+// Gateway at startup whatever the bindings (finding 3056); `alias` is the default env alias
+// (secrets.defaults.env, else "default").
 const UNREADABLE_PLUGIN_SECRETS = {
-  providerless: (source = "env") =>
-    `is a SecretRef without a provider: add ${["env", "store"].includes(source) ? "provider default" : `a provider that secrets.providers configures for ${source}`}`,
+  providerless: (source = "env", alias = "default") =>
+    `is a SecretRef without a provider: add ${["env", "store"].includes(source) ? `provider ${alias}` : `a provider that secrets.providers configures for ${source}`}`,
   provider: (provider, source = "env") =>
     `uses secret provider ${provider}, which secrets.providers does not configure for ${source}`,
   id: (id) =>
@@ -598,10 +601,20 @@ export const unboundUnreadablePluginSecretRefusal = (setting, plugin, name, held
 // (`agent`: "an embedded" or "a Dedicated OpenClaw"), which never sets it (finding 3060).
 export const appServerUnreadablePluginSecretRefusal = (setting, plugin, agent, held, ...shown) =>
   `Configuration setting ${setting} ${UNREADABLE_PLUGIN_SECRETS[held](...shown)}, and it is never set on ${agent} Agent: remove plugins.entries.${plugin} or set its enabled to false.`;
-// Kubernetes Compute's refusal of the gateway.auth.password reference when OpenClaw cannot read
-// it from the Gateway's environment, which stops every start (finding 3057).
+// The refusal of a gateway.auth.password object OpenClaw cannot read, which stops every start on
+// every Compute (findings 3057, 3061, 3062): Configuration save, Agent save and deployment
+// (packages/occ/src/configuration-settings.ts), and Kubernetes and Docker Compute admission and
+// preparation, from one reader (`gatewayPasswordRequirement`). `keys`: an object with other keys;
+// `shape`: an object OpenClaw does not read as a SecretRef, offering the generated reference on the
+// default env alias.
+const UNREADABLE_GATEWAY_PASSWORDS = {
+  ...UNREADABLE_PLUGIN_SECRETS,
+  keys: () => "holds keys other than source, provider and id, which OpenClaw refuses: remove them",
+  shape: (alias = "default") =>
+    `is not a SecretRef OpenClaw reads: use {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}`,
+};
 export const unreadableGatewayPasswordRefusal = (held, ...shown) =>
-  `Configuration setting gateway.auth.password ${UNREADABLE_PLUGIN_SECRETS[held](...shown)}, so the Gateway cannot read the password Kubernetes Compute generates.`;
+  `Configuration setting gateway.auth.password ${UNREADABLE_GATEWAY_PASSWORDS[held](...shown)}.`;
 const USE_UPPERCASE =
   "use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}";
 export const unsubstitutedReferenceRefusal = (setting, shown) =>
