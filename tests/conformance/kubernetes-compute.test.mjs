@@ -9627,6 +9627,9 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       "codex",
     ],
     [withSearchHeader("${RELAY_TOKEN}"), searchHeader, "RELAY_TOKEN", "google"],
+    // OpenClaw trims a secret-input value before it reads `${NAME}`, so padding still stops the
+    // Gateway (finding 3046).
+    [withSearchHeader(" ${RELAY_TOKEN}\n"), searchHeader, "RELAY_TOKEN", "google"],
     [
       withSearchHeader(envRef("relay_token"), { enabled: true }),
       searchHeader,
