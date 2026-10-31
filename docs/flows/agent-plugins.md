@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-10-31
-last_updated_session: authoring-run/dc99918c-2f5c-4141-bffd-b216830017d0
+last_updated_session: authoring-run/86b48c89-0c80-493f-b48a-6999988d4766
 ---
 
 # Agent Plugin Deployment Flow
@@ -206,6 +206,11 @@ describe the generated bridge.
 writes, reviewer checks, and no-account disablement; ordinary transport is unchanged. -->
 
 Startup enables experimental APIs and resolves selected IDs through `plugin/search`.
+`codex-plugin-stdio.ts:withCodexPluginStdio` retains fixed
+`nativeErrorType`/`nativeSubErrorType` values, discarding other stderr/RPC content
+and lines over 64 KiB while draining. RPC errors alone do not prove backend
+installation.
+
 `runtime-entrypoints.ts:readCodexPluginDetails` reads up to four
 selections concurrently before and after installs. Batches preserve order and drain
 before retries and final verification; writes stay sequential.
@@ -364,8 +369,7 @@ establish starvation.
 
 ## Changelog
 
+- 2026-10-31 05:52: Classify native install failures. (authoring-run/86b48c89-0c80-493f-b48a-6999988d4766 - 6d941c15081e95ef36b4ba1ffbbbc0b117972c0a)
 - 2026-10-31 03:36: Restore experimental plugin search with the upstream Codex version. (authoring-run/dc99918c-2f5c-4141-bffd-b216830017d0 - 25364fcfdc905e95b5a813a6cd7b2de47b66ca71)
-- 2026-10-31 03:03: Resolve plugins through the pinned catalog API with these changes. (authoring-run/19fe4474-0b66-462e-9fcd-5afe08fe9c8a - d10715a3d0dfef7592ca35efebed0b3c6867c7ab)
-- 2026-10-29 22:19: Release deferred catalog loading when its tab is no longer current. (authoring-run/7a2bb516-4223-4156-b1a8-1d89f60a54d4)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.
