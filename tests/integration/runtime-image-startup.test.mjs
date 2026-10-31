@@ -54,7 +54,7 @@ test("runtime image seccomp option requires the CI-prepared profile record", asy
   const directory = await temporaryDirectory(t, "oce-runtime-seccomp-profile-");
   const contents = Buffer.from(`${JSON.stringify({ defaultAction: "SCMP_ACT_ERRNO" })}\n`);
   const digest = createHash("sha256").update(contents).digest("hex");
-  const profile = join(directory, `codex-0.163.0-alpha.2-${digest}.json`);
+  const profile = join(directory, `codex-0.164.0-${digest}.json`);
   const statePath = join(directory, "state.json");
   await writeFile(profile, contents);
   await writeFile(
@@ -1755,7 +1755,7 @@ const timeout = setTimeout(() => {
 );
 
 test(
-  "runtime image shares Codex 0.163.0-alpha.2 between the plugin and Dedicated command",
+  "runtime image shares Codex 0.164.0 between the plugin and Dedicated command",
   imageTestOptions,
   async () => {
     const source = await readOpenclawSource();
@@ -1778,11 +1778,11 @@ const { realpathSync, readFileSync } = require("node:fs");
 const { execFileSync } = require("node:child_process");
 const plugin = createRequire("/app/dist/extensions/codex/package.json");
 const installed = plugin.resolve("@openai/codex/package.json");
-assert.equal(JSON.parse(readFileSync(installed, "utf8")).version, "0.163.0-alpha.2");
+assert.equal(JSON.parse(readFileSync(installed, "utf8")).version, "0.164.0");
 const bundledCommand = plugin.resolve("@openai/codex/bin/codex.js");
 assert.equal(realpathSync("/app/node_modules/.bin/codex"), realpathSync(bundledCommand));
-assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), "codex-cli 0.163.0-alpha.2");
-assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), "codex-cli 0.163.0-alpha.2");
+assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), "codex-cli 0.164.0");
+assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), "codex-cli 0.164.0");
 const provenance = JSON.parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8"));
 assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
 const expectedSource = JSON.parse(process.argv[2]);
@@ -1790,18 +1790,17 @@ assert.equal(provenance.commit, expectedSource.commit);
 assert.equal(provenance.sourceArchiveSha256, expectedSource.sourceArchiveSha256);
 assert.equal(provenance.openclawBridgePatchSha256, "f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc");
 assert.equal(Object.hasOwn(provenance, "openclawConnectPatchSha256"), false);
-assert.equal(provenance.codexDependencyPinPatchSha256, "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119");
+assert.equal(Object.hasOwn(provenance, "codexDependencyPinPatchSha256"), false);
 assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804");
 assert.deepEqual(provenance.patches, {
   "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
   "openclaw-codex-full-access-profile.patch": "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a",
-  "stock-codex-0.163.0-alpha.2-dependency-pin.patch": provenance.codexDependencyPinPatchSha256,
   "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
   "openclaw-control-ui-browser-reconnect.patch": "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947",
   "openclaw-terminated-gateway-namespace.patch": "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
   "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
 });
-assert.equal(provenance.codex.version, "0.163.0-alpha.2");
+assert.equal(provenance.codex.version, "0.164.0");
 assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
 assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
 const contents = readFileSync("/opt/oce/runtime/contents.json");
@@ -1937,6 +1936,11 @@ const deadline = setTimeout(() => {
   try {
     await rpc("initialize", { clientInfo: { name: "oce-plugin-defaults-proof", version: "1.0.0" }, capabilities: { experimentalApi: true } });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\n");
+    // Production startup uses this experimental API. An empty query proves protocol
+    // support without authentication, remote catalog access, or a model request.
+    const emptySearch = await rpc("plugin/search", { searchTerm: "" });
+    assert.deepEqual(emptySearch.data, []);
+    assert.equal(emptySearch.nextCursor ?? null, null);
     for (const pluginName of names) await rpc("plugin/install", { marketplacePath, pluginName });
     const defaultPolicy = JSON.parse(process.argv[1]);
     for (const stage of ["installed", "default-off", "selected"]) {
@@ -1962,7 +1966,7 @@ const deadline = setTimeout(() => {
       assert.deepEqual(fixtureSkills.sort((a, b) => a.name.localeCompare(b.name)),
         enabledNames.map((name) => ({ name: name + ":inspect", pluginId: name + "@marketplace" })));
     }
-    process.stdout.write("shared-codex-0.163.0-alpha.2-ready\n");
+    process.stdout.write("shared-codex-0.164.0-ready\n");
   } finally {
     clearTimeout(deadline);
     lines.close();
@@ -1984,6 +1988,6 @@ const deadline = setTimeout(() => {
       JSON.stringify(defaultPluginPolicy),
       JSON.stringify(source),
     ]);
-    assert.match(stdout, /shared-codex-0.163.0-alpha.2-ready/);
+    assert.match(stdout, /shared-codex-0.164.0-ready/);
   },
 );

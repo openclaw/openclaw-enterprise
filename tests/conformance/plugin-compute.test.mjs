@@ -241,7 +241,7 @@ function kubernetesOptions(overrides = {}) {
   };
 }
 
-function codexCatalogResponse(options = {}) {
+function codexSearchResponse(options = {}) {
   const plugins = options.plugins ?? [
     {
       id: options.nativeId ?? CODEX_LINEAR_NATIVE_ID,
@@ -258,7 +258,8 @@ function codexCatalogResponse(options = {}) {
     },
   ];
   return {
-    marketplaces: [{ name: "openai-curated-remote", plugins }],
+    data: plugins.map((plugin) => ({ marketplaceName: "openai-curated-remote", plugin })),
+    nextCursor: null,
   };
 }
 
@@ -777,9 +778,9 @@ test("Codex runtime helper installs a plugin with skills and applies write actio
     if (method === "initialize") {
       return { serverInfo: { name: "codex", version: "0.149.0" } };
     }
-    if (method === "plugin/list") {
-      assert.deepEqual(params, {});
-      return codexCatalogResponse();
+    if (method === "plugin/search") {
+      assert.deepEqual(params, { searchTerm: "linear", scope: "global", limit: 100 });
+      return codexSearchResponse();
     }
     if (method === "plugin/read") {
       assert.deepEqual(params, {
@@ -874,7 +875,7 @@ test("Codex runtime helper installs a plugin with skills and applies write actio
     requests.map((request) => request.method),
     [
       "initialize",
-      "plugin/list",
+      "plugin/search",
       "initialize",
       "plugin/read",
       "initialize",
@@ -911,8 +912,8 @@ test("Codex startup explicitly denies inherited apps and replaces inherited appr
     if (method === "initialize") {
       return { serverInfo: { name: "codex", version: "0.158.0" } };
     }
-    if (method === "plugin/list") {
-      return codexCatalogResponse();
+    if (method === "plugin/search") {
+      return codexSearchResponse();
     }
     if (method === "plugin/read") {
       return codexReadResponse();
@@ -1057,8 +1058,8 @@ test("Codex runtime helper verifies explicit reviewers before readiness without 
           if (method === "initialize") {
             return { serverInfo: { name: "codex", version: "0.156.0" } };
           }
-          if (method === "plugin/list") {
-            return codexCatalogResponse();
+          if (method === "plugin/search") {
+            return codexSearchResponse();
           }
           if (method === "plugin/read") {
             return codexReadResponse();
@@ -1117,8 +1118,8 @@ test("Codex runtime helper discovers tool policy after installation and before r
     if (method === "initialize") {
       return { serverInfo: { name: "codex", version: "0.156.0" } };
     }
-    if (method === "plugin/list") {
-      return codexCatalogResponse();
+    if (method === "plugin/search") {
+      return codexSearchResponse();
     }
     if (method === "plugin/read") {
       return codexReadResponse({
@@ -1229,6 +1230,14 @@ test("Codex runtime helper rejects incomplete or unbounded tool discovery before
     ],
   ]) {
     await t.test(name, async () => {
+      // Keep startup time deterministic until the intended discovery failure.
+      // Advancing there prevents a retry without racing the fixture's 25 ms budget.
+      let now = 0;
+      class FixtureDate extends Date {
+        static now() {
+          return now;
+        }
+      }
       const state = codexLinearPluginState({
         tools: { [CODEX_LINEAR_APP_ID + "/list_issues"]: { enabled: false } },
       });
@@ -1240,8 +1249,8 @@ test("Codex runtime helper rejects incomplete or unbounded tool discovery before
           if (method === "initialize") {
             return { serverInfo: { name: "codex", version: "0.156.0" } };
           }
-          if (method === "plugin/list") {
-            return codexCatalogResponse();
+          if (method === "plugin/search") {
+            return codexSearchResponse();
           }
           if (method === "plugin/read") {
             return codexReadResponse();
@@ -1253,11 +1262,12 @@ test("Codex runtime helper rejects incomplete or unbounded tool discovery before
             return { status: "ok", version: "selected-plugins" };
           }
           if (method === "mcpServerStatus/list") {
+            now = 25;
             return response(page++);
           }
           throw new Error(`unexpected request ${method}`);
         },
-        { captureError: true },
+        { captureError: true, Date: FixtureDate },
       );
       assert.match(result.error?.message ?? "", expected);
       assert.equal(
@@ -1285,8 +1295,8 @@ test("Codex runtime helper reports plugin install warnings without retrying", as
       if (method === "initialize") {
         return { serverInfo: { name: "codex", version: "0.149.0" } };
       }
-      if (method === "plugin/list") {
-        return codexCatalogResponse();
+      if (method === "plugin/search") {
+        return codexSearchResponse();
       }
       if (method === "plugin/read") {
         readCount += 1;
@@ -1364,8 +1374,8 @@ test("Codex runtime helper reports connector-auth warnings with the admitted key
       if (method === "initialize") {
         return { serverInfo: { name: "codex", version: "0.149.0" } };
       }
-      if (method === "plugin/list") {
-        return codexCatalogResponse();
+      if (method === "plugin/search") {
+        return codexSearchResponse();
       }
       if (method === "plugin/read") {
         return codexReadResponse();
@@ -1586,8 +1596,8 @@ test("Codex runtime helper keeps malformed matching install responses generic", 
           if (method === "initialize") {
             return { serverInfo: { name: "codex", version: "0.149.0" } };
           }
-          if (method === "plugin/list") {
-            return codexCatalogResponse();
+          if (method === "plugin/search") {
+            return codexSearchResponse();
           }
           if (method === "plugin/read") {
             return codexReadResponse();
@@ -1665,35 +1675,44 @@ test("Codex runtime cannot report installation success when its deadline expires
   assert.deepEqual(result.requests, []);
 });
 
-test("Codex selected-plugin catalog resolution stops before writes when its budget expires", async () => {
-  let now = 0;
-  class FixtureDate extends Date {
-    static now() {
-      return now;
-    }
-  }
-  let catalogReads = 0;
-  const result = await runCodexRuntimeHelper(
-    { manifest: pluginRuntimeSpecForRevision(revision({ plugins: codexLinearPluginState() })) },
-    (method) => {
-      if (method === "initialize") {
-        return {};
+test("Codex selected-plugin search stops before writes or continuation when its budget expires", async (t) => {
+  for (const matching of [false, true]) {
+    await t.test(matching ? "late exact match" : "late continuation", async () => {
+      let now = 0;
+      class FixtureDate extends Date {
+        static now() {
+          return now;
+        }
       }
-      assert.equal(
-        method,
-        "plugin/list",
-        "expired catalog reads must not reach installation or writes",
+      let pages = 0;
+      const result = await runCodexRuntimeHelper(
+        { manifest: pluginRuntimeSpecForRevision(revision({ plugins: codexLinearPluginState() })) },
+        (method) => {
+          if (method === "initialize") {
+            return {};
+          }
+          assert.equal(
+            method,
+            "plugin/search",
+            "expired search must not reach installation or writes",
+          );
+          assert.equal(++pages, 1, "the client must not fetch a continuation after expiry");
+          now = 25;
+          // Neither a late exact match nor another page may outlive the installation budget.
+          return matching
+            ? codexSearchResponse()
+            : {
+                ...codexSearchResponse({ nativeId: "other@openai-curated-remote", name: "other" }),
+                nextCursor: "continuation",
+              };
+        },
+        { captureError: true, Date: FixtureDate },
       );
-      catalogReads += 1;
-      now = 25;
-      // Even a matching result must not start mutation after the deadline.
-      return codexCatalogResponse();
-    },
-    { captureError: true, Date: FixtureDate },
-  );
-  assert.match(result.error?.message ?? "", /catalog deadline expired/);
-  assert.equal(result.value, undefined);
-  assert.equal(catalogReads, 1);
+      assert.match(result.error?.message ?? "", /search deadline expired/);
+      assert.equal(result.value, undefined);
+      assert.equal(pages, 1);
+    });
+  }
 });
 
 test("Codex runtime helper keeps pre-install native uncertainty generic", async () => {
@@ -1707,8 +1726,8 @@ test("Codex runtime helper keeps pre-install native uncertainty generic", async 
       if (method === "initialize") {
         return { serverInfo: { name: "codex", version: "0.149.0" } };
       }
-      if (method === "plugin/list") {
-        return codexCatalogResponse();
+      if (method === "plugin/search") {
+        return codexSearchResponse();
       }
       if (method === "plugin/read") {
         throw new Error("catalog read unavailable");
@@ -1740,8 +1759,8 @@ test("Codex runtime keeps disabled selected plugins default-denied while preserv
       if (method === "initialize") {
         return { serverInfo: { name: "codex", version: "0.149.0" } };
       }
-      if (method === "plugin/list") {
-        return codexCatalogResponse();
+      if (method === "plugin/search") {
+        return codexSearchResponse();
       }
       if (method === "plugin/read") {
         readCount += 1;
@@ -1840,8 +1859,8 @@ test("Codex runtime installs and reports only enabled selections in mixed plugin
     if (method === "initialize") {
       return { serverInfo: { name: "codex", version: "0.149.0" } };
     }
-    if (method === "plugin/list") {
-      return codexCatalogResponse({
+    if (method === "plugin/search") {
+      return codexSearchResponse({
         plugins: [
           {
             id: CODEX_LINEAR_NATIVE_ID,
@@ -1989,8 +2008,8 @@ test("Codex runtime helper fails before readiness when catalog identity is absen
         if (method === "initialize") {
           return { serverInfo: { name: "codex", version: "0.149.0" } };
         }
-        if (method === "plugin/list") {
-          return codexCatalogResponse({
+        if (method === "plugin/search") {
+          return codexSearchResponse({
             nativeId: "asana@openai-curated-remote",
             remotePluginId: "plugin_asdk_app_asana",
             name: "asana",
@@ -2034,8 +2053,8 @@ test("Codex runtime helper rejects catalog drift before app grants and readiness
             if (method === "initialize") {
               return { serverInfo: { name: "codex", version: "0.149.0" } };
             }
-            if (method === "plugin/list") {
-              return codexCatalogResponse();
+            if (method === "plugin/search") {
+              return codexSearchResponse();
             }
             if (method === "plugin/read") {
               // A post-install catalog read must still match the admitted capabilities.
@@ -2084,8 +2103,8 @@ test("Codex runtime helper verifies defaults and rejects inherited unselected ap
           if (method === "initialize") {
             return { serverInfo: { name: "codex", version: "0.156.0" } };
           }
-          if (method === "plugin/list") {
-            return codexCatalogResponse();
+          if (method === "plugin/search") {
+            return codexSearchResponse();
           }
           if (method === "plugin/read") {
             return codexReadResponse();
@@ -2259,8 +2278,8 @@ test("Codex runtime helper checks effective app, tool, and account policy before
           if (method === "initialize") {
             return { serverInfo: { name: "codex", version: "0.156.0" } };
           }
-          if (method === "plugin/list") {
-            return codexCatalogResponse();
+          if (method === "plugin/search") {
+            return codexSearchResponse();
           }
           if (method === "plugin/read") {
             return codexReadResponse();
@@ -2318,8 +2337,8 @@ test("Codex runtime helper fails before readiness when selected plugin lacks app
         if (method === "initialize") {
           return { serverInfo: { name: "codex", version: "0.149.0" } };
         }
-        if (method === "plugin/list") {
-          return codexCatalogResponse();
+        if (method === "plugin/search") {
+          return codexSearchResponse();
         }
         if (method === "plugin/read") {
           return codexReadResponse({ apps: [] });

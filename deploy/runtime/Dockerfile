@@ -117,10 +117,6 @@ RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp
 COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
 RUN echo '7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-full-access-profile.patch
-# TODO: Remove this dependency pin when the selected OpenClaw source supports plugin defaults.
-COPY deploy/runtime/stock-codex-0.163.0-alpha.2-dependency-pin.patch /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch
-RUN echo 'd7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119  /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch' | sha256sum --check --strict \
-    && git apply --unidiff-zero /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
 
@@ -298,7 +294,7 @@ RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verifi
 FROM node-runtime-base AS runtime
 
 ARG TARGETARCH
-ENV OPENAI_CODEX_VERSION=0.163.0-alpha.2
+ENV OPENAI_CODEX_VERSION=0.164.0
 
 ENV NODE_ENV=production
 # Keep local npm commands from issuing unrelated background update requests.

@@ -1931,18 +1931,40 @@ async function readCodexPluginDetails(readParamsList, read = (params) => codexAp
   return details;
 }
 
-async function resolveCodexSelectionParams(selections, request, deadline) {
-  const catalog = await request("plugin/list", {});
-  if (Date.now() >= deadline) {
-    throw new Error("Codex plugin catalog deadline expired.");
+async function searchCodexSelectionParams(selections, request, deadline) {
+  const resolved = [];
+  for (const selection of pluginRuntimeTranslator.codexSearchPlan(selections)) {
+    let cursor;
+    const seen = new Set();
+    for (;;) {
+      const response = await request("plugin/search", {
+        ...selection.params, ...(cursor === undefined ? {} : { cursor }),
+      });
+      if (Date.now() >= deadline) {
+        throw new Error("Codex plugin search deadline expired.");
+      }
+      const params = pluginRuntimeTranslator.codexReadParamsFromSearch(selection.pluginId, response);
+      if (params !== undefined) {
+        resolved.push(params);
+        break;
+      }
+      if (typeof response.nextCursor !== "string" || response.nextCursor.length === 0) {
+        throw new Error("Codex plugin catalog did not contain the selected plugin.");
+      }
+      if (seen.has(response.nextCursor)) {
+        throw new Error("Codex plugin search repeated its cursor.");
+      }
+      cursor = response.nextCursor;
+      seen.add(cursor);
+    }
   }
-  return pluginRuntimeTranslator.codexReadParamsForSelections(selections, catalog);
+  return resolved;
 }
 
 async function installCodexSelectionSet(selections, failures, request, deadline = Date.now() + CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS) {
   if (Object.keys(selections).length === 0) return { successfulPluginIds: [], failures: [] };
   const enabledPluginIds = enabledCodexSelectionIds(selections);
-  const readParamsList = await resolveCodexSelectionParams(selections, request, deadline);
+  const readParamsList = await searchCodexSelectionParams(selections, request, deadline);
   const resolvedDetails = await readCodexPluginDetails(readParamsList, (params) => request("plugin/read", params));
   const failed = [...failures];
   const failedIds = pluginFailureIds(failed);

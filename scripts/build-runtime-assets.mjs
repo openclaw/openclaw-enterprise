@@ -30,11 +30,6 @@ const appliedPatches = [
     sha256: "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a",
   },
   {
-    file: "stock-codex-0.163.0-alpha.2-dependency-pin.patch",
-    sha256: "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119",
-    field: "codexDependencyPinPatchSha256",
-  },
-  {
     file: "openclaw-required-worker-authority-regression.patch",
     sha256: "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804",
     field: "openclawRequiredWorkerAuthorityRegressionPatchSha256",

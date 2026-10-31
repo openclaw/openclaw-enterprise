@@ -143,7 +143,7 @@ For the `codex` profile, add the reviewed Codex seccomp profile to the base inpu
 ```json
 {
   "runtime": {
-    "codexSeccompProfile": "openclaw/codex-0.163.0-alpha.2-<profile-sha256>.json"
+    "codexSeccompProfile": "openclaw/codex-0.164.0-<profile-sha256>.json"
   }
 }
 ```

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-10-31
-last_updated_session: authoring-run/19fe4474-0b66-462e-9fcd-5afe08fe9c8a
+last_updated_session: authoring-run/dc99918c-2f5c-4141-bffd-b216830017d0
 ---
 
 # Agent Plugin Deployment Flow
@@ -205,7 +205,7 @@ describe the generated bridge.
 <!-- Internal preparation threads one explicit RPC caller through these reads,
 writes, reviewer checks, and no-account disablement; ordinary transport is unchanged. -->
 
-`codexReadParamsForSelections` resolves exact selected IDs from `plugin/list`'s curated catalog.
+Startup enables experimental APIs and resolves selected IDs through `plugin/search`.
 `runtime-entrypoints.ts:readCodexPluginDetails` reads up to four
 selections concurrently before and after installs. Batches preserve order and drain
 before retries and final verification; writes stay sequential.
@@ -244,8 +244,7 @@ and `configRequirements/read`. Forbidden reviewers, incompatible automatic-revie
 settings or conflicting model requirements block startup. Checks exclude later
 workspace/session/model changes and strict review. Codex 0.156 readback omits
 execution-time managed app/tool requirements; [effective-policy proof](../testing/plugins.md#current-proof-notes)
-remains necessary. Codex owns cache integrity and health;
-[older binaries](../reference/drivers/plugin-bundled.md#native-mappings-and-limits) may ignore plugin defaults.
+remains necessary.
 
 `runtime-entrypoints.ts:disableCodexSelectionsWithoutChatGptLogin` disables enabled
 selections and app/plugin features for API-key logins when best-effort preparation
@@ -365,6 +364,7 @@ establish starvation.
 
 ## Changelog
 
+- 2026-10-31 03:36: Restore experimental plugin search with the upstream Codex version. (authoring-run/dc99918c-2f5c-4141-bffd-b216830017d0 - 25364fcfdc905e95b5a813a6cd7b2de47b66ca71)
 - 2026-10-31 03:03: Resolve plugins through the pinned catalog API with these changes. (authoring-run/19fe4474-0b66-462e-9fcd-5afe08fe9c8a - d10715a3d0dfef7592ca35efebed0b3c6867c7ab)
 - 2026-10-29 22:19: Release deferred catalog loading when its tab is no longer current. (authoring-run/7a2bb516-4223-4156-b1a8-1d89f60a54d4)
 

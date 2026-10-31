@@ -133,19 +133,23 @@ for (const mode of [
             if (method === "initialize") {
               return send({});
             }
-            if (method === "plugin/list") {
-              assert.deepEqual(params, {});
-              assert.equal(outstanding, 0, "a retry must wait for every earlier read to settle");
-              assert.equal(firstErrorDrained, attempts === 0 ? !retry : true);
-              attempts += 1;
-              phaseReads = 0;
+            if (method === "plugin/search") {
+              assert.ok(names.includes(params.searchTerm));
+              assert.equal(params.scope, "global");
+              if (params.searchTerm === names[0]) {
+                assert.equal(outstanding, 0, "a retry must wait for every earlier read to settle");
+                assert.equal(firstErrorDrained, attempts === 0 ? !retry : true);
+                attempts += 1;
+                phaseReads = 0;
+              }
               return send({
-                marketplaces: [
+                data: [
                   {
-                    name: "openai-curated-remote",
-                    plugins: names.map((name) => summary(name, false)),
+                    marketplaceName: "openai-curated-remote",
+                    plugin: summary(params.searchTerm, false),
                   },
                 ],
+                nextCursor: null,
               });
             }
             if (method === "plugin/read") {
