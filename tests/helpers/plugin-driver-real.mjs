@@ -1046,10 +1046,12 @@ async function useLocalPluginRuntimeAppServerToken() {
 const codexNativeCatalogScript = String.raw`
 ${PLUGIN_RUNTIME_HELPERS}
 ${codexLocalAppServerTokenScript}
+let catalogQueryStage = "preparing app-server authentication from local runtime status";
 (async () => {
   await useLocalPluginRuntimeAppServerToken();
-  // Startup has already resolved and installed A from this native catalog.
+  catalogQueryStage = "requesting the native catalog";
   const listed = await codexAppServerRequest("plugin/list", {});
+  catalogQueryStage = "interpreting catalog results";
   const requestedIds = new Set(JSON.parse(process.argv[1]));
   const entries = [];
   for (const entry of pluginRuntimeTranslator.codexCatalogEntries(listed)) {
@@ -1073,7 +1075,7 @@ ${codexLocalAppServerTokenScript}
   }
   process.stdout.write(JSON.stringify({ entries }));
 })().catch(() => {
-  process.stderr.write("Native Codex catalog query failed.");
+  process.stderr.write("Native Codex catalog query failed while " + catalogQueryStage + ".");
   process.exitCode = 1;
 });
 `;

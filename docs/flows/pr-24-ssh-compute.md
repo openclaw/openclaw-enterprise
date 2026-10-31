@@ -1,7 +1,7 @@
 ---
 created: 2026-09-07
-updated: 2026-10-30
-last_updated_session: authoring-run/be3c47b9-e273-4252-94cc-50700db0c396
+updated: 2026-10-31
+last_updated_session: authoring-run/514090cf-874e-4562-80f6-058be47d8968
 ---
 
 <a id="pr-24-ssh-compute-flow"></a>
@@ -28,7 +28,7 @@ supported boundaries.
   (`processRevision`), and [ssh/index.ts](../../apps/controller/src/drivers/compute/ssh/index.ts)
   (`SshComputeDriver`).
 - Assumptions: Trusted Installation YAML selects packageless `compute-ssh`;
-  the operator provisions Linux, systemd, flock, Node, OpenClaw, root SSH, and a
+  the operator provisions Linux, systemd, flock, Node, OpenClaw, root SSH, and
   account-management tools. Namespace names map to configured hosts. OCC supplies
   authorized, server-owned resource identities and immutable saved versions.
 
@@ -137,6 +137,14 @@ Namespace still holds it while retrying cleanup of remaining owned accounts.
 Before host work, `sshGatewayConfigurationDocument` admits only the supported
 authentication fields and modes. Omitted auth mode renders explicit password mode with a
 managed environment SecretRef; explicit trusted proxy retains its configured trust.
+`sshGatewayAuthentication` reads an authored password with the shared reader
+(`gatewayPasswordRequirement`). An unset password, `${OPENCLAW_GATEWAY_PASSWORD}`
+and a `default`-provider SecretRef render as the managed reference, as before. Any
+other readable environment SecretRef to that variable renders as written. When the
+managed reference is unreadable under the Configuration's `secrets`, admission
+refuses it. The refusal offers the reference on the default env alias only if the
+reader accepts that reference. Verify, stop and retire check only the password's
+shape and render it the same way, so the snapshot hash still matches.
 
 The helper creates or verifies a deterministic per-Agent system user and
 private group, then creates the Agent directory and reserves the lowest free
@@ -251,6 +259,10 @@ retire, which frees its gateway port.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31 18:01: Preserve Namespace generation binding and password teardown behavior in the accompanying main merge. (authoring-run/514090cf-874e-4562-80f6-058be47d8968 - 1a067ef727e2db04da3bd90c60fd77821319d77c)
+
+- 2026-10-31: Trace authored password rendering, the alias-aware refusal offer and shape-only teardown checks. (fix-3064, findings 3064, 3065)
 
 - 2026-10-30 10:42: Match OpenSSH verbatim alias lookup and retain default-host port selection. (authoring-run/be3c47b9-e273-4252-94cc-50700db0c396 - 922a031ef91f6dc14329034f50964752757ec29b)
 

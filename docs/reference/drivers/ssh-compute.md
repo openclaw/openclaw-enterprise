@@ -1,16 +1,14 @@
 # SSH Compute Driver
 
-Use the SSH Compute Driver to run embedded OpenClaw on operator-managed
-Linux hosts. It prepares each Namespace over SSH and runs one systemd gateway
-unit per Agent. OCC still owns Agent resources, authorization, Agent revisions, and
-activation. Trusted Installation YAML can select `compute-ssh` (implementation
-`occ/ssh`) in development or production.
+Select `compute-ssh` (`occ/ssh`) in trusted Installation YAML to run embedded
+OpenClaw on operator-managed Linux hosts in development or production. The Driver
+prepares Namespaces over SSH and runs one systemd gateway per Agent. OCC owns
+Agent resources, authorization, Agent revisions and activation.
 
-Select `harnessAuth: { "method": "runtime" }` and supply model credentials on
-the host. OCC does not deliver or validate those credentials; confirm access
-with a real model response. SSH does not support dedicated Codex, an OCC
-Secret-backed model API key, or a managed ChatGPT account. Use
-[Kubernetes Compute](kubernetes-compute.md) if you need those options.
+Select `harnessAuth: { "method": "runtime" }` and supply host model credentials.
+OCC does not deliver or validate them; verify with a real model response.
+SSH refuses dedicated Codex, OCC Secret-backed model API keys and managed ChatGPT
+accounts; use [Kubernetes Compute](kubernetes-compute.md).
 
 ## Requirements and configuration
 
@@ -21,8 +19,8 @@ need the system `ssh` and `ssh-keygen` executables and protected identity and kn
 The Compose `node:24-bookworm` base includes OpenSSH; provide the client
 yourself if you choose another controller image base. The Driver never installs
 or upgrades host software and has no `sudo` fallback.
-API and worker production preflight both verify configured hosts, so both
-processes need these SSH inputs. Hosts receive no controller credentials,
+API and worker production preflight configured hosts; both need these SSH inputs.
+Hosts receive no controller credentials,
 database access, or Installation YAML.
 
 In the existing trusted Installation document at `OCC_CONFIG_PATH`, select:
@@ -55,7 +53,7 @@ drivers:
           end: 18899
 ```
 
-This is the Compute selection only. Keep the required `occ`, Configuration,
+Keep the required `occ`, Configuration,
 IAM, and Secret selections from the
 [Installation contract](selection.md). SSH does not consume the Secret Driver;
 OCC Secret bindings are unsupported. Select Configuration storage appropriate to
@@ -167,8 +165,8 @@ under `namespace-lifecycles/`, then binds the Namespace marker generation and
 original directory device, inode, and birth time under the host lock. OCC commits
 that identity before readiness or `afterNamespacePrepared` hooks. An unmapped name fails permanently.
 
-The state filesystems must provide positive creation timestamps that remain stable
-when metadata changes. [Node can substitute ctime or zero when birth time is unavailable](https://nodejs.org/download/release/v24.20.0/docs/api/fs.html#stat-time-values).
+State filesystems must provide positive creation timestamps stable across metadata
+changes. [Node can substitute ctime or zero when birth time is unavailable](https://nodejs.org/download/release/v24.20.0/docs/api/fs.html#stat-time-values).
 Under the lock, each helper creates and removes an owned temporary file on each
 selected device. The directory's birth time must stay positive and unchanged while
 its ctime changes within two seconds. The same `lstat` call checks both identity
@@ -188,8 +186,8 @@ that evaluation. User and global known-hosts files and `HostKeyAlias` remain
 supported. An explicit alias is used verbatim; without one, a nondefault port uses
 `[hostname]:port`. Fingerprints use matched public key bytes; comments, hashed-host salts,
 unrelated entries, limits, and authentication-key rotation do not change placement.
-This records the selected public trust policy. Each connection still uses ordinary
-OpenSSH peer verification; the host receipt separately identifies the remote tree.
+Fingerprints record public trust policy. OpenSSH verifies each peer; the host
+receipt identifies the remote tree.
 Active `KnownHostsCommand` and `VerifyHostKeyDNS=yes` are unsupported for this
 lifecycle: file fingerprints cannot bind their additional dynamic trust. A target
 without matched file-backed public host trust is refused. Before
@@ -199,9 +197,9 @@ Agent, and ServicePrincipal identities; an unbound Agent revision fails closed.
 `prepareRevision` accepts only `openclaw`/`embedded` with `runtime` authentication and without OCC Secret bindings.
 It verifies ownership, creates or verifies the Agent's Unix identity, allocates
 or reuses the Agent port, and writes the immutable snapshot. A superseded
-candidate returns not-ready. Preparation does not replace `current`, write the
-systemd unit, or restart the running gateway. An OCC publication failure leaves
-the previous gateway serving its existing version.
+candidate returns not-ready. Preparation changes neither `current` nor the unit
+and does not restart the gateway. OCC publication failure leaves the previous
+version serving.
 
 After OCC records the selected Agent revision, `activateRevision` runs selected
 Configuration and IAM `beforeWorkloadStart` hooks, renders the systemd unit,
@@ -258,11 +256,22 @@ verified teardown.
 When native Configuration omits `gateway.auth.mode`, the Driver renders
 `password` mode with a managed environment SecretRef using
 `OPENCLAW_GATEWAY_PASSWORD`. Explicit `password` and `trusted-proxy` modes are
-supported. An explicit password must be `${OPENCLAW_GATEWAY_PASSWORD}` or that
-variable's default-provider environment SecretRef; trusted proxy can opt into the
-same loopback password. Deployment refuses any other mode, an unsupported
-authentication field, another password reference, or a `gateway` or `gateway.auth`
-that is not an object, with `409` naming the setting, before admitting a revision.
+supported. An explicit password must be `${OPENCLAW_GATEWAY_PASSWORD}` or an
+environment SecretRef to that variable that OpenClaw reads, on any env provider:
+the systemd unit sets the variable, and the Driver renders such a SecretRef as
+written. Trusted proxy can opt into the same loopback password. If
+`secrets.defaults.env` or `secrets.providers` makes the managed `default`
+reference unreadable, password mode needs that explicit SecretRef. The refusal
+offers it on the default env alias only when OpenClaw can read it there.
+Otherwise, it states the requirement, for example an `allowlist` to extend.
+
+Deployment refuses settings in two steps, before it admits a revision. First,
+the shared Configuration rules refuse an environment SecretRef that OpenClaw
+cannot read with `400`, as on every Compute. Then this Driver refuses, with `409`
+naming the setting, any other mode, an unsupported authentication field, another
+password reference, or a `gateway` or `gateway.auth` that is not an object. Stop
+and retire check only the password's shape and render it as at admission, so a
+later OpenClaw reader change cannot block teardown.
 
 The helper creates a private per-Agent `gateway-password.env` when the managed
 password is needed. Later versions reuse that file; the Driver does not rotate
@@ -297,7 +306,7 @@ configuration snapshots. Agents still share host networking; SSH does not
 provide Kubernetes NetworkPolicy isolation or the channel isolation of
 dedicated execution. Operators own host/network trust and credential access.
 
-Dedicated Codex, SandboxDriver composition, OCC Secret delivery, workspace-file
+SandboxDriver composition, workspace-file
 API endpoint resolution, `existingNamespace` adoption, active-runtime
 maintenance, macOS launchd, non-root SSH, and zero-downtime rollout are
 unsupported. Host runtime upgrades are operator changes followed by explicit

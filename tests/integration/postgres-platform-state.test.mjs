@@ -2069,27 +2069,29 @@ test(
         const decoded = JSON.parse(structured.stdout);
         const records = Array.isArray(decoded) ? decoded : [decoded];
         if (command[1] === "revisions") {
-          // Revision summaries carry no saved settings, so no read error either.
+          // Revision summaries carry no saved settings, so no read error either. The CLI
+          // keeps each deployment status OCC listed, though the Agent's settings are unreadable.
           assert.ok(table.stdout.includes(malformedRevisionId));
-          assert.match(structured.stderr, /Agent saved configuration is unreadable/u);
-          assert.ok(records.every((record) => record.deploymentStatus === null));
+          assert.match(table.stdout, /queued/u);
+          assert.equal(structured.stderr, "");
+          assert.deepEqual(
+            records.map(({ id, deploymentStatus }) => ({ id, deploymentStatus })),
+            revisions.data.map(({ id, deploymentStatus }) => ({ id, deploymentStatus })),
+          );
           continue;
         }
         assert.match(table.stdout, /CONFIGURATION ERROR/u);
         assert.match(table.stdout, /SAVED_CONFIGURATION_UNREADABLE \(plugins\)/u);
         assert.ok(records.some((record) => record.configurationReadError?.code === readError.code));
       }
-      // A readable Agent can still have an unreadable historical snapshot. Keep
-      // its healthy sibling and do not enrich the error variant through strict reads.
+      // A readable Agent can still have an unreadable historical snapshot. The list never
+      // decodes it, so the CLI lists it beside its healthy sibling without a strict read.
       await pool.query("UPDATE occ.agents SET plugins = $2::jsonb WHERE id = $1", [
         agent.id,
         JSON.stringify(agent.plugins ?? {}),
       ]);
       const history = await execute(cli, [...cliArguments, "agent", "revisions", agent.id]);
-      assert.match(
-        history.stderr,
-        new RegExp(`deployment status of revision ${malformedRevisionId} is unavailable`, "u"),
-      );
+      assert.equal(history.stderr, "");
       assert.ok(history.stdout.includes(revision.id));
       assert.match(history.stdout, /queued/u);
       assert.ok(history.stdout.includes(malformedRevisionId));

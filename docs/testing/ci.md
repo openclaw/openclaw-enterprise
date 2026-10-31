@@ -63,11 +63,19 @@ exactly one custom rule: branch `main`. The advisory `integration-qa-pr` environ
 permits `main` and GitHub's `refs/pull/*/merge` branches. The `full-qa` and `qa-openshell-compose` labels select runs within
 that policy. Full Integration preflight does not govern this environment.
 
-Only `k3d-model`, `openshell`, and credential-free `dev-up-k3d` accept a branch
-dispatch. For the first two, temporarily add the exact reviewed branch to the
-corresponding custom environment policy, preserving `main`; a wildcard alone
-does not authorize it. Remove the exception afterward. `dev-up-k3d`,
-`helper-timeout`, and standalone `logging-collector` need no environment.
+Full Integration rejects tags. Before dispatch, confirm the branch points
+to the reviewed commit; rely on the run only if its `headSha` matches that commit. Four
+lanes accept branches other than `main`.
+For `k3d-model` (`integration-model`) and `openshell` (`integration-openshell`),
+the custom environment policy must allow both `main` and the exact reviewed
+branch. A wildcard alone does not authorize the branch. Remove the temporary
+branch exception afterward.
+
+`dev-up-k3d` and `skipper-prepared-git-installed` accept branches without a
+GitHub environment. The Skipper job uses synthetic, job-local model and Git credentials for the
+[installed private Git fixture](repository-credentials.md#verify-prepared-native-git)
+and a GitHub Actions cache token to build images. `helper-timeout` and standalone
+`logging-collector` also need no environment, but both require `main`.
 
 The table distinguishes secret names from variable names. The common runtime
 image variables are optional `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and

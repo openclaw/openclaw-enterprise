@@ -6,6 +6,8 @@ import type {
   SecretConsumers,
 } from "@openclaw-enterprise/contracts";
 
+import { quotedSettingKey, shownSettingKey as shownKey } from "./environment-references.ts";
+
 export class AuthorizationDeniedError extends Error {
   readonly evidence?: AuthorizationEvidence;
   readonly authorization?: {
@@ -462,22 +464,8 @@ export function keyedSettingPath(parent: string, key: string): string {
     : `${parent}[${JSON.stringify(shown)}]`;
 }
 
-// Control, format, line and paragraph separator characters and lone surrogates show as ?.
-const shownKey = (key: string): string => key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
-
-/**
- * A submitted key a message names, such as a header name, in double quotes: characters
- * keyedSettingPath hides show as ?, and a key longer than `limit` code points is cut with …,
- * so the message keeps its cap (`limit` is at least 1). Use it only for keys that are not secrets.
- */
-export function quotedSettingKey(key: string, limit: number): string {
-  const characters = Array.from(shownKey(key));
-  return JSON.stringify(
-    characters.length <= limit
-      ? characters.join("")
-      : `${characters.slice(0, limit - 1).join("")}…`,
-  );
-}
+// The Console's secret reference reader shows names with these too (environment-references.ts).
+export { quotedSettingKey };
 
 /**
  * "Configuration setting <setting> <requirement>.", with a long setting path shortened to fit
@@ -487,6 +475,34 @@ export function configurationSettingMessage(setting: string, requirement: string
   return configurationFieldMessage(
     setting,
     (path) => `Configuration setting ${path} ${requirement}.`,
+  );
+}
+
+/**
+ * Builds a message that names two Configuration settings. When both paths do not fit the
+ * 256-character cap, the longer one is shortened first, and neither below half of the room
+ * left; the cut counts code points, as configurationFieldMessage's does.
+ */
+export function configurationSettingsMessage(
+  first: string,
+  second: string,
+  message: (first: string, second: string) => string,
+): string {
+  const budget = 256 - message("", "").length;
+  const firstCharacters = Array.from(first);
+  const secondCharacters = Array.from(second);
+  if (firstCharacters.length + secondCharacters.length <= budget) {
+    return message(first, second);
+  }
+  const half = Math.floor(budget / 2);
+  const firstLimit = Math.max(half, budget - secondCharacters.length);
+  const shorten = (characters: string[], limit: number): string =>
+    characters.length <= limit
+      ? characters.join("")
+      : `${characters.slice(0, limit - 1).join("")}…`;
+  return message(
+    shorten(firstCharacters, firstLimit),
+    shorten(secondCharacters, budget - Math.min(firstLimit, firstCharacters.length)),
   );
 }
 
@@ -951,13 +967,21 @@ export const DEDICATED_OPENCLAW_SANDBOX_REQUIRED =
  * Dedicated native OpenClaw needs a provisioning SandboxDriver with networking, filesystem and
  * process containment, and the Installation selects none. The Installation's shape refuses
  * every new attempt the same way, so a new provisioning request or deploy answers the 409 other
- * plan refusals use, with this fixed message (finding 1609). Stored provisioning work never
- * throws this: it stays a retryable DependencyUnavailableError (503) carrying the same message,
- * and resumes once a qualifying Driver is selected.
+ * plan refusals use, with this message (finding 1609). It names what makes the Agent deployable:
+ * codex for the selected models when Codex runs them (`codexRuns`), else a Codex model, or a
+ * qualifying Driver (finding 3036). Stored provisioning work never throws this: it stays a
+ * retryable DependencyUnavailableError (503) with DEDICATED_OPENCLAW_SANDBOX_REQUIRED, and resumes
+ * once a qualifying Driver is selected.
  */
 export class DedicatedOpenClawSandboxError extends ResourceStateConflictError {
-  constructor() {
-    super(DEDICATED_OPENCLAW_SANDBOX_REQUIRED);
+  constructor(codexRuns = false) {
+    super(
+      `${DEDICATED_OPENCLAW_SANDBOX_REQUIRED} ${
+        codexRuns
+          ? "Set agentRuntime.id to codex for the selected models"
+          : "Select a codex/<model> model with agentRuntime.id codex"
+      }, or ask an Installation administrator for such a SandboxDriver.`,
+    );
     this.name = "DedicatedOpenClawSandboxError";
   }
 }

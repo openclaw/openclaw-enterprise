@@ -24,6 +24,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   accessBindingPostRequests,
   apiRequests,
+  CHANNEL_SECRETS_SAVED_DEPLOY,
   detailUrl,
   expectNoText,
   fileBrowser,
@@ -503,6 +504,7 @@ const inPlaceCases: {
   viewport?: Viewport;
   beforeLogin?(page: Page, context: Draft): Promise<void>;
   prepare(page: Page, context: Draft): Promise<Locator>;
+  holdReloadGrants?: boolean;
   saved: string;
   focus: string;
   described?: boolean;
@@ -577,6 +579,7 @@ const inPlaceCases: {
   },
   {
     name: "Reload draft after a lost channel save updates the Agent page in place",
+    holdReloadGrants: true,
     setup: (t) => slackAgent(t, "Channel Reload In Place"),
     tab: "channels",
     // The API commits, but the browser cannot know that the response was lost.
@@ -645,6 +648,16 @@ for (const c of inPlaceCases) {
     });
     const control = await c.prepare(page, context);
     const place = await watchPlace(page, fixture, control);
+    // A reloaded draft is announced before its bound-Secret grant read settles. Hold the real
+    // response to exercise that ordering even when Slack has just been disabled.
+    const grants = c.holdReloadGrants
+      ? await holdRequests(
+          t,
+          page,
+          `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
+          { once: true, method: "GET", afterServer: true },
+        )
+      : undefined;
 
     await control.click();
     await page.getByRole("status").filter({ hasText: c.saved }).waitFor();
@@ -654,10 +667,18 @@ for (const c of inPlaceCases) {
     if (c.described) {
       assert.equal(await focusedDescription(page), c.description ?? c.saved);
     }
-    assert.equal(
-      await page.getByRole("button", { name: "Deploy new version" }).isEnabled(),
-      c.deployable ?? true,
-    );
+    if (grants) {
+      await grants.requested;
+      assert.equal(
+        await page.getByRole("button", { name: "Deploy new version" }).isDisabled(),
+        true,
+      );
+      grants.release();
+    }
+    // The saved status, generation, focus and placement do not synchronize the grant gate.
+    await page
+      .getByRole("button", { name: "Deploy new version", disabled: !(c.deployable ?? true) })
+      .waitFor();
     await c.verify?.(page, context, place.requests);
   });
 }
@@ -1146,8 +1167,8 @@ const outcomeFocusCases = [
       await selectNewSlackSecrets(page, c);
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
     },
-    message: "Channel Secret bindings saved. Deploy the new version to deliver them.",
-    focus: "Channel Secret bindings saved. Deploy the new version to deliver them.",
+    message: CHANNEL_SECRETS_SAVED_DEPLOY,
+    focus: CHANNEL_SECRETS_SAVED_DEPLOY,
   },
   {
     name: "a channel Secrets conflict focuses Reload draft",
@@ -1815,9 +1836,7 @@ test("an unsaved channel Secret choice blocks Deploy new version until it is sav
   await selectSecret(page, "Slack bot token", secondBot);
   await page.getByText(UNSAVED_SECRETS_GATE).waitFor();
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  await page
-    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
-    .waitFor();
+  await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
   await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
   assert.equal(await page.getByText(UNSAVED_SECRETS_GATE).count(), 0);
 });
@@ -2029,9 +2048,7 @@ test("a channel Secrets conflict carries the chosen Secret over the reread bindi
   await waitForInputValue(page.getByLabel("Slack bot token"), "Second bot token");
   await waitForInputValue(page.getByLabel("Slack app token"), "Other app token");
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  await page
-    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
-    .waitFor();
+  await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
   const saved = (await fixture.request("GET", configurationPath(context))).data;
   assert.deepEqual(saved.secretBindings.SLACK_BOT_TOKEN, envBinding(secondBot));
   assert.deepEqual(saved.secretBindings.SLACK_APP_TOKEN, envBinding(otherApp));
@@ -2145,9 +2162,7 @@ test("carried channel Secret choices survive the page load after a failed reread
   await waitForInputValue(page.getByLabel("Slack bot token"), "Second bot token");
   await waitForInputValue(page.getByLabel("Slack app token"), "Other app token");
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  await page
-    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
-    .waitFor();
+  await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
   const saved = (await fixture.request("GET", configurationPath(context))).data;
   assert.deepEqual(saved.secretBindings.SLACK_BOT_TOKEN, envBinding(secondBot));
   assert.deepEqual(saved.secretBindings.SLACK_APP_TOKEN, envBinding(otherApp));

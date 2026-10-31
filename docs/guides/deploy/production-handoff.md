@@ -149,6 +149,23 @@ references. Referenced Secret values and resolved plugin releases can change. Se
 [version snapshots](../../reference/agents/deployment.md#revisions-and-deployment)
 and [plugin lifecycle](../../reference/agent-plugins.md#lifecycle).
 
+### Check conversation continuity
+
+Before the upgrade, choose a test conversation on an existing Agent and note a
+harmless exchange. After recovery, reopen that conversation on the same Agent.
+Find the earlier exchange, then send a follow-up and check for a new reply.
+Repeat the check if you return to the old build. A new chat or a restored
+workspace file can work even when the original history is missing.
+
+For dedicated Codex, the Gateway claim holds the conversation and the
+[Harness claim](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
+holds `codex-sessions`. To check native thread continuity, record the thread ID
+before the change and verify the follow-up used that same thread. Keep IDs and
+results private; omit message bodies and credentials.
+
+[Re-creating a split-layout tenant](split-layout-upgrade.md#export-and-re-create)
+assigns new Agent IDs; the separate archive keeps old conversations for reference.
+
 ## Complete the handoff
 
 The business and platform owners should be able to locate the accepted workflow,

@@ -182,6 +182,7 @@ import {
   ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
   validRuntimeLogFrontierTime,
+  waitsOnVariable,
 } from "@openclaw-enterprise/occ";
 import {
   createKubernetesClientConfiguration,
@@ -212,6 +213,7 @@ import {
   enabledChannelProviders,
   OPENCLAW_GATEWAY_PASSWORD,
   requireChannelTopology,
+  requirePluginSecretInputs,
   type KubernetesHarnessTopology,
   kubernetesHarnessAuthMethods,
   providerWaitsOnVariable,
@@ -2649,7 +2651,11 @@ export async function resolveKubernetesNamespace(
 
 // OCC admission requires every configured Agent entry to share this primary model.
 // The isolated probe sets it explicitly instead of invoking native roster selection.
-function harnessPrimaryModel(configuration: OpenClawConfigurationDocument): string {
+function harnessPrimaryModel(
+  configuration: OpenClawConfigurationDocument,
+  missing: () => Error = () =>
+    new ConfigurationFailure("Harness authentication requires an explicit primary model."),
+): string {
   const agents = asRecord(configuration.agents);
   const defaults = asRecord(agents?.defaults);
   const selection =
@@ -2659,7 +2665,7 @@ function harnessPrimaryModel(configuration: OpenClawConfigurationDocument): stri
       .find((model) => model !== undefined);
   const model = typeof selection === "string" ? selection : asRecord(selection)?.primary;
   if (typeof model !== "string" || model.trim().length === 0) {
-    throw new ConfigurationFailure("Harness authentication requires an explicit primary model.");
+    throw missing();
   }
   return model;
 }
@@ -2872,30 +2878,6 @@ function requireProviderApiKeys(
       );
     }
   }
-}
-
-// Whether a Preset variable without a value fills any text (a string or an object key) in `value`,
-// which sits at `path` in the Configuration document.
-function waitsOnVariable(
-  value: unknown,
-  path: readonly (string | number)[],
-  options: ConfigurationValidationOptions | undefined,
-): boolean {
-  const unresolved = options?.unresolved;
-  if (unresolved === undefined) {
-    return false;
-  }
-  if (typeof value === "string") {
-    return unresolved(path) !== undefined;
-  }
-  const entries = Array.isArray(value)
-    ? [...value.entries()]
-    : Object.entries(asRecord(value) ?? {});
-  return entries.some(
-    ([key, child]) =>
-      (typeof key === "string" && unresolved([...path, key], true) !== undefined) ||
-      waitsOnVariable(child, [...path, key], options),
-  );
 }
 
 // A `${NAME}` or SecretRef-shaped value, as the Configuration Driver admits in a credential field
@@ -4745,6 +4727,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
       }
     }
+    // Configuration save keeps a draft that selects no model yet, and no topology here runs
+    // without one, so admission names the setting instead of refusing the binding (finding 3022).
+    if (stage === "admission") {
+      harnessPrimaryModel(configuration, () =>
+        callerSettingError(
+          "agents.defaults.model",
+          "is required to deploy on Kubernetes: set it, or each agents.entries model, to a model such as openai/gpt-5.1",
+        ),
+      );
+    }
     const models = nativeOpenAiModelSelections(configuration)?.map(({ reference }) => reference);
     const authentication = harnessModelAuthentication(configuration, embedded);
     // Every model selection (fallbacks, subagents, image, PDF, per-channel, ...) and every Agent
@@ -4806,6 +4798,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       },
       callerSettingError,
     );
+    // Every topology's Gateway would exit at every start on a plugin secret input it cannot
+    // resolve, and the deployment would wait for its convergence deadline. The Agent's mode
+    // decides the APP_SERVER_ case, so Agent save refuses it too; the rest waits for the bindings.
+    this.requirePluginSecretInputs(configuration, topology, secretBindings);
     requireProviderApiKeys(configuration, openclaw, authentication);
     if (!agentSave) {
       this.validateChannelSecretBindings(configuration, secretBindings);
@@ -13848,6 +13844,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const nativeConfiguration = this.kubernetesGatewayConfigurationDocument(revision.configuration);
     const usesGatewayPasswordEnv = usesGatewayPasswordEnvironment(
       asRecord(asRecord(nativeConfiguration.gateway)?.auth) ?? {},
+      asRecord(nativeConfiguration.secrets),
       (setting, requirement) => new GatewaySettingFailure(setting, requirement),
     );
     return {
@@ -14084,6 +14081,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     usesGatewayPasswordEnvironment(
       auth,
+      asRecord(configuration.secrets),
       (setting, requirement) => new GatewaySettingFailure(setting, requirement),
     );
     if (gateway.trustedProxies !== undefined) {
@@ -15517,6 +15515,37 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
     return providers.map(
       (provider) => CHANNEL_REQUIREMENTS[provider as keyof typeof CHANNEL_REQUIREMENTS],
+    );
+  }
+
+  // A Gateway's environment sets a name a Secret binding could set only from a binding or from
+  // what the Installation's Drivers add at launch (beforeWorkloadStart), whose names are unknown
+  // before then; null bindings (Agent save) check only what the Agent's mode decides.
+  private requirePluginSecretInputs(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    topology: KubernetesHarnessTopology,
+    secretBindings: SecretBindings | null | undefined,
+  ): void {
+    let bindings: ReturnType<typeof normalizeSecretBindings> | undefined;
+    requirePluginSecretInputs(
+      configuration,
+      topology,
+      secretBindings === null
+        ? undefined
+        : (name) => {
+            if (this.lifecycle.contributesLaunchEnvironment) {
+              return true;
+            }
+            if (bindings === undefined) {
+              try {
+                bindings = normalizeSecretBindings(secretBindings);
+              } catch {
+                throw new ConfigurationFailure("AgentRevision Secret bindings are invalid.");
+              }
+            }
+            return Object.hasOwn(bindings, name);
+          },
+      callerSettingError,
     );
   }
 

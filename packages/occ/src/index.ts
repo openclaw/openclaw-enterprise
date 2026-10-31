@@ -256,7 +256,12 @@ import {
   immutableCopy,
   isNonEmptyString,
 } from "@openclaw-enterprise/utils";
-import { requireFallbackProviders, resolveConfiguredHarnessId } from "./configured-harness.ts";
+import {
+  codexRunsPrimaryModel,
+  type ModelPolicyAgent,
+  requireFallbackProviders,
+  resolveConfiguredHarnessId,
+} from "./configured-harness.ts";
 import { requireDeployableRoster, withAgentIdentityName } from "./openclaw-roster.ts";
 import {
   capability,
@@ -596,10 +601,16 @@ export type { DeploymentFailureStep } from "./deployment-failure-steps.ts";
 export {
   environmentReference,
   environmentReferenceNames,
+  gatewayPasswordRequirement,
+  generatedGatewayPasswordReference,
+  secretInputReference,
   secretInputShorthandName,
+  secretProviderDefaultsProblem,
+  shownSecretName,
   unsubstitutedReference,
   wholeEnvironmentReferenceName,
 } from "./environment-references.ts";
+export type { SecretInputReference } from "./environment-references.ts";
 export {
   invalidHeaderNameRequirement,
   isAdmittedHeaderName,
@@ -619,6 +630,7 @@ export {
   CODEX_APPROVAL_POLICY_SETTING,
   codexApprovalPolicy,
   refuseLiteralGatewayPassword,
+  waitsOnVariable,
 } from "./configuration-settings.ts";
 export { PostgresCommitOutcomeUnknownError };
 export {
@@ -1696,6 +1708,8 @@ function validateComputeAgentProvisioning(
   }
 }
 
+// `configuration`, where the caller has the Agent's, lets the 409 offer codex when Codex runs its
+// models (finding 3036).
 function requireDedicatedNativeSupport(
   harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
   sandbox: SandboxDriver | undefined,
@@ -1703,7 +1717,12 @@ function requireDedicatedNativeSupport(
   {
     runtimeImage = true,
     stored = false,
-  }: { readonly runtimeImage?: boolean; readonly stored?: boolean } = {},
+    configuration,
+  }: {
+    readonly runtimeImage?: boolean;
+    readonly stored?: boolean;
+    readonly configuration?: Readonly<OpenClawConfigurationDocument>;
+  } = {},
 ): void {
   if (harness.id !== "openclaw" || harness.mode !== "dedicated") {
     return;
@@ -1717,7 +1736,9 @@ function requireDedicatedNativeSupport(
     if (stored) {
       throw new DependencyUnavailableError(DEDICATED_OPENCLAW_SANDBOX_REQUIRED);
     }
-    throw new DedicatedOpenClawSandboxError();
+    throw new DedicatedOpenClawSandboxError(
+      configuration !== undefined && codexRunsPrimaryModel(configuration),
+    );
   }
 }
 
@@ -3082,13 +3103,16 @@ export class OpenClawController {
     const requestFingerprintHex = createHash("sha256")
       .update(canonicalProvisioningJson(acceptedInput))
       .digest("hex");
-    // The Configuration rules Configuration save applies, for the plan's values and bindings.
+    // The Configuration rules Configuration save applies, for the plan's values and bindings. The
+    // Configuration serves only this Agent, so its model policy refusals offer the runtimes this
+    // Agent can run, as its admission's do (finding 3036).
     const validateContent = async () => {
       await configurationDriver.validateSize?.(configurationInput.values);
       this.validateConfigurationContent(
         configurationInput.values,
         undefined,
         configurationInput.secretBindings ?? {},
+        this.modelPolicyAgent(executionMode),
       );
       await configurationDriver.validate({
         id: "cfg_00000000-0000-4000-8000-000000000000",
@@ -3199,7 +3223,10 @@ export class OpenClawController {
         validateRepositoryTopology(
           compute,
           {
-            id: resolveConfiguredHarnessId(configurationInput.values),
+            id: resolveConfiguredHarnessId(
+              configurationInput.values,
+              this.modelPolicyAgent(executionMode),
+            ),
             version: "provisioning",
             mode: executionMode,
           },
@@ -3210,7 +3237,10 @@ export class OpenClawController {
       // authorizeProvisioningRecord repeats this check for the stored record.
       if (plugins !== undefined && Object.keys(plugins).length > 0) {
         this.validatePluginPlacement(plugins, {
-          id: resolveConfiguredHarnessId(configurationInput.values),
+          id: resolveConfiguredHarnessId(
+            configurationInput.values,
+            this.modelPolicyAgent(executionMode),
+          ),
           mode: executionMode,
         });
       }
@@ -3218,7 +3248,13 @@ export class OpenClawController {
       // it; authorizeProvisioningRecord repeats this check for the stored record.
       if (repositoryBindings !== undefined && repositoryBindings.length > 0) {
         this.validateRepositoryBrokerNetworkProxy(
-          { id: resolveConfiguredHarnessId(configurationInput.values), mode: executionMode },
+          {
+            id: resolveConfiguredHarnessId(
+              configurationInput.values,
+              this.modelPolicyAgent(executionMode),
+            ),
+            mode: executionMode,
+          },
           plugins,
           configurationInput.values,
           this.sandboxDriver(),
@@ -5239,16 +5275,19 @@ export class OpenClawController {
    * (findings 1305 and 1308); then the selected Compute Driver's rules. A write that saves Secret
    * bindings with the values passes them: on the bundled Kubernetes Compute, which delivers
    * channel credentials only from bindings, a channel credential reference without one is then
-   * refused with the rule its deployment admission applies (finding 2319).
+   * refused with the rule its deployment admission applies (finding 2319). Agent provisioning,
+   * whose Configuration serves only the new Agent, passes that `agent` for the model policy
+   * refusals' offers (finding 3036).
    */
   private validateConfigurationContent(
     values: OpenClawConfigurationDocument,
     options?: ConfigurationValidationOptions,
     secretBindings?: SecretBindings,
+    agent?: ModelPolicyAgent,
   ): void {
     validateModelProviderSettings(values, options);
     validateConfigurationSettings(values, options);
-    requireDeployableRoster(values, options);
+    requireDeployableRoster(values, options, agent);
     this.validateComputeConfiguration(values, options);
     if (secretBindings !== undefined) {
       this.requireBundledChannelBindings(values, secretBindings);
@@ -8631,7 +8670,13 @@ export class OpenClawController {
         readConfiguration: this.savedConfigurationReader(metadata),
       };
     });
-    const harness = { id: resolveConfiguredHarnessId((await readConfiguration()).values), mode };
+    const harness = {
+      id: resolveConfiguredHarnessId(
+        (await readConfiguration()).values,
+        this.modelPolicyAgent(mode),
+      ),
+      mode,
+    };
     return (pluginId) => this.validatePluginPlacement({ [pluginId]: { enabled: true } }, harness);
   }
 
@@ -10293,7 +10338,10 @@ export class OpenClawController {
         ),
         metadata,
       );
-      const configuredHarnessId = resolveConfiguredHarnessId(configuration.values);
+      const configuredHarnessId = resolveConfiguredHarnessId(
+        configuration.values,
+        this.modelPolicyAgent(lockedAgent.executionMode, resolveHarness),
+      );
       const approvedHarness = resolveAgentHarness(
         resolveHarness,
         configuredHarnessId,
@@ -10317,7 +10365,9 @@ export class OpenClawController {
       // topology deployable, so the refusal the operator can act on must surface first. A
       // missing Sandbox Driver is a permanent 409 here; provisioning handoff reaches this only
       // after fenceAgentProvisioning applied the stored-work check, which stays a retryable 503.
-      requireDedicatedNativeSupport(revisionHarness, sandbox, this.nativeWorkers);
+      requireDedicatedNativeSupport(revisionHarness, sandbox, this.nativeWorkers, {
+        configuration: configuration.values,
+      });
       const [harnessAuth, credentialSourceType] = await this.admitHarnessAuth(
         state,
         principalId,
@@ -10466,17 +10516,18 @@ export class OpenClawController {
           binding.repositoryRef,
         );
         if (approval) {
-          const driver = this.resolveRepositoryBindings(
+          const resolved = this.resolveRepositoryBindings(
             namespace.id,
             [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
             "saved",
-          )!.driver;
-          const scope = eligibleRepositoryApprovalScope(driver, {
+          )!;
+          const scope = eligibleRepositoryApprovalScope(resolved.driver, {
             namespaceId: namespace.id,
             binding,
           });
           if (
             !scope ||
+            !isDeepStrictEqual(resolved.resolution.bindings[0], binding) ||
             !isDeepStrictEqual(approval.binding, binding) ||
             !isDeepStrictEqual(approval.scope, scope)
           ) {
@@ -12361,7 +12412,10 @@ export class OpenClawController {
       auth = await this.serviceAccountHarnessAuthSnapshot(state, namespaceId, backendId, binding);
     }
     const harness = {
-      id: resolveConfiguredHarnessId(plan.configuration.values),
+      id: resolveConfiguredHarnessId(
+        plan.configuration.values,
+        this.modelPolicyAgent(plan.executionMode),
+      ),
       version: "provisioning",
       mode: plan.executionMode,
     };
@@ -12374,6 +12428,7 @@ export class OpenClawController {
     requireDedicatedNativeSupport(harness, sandbox, this.nativeWorkers, {
       runtimeImage: !statusRead,
       stored: !admission,
+      configuration: plan.configuration.values,
     });
     // Static support and real Configuration transformation are write admission; status reads
     // must still report stored work after Installation settings change.
@@ -14460,6 +14515,44 @@ export class OpenClawController {
     } catch {
       throw new DependencyUnavailableError("The selected Sandbox Driver is unavailable.");
     }
+  }
+
+  /**
+   * The Agent a model policy refusal offers runtimes for: a dedicated Agent cannot run OpenClaw
+   * where the Installation does not list dedicated OpenClaw (openClawExecutionModes), so its
+   * refusals offer codex alone where Codex runs the model (finding 3036). With the deploy route's
+   * `resolveHarness`, an embedded Agent cannot run Codex where the Installation approves the Codex
+   * Harness only for dedicated execution (resolveAgentHarness refuses it), so its refusals offer
+   * openclaw alone, or name the next step on a codex/<model> model (finding 3037). Callers without
+   * that resolver (Agent provisioning, which Kubernetes Compute admits only for dedicated Agents,
+   * and saved-Agent plugin discovery) keep every offer. Read only to word a refusal: an
+   * unavailable Sandbox Driver keeps every offer too, and admission refuses it later.
+   */
+  private modelPolicyAgent(
+    executionMode: HarnessExecutionMode,
+    resolveHarness?: HarnessResolver,
+  ): ModelPolicyAgent {
+    return {
+      codexRuns: () =>
+        executionMode !== "embedded" ||
+        resolveHarness?.("codex", "embedded")?.id === "codex" ||
+        resolveHarness?.("codex", "dedicated")?.id !== "codex",
+      openclawRuns: () => {
+        if (executionMode !== "dedicated") {
+          return true;
+        }
+        let sandbox: SandboxDriver | undefined;
+        try {
+          sandbox = this.sandboxDriver();
+        } catch (error) {
+          if (error instanceof DependencyUnavailableError) {
+            return true;
+          }
+          throw error;
+        }
+        return admitsOpenClawExecutionMode(sandbox, executionMode, this.nativeWorkers) === true;
+      },
+    };
   }
 
   private validatePluginPolicies(

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { SECRET_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 
 function identifier(kind) {
   return `${kind}_${randomUUID()}`;
@@ -222,7 +223,7 @@ async function exerciseRepository(store) {
     ),
     {
       name: "ResourceStateConflictError",
-      message: "A Secret with this name already exists in this Namespace. Choose a different name.",
+      message: SECRET_NAME_CONFLICT,
     },
   );
 

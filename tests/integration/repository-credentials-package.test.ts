@@ -739,10 +739,12 @@ test("credential artifact builder rejects dependencies outside its emitted closu
   const emitted = join(temporary, "apps/controller/dist");
   const entrypoint = join(emitted, "composition/repository-credentials/check-config.js");
   await mkdir(join(emitted, "composition/repository-credentials"), { recursive: true });
-  await cp(
-    join(root, "scripts/build-repository-credentials.mjs"),
-    join(temporary, "scripts/build-repository-credentials.mjs"),
-  );
+  for (const extension of ["mjs", "ts"]) {
+    await cp(
+      join(root, `scripts/build-repository-credentials.${extension}`),
+      join(temporary, `scripts/build-repository-credentials.${extension}`),
+    );
+  }
   await cp(
     join(root, "deploy/runtime/repository-credentials"),
     join(temporary, "deploy/runtime/repository-credentials"),
@@ -1101,10 +1103,12 @@ function isConnectionReset(error: unknown): boolean {
 
 async function stageArtifactInputs(directory: string): Promise<void> {
   await mkdir(join(directory, "scripts"), { recursive: true });
-  await cp(
-    join(root, "scripts/build-repository-credentials.mjs"),
-    join(directory, "scripts/build-repository-credentials.mjs"),
-  );
+  for (const extension of ["mjs", "ts"]) {
+    await cp(
+      join(root, `scripts/build-repository-credentials.${extension}`),
+      join(directory, `scripts/build-repository-credentials.${extension}`),
+    );
+  }
   await cp(join(root, "apps/controller/dist"), join(directory, "apps/controller/dist"), {
     recursive: true,
   });

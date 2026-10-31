@@ -502,9 +502,11 @@ func TestServiceAccountListShowsNamespaceAccounts(t *testing.T) {
 	}
 }
 
+// agentRevisionsResponse is a revision list as OCC answers it: summaries that
+// carry each revision's deployment status and error code.
 func agentRevisionsResponse() string {
-	return `[{"id":"` + testRevision2ID + `","revision":2,"agentId":"` + testAgentID + `","configurationGeneration":2,"createdAt":"2026-09-30T01:00:00.000Z"},` +
-		`{"id":"` + testRevision1ID + `","revision":1,"agentId":"` + testAgentID + `","configurationGeneration":1,"createdAt":"2026-09-30T00:00:00.000Z"}]`
+	return `[{"id":"` + testRevision2ID + `","revision":2,"agentId":"` + testAgentID + `","configurationGeneration":2,"createdAt":"2026-09-30T01:00:00.000Z","deploymentStatus":"failed","deploymentErrorCode":"CONVERGENCE_DEADLINE_EXCEEDED"},` +
+		`{"id":"` + testRevision1ID + `","revision":1,"agentId":"` + testAgentID + `","configurationGeneration":1,"createdAt":"2026-09-30T00:00:00.000Z","deploymentStatus":"succeeded","deploymentErrorCode":null}]`
 }
 
 // agentRevisionResponses serves an Agent whose active revision is revision 1,
@@ -512,10 +514,8 @@ func agentRevisionsResponse() string {
 func agentRevisionResponses() map[string]string {
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
 	return map[string]string{
-		"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision1ID + `"}`,
-		"GET " + agentPath + "/revisions":                      agentRevisionsResponse(),
-		"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"succeeded"}`,
-		"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","status":"failed"}`,
+		"GET " + agentPath:                `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision1ID + `"}`,
+		"GET " + agentPath + "/revisions": agentRevisionsResponse(),
 	}
 }
 
@@ -557,24 +557,12 @@ func TestAgentRevisionsStructuredOutputCarriesActiveAndStatus(t *testing.T) {
 		if len(rows) != 2 {
 			t.Fatalf("%s: expected two revisions:\n%s", format, out)
 		}
-		if rows[0]["active"] != false || rows[0]["deploymentStatus"] != "failed" {
+		if rows[0]["active"] != false || rows[0]["deploymentStatus"] != "failed" || rows[0]["deploymentErrorCode"] != "CONVERGENCE_DEADLINE_EXCEEDED" {
 			t.Fatalf("%s: revision 2 = %v", format, rows[0])
 		}
 		if rows[1]["active"] != true || rows[1]["deploymentStatus"] != "succeeded" {
 			t.Fatalf("%s: revision 1 = %v", format, rows[1])
 		}
-	}
-}
-
-func TestAgentRevisionsToleratesUnreadableDeploymentStatus(t *testing.T) {
-	responses := agentRevisionResponses()
-	delete(responses, "GET /namespaces/"+testNamespaceID+"/agents/"+testAgentID+"/deployments/"+testRevision2ID)
-	out, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, testRevision2ID) || !strings.Contains(out, "succeeded") {
-		t.Fatalf("expected both revisions with the readable status:\n%s", out)
 	}
 }
 
@@ -1088,23 +1076,48 @@ func TestAgentBrowsingShowsUnreadableSavedSettings(t *testing.T) {
 	}
 }
 
-// List items are summaries, so a revision whose saved settings are unreadable is
-// found only when its deployment status read fails (503). The listing keeps the
-// other revisions' status and names the unreadable one instead of failing.
-func TestAgentRevisionBrowsingKeepsHealthyStatusBesideUnreadableSnapshot(t *testing.T) {
+// OCC reads each listed revision's deployment status with the list, without
+// decoding saved settings. The CLI shows those statuses as OCC listed them, even
+// when the Agent's or a revision's saved settings are unreadable and their exact
+// deployment status reads fail (503), and sends no read per revision.
+func TestAgentRevisionsShowTheStatusOCCListed(t *testing.T) {
 	responses := agentRevisionResponses()
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
-	responses["GET "+agentPath+"/deployments/"+testRevision2ID] = `raw:503 {"error":{"code":"DEPENDENCY_UNAVAILABLE","message":"Persisted AgentRevision plugin state is invalid."}}`
+	responses["GET "+agentPath] = `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision1ID + `","configurationReadError":{"code":"SAVED_CONFIGURATION_UNREADABLE","field":"plugins"}}`
+	unavailable := `raw:503 {"error":{"code":"DEPENDENCY_UNAVAILABLE","message":"Persisted AgentRevision plugin state is invalid."}}`
+	responses["GET "+agentPath+"/deployments/"+testRevision1ID] = unavailable
+	responses["GET "+agentPath+"/deployments/"+testRevision2ID] = unavailable
 	for _, format := range []string{"table", "json", "yaml"} {
-		out, notices, _, err := runOCCWithNotices(t, responses, "--namespace", testNamespaceID, "--output", format, "agent", "revisions", testAgentID)
+		out, notices, requested, err := runOCCWithNotices(t, responses, "--namespace", testNamespaceID, "--output", format, "agent", "revisions", testAgentID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out, testRevision2ID) || !strings.Contains(out, "succeeded") {
-			t.Fatalf("%s must list both revisions and the healthy status: %s", format, out)
+		for _, request := range requested {
+			if strings.Contains(request, "/deployments/") {
+				t.Fatalf("%s: the list already carries each status; unexpected %s", format, request)
+			}
 		}
-		if !strings.Contains(notices, "deployment status of revision "+testRevision2ID+" is unavailable") {
-			t.Fatalf("%s must name the revision whose status is unavailable: %q", format, notices)
+		if notices != "" {
+			t.Fatalf("%s: no status is unavailable: %q", format, notices)
+		}
+		if format == "table" {
+			lines := strings.Split(strings.TrimSpace(out), "\n")
+			if len(lines) != 3 || strings.Fields(lines[1])[3] != "failed" || strings.Fields(lines[2])[4] != "succeeded" {
+				t.Fatalf("table must show the listed statuses:\n%s", out)
+			}
+			continue
+		}
+		var rows []map[string]any
+		if format == "json" {
+			err = json.Unmarshal([]byte(out), &rows)
+		} else {
+			err = yaml.Unmarshal([]byte(out), &rows)
+		}
+		if err != nil || len(rows) != 2 {
+			t.Fatalf("%s: %v\n%s", format, err, out)
+		}
+		if rows[0]["deploymentStatus"] != "failed" || rows[0]["deploymentErrorCode"] != "CONVERGENCE_DEADLINE_EXCEEDED" || rows[1]["deploymentStatus"] != "succeeded" {
+			t.Fatalf("%s must keep the listed statuses: %v", format, rows)
 		}
 	}
 }

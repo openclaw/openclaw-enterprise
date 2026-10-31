@@ -80,6 +80,7 @@ import {
   StoredCredentialSourceConfigError,
 } from "../../packages/occ/src/index.ts";
 import {
+  AGENT_DELETING,
   AGENT_NAME_CONFLICT,
   agentPrincipalDenied,
   AUTHORIZATION_HEADER_REFUSED,
@@ -100,6 +101,7 @@ import {
   SERVICE_ACCOUNT_NO_BACKEND_BINDING,
   serviceKeyOutsideNamespace,
   storedCredentialSourceConfig,
+  dedicatedOpenClawSandboxRefusal,
 } from "../helpers/refusal-text.mjs";
 
 // Text that must never reach a client: the mappings below that answer with fixed text are
@@ -165,7 +167,7 @@ const cases = [
   [
     "an Agent being deleted",
     new AgentDeletingError(INTERNAL),
-    { status: 409, code: "AGENT_DELETING", message: "The requested Agent is being deleted." },
+    { status: 409, code: "AGENT_DELETING", message: AGENT_DELETING },
   ],
   [
     "a Namespace that is not ready",
@@ -474,15 +476,14 @@ const cases = [
     { status: 400, code: "INVALID_REQUEST", message: new NativeWorkerSupportError().message },
   ],
   [
-    // A fixed Installation shape: a permanent conflict naming the missing Driver, not an
-    // outage with generic text (finding 1609).
+    // A fixed Installation shape: a permanent conflict naming the missing Driver and the next
+    // step, not an outage with generic text (findings 1609, 3036).
     "an Installation without a Sandbox Driver that provisions dedicated OpenClaw",
-    new DedicatedOpenClawSandboxError(),
+    new DedicatedOpenClawSandboxError(true),
     {
       status: 409,
       code: "RESOURCE_CONFLICT",
-      message:
-        "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
+      message: dedicatedOpenClawSandboxRefusal(true),
     },
   ],
   [

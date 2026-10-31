@@ -41,6 +41,12 @@ import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { listen as listenServer } from "../helpers/listen.mjs";
+import {
+  gatewayExitedBeforeServing,
+  invalidGatewayConfiguration,
+  invalidGatewayConfigurationLine,
+  invalidGatewayConfigurationSecret,
+} from "../helpers/openclaw-config-validation.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { waitForResult } from "../helpers/wait-for.mjs";
@@ -3661,6 +3667,9 @@ async function startCodexGatewaySupervisor(
     peerRequests: 0,
     serving: true,
     readinessProbes: [],
+    // What OpenClaw's config validator reports, and how often the wrapper ran it.
+    validation: { status: 0, stdout: JSON.stringify({ valid: true }) },
+    validations: 0,
     children: [],
     exits: [],
     intervals: [],
@@ -3709,9 +3718,9 @@ async function startCodexGatewaySupervisor(
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(fixture.peerStatus));
   });
-  // The native Gateway's own readiness endpoint, answered only while serving.
+  // The native Gateway's own readiness endpoints, answered only while serving.
   const gatewayPort = await listen((request, response) => {
-    assert.equal(request.url, "/readyz");
+    assert.ok(["/readyz", "/startupz"].includes(request.url), request.url);
     const live = fixture.children.at(-1);
     const status = fixture.serving && live?.exited === undefined ? 200 : 503;
     fixture.readinessProbes.push({ child: fixture.children.length, status });
@@ -3783,6 +3792,8 @@ async function startCodexGatewaySupervisor(
             fixture.statusHandler = handler;
             return { listen() {} };
           },
+          // Readiness reaches the fixture's native Gateway port.
+          get: peerHttp.get,
         };
       }
       if (specifier === "node:fs") {
@@ -3862,7 +3873,8 @@ async function startCodexGatewaySupervisor(
             assert.equal(command, "node");
             assert.deepEqual(plain(args), ["/app/openclaw.mjs", "config", "validate", "--json"]);
             assert.equal(options.env.OPENCLAW_CONFIG_READONLY, "1");
-            return { status: 0, stdout: JSON.stringify({ valid: true }) };
+            fixture.validations++;
+            return fixture.validation;
           },
         };
       }
@@ -4620,6 +4632,101 @@ test("Codex gateway supervisor stops respawning a Gateway whose Harness keeps ch
   assert.deepEqual(gateway.exits, [1]);
   assert.equal(gateway.children.length, 6);
 });
+
+test("Kubernetes Gateway holds a configuration OpenClaw refuses when its first start exits", async (t) => {
+  const gateway = await startCodexGatewaySupervisor(t, {
+    runtimeStatus: true,
+    bindingDeviceId: "a".repeat(64),
+  });
+  gateway.validation = invalidGatewayConfiguration;
+  // The kubelet's readiness probe finds OpenClaw unready; it exits at about 3 s, before
+  // its /readyz ever answers 200.
+  gateway.serving = false;
+  assert.equal((await readReadyStatusFromHandler(gateway.statusHandler)).status, 503);
+  const validationsBefore = gateway.validations;
+  // OpenClaw refuses an invalid configuration with status 78 (EX_CONFIG).
+  gateway.children[0].exit(78, null);
+
+  // The wrapper holds the failure instead of restarting the container into the same refusal.
+  assert.deepEqual(gateway.exits, []);
+  assert.equal(gateway.validations - validationsBefore, 1);
+  const { checkedAt, ...held } = gateway.runtimeStatus().runtimeFailure;
+  assert.ok(!Number.isNaN(Date.parse(checkedAt)));
+  assert.deepEqual(held, { component: "gateway", check: "gateway-config", code: "UNAVAILABLE" });
+  // One log line names up to five settings. Only JSON Schema messages, which carry no
+  // setting value, stay beside their paths: the configuration may hold secrets.
+  assert.ok(
+    gateway.logs.includes(invalidGatewayConfigurationLine(gatewayExitedBeforeServing("exit-78"))),
+    JSON.stringify(gateway.logs),
+  );
+  assert.equal(JSON.stringify(gateway.logs).includes(invalidGatewayConfigurationSecret), false);
+
+  // A held Gateway is not respawned for a changed Harness peer, nor restarted for another
+  // workspace node; a container stop ends it. A respawn would validate again and hold anew,
+  // so the validator count tells a skipped poll from a repeated hold.
+  gateway.peerStatus = { ...gateway.peerStatus, startupId: "agent-startup-2" };
+  await gateway.pollPeer();
+  gateway.files.set(
+    "/home/node/workspace-node-binding/workspace-node.json",
+    JSON.stringify({ revisionId: gateway.revisionId, deviceId: "b".repeat(64) }),
+  );
+  await gateway.intervals.find(({ delay }) => delay === 1_000).callback();
+  assert.equal(gateway.children.length, 1);
+  assert.deepEqual(gateway.exits, []);
+  assert.equal(gateway.validations - validationsBefore, 1);
+  assert.equal(gateway.runtimeStatus().runtimeFailure.check, "gateway-config");
+  gateway.signalHandlers.SIGTERM();
+  assert.deepEqual(gateway.exits, [0]);
+});
+
+// Every other exit restarts the container as before; the hold covers only a Gateway that
+// never served, whose configuration OpenClaw's validator reports invalid.
+for (const {
+  label,
+  runtimeStatus = true,
+  validation,
+  served = false,
+  exitCode = 1,
+  validations,
+} of [
+  { label: "a configuration the validator accepts", validation: undefined, validations: 1 },
+  {
+    label: "a validator that times out",
+    validation: { status: null, error: new Error("spawnSync node ETIMEDOUT"), stdout: "" },
+    validations: 1,
+  },
+  {
+    label: "no Compute status port",
+    runtimeStatus: false,
+    validation: invalidGatewayConfiguration,
+    validations: 0,
+  },
+  {
+    label: "a Gateway that served first",
+    validation: invalidGatewayConfiguration,
+    served: true,
+    validations: 0,
+  },
+  { label: "status 0", validation: invalidGatewayConfiguration, exitCode: 0, validations: 0 },
+]) {
+  test(`Kubernetes Gateway restarts after an exit with ${label}`, async (t) => {
+    const gateway = await startCodexGatewaySupervisor(t, { runtimeStatus });
+    if (validation !== undefined) {
+      gateway.validation = validation;
+    }
+    if (served) {
+      // The kubelet's readiness probe saw OpenClaw serve.
+      assert.equal((await readReadyStatusFromHandler(gateway.statusHandler)).status, 200);
+    }
+    const validationsBefore = gateway.validations;
+    gateway.children[0].exit(exitCode, null);
+    assert.deepEqual(gateway.exits, [exitCode]);
+    assert.equal(gateway.validations - validationsBefore, validations);
+    if (runtimeStatus) {
+      assert.equal(gateway.runtimeStatus().runtimeFailure, undefined);
+    }
+  });
+}
 
 for (const [dedicated, withBroker, proxyEnabled] of [
   [true, true, true],

@@ -111,6 +111,9 @@ function pick(records, keys) {
 function gatewayJson(message) {
   return JSON.stringify({ level: "info", subsystem: "gateway", message });
 }
+function openclawError(message) {
+  return JSON.stringify({ level: "error", message });
+}
 
 // The production controller app over the in-memory runtime-log Compute Driver
 // (tests/helpers/runtime-logs.mjs) with one deployed Agent. `wrap` decorates the Driver.
@@ -147,6 +150,22 @@ function assertNoCanary(text, values, where) {
       assert.equal(text.includes(value), false, `canary ${name} leaked ${where}`);
     }
   }
+}
+
+// Serves raw Gateway container lines, timed lineTime(0), lineTime(1), ..., through the logs
+// route. Returns the page's messages and the download; neither body may contain a secret.
+async function routeMessages(raws, secrets) {
+  const route = await logsRoute();
+  route.state.lines = raws.map((raw, index) => ({ time: lineTime(index), raw }));
+  const logs = await route.read({ tailLines: 100 });
+  assert.equal(logs.status, 200, logs.text);
+  const download = await route.read({ download: true });
+  assert.equal(download.status, 200, download.text);
+  for (const value of secrets) {
+    assert.equal(logs.text.includes(value), false, `${value.slice(0, 4)}... leaked`);
+    assert.equal(download.text.includes(value), false, `${value.slice(0, 4)}... leaked`);
+  }
+  return { messages: logs.data.records.map((record) => record.message), download: download.text };
 }
 
 test("runtime status refuses an invalid Driver timestamp instead of normalizing it", async () => {
@@ -784,6 +803,109 @@ test("a PEM block printed over several lines is masked on every line", () => {
   }
 });
 
+test("a multi-line message stays one record with its line breaks as spaces (3048)", async () => {
+  const pemBody = randomBytes(48).toString("base64");
+  const lines = [
+    // OpenClaw's config report as an embedded Gateway printed it (dogfood finding 3048):
+    // one JSON record per paragraph, with `\n` between the lines of a paragraph.
+    openclawError(
+      "  - plugins.entries.beam.config.mirror.endpoint: invalid config: must have required property 'endpoint'\n  - plugins.entries.beam.config.mirror.catalogs: invalid config: must have required property 'catalogs'",
+    ),
+    openclawError(
+      "Fix: Config is externally managed (`OPENCLAW_CONFIG_READONLY=1`), so OpenClaw treats openclaw.json as immutable.\nConfig path: /etc/openclaw/openclaw.json\nEdit the config in your external deployment source, then redeploy or restart OpenClaw as needed.",
+    ),
+    openclawError(`key:\n-----BEGIN PRIVATE KEY-----\n${pemBody}\n-----END PRIVATE KEY-----\ndone`),
+    // A CRLF-terminated container line keeps no trailing space.
+    "plain text from a CRLF writer\r",
+  ];
+  const { messages, download } = await routeMessages(lines, [pemBody]);
+  const expected = [
+    "  - plugins.entries.beam.config.mirror.endpoint: invalid config: must have required property 'endpoint'   - plugins.entries.beam.config.mirror.catalogs: invalid config: must have required property 'catalogs'",
+    "Fix: Config is externally managed (`OPENCLAW_CONFIG_READONLY=1`), so OpenClaw treats openclaw.json as immutable. Config path: /etc/openclaw/openclaw.json Edit the config in your external deployment source, then redeploy or restart OpenClaw as needed.",
+    "key: [redacted:pem] done",
+    "plain text from a CRLF writer",
+  ];
+  assert.deepEqual(messages, expected);
+  // The download prints one record per line: a message cannot start a forged record.
+  assert.deepEqual(
+    download
+      .trimEnd()
+      .split("\n")
+      .slice(1)
+      .map((line) => line.replace(/^\S+ ERROR openclaw /, "").replace(/^\S+ UNKNOWN text /, "")),
+    expected,
+  );
+});
+
+test("a credential is masked when a spacing control, a literal escape, a quoted key or a percent-encoded separator separates it from its key", async () => {
+  const token = `Ab1${randomString(29)}`;
+  const password = `pw${randomString(14)}`;
+  const apiKey = `key${randomString(21)}`;
+  const digest = randomBytes(20).toString("hex");
+  // A line break, vertical tab, form feed or NEL shows as one space, so the keyword stays
+  // apart from its value and the digest from the next word.
+  const gaps = ["\n", "\u000b", "\u000c", "\u0085"];
+  const lines = [
+    ...gaps.flatMap((gap) => [
+      openclawError(`retry with bearer${gap}${token}`),
+      openclawError(`login failed: --password${gap}${password}`),
+      openclawError(`fetched sha1 ${digest}${gap}next step`),
+    ]),
+    // A cursor-forward escape shows as a gap too.
+    `retry with bearer\u001b[1C${token}`,
+    // Python dict reprs and JSON quoted inside a logfmt value: the closing quote of the
+    // key sits between the key and its separator.
+    `ERROR request failed: {'Authorization': 'token ${token}', 'password': '${password}'}`,
+    `level=error msg="token refresh failed" body="{\\"api_key\\":\\"${apiKey}\\"}"`,
+    openclawError(`upstream body: ${JSON.stringify(JSON.stringify({ client_secret: password }))}`),
+    // Plain-text lines (logfmt, Go %q, Python reprs) keep a line break or tab inside a
+    // quoted value as a two-character escape. It separates a keyword from its value,
+    // before or after the keyword, and starts a new long-token run.
+    `level=error msg="retry with bearer\\n${token}"`,
+    `level=error msg="login failed: --password\\t${password}"`,
+    `level=info msg="fetched sha1\\n${digest}"`,
+    `ERROR retry: 'bearer\\x0a${token}'`,
+    `ERROR request failed: {'Authorization':\\u000a'token ${token}'}`,
+    `level=warn msg="env:\\nMY_SERVICE_KEY=${apiKey}"`,
+    // An escape inside a value does not end it: no tail after the escape is shown.
+    `level=error msg="cli: --token=${apiKey.slice(0, 12)}\\n${apiKey.slice(12)}"`,
+    // Ordinary text around escapes stays.
+    `level=info msg="line one\\nline two\\tthe token\\nwas refreshed"`,
+    // Percent-encoded separators outside a URL query.
+    `level=error body=password%3D${password}&next=1`,
+    `level=error header=Authorization%3A%20Bearer%20${token}`,
+  ];
+  const secrets = [token, password, apiKey, digest, apiKey.slice(12)];
+  const { messages, download } = await routeMessages(lines, secrets);
+  assert.deepEqual(messages, [
+    ...gaps.flatMap(() => [
+      "retry with bearer [redacted:bearer]",
+      "login failed: --password [redacted:argv]",
+      "fetched sha1 [redacted:long-token] next step",
+    ]),
+    "retry with bearer [redacted:bearer]",
+    "ERROR request failed: {'Authorization': '[redacted:header]', 'password': [redacted:key-value]}",
+    'level=error msg="token refresh failed" body="{\\"api_key\\":[redacted:key-value]}"',
+    'upstream body: "{\\"client_secret\\":[redacted:key-value]}"',
+    'level=error msg="retry with bearer\\n[redacted:bearer]"',
+    'level=error msg="login failed: --password\\t[redacted:argv]',
+    'level=info msg="fetched sha1\\n[redacted:long-token]"',
+    "ERROR retry: 'bearer\\x0a[redacted:bearer]'",
+    "ERROR request failed: {'Authorization':\\u000a'[redacted:header]'}",
+    'level=warn msg="env:\\nMY_SERVICE_KEY=[redacted:key-value]"',
+    'level=error msg="cli: --token=[redacted:argv]',
+    'level=info msg="line one\\nline two\\tthe token\\nwas refreshed"',
+    "level=error body=password%3D[redacted:key-value]&next=1",
+    "level=error header=Authorization%3A[redacted:header]",
+  ]);
+  // The download prints each record on its own line.
+  const downloadLines = download.trimEnd().split("\n").slice(1);
+  assert.equal(downloadLines.length, messages.length, download);
+  for (const [index, message] of messages.entries()) {
+    assert.ok(downloadLines[index].endsWith(message), `download lacks ${message}`);
+  }
+});
+
 test("the sanitizer keeps bracket-tagged text lines but withholds malformed JSON arrays", () => {
   const canary = `array-canary-${randomUUID()}`;
   const tagged = [
@@ -820,6 +942,8 @@ test("the sanitizer keeps bracket-tagged text lines but withholds malformed JSON
 function redactionCpuMs(input, budgetMs) {
   return cpuTimeMs(
     () => {
+      stripRuntimeLogControls(input);
+      redactArgvCredentials(input);
       redactRuntimeLogText(input);
       maskRuntimeEventText(input);
     },
@@ -833,8 +957,26 @@ test("redaction stays linear on hostile 32 KiB lines", () => {
     unit.repeat(Math.ceil((32 * 1024) / unit.length)).slice(0, 32 * 1024 - suffix.length) + suffix;
   redactRuntimeLogText(line("warm-up "));
   maskRuntimeEventText(line("warm-up "));
-  const units = ["a-", "a.", "-", "--a-", "=/", "(/", '"a-', "a0a", "tokena-", "bearer "];
-  units.push("-eyJa", "-eyJ_", "_eyJa", "-eyJa-", "-eyJaaaa");
+  // One group per pattern family a unit can make backtrack; each unit runs on its own.
+  const units = [
+    // Delimiter runs and keyword prefixes of the key, path, argv and bearer rules.
+    ["a-", "a.", "-", "--a-", "=/", "(/", '"a-', "a0a", "tokena-", "bearer "],
+    // Near-JWT runs the jwt scan has to restart on.
+    ["-eyJa", "-eyJ_", "_eyJa", "-eyJa-", "-eyJaaaa"],
+    // Line-break runs that do not end the line: each break becomes a space (3048).
+    ["\r\n", "\n", "\r", "\r\r\n"],
+    // Spacing controls, which also become spaces.
+    ["\u001b[1C", "\u001b[", "\v"],
+    // Quoted keys: the key's closing quote sits before the separator.
+    ["token': ", 'token\\":', "'token'='", "cookie':'"],
+    // Literal escapes that do not end the line, doubled backslashes and a cut escape.
+    ["\\n", "\\t", "\\u000a", "\\x0a", "\\\\n", "\\u000"],
+    // Literal escapes next to keywords, flags, key separators and long-token runs.
+    ["bearer\\n", "\\nbearer", "--token\\n", "\\n--token", "token=\\n", "Authorization:\\n"],
+    ["\\nA_KEY=", "-p\\n", "--password=a\\n", "a\\n0"],
+    // Percent-encoded separators.
+    ["%3D", "token%3D", "Authorization%3A"],
+  ].flat();
   for (const unit of units) {
     for (const suffix of ["", "?", "token", "=x"]) {
       const elapsed = redactionCpuMs(line(unit, suffix), budgetMs);
@@ -857,7 +999,7 @@ test("redaction stays linear on a generated sweep of short repeated units", () =
   // pattern delimiters and prefix letters, every 3-character unit over a smaller one, and
   // each delimiter ahead of the JWT, token and bearer prefixes.
   const budgetMs = 100;
-  const alphabet = [...'a-.=/?":_+@eyJtokn '];
+  const alphabet = [...'a-.=/?":_+@eyJtokn \\'];
   const short = [...'a-.=/"_eJ '];
   const units = [];
   for (const x of alphabet) {
@@ -908,6 +1050,8 @@ test("the jwt rule masks tokens in every delimiter context but not inside a long
   // `-` and `.` are word boundaries inside a run; a word character ahead of `eyJ` is not.
   for (const [input, expected] of [
     [`x-token-${jwt} next`, "x-token-[redacted:jwt] next"],
+    // A literal escape before `eyJ` is a boundary too.
+    [`a\\n${jwt}`, "a\\n[redacted:jwt]"],
     [`a.${jwt}.b`, "a.[redacted:jwt].b"],
     [`${jwt}.${jwt}`, "[redacted:jwt].[redacted:jwt]"],
     ["xeyJabcd.efgh.ij", "xeyJabcd.efgh.ij"],
@@ -931,7 +1075,7 @@ test("the linear jwt scan matches the reference regex on random runs", () => {
   }
 });
 
-test("bounded key and path patterns still mask the shapes they did before", () => {
+test("bounded key and path patterns mask key values, flags, queries and token prefixes", () => {
   // The digit keeps the value inside the digit-gated `bearer` rule on every run.
   const value = `v7${randomString(20)}`;
   for (const [input, expected] of [
@@ -952,6 +1096,21 @@ test("bounded key and path patterns still mask the shapes they did before", () =
     ["see /a#b?c", "see /a#b?c"],
     [`bearer token ${value} for upstream`, "bearer token [redacted:bearer] for upstream"],
     ["bearer authentication failed", "bearer authentication failed"],
+    // A flag only the text rules know, right after a literal escape.
+    [`log\\n--db-password ${value}`, "log\\n--db-password [redacted:key-value]"],
+    // A run that starts with the letters of a literal escape is still masked whole when
+    // only the whole run is token-shaped (here the upper-case `A` of `\u000A`).
+    [`x\\u000A${"xy1z".repeat(10)}`, "x\\[redacted:long-token]"],
+    // Otherwise the escape stays and only the run after it is masked.
+    [`id\\n${"a1B_".repeat(10)}`, "id\\n[redacted:long-token]"],
+    // A known token prefix right after a literal escape.
+    [`list\\nghp_${value}`, "list\\n[redacted:token]"],
+    [`list\\nhf_${"a1".repeat(17)}`, "list\\n[redacted:token]"],
+    [`list\\nAKIA${"A2".repeat(8)}`, "list\\n[redacted:aws-key]"],
+    [`list\\nAIza${"b3".repeat(16)}`, "list\\n[redacted:google-key]"],
+    // A value an earlier rule masked keeps its mark: the gap before it is not a value.
+    [`--github-token\\n\\nghp_${value}`, "--github-token\\n\\n[redacted:token]"],
+    [`MY_SERVICE_KEY=\\nghp_${value}`, "MY_SERVICE_KEY=\\n[redacted:token]"],
   ]) {
     assert.equal(redactRuntimeLogText(input), expected, input);
   }
@@ -977,18 +1136,34 @@ test("rule prefilters skip only text a rule cannot change", () => {
       character,
     );
   }
+});
+
+test("control stripping keeps printable text and shows breaks and spacing controls as spaces", () => {
   assert.equal(
     stripRuntimeLogControls(
       "a\tb\u0000c\u001b[31md\u001b[0m\u007fe\u0085f\u009fg\u00a0h🙂\ud800\u2028",
     ),
-    "a bcdefg\u00a0h🙂\ud800\u2028",
+    "a bcde fg\u00a0h🙂\ud800\u2028",
   );
+  // Vertical tab, form feed and cursor-forward escapes show as gaps: one space each.
+  assert.equal(stripRuntimeLogControls("a\vb\fc\u001b[3Cd\u009bCe\u001b[1mf"), "a b c d ef");
+  // A line break is one space, CRLF included; breaks that end the value are dropped.
+  assert.equal(stripRuntimeLogControls("a\nb\r\nc\rd\n\ne\r\n\n"), "a b c d  e");
+});
+
+test("argv masking needs a real client name and keeps a value whole across a literal escape", () => {
   for (const [input, expected] of [
     ["/usr/local/bin/redis-cli -a pw1", "/usr/local/bin/redis-cli -a [redacted:argv]"],
     // A client name inside a longer token names no client.
     ["redis-cli-wrapper -a pw2", "redis-cli-wrapper -a pw2"],
     ["echo mysql; ls -pfoo", "echo mysql; ls -pfoo"],
     ["sudo mysql -uroot -ppw3", "sudo mysql -uroot -p[redacted:argv]"],
+    // A literal escape separates a flag from its value but does not end the value, and a
+    // value joined to its flag by an escape alone is masked like an attached value.
+    ["mysql -uroot -p\\n-pw4", "mysql -uroot -p\\n[redacted:argv]"],
+    ["cmd --password pw5\\nrest next", "cmd --password [redacted:argv] next"],
+    ["curl --user=alice\\n:pw6 next", "curl --user=[redacted:argv] next"],
+    ["cmd -pab\\ncd next", "cmd -p[redacted:argv] next"],
   ]) {
     assert.equal(redactArgvCredentials(input), expected, input);
   }

@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
+import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import {
@@ -2465,6 +2466,7 @@ ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
 ${startupPhaseHelper("gateway")}
 ${openClawStateMigrationHelper("Gateway", "restart the Pod")}
+${OPENCLAW_CONFIG_ISSUE_HELPER}
 
 function nativeGatewayAnswers(path) {
   return new Promise((resolve) => {
@@ -2491,6 +2493,11 @@ function nativeGatewayAnswers(path) {
   });
 }
 
+// Whether a native Gateway this wrapper started has answered its /readyz, which the
+// kubelet's readiness probe asks every 2 s. Until one has, an exit may be OpenClaw refusing
+// its configuration at startup.
+let gatewayServed = false;
+
 // OpenClaw's /readyz admits a Gateway whose agent databases are still in
 // background startup inspection, and a chat turn then gets HTTP 500 until it
 // finishes (19.6 s after start in finding 2185). /startupz stays 503 until
@@ -2501,6 +2508,7 @@ async function gatewayRuntimeReady() {
     return false;
   }
   const answers = await Promise.all([nativeGatewayAnswers("/startupz"), nativeGatewayAnswers("/readyz")]);
+  if (answers[1]) gatewayServed = true;
   return answers.every((ready) => ready);
 }
 
@@ -3120,6 +3128,39 @@ function gatewayEnvironment() {
   }
 }
 
+let gatewayConfigurationHeld = false;
+
+// OpenClaw exits at startup (status 78) when any setting fails its schema, including a plugin
+// entry's config when that plugin is disabled or denied (finding 3043; the runtime image carries
+// openclaw/openclaw#189392, so OpenClaw's own log names a failing plugin setting too). Each
+// restart fails the same way, until the convergence deadline. So once a Gateway that never
+// served exits non-zero, OpenClaw's own validator checks the same configuration. An invalid
+// one is held as check gateway-config, which ends the deployment at once, and the log names
+// the settings. Any other exit, or a validator that prints no report (it failed or timed
+// out), restarts the container as before, as does a Gateway with no Compute status port to
+// serve the hold on.
+function holdInvalidGatewayConfiguration(code, signal) {
+  if (runtimeStatusPort() === undefined) return false;
+  const validation = pluginSpawnSync("node", ["/app/openclaw.mjs", "config", "validate", "--json"], {
+    env: { ...gatewayEnvironment(), OPENCLAW_CONFIG_READONLY: "1" },
+    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, maxBuffer: 1024 * 1024,
+  });
+  let report;
+  try {
+    report = JSON.parse(validation.stdout);
+  } catch {
+    return false;
+  }
+  if (report?.valid !== false) return false;
+  gatewayConfigurationHeld = true;
+  publishRuntimeFailure("gateway-config", "UNAVAILABLE");
+  console.error(invalidOpenClawConfigurationLine(
+    "The OpenClaw Gateway exited (" + (signal ?? "exit-" + code) + ") before it served", report.issues,
+  ));
+  setInterval(() => {}, 3600000);
+  return true;
+}
+
 function startGatewayProcess() {
   const spawned = spawn(
     "node",
@@ -3138,6 +3179,9 @@ function startGatewayProcess() {
         return;
       }
       if (gatewayTerminating || ((!respawning || waitingForPeerDuringOutage || verifyingServingReplacement) && spawned === child)) {
+        if (!gatewayTerminating && !gatewayServed && code !== 0 && holdInvalidGatewayConfiguration(code, signal)) {
+          return;
+        }
         process.exit(code ?? (signal === "SIGTERM" ? 0 : 1));
       }
     });
@@ -3287,7 +3331,7 @@ if (workspaceNodeBindingPath !== undefined) {
     }
   };
   const workspaceNodePoll = setInterval(async () => {
-    if (pollInFlight || respawning) return;
+    if (pollInFlight || respawning || gatewayConfigurationHeld) return;
     pollInFlight = true;
     try {
       await pollWorkspaceNode();
@@ -3427,7 +3471,7 @@ if (followsPeerStatus) {
     }
   };
   const peerStatusPoll = setInterval(async () => {
-    if (pollInFlight || respawning || stoppingContainer) return;
+    if (pollInFlight || respawning || stoppingContainer || gatewayConfigurationHeld) return;
     pollInFlight = true;
     try {
       let current;
@@ -4474,15 +4518,14 @@ function withoutOpenClawCommandHints(text) {
 }
 // What a failed native setup reported: its message on one line of at most 400
 // characters, and up to five invalid setting paths (names, never values).
+${OPENCLAW_CONFIG_ISSUE_HELPER}
 function workspaceBaselineReport(path) {
   let reported;
   try {
     reported = JSON.parse(workspaceBaselineOutput(path));
   } catch {}
   const message = reported?.error?.message;
-  const settings = [...new Set((Array.isArray(reported?.issues) ? reported.issues : [])
-    .map((issue) => issue?.path)
-    .filter((setting) => typeof setting === "string" && setting.length <= 64 && /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(setting)))].slice(0, 5);
+  const settings = openClawConfigIssues(reported?.issues).map((issue) => issue.path);
   // A message that is only a hint is still what OpenClaw reported: keep it whole.
   const collapsed = typeof message === "string"
     ? message.replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, " ").trim()
