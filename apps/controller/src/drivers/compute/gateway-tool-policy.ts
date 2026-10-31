@@ -433,8 +433,7 @@ function concernsGatewayToolPolicy(issue) {
     if (path === setting || path.startsWith(setting + ".")) return true;
     if (!setting.startsWith(path + ".")) return false;
     const key = setting.slice(path.length + 1).split(".")[0];
-    return typeof issue.message !== "string" ||
-      issue.message.includes('"' + key + '"') || issue.message.includes("'" + key + "'");
+    return typeof issue.message !== "string" || issue.message.includes('"' + key + '"');
   });
 }
 // A validation report whose issues all lie outside the tool policy: the Agent's own

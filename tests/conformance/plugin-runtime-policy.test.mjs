@@ -1813,8 +1813,9 @@ for (const launcher of dedicatedGatewayLaunchers) {
       },
       "gateway-config",
     ],
+    // An issue on a setting the step composes keeps the tool policy hold, beside any other.
     [
-      "an invalid composed tool policy setting",
+      "an invalid composed tool policy",
       {
         configValidationResponse: openClawConfigValidationRefusal([
           beamIssue,
@@ -1822,15 +1823,39 @@ for (const launcher of dedicatedGatewayLaunchers) {
         ]),
       },
     ],
+    [
+      "an invalid composed Codex tool exclusion",
+      {
+        configValidationResponse: openClawConfigValidationRefusal([
+          {
+            path: "plugins.entries.codex.config.codexDynamicToolsExclude.0",
+            message: "invalid config: must be string",
+          },
+        ]),
+      },
+    ],
     // A runtime whose OpenClaw does not know a composed setting refuses its key one level up.
     [
-      "a runtime that refuses a composed setting's key",
+      "a runtime that refuses the composed cron trigger switch",
       {
         configValidationResponse: openClawConfigValidationRefusal([
           { path: "cron.triggers", message: 'Unrecognized key: "enabled"' },
           beamIssue,
         ]),
       },
+    ],
+    [
+      "a runtime that refuses the composed model selection scope",
+      {
+        configValidationResponse: openClawConfigValidationRefusal([
+          { path: "agents.defaults", message: 'Unrecognized key: "modelSelectionScope"' },
+        ]),
+      },
+    ],
+    // A refusal that names no setting cannot be told apart from a policy refusal.
+    [
+      "an invalid report without issues",
+      { configValidationResponse: openClawConfigValidationRefusal([]) },
     ],
   ]) {
     test(`${launcher.name} holds ${failure} unready without starting model work`, async () => {
