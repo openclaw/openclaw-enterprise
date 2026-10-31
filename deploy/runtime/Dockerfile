@@ -190,6 +190,12 @@ COPY deploy/runtime/openclaw-google-worker-placeholder.patch /tmp/openclaw-googl
 RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp/openclaw-google-worker-placeholder.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-google-worker-placeholder.patch
 
+# Local qualification bridge for the pinned OpenClaw private-store owner.
+# Remove after selecting an OpenClaw revision containing this owning repair.
+COPY deploy/runtime/openclaw-linux-private-store-setgid.patch /tmp/openclaw-linux-private-store-setgid.patch
+RUN echo 'e97b0274d925f886638b0d8508d88842886b7ac3d84eacd29d76baf6cc487c8c  /tmp/openclaw-linux-private-store-setgid.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-linux-private-store-setgid.patch
+
 # Run the bridge tests alongside the build using the same patched source.
 # Packaging mounts this stage so a failed test still blocks the runtime image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
@@ -201,7 +207,8 @@ FROM openclaw-patched-source AS openclaw-bridge-tests
 RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
-    src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts
+    src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
+    src/infra/private-store-file.test.ts
 # Type-check the two UI test graphs touched by the bridge. The upstream runner
 # generates its database types and compiler cache under .artifacts.
 RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \

@@ -5,7 +5,7 @@ Harnesses, and [Kubernetes Compute](kubernetes-compute.md). OCC owns Agents,
 Agent revisions, Namespaces, routing, credentials, and authorization.
 
 Development supports native OpenClaw and dedicated Codex with
-[`v0.1.5`](https://github.com/NVIDIA/OpenShell/tree/v0.1.5). The pinned
+[`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6). The pinned
 OCE runtime declares native Dedicated support. The paired
 [Credential Gateway](openshell-credential-gateway.md) delivers model credentials;
 each Agent revision's providers supply node enrollment and Codex files. These experimental APIs are
@@ -137,7 +137,7 @@ Do not add a policy for the model endpoint: the credential source's provider
 profile allows `api.openai.com` with TLS inspection, and an uninspected rule for
 that host conflicts.
 
-v0.1.5 requires unique network policy names and nonempty executable
+v0.1.6 requires unique network policy names and nonempty executable
 paths. `workspace-node-enrollment` is reserved. Options include `enforcement: enforce|audit`
 and `access: read_only|read_write|full`. Omit `tls` for automatic TLS inspection;
 `tls: skip` bypasses inspection. The pinned gateway rejects explicit `terminate`
