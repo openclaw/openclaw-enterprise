@@ -202,6 +202,95 @@ test("the signed OpenShell request guard intersects the source envelope with the
     body: Buffer.from(JSON.stringify(value)),
     headers: [{ name: "content-type", value: "application/json" }],
   });
+  const calendarRead = "https://www.googleapis.com/auth/calendar.readonly";
+  const calendar = {
+    ...request,
+    config: scopeConfig("www.googleapis.com", "/calendar/v3/**", calendarRead),
+    target: {
+      ...target,
+      host: "www.googleapis.com",
+      path: "/calendar/v3/calendars/en.usa%23holiday%40group.v.calendar.google.com/events",
+      query: "",
+    },
+  };
+  for (const calendarId of ["primary", "reader%40example.test"]) {
+    assert.equal(
+      await evaluate({
+        ...calendar,
+        target: { ...calendar.target, path: `/calendar/v3/calendars/${calendarId}/events` },
+      }),
+      1,
+      calendarId,
+    );
+  }
+  assert.equal(await evaluate(calendar), 1, "encoded hash is Calendar ID data");
+  for (const path of [
+    "/calendar/v3/calendars/en.usa%23holiday%40group.v.calendar.google.com/events/event-1",
+    "/calendar/v3/users/me/calendarList/en.usa%23holiday%40group.v.calendar.google.com",
+  ]) {
+    assert.equal(await evaluate({ ...calendar, target: { ...calendar.target, path } }), 1, path);
+  }
+  for (const calendarId of [
+    "id#fragment",
+    "id?query",
+    "id%2Fother",
+    "id%5Cother",
+    "id%3Bother",
+    "id%3Fquery",
+    "id%00",
+    "id%1F",
+    "id%7F",
+    "id%25",
+    "id%2523hash",
+    "%2e",
+    "%2e%2e",
+    "id%",
+  ]) {
+    assert.equal(
+      await evaluate({
+        ...calendar,
+        target: { ...calendar.target, path: `/calendar/v3/calendars/${calendarId}/events` },
+      }),
+      2,
+      calendarId,
+    );
+  }
+  for (const path of [
+    "/calendar/v3/calendars/primary/events/event%23hash",
+    "/calendar/v3/calendars/id%23hash/events/event%23hash",
+    "/calendar/v3/calendars/id%23hash/events%23hash",
+    "/calendar/v3/calendars/id%23hash/unreleased",
+  ]) {
+    assert.equal(await evaluate({ ...calendar, target: { ...calendar.target, path } }), 2, path);
+  }
+  // These methods are admitted by the wire contract but do not authorize this read.
+  for (const method of ["HEAD", "POST", "PUT", "PATCH", "DELETE"]) {
+    assert.equal(
+      await evaluate({ ...calendar, target: { ...calendar.target, method } }),
+      2,
+      method,
+    );
+  }
+  // Invalid wire methods are rejected before the Google policy runs.
+  for (const method of ["get", "OPTIONS", "INVALID"]) {
+    assert.equal(
+      await evaluate({ ...calendar, target: { ...calendar.target, method } }),
+      2,
+      method,
+    );
+  }
+  for (const denied of [
+    { ...calendar, target: { ...calendar.target, host: "calendar.googleapis.com" } },
+    { ...calendar, config: scopeConfig(calendar.target.host, "/calendar/v3/**", gmail) },
+    {
+      ...calendar,
+      config: scopeConfig(calendar.target.host, "/calendar/v3/calendars/primary/**", calendarRead),
+    },
+    { ...calendar, ...json({}) },
+    { ...calendar, target: { ...calendar.target, query: "unreviewed=true" } },
+  ]) {
+    assert.equal(await evaluate(denied), 2, "Calendar authority remains constrained");
+  }
   const freebusy = {
     ...request,
     config: scopeConfig(
@@ -287,6 +376,11 @@ test("the signed OpenShell request guard intersects the source envelope with the
     ),
   };
   assert.equal(await evaluate(drive), 1, "Drive metadata");
+  assert.equal(
+    await evaluate({ ...drive, target: { ...drive.target, path: "/drive/v3/files/file%23hash" } }),
+    2,
+    "encoded hash is not permitted in a non-Calendar identifier",
+  );
   const download = { ...drive, target: { ...drive.target, query: "alt=media" } };
   assert.equal(await evaluate(download), 2, "metadata grant cannot fetch file bytes");
   assert.equal(
