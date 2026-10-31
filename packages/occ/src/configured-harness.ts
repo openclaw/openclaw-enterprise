@@ -5,7 +5,13 @@ import type {
 import { asRecord, isNonEmptyString, splitModelRef } from "@openclaw-enterprise/utils";
 
 import { canSpell } from "./configuration-settings.ts";
-import { agentEntryMessage, ConfigurationHarnessError, modelProviderMessage } from "./errors.ts";
+import {
+  agentEntryMessage,
+  ConfigurationHarnessError,
+  configurationSettingMessage,
+  keyedSettingPath,
+  modelProviderMessage,
+} from "./errors.ts";
 import { providerModelsListError } from "./model-provider-settings.ts";
 
 function configuredRuntime(value: unknown): string | undefined {
@@ -516,8 +522,9 @@ function resolveModelPolicy(
   const plugins = asRecord(asRecord(values.plugins)?.entries);
   const catalogs = new Map<string, CatalogIndex>();
 
-  // The Harness one candidate selects; refusals name no candidate. A draft leaves a candidate
-  // without its required runtime to deployment.
+  // The Harness one candidate selects. A draft leaves a candidate without its required runtime
+  // to deployment, which names the setting that selects one (finding 3022); other refusals name
+  // no candidate.
   const resolveCandidate = (model: string, entryPolicy: unknown): string | undefined => {
     const providerId = splitModelRef(model).provider;
     const provider = asRecord(providerConfigurations?.[providerId]);
@@ -547,7 +554,10 @@ function resolveModelPolicy(
         return undefined;
       }
       throw new ConfigurationHarnessError(
-        "The configured Agent model requires an explicit supported Harness runtime.",
+        configurationSettingMessage(
+          `${keyedSettingPath("agents.defaults.models", model)}.agentRuntime.id`,
+          "is required for the selected model: set it to openclaw or codex",
+        ),
       );
     }
     const codexPlugin = asRecord(plugins?.codex);

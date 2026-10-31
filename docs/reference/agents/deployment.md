@@ -56,8 +56,9 @@ The Agent's native Configuration selects a Harness through model/provider
 owns supported runtime selections, model catalogs, transport, and credential
 boundaries. OCC rejects conflicting, unknown, missing, or mode-incompatible
 selections before admitting a version: deploy returns `400 INVALID_REQUEST`
-with the specific reason, such as "The configured Agent model requires an
-explicit supported Harness runtime." A selected SandboxDriver currently requires
+with the specific reason and the setting to change, such as "Configuration
+setting agents.defaults.models["openai/gpt-4.1"].agentRuntime.id is required for
+the selected model: set it to openclaw or codex." A selected SandboxDriver currently requires
 `dedicated` Codex execution; it does not support embedded OpenClaw.
 
 An Agent update may include `executionMode`, `harnessAuth`, and `backendId`
