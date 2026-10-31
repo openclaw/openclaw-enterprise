@@ -201,6 +201,18 @@ const matchesField = (fields: readonly string[], relative: SettingPath): boolean
       segments.every((segment, index) => segment === "*" || segment === relative[index])
     );
   });
+// Whether OpenClaw resolves the setting at `path` as a plugin secret input (`PLUGIN_SECRET_INPUTS`).
+const isPluginSecretInput = (path: SettingPath): boolean => {
+  const [plugins, entries, plugin, config, ...relative] = path;
+  return (
+    plugins === "plugins" &&
+    entries === "entries" &&
+    config === "config" &&
+    typeof plugin === "string" &&
+    Object.hasOwn(PLUGIN_SECRET_INPUTS, plugin) &&
+    matchesField(PLUGIN_SECRET_INPUTS[plugin]!, relative)
+  );
+};
 
 const isSecretRef = (value: unknown): boolean => {
   const reference = asRecord(value);
@@ -389,13 +401,8 @@ export function validateModelCredentialReferences(
   // by key, each child judged by its own name, except a service account, refused whole. OpenClaw
   // refuses other shapes there, so it never reads them. A `headers` map follows the credential
   // header rule, and an `env` map keeps the environment rules above. A number or boolean
-  // (`requireToken: true`) passes. A plugin's secret input (`secretInputs`) also takes `$NAME`.
-  const refuseSensitiveSettings = (
-    root: SettingPath,
-    settings: unknown,
-    owner: string,
-    secretInputs: readonly string[] = [],
-  ): void => {
+  // (`requireToken: true`) passes. A plugin secret input also takes `$NAME`.
+  const refuseSensitiveSettings = (root: SettingPath, settings: unknown, owner: string): void => {
     const manifest = SENSITIVE_MANIFEST_SETTINGS[owner] ?? [];
     const keyMessage = root[0] === "channels" ? channelCredentialKeyMessage : credentialKeyMessage;
     const pending: [SettingPath, unknown, boolean][] = [[[], settings, false]];
@@ -405,13 +412,7 @@ export function validateModelCredentialReferences(
       const key = relative.at(-1);
       if (typeof value === "string") {
         if (sensitive) {
-          validateReference(
-            value,
-            pointer(...path),
-            false,
-            keyMessage,
-            matchesField(secretInputs, relative),
-          );
+          validateReference(value, pointer(...path), false, keyMessage, isPluginSecretInput(path));
         }
         continue;
       }
@@ -431,7 +432,7 @@ export function validateModelCredentialReferences(
       }
       if (key === "headers") {
         refuseCredentialHeaders(path, record, credentialHeaderMessage, (name) =>
-          matchesField(secretInputs, [...relative, name]),
+          isPluginSecretInput([...path, name]),
         );
         continue;
       }
@@ -593,11 +594,13 @@ export function validateModelCredentialReferences(
       for (const [provider, settings] of Object.entries(at(block, ["providers"]) ?? {})) {
         refuseUrlUserinfo([...path, "providers", provider, "proxy"], asRecord(settings)?.proxy);
         // The speech or Talk provider's key, which OpenClaw marks sensitive (finding 1307).
+        const apiKey = [...path, "providers", provider, "apiKey"];
         validateReference(
           asRecord(settings)?.apiKey,
-          pointer(...path, "providers", provider, "apiKey"),
+          pointer(...apiKey),
           false,
           credentialKeyMessage,
+          isPluginSecretInput(apiKey),
         );
       }
     }
@@ -702,7 +705,6 @@ export function validateModelCredentialReferences(
         ["plugins", "entries", plugin, "config"],
         asRecord(settings)?.config,
         `plugins/${plugin}`,
-        Object.hasOwn(PLUGIN_SECRET_INPUTS, plugin) ? PLUGIN_SECRET_INPUTS[plugin] : undefined,
       );
     }
     // Every other environment map OpenClaw starts a process with (findings 1260, 1261): a

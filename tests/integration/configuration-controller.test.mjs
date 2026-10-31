@@ -5292,6 +5292,21 @@ test("a credential reference that is not the whole value is refused with a messa
       { plugins: { entries: { reader: { config: { apiKey: "$READER_API_KEY" } } } } },
       shorthand("plugins.entries.reader.config.apiKey"),
     ],
+    // voice-call declares its TTS providers' keys, not those of a persona's providers.
+    [
+      {
+        plugins: {
+          entries: {
+            "voice-call": {
+              config: {
+                tts: { personas: { calm: { providers: { openai: { apiKey: "$TTS_KEY" } } } } },
+              },
+            },
+          },
+        },
+      },
+      shorthand("plugins.entries.voice-call.config.tts.personas.calm.providers.openai.apiKey"),
+    ],
     // An escape renders literal text, so it is a literal credential, with that message. So is a
     // `$` before a name the runtime does not read as one (finding 2517).
     [slack("$${SLACK_BOT_TOKEN}"), referenceFormRefusal(bot, "inline")],
