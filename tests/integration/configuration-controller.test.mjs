@@ -1977,9 +1977,17 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     [approvalPolicy("always"), policyEnum],
     [approvalPolicy("untrusted"), policyRetired],
     [password("literal-gateway-password"), gatewayPassword, KUBERNETES_GATEWAY_PASSWORD_REFUSAL],
-    // A password object OpenClaw cannot read stops the Gateway at every start on every Compute
-    // (findings 3057, 3061, 3062, 3063): one its schema refuses (no provider, a null provider,
-    // other keys; exit 78) and one on a provider or allowlist that cannot serve it.
+  ]) {
+    await refusedAtSaveAndDeploy(context, agent, values, message, {
+      status: 409,
+      message: deployMessage,
+    });
+  }
+  // A password object OpenClaw cannot read stops the Gateway at every start on every Compute
+  // (findings 3057, 3061, 3062, 3063): one its schema refuses (no provider, a null provider, other
+  // keys; exit 78) and one on a provider or allowlist that cannot serve it. Deploy admission's
+  // stored-values rules refuse it with the save's text, before any Compute rule (a 400).
+  for (const [values, message] of [
     [
       password({ source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" }),
       unreadableGatewayPasswordRefusal("providerless"),
@@ -2005,10 +2013,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
       unreadableGatewayPasswordRefusal("allowlist", "OPENCLAW_GATEWAY_PASSWORD"),
     ],
   ]) {
-    await refusedAtSaveAndDeploy(context, agent, values, message, {
-      status: 409,
-      message: deployMessage,
-    });
+    await refusedAtSaveAndDeploy(context, agent, values, message);
   }
   assert.equal(configurationDriver.storedConfigurations().length, 1);
   // A stored Configuration the password rule now refuses still reads and deletes.
@@ -2041,6 +2046,21 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     "Password-provider-deferred",
   );
   assert.equal(deferredProvider.status, 201, JSON.stringify(deferredProvider.body));
+  // The default env alias waits on a variable too: the alias the password names may be it.
+  const deferredAlias = await savePreset(
+    context,
+    {
+      variables: { alias: { type: "string" } },
+      configuration: {
+        values: {
+          ...password({ ...generated, provider: "custom" }),
+          secrets: { defaults: { env: "{{ vars.alias }}" } },
+        },
+      },
+    },
+    "Password-alias-deferred",
+  );
+  assert.equal(deferredAlias.status, 201, JSON.stringify(deferredAlias.body));
 
   // Rules that depend on the Compute Driver or the topology save, and deployment refuses them.
   for (const [values, deployStatus, deployMessage] of [
