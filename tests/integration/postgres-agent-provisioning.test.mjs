@@ -3498,6 +3498,15 @@ test(
       assert.equal(refused.status, status, JSON.stringify(refused.body));
       assert.equal(refused.body.error.message, message);
     }
+    // Agent provisioning has no Harness resolver, so an embedded request keeps both offers; the
+    // deploy route's resolver lets its deploy name the next step instead (finding 3037).
+    const embeddedBody = provisioningBody(namespace.id, secrets, { executionMode: "embedded" });
+    embeddedBody.configuration.values.agents.defaults = { model };
+    const embedded = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: embeddedBody,
+    });
+    assert.equal(embedded.status, 400, JSON.stringify(embedded.body));
+    assert.equal(embedded.body.error.message, runtimeIdRequired(policy, "openclaw or codex"));
     // The refusals stored nothing: no provisioning job or Agent.
     assert.deepEqual(await storedProvisioningCounts(fixture.pool, namespace.id), {
       jobs: 0,
