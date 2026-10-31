@@ -11,6 +11,8 @@ import {
   accessBindingPostRequests,
   accessibleDescription,
   apiRequests,
+  CHANNEL_SECRETS_SAVED,
+  CHANNEL_SECRETS_SAVED_DEPLOY,
   detailUrl,
   expectNoText,
   expectReachableReason,
@@ -1030,9 +1032,7 @@ test("an HTTP-mode Slack account keeps the bot token picker alone", async (t) =>
   );
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   assert.equal((await saved).status(), 200);
-  await page
-    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
-    .waitFor();
+  await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
   assert.deepEqual(await savedSecretBindings(fixture, namespace.id, agent.configurationId), {
     ...secretBindings,
     SLACK_BOT_TOKEN: envBinding(replacement),
@@ -1191,10 +1191,10 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
   // app grant present, the save's own unheld recheck may already have settled and named Deploy.
   const saveStatus = page
     .locator("section.channel-secrets p.hint[role=status]")
-    .filter({ hasText: /^Channel Secret bindings saved\./ });
+    .filter({ hasText: new RegExp(`^${RegExp.escape(CHANNEL_SECRETS_SAVED)}`) });
   await saveStatus.waitFor();
   if (!appGranted) {
-    assert.equal(await saveStatus.textContent(), "Channel Secret bindings saved.");
+    assert.equal(await saveStatus.textContent(), CHANNEL_SECRETS_SAVED);
   }
   if (!readLandsDuringSave) {
     read.release();
@@ -1212,7 +1212,7 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
     // With nothing left to hold Deploy, the save outcome names it as the next step.
     await saveStatus
       .filter({
-        hasText: /^Channel Secret bindings saved\. Deploy the new version to deliver them\.$/,
+        hasText: new RegExp(`^${RegExp.escape(CHANNEL_SECRETS_SAVED_DEPLOY)}$`),
       })
       .waitFor();
     const deployResponse = page.waitForResponse(
@@ -1242,7 +1242,7 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
   assert.equal(await list.getByText(/· Agent access not confirmed$/).count(), 1);
   // The settled missing-grant state offers Retry and does not direct the user to Deploy.
   assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).isEnabled(), true);
-  assert.equal(await saveStatus.textContent(), "Channel Secret bindings saved.");
+  assert.equal(await saveStatus.textContent(), CHANNEL_SECRETS_SAVED);
   assert.equal(
     await page
       .locator("section.channel-secrets")
@@ -1497,9 +1497,7 @@ test("Slack credential replacement switches only selected Secret references", as
   );
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   assert.equal((await saveResponse).status(), 200);
-  await page
-    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
-    .waitFor();
+  await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
   await expectNoText(page, /xapp-replacement/);
   const saved = await savedSecretBindings(fixture, namespace.id, agent.configurationId);
   assert.deepEqual(saved, {
@@ -1574,9 +1572,7 @@ test("partially bound Slack credentials save only the missing token", async (t) 
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
   await selectSecret(page, "Slack bot token", botSecret);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  await page
-    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
-    .waitFor();
+  await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
   assert.deepEqual(secretWrites(requests, namespace.id), []);
   const saved = await savedSecretBindings(fixture, namespace.id, agent.configurationId);
   assert.deepEqual(saved, {
@@ -1634,9 +1630,7 @@ test("missing Slack credential fields require both Secret references before savi
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
   await selectSecret(page, "Slack app token", appSecret);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  await page
-    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
-    .waitFor();
+  await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
   // Confirmed grants leave nothing pending, so there is nothing left to save or retry.
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
 

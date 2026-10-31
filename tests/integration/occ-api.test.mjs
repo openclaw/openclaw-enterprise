@@ -46,12 +46,14 @@ import {
   BINDING_SUBJECT_EMAIL,
   BINDING_SUBJECT_INELIGIBLE,
   callerDenied,
+  DEDICATED_STORAGE_ROUTING_REQUIRED,
   DEPLOYMENT_FAILED,
   MODEL_CREDENTIAL_REJECTED_RECORDED,
   NAMESPACE_NAME_CONFLICT,
   referenceFormRefusal,
   SECRET_NAME_CONFLICT,
   SERVICE_ACCOUNT_CROSS_NAMESPACE,
+  SERVICE_ACCOUNT_NAME_CONFLICT,
   SLACK_ROUTE_NOT_CONFIGURED,
   unboundReferenceRefusal,
   unsubstitutedReferenceRefusal,
@@ -5052,10 +5054,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   );
   assertApiError(duplicate, 409, "RESOURCE_CONFLICT");
   // The caller chose only the name, so the conflict says the name is taken here.
-  assert.equal(
-    duplicate.body.error.message,
-    "A ServiceAccount with this name already exists in this Namespace. Choose a different name.",
-  );
+  assert.equal(duplicate.body.error.message, SERVICE_ACCOUNT_NAME_CONFLICT);
 
   // Account ownership participates in Namespace emptiness even before any Agent is created.
   const occupiedNamespace = await controller.request("DELETE", `/namespaces/${namespaceA.id}`);
@@ -6469,7 +6468,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     {
       severity: "WARN",
       requestId: computeRefused.body.meta.requestId,
-      reason: "Dedicated Harness storage requires gateway routing and node enrollment.",
+      reason: DEDICATED_STORAGE_ROUTING_REQUIRED,
     },
   );
   assert.equal(computeRefused.body.error.code, "RESOURCE_CONFLICT");

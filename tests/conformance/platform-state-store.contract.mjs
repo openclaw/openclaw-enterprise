@@ -1,6 +1,12 @@
 import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import {
+  NAMESPACE_NAME_CONFLICT,
+  PRESET_NAME_CONFLICT,
+  SECRET_NAME_CONFLICT,
+  SERVICE_ACCOUNT_NAME_CONFLICT,
+} from "../helpers/refusal-text.mjs";
 
 function identifier(kind) {
   return `${kind}_${randomUUID()}`;
@@ -1099,8 +1105,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     ),
     {
       name: "ResourceStateConflictError",
-      message:
-        "A ServiceAccount with this name already exists in this Namespace. Choose a different name.",
+      message: SERVICE_ACCOUNT_NAME_CONFLICT,
     },
     "ServiceAccount names must be unique within their Namespace.",
   );
@@ -1655,25 +1660,25 @@ async function verifyDuplicateNameContract(store) {
     [
       (transaction) =>
         transaction.namespaces.createNamespace({ ...namespace, id: identifier("ns") }),
-      "A Namespace with this name already exists. Choose a different name.",
+      NAMESPACE_NAME_CONFLICT,
     ],
     [
       (transaction) => transaction.secrets.createSecret({ ...secret, id: identifier("sec") }),
-      "A Secret with this name already exists in this Namespace. Choose a different name.",
+      SECRET_NAME_CONFLICT,
     ],
     [
       (transaction) => transaction.presets.createPreset({ ...preset, id: identifier("pre") }),
-      "A Preset with this name already exists in this Namespace. Choose a different name.",
+      PRESET_NAME_CONFLICT,
     ],
     [
       (transaction) =>
         transaction.presets.updatePreset(namespace.id, otherPreset.id, { name: preset.name }),
-      "A Preset with this name already exists in this Namespace. Choose a different name.",
+      PRESET_NAME_CONFLICT,
     ],
     [
       (transaction) =>
         transaction.serviceAccounts.createServiceAccount({ ...account, id: identifier("sa") }),
-      "A ServiceAccount with this name already exists in this Namespace. Choose a different name.",
+      SERVICE_ACCOUNT_NAME_CONFLICT,
     ],
     [
       (transaction) =>

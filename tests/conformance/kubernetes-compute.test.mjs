@@ -81,6 +81,7 @@ import { conformanceKubeconfig } from "../helpers/kubernetes-compute.mjs";
 import {
   CODEX_PLACEMENT_REFUSAL,
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
+  DEDICATED_STORAGE_ROUTING_REQUIRED,
   EMBEDDED_API_KEY_REQUIRED,
   codexApiKeyRefusal,
   unsupportedChannelRefusal,
@@ -788,10 +789,9 @@ test("dedicated runtime rejects missing workspace transport before cluster acces
       },
     });
     for (const operation of ["prepareRevision", "activateRevision"]) {
-      await assert.rejects(
-        driver[operation](revision),
-        /Dedicated Harness storage requires gateway routing and node enrollment/,
-      );
+      await assert.rejects(driver[operation](revision), {
+        message: DEDICATED_STORAGE_ROUTING_REQUIRED,
+      });
     }
     assert.equal(clusterReads, 0);
   }
@@ -7313,7 +7313,7 @@ test("agent provisioning validation reuses native trusted-proxy admission before
         executionMode: "embedded",
         configuration: revision.configuration,
       }),
-    /dedicated execution mode/i,
+    { message: "Kubernetes Agent provisioning supports only dedicated execution mode." },
   );
 
   // Gateway settings in the caller's own Configuration are refused with a typed error that

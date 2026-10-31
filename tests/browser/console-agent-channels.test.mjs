@@ -9,6 +9,7 @@ import {
   accessibleDescription,
   AGENT_READ,
   apiRequests,
+  CHANNEL_SECRETS_SAVED_DEPLOY,
   detailUrl,
   expectNoText,
   fileBrowser,
@@ -1586,9 +1587,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     // Saving again here is an explicit user action with the still-selected second app token.
     requests.length = 0;
     await page.getByRole("button", { name: "Save channel Secrets" }).click();
-    await page
-      .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
-      .waitFor();
+    await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
 
     const finalConfiguration = await fixture.request(
       "GET",

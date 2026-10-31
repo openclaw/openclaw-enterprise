@@ -56,6 +56,10 @@ export const SECRET_NAME_CONFLICT =
   "A Secret with this name already exists in this Namespace. Choose a different name.";
 export const NAMESPACE_NAME_CONFLICT =
   "A Namespace with this name already exists. Choose a different name.";
+export const PRESET_NAME_CONFLICT =
+  "A Preset with this name already exists in this Namespace. Choose a different name.";
+export const SERVICE_ACCOUNT_NAME_CONFLICT =
+  "A ServiceAccount with this name already exists in this Namespace. Choose a different name.";
 // Refusals that once read as the generic 404 or 409 and now say what to change (finding 2536).
 // A credential source field its type's catalog does not list, or a required one that is missing:
 // `field` is the request path, such as "secrets.api_key".
@@ -323,6 +327,11 @@ export const AGENT_DEVICE_LOGIN_CANCEL_DENIED = notIncluded(
 export const DEDICATED_PLACEMENT_REQUIREMENT =
   "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration.";
 export const CODEX_PLACEMENT_REFUSAL = `${DEDICATED_PLACEMENT_REQUIREMENT} Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.`;
+// The Compute Driver's own refusal of Dedicated storage without them, at provisioning, preparation
+// and activation. The API keeps it out of the response and logs it as the refusal reason; the
+// worker records it as the permanent failure reason.
+export const DEDICATED_STORAGE_ROUTING_REQUIRED =
+  "Dedicated Harness storage requires gateway routing and node enrollment.";
 // Kubernetes Compute's harness rules: embedded OpenClaw takes only API key authentication, and
 // Dedicated Codex takes its model credential only from the Harness authentication binding.
 export const EMBEDDED_API_KEY_REQUIRED =

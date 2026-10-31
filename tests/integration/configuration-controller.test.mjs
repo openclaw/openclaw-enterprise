@@ -45,6 +45,7 @@ import {
   runtimeIdUnsupported,
   runtimePoliciesConflict,
   selectableModelOffProvider,
+  unsupportedChannelRefusal,
 } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
@@ -2222,10 +2223,7 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
   for (const [values, message] of [
     [
       { ...valid, channels: { discord: { enabled: true } } },
-      setting(
-        "channels.discord",
-        "is not a supported channel: use slack or msteams, or set its enabled to false",
-      ),
+      unsupportedChannelRefusal("channels.discord"),
     ],
     [
       {
