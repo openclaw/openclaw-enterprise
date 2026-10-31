@@ -196,10 +196,6 @@ Preset value that waits on a variable
 is checked as far as its written text goes, and in full once filled. A
 Configuration saved before these checks still reads; deployment refuses it, and
 only a write that keeps the value is refused.
-Every write also refuses, with deployment's `400`, a `models.providers.<id>.models`
-entry whose `id` names no selected primary or fallback. A Preset is checked when
-a launch creates its Configuration. A saved row that keeps such an entry is
-refused on its next write until the entry is removed or selected.
 
 OCC also refuses `security.preset`. Remove it and [set the controls you need](../guides/console/configuration-plugins-and-files.md#configuration-tab).
 OpenClaw's `doctor --fix` removes the field without translating its restrictions.
@@ -355,7 +351,6 @@ details compatibility checks.
 
 ## Changelog
 
-- 2026-10-31: Writes refuse a provider model entry that no primary or fallback selects. (finding 3019)
 - 2026-10-09 19:20: Dedicated Codex deployment applies the `main` Agent rules too. (fix-969, finding 969)
 - 2026-10-09 19:00: Configuration create and update refuse an `agents` roster every deployment refuses, with deployment's message; topology-dependent rules stay at deployment. (q35-roster-save, finding 874)
 
