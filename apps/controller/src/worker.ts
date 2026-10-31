@@ -4712,6 +4712,15 @@ export class ControllerWorker {
         });
         return;
       }
+      const ended = await this.endedSharedSuccessor(revision);
+      if (ended !== undefined) {
+        await this.finalizeRevision(claim, {
+          outcome: "success",
+          code: "REVISION_SUPERSEDED",
+          supersededBy: ended,
+        });
+        return;
+      }
       if (!(await this.renewClaim(claim))) {
         throw new WorkClaimLostError();
       }
@@ -6895,6 +6904,49 @@ export class ControllerWorker {
    * never changes. Newest first; a fail path, so the linear scan is bounded by the Agent's
    * revision history.
    */
+  /**
+   * The newest later version of this Agent on this Compute whose deployment has ended (succeeded
+   * or failed), for a version without exclusive replacement (finding 3066). Shared Compute keeps
+   * one runtime per Agent: an embedded Kubernetes Gateway or an SSH unit. A newer candidate takes
+   * it over, and Compute then reports this version not ready, so it could only wait out the
+   * convergence deadline. A newer version that is still pending or that activated is decided
+   * elsewhere: this version keeps waiting, or `previous` supersedes it. Exclusive replacement
+   * keeps its own successor check, which first finishes this version's predecessor stops.
+   */
+  private async endedSharedSuccessor(
+    revision: Readonly<AgentRevision>,
+  ): Promise<Readonly<AgentRevision> | undefined> {
+    if (this.compute.requiresStoppedPredecessors?.(revision) === true) {
+      return undefined;
+    }
+    const later = (
+      await this.state.read((view) =>
+        view.revisions.listRevisionMetadata(revision.namespaceId, revision.agentId),
+      )
+    ).filter((candidate) => candidate.revision > revision.revision);
+    for (const listed of later.reverse()) {
+      const deployment = await this.queue.findWork(`agent_revision:${listed.id}:reconcile`);
+      if (
+        deployment === undefined ||
+        deployment.revisionId !== listed.id ||
+        (deployment.state !== "succeeded" && deployment.state !== "failed_permanent")
+      ) {
+        continue;
+      }
+      const candidate = await this.state.read((view) =>
+        view.revisions.findRevision(listed.namespaceId, listed.agentId, listed.id),
+      );
+      if (
+        candidate !== undefined &&
+        candidate.compute.id === this.compute.id &&
+        candidate.compute.implementation === this.compute.implementation
+      ) {
+        return candidate;
+      }
+    }
+    return undefined;
+  }
+
   private async activatedEarlierRevision(
     unit: PlatformUnitOfWork,
     queue: Pick<PostgresWorkQueue, keyof PostgresWorkQueue>,

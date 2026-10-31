@@ -21,8 +21,9 @@ import {
 
 // Exclusive replacement and refused candidates: predecessor stops across pending passes and
 // maintenance, refused and self-failed exclusive candidates, refused deployments on shared
-// Compute, predecessors that come back after the sweep, and a refused wait's failed reads and a
-// refusal lifted past the deadline. Worker health is in the -health sibling, a refused
+// Compute, predecessors that come back after the sweep, a refused wait's failed reads, a
+// refusal lifted past the deadline, and older shared versions overtaken by a newer one that
+// fails or activates. Worker health is in the -health sibling, a refused
 // candidate's stop and its wait in the -refused-stop and -refused-wait siblings, and redeploys
 // whose predecessor stop yields in the -yielded-redeploy sibling; the lane runs the revision files
 // at once. These files name the -replacement, -refused-stop, -refused-wait and -yielded-redeploy
@@ -690,5 +691,157 @@ test(
     const waits = refusedStopWaits(events, replacement).map(({ refusal }) => refusal);
     const lateWaits = waits.slice(waits.indexOf("CONVERGENCE_DEADLINE_EXCEEDED"));
     assert.deepEqual(lateWaits, ["CONVERGENCE_DEADLINE_EXCEEDED", "CONVERGENCE_DEADLINE_EXCEEDED"]);
+  },
+);
+
+// Finding 3066: shared Compute keeps one runtime per Agent (the embedded Kubernetes Gateway
+// Deployment, an SSH unit). A newer candidate takes it over, and the Kubernetes Driver then
+// reports the older version not ready: it never rolls the Deployment back. The older version
+// was superseded only once the newer one activated. When the newer one failed (a double Deploy
+// whose second version fails its startup model check), the older one polled for the whole
+// convergence deadline and failed CONVERGENCE_DEADLINE_EXCEEDED, though its runtime was gone.
+// This Compute models that Gateway: a version writes it unless it carries a later version.
+// `outcomes` sets a version's readiness once it holds the Gateway: "pending" (the default),
+// "ready" or "probe-failed" (a held model-probe failure).
+function sharedGatewayCompute(fixture) {
+  const gateway = new Map();
+  const passes = new Map();
+  const outcomes = new Map();
+  const compute = {
+    ...fixture.compute,
+    // Kubernetes declares exclusive replacement only for dedicated Harnesses.
+    requiresStoppedPredecessors: (revision) => revision.harness.mode === "dedicated",
+    async prepareRevision(revision) {
+      passes.set(revision.id, (passes.get(revision.id) ?? 0) + 1);
+      const observed = await fixture.compute.prepareRevision(revision);
+      if (revision.revision < (gateway.get(revision.agentId) ?? 0)) {
+        return { ...observed, ready: false };
+      }
+      gateway.set(revision.agentId, revision.revision);
+      const outcome = outcomes.get(revision.id) ?? "pending";
+      if (outcome === "ready") {
+        return observed;
+      }
+      return {
+        ...observed,
+        ready: false,
+        ...(outcome === "probe-failed"
+          ? {
+              runtimeFailure: {
+                component: "gateway",
+                check: "model-probe",
+                checkedAt: "2026-10-31T20:09:54.000Z",
+                code: "MODEL_PROBE_FAILED",
+                cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
+              },
+            }
+          : {}),
+      };
+    },
+  };
+  return { compute, gateway, outcomes, passes: (revision) => passes.get(revision.id) ?? 0 };
+}
+
+async function workState(fixture, work) {
+  const rows = await fixture.observerPool.query(
+    "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
+    [work.idempotencyKey],
+  );
+  return rows.rows[0].state;
+}
+
+// An older version that holds the Agent's shared Gateway and is not ready yet.
+async function pendingOlderVersion(fixture, label, driver, options = {}) {
+  const owner = await fixture.agent(label);
+  const older = await fixture.revision(owner, 1, options);
+  await waitFor("the older version's first preparation", async () =>
+    driver.passes(older) > 0 ? true : undefined,
+  );
+  return { owner, older };
+}
+
+revisionTest(
+  "an older shared version overtaken by a newer version that fails is superseded at once",
+  async (fixture) => {
+    const driver = sharedGatewayCompute(fixture);
+    // The default 15-minute deadline: on main the older version stayed pending past this test.
+    await fixture.start(driver.compute);
+    const { owner, older } = await pendingOlderVersion(fixture, "shared-overtaken", driver);
+    const newer = await fixture.revision(owner, 2);
+    driver.outcomes.set(newer.id, "probe-failed");
+    await assertWorkEnds(fixture, newer, "failed_permanent", "RUNTIME_MODEL_PROBE_FAILED");
+    const olderPasses = driver.passes(older);
+    // Versions of one Agent serialize, so the older version's next pass follows the newer
+    // version's failure. It ends superseded before Compute is called again.
+    await assertWorkEnds(fixture, older, "succeeded", "REVISION_SUPERSEDED");
+    assert.equal(driver.passes(older), olderPasses, "no preparation after the newer one failed");
+    assert.equal(driver.gateway.get(owner.id), newer.revision, "the newer version keeps it");
+    const active = await fixture.activePointer(owner);
+    assert.equal(active.rows[0].active_revision_id, null);
+    const superseded = await fixture.observerPool.query(
+      `SELECT details->>'activeRevisionId' AS successor FROM occ.audit_events
+       WHERE resource_id = $1 AND action = 'openclaw.agents.lifecycle.supersede'`,
+      [older.id],
+    );
+    assert.deepEqual(superseded.rows, [{ successor: newer.id }]);
+    // The Versions list shows the older version superseded (neutral in the console), not a
+    // deadline failure that points at logs it never had.
+    const listed = await fixture.controller.listRevisions(
+      fixture.actor.id,
+      fixture.namespace.id,
+      owner.id,
+    );
+    assert.deepEqual(
+      listed.revisions.map(({ id, deploymentErrorCode }) => [id, deploymentErrorCode]),
+      [
+        [newer.id, "RUNTIME_MODEL_PROBE_FAILED"],
+        [older.id, "REVISION_SUPERSEDED"],
+      ],
+    );
+  },
+);
+
+revisionTest(
+  "an older shared version waits while the newer version is pending and ends superseded once it activates",
+  async (fixture) => {
+    const driver = sharedGatewayCompute(fixture);
+    await fixture.start(driver.compute);
+    const { owner, older } = await pendingOlderVersion(fixture, "shared-newer-pending", driver);
+    const newer = await fixture.revision(owner, 2);
+    await waitFor("the newer version's preparation", async () =>
+      driver.passes(newer) > 0 ? true : undefined,
+    );
+    // A pending newer version may still fail or activate: the older one keeps waiting.
+    const waited = driver.passes(older);
+    await waitFor("three older passes while the newer version is pending", async () =>
+      driver.passes(older) >= waited + 3 ? true : undefined,
+    );
+    assert.notEqual(await workState(fixture, older), "succeeded");
+    assert.notEqual(await workState(fixture, older), "failed_permanent");
+    // Once it activates, the active pointer supersedes the older version, as before.
+    driver.outcomes.set(newer.id, "ready");
+    await fixture.work(newer, "succeeded");
+    await assertWorkEnds(fixture, older, "succeeded", "REVISION_SUPERSEDED");
+    const active = await fixture.activePointer(owner);
+    assert.equal(active.rows[0].active_revision_id, newer.id);
+  },
+);
+
+revisionTest(
+  "an older exclusive version keeps its own successor rule when a newer shared version fails",
+  async (fixture) => {
+    const driver = sharedGatewayCompute(fixture);
+    await fixture.start(driver.compute, { convergenceTimeoutMs: 3_000 });
+    // A dedicated version, then the Agent switched to embedded execution. Exclusive replacement
+    // supersedes an older version only through its own successor check (RFC-0024), which first
+    // finishes that version's predecessor stops. The shared rule above does not decide it, so it
+    // still ends at its deadline as before.
+    const { owner, older } = await pendingOlderVersion(fixture, "exclusive-overtaken", driver, {
+      harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+    });
+    const newer = await fixture.revision(owner, 2);
+    driver.outcomes.set(newer.id, "probe-failed");
+    await assertWorkEnds(fixture, newer, "failed_permanent", "RUNTIME_MODEL_PROBE_FAILED");
+    await assertWorkEnds(fixture, older, "failed_permanent", "CONVERGENCE_DEADLINE_EXCEEDED");
   },
 );
