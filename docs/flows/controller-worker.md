@@ -160,11 +160,12 @@ rechecks each managed credential's frozen Backend binding; the
 owns these checks.
 
 Revocation and denial fail permanently before Compute. Selected versions enter
-finalization or maintenance. Older versions end superseded; without
+finalization or maintenance. Older versions end superseded, also once the newest,
+without Git, has a held runtime failure. With
 [exclusive replacement](../reference/drivers/compute.md#production-revision-stages),
-also once the newest, without Git, has a held runtime failure. With it, a newer
-admission supersedes older active maintenance before Compute effects, even after
-candidate failure. Recovery uses a new version.
+the older one then stops itself, and a newer admission supersedes older active
+maintenance before Compute effects, even after candidate failure. Recovery uses
+a new version.
 
 Agent-stop work rechecks current exact-Agent `operate`; superseded desired state
 completes without shutdown.
@@ -299,8 +300,8 @@ Pending convergence refunds the attempt and requeues unready versions on the
 cadence in
 [pending deployment progress](../reference/agents/deployment.md#pending-deployment-progress),
 others with backoff. Compute's `pendingReason` selects the pending code.
-`PostgresWorkQueue.defer` appends `reconcile` evidence only when its outcome and
-code differ from that work item's latest evidence. `retry` outcomes consume attempts; permanent failure, exhaustion, deadline, or `AUTHENTICATION_FAILED`
+`PostgresWorkQueue.defer` appends `reconcile` evidence only when its outcome or
+code changes. `retry` outcomes consume attempts; permanent failure, exhaustion, deadline, or `AUTHENTICATION_FAILED`
 terminates work. See [outcomes](../reference/controller.md) and
 [timing controls](../reference/settings/operations.md#controller-worker-environment).
 
