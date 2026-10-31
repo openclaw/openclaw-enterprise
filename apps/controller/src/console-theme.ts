@@ -9,6 +9,8 @@ export interface ConsoleTheme {
   readonly logoUrl: string;
   readonly faviconUrl?: string;
   readonly appleTouchIconUrl?: string;
+  /** Operator colors are chosen against light surfaces, so the shell keeps the light appearance. */
+  readonly hasColors: boolean;
   readonly assets: ReadonlyMap<string, ConsoleThemeAsset>;
 }
 
@@ -56,6 +58,12 @@ function escapeHtml(value: string): string {
 export function renderConsoleThemeShell(shell: string, theme: ConsoleTheme): string {
   const name = escapeHtml(theme.displayName);
   let html = shell.replaceAll("OpenClaw Enterprise", () => name);
+  if (theme.hasColors) {
+    // Marks the root before any stylesheet applies, so the first paint is already light.
+    html = html
+      .replace(/<html([^>]*)>/, "<html$1 data-theme-colors>")
+      .replace('content="light dark"', 'content="light"');
+  }
   if (theme.faviconUrl !== undefined) {
     html = html.replace(/\s*<link rel="icon"[^>]*\/>/g, "");
   }
