@@ -3078,14 +3078,19 @@ test("an embedded Agent's runtime refusals offer only what it runs, and name the
   });
 
   // On a codex/<model> model neither runtime deploys an embedded Agent, so the refusal names the
-  // next step instead of an offer. A resolver that approves Codex for embedded execution keeps
-  // both offers.
+  // next step instead of an offer. Resolvers that approve Codex for embedded execution, or for
+  // no execution mode, refuse codex differently, so both offers stay.
   await use(cases.codex.configurations.none);
   await assert.rejects(deploy(), refusedWith(runtimeIdRequiredNextStep(cases.codex.policy)));
-  await assert.rejects(
-    deploy((harnessId) => ({ id: harnessId, version: "1.0.0" })),
-    refusedWith(runtimeIdRequired(cases.codex.policy, "openclaw or codex")),
-  );
+  for (const resolveHarness of [
+    (harnessId) => ({ id: harnessId, version: "1.0.0" }),
+    (harnessId) => (harnessId === "openclaw" ? { id: harnessId, version: "1.0.0" } : undefined),
+  ]) {
+    await assert.rejects(
+      deploy(resolveHarness),
+      refusedWith(runtimeIdRequired(cases.codex.policy, "openclaw or codex")),
+    );
+  }
   await use(cases.codex.configurations.codex);
   await assert.rejects(deploy(), refusedWith(CODEX_NEEDS_DEDICATED));
 
