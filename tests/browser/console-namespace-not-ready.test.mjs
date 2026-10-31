@@ -15,6 +15,7 @@ import {
   apiRequests,
   expectReachableReason,
   fileBrowser,
+  fulfillPatchedJson,
   hasFocus,
   login,
   nativeValues,
@@ -25,6 +26,7 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
+import { refocus } from "./console-refocus-helpers.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 
 // On a first run the only Namespace is still provisioning. The Agents page and Create Agent never
@@ -66,14 +68,13 @@ async function firstRun(t, names = [], fixtureOptions = {}) {
 async function reportNamespaces(page, patches) {
   await page.route(
     (url) => url.pathname === "/namespaces",
-    async (route) => {
-      const response = await route.fetch();
-      const body = await response.json();
-      body.data = body.data
-        .filter((item) => patches.get(item.id) !== null)
-        .map((item) => (patches.has(item.id) ? { ...item, ...patches.get(item.id) } : item));
-      await route.fulfill({ response, json: body });
-    },
+    (route) =>
+      fulfillPatchedJson(route, (body) => {
+        body.data = body.data
+          .filter((item) => patches.get(item.id) !== null)
+          .map((item) => (patches.has(item.id) ? { ...item, ...patches.get(item.id) } : item));
+        return body;
+      }),
   );
 }
 
@@ -589,7 +590,7 @@ test("Create Agent waiting on a provisioning Namespace", async (t) => {
     async (t) => {
       const { page, view, create, name, release } = await openGatedForm(t, team);
       release();
-      await page.evaluate(() => globalThis.dispatchEvent(new globalThis.Event("focus")));
+      await refocus(page);
       await view.getByText(READY_PLAN, { exact: true }).waitFor();
       // Create Agent also waits for the form's repository discovery.
       await waitForEnabled(create);

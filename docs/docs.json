@@ -503,10 +503,10 @@
             ]
           },
           {
-            "tab": "Operate",
+            "tab": "Deploy & Operate",
             "groups": [
               {
-                "group": "Operate",
+                "group": "Deploy & Operate",
                 "pages": [
                   {
                     "page": "guides/operate/README",
@@ -522,52 +522,36 @@
                     "label": "Overview"
                   },
                   {
+                    "page": "guides/deploy/kubernetes",
+                    "label": "Kubernetes"
+                  },
+                  {
+                    "page": "guides/deploy/eks",
+                    "label": "Amazon EKS"
+                  },
+                  {
                     "page": "guides/deploy/production-installation",
                     "label": "Control Plane Setup"
-                  },
-                  {
-                    "page": "guides/deploy/console-theme",
-                    "label": "Console Theme"
-                  },
-                  {
-                    "page": "guides/deploy/private-registry-images",
-                    "label": "Private Images"
                   },
                   {
                     "page": "guides/deploy/installation-profiles",
                     "label": "Profiles"
                   },
                   {
-                    "page": "guides/deploy/split-layout-upgrade",
-                    "label": "Split-Layout Upgrade"
+                    "page": "guides/deploy/private-registry-images",
+                    "label": "Private Images"
                   },
                   {
-                    "page": "guides/deploy/upgrade-checklist",
-                    "label": "Upgrade Checklist"
+                    "page": "guides/deploy/eks-private-access",
+                    "label": "Private EKS Access"
                   },
                   {
-                    "page": "guides/deploy/upgrade-dispositions",
-                    "label": "Upgrade Dispositions"
+                    "page": "guides/deploy/codex-sandbox",
+                    "label": "Codex Sandbox"
                   },
                   {
-                    "page": "guides/deploy/upgrade-baseline",
-                    "label": "Upgrade Baseline"
-                  },
-                  {
-                    "page": "guides/deploy/production-upgrade",
-                    "label": "Image Upgrades"
-                  },
-                  {
-                    "page": "guides/deploy/production-installation-changes",
-                    "label": "Installation Changes"
-                  },
-                  {
-                    "page": "guides/deploy/production-upgrade-recovery",
-                    "label": "Upgrade Recovery"
-                  },
-                  {
-                    "page": "guides/deploy/auth-maintenance",
-                    "label": "External Sign-in Maintenance"
+                    "page": "guides/deploy/console-theme",
+                    "label": "Console Theme"
                   },
                   {
                     "page": "guides/deploy/google-sign-in",
@@ -578,32 +562,8 @@
                     "label": "OIDC Sign-in"
                   },
                   {
-                    "page": "guides/deploy/oidc-operations",
-                    "label": "OIDC Operations"
-                  },
-                  {
                     "page": "guides/deploy/oidc-keycloak",
                     "label": "Keycloak Sign-in"
-                  },
-                  {
-                    "page": "guides/deploy/local-k3d-image-upgrade",
-                    "label": "Local k3d Upgrades"
-                  },
-                  {
-                    "page": "guides/deploy/kubernetes",
-                    "label": "Kubernetes"
-                  },
-                  {
-                    "page": "guides/deploy/eks",
-                    "label": "Amazon EKS"
-                  },
-                  {
-                    "page": "guides/deploy/eks-private-access",
-                    "label": "Private EKS Access"
-                  },
-                  {
-                    "page": "guides/deploy/codex-sandbox",
-                    "label": "Codex Sandbox"
                   },
                   {
                     "group": "Settings",
@@ -688,15 +648,60 @@
                 ]
               },
               {
-                "group": "Maintenance and Recovery",
+                "group": "Upgrades & Recovery",
+                "pages": [
+                  {
+                    "page": "guides/deploy/upgrade-checklist",
+                    "label": "Upgrade Checklist"
+                  },
+                  {
+                    "page": "guides/deploy/upgrade-baseline",
+                    "label": "Upgrade Baseline"
+                  },
+                  {
+                    "page": "guides/deploy/upgrade-dispositions",
+                    "label": "Upgrade Dispositions"
+                  },
+                  {
+                    "page": "guides/deploy/production-upgrade",
+                    "label": "Image Upgrades"
+                  },
+                  {
+                    "page": "guides/deploy/production-installation-changes",
+                    "label": "Installation Changes"
+                  },
+                  {
+                    "page": "guides/deploy/production-upgrade-recovery",
+                    "label": "Upgrade Recovery"
+                  },
+                  {
+                    "page": "guides/deploy/split-layout-upgrade",
+                    "label": "Split-Layout Upgrade"
+                  },
+                  {
+                    "page": "guides/deploy/local-k3d-image-upgrade",
+                    "label": "Local k3d Upgrades"
+                  },
+                  {
+                    "page": "guides/deploy/credential-proxy-upgrade",
+                    "label": "Migrate to Credential Proxy"
+                  }
+                ]
+              },
+              {
+                "group": "Maintenance",
                 "pages": [
                   {
                     "page": "guides/deploy/credential-lifecycle",
                     "label": "Credential Rotation"
                   },
                   {
-                    "page": "guides/deploy/credential-proxy-upgrade",
-                    "label": "Migrate to Credential Proxy"
+                    "page": "guides/deploy/auth-maintenance",
+                    "label": "External Sign-in Maintenance"
+                  },
+                  {
+                    "page": "guides/deploy/oidc-operations",
+                    "label": "OIDC Operations"
                   }
                 ]
               }

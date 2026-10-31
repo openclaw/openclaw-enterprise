@@ -6,11 +6,13 @@ author: russellb
 
 # Proposal: persist Namespace cleanup before removing its provider access
 
-- **ID:** RFC-0026
+- **ID:** RFC-0027
 - **Created:** 2026-10-30
 - **Last updated:** 2026-10-30
 - **RFC PR:** [PR #4088](https://github.com/openclaw/openclaw-enterprise/pull/4088)
-- **Implementation plan:** [RFC-0026 plan](../plans/0026-durable-namespace-cleanup.md)
+- **Implementation plan:** [RFC-0027 plan](../plans/0027-durable-namespace-cleanup.md)
+
+Submitted as RFC-0026 in the [original review request](https://github.com/openclaw/openclaw-enterprise/pull/4088#issuecomment-6523250103). The proposal and linked plan are renumbered to RFC-0027 because main assigned RFC-0026 to another decision; the submission commits and review links remain unchanged.
 
 ## Summary
 
@@ -277,7 +279,7 @@ an adversarial provider-side replacement between read and delete.
 
 ## Delivery and evidence
 
-The [plan](../plans/0026-durable-namespace-cleanup.md) connects the contract,
+The [plan](../plans/0027-durable-namespace-cleanup.md) connects the contract,
 PostgreSQL repository, real worker, selected Drivers, documentation, and tests.
 Required proof includes successful and unknown checkpoint commits, restart and
 lease takeover, target drift, original versus replacement IDs, configured

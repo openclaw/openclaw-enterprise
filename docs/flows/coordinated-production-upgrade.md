@@ -114,12 +114,12 @@ Each Pod checks the stored Installation name from `occ installation get` with
 the image's `isName`, as the controller does after reading the database
 (`INSTALLATION_NAME_INVALID`); an image without the rule skips it.
 
-Runtime upgrades also put each recorded Agent's Configuration in the Secret when it fits beside the Installation within 1 MiB. The API Pod alone runs the
-image's `refuseUndeployableConfigurationValues` on them: deploy admission's values-only
-rules (model providers, workspace bootstrap, retired settings, OpenClaw sandbox). A refusal
-stops preparation. Deploy alone runs rules that read live state, such as Driver, Harness,
-credential, plugin and repository checks. Older images and drafts that do not fit skip the
-check with a warning.
+During runtime upgrades the candidate API Pod resolves each recorded draft's Harness
+(`resolveConfiguredHarnessId`) before `refuseUndeployableConfigurationValues`. Deploy checks
+live Harness state. Refusals stop preparation while the old API and worker serve. Correct
+refused drafts or stop their Agents. For images providing values checks without a working resolver,
+select a corrected controller image. Retry with a new evidence directory. Preflight warns and defers
+to deploy when images predate the check or gzipped drafts plus the Installation exceed 1 MiB.
 
 Experimental two-cluster Pods also run
 `KubernetesComputeDriver.verifyExecutionTenantGrants` for their component; startup

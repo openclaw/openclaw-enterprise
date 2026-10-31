@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-30 10:09
-last_updated_session: authoring-run/80ea08bc-5b26-4327-bd7b-128cc7aaf0fd
+updated: 2026-10-30
+last_updated_session: authoring-run/010dd6ea-2b4f-455b-bfe5-593e04307743
 ---
 
 # Compose development flow
@@ -188,7 +188,12 @@ the registry attachment for `occ dev down` to detach.
 With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, OpenShell uses the
 Kubernetes-only lifecycle before Compose rendering. It pins K3s and OpenShell
 inputs, installs PostgreSQL, OCE, and one central Gateway in `oce-system`, and
-publishes only an admitted API proxy on host loopback.
+publishes only an admitted API proxy on host loopback. The source archive and all three
+OpenShell images select 0.1.6 together, including the paired sandbox/supervisor
+control protocol and compromised-key rejection. The observed-hook repository
+credential preview admits 0.1.6 through its existing opt-in, held-launcher and
+recipient checks. Repository-scoped access uses the separate
+[protected Git enrollment](../guides/repository-credentials/openshell-enrollment.md).
 
 By default, the Kubernetes lifecycle starts PostgreSQL, migration, bootstrap,
 the API, and the worker in Compose. It installs the central Gateway in
@@ -301,14 +306,6 @@ distinguishes local proof from pending connected runtime qualification.
 
 ## Changelog
 
-- 2026-10-30 10:09: Update the linked execution trace for the accompanying durable Engine/network identity journal and conservative unknown-create refusal. (authoring-run/80ea08bc-5b26-4327-bd7b-128cc7aaf0fd - ef2cf007043819118c83fd8339496a92bcab9fb3)
-
-- 2026-10-15 23:41: Isolate development-wrapper path resolution from CDPATH while preserving the CLI environment. (authoring-run/92de1204-326a-4c11-a868-5b3f1b9de0c1 - 04514330688378316bd0641b8d5560da56aeff85)
-
-- 2026-10-14 18:14: Bound declared and streamed Docker API response bodies before complete buffering. (issue-2406 - 1fc3258afdd73b2888c524092b988a2110449bbb)
-
-- 2026-10-14 17:03: Validate protected development selectors before CLI dispatch and direct Docker script effects. (authoring-run/5607c5fd-a268-466b-a5c9-93e0cc984807 - 3fba9be5bae09aa9c33483a768221f44079edc3b)
-
-- 2026-10-14 16:11: Add the default-off protected OpenShell launch, native mTLS credential ownership, authority-first readiness and disposable database selection. (authoring-run/b0bd473e-3b1d-44cc-a1b1-4a1d411a1829 - 126b6a1b13b48281aee5d3ca4d476ec75da8a24a)
+- 2026-10-30 21:23: Preserve patched runtime provenance and durable cleanup in the accompanying main merge. (authoring-run/010dd6ea-2b4f-455b-bfe5-593e04307743 - a85796bbb3aa8c167350824697171ca1ca52101d)
 
 [Compose development documentation history](docker-compose-development/history.md) preserves the older dated entries.

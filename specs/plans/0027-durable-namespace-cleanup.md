@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0026-durable-namespace-cleanup.md
+rfc: ../rfcs/0027-durable-namespace-cleanup.md
 ---
 
 # Implementation plan: durable Namespace cleanup
 
-- **ID:** RFC-0026
+- **ID:** RFC-0027
 - **Delivery status:** In progress
 - **Owner:** @russellb
-- **Authority:** [RFC-0026](../rfcs/0026-durable-namespace-cleanup.md)
+- **Authority:** [RFC-0027](../rfcs/0027-durable-namespace-cleanup.md)
 - **Source baseline:** PR #4088 at `bfef7f0d5f8091390d5ec8296d0be4cd5bb5faaa` and main `330073017`.
 
 ## Outcome and scope
@@ -48,7 +48,7 @@ RFC status remains Proposed; implementation and review proceed in parallel.
 Contract submissions precede their corresponding implementation. Keep the PR draft and its
 security/runtime holds until the amended behavior is proved.
 
-1. Submit RFC-0026 and this plan in an initial documentation-only commit on
+1. Submit RFC-0027 and this plan in an initial documentation-only commit on
    PR #4088. Record submission SHA and explicit human-review comment URL below.
    Do not change Driver contracts before that submission.
 2. Verify pinned OpenShell operation replay semantics. Define versioned
@@ -195,6 +195,7 @@ remain.
 
 ## Delivery record
 
+- Renumbered from provisional RFC-0026 to RFC-0027 after main assigned RFC-0026 to standalone web search. The original submission commits, dates, review links and decision status are unchanged.
 - Each RFC submission precedes its corresponding contract code. Component qualification and upstream integration are in progress; genuine provider proof remains pending. The complete static review applies to `75ac1fa`, before the later upstream integration.
 - RFC submission: documentation-only commit `536e71d95bf39797f2b60048cb3677e879ed046b`; [explicit human-review request](https://github.com/openclaw/openclaw-enterprise/pull/4088#issuecomment-6523250103). Decision status remains Proposed.
 - Operator-owned binding clarification: documentation-only commit `dc724484d59f5446e9cceea41f0b38192372b8dd`; [explicit human-review request](https://github.com/openclaw/openclaw-enterprise/pull/4088#issuecomment-6529363877), submitted before the observed-ID binding repair.

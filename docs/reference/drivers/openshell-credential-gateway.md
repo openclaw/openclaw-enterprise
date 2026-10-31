@@ -190,7 +190,7 @@ Ordinary delivery grants use of the key on the profile's route. A child process
 of the configured binary can use it too. The profile neither authorizes a
 specific inference body nor filters the response for that caller.
 
-**Online GitHub preview.** On stock OpenShell 0.1.5, the opt-in `github-installation`
+**Online GitHub preview.** On OpenShell 0.1.5/0.1.6, the opt-in `github-installation`
 profile verifies a one-use denial in the selected workspace at startup. Later
 enforcement remains unverified. [Protected Git profiles](../repository-credentials/protected-openshell-git.md)
 

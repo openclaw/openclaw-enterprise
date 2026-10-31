@@ -1268,6 +1268,9 @@ test("Agent detail preserves admitted revision history while draft edits change 
     { secretBindings },
   );
   assert.equal(draft.generation, 3);
+  // The draft is deployable: deployment checks the Agent's grant on every bound Secret, and an
+  // administrator's console reads it, Slack or not (finding 3018).
+  await fixture.grantAgentSecretOperate(agent, secret.ref);
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);

@@ -174,10 +174,10 @@ installation scope, set a distinct `installationAccess.repositoryRef`, allow the
 Namespace with `accessMode: installation`, and select that reference with
 `profile: github-installation` in the Agent's `repositoryBindings`, as its only
 binding (Agent save and deploy refuse it next to another). No default or wildcard selects this scope; the sender must confirm
-`github_installation` support. With the bundled OpenShell Credential Proxy, that
-needs its `observedHookPreviewWorkspace` setting: without it, deploy answers
-`409 RESOURCE_CONFLICT`. Missing or incompatible gateway registration returns
-`503 DEPENDENCY_UNAVAILABLE`.
+`github_installation` support. The bundled OpenShell Credential Proxy requires
+`observedHookPreviewWorkspace`; otherwise deploy answers
+`409 RESOURCE_CONFLICT`. Missing or incompatible registration returns
+`503 DEPENDENCY_UNAVAILABLE`. Use 0.1.6 for incident key distrust; 0.1.5 remains affected.
 
 Repository grants require authenticated `allowlist`/`exact` with only `pre_credentials`.
 Opted-in installation preview also accepts both binding fields absent; partial,

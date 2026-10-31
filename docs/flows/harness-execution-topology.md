@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-26
-last_updated_session: authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba
+updated: 2026-10-29
+last_updated_session: authoring-run/be4eda1a-8676-415e-9999-ffcfe3f9bd17
 ---
 
 # Harness Execution Topology Flow
@@ -188,6 +188,13 @@ source endpoint before `runtime.codexModelBaseUrl`.
 `apps/controller/src/drivers/openai-endpoint.ts:normalizeOpenAiBaseUrl` normalizes either.
 `pluginRuntimeConfigMapData` in `apps/controller/src/drivers/compute/plugin-runtime.ts`
 writes the HTTPS Responses endpoint/provider pair to the manifest and `config.toml`.
+When the API-key endpoint comes from Installation configuration,
+`runtime.codexModelSupportsStandaloneWebSearch: true` adds the standalone-search
+declaration to the same provider. A bound credential-source endpoint does not
+inherit this declaration, and `providerTools: none` still disables search.
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:writeCodexConfigToml`
+writes the generated file into `CODEX_HOME` before native startup. The capability
+therefore belongs to Codex's user configuration, not a workspace override.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:probeCodexAuthentication`
 uses CLI overrides because the probe ignores user configuration. Account login and
 other Harnesses keep their endpoints; only the Harness holds model credentials.
@@ -318,6 +325,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 18:43: Trace the explicit custom-provider standalone search declaration and protected-tool exclusion. (authoring-run/be4eda1a-8676-415e-9999-ffcfe3f9bd17 - 35569940c)
 
 - 2026-10-26 23:35: Trace the model tool policy in both Gateway administration modes and recovery after a forced stop. (authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba - fac7d121c3c582afb53ca49c7d4579e04b5e5ea5)
 

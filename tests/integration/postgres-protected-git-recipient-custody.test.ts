@@ -326,6 +326,11 @@ test(
       { absent: "unprepared" },
       "the narrow sender cannot get the wide token",
     );
+    assert.deepEqual(
+      await host.githubRepository!.readMaterial(route, t.signal),
+      { absent: "unprepared" },
+      "a selected-repository sender cannot get the installation-wide token",
+    );
     // Deliberately lose the installation confirmation. Only provider retirement can settle the token;
     // changing the Agent's binding and disposing its session cannot adopt or replay that installation.
     const { preparationAttemptId, materialVersion } = read;
@@ -788,6 +793,16 @@ for (const removal of [
         operation: "receive-pack" as const,
       });
       assert.equal((await selected.authorize(request(), installed, t.signal)).kind, "allow");
+      // The use check compares the request's repository set with the token's exact grant:
+      // a request that also names an unselected C cannot use the A+B token.
+      const withC = [
+        ...request().repositories,
+        { repositoryId: "75", repository: "fixture/third" },
+      ];
+      assert.equal(
+        (await selected.authorize({ ...request(), repositories: withC }, installed, t.signal)).kind,
+        "denied",
+      );
       const sessions = await f.pool.query(
         "SELECT admission_id,repository_ref,phase FROM occ.repository_session_attempts WHERE revision_id=$1 ORDER BY repository_ref",
         [revisionId],

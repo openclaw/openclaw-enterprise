@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-30
-last_updated_session: authoring-run/1ef4bc7c-b32a-46c2-91a8-84483e88bbe7
+last_updated_session: authoring-run/010dd6ea-2b4f-455b-bfe5-593e04307743
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -209,8 +209,8 @@ selects a named provider and HTTPS Responses transport.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
-Only dedicated Codex or OpenClaw versions pinned to this Driver qualify.
-Kubernetes, filesystem, process and binary-scoped network policy use `v0.1.5`.
+Use pinned, dedicated Codex or OpenClaw.
+Kubernetes, filesystem, process and binary-scoped network policy use `v0.1.6`.
 Path relocation preserves opaque `OCE_CODEX_CHATGPT_ACCOUNT` JSON.
 Landlock is required. Unsupported enums, inherited keys, `passthrough` TLS,
 missing executable paths and invalid readiness `timeoutMs` prevent Kubernetes
@@ -233,10 +233,11 @@ to install selections. Clean stdio exit precedes verifier-only WebSocket startup
 in the same home. Failure terminates the process group through TERM/KILL cleanup.
 The provider Gateway skips HMAC plugin status; readiness observes transport.
 
-Providers use `oce-codex-runtime` or `oce-openclaw-runtime`. Both supply read-only setup and Gateway CA files; Codex requires `runtime.json` and `config.toml`, which native OpenClaw refuses. The validated setup Secret's complete expiring envelope, including `bootstrapToken`, becomes `node-setup.json`. WebSocket rewriting is unsupported: OpenClaw signs the literal token in its device proof.
-Renewal requires the same endpoint, TLS fingerprint, runtime, and CA configuration.
-Renewal requires an expired stored envelope and a later live expiry. The Sandbox network policy limits the connection to the exact
-Gateway endpoint and `/usr/local/bin/node`. Foreign ownership or drift prevents Sandbox creation.
+Providers `oce-codex-runtime` and `oce-openclaw-runtime` supply read-only setup and Gateway CA files. Codex requires `runtime.json` and `config.toml`; native OpenClaw refuses them. The complete validated setup envelope, including `bootstrapToken`, becomes `node-setup.json`. WebSocket rewriting is unsupported: OpenClaw signs the literal token in its device proof.
+Renewal requires an expired stored envelope, later live expiry, and unchanged
+endpoint, TLS fingerprint, runtime and CA configuration. Sandbox policy limits
+connections to that Gateway and `/usr/local/bin/node`. Foreign ownership or drift
+prevents creation.
 
 The Driver mounts version state at `/sandbox/.openclaw-runtime` and persistent
 subpaths below `/sandbox/.openclaw-mounts`. Admitted `/home/node` paths move under
@@ -421,6 +422,6 @@ live provider removal or Kubernetes concurrency; that combined proof remains unr
 
 ## Changelog
 
-- 2026-10-30 16:38: Merge online Git startup with durable Namespace cleanup in the accompanying main merge. (authoring-run/1ef4bc7c-b32a-46c2-91a8-84483e88bbe7 - 75ac1fa63ed75ea1f7493d7172f02ddbb497f51b)
+- 2026-10-30 21:23: Preserve patched runtime provenance and durable cleanup in the accompanying main merge. (authoring-run/010dd6ea-2b4f-455b-bfe5-593e04307743 - a85796bbb3aa8c167350824697171ca1ca52101d)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

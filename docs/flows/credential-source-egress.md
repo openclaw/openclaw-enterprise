@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: "2026-10-27"
-last_updated_session: authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d
+updated: 2026-10-30
+last_updated_session: authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008
 ---
 
 # Protected credential request flow
@@ -335,6 +335,8 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-10-30 10:12: Retain guarded OpenShell 0.1.6 preview. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
 
 - 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
 

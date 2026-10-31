@@ -1,10 +1,12 @@
 # OpenShell SandboxDriver
 
-The OpenShell SandboxDriver pairs dedicated Codex/native OpenClaw Harnesses with
+Use dedicated Codex/native OpenClaw with
 [Kubernetes Compute](kubernetes-compute.md) and the selected
 [Credential Gateway](openshell-credential-gateway.md). Development uses
-[`v0.1.5`](https://github.com/NVIDIA/OpenShell/tree/v0.1.5); these APIs remain
-unqualified for production. Embedded OpenClaw is unsupported.
+[`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6); APIs are
+unqualified for production. The pinned runtime declares native Dedicated support;
+see [qualification](#qualification-contract).
+Embedded OpenClaw is unsupported.
 
 ## Ownership model
 
@@ -125,7 +127,7 @@ Do not add a policy for the model endpoint: the credential source's provider
 profile allows `api.openai.com` with TLS inspection, and an uninspected rule for
 that host conflicts.
 
-v0.1.5 requires unique network policy names and nonempty executable
+v0.1.6 requires unique network policy names and nonempty executable
 paths. `workspace-node-enrollment` is reserved. Options include `enforcement: enforce|audit`
 and `access: read_only|read_write|full`. Omit `tls` for automatic TLS inspection;
 `tls: skip` bypasses inspection. The pinned gateway rejects explicit `terminate`
@@ -329,9 +331,9 @@ UIDs refuse cleanup; names alone cannot establish new ownership.
 
 Receipts survive worker/tenant-local gateway loss. Compute separately releases
 external Namespace claims. Unknown Workspace responses remain unconfirmed;
-see [recovery](#gateway-identity-and-removal). Supplier replay expires and binds
+see [recovery](#gateway-identity-and-removal). [Supplier replay](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/crates/openshell-server/src/grpc/mutation_replay.rs#L137-L375) expires and binds
 names, so it is not permanent generation authority. Workspace deletion has no
-atomic precondition for the saved ID.
+atomic [precondition for the saved ID](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/proto/openshell.proto#L3784-L3835).
 
 ## Sandbox log reads
 

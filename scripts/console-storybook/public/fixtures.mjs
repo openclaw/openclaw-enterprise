@@ -77,7 +77,8 @@ function configurationValues(scenario) {
   }
   if (scenario.slack) {
     values.channels.slack = {
-      enabled: true,
+      // `slackOff`: Disable Slack saved the channel off and kept its bindings.
+      enabled: scenario.slackOff !== true,
       mode: scenario.slackMode ?? "socket",
       ...(scenario.slackReplyToMode === undefined
         ? {}
@@ -410,6 +411,7 @@ export function installFixture(scenario, evidence) {
   let agentReadCount = 0;
   let agentListReadCount = 0;
   let runtimeStatusReads = 0;
+  let runtimeLogReads = 0;
   const agent = {
     id: scenario.agentId ?? "agt_00000000-0000-4000-8000-000000000001",
     namespaceId,
@@ -2075,6 +2077,12 @@ export function installFixture(scenario, evidence) {
             if (scenario.deletingOnRefresh && ++agentReadCount > 1) {
               saved.status = "deleting";
             }
+            // Once the open Logs view has read output, another person stops the Agent and the
+            // stop completes: no version is selected for service (stopElsewhereOnReread).
+            if (scenario.stopElsewhereOnReread && runtimeLogReads > 0 && saved.activeRevisionId) {
+              saved.desiredRuntimeState = "stopped";
+              delete saved.activeRevisionId;
+            }
             // By the open Logs view's second runtime status poll, another person has deployed v8,
             // whose startup model check timed out: the Agent runs again with no version selected.
             if (
@@ -2468,6 +2476,7 @@ export function installFixture(scenario, evidence) {
           suffix.endsWith("/runtime/logs") &&
           method === "GET"
         ) {
+          runtimeLogReads += 1;
           const revisionId = suffix.split("/")[2];
           if (url.searchParams.get("download") === "true") {
             // Downloads are a text/plain attachment, not a JSON envelope.

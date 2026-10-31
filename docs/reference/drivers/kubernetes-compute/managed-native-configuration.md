@@ -29,3 +29,16 @@ edits remain refused. Pod replacement clears copy/provenance.
 Edits stay outside OCE Configuration and AgentRevisions; see
 the [native admin feature boundary](../../agent-native-admin.md#native-authority-and-drift)
 and [deployment procedure](../../../guides/deploy/native-admin.md).
+
+## Custom Codex provider capabilities
+
+`runtime.codexModelSupportsStandaloneWebSearch` defaults to false. Set it to true
+only when the explicit `runtime.codexModelBaseUrl` supports Codex's standalone
+web-search protocol. True without that endpoint or a nonboolean value is rejected.
+
+For dedicated Codex API-key authentication, OCE writes
+`supports_standalone_web_search = true` under the existing custom provider in
+Codex's user configuration. Account logins, other Harnesses, and protected
+credential-source endpoints ignore this declaration. Protected `providerTools: none`
+still disables web search. The option does not grant network access or validate
+endpoint support. Deploy a new Agent revision to apply a changed declaration.

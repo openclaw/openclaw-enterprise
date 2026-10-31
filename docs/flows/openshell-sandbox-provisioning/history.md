@@ -8,9 +8,15 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
+- 2026-10-30 16:38: Merge online Git startup with durable Namespace cleanup in the accompanying main merge. (authoring-run/1ef4bc7c-b32a-46c2-91a8-84483e88bbe7 - 75ac1fa63ed75ea1f7493d7172f02ddbb497f51b)
+
+- 2026-10-30 16:09: Preserve capability-based repository admission while integrating patched runtime provenance. (authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f - 87d52638bda95e06820328e244ba2ad9960df1c4)
+
 - 2026-10-30 10:50: Refuse replay of unknown configured creates. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - 922a031ef91f6dc14329034f50964752757ec29b)
 
 - 2026-10-30 10:40: Trace cleanup after definitive creation refusals. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - 922a031ef91f6dc14329034f50964752757ec29b)
+
+- 2026-10-30 10:12: Adopt 0.1.6. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
 
 - 2026-10-30 10:00: Trace cleanup results before parent sweeping in the accompanying Driver change. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - ef2cf007043819118c83fd8339496a92bcab9fb3)
 
@@ -72,8 +78,6 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 - 2026-10-15 02:25: Distinguish API-key and PAT isolation. (authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00 - 07eb950b5)
 
-- 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
-
 - 2026-10-14 22:33: Exclude static Codex aliases. (authoring-run/32c91236-108c-48b8-9a06-9747c1d2d90c - f3a4d896bb51cd0d8e62bcdb29a69645b1c850dc)
 
 - 2026-10-14 20:27: Release refused WebSocket probes. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 4727e9b109a2127150e03e39e859d45e0668f82f)
@@ -83,6 +87,8 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 - 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
 
 - 2026-10-14 01:11: Reconcile endpoint validation and provider ownership with external OAuth custody in the accompanying merge. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - c5fb4880ebf2df2aedae12f99adb1992a930ba1b)
+
+- 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
 
 - 2026-10-13 18:22: Preserve opaque account metadata during Sandbox environment relocation. (authoring-run/a67c01b5-f0f7-434b-8183-d2dcc6941836 - 7c25b823f17e93f62d7ba8abea23e65df4b36fef)
 
@@ -142,10 +148,6 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 - 2026-10-02 11:10: Routed OpenShell-owned dedicated Codex traffic through the provider's bearer-passthrough exposure, with a scoped k3d address bridge and unchanged behavior for Sandbox Drivers without the endpoint capability. (authoring-run/ab38d00b-2481-43e9-b6b1-f43878f5d7f3 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
 
-- 2026-10-01: Adopted exact existing Sandboxes during reconciliation, retained revision providers across uncertain create outcomes, and gave the dev-up OpenShell Backend a 30-second local-cluster request deadline. The disposable k3d node now retains verified `Never`-pull OpenShell images through teardown.
-
-- 2026-10-01: Added the plugin-free dedicated Codex path with verifier-only app-server authentication, bearer passthrough, provider-managed runtime files, one-shot workspace-node credentials, and revision-provider cleanup.
-
 - 2026-10-01 18:06: Isolated persistent PVC mounts from the writable runtime home and linked their admitted paths during bootstrap so Kubernetes cannot recreate runtime-home parents as root. (authoring-run/578ab091-2c8d-4e02-a292-b8c48ec13509 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
 
 - 2026-10-01 17:15: Mounted the relocated OpenShell runtime home on a writable revision-scoped Agent PVC subpath after the live first-Agent flow exposed root-owned image ancestry. (authoring-run/578ab091-2c8d-4e02-a292-b8c48ec13509 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
@@ -155,6 +157,10 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 - 2026-10-01 14:07: Replaced whole-code node setup delivery with expiring split-envelope WebSocket substitution, optional workload identity, and relocated bounded runtime state; protected k3d proof remains pending. (authoring-run/e4bc9884-b517-4a72-8f04-264d4fa72f82 - 66922a5c23a44fabf23121968a8a63be20293380)
 
 - 2026-10-01 11:37: Updated the verified source, image, chart, and wire-contract pin to OpenShell v0.1.3-pre.2; retained the current fail-closed projection and authorization behavior. (authoring-run/f1f395c4-2594-4b07-9e92-ae829a5b5dd4 - f22a584e6ce21d505b40a72fdb5ae1c6e74c1c84)
+
+- 2026-10-01: Adopted exact existing Sandboxes during reconciliation, retained revision providers across uncertain create outcomes, and gave the dev-up OpenShell Backend a 30-second local-cluster request deadline. The disposable k3d node now retains verified `Never`-pull OpenShell images through teardown.
+
+- 2026-10-01: Added the plugin-free dedicated Codex path with verifier-only app-server authentication, bearer passthrough, provider-managed runtime files, one-shot workspace-node credentials, and revision-provider cleanup.
 
 - 2026-09-30 23:45: Required hard Landlock compatibility in the OpenShell Sandbox request and rejected weaker Installation settings. (authoring-run/62afbbd6-1a38-43bf-b998-665eab33521a - 129723ab)
 

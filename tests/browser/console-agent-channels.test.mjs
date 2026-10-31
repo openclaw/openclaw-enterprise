@@ -6,6 +6,7 @@ import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   accessBindingPostRequests,
+  accessibleDescription,
   AGENT_READ,
   apiRequests,
   detailUrl,
@@ -36,6 +37,7 @@ import {
   BOUND_SECRET_UNLISTED,
   CONFIGURATION_SAVE_DENIED,
   SECRET_CREATE_DENIED,
+  secretGrantDeployReason,
   SLACK_SETUP_HINT,
 } from "../helpers/refusal-text.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
@@ -1062,6 +1064,15 @@ describe("Agent channels", { concurrency: 3 }, () => {
     await page.getByText("Bound · Agent access not confirmed", { exact: true }).waitFor();
     await page.getByText(GRANT_MISSING, { exact: true }).waitFor();
     await waitForEnabled(page.getByRole("button", { name: "Retry Secret access" }));
+    // Deploy new version, on every tab, names the token whose Secret waits and where to grant it,
+    // and is described by that reason (finding 3017).
+    const reason = secretGrantDeployReason(["Slack app token"], { missing: true });
+    const deploy = page.getByRole("button", { name: "Deploy new version" });
+    for (const tab of ["Credentials", "Configuration"]) {
+      await page.getByRole("tab", { name: tab, exact: true }).click();
+      await page.getByText(reason, { exact: true }).waitFor();
+      assert.equal(await accessibleDescription(deploy), reason);
+    }
   });
 
   // A member cannot write IAM policy, and the session already knows it (finding 2109), so a Slack
@@ -1149,7 +1160,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
       assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).count(), 0);
       // The save finished and nothing this member can do confirms the grant, so Deploy is not
       // held: the API checks the Agent's access when it deploys (finding 2547).
-      await expectNoText(page, "Resolve the saved Secret access grant before deploying.", () =>
+      await expectNoText(page, /^This Agent's access to the Secrets? bound to /, () =>
         waitForEnabled(page.getByRole("button", { name: "Deploy new version" })),
       );
       const configuration = await fixture.request(
@@ -1444,7 +1455,11 @@ describe("Agent channels", { concurrency: 3 }, () => {
     await selectSecret(page, "Slack app token", firstAppSecret);
     await selectSecret(page, "Slack bot token", botSecret);
     await page.getByRole("button", { name: "Save channel Secrets" }).click();
-    await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
+    // Both saved tokens' grants were refused: Deploy names them and who grants them (finding 3017).
+    const heldDeploy = secretGrantDeployReason(["Slack app token", "Slack bot token"], {
+      administrator: true,
+    });
+    await page.getByText(heldDeploy, { exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
 
     const firstConfiguration = await fixture.request(
@@ -1459,7 +1474,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     denyGrant = false;
     rejectNextConfigurationPatch = true;
     await selectSecret(page, "Slack app token", secondAppSecret);
-    await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
+    await page.getByText(heldDeploy, { exact: true }).waitFor();
     requests.length = 0;
     await page.getByRole("button", { name: "Save channel Secrets" }).click();
     // This write was refused; only the earlier saved binding has an outstanding access grant.
@@ -1474,7 +1489,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
       ["PATCH"],
     );
     assert.equal(await page.getByRole("button", { name: "Reload draft" }).count(), 0);
-    await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
+    await page.getByText(heldDeploy, { exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
 
     // Saving again here is an explicit user action with the still-selected second app token.
@@ -1639,7 +1654,12 @@ describe("Agent channels", { concurrency: 3 }, () => {
         1,
       );
       await waitForEnabled(page.getByRole("button", { name: "Retry Secret access" }));
-      await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
+      await page
+        .getByText(
+          secretGrantDeployReason(["Slack app token"], { administrator: grantStatus === 403 }),
+          { exact: true },
+        )
+        .waitFor();
       assert.equal(
         await page.getByRole("button", { name: "Deploy new version" }).isDisabled(),
         true,

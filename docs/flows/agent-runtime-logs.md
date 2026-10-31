@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
 updated: "2026-10-30"
-last_updated_session: fix-3010
+last_updated_session: fix-3012
 ---
 
 # Agent runtime logs flow
@@ -201,6 +201,7 @@ With no running Pod, each status poll rereads the Agent (`detail.mts:runningVers
 A running Agent with no selected version also rereads the version list, so a newer deployment's failure shows. With no Agent change it rereads at most once a minute; an unchanged list keeps the version chooser.
 A reread that a newer Agent state overtakes, such as this page's Stop, is dropped (2998).
 The view repeats the recovery card's failure line without its code (`deployment-recovery.mts:show`), in place, until a later deployment succeeds.
+For a version the reader cannot read, the view also says in place that a stop was requested or that the version is no longer selected for service (`detail.mts:servingChange`, 3012).
 Follow leaves loaded rows and unchanged statuses alone; its first line replaces an empty-tail status.
 Pod cards show state/exit; Gateway links Harness output or Deployment activity.
 
@@ -232,6 +233,7 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 
 ## Changelog
 
+- 2026-10-30 21:30: Say a stop in Logs of an unreadable version; keep the view in place. (3012)
 - 2026-10-30 20:30: Reread the Agent in Logs after a fresh status refusal. (3010)
 - 2026-10-30 20:00: Reread the Agent in Logs whose status denial is remembered. (3005)
 - 2026-10-30 18:15: Reread the Agent on refocus and in Logs of an unreadable version. (3000)

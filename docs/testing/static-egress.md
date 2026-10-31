@@ -319,6 +319,8 @@ Retain `.build/egress-connected/runtime-<uuid>/` for atomic phase checkpoints, r
 IDs and bounded observations, without raw requests or credentials. Each controller
 attempt starts with an operation ID and unknown outcome. A response does not establish
 the effect. Failures retain the phase and source location.
+The deployed checkpoint identifies the public owner capability of the source selected
+by the admitted Harness, while sender evidence independently shows protected sends.
 
 Cleanup removes the owned Agent, confirms API, Sandbox and workload Pod absence,
 then removes supporting resources and closes the provider. Reconcile missing Sandbox
