@@ -61,6 +61,7 @@ import {
   REPOSITORY_ACCESS_OR_BINDINGS,
   REPOSITORY_SELECTION_NOT_APPROVED,
   REPOSITORY_SETTINGS_MISSING,
+  runtimeIdUnsupported,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
@@ -1087,7 +1088,7 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
       executionMode: "embedded",
       status: 400,
       code: "INVALID_REQUEST",
-      message: /^The configured model Harness runtime identity is unsupported\.$/,
+      message: runtimeIdUnsupported('agents.defaults.models["openai/gpt-5.1"]'),
       storedPastSave: true,
     },
     // Kubernetes cannot deliver repository credentials to dedicated OpenClaw, so Agent save
@@ -1145,7 +1146,9 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
       const denied = await f.request("POST", `${path}/deploy`);
       assert.equal(denied.status, status, JSON.stringify(denied));
       assert.equal(denied.error.code, code);
-      if (message) {
+      if (typeof message === "string") {
+        assert.equal(denied.error.message, message);
+      } else if (message) {
         assert.match(denied.error.message, message);
       }
       assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);

@@ -32,6 +32,11 @@ import {
   unsubstitutedFallbackRefusal,
   unsubstitutedReferenceRefusal,
   codexApiKeyRefusal,
+  codexRuntimeOffProvider,
+  runtimeIdRequired,
+  runtimeIdUnsupported,
+  runtimePoliciesConflict,
+  selectableModelOffProvider,
 } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
@@ -1089,13 +1094,11 @@ test("Configuration save refuses a model policy whose settings conflict, with de
     "agents.entries.main.model",
     "must select the same primary model as agents.defaults.model and the other agents.entries",
   );
-  const selectableRule =
-    "must be an object keyed by model ref: a model other than the primary needs the primary's provider and the same agentRuntime, set on both";
   const catalogRule = setting(
     "models.providers.openai.models",
     "may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries",
   );
-  const conflictingPolicies = "The selected model has conflicting Harness runtime policies.";
+  const defaultPolicy = 'agents.defaults.models["openai/gpt-4.1"]';
   const unselectedRow = { providers: { openai: { models: [{ id: "gpt-unselected" }] } } };
   // Each document sets two values that cannot both hold. Create and update refuse it; a row an
   // older release stored still reads, and deployment refuses it with the same text unless the row
@@ -1121,7 +1124,7 @@ test("Configuration save refuses a model policy whose settings conflict, with de
           },
         },
       },
-      setting("agents.entries.main.models", selectableRule),
+      selectableModelOffProvider('agents.entries.main.models["gateway/model-x"]', "openai"),
     ],
     [
       "the defaults' selectable models on another provider than the primary's",
@@ -1133,12 +1136,12 @@ test("Configuration save refuses a model policy whose settings conflict, with de
           },
         },
       },
-      setting("agents.defaults.models", selectableRule),
+      selectableModelOffProvider('agents.defaults.models["gateway/model-x"]', "openai"),
     ],
     [
       "a selected model policy and a provider policy that name different runtimes",
       { ...runtimeSelected, models: { providers: { openai: { agentRuntime: { id: "codex" } } } } },
-      conflictingPolicies,
+      runtimePoliciesConflict(defaultPolicy, "openclaw", "models.providers.openai", "codex"),
     ],
     // The openai provider takes Codex only with the Codex plugin's WebSocket app server.
     [
@@ -1148,19 +1151,19 @@ test("Configuration save refuses a model policy whose settings conflict, with de
           defaults: { model: "openai/gpt-4.1", models: runtime("openai/gpt-4.1", "codex") },
         },
       },
-      "The Codex Harness requires the native codex model provider.",
+      codexRuntimeOffProvider(defaultPolicy),
     ],
     [
       "a runtime id that no Harness implements",
       {
         agents: { defaults: { model: "openai/gpt-4.1", models: runtime("openai/gpt-4.1", "pi") } },
       },
-      "The configured model Harness runtime identity is unsupported.",
+      runtimeIdUnsupported(defaultPolicy),
     ],
     [
       "a provider runtime id that no Harness implements",
       { ...runtimeSelected, models: { providers: { openai: { agentRuntime: { id: "pi" } } } } },
-      "The configured model Harness runtime identity is unsupported.",
+      runtimeIdUnsupported("models.providers.openai"),
     ],
     // Each policy names one runtime, so no single model conflicts: the primary and its fallback
     // together select two Harnesses.
@@ -1303,10 +1306,18 @@ test("Configuration save refuses a model policy whose settings conflict, with de
     [
       "an openai model without a runtime",
       { agents: { defaults: { model: "openai/gpt-4.1" } } },
-      setting(
-        'agents.defaults.models["openai/gpt-4.1"].agentRuntime.id',
-        "is required for the selected model: set it to openclaw or codex",
-      ),
+      runtimeIdRequired(defaultPolicy),
+    ],
+    // The entry's own models policy lists the model, so deployment names that policy, not the
+    // defaults'.
+    [
+      "an entry model whose own models policy sets no runtime",
+      {
+        agents: {
+          entries: { main: { model: "openai/gpt-4.1", models: { "openai/gpt-4.1": {} } } },
+        },
+      },
+      runtimeIdRequired('agents.entries.main.models["openai/gpt-4.1"]'),
     ],
   ]) {
     await t.test(`saves ${name}`, async () => {
@@ -3460,7 +3471,7 @@ test("Deploy rejects Configuration content that selects no supported Harness run
   assert.equal(deployed.body.error.code, "INVALID_REQUEST");
   assert.equal(
     deployed.body.error.message,
-    'Configuration setting agents.defaults.models["openai/gpt-4.1"].agentRuntime.id is required for the selected model: set it to openclaw or codex.',
+    runtimeIdRequired('agents.defaults.models["openai/gpt-4.1"]'),
   );
   const unchanged = await request(context.app, "GET", agentPath);
   assert.equal(unchanged.status, 200);

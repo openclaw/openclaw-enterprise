@@ -206,11 +206,14 @@ Codex plugin explicitly enabled for WebSocket app-server transport.
 Configuration writes run these rules in deployment's order. They refuse settings
 that conflict, with deployment's message: an entry primary that differs, selectable
 models on another provider or runtime, an unselected catalog entry, conflicting
-runtime policies, an unsupported runtime ID, or Codex on another provider. A draft
-without a model, or a model without its required runtime, still saves; deployment
-refuses it and names the setting to add: `agents.defaults.models["<ref>"].agentRuntime.id`
-for a missing runtime, and on Kubernetes Compute `agents.defaults.model` for a missing
-model. A Preset is checked when a launch creates its Configuration.
+runtime policies, an unsupported runtime ID, or Codex on another provider. Each
+message names the settings to change and, for a runtime, the allowed values `openclaw`
+and `codex`. A draft without a model, or a model without its required runtime, still
+saves; deployment refuses it and names the setting to add:
+`agents.defaults.models["<ref>"].agentRuntime.id` for a missing runtime (the entry's
+`agents.entries.<id>.models` policy when it lists the model), and on Kubernetes Compute
+`agents.defaults.model` for a missing model. A Preset is checked when a launch creates
+its Configuration.
 
 ## Limits
 
