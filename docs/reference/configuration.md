@@ -189,16 +189,14 @@ that is not `<provider>/<model>` (OpenClaw's `openrouter:auto` included),
 fallbacks that are not a list, a non-boolean `agents.defaults.skipBootstrap`,
 `agents.defaults.skipOptionalBootstrapFiles` names outside OpenClaw's
 optional file list, an `agents.defaults.sandbox.mode` or
-`agents.entries.<id>.sandbox.mode` other than `off`, and a `tools.exec.host` or
+`agents.entries.<id>.sandbox.mode` other than `off`, a `tools.exec.host` or
 `agents.entries.<id>.tools.exec.host` other than `auto`, `gateway` or `node`,
-naming the setting. A
+and a `$include` key at any depth, naming the setting. A
 Preset value that waits on a variable
 is checked as far as its written text goes, and in full once filled. A
 Configuration saved before these checks still reads; deployment refuses it, and
 only a write that keeps the value is refused.
 
-OCC also refuses OpenClaw's `$include` directive at any depth, naming the
-setting: OpenClaw would merge in settings from a file that OCE does not check.
 OCC also refuses `security.preset`. Remove it and [set the controls you need](../guides/console/configuration-plugins-and-files.md#configuration-tab).
 OpenClaw's `doctor --fix` removes the field without translating its restrictions.
 See [OpenClaw's repair behavior](https://github.com/openclaw/openclaw/blob/554f0b886bde6c089578c49967227f8b50d1cf16/docs/gateway/doctor/config-migrations.md#removed-security-presets).
