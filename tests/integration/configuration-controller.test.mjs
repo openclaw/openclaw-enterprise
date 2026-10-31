@@ -26,6 +26,8 @@ import { bindRole } from "../helpers/iam-grants.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
+  catalogRowNoModel,
+  catalogRowUnselected,
   referenceFormRefusal,
   unboundReferenceRefusal,
   unreadableSlackTokenRefusal,
@@ -1028,10 +1030,7 @@ test("Configuration save refuses a provider catalog row that no model selection 
     name: "Catalog consumer",
     secretName: "catalog-key",
   });
-  const catalogRule = setting(
-    "models.providers.openai.models",
-    "may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries",
-  );
+  const catalogRule = catalogRowUnselected("models.providers.openai");
   // Create and update refuse the row. A row an older release stored still reads, deployment
   // refuses it with the same text, and an update that keeps it is refused.
   await refusedAtSaveAndDeploy(
@@ -1039,6 +1038,14 @@ test("Configuration save refuses a provider catalog row that no model selection 
     agent,
     withCatalog([{ id: "gpt-4.1" }, { id: "gpt-unselected" }]),
     catalogRule,
+  );
+  // With no model selected at all, the row refusal names the model setting instead: save and
+  // deploy share the text (dogfood-member-r67 catalog row 7).
+  await refusedAtSaveAndDeploy(
+    context,
+    agent,
+    withCatalog([{ id: "gpt-4.1" }], {}),
+    catalogRowNoModel("models.providers.openai"),
   );
 
   // Rows that name a selected model save: the primary by its id or its complete ref, a fallback,
@@ -1094,10 +1101,7 @@ test("Configuration save refuses a model policy whose settings conflict, with de
     "agents.entries.main.model",
     "must select the same primary model as agents.defaults.model and the other agents.entries",
   );
-  const catalogRule = setting(
-    "models.providers.openai.models",
-    "may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries",
-  );
+  const catalogRule = catalogRowUnselected("models.providers.openai");
   const defaultPolicy = 'agents.defaults.models["openai/gpt-4.1"]';
   const unselectedRow = { providers: { openai: { models: [{ id: "gpt-unselected" }] } } };
   // Each document sets two values that cannot both hold. Create and update refuse it; a row an

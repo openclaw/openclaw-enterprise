@@ -200,6 +200,8 @@ OpenClaw when there is no model candidate or an unambiguous built-in provider.
 OpenAI, Codex, custom providers, and plugin-routed providers require an explicit
 runtime policy. Catalog entries may use the full model reference or the ID after
 the first slash. Each listed provider model must be a selected primary or fallback.
+When no model is selected at all, that refusal says so and names
+`agents.defaults.model` or an `agents.entries` model as the setting to set.
 Codex accepts its native `codex` provider, or `openai` with the
 Codex plugin explicitly enabled for WebSocket app-server transport.
 

@@ -418,11 +418,13 @@ function requireSelectedCatalogRows(
         return !(typeof id === "string" && ids?.has(id) === true);
       })
     ) {
+      // With no model selected at all, no row can name one: the setting to set is the model,
+      // not the row (dogfood-member-r67 catalog row 7).
       throw new ConfigurationHarnessError(
-        modelProviderMessage(
-          providerId,
-          (path) =>
-            `Configuration setting ${path}.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.`,
+        modelProviderMessage(providerId, (path) =>
+          catalogIds.size === 0
+            ? `Configuration setting ${path}.models lists models, but no model is selected: set agents.defaults.model or an agents.entries model.`
+            : `Configuration setting ${path}.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.`,
         ),
       );
     }

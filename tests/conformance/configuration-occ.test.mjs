@@ -30,6 +30,8 @@ import {
 import { bindRole, grantRole, principalIAMState } from "../helpers/iam-grants.mjs";
 import { refusedAnswer } from "../helpers/refusal-answers.mjs";
 import {
+  catalogRowNoModel,
+  catalogRowUnselected,
   codexRuntimeOffProvider,
   GATEWAY_MANAGED_MODE_DENIED,
   runtimeIdRequired,
@@ -1611,8 +1613,7 @@ test("Agent roster refusals name the setting and the fix", () => {
 test("model policy refusals name the Configuration setting", () => {
   const catalog = { providers: { openai: { models: [{ id: "gpt-4.1" }] } } };
   const runtime = (id) => ({ agentRuntime: { id } });
-  const catalogRule =
-    "Configuration setting models.providers.openai.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.";
+  const catalogRule = catalogRowUnselected("models.providers.openai");
   for (const [values, message] of [
     // Finding 888: a non-object agents read as an empty roster, so the provider catalog check
     // refused it first with text about selectable provider models.
@@ -1632,6 +1633,10 @@ test("model policy refusals name the Configuration setting", () => {
       { agents: { entries: { main: {} } } },
       "Configuration setting agents.entries.main.model is required when agents.defaults.model is unset: set either one.",
     ],
+    // With no model selected at all, a catalog row names the model setting to set, not the row
+    // rule no row could meet.
+    [{ models: catalog }, catalogRowNoModel("models.providers.openai")],
+    [{ agents: { defaults: {} }, models: catalog }, catalogRowNoModel("models.providers.openai")],
     [
       {
         agents: {
@@ -2172,8 +2177,7 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
     {
       name: "provider model catalogs cannot expose alternate runtime overrides",
       executionMode: "embedded",
-      saveRefusal:
-        "Configuration setting models.providers.openai.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.",
+      saveRefusal: catalogRowUnselected("models.providers.openai"),
       values: {
         agents: {
           defaults: selectedModelDefaults("openai/gpt-4.1", "openclaw"),
