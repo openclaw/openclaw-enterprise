@@ -41,7 +41,7 @@
     "tests/integration/postgres-protected-git-recipient-custody.test.ts",
     "tests/integration/postgres-prepared-standing-removal.test.ts",
     "tests/integration/postgres-prepared-github-git-use.test.mjs",
-    "tests/integration/postgres-openshell-online-git-journey.test.mjs",
+    "tests/integration/postgres-openshell-online-git-journey.test.ts",
     "tests/integration/postgres-openshell-git-routes.test.ts",
     "tests/integration/postgres-openshell-standing-route.test.ts",
     "tests/integration/postgres-external-protected-git.test.ts",
@@ -360,9 +360,10 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-openshell-online-git-journey.test.mjs",
+      "path": "tests/integration/postgres-openshell-online-git-journey.test.ts",
       "expectedTests": [
-        "OCE signed TLS Git authorization composes with PostgreSQL admission and material withdrawal"
+        "OCE signed TLS Git authorization: stopping the Agent denies a fresh signed Git request",
+        "OCE signed TLS Git authorization: removing the repository binding denies a fresh signed Git request"
       ]
     },
     {
