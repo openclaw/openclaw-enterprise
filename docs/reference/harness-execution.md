@@ -224,8 +224,9 @@ Deployment and Agent save refuse such a `${APP_SERVER_*}` there for Agents other
 than dedicated Codex, because it is always unset on them. On every Compute,
 Configuration save, Agent save and deployment apply the same provider and
 allowlist rules to a `gateway.auth.password` SecretRef. They also refuse one
-with keys other than `source`, `provider` and `id`, because OpenClaw's
-configuration check then fails.
+with keys other than `source`, `provider` and `id`, or a `secrets.defaults`
+alias outside OpenClaw's alias grammar, such as `" custom "` or `"BAD"`, because
+OpenClaw's configuration check then fails.
 
 Configuration writes run these rules in deployment's order. They refuse settings
 that conflict, with deployment's message: an entry primary that differs, selectable

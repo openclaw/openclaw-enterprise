@@ -603,6 +603,7 @@ export {
   generatedGatewayPasswordReference,
   secretInputReference,
   secretInputShorthandName,
+  secretProviderDefaultsProblem,
   shownSecretName,
   unsubstitutedReference,
   wholeEnvironmentReferenceName,

@@ -27,6 +27,8 @@ import {
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
   configurationSettingMessage,
+  gatewayPasswordRequirement,
+  generatedGatewayPasswordReference,
   keyedSettingPath,
 } from "@openclaw-enterprise/occ";
 import {
@@ -200,6 +202,10 @@ function hasPluginSelections(revision: AgentRevision): boolean {
   return revision.plugins !== undefined && Object.keys(revision.plugins.plugins).length > 0;
 }
 
+// The passwords password mode renders as GATEWAY_PASSWORD_REFERENCE: the expression and a
+// default-provider reference to the generated password. SSH Compute admitted only these before it
+// read the authored reference (finding 3065), so teardown still accepts them and renders them as
+// before: the helper compares the rendered document with the prepared snapshot's hash.
 function usesGatewayPasswordReference(value: unknown): boolean {
   if (value === GATEWAY_PASSWORD_EXPRESSION) {
     return true;
@@ -212,6 +218,22 @@ function usesGatewayPasswordReference(value: unknown): boolean {
   );
 }
 
+// Why the Gateway cannot read the password SSH Compute generates through `password` with the
+// Configuration's `secrets`, or undefined. The unit's EnvironmentFile sets OPENCLAW_GATEWAY_PASSWORD,
+// which every env provider reads, so any environment SecretRef to it that OpenClaw reads
+// (`gatewayPasswordRequirement`) serves, on a custom default alias or a configured env provider too.
+function gatewayPasswordProblem(password: unknown, secrets: unknown): string | undefined {
+  const reference = asRecord(password);
+  if (
+    password !== GATEWAY_PASSWORD_EXPRESSION &&
+    (reference?.source !== "env" || reference.id !== OPENCLAW_GATEWAY_PASSWORD)
+  ) {
+    const generated = generatedGatewayPasswordReference(secrets);
+    return `must be "${GATEWAY_PASSWORD_EXPRESSION}" or the environment SecretRef {source: "env", provider: "${generated.provider}", id: "${OPENCLAW_GATEWAY_PASSWORD}"}, whose value SSH Compute generates`;
+  }
+  return gatewayPasswordRequirement(password, secrets);
+}
+
 type SettingError = (setting: string, requirement: string) => Error;
 
 const preparationSettingError: SettingError = (setting, requirement) =>
@@ -219,11 +241,13 @@ const preparationSettingError: SettingError = (setting, requirement) =>
 
 // Gateway authentication SSH Compute can deliver. Deploy admission refuses the rest with the
 // setting's name (a 409, as Kubernetes does); preparation applies the same rule as defence in
-// depth. Returns the gateway and auth records for rendering.
+// depth, and teardown (`teardown`) also accepts what SSH admitted before finding 3065. Returns the
+// gateway and auth records for rendering.
 function sshGatewayAuthentication(
   configuration: Readonly<OpenClawConfigurationDocument>,
   createError: SettingError = (setting, requirement) =>
     new ComputeGatewaySettingError(setting, requirement),
+  teardown = false,
 ): {
   gateway: Record<string, OpenClawConfigurationValue>;
   auth: Record<string, OpenClawConfigurationValue>;
@@ -251,13 +275,34 @@ function sshGatewayAuthentication(
       "must be trusted-proxy or password: SSH Compute supports only native trusted-proxy or password gateway authentication",
     );
   }
-  if (auth.password !== undefined && !usesGatewayPasswordReference(auth.password)) {
+  const problem =
+    auth.password === undefined || (teardown && usesGatewayPasswordReference(auth.password))
+      ? undefined
+      : gatewayPasswordProblem(auth.password, configuration.secrets);
+  if (problem !== undefined) {
+    throw createError("gateway.auth.password", problem);
+  }
+  // Password mode renders an unset password and the expression as GATEWAY_PASSWORD_REFERENCE,
+  // which a custom default env alias or an allowlist can leave unreadable: the Gateway would exit
+  // at every start, so offer the reference that serves instead.
+  const rendered =
+    teardown || auth.mode === "trusted-proxy" || !rendersGatewayPasswordReference(auth.password)
+      ? undefined
+      : gatewayPasswordRequirement(GATEWAY_PASSWORD_REFERENCE, configuration.secrets);
+  if (rendered !== undefined) {
+    const generated = generatedGatewayPasswordReference(configuration.secrets);
     throw createError(
       "gateway.auth.password",
-      `must be "${GATEWAY_PASSWORD_EXPRESSION}" or the default-provider environment SecretRef with id ${OPENCLAW_GATEWAY_PASSWORD}, whose value SSH Compute generates`,
+      `must be set to {source: "env", provider: "${generated.provider}", id: "${OPENCLAW_GATEWAY_PASSWORD}"}: SSH Compute's default reference ${rendered}`,
     );
   }
   return { gateway, auth };
+}
+
+// Whether password mode replaces `password` with GATEWAY_PASSWORD_REFERENCE; it renders any other
+// admitted reference as written.
+function rendersGatewayPasswordReference(password: unknown): boolean {
+  return password === undefined || usesGatewayPasswordReference(password);
 }
 
 function sshGatewayConfigurationDocument(
@@ -269,7 +314,11 @@ function sshGatewayConfigurationDocument(
       validate(configuration, preparationSettingError);
     }
   }
-  const { gateway, auth } = sshGatewayAuthentication(configuration, preparationSettingError);
+  const { gateway, auth } = sshGatewayAuthentication(
+    configuration,
+    preparationSettingError,
+    !validateTransport,
+  );
   if (auth.mode === "trusted-proxy") {
     return configuration;
   }
@@ -280,7 +329,9 @@ function sshGatewayConfigurationDocument(
       auth: {
         ...auth,
         mode: "password",
-        password: GATEWAY_PASSWORD_REFERENCE,
+        password: rendersGatewayPasswordReference(auth.password)
+          ? GATEWAY_PASSWORD_REFERENCE
+          : auth.password!,
       },
     },
   } as OpenClawConfigurationDocument;

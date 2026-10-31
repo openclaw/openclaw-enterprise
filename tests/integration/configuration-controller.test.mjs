@@ -34,6 +34,7 @@ import {
   unreadablePluginSecretRefusal,
   appServerUnreadablePluginSecretRefusal,
   unreadableGatewayPasswordRefusal,
+  invalidSecretProviderDefaultsRefusal,
   unboundReferenceRefusal,
   unreadableSlackTokenRefusal,
   unsubstitutedFallbackRefusal,
@@ -2012,6 +2013,31 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
       },
       unreadableGatewayPasswordRefusal("allowlist", "OPENCLAW_GATEWAY_PASSWORD"),
     ],
+    // A secrets.defaults OpenClaw's configuration check refuses stops the Gateway at every start
+    // whatever it references (exit 78, finding 3064): a padded or upper-case alias, one that is
+    // not text, another key, or no object. The alias rule runs first, so with a password on
+    // provider default the refusal names the alias, not the provider.
+    [
+      { ...password(generated), secrets: { defaults: { env: " custom " } } },
+      invalidSecretProviderDefaultsRefusal("alias", "env", '" custom "'),
+    ],
+    [
+      { ...password(generated), secrets: { defaults: { env: "BAD" } } },
+      invalidSecretProviderDefaultsRefusal("alias", "env", "BAD"),
+    ],
+    [
+      { ...valid, secrets: { defaults: { file: "Vault" } } },
+      invalidSecretProviderDefaultsRefusal("alias", "file", "Vault"),
+    ],
+    [
+      { ...valid, secrets: { defaults: { env: 7 } } },
+      invalidSecretProviderDefaultsRefusal("alias", "env"),
+    ],
+    [
+      { ...valid, secrets: { defaults: { envv: "custom" } } },
+      invalidSecretProviderDefaultsRefusal("key", '"envv"'),
+    ],
+    [{ ...valid, secrets: { defaults: "custom" } }, invalidSecretProviderDefaultsRefusal("shape")],
   ]) {
     await refusedAtSaveAndDeploy(context, agent, values, message);
   }
@@ -2061,6 +2087,19 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     "Password-alias-deferred",
   );
   assert.equal(deferredAlias.status, 201, JSON.stringify(deferredAlias.body));
+  // A variable default fills the alias at Preset save, where the alias rule checks it.
+  assertRefused(
+    await savePreset(context, {
+      variables: { alias: { type: "string", default: "BAD" } },
+      configuration: {
+        values: {
+          ...password({ ...generated, provider: "custom" }),
+          secrets: { defaults: { env: "{{ vars.alias }}" } },
+        },
+      },
+    }),
+    invalidSecretProviderDefaultsRefusal("alias", "env", "BAD"),
+  );
 
   // Rules that depend on the Compute Driver or the topology save, and deployment refuses them.
   for (const [values, deployStatus, deployMessage] of [

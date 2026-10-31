@@ -615,6 +615,39 @@ const UNREADABLE_GATEWAY_PASSWORDS = {
 };
 export const unreadableGatewayPasswordRefusal = (held, ...shown) =>
   `Configuration setting gateway.auth.password ${UNREADABLE_GATEWAY_PASSWORDS[held](...shown)}.`;
+// The refusal of a secrets.defaults OpenClaw's configuration check refuses, which stops the
+// Gateway at every start on every Compute (finding 3064): Configuration save, Agent save and
+// deployment (`secretProviderDefaultsProblem`) and the console. `alias`: an alias outside the
+// grammar on `source` (`shown` as the message shows it, absent for one that is not text); `key`: a
+// key other than a source; `shape`: secrets.defaults that is not an object.
+const INVALID_SECRET_PROVIDER_DEFAULTS = {
+  alias: (source, shown) => [
+    `secrets.defaults.${source}`,
+    `${shown === undefined ? "is " : `is ${shown}, `}not a provider alias OpenClaw reads (a-z, 0-9, _ and -, from a lowercase letter, at most 64 characters)`,
+  ],
+  key: (shown) => [
+    "secrets.defaults",
+    `holds ${shown}, which OpenClaw refuses: name only env, file, exec or store`,
+  ],
+  shape: () => [
+    "secrets.defaults",
+    "must be an object that names a provider alias for env, file, exec or store",
+  ],
+};
+export const invalidSecretProviderDefaultsRefusal = (held, ...shown) => {
+  const [setting, requirement] = INVALID_SECRET_PROVIDER_DEFAULTS[held](...shown);
+  return `Configuration setting ${setting} ${requirement}.`;
+};
+// SSH Compute's refusals of a gateway.auth.password it cannot deliver (finding 3065): `reference`,
+// a password other than the expression or an env SecretRef to the generated password, offering it
+// on the default env alias; `rendered`, an unset password or the expression in password mode when
+// the default-provider reference SSH Compute renders then is unreadable (`requirement` says why).
+export const sshGatewayPasswordRefusal = {
+  reference: (alias = "default") =>
+    `Configuration setting gateway.auth.password must be "\${OPENCLAW_GATEWAY_PASSWORD}" or the environment SecretRef {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value SSH Compute generates.`,
+  rendered: (alias, requirement) =>
+    `Configuration setting gateway.auth.password must be set to {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}: SSH Compute's default reference ${requirement}.`,
+};
 const USE_UPPERCASE =
   "use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}";
 export const unsubstitutedReferenceRefusal = (setting, shown) =>

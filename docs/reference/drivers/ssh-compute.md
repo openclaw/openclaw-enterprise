@@ -221,11 +221,15 @@ verified teardown.
 When native Configuration omits `gateway.auth.mode`, the Driver renders
 `password` mode with a managed environment SecretRef using
 `OPENCLAW_GATEWAY_PASSWORD`. Explicit `password` and `trusted-proxy` modes are
-supported. An explicit password must be `${OPENCLAW_GATEWAY_PASSWORD}` or that
-variable's default-provider environment SecretRef; trusted proxy can opt into the
-same loopback password. Deployment refuses any other mode, an unsupported
-authentication field, another password reference, or a `gateway` or `gateway.auth`
-that is not an object, with `409` naming the setting, before admitting a revision.
+supported. An explicit password must be `${OPENCLAW_GATEWAY_PASSWORD}` or an
+environment SecretRef to that variable that OpenClaw reads, on any env provider:
+the systemd unit sets the variable, and the Driver renders such a SecretRef as
+written. Trusted proxy can opt into the same loopback password. If
+`secrets.defaults.env` or `secrets.providers` makes the managed `default`
+reference unreadable, password mode needs that explicit SecretRef. Deployment
+refuses any other mode, an unsupported authentication field, another password
+reference, or a `gateway` or `gateway.auth` that is not an object, with `409`
+naming the setting, before admitting a revision.
 
 The helper creates a private per-Agent `gateway-password.env` when the managed
 password is needed. Later versions reuse that file; the Driver does not rotate

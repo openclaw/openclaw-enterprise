@@ -106,6 +106,45 @@ const defaultSecretProvider = (secrets: unknown, source: string): string => {
   return typeof alias === "string" && alias.trim() !== "" ? alias.trim() : "default";
 };
 
+/**
+ * The first secrets.defaults setting OpenClaw's config check refuses, as the setting and why, or
+ * undefined. Its schema (`SecretsConfigSchema` in `src/config/zod-schema.core.ts`) takes
+ * secrets.defaults only as an object of env, file, exec and store aliases, each in the provider
+ * alias grammar (no padding, no upper case), so the Gateway exits with code 78 at every start on
+ * anything else, whatever the Compute (finding 3064). The schema sets no grammar on
+ * secrets.providers keys: a SecretRef cannot name one that breaks it (`secretInputReference`).
+ */
+export function secretProviderDefaultsProblem(
+  secrets: unknown,
+): { readonly setting: string; readonly requirement: string } | undefined {
+  const defaults = asObject(secrets)?.defaults;
+  if (defaults === undefined) {
+    return undefined;
+  }
+  const aliases = asObject(defaults);
+  if (aliases === undefined) {
+    return {
+      setting: "secrets.defaults",
+      requirement: "must be an object that names a provider alias for env, file, exec or store",
+    };
+  }
+  for (const [source, alias] of Object.entries(aliases)) {
+    if (!SECRET_REF_SOURCES.includes(source)) {
+      return {
+        setting: "secrets.defaults",
+        requirement: `holds ${quotedSettingKey(source, 32)}, which OpenClaw refuses: name only env, file, exec or store`,
+      };
+    }
+    if (typeof alias !== "string" || !SECRET_PROVIDER_ALIAS.test(alias)) {
+      return {
+        setting: `secrets.defaults.${source}`,
+        requirement: `${typeof alias === "string" ? `is ${shownSecretName(alias)}, ` : "is "}not a provider alias OpenClaw reads (a-z, 0-9, _ and -, from a lowercase letter, at most 64 characters)`,
+      };
+    }
+  }
+  return undefined;
+}
+
 const providerlessRequirement = (source: string, secrets: unknown): string =>
   `is a SecretRef without a provider: add ${
     ["env", "store"].includes(source)
