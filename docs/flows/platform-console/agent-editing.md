@@ -245,8 +245,7 @@ Slack off, the section shows only while a bound Secret's grant waits, with only 
 whose success names the granted access. A Retry carries no Secret choices into **Reload draft** (3021).
 A Retry's warning names only the grant, and a later save's names the Configuration save (3023,
 3029); after **Reload draft** the section waits for its grant read instead of restating that outcome.
-When that read finds nothing outstanding, the section says access is confirmed and that line takes
-focus, with Slack on or off (3030).
+If it finds nothing outstanding, the section says access is confirmed and focuses that line (3030).
 `agents/credentials.mjs:missingChannelCredentialGroups` reads token keys as the Slack Channel
 Driver does; pickers appear only for standard keys. A 400 that
 `agents/list.mjs:channelBindingRefusal` matches shows the API's message. An uncertain PATCH
@@ -346,10 +345,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
-- 2026-10-31 09:00: Confirm access when the grant read after Reload draft finds none outstanding. (fix-3030)
+- 2026-10-31 09:00: Confirm access when the read after Reload draft finds no grant outstanding. (fix-3030)
 
 - 2026-10-31 08:00: Name the save after a refused Retry. (fix-offers-1031)
-
-- 2026-10-31 07:30: Word an unconfirmed Retry without a Configuration save; clear it on Reload draft. (fix-3023)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.
