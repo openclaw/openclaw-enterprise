@@ -137,7 +137,9 @@ accounts, other `${NAME}` references or each other's key, the section lists each
 secret's, below the pickers. Bind them through the Configuration API; **Deploy new version** waits
 until each is bound and the Agent can use its Secret. Deployment checks the Agent's access to every
 bound Secret, so a bound key no Slack setting reads, such as `SLACK_APP_TOKEN` left from Socket
-Mode, shows as **Bound · not read by the Slack settings** and needs that access too. While an
+Mode, shows as **Bound · not read by the Slack settings** and needs that access too. **Disable
+Slack** keeps the bindings, so with Slack off the section still lists each bound Secret whose
+access is not confirmed. While an
 Installation administrator's console reads that access, **Deploy new version** waits, and the save
 message names deployment as the next step only after the Agent's access is confirmed. Until then,
 **Deploy new version** names the token or key whose Secret waits and says to select **Retry Secret

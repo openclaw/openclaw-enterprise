@@ -778,6 +778,23 @@ test("a bound key no Slack setting reads still needs the Agent's grant", (t) =>
     viewport: { width: 390, height: 844 },
   }));
 
+// Disable Slack keeps its bindings, and Deploy still checks each bound Secret's grant. With Slack
+// off, an administrator's console read no grant: it showed "Ready to deploy." and the deploy
+// failed AUTHORIZATION_DENIED. A grant still outstanding from before Disable Slack held Deploy on
+// a Retry Secret access that the tab no longer showed (finding 3018).
+test("Secrets left bound after Disable Slack still need the Agent's grant", (t) =>
+  ungrantedBoundSecret(t, {
+    name: "Slack off leftover",
+    slackValues: { enabled: false },
+    bindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    ungranted: "SLACK_APP_TOKEN",
+    rows: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    badges: [
+      "Bound · not read by the Slack settings · Agent access not confirmed",
+      "Bound · not read by the Slack settings",
+    ],
+  }));
+
 // Tokens on other keys get the list; the standard pair left bound beside them is checked too
 // (finding 2558).
 test("a standard Slack key left bound beside other token keys needs the Agent's grant", (t) =>
