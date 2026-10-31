@@ -9839,8 +9839,10 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
     embeddedAdmission(configuration, { RELAY_TOKEN: { source } });
     embeddedAdmission(configuration, null);
   }
-  // An allowlist that lists the unset name leaves only the owner unavailable.
+  // An allowlist that lists the unset name leaves only the owner unavailable, and OpenClaw keeps
+  // an unset `${_NAME}` as written, never as a SecretRef.
   embeddedAdmission({ ...withBeam("${RELAY_TOKEN}"), ...allowlist(["RELAY_TOKEN"]) }, {});
+  embeddedAdmission({ ...withBeam("${_RELAY}"), ...allowlist([]) }, {});
   // A Dedicated Codex Agent whose allowlist omits APP_SERVER_TOKEN: its own codex entry reads
   // `${APP_SERVER_TOKEN}`, which Compute sets, so OpenClaw substitutes it and the Gateway starts.
   // `$APP_SERVER_TOKEN` stays a SecretRef, which that allowlist denies.
