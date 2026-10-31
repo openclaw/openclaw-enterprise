@@ -164,8 +164,6 @@ Revocation and denial fail permanently before the pass prepares a runtime. Older
 complete as superseded; selected versions enter finalization or maintenance.
 When Compute requires stopped predecessors, a newer admission supersedes older
 active maintenance before Compute effects, even after candidate failure.
-Otherwise an older candidate completes as superseded once a newer version is
-active or its deployment has ended, failed or not (`endedSharedSuccessor`).
 Recovery uses a new version.
 
 Agent-stop work rechecks current exact-Agent `operate`; superseded desired state
@@ -425,7 +423,6 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
-- 2026-10-31 20:47: On shared Compute, a newer deployment that ends supersedes older candidates. (fix-3066)
 - 2026-10-30 17:22: Shutdown stops the loop before readiness and parts close. (fix-2997)
 
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.
