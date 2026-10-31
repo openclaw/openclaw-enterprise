@@ -211,9 +211,9 @@ secret input reads an unset variable: Codex `appServer.authToken` or
 Agent save refuse them for other Agents. Deployment also refuses another
 variable that no Configuration Secret binding sets, unless an Installation
 Driver adds launch variables. Bind a Secret to it, or remove or disable the
-plugin entry. Deployment and Agent save also refuse a reference OpenClaw cannot
-read in any active plugin's secret input, including an enabled Beam or IMAP
-entry: a SecretRef without a provider, a provider that `secrets.providers` does
+plugin entry. On Kubernetes, Configuration save, Agent save and deployment
+also refuse a reference OpenClaw cannot read in any active plugin's secret
+input, including an enabled Beam or IMAP entry: a SecretRef without a provider, a provider that `secrets.providers` does
 not configure (the default env alias needs no entry), an env id that does not
 start with a letter and use only `A-Z`, `0-9` and `_` (at most 128 characters),
 or an id that the env provider's `allowlist` omits. The allowlist applies to

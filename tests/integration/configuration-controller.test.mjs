@@ -2139,6 +2139,124 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     invalidSecretProviderDefaultsRefusal("alias", "env", "BAD", "bad"),
   );
 
+  // A plugin secret input OpenClaw cannot read at all stops the Gateway whatever the topology and
+  // the bindings, while its configuration still validates (finding 3056): one without a provider,
+  // an env id OpenClaw refuses, a provider no secrets.providers entry configures (at an input with
+  // a runtime owner, beam enabled, too) and an id the env provider's allowlist omits. Kubernetes
+  // Compute's save rules refuse each with deployment's text (finding 3069): before, the save
+  // accepted it and only deployment refused it. A stored row still reads, deployment refuses it,
+  // and an edit that keeps it gets the same refusal, which names the step.
+  const unreadablePluginInputs = [
+    [
+      withPluginEntries(valid, {
+        codex: { config: { appServer: { authToken: { source: "env", id: "RELAY_TOKEN" } } } },
+      }),
+      unreadablePluginSecretRefusal(
+        "plugins.entries.codex.config.appServer.authToken",
+        "codex",
+        "providerless",
+      ),
+    ],
+    [
+      withPluginEntries(
+        valid,
+        searchHeader("X-Goog-User-Project", {
+          source: "env",
+          provider: "default",
+          id: "search_header",
+        }),
+      ),
+      unreadablePluginSecretRefusal(
+        "plugins.entries.google.config.webSearch.headers.X-Goog-User-Project",
+        "google",
+        "id",
+        "search_header",
+        "SEARCH_HEADER",
+      ),
+    ],
+    [
+      withPluginEntries(valid, {
+        beam: {
+          enabled: true,
+          config: {
+            mirror: {
+              endpoint: "https://beam.example.test/mirror",
+              catalogs: ["main"],
+              token: { source: "env", provider: "vault", id: "BEAM_TOKEN" },
+            },
+          },
+        },
+      }),
+      unreadablePluginSecretRefusal(
+        "plugins.entries.beam.config.mirror.token",
+        "beam",
+        "provider",
+        "vault",
+      ),
+    ],
+    [
+      {
+        ...withPluginEntries(valid, searchHeader("X-Key", "$SEARCH_HEADER")),
+        secrets: {
+          providers: { default: { source: "env", allowlist: ["OPENCLAW_GATEWAY_PASSWORD"] } },
+        },
+      },
+      unreadablePluginSecretRefusal(
+        "plugins.entries.google.config.webSearch.headers.X-Key",
+        "google",
+        "allowlist",
+        "SEARCH_HEADER",
+      ),
+    ],
+  ];
+  for (const [values, message] of unreadablePluginInputs) {
+    await refusedAtSaveAndDeploy(context, agent, values, message);
+  }
+  // A Preset save refuses it too, unless the plugins or secrets wait on a variable: then it is
+  // checked once filled.
+  const [[unreadableValues, unreadableMessage]] = unreadablePluginInputs;
+  assertRefused(
+    await savePreset(context, { configuration: { values: unreadableValues } }),
+    unreadableMessage,
+  );
+  const waitingPluginInput = await savePreset(
+    context,
+    {
+      variables: { provider: { type: "string" } },
+      configuration: {
+        values: withPluginEntries(
+          valid,
+          searchHeader("X-Key", { source: "env", provider: "{{ vars.provider }}", id: "SEARCH" }),
+        ),
+      },
+    },
+    "Plugin-input-deferred",
+  );
+  assert.equal(waitingPluginInput.status, 201, JSON.stringify(waitingPluginInput.body));
+  // References OpenClaw reads still save: an env SecretRef on the default alias, the same id on a
+  // configured env provider whose allowlist lists it, and the `$NAME` shorthand there.
+  for (const value of [
+    { source: "env", provider: "default", id: "SEARCH_HEADER" },
+    { source: "env", provider: "listed", id: "SEARCH_HEADER" },
+    "$SEARCH_HEADER",
+  ]) {
+    const values = {
+      ...withPluginEntries(valid, searchHeader("X-Key", value)),
+      secrets: {
+        providers: {
+          default: { source: "env", allowlist: ["OPENCLAW_GATEWAY_PASSWORD", "SEARCH_HEADER"] },
+          listed: { source: "env", allowlist: ["SEARCH_HEADER"] },
+        },
+      },
+    };
+    const saved = await request(context.app, "PATCH", item, { body: { values } });
+    assert.equal(saved.status, 200, `${JSON.stringify(value)}: ${JSON.stringify(saved.body)}`);
+  }
+  assert.equal(
+    (await request(context.app, "PATCH", item, { body: { values: valid } })).status,
+    200,
+  );
+
   // Rules that depend on the Compute Driver or the topology save, and deployment refuses them.
   for (const [values, deployStatus, deployMessage] of [
     [
@@ -2188,60 +2306,6 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
       withPluginEntries(valid, searchHeader("X-Goog-User-Project", " ${SEARCH_HEADER} ")),
       400,
       unboundSearchHeader("X-Goog-User-Project"),
-    ],
-    // A SecretRef OpenClaw cannot read at all stops the Gateway whatever the bindings, while its
-    // configuration still validates (finding 3056): one without a provider, an env id OpenClaw
-    // refuses, and a provider no secrets.providers entry configures, at an input with a runtime
-    // owner (beam, enabled) too. Save accepts each.
-    [
-      withPluginEntries(valid, {
-        codex: { config: { appServer: { authToken: { source: "env", id: "RELAY_TOKEN" } } } },
-      }),
-      400,
-      unreadablePluginSecretRefusal(
-        "plugins.entries.codex.config.appServer.authToken",
-        "codex",
-        "providerless",
-      ),
-    ],
-    [
-      withPluginEntries(
-        valid,
-        searchHeader("X-Goog-User-Project", {
-          source: "env",
-          provider: "default",
-          id: "search_header",
-        }),
-      ),
-      400,
-      unreadablePluginSecretRefusal(
-        "plugins.entries.google.config.webSearch.headers.X-Goog-User-Project",
-        "google",
-        "id",
-        "search_header",
-        "SEARCH_HEADER",
-      ),
-    ],
-    [
-      withPluginEntries(valid, {
-        beam: {
-          enabled: true,
-          config: {
-            mirror: {
-              endpoint: "https://beam.example.test/mirror",
-              catalogs: ["main"],
-              token: { source: "env", provider: "vault", id: "BEAM_TOKEN" },
-            },
-          },
-        },
-      }),
-      400,
-      unreadablePluginSecretRefusal(
-        "plugins.entries.beam.config.mirror.token",
-        "beam",
-        "provider",
-        "vault",
-      ),
     ],
     // An APP_SERVER_ name at an enabled Beam is never set on this embedded Agent, and the
     // allowlist's denial of the SecretRef OpenClaw then keeps stops the Gateway (finding 3060).
