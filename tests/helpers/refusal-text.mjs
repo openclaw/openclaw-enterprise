@@ -332,15 +332,16 @@ export const codexApiKeyRefusal = (setting) =>
 // Deploy and Agent provisioning of dedicated OpenClaw where the Installation selects no
 // provisioning SandboxDriver with all three containment facets (409 RESOURCE_CONFLICT). It names
 // the next step: codex for the selected models when Codex runs them (`codexRuns`), else a Codex
-// model (finding 3036). Stored provisioning work keeps the first sentence alone, as a 503.
+// model (finding 3036), within the API's 256-character message cap. Stored provisioning work keeps
+// the first sentence alone, as a 503.
 export const DEDICATED_OPENCLAW_SANDBOX_REQUIRED =
   "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.";
 export const dedicatedOpenClawSandboxRefusal = (codexRuns) =>
-  `${DEDICATED_OPENCLAW_SANDBOX_REQUIRED} To deploy this Agent, ${
+  `${DEDICATED_OPENCLAW_SANDBOX_REQUIRED} ${
     codexRuns
-      ? "set agentRuntime.id to codex for its selected models"
-      : "select a codex/<model> model with agentRuntime.id codex"
-  }, or ask an Installation administrator to select such a SandboxDriver.`;
+      ? "Set agentRuntime.id to codex for the selected models"
+      : "Select a codex/<model> model with agentRuntime.id codex"
+  }, or ask an Installation administrator for such a SandboxDriver.`;
 // Model policy refusals at Configuration save and deploy (packages/occ/src/configured-harness.ts).
 // `policy` is the setting path of the object that holds agentRuntime, such as
 // agents.defaults.models["openai/gpt-4.1"] or models.providers.openai.models[0]; `parent` is

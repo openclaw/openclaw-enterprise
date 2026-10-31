@@ -988,11 +988,11 @@ export const DEDICATED_OPENCLAW_SANDBOX_REQUIRED =
 export class DedicatedOpenClawSandboxError extends ResourceStateConflictError {
   constructor(codexRuns = false) {
     super(
-      `${DEDICATED_OPENCLAW_SANDBOX_REQUIRED} To deploy this Agent, ${
+      `${DEDICATED_OPENCLAW_SANDBOX_REQUIRED} ${
         codexRuns
-          ? "set agentRuntime.id to codex for its selected models"
-          : "select a codex/<model> model with agentRuntime.id codex"
-      }, or ask an Installation administrator to select such a SandboxDriver.`,
+          ? "Set agentRuntime.id to codex for the selected models"
+          : "Select a codex/<model> model with agentRuntime.id codex"
+      }, or ask an Installation administrator for such a SandboxDriver.`,
     );
     this.name = "DedicatedOpenClawSandboxError";
   }
