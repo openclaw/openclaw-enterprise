@@ -12,7 +12,7 @@ import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor, within } from "../helpers/wait-for.mjs";
 
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const repository = fileURLToPath(new URL("../..", import.meta.url));
@@ -132,16 +132,11 @@ test(
     const signalled = performance.now();
     child.kill("SIGTERM");
     // An idle worker closes in well under a second; the bound only absorbs a loaded runner.
-    const [code, signal] = await Promise.race([
+    const [code, signal] = await within(
       exited,
-      new Promise<never>((_, reject) => {
-        const timer = setTimeout(
-          () => reject(new Error(`worker.mjs did not exit within 20 s of SIGTERM:\n${output}`)),
-          20_000,
-        );
-        timer.unref();
-      }),
-    ]);
+      () => `worker.mjs did not exit after SIGTERM:\n${output}`,
+      20_000,
+    );
 
     const exitMs = performance.now() - signalled;
 

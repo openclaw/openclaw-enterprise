@@ -202,8 +202,42 @@ OpenClaw when there is no model candidate or an unambiguous built-in provider.
 OpenAI, Codex, custom providers, and plugin-routed providers require an explicit
 runtime policy. Catalog entries may use the full model reference or the ID after
 the first slash. Each listed provider model must be a selected primary or fallback.
+When no model is selected at all, that refusal says so and names
+`agents.defaults.model` or an `agents.entries` model as the setting to set.
 Codex accepts its native `codex` provider, or `openai` with the
 Codex plugin explicitly enabled for WebSocket app-server transport.
+An embedded or dedicated Gateway cannot start when an active plugin's startup
+secret input reads an unset variable: Codex `appServer.authToken` or
+`appServer.headers`, or Google `webSearch.headers`. Kubernetes sets the
+`APP_SERVER_` variables only in a dedicated Codex Gateway, so deployment and
+Agent save refuse them for other Agents. Deployment also refuses another
+variable that no Configuration Secret binding sets, unless an Installation
+Driver adds launch variables. Bind a Secret to it, or remove or disable the
+plugin entry. OpenClaw reads these inputs only in an entry keyed by the exact
+plugin ID, such as `google`, not `Google`. On Kubernetes, Configuration save, Agent save and deployment
+also refuse a reference OpenClaw cannot read in any active plugin's secret
+input, including an enabled Beam or IMAP entry: a SecretRef without a
+provider, a provider that `secrets.providers` does not configure (the default
+env alias needs no entry), an env id that does not start with a letter and use
+only `A-Z`, `0-9` and `_` (at most 128 characters), or an id that the env
+provider's `allowlist` omits. The allowlist applies to
+`$NAME` and SecretRef objects. OpenClaw substitutes a set `${NAME}` first, so the
+allowlist applies to it only when the variable is unset. Deployment then refuses an
+unbound `${NAME}` that the allowlist omits at an enabled Beam or IMAP entry.
+Deployment and Agent save refuse such a `${APP_SERVER_*}` there for Agents other
+than dedicated Codex, because it is always unset on them. On every Compute,
+Configuration save, Agent save and deployment apply the same provider and
+allowlist rules to a `gateway.auth.password` SecretRef. They also refuse one
+with keys other than `source`, `provider` and `id`, because OpenClaw's
+configuration check then fails. The same check fails on a `secrets.defaults` that
+is not an object, that holds a key other than `env`, `file`, `exec` or `store`,
+or that holds an alias outside OpenClaw's alias grammar, such as `" custom "` or
+`"BAD"`, so the same steps refuse these too. OpenClaw substitutes an alias written
+as `${NAME}` or `${NAME:-fallback}` before that check, so OCE leaves such an alias,
+and any SecretRef rule that depends on it, to OpenClaw. Configuration save, Agent
+save and deployment refuse another spelling of a `codex` or `acpx` key in
+`plugins.entries`, such as `Codex`: OpenClaw merges it into that plugin's entry,
+which OCE checks only at the exact key.
 
 Configuration writes run these rules in deployment's order. They refuse settings
 that conflict, with deployment's message: an entry primary that differs, selectable
@@ -212,10 +246,22 @@ runtime policies, an unsupported runtime ID, or Codex on another provider. Each
 message names the settings to change and, for a runtime, the allowed values `openclaw`
 and `codex`. A draft without a model, or a model without its required runtime, still
 saves; deployment refuses it and names the setting to add:
-`agents.defaults.models["<ref>"].agentRuntime.id` for a missing runtime (the entry's
-`agents.entries.<id>.models` policy when it lists the model), and on Kubernetes Compute
-`agents.defaults.model` for a missing model. A Preset is checked when a launch creates
-its Configuration.
+`agents.defaults.models["<ref>"].agentRuntime.id` for a missing runtime, and on
+Kubernetes Compute `agents.defaults.model` for a missing model. A missing runtime names a
+setting that keeps the selectable rule: the entry's `agents.entries.<id>.models` policy when
+it lists the model or sets the primary's runtime, or the model's provider catalog entry or
+provider when the primary's runtime comes from there. A missing or conflicting runtime offers
+only values that deployment accepts: `codex` only where Codex accepts the model, and the
+runtime that the other selected models, the listed models, or another policy already select.
+Deployment and Agent provisioning also check the Agent: if the Agent is dedicated and the
+Installation does not list dedicated OpenClaw, the refusal offers only `codex` where Codex
+accepts the model. Deployment of an embedded Agent, where the Installation approves Codex only
+for dedicated execution, offers only `openclaw`. For a `codex/<model>` model, embedded OpenClaw
+cannot run it either, so the refusal tells you to set `codex` on a dedicated Agent or to select
+a model of another provider. For Codex on another provider, the refusal offers only the step that
+the Agent can take: a `codex/<model>` model or `openclaw`. Configuration save can serve any
+Agent, so it offers both values.
+A Preset is checked when a launch creates its Configuration.
 
 ## Limits
 
@@ -237,13 +283,13 @@ its Configuration.
 
 ## Troubleshooting
 
-| Symptom                                                       | Check                                                                                                                                                                                                              | Recovery and expected result                                                                                                                               |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Deployment returns `400 INVALID_REQUEST`                      | Check the primary model, explicit runtime policies, execution mode, and native worker support.                                                                                                                     | Choose a supported pair or configure a qualifying native image. Verify the mode appears in the Installation response.                                      |
-| Dedicated native OpenClaw returns `409 RESOURCE_CONFLICT`     | Check whether the Installation has a Sandbox that supports the mode, provisions the Harness, and enforces the required facets.                                                                                     | Configure a qualifying Sandbox or choose an advertised mode, then retry deployment.                                                                        |
-| Agent save or deployment returns `503 DEPENDENCY_UNAVAILABLE` | Check `GET /installation` for `sandboxDriverUnavailable: true`. OCC reports an empty list of OpenClaw execution modes while the selected Driver is unavailable.                                                    | Restore the selected Sandbox. Verify that the mode appears again, then retry the request. Queued provisioning can resume when the Driver returns.          |
-| A model probe holds a workload unready                        | Check the [deployment failure cause](agents/deployment.md#model-check-failure-cause). `AUTHENTICATION_FAILED` indicates rejected credentials; `MODEL_PROBE_TIMEOUT` indicates the probe exhausted its time budget. | Correct the binding, provider endpoint, or connectivity and redeploy. Readiness polling does not start another model call. Check that deployment succeeds. |
-| Gateway reports `Waiting for Harness plugin runtime status`   | Inspect Harness login, model probe, and plugin status first.                                                                                                                                                       | Restore the Harness dependency. Check both the gateway endpoint and the AgentRevision's deployment status before sending a turn.                           |
+| Symptom                                                       | Check                                                                                                                                                                                                              | Recovery and expected result                                                                                                                                                              |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Deployment returns `400 INVALID_REQUEST`                      | Check the primary model, explicit runtime policies, execution mode, and native worker support.                                                                                                                     | Choose a supported pair or configure a qualifying native image. Verify the mode appears in the Installation response.                                                                     |
+| Dedicated native OpenClaw returns `409 RESOURCE_CONFLICT`     | Check whether the Installation has a Sandbox that supports the mode, provisions the Harness, and enforces the required facets.                                                                                     | Do the step that the message names: set `agentRuntime.id` to `codex` for models that Codex accepts, or ask an Installation administrator for a qualifying Sandbox. Then retry deployment. |
+| Agent save or deployment returns `503 DEPENDENCY_UNAVAILABLE` | Check `GET /installation` for `sandboxDriverUnavailable: true`. OCC reports an empty list of OpenClaw execution modes while the selected Driver is unavailable.                                                    | Restore the selected Sandbox. Verify that the mode appears again, then retry the request. Queued provisioning can resume when the Driver returns.                                         |
+| A model probe holds a workload unready                        | Check the [deployment failure cause](agents/deployment.md#model-check-failure-cause). `AUTHENTICATION_FAILED` indicates rejected credentials; `MODEL_PROBE_TIMEOUT` indicates the probe exhausted its time budget. | Correct the binding, provider endpoint, or connectivity and redeploy. Readiness polling does not start another model call. Check that deployment succeeds.                                |
+| Gateway reports `Waiting for Harness plugin runtime status`   | Inspect Harness login, model probe, and plugin status first.                                                                                                                                                       | Restore the Harness dependency. Check both the gateway endpoint and the AgentRevision's deployment status before sending a turn.                                                          |
 
 ## Implementations
 

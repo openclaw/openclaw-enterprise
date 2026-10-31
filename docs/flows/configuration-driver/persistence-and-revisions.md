@@ -26,7 +26,8 @@ which runs the deployment resolver itself, in its order, and leaves a draft
 without a model or runtime to deployment), all of which every deployment refuses,
 with deployment's own text, and [the settings rules](../../../packages/occ/src/configuration-settings.ts).
 These rules reject unsupported Codex approval policies, a literal
-`gateway.auth.password`, and retired settings such as `security.preset`.
+`gateway.auth.password` or a password SecretRef OpenClaw cannot read
+(`gatewayPasswordRequirement`), and retired settings such as `security.preset`.
 OCC also calls the selected Compute Driver's optional
 [`validateConfiguration`](../../reference/drivers/compute-admission.md). On
 Kubernetes, this check refuses unsupported channels, model credentials outside the Harness
@@ -46,7 +47,8 @@ bundled Driver checks a stored document only against
 the credential-reference rules in force before 2026-10-12, and every write and
 deployment against all of them. Those include a `${NAME}` reference or SecretRef
 in every slot OpenClaw marks sensitive, channel and plugin secrets included
-([list](../../reference/configuration/secrets.md#secret-boundaries)), checked in
+([list](../../reference/configuration/secrets.md#secret-boundaries)), and in a
+plugin secret input also OpenClaw's whole `$NAME` shorthand, checked in
 [the credential rules](../../../apps/controller/src/drivers/configuration/model-auth.ts),
 which a Preset save runs too. The Driver owns backing document
 storage and checks storage-specific identity and ownership. When the bundled

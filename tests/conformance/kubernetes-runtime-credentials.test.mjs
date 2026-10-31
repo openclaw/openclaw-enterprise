@@ -781,14 +781,23 @@ test("embedded Gateway uses the separate canonical password source", () => {
   };
 
   assert.equal(gatewayEnvironment({}).OPENCLAW_GATEWAY_PASSWORD, undefined);
-  assert.deepEqual(
-    gatewayEnvironment({
-      gateway: {
-        auth: { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } },
-      },
-    }).OPENCLAW_GATEWAY_PASSWORD.valueFrom.secretKeyRef,
-    { name: `gateway-password-${suffix}`, key: "gateway-password" },
-  );
+  // On the default env alias, and on an env provider the revision's secrets configure, which
+  // OpenClaw also reads from the Gateway's environment (finding 3057).
+  for (const [provider, secrets] of [
+    ["default", undefined],
+    ["vault", { providers: { vault: { source: "env" } } }],
+  ]) {
+    assert.deepEqual(
+      gatewayEnvironment({
+        gateway: {
+          auth: { password: { source: "env", provider, id: "OPENCLAW_GATEWAY_PASSWORD" } },
+        },
+        ...(secrets === undefined ? {} : { secrets }),
+      }).OPENCLAW_GATEWAY_PASSWORD.valueFrom.secretKeyRef,
+      { name: `gateway-password-${suffix}`, key: "gateway-password" },
+      provider,
+    );
+  }
   assert.throws(
     () =>
       driver.gatewayConfiguration({

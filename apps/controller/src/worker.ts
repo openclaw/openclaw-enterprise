@@ -1104,6 +1104,14 @@ const HELD_RUNTIME_FAILURE_CODES: Readonly<Record<string, string>> = Object.free
   REPOSITORY_ROUTE_BLOCKED: "REPOSITORY_GIT_ROUTE_BLOCKED",
 });
 
+// The deployment failure codes of held runtime failures. `finalizeRevision` does not stop their
+// runtime, but the failure of a version with repository credentials also queues its retirement
+// (`agent_revision:<id>:repository_cleanup:retire:<hash>`), which stops it: see
+// `heldRuntimeSuccessor`.
+const HELD_RUNTIME_DEPLOYMENT_CODES: ReadonlySet<string> = new Set(
+  Object.values(HELD_RUNTIME_FAILURE_CODES),
+);
+
 function heldRuntimeFailureCode(code: string): string | undefined {
   return Object.hasOwn(HELD_RUNTIME_FAILURE_CODES, code)
     ? HELD_RUNTIME_FAILURE_CODES[code]
@@ -4476,7 +4484,18 @@ export class ControllerWorker {
               }
               return undefined;
             });
-      if (successor !== undefined) {
+      // An exclusive candidate overtaken by a newer version without exclusive replacement (an
+      // Agent switched from dedicated to embedded execution) cannot become ready once that version
+      // holds a failed runtime: see `heldRuntimeSuccessor` (finding 3068). The active version is
+      // left to its maintenance.
+      const heldSuccessor =
+        successor === undefined &&
+        agent.activeRevisionId !== revision.id &&
+        this.compute.requiresStoppedPredecessors?.(revision) === true
+          ? await this.heldRuntimeSuccessor(revision)
+          : undefined;
+      const supersededBy = successor ?? heldSuccessor;
+      if (supersededBy !== undefined) {
         // A refusal decided after this check (lost repository authority, a Secret or
         // credential-source problem, a refused observation) may still wait on its candidate's
         // stop. The newer revision's sweep gives up at its own deadline, so finish that stop
@@ -4503,9 +4522,20 @@ export class ControllerWorker {
           claim,
           this.refusalWait === undefined ? "yield" : "wait",
         );
+        if (heldSuccessor !== undefined && waited === undefined) {
+          // A newer exclusive version stops this one before it prepares; a version without
+          // exclusive replacement never does. The newer version replaced only the Gateway, so
+          // this version's Harness (its Deployment or Sandbox) would keep running with nothing
+          // routing to it until a later activation retired it. Stop it now, after its
+          // predecessors. Kubernetes deletes the Gateway only while this version holds it, so
+          // the stop has no Gateway drain to wait for. A failed stop fails this pass, and the
+          // next pass repeats it. (A stored refusal's wait above already stopped it.)
+          await this.closeRevisionCredentials(claim, revision);
+          await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
+        }
         await this.finalizeRevision(
           claim,
-          { outcome: "success", code: "REVISION_SUPERSEDED", supersededBy: successor },
+          { outcome: "success", code: "REVISION_SUPERSEDED", supersededBy },
           predecessorStop,
         );
         return;
@@ -4709,6 +4739,19 @@ export class ControllerWorker {
           outcome: "success",
           code: "REVISION_SUPERSEDED",
           supersededBy: previous,
+        });
+        return;
+      }
+      // An exclusive version was decided by the successor check above.
+      const holder =
+        this.compute.requiresStoppedPredecessors?.(revision) === true
+          ? undefined
+          : await this.heldRuntimeSuccessor(revision);
+      if (holder !== undefined) {
+        await this.finalizeRevision(claim, {
+          outcome: "success",
+          code: "REVISION_SUPERSEDED",
+          supersededBy: holder,
         });
         return;
       }
@@ -6886,6 +6929,56 @@ export class ControllerWorker {
       ...this.deployTimingFields(claim),
     });
     return true;
+  }
+
+  /**
+   * The Agent's newest version, if it is later than this one, on this Compute, without repository
+   * credentials, and its deployment failed with a held runtime failure (findings 3066, 3068). The
+   * successor check has already handled a later exclusive version, so this one runs without
+   * exclusive replacement. Compute keeps one Gateway per Agent (Kubernetes: one Deployment, never
+   * rolled back): that version took it over, so Compute reports this version not ready, and
+   * `finalizeRevision` keeps a held failure's runtime for diagnosis instead of stopping it. This
+   * version could then only wait out the convergence deadline. No other
+   * outcome shows that the newest version's runtime is still in place: a refusal before Compute
+   * never wrote it, a refused candidate may have been stopped (on a first deploy that deletes the
+   * Gateway), a deadline or retry failure may have come before Compute, and a succeeded deployment
+   * activated (`previous` decides), was superseded or was stopped. A version with repository
+   * credentials is also excluded: its failure queues runtime retirement in the same transaction
+   * (`transferRepositoryCleanupSql`), and `processRepositoryCleanup` stops it, which deletes the
+   * Gateway it holds. After those, this version can still activate, so it keeps waiting. Only the
+   * newest version counts, as a newer one may have replaced or removed the runtime. An exclusive
+   * version is superseded through the successor check, which first finishes its predecessor stops
+   * and stops its own Harness.
+   */
+  private async heldRuntimeSuccessor(
+    revision: Readonly<AgentRevision>,
+  ): Promise<Readonly<AgentRevision> | undefined> {
+    const newest = (
+      await this.state.read((view) =>
+        view.revisions.listRevisionMetadata(revision.namespaceId, revision.agentId),
+      )
+    ).at(-1);
+    if (newest === undefined || newest.revision <= revision.revision) {
+      return undefined;
+    }
+    const deployment = await this.queue.findWork(`agent_revision:${newest.id}:reconcile`);
+    if (
+      deployment?.revisionId !== newest.id ||
+      deployment.state !== "failed_permanent" ||
+      deployment.reasonCode === undefined ||
+      !HELD_RUNTIME_DEPLOYMENT_CODES.has(deployment.reasonCode)
+    ) {
+      return undefined;
+    }
+    const candidate = await this.state.read((view) =>
+      view.revisions.findRevision(newest.namespaceId, newest.agentId, newest.id),
+    );
+    return candidate !== undefined &&
+      candidate.repositoryCredentials === undefined &&
+      candidate.compute.id === this.compute.id &&
+      candidate.compute.implementation === this.compute.implementation
+      ? candidate
+      : undefined;
   }
 
   /**

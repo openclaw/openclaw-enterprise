@@ -12,6 +12,7 @@ import {
   verifyKnownDevice,
 } from "../../apps/controller/src/auth/known-device.ts";
 import { injectJson } from "../helpers/inject-json.mjs";
+import { within } from "../helpers/wait-for.mjs";
 
 const secret = "known-device-test-secret-at-least-32-bytes";
 const email = "member@example.test";
@@ -407,19 +408,12 @@ test(
       await Promise.allSettled(requests);
       await app.close();
     });
-    let timer;
     let first;
     let before;
     try {
-      first = await Promise.race([
-        observed,
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error("route did not reach either boundary")), 8_000);
-        }),
-      ]);
+      first = await within(observed, "route did not reach either boundary", 8_000);
       before = { reads, admissions: admissions.filter((entry) => entry.beforeRelease) };
     } finally {
-      clearTimeout(timer);
       released = true;
       release();
     }

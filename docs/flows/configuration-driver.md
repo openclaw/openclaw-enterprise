@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
-updated: 2026-10-29
-last_updated_session: authoring-run/74db2351-f5c1-4733-a3dc-a1ca653b29cf
+updated: 2026-10-31
+last_updated_session: fix-3023
 ---
 
 # Configuration Driver and Agent Revision Flow
@@ -218,6 +218,10 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31: Writes, Agent save and deployment refuse a `gateway.auth.password` object OpenClaw cannot read on every Compute (no provider, other keys, a provider or allowlist that cannot serve it); Docker and Kubernetes Compute use the same reader, and a stored row still reads and deletes. (fix-3061, findings 3061-3063)
+- 2026-10-31: Writes, Agent save and deployment also refuse a `secrets.defaults` alias OpenClaw's configuration check refuses, before the password rule; SSH Compute reads the password with the same reader and renders a readable custom-provider reference as written. (fix-3064, findings 3064, 3065)
+- 2026-10-31: With no model selected, the provider catalog refusal names the model setting instead of the row rule. (fix-3023)
 
 - 2026-10-31: Writes also refuse model and runtime settings that conflict (entry primary, selectable models, runtime policies and IDs, Codex provider), with deployment's text and order; drafts without a model or runtime still save. (fix-3020, finding 3020)
 

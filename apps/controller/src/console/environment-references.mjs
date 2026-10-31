@@ -2,7 +2,10 @@
 // (console-assets.ts); browsers never load this file.
 export {
   environmentReferenceNames,
+  gatewayPasswordRequirement,
+  generatedGatewayPasswordReference,
   secretInputShorthandName,
+  secretProviderDefaultsProblem,
   unsubstitutedReference,
   wholeEnvironmentReferenceName,
 } from "@openclaw-enterprise/occ";

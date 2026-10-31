@@ -110,6 +110,14 @@ export const CredentialsSlackOffGrantMissing = {
   ...story("credentialsSlackOffGrantMissing"),
   name: "Slack off with a bound Secret without an Agent grant",
 };
+export const CredentialsSlackOffRetryUnconfirmed = {
+  ...story("credentialsSlackOffRetryUnconfirmed"),
+  name: "Slack off Retry with an unconfirmed grant",
+};
+export const CredentialsSlackOffRetryAnswerLost = {
+  ...story("credentialsSlackOffRetryAnswerLost"),
+  name: "Slack off Retry whose answer is lost",
+};
 export const CredentialsSlackGrantReadPending = {
   ...story("credentialsSlackGrantReadPending"),
   name: "Slack grant read in progress",

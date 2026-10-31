@@ -102,6 +102,10 @@ key naming where a credential is read from (ending in `File`, `Path`, `Dir` or
 `headers` map there follows the header rule. Environment maps keep their own
 rules, and a hook mapping's `sessionKey`, a routing key, stays as written. A
 literal `gateway.auth.password` is refused on Configuration and Preset saves.
+A plugin secret input that OpenClaw resolves (a bundled manifest's secret inputs,
+such as Codex `appServer.authToken` and `appServer.headers`, and web search and
+fetch `apiKey`s) also takes a whole `$NAME` value: OpenClaw reads it as an
+environment SecretRef. The other slots refuse a `$NAME` value.
 
 A stored document that predates one of these rules still reads, so its
 operator can replace it.

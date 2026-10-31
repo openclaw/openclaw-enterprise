@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { BINDING_SUBJECT_INELIGIBLE } from "../helpers/refusal-text.mjs";
 
 const authSecret = "agent-deletion-audit-postgres-auth-secret-minimum-32";
 const byId = (left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
@@ -166,15 +167,7 @@ test(
     for (const [subjectId, resourceKind, resourceId, [path, message]] of [
       [principal.id, "agent", agent.id, deletedTarget],
       [principal.id, "agent_revision", revision.id, deletedTarget],
-      [
-        servicePrincipalId,
-        "secret",
-        secretRef.id,
-        [
-          "/subjectId",
-          "The IAM AccessBinding subject must be a human Principal, a non-Agent ServicePrincipal of this Namespace, or the ServicePrincipal of a live Agent here.",
-        ],
-      ],
+      [servicePrincipalId, "secret", secretRef.id, ["/subjectId", BINDING_SUBJECT_INELIGIBLE]],
     ]) {
       const refused = await inject(
         "POST",
