@@ -42,23 +42,23 @@ const templates = [
   },
 ];
 
-test("selected plugin search requires exact identity and the admitted marketplace", () => {
-  const pluginId = `codex-plugin:${nativeId}`;
-  assert.equal(translator.codexSearchPlan(selections)[0].params.searchTerm, "fixture");
-  // Search can return fuzzy matches and entries from other marketplaces. Neither
-  // may redirect installation away from the Agent's admitted selection.
-  for (const result of [
-    { marketplaceName: "workspace-directory", plugin: detail.plugin.summary },
+test("selected plugin catalog resolution requires exact identity and the admitted marketplace", () => {
+  // Entries from other marketplaces and partial ID matches must not redirect
+  // installation away from the Agent's admitted selection.
+  for (const marketplace of [
+    { name: "workspace-directory", plugins: [detail.plugin.summary] },
     {
-      marketplaceName: "openai-curated-remote",
-      plugin: { ...detail.plugin.summary, id: "fixture-tools@openai-curated-remote" },
+      name: "openai-curated-remote",
+      plugins: [{ ...detail.plugin.summary, id: "fixture-tools@openai-curated-remote" }],
     },
   ]) {
-    assert.equal(translator.codexReadParamsFromSearch(pluginId, { data: [result] }), undefined);
+    assert.throws(
+      () => translator.codexReadParamsForSelections(selections, { marketplaces: [marketplace] }),
+      /catalog did not contain the selected plugin/,
+    );
   }
-  const params = translator.codexReadParamsFromSearch(pluginId, {
-    data: [{ marketplaceName: "openai-curated-remote", plugin: detail.plugin.summary }],
-    nextCursor: null,
+  const [params] = translator.codexReadParamsForSelections(selections, {
+    marketplaces: [{ name: "openai-curated-remote", plugins: [detail.plugin.summary] }],
   });
   assert.equal(params.pluginName, "fixture");
   assert.equal(params.remoteMarketplaceName, "openai-curated-remote");

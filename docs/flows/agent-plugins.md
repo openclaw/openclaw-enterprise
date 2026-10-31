@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-29
-last_updated_session: 01a184cd-7ec2-7fa2-8547-9629c51ad0ba
+updated: 2026-10-31
+last_updated_session: authoring-run/19fe4474-0b66-462e-9fcd-5afe08fe9c8a
 ---
 
 # Agent Plugin Deployment Flow
@@ -205,7 +205,7 @@ describe the generated bridge.
 <!-- Internal preparation threads one explicit RPC caller through these reads,
 writes, reviewer checks, and no-account disablement; ordinary transport is unchanged. -->
 
-After `plugin/search` resolves each selected ID,
+`codexReadParamsForSelections` resolves exact selected IDs from `plugin/list`'s curated catalog.
 `runtime-entrypoints.ts:readCodexPluginDetails` reads up to four
 selections concurrently before and after installs. Batches preserve order and drain
 before retries and final verification; writes stay sequential.
@@ -218,8 +218,6 @@ Install rejections or missing app authentication warn. Explicit tool policies
 require `mcpServerStatus/list`'s `codex_apps` inventory; `codexAppToolSettings`
 binds catalog action IDs through `_meta._codex_apps.resource_uri`. Native IDs
 work. Unknown, unowned, ambiguous, or duplicate IDs fail startup.
-
-`codexRuntimeArtifact` applies the [native policy mappings](../reference/drivers/plugin-bundled.md).
 
 After installation, startup rechecks catalog identity, version, apps and components
 before final app/tool grants; `plugin/read` cannot inspect bundles.
@@ -350,9 +348,6 @@ establish starvation.
 - Prove behavior with a model-chosen plugin call in a normal Agent turn, then
   disable or remove the plugin and verify another Agent is unchanged. Source or
   fixture tests are not native runtime proof.
-- The opt-in [Agent plugin testing](../testing/plugins.md) real-runtime lane covers
-  Kubernetes, database, credential, native-runtime, and historical proof. Skipped
-  native tests are not proof.
 
 ## Related docs
 
@@ -370,6 +365,7 @@ establish starvation.
 
 ## Changelog
 
+- 2026-10-31 03:03: Resolve plugins through the pinned catalog API with these changes. (authoring-run/19fe4474-0b66-462e-9fcd-5afe08fe9c8a - d10715a3d0dfef7592ca35efebed0b3c6867c7ab)
 - 2026-10-29 22:19: Release deferred catalog loading when its tab is no longer current. (authoring-run/7a2bb516-4223-4156-b1a8-1d89f60a54d4)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.
