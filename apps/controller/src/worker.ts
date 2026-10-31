@@ -6138,8 +6138,10 @@ export class ControllerWorker {
           return;
         }
         if (
-          activated.executionAdmission.version === 6 &&
-          resolved.code === "REPOSITORY_GIT_ROUTE_PENDING"
+          resolved.code === "REPOSITORY_GIT_ROUTE_PENDING" &&
+          (activated.executionAdmission.version === 6 ||
+            (activated.executionAdmission.version === 5 &&
+              activated.egressPlan?.repositoryGitAuthorization === "online-request"))
         ) {
           // Re-enter normal preparation after custody can install material. Do not mark this
           // deployment ready, retire a predecessor, or release traffic at the held boundary.

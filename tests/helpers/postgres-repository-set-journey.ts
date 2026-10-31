@@ -1,3 +1,4 @@
+import { deferred } from "./deferred.ts";
 import { waitFor } from "./wait-for.mjs";
 import { buffer } from "node:stream/consumers";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
@@ -43,14 +44,43 @@ const repositorySetPermissions = {
 } as const;
 import { gitExpiryGateway } from "./openshell-online-git-journey.mjs";
 import { harnessTlsFixture } from "./harness-tls.mjs";
-import { availablePort } from "./available-port.mjs";
+import { bindReservedPortInProcess, reservePort } from "./available-port.mjs";
 import { invoke, token, openShellMiddlewareClient } from "./openshell-online-wire.mjs";
 import { exerciseNativeRepositorySet } from "./native-repository-set.ts";
 import { CREDENTIAL_GATEWAY_FIXTURE_ID } from "./postgres-worker-revision-fixture.mjs";
 
 // PostgreSQL admission, worker, owner, route and bundled proxy are production code.
 // Compute observations, the authenticated Gateway, launcher and Git provider are controlled.
+type NarrowJourney = {
+  pool: Awaited<ReturnType<typeof standingExecutionPlatform>>["observerPool"];
+  peer: Awaited<ReturnType<typeof preparedStandingGitPeer>>;
+  sandboxId: string;
+  pushRef: string;
+  grantId: string;
+  installed: { preparationAttemptId: string; materialVersion: string };
+  evaluate: (input: object, signedSandbox?: string) => ReturnType<typeof invoke>;
+  withLookupFault: (fault: "material" | "provider", exercise: () => Promise<void>) => Promise<void>;
+  heldCredentialStatus: () => Promise<number>;
+  admissionId: string;
+  removeBinding: () => Promise<unknown>;
+  withdraw: () => Promise<unknown>;
+};
+
+export async function narrowOnlineGitJourney(
+  t: TestContext,
+  exercise: (journey: NarrowJourney) => Promise<void>,
+) {
+  return repositoryGitJourney(t, exercise);
+}
+
 export async function repositorySetJourney(t: TestContext) {
+  return repositoryGitJourney(t);
+}
+
+async function repositoryGitJourney(
+  t: TestContext,
+  narrow?: (journey: NarrowJourney) => Promise<void>,
+) {
   const workspace = "selected-journey";
   const tls = await harnessTlsFixture(t);
   const tokenPath = join(tls.directory, "gateway-token");
@@ -95,7 +125,12 @@ export async function repositorySetJourney(t: TestContext) {
   const keys = generateKeyPairSync("ed25519");
   const issuerPublicKeyPath = join(tls.directory, "issuer.pem");
   await writeFile(issuerPublicKeyPath, keys.publicKey.export({ type: "spki", format: "pem" }));
-  const port = await availablePort();
+  // The Git runtime binds its authority on this port in-process, well after its configuration
+  // names it. Hold the port until then, so a test running in parallel cannot take it.
+  const authorityPort = await reservePort();
+  t.after(() => authorityPort.release());
+  await bindReservedPortInProcess(authorityPort);
+  const { port } = authorityPort;
   const middleware = openShellMiddlewareClient(t, port, tls.caBundle);
   const order: string[] = [];
   const id = "selected-stock-openshell";
@@ -191,15 +226,19 @@ export async function repositorySetJourney(t: TestContext) {
   ]);
   let admitted: AgentRevision | undefined;
   let issuanceStarted = false;
-  const issuanceRelease = Promise.withResolvers<void>();
+  const issuanceRelease = deferred();
   const peer = await preparedStandingGitPeer(t, f.observerPool, f.namespace.id, {
     driver: owner.ref,
     tokenLifetimeMs: 600_000,
-    selection: {
-      entries: repositorySet,
-      permissions: repositorySetPermissions,
-      selectedRepositoryIds: repositorySet.slice(0, 2).map((entry) => entry.repositoryId),
-    },
+    ...(narrow
+      ? { draftPull: true }
+      : {
+          selection: {
+            entries: repositorySet,
+            permissions: repositorySetPermissions,
+            selectedRepositoryIds: repositorySet.slice(0, 2).map((entry) => entry.repositoryId),
+          },
+        }),
     beforeIssue: async () => {
       assert.ok(admitted);
       const { rows } = await f.observerPool.query(
@@ -219,6 +258,9 @@ export async function repositorySetJourney(t: TestContext) {
   runtime["routes"] = new PostgresOpenShellGitRouteStore(f.observerPool);
   const bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
   t.after(() => bound.close());
+  // The authority listens now. Release the hold before the first request: while both listen, the
+  // kernel may hand a connection to the hold, which resets it.
+  await authorityPort.release();
   await runtime["running"];
   const driver = new GitHubRepositoryPolicy(
     { driverId: peer.registry.backendId, backendId: peer.registry.backendId },
@@ -254,7 +296,9 @@ export async function repositorySetJourney(t: TestContext) {
     namespaceId: f.namespace.id,
     agentId: agent.id,
     configurationId: configuration.id,
-    repositoryBindings: repositorySet.slice(0, 2).map(({ repositoryRef }) => ({ repositoryRef })),
+    repositoryBindings: narrow
+      ? [{ repositoryRef: "source", profile: "git-write" }]
+      : repositorySet.slice(0, 2).map(({ repositoryRef }) => ({ repositoryRef })),
   });
   const revision = (admitted = await f.controller.deployAgent(
     f.actor.id,
@@ -267,7 +311,8 @@ export async function repositorySetJourney(t: TestContext) {
   );
   assert.equal(queued.rows.length, 1);
   const work = { ...revision, idempotencyKey: queued.rows[0].idempotency_key };
-  assert.equal(revision.repositoryCredentials!.bindings.length, 2);
+  assert.equal(revision.repositoryCredentials!.bindings.length, narrow ? 1 : 2);
+  assert.equal(revision.executionAdmission.version, 5);
   assert.equal(revision.egressPlan!.repositoryGitAuthorization, "online-request");
   Object.assign(state, {
     revisionId: revision.id,
@@ -286,7 +331,7 @@ export async function repositorySetJourney(t: TestContext) {
   state.policy = wiring.configuration;
   const startupId = randomUUID();
   let wrongIdentity = false;
-  const evaluate = (input: object) =>
+  const evaluate = (input: object, signedSandbox = wrongIdentity ? "unowned" : wire.world.id) =>
     invoke(
       middleware,
       "EvaluateHttpRequest",
@@ -294,7 +339,7 @@ export async function repositorySetJourney(t: TestContext) {
         phase: 1,
         middleware_name: "oce-prepared-git",
         context: {
-          sandbox_id: wrongIdentity ? "unowned" : wire.world.id,
+          sandbox_id: signedSandbox,
           request_id: randomUUID(),
           workspace,
         },
@@ -303,7 +348,7 @@ export async function repositorySetJourney(t: TestContext) {
         },
         ...input,
       },
-      token(keys, "supervisor", wrongIdentity ? "unowned" : wire.world.id, "repository-set"),
+      token(keys, "supervisor", signedSandbox, "repository-set"),
     );
   const probe = {
     target: {
@@ -357,7 +402,12 @@ export async function repositorySetJourney(t: TestContext) {
       let stage = "provider-bootstrap";
       try {
         const p = await runtime.prepare(r, client, workspace, state.sandbox, t.signal, ["openai"]);
-        wire.world.id ??= randomUUID();
+        // This is the synthetic process launch, after its preview registration.
+        // Both scopes must report this event, not the earlier fixture construction.
+        if (!wire.world.id) {
+          state.started = { seconds: Math.floor(Date.now() / 1000) };
+          wire.world.id = randomUUID();
+        }
         const entry = runtime["states"].get(revision.id)!.entry!;
         state.gitRule = entry.provider.previewNetworkRule()!;
         stage = "recipient-bind";
@@ -522,6 +572,74 @@ export async function repositorySetJourney(t: TestContext) {
     });
     assert.equal(acked, true);
     assert.ok(state.installed, "production owner material reached the authenticated recipient");
+    if (narrow) {
+      assert.equal(revision.repositoryCredentials!.bindings[0]!.profile, "git-write");
+      assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
+      assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, {
+        metadata: "read",
+        contents: "write",
+        pull_requests: "write",
+      });
+      const binding = revision.repositoryCredentials!.bindings[0]!;
+      const delivery = createGitHubRepositoryDeliveryResolver(peer.registry)(revision);
+      assert.ok(delivery.repository);
+      const material = runtime["states"].get(revision.id)!.entry!.material!;
+      const installed = {
+        preparationAttemptId: material.preparationAttemptId,
+        materialVersion: material.materialVersion,
+      };
+      // Corrupt only one consumer lookup, after all real live checks have run.
+      const withLookupFault: NarrowJourney["withLookupFault"] = async (fault, exercise) => {
+        const original = runtime["lookup"];
+        let calls = 0;
+        runtime["lookup"] = async (...args) => {
+          const live = await original.apply(runtime, args);
+          assert.ok(live);
+          calls++;
+          return fault === "material"
+            ? { ...live, installed: { ...live.installed, materialVersion: randomUUID() } }
+            : { ...live, providerInstanceId: randomUUID() };
+        };
+        try {
+          await exercise();
+          assert.equal(calls, 1);
+        } finally {
+          runtime["lookup"] = original;
+        }
+      };
+      const { rows } = await f.observerPool.query(
+        "SELECT admission_id FROM occ.repository_session_attempts WHERE revision_id=$1 AND phase='open'",
+        [revision.id],
+      );
+      assert.equal(rows.length, 1);
+      const heldCredential = state.installed;
+      await narrow({
+        pool: f.observerPool,
+        peer,
+        sandboxId: wire.world.id!,
+        pushRef: delivery.repository.pushRef,
+        grantId: binding.grant.grantId,
+        installed,
+        evaluate,
+        withLookupFault,
+        // Read-only provider observation; this is not a dispatch permit.
+        heldCredentialStatus: async () => (await peer.send(heldCredential, false)).status,
+        admissionId: rows[0].admission_id,
+        removeBinding: () =>
+          f.controller.updateAgent(f.actor.id, {
+            namespaceId: f.namespace.id,
+            agentId: agent.id,
+            configurationId: configuration.id,
+            repositoryBindings: [],
+          }),
+        withdraw: () => f.controller.stopAgent(f.actor.id, f.namespace.id, agent.id),
+      });
+      await peer.noBroker();
+      // Finish normal retirement before another fixture opens the same database
+      // with its own custody key. All authority and held-token checks are complete.
+      await peer.prepared.maintain();
+      return;
+    }
     assert.equal(peer.gh.issuesOfTokens.length, 1, "one issuance for the selected set");
     assert.deepEqual(
       peer.gh.issuesOfTokens[0].repositoryIds,

@@ -490,6 +490,34 @@ export function configurationSettingMessage(setting: string, requirement: string
   );
 }
 
+/**
+ * Builds a message that names two Configuration settings. When both paths do not fit the
+ * 256-character cap, the longer one is shortened first, and neither below half of the room
+ * left; the cut counts code points, as configurationFieldMessage's does.
+ */
+export function configurationSettingsMessage(
+  first: string,
+  second: string,
+  message: (first: string, second: string) => string,
+): string {
+  const budget = 256 - message("", "").length;
+  const firstCharacters = Array.from(first);
+  const secondCharacters = Array.from(second);
+  if (firstCharacters.length + secondCharacters.length <= budget) {
+    return message(first, second);
+  }
+  const half = Math.floor(budget / 2);
+  const firstLimit = Math.max(half, budget - secondCharacters.length);
+  const shorten = (characters: string[], limit: number): string =>
+    characters.length <= limit
+      ? characters.join("")
+      : `${characters.slice(0, limit - 1).join("")}…`;
+  return message(
+    shorten(firstCharacters, firstLimit),
+    shorten(secondCharacters, budget - Math.min(firstLimit, firstCharacters.length)),
+  );
+}
+
 /** Builds a message that names the Configuration setting `agents.entries.<key>`. */
 export function agentEntryMessage(key: string, message: (path: string) => string): string {
   return keyedSettingMessage("agents.entries", key, message);

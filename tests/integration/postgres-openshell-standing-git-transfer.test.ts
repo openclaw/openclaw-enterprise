@@ -1,3 +1,4 @@
+import { waitFor } from "../helpers/wait-for.mjs";
 import { repositorySetJourney } from "../helpers/postgres-repository-set-journey.ts";
 import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import assert from "node:assert/strict";
@@ -28,6 +29,7 @@ import { standingExecutionFixture } from "../helpers/postgres-standing-execution
 import { clockBehind, preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
 import {
   expireStoppedClaims,
+  makeWorkDue,
   waitForRevisionPass,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import { standingGitConversation } from "../helpers/standing-git-conversation.ts";
@@ -141,6 +143,14 @@ test(
     const authority = prepared.protectedGit!;
     await protectedGit.owner.requireRepositoryGitTransport()(authority);
     assert.ok(predecessor);
+    const persisted = await f.state.read((view) =>
+      view.revisions.findRevision(revision.namespaceId, revision.agentId, revision.id),
+    );
+    assert.deepEqual(persisted?.executionAdmission, { version: 5, mode: "protected" });
+    assert.equal(persisted.egressPlan?.repositoryGitAuthorization, "online-request");
+    const workKey = `agent_revision:${revision.id}:reconcile`;
+    const activationOrder: string[] = [];
+    let heldStopped: Promise<void> | undefined;
     const preparationClaims: string[] = [];
     let oid = peer.oid;
     const workspace = kubernetesNamespaceName(revision.namespaceId);
@@ -254,6 +264,16 @@ test(
     let askModel: ((phase: "before" | "after") => Promise<void>) | undefined;
     const compute = {
       ...f.compute,
+      activationOrder: "afterCommit" as const,
+      async activateRevision(r: AgentRevision) {
+        assert.equal(r.id, revision.id);
+        activationOrder.push("activate");
+      },
+      async retireRevision(r: AgentRevision) {
+        assert.equal(r.id, predecessor.id);
+        activationOrder.push("retire predecessor");
+        await f.compute.retireRevision();
+      },
       validateRepositoryCredentials: kube.validateRepositoryCredentials.bind(kube),
       validateExecutionAdmission: kube.validateExecutionAdmission.bind(kube),
       async prepareRevision(r: AgentRevision, custody: ComputeRevisionContext) {
@@ -394,8 +414,16 @@ test(
               undefined,
             );
             const observed = await f.compute.prepareRevision(r);
-            return { ...observed, ready: preparationClaims.length === 3 };
+            return {
+              ...observed,
+              ready: false,
+              ...(preparationClaims.length === 3 && {
+                heldForRepositoryGitMaterial: true,
+                pendingReason: "REPOSITORY_GIT_ROUTE_PENDING" as const,
+              }),
+            };
           }
+          activationOrder.push("serving");
           return f.compute.prepareRevision(r);
         } catch (error) {
           preparationFailure ??= error;
@@ -421,13 +449,29 @@ test(
         }
       },
     };
-    type Event = { event?: string; code?: string; reason?: string };
+    type Event = {
+      event?: string;
+      code?: string;
+      reason?: string;
+      workId?: string;
+      outcome?: string;
+    };
     const events: Event[] = [];
     const start = () =>
       f.start(compute, {
         emit: (e?: Event) => {
           if (e && e.event !== "worker.health") {
             events.push(e);
+            if (
+              e.event === "worker.completed" &&
+              e.workId === workKey &&
+              e.code === "REPOSITORY_GIT_ROUTE_PENDING"
+            ) {
+              heldStopped = f.stop();
+            }
+            if (e.event === "worker.completed" && e.workId === workKey && e.outcome === "success") {
+              activationOrder.push("complete");
+            }
           }
         },
         transformDrivers: (d: { installation: { drivers: object } }) => ({
@@ -496,11 +540,32 @@ test(
     try {
       originCallsBeforeActivation = peer.originCalls();
       await start();
+      await waitFor("held candidate pass", async () => (heldStopped ? true : undefined));
+      // The completion callback stops polling before another preparation can report serving.
+      assert.ok(heldStopped);
+      await heldStopped;
+      assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
+      const heldWork = await f.observerPool.query(
+        "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key=$1",
+        [workKey],
+      );
+      assert.deepEqual(heldWork.rows, [{ state: "queued", attempt_count: 0 }]);
+      assert.equal(
+        activationOrder.length,
+        0,
+        "held candidate must not activate or retire its predecessor",
+      );
+      await makeWorkDue(f.observerPool, workKey);
+      await start();
       try {
         await f.work(revision, "succeeded");
       } catch (error) {
         throw preparationFailure ?? error;
       }
+      await waitFor("original deployment completion", async () =>
+        activationOrder.includes("complete") ? true : undefined,
+      );
+      assert.deepEqual(activationOrder, ["serving", "activate", "retire predecessor", "complete"]);
       assert.equal(preparationFailure, undefined);
       assert.equal(preparationClaims.length, 3);
       assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
