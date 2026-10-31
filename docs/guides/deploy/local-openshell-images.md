@@ -125,8 +125,11 @@ image config digest separately. Keep named references by importing without
 `--digests`. If CRI reports an imported index as `imageID`, verify its exact
 receipt-bound link to the expected manifest, config, layers, source and
 architecture. A platform-only export must contain only its expected descriptor.
-Keep the Pod specification pinned to the qualified manifest. Unknown identities,
-extra descriptors, tags, prefixes or labels alone cannot establish that link.
+For task-built OCE controller and runtime images qualified by a platform
+manifest, pin the Pod specification to that manifest. The upstream Agent Sandbox
+example below pins its official multiarchitecture index and separately verifies
+the selected Linux AMD64 manifest. Unknown identities, extra descriptors, tags,
+prefixes or labels alone cannot establish the required link.
 
 The shipped Agent Sandbox `v0.5.2` controller has official index digest
 `sha256:dbbad861e6c2cc0df1f7ec37dd0e2827b3d2bc051eb45855e01f94e697440403`.
