@@ -1991,6 +1991,7 @@ test(
       [62, "prePreparedAttemptSettlement"],
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
+      [65, "preCredentialSourceRetainedSecrets"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2427,6 +2428,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [65, "preCredentialSourceRetainedSecrets"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2657,6 +2659,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [65, "preCredentialSourceRetainedSecrets"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2835,7 +2838,8 @@ test(
     // A valid first and last receipt cannot vouch for the interior 0061 receipt.
     // Start each fault from accepted history so rejection cannot pass merely because
     // a retired preview hash was already unsupported.
-    const middle = completed.receipts.at(-3);
+    const middle =
+      completed.receipts[manifest.entries.findIndex(({ tag }) => tag.startsWith("0061_"))];
     for (const [label, sql] of [
       ["changed interior hash", "UPDATE drizzle.__drizzle_migrations SET hash=$2 WHERE id=$1"],
       [

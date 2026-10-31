@@ -161,9 +161,9 @@ shared by both Harnesses. See [Console creation](console/create-and-deploy.md).
 ## Update a source
 
 Device-authorized sources reject PATCH with `409` before reading Secrets or
-changing refresh state. Sign in again and replace the Agent binding instead.
+changing refresh state. Sign in again and replace the Agent binding.
 
-For an ordinary static Gateway source, updating the Secret does not change the copy. To push a new
+For a static Gateway source, updating the Secret does not change the copy. To push a new
 value, send
 `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId`. The
 caller needs exact `credential_source:update` and `secret:operate` on every
@@ -179,19 +179,21 @@ Secret the update reads:
 A successful update returns `200` with the source and its live gateway `status`.
 Only a `ready` source can be updated. A gateway failure returns `503` and leaves
 the Secret references unchanged; once the gateway may have changed, the failure
-is audited. The gateway is updated before OCC commits, so
-if the request fails after that, repeating the same request converges. If the
-gateway no longer holds a copy (`absent`), the update also returns `503`;
+is audited. The gateway is updated before OCC commits; after a later failure,
+repeating the request converges. Each Secret an unfinished update may have sent
+stays referenced by the source until an update succeeds. Of two overlapping
+updates, only the later writes the gateway; the earlier, and live adoption
+meanwhile, return `409`.
+If the gateway no longer holds a copy (`absent`), the update returns `503`;
 delete the source and register it again.
 
 Prepared and credential-free sources reject PATCH and rotation with `409`. Register a replacement source. For a live static source, changing the referenced Secret value affects subsequent eligible reads. Changing its reference or adopting a legacy source requires an unbound source. See [protected static inference](credential-sources/protected-inference.md#static-source-and-response-policy).
 
-Migration `0048_administrator_credential_source_grants` adds the current
-`credential_source` grants, including `update`, to an unchanged built-in
-Installation administrator Role from an earlier bootstrap. Other Roles keep
-their exact grants; grant `update` through a Namespace Role where needed.
+Migration `0048_administrator_credential_source_grants` adds the
+`credential_source` grants to an unchanged built-in Installation administrator
+Role; grant `update` to other Roles through a Namespace Role.
 
-Updated Gateway copies reach new Harness processes only. To rotate a copied key, follow these steps.
+Updated Gateway copies reach new Harness processes only. To rotate a copied key:
 
 1. Update the Secret's value (`occ secret update`), or create a replacement
    Secret.
@@ -203,17 +205,16 @@ A Secret-backed `refresh` source keeps no static value: an update replaces its r
 material and mints a new token, and OCC commits replacement Secret references
 only after that mint succeeds. If the mint fails, the update returns `503`, but
 the gateway keeps the new material; the source stays `ready` and its
-`status.refresh` reports the failure. OCC does not restore the previous
-material; update again with corrected Secrets. Running Agents lose the source's
+`status.refresh` reports the failure. Update again with corrected Secrets. Running Agents lose the source's
 token within about 10 seconds of an update, even a failed one, and receive none
 until you redeploy them.
 
 The issuer can replace an `oauth2-refresh-token` source's refresh token each
 time the gateway uses it, so the recorded Secret may hold an already-used
 token. Re-sending it can fail or make the issuer revoke the sign-in, so an
-update that keeps the `refresh_token` Secret, including `{}`, returns `409`.
-Complete a new sign-in, store its refresh token in a new Secret, and reference
-that Secret.
+update that keeps the `refresh_token` Secret, including `{}`, or reuses one an
+unfinished update sent, returns `409`. Complete a new sign-in and reference a
+new Secret holding its refresh token.
 
 ## Rotate a refresh source
 
