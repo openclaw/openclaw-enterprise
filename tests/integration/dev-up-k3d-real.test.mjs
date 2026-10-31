@@ -11,7 +11,7 @@ import test, { before } from "node:test";
 import { promisify } from "node:util";
 import { devUpUnrelatedImage, prepareDevUpImage } from "../../scripts/ci/prepare.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
-import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
+import { outputTail, runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "@kubernetes/client-node",
@@ -180,12 +180,23 @@ process.exit(result.status ?? 1);
         maxBuffer: 16 * 1024 * 1024,
       }),
       (error) => {
+        // A dev-up that stops early names its cause at the end of stderr (finding 1847); it
+        // comes first so the job log's short copy of the message starts with it.
+        const output = [
+          `dev-up stderr tail:\n${outputTail(error.stderr ?? error.message, environment, 8_000)}`,
+          `dev-up stdout tail:\n${outputTail(error.stdout, environment, 3_000)}`,
+        ].join("\n");
         assert.match(
           error.stdout,
           /Verifying Kubernetes network isolation before configuring gateway trust/,
+          output,
         );
-        assert.match(error.stderr, /Kubernetes NetworkPolicy enforcement could not be verified/);
-        assert.doesNotMatch(error.stdout, /Installing OCE in Namespace/);
+        assert.match(
+          error.stderr,
+          /Kubernetes NetworkPolicy enforcement could not be verified/,
+          output,
+        );
+        assert.doesNotMatch(error.stdout, /Installing OCE in Namespace/, output);
         return true;
       },
     );
@@ -1071,19 +1082,6 @@ test(
   },
 );
 
-// The end of a command's output for a failure message. The results artifact keeps a whole
-// message only up to 16 KiB, so each stream is bounded to leave room for both.
-const outputTailLines = 40;
-const outputTailChars = 6_000;
-function outputTail(output) {
-  return String(output ?? "")
-    .trimEnd()
-    .split("\n")
-    .slice(-outputTailLines)
-    .join("\n")
-    .slice(-outputTailChars);
-}
-
 test(
   "dev-up Keycloak second-pass failure retains recovery state until owned cleanup succeeds",
   {
@@ -1149,8 +1147,10 @@ process.exit(result.status ?? 1);
           // Node's own message quotes the start of stdout; keep only its first line.
           throw new Error(
             `${mismatch.message.split("\n")[0].replace(/ Input:$/, "")} dev up exit ${error.code} signal ${error.signal}.` +
-              `\n--- dev up stdout, last ${outputTailLines} lines ---\n${outputTail(error.stdout)}` +
-              `\n--- dev up stderr, last ${outputTailLines} lines ---\n${outputTail(error.stderr)}`,
+              // The results artifact keeps a whole message only up to 16 KiB, so each
+              // redacted stream is bounded to leave room for both.
+              `\n--- dev up stdout tail ---\n${outputTail(error.stdout, fixture.environment, 6_000)}` +
+              `\n--- dev up stderr tail ---\n${outputTail(error.stderr, fixture.environment, 6_000)}`,
             { cause: mismatch },
           );
         }
