@@ -44,6 +44,7 @@ import {
   KUBERNETES_GATEWAY_PASSWORD_REFUSAL,
   keepRuntime,
   OPENCLAW_ONLY,
+  pluginEntryKeyVariantRefusal,
   runtimeIdRequired,
   runtimeIdUnsupported,
   runtimePoliciesConflict,
@@ -1657,6 +1658,78 @@ test("Configuration save and deployment refuse settings the pinned OpenClaw reti
       },
     },
   });
+});
+
+test("Configuration save and deployment refuse another spelling of the codex or acpx plugin entry key", async () => {
+  // Finding 3073. The pinned OpenClaw merges plugins.entries keys that match trimmed and
+  // lowercased, and the last entry with a `config` replaces the plugin's whole config. OCE checks
+  // codex and acpx settings, and Compute renders codex settings, only at the exact key, so a later
+  // `Codex` entry would replace what OCE checked: every save path, Agent save and deployment
+  // refuse such a key, whatever it holds.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-plugin-key-integration", ...configurationRules),
+  });
+  const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+    name: "Plugin entry key consumer",
+    secretName: "plugin-key",
+  });
+  const sentinel = `synthetic-url-userinfo-${randomUUID()}`;
+  const proxy = `http://u:${sentinel}@proxy.example:3128`;
+  const codex = { config: { appServer: { approvalPolicy: "on-request" } } };
+  const withEntries = (entries) => ({ ...runtimeSelected, plugins: { entries } });
+  // Each variant holds a value OCE refuses at the exact key: a retired approval policy, a proxy
+  // URL with userinfo, an MCP server environment proxy with userinfo.
+  for (const [entries, path, id] of [
+    [
+      { codex, Codex: { config: { appServer: { approvalPolicy: "untrusted" } } } },
+      "plugins.entries.Codex",
+      "codex",
+    ],
+    [
+      { " codex": { config: { appServer: { networkProxy: { proxyUrl: proxy } } } } },
+      'plugins.entries[" codex"]',
+      "codex",
+    ],
+    [
+      {
+        acpx: { config: {} },
+        ACPX: {
+          config: { mcpServers: { docs: { command: "docs-mcp", env: { HTTPS_PROXY: proxy } } } },
+        },
+      },
+      "plugins.entries.ACPX",
+      "acpx",
+    ],
+  ]) {
+    const values = withEntries(entries);
+    const message = pluginEntryKeyVariantRefusal(path, id);
+    await refusedAtSaveAndDeploy(context, agent, values, message);
+    await refusedOnSave(context, values, message, { sentinel });
+  }
+  // Agent save refuses a stored row the same way, before any deployment.
+  await writePastOcc(
+    configurationDriver,
+    agent.configurationId,
+    withEntries({ codex, CODEX: { config: {} } }),
+  );
+  assertRefused(
+    await request(context.app, "PATCH", agent.agentPath, {
+      body: { configurationId: agent.configurationId },
+    }),
+    pluginEntryKeyVariantRefusal("plugins.entries.CODEX", "codex"),
+    { label: "Agent save" },
+  );
+  // The exact keys deploy, and other plugins' keys in another spelling still save (finding 3072).
+  const exact = withEntries({ codex, acpx: { config: {} } });
+  await writePastOcc(configurationDriver, agent.configurationId, exact);
+  const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  await acceptedOnSave(
+    context,
+    withEntries({ ...exact.plugins.entries, Google: { enabled: false } }),
+  );
 });
 
 test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE runtime cannot run", async () => {

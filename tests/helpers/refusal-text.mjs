@@ -338,6 +338,11 @@ export const EMBEDDED_API_KEY_REQUIRED =
   "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.";
 export const codexApiKeyRefusal = (setting) =>
   `Configuration setting ${setting} must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.`;
+// Configuration save, Agent save and deploy admission refuse a plugins.entries key that spells the
+// codex or acpx plugin another way (finding 3073). `path` is the setting as the message shows it,
+// such as plugins.entries.Codex or plugins.entries[" codex"]; `id` is codex or acpx.
+export const pluginEntryKeyVariantRefusal = (path, id) =>
+  `Configuration setting ${path} must be named ${id}: OpenClaw applies it to the ${id} plugin, whose settings OCE checks only under plugins.entries.${id}. Rename it to ${id}, or merge it into that entry.`;
 // Kubernetes Compute generates the Gateway password, so gateway.auth.password may only reference it,
 // on the default env provider alias (secrets.defaults.env, else "default").
 export const kubernetesGatewayPasswordRequirement = (alias = "default") =>
