@@ -44,6 +44,7 @@ export async function standingGitOrigin(
   beforeIssue?: () => Promise<void>,
   installationAccess = false,
   selection?: SelectedRepositories,
+  draftPull = false,
 ) {
   const clock = createSystemClock();
   // Keep the prepared owner's real 60 s clock margin and 60 s minimum validity.
@@ -54,6 +55,9 @@ export async function standingGitOrigin(
     tokenLifetimeMs,
     beforeIssue,
     installationAccess,
+    ...(draftPull && {
+      additionalPermissions: [{ metadata: "read", contents: "write", pull_requests: "write" }],
+    }),
     ...(selection && {
       expectedRepositoryIds: selection.selectedRepositoryIds.map(Number),
       additionalRepositories: selection.entries.slice(1),
@@ -70,7 +74,7 @@ export async function standingGitOrigin(
     providerInstanceId: "fixture-provider",
     appId: fixtureAppId,
     githubInstallationId: fixtureInstallationId,
-    maximumDurationSeconds: selection ? 600 : 180,
+    maximumDurationSeconds: selection || draftPull ? 600 : 180,
     allowStandingApprovals: true,
     ...(installationAccess && {
       installationAccess: {
@@ -94,7 +98,8 @@ export async function standingGitOrigin(
               {
                 namespaceId,
                 profiles: ["git-write"],
-                transport: "git-only",
+                transport: draftPull ? "git-and-draft-pr" : "git-only",
+                ...(draftPull && { pullRequestBase: "main" }),
                 allowStandingApproval: true,
                 pushRefAllowlist: [pushRef],
               },
@@ -143,6 +148,7 @@ export async function preparedStandingGitPeer(
     driver?: DriverRegistrationRef;
     installationAccess?: boolean;
     selection?: SelectedRepositories;
+    draftPull?: boolean;
     /** GitHub's token lifetime, by the system clock. */
     tokenLifetimeMs?: number;
     /** Only the prepared owner's clock. GitHub, PostgreSQL and the runtime keep real time. */
@@ -167,6 +173,7 @@ export async function preparedStandingGitPeer(
     options.beforeIssue,
     options.installationAccess,
     options.selection,
+    options.draftPull,
   );
   // Public OpenShell requires the GitHub.com authority, not an arbitrary API origin.
   // Replace only the issuer's network destination, before DNS; keep fixture TLS verification,
