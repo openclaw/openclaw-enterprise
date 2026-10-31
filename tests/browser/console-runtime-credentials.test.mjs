@@ -692,6 +692,10 @@ const SLACK_RETRY_GRANTED =
 // With Slack off, Retry saved nothing about Slack: it granted the bound Secrets (finding 3021).
 const SLACK_OFF_RETRY_GRANTED =
   "Secret access granted. This Agent can use its bound Secrets. Deploy the new version to deliver them.";
+// A Retry whose grant answer was lost saved no Configuration, so it names only the grant (finding
+// 3023).
+const SLACK_RETRY_UNCONFIRMED =
+  "Secret access grants could not be confirmed. Select Retry Secret access again; if it is refused, ask an Installation administrator.";
 
 async function ungrantedBoundSecret(
   t,
@@ -803,7 +807,9 @@ test("Secrets left bound after Disable Slack still need the Agent's grant", (t) 
 // its Reload draft said "Your channel Secret choices were not reapplied: Slack is off in the
 // reloaded Configuration." The rebuilt section also lost a keyboard reader's focus: Reload draft
 // put it on Retry Secret access, then the grant read that followed rebuilt that button and focus
-// fell to the page (finding 3021).
+// fell to the page (finding 3021). The Retry the IAM API left unconfirmed said "Configuration
+// saved", though a Retry saves none, and Reload draft showed that outcome again beside "Draft
+// reloaded." until the grant read ended (finding 3023).
 for (const viewport of [
   { width: 1440, height: 900 },
   { width: 390, height: 844 },
@@ -837,9 +843,8 @@ for (const viewport of [
         : route.fallback(),
     );
     await retry.click();
-    await section
-      .getByText("Secret access grants could not be confirmed.", { exact: false })
-      .waitFor();
+    await section.getByText(SLACK_RETRY_UNCONFIRMED, { exact: true }).waitFor();
+    await expectNoText(page, /Configuration saved/);
     await page.unroute(`**${bindingsPath}`);
     // Another browser saves the Configuration, Slack still off and its bindings kept.
     const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
@@ -872,6 +877,10 @@ for (const viewport of [
     await policyRead.requested;
     // A Retry carried no choices, so nothing says any were not reapplied.
     await expectNoText(page, /Secret choices/);
+    // The rebuilt section reads the grant again: until that read lands, it does not restate the
+    // Retry's outcome beside "Draft reloaded.", and Deploy waits for the read.
+    await expectNoText(page, /could not be confirmed/);
+    assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
     // Reload draft puts focus on the rebuilt Retry Secret access.
     await page.waitForFunction(
       () => globalThis.document.activeElement?.textContent === "Retry Secret access",

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-10-31
-last_updated_session: fix-slackoff-copy
+last_updated_session: fix-3023
 ---
 
 # Console Agent editing and runtime requests
@@ -243,6 +243,8 @@ bound Secret's grant, as deployment does, with Slack on or off; Deploy waits for
 rechecks before its POST, and a save or Retry during one reads again before naming Deploy. With
 Slack off, the section shows only while a bound Secret's grant waits, with only Retry (3018),
 whose success names the granted access. A Retry carries no Secret choices into **Reload draft** (3021).
+An unconfirmed Retry names only the grant, not a Configuration save; after **Reload draft** the
+section waits for its grant read instead of restating that outcome (3023).
 `agents/credentials.mjs:missingChannelCredentialGroups` reads token keys as the Slack Channel
 Driver does; pickers appear only for standard keys. A 400 that
 `agents/list.mjs:channelBindingRefusal` matches shows the API's message. An uncertain PATCH
@@ -341,6 +343,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31 07:30: Word an unconfirmed Retry without a Configuration save; clear it on Reload draft. (fix-3023)
 
 - 2026-10-31 03:45: Say what a Slack-off Retry did and keep its focus. (fix-slackoff-copy)
 
