@@ -120,6 +120,14 @@ content digest before import. Keep TLS and the installation's network policies.
 content for another platform in a platform-only archive, use containerd's explicit
 platform selection below.
 
+Record the archive's `index.json` hash, selected platform manifest digest and
+image config digest separately. Keep named references by importing without
+`--digests`. If CRI reports an imported index as `imageID`, verify its exact
+receipt-bound link to the expected manifest, config, layers, source and
+architecture. A platform-only export must contain only its expected descriptor.
+Keep the Pod specification pinned to the qualified manifest. Unknown identities,
+extra descriptors, tags, prefixes or labels alone cannot establish that link.
+
 The shipped Agent Sandbox `v0.5.2` controller has official index digest
 `sha256:dbbad861e6c2cc0df1f7ec37dd0e2827b3d2bc051eb45855e01f94e697440403`.
 Its Linux AMD64 manifest is
@@ -147,7 +155,8 @@ digest='sha256:dbbad861e6c2cc0df1f7ec37dd0e2827b3d2bc051eb45855e01f94e697440403'
 printf '%s  %s\n' "$archive_sha256" "$archive" | sha256sum --check -
 kubectl --kubeconfig "$state/kubeconfig" --context "$context" get node "$node"
 test "$(docker inspect --format '{{index .Config.Labels "k3d.cluster"}}' "$node")" = "$cluster"
-# This archive contains the verified Linux AMD64 platform.
+# This named archive contains the verified Linux AMD64 platform. Do not add
+# --digests: it can create extra import-date aliases for the archive index.
 docker exec -i "$node" ctr --namespace k8s.io images import \
   --platform linux/amd64 - < "$archive"
 
