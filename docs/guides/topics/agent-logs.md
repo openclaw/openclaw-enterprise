@@ -150,14 +150,14 @@ The console and `occ agent logs` show an invisible or direction-changing
 character in retained text, such as a bidirectional override, as an escape like
 `\u202e`, so a line cannot reorder or hide what you read.
 
-Every retained string is then redacted. OCC replaces PEM blocks, `Authorization`
+Every retained string is redacted. OCC replaces PEM blocks, `Authorization`
 and cookie header values, `Bearer` tokens, `Basic` user:password values, JWTs,
 known token prefixes (`sk-`, `sk_live_`, `rk_live_`, `ghp_`, `ghs_`,
 `github_pat_`, `hf_`, `xoxb-`, `AKIA` and others), URL user information, every
 URL query value and fragment, `password=`/`token:`/`"api_key":`-style values,
 upper-case `*_KEY=` assignments, netrc `login <user> password <secret>` values,
 the value after a command-line credential flag such as `curl -u user:password`
-(listed under [Sandbox source](#sandbox-source)), and long base64 or hex runs
+(see [Sandbox source](#sandbox-source)), and long base64 or hex runs
 with `[redacted:<pattern>]`. A PEM block printed over several lines is masked
 from an observed BEGIN through END, across follow polls in the same container
 view. Only ordered lines newer than the prior cursor position can close it (at
@@ -168,8 +168,8 @@ and a page that begins inside a block whose BEGIN it never saw cannot mask it.
 Redaction is best-effort: an opaque token under 40 characters with no known
 prefix and no key name or `Bearer` next to it stays visible. Do not rely on
 redaction to make a runtime that prints secrets safe.
-Tabs and line breaks become spaces; other controls are removed. Messages are
-capped at 8 KiB.
+Tabs, line breaks and cursor-forward escapes become spaces; other controls are
+removed. Messages are capped at 8 KiB.
 
 Runtime status Event messages are redacted the same way; node names, image
 references and Secret and ConfigMap names are masked in the standard scheduler

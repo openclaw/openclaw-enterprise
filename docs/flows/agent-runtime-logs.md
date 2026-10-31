@@ -233,6 +233,7 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 
 ## Changelog
 
+- 2026-10-31 17:30: Mask values after spacing controls and quoted keys. (3051, 3052)
 - 2026-10-31 16:00: Show a line break inside a message as one space, not joined words. (3048)
 - 2026-10-30 21:30: Say a stop in Logs of an unreadable version; keep the view in place. (3012)
 - 2026-10-30 20:30: Reread the Agent in Logs after a fresh status refusal. (3010)

@@ -842,6 +842,49 @@ test("a multi-line message stays one record with its line breaks as spaces (3048
   }
 });
 
+test("a credential is masked when a spacing control or a quoted key separates it from its key", async () => {
+  const token = `Ab1${randomString(29)}`;
+  const password = `pw${randomString(14)}`;
+  const apiKey = `key${randomString(21)}`;
+  const digest = randomBytes(20).toString("hex");
+  const openclaw = (message) => JSON.stringify({ level: "error", message });
+  const route = await logsRoute();
+  route.state.lines = [
+    // A vertical tab, form feed, NEL or cursor-forward escape shows as a break or a gap.
+    // Deleting it glued the keyword to its value, so no rule matched.
+    openclaw(`retry with bearer\u000b${token}`),
+    openclaw(`login failed: --password\u000c${password}`),
+    openclaw(`fetched sha1 ${digest}\u0085next step`),
+    `retry with bearer\u001b[1C${token}`,
+    // Python dict reprs and JSON quoted inside a logfmt value: the closing quote of the
+    // key sits between the key and its separator.
+    `ERROR request failed: {'Authorization': 'token ${token}', 'password': '${password}'}`,
+    `level=error msg="token refresh failed" body="{\\"api_key\\":\\"${apiKey}\\"}"`,
+    openclaw(`upstream body: ${JSON.stringify(JSON.stringify({ client_secret: password }))}`),
+  ].map((raw, index) => ({ time: lineTime(index), raw }));
+
+  const logs = await route.read({ tailLines: 100 });
+  assert.equal(logs.status, 200, logs.text);
+  assert.deepEqual(
+    logs.data.records.map((record) => record.message),
+    [
+      "retry with bearer [redacted:bearer]",
+      "login failed: --password [redacted:argv]",
+      "fetched sha1 [redacted:long-token] next step",
+      "retry with bearer [redacted:bearer]",
+      "ERROR request failed: {'Authorization': '[redacted:header]', 'password': [redacted:key-value]}",
+      'level=error msg="token refresh failed" body="{\\"api_key\\":[redacted:key-value]}"',
+      'upstream body: "{\\"client_secret\\":[redacted:key-value]}"',
+    ],
+  );
+  const download = await route.read({ download: true });
+  assert.equal(download.status, 200, download.text);
+  for (const value of [token, password, apiKey, digest]) {
+    assert.equal(logs.text.includes(value), false, `${value.slice(0, 4)}... leaked`);
+    assert.equal(download.text.includes(value), false, `${value.slice(0, 4)}... leaked`);
+  }
+});
+
 test("the sanitizer keeps bracket-tagged text lines but withholds malformed JSON arrays", () => {
   const canary = `array-canary-${randomUUID()}`;
   const tagged = [
@@ -896,6 +939,8 @@ test("redaction stays linear on hostile 32 KiB lines", () => {
   units.push("-eyJa", "-eyJ_", "_eyJa", "-eyJa-", "-eyJaaaa");
   // Line-break runs that do not end the line (3048: CR/LF become spaces, trailing ones go).
   units.push("\r\n", "\n", "\r", "\r\r\n");
+  // Spacing controls and quoted keys (keys whose closing quote precedes the separator).
+  units.push("\u001b[1C", "\u001b[", "\v", "token': ", 'token\\":', "'token'='", "cookie':'");
   for (const unit of units) {
     for (const suffix of ["", "?", "token", "=x"]) {
       const elapsed = redactionCpuMs(line(unit, suffix), budgetMs);
@@ -1042,8 +1087,10 @@ test("rule prefilters skip only text a rule cannot change", () => {
     stripRuntimeLogControls(
       "a\tb\u0000c\u001b[31md\u001b[0m\u007fe\u0085f\u009fg\u00a0h🙂\ud800\u2028",
     ),
-    "a bcdefg\u00a0h🙂\ud800\u2028",
+    "a bcde fg\u00a0h🙂\ud800\u2028",
   );
+  // Vertical tab, form feed and cursor-forward escapes show as gaps: one space each.
+  assert.equal(stripRuntimeLogControls("a\vb\fc\u001b[3Cd\u009bCe\u001b[1mf"), "a b c d ef");
   // A line break is one space, CRLF included; breaks that end the value are dropped.
   assert.equal(stripRuntimeLogControls("a\nb\r\nc\rd\n\ne\r\n\n"), "a b c d  e");
   for (const [input, expected] of [

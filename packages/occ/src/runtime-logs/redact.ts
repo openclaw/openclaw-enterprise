@@ -22,6 +22,9 @@ const SECRET_KEY_TAIL = `(?:token|secret|passw(?:or)?d|passphrase|pwd|api[_-]?ke
 const SECRET_KEY = `${KEY_AFFIX}${SECRET_KEY_TAIL}`;
 
 const HEADER_NAMES = "authorization|proxy-authorization|cookie|set-cookie|x-api-key";
+// An optional quote around a key or a value: `"`, `'`, or an escaped `\"` / `\'`, as in a
+// Python dict repr or JSON quoted inside a logfmt or JSON string value.
+const QUOTE = String.raw`(?:\\?["'])?`;
 
 interface Rule {
   readonly pattern: RegExp;
@@ -131,8 +134,12 @@ const RULES: readonly Rule[] = [
     replace: () => mark("pem"),
   },
   {
-    // Header values, including inside `-H '...'` and `--header "..."` arguments and JSON.
-    pattern: new RegExp(`\\b(${HEADER_NAMES})("?\\s*[:=]\\s*"?)${notRedacted}[^"'\\r\\n]+`, "gi"),
+    // Header values, including inside `-H '...'` and `--header "..."` arguments, JSON,
+    // Python reprs (`'Authorization': '...'`) and escaped JSON (`\"Authorization\":\"...`).
+    pattern: new RegExp(
+      `\\b(${HEADER_NAMES})(${QUOTE}\\s*[:=]\\s*${QUOTE})${notRedacted}[^"'\\r\\n]+`,
+      "gi",
+    ),
     replace: (_match, name, separator) => `${name}${separator}${mark("header")}`,
   },
   {
@@ -223,9 +230,10 @@ const RULES: readonly Rule[] = [
     replace: (_match, key, separator) => `${key}${separator}${mark("key-value")}`,
   },
   {
-    // `password=value`, `token: value`.
+    // `password=value`, `token: value`, and keys whose closing quote comes before the
+    // separator: `{'password': 'value'}`, `{\"api_key\":\"value\"}`.
     pattern: new RegExp(
-      `(${SECRET_KEY_TAIL})(\\s*[=:]\\s*)${notRedacted}("[^"]*"|'[^']*'|[^\\s,;&"']+)`,
+      `(${SECRET_KEY_TAIL})(${QUOTE}\\s*[=:]\\s*)(?!${QUOTE}\\[redacted:)("[^"]*"|'[^']*'|\\\\"[^"]*"|[^\\s,;&"']+)`,
       "gi",
     ),
     replace: (_match, key, separator) => `${key}${separator}${mark("key-value")}`,
@@ -658,15 +666,29 @@ export function maskRuntimeEventText(value: string): string {
 // A CRLF pair, then any one C0 control, DEL or C1 control: U+0000-U+001F and U+007F-U+009F.
 // eslint-disable-next-line no-control-regex -- matching control characters is the point
 const CONTROL_CHARACTERS = /\r\n|[\u0000-\u001f\u007f-\u009f]/g;
-const SPACED_CONTROLS: ReadonlySet<string> = new Set(["\t", "\n", "\r", "\r\n"]);
+// Tab, LF, VT, FF, CR, CRLF and NEL: a terminal shows each as a gap or a new line.
+const SPACED_CONTROLS: ReadonlySet<string> = new Set([
+  "\t",
+  "\n",
+  "\v",
+  "\f",
+  "\r",
+  "\r\n",
+  "\u0085",
+]);
+// A cursor-forward escape (`ESC [ n C`, or the one-byte CSI form) shows as a gap too.
+// eslint-disable-next-line no-control-regex -- matching control characters is the point
+const CURSOR_FORWARD = /(?:\u001b\[|\u009b)\d{0,4}C/g;
 
 /**
- * Removes ANSI escape sequences and C0/C1 control characters. A tab or a line break
- * inside the value (a multi-line message printed as one JSON string) becomes one space,
- * so its words stay apart on the record's single line; line breaks at the end are dropped.
+ * Removes ANSI escape sequences and C0/C1 control characters. A control that shows as a
+ * gap or a line break inside the value (a tab, a cursor-forward escape, or a multi-line
+ * message printed as one JSON string) becomes one space, so its words stay apart on the
+ * record's single line and redaction still sees a key and its value as separate words;
+ * line breaks at the end are dropped.
  */
 export function stripRuntimeLogControls(value: string): string {
-  const text = stripVTControlCharacters(value);
+  const text = stripVTControlCharacters(value.replace(CURSOR_FORWARD, " "));
   // Drop trailing CR/LF, such as the CR of a CRLF-terminated container line. A scan, not
   // a regex: `[\r\n]+$` retries at every position of a long break run that does not end
   // the value, which is quadratic on a 32 KiB line.
