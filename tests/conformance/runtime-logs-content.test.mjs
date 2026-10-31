@@ -1049,6 +1049,8 @@ test("the jwt rule masks tokens in every delimiter context but not inside a long
   // `-` and `.` are word boundaries inside a run; a word character ahead of `eyJ` is not.
   for (const [input, expected] of [
     [`x-token-${jwt} next`, "x-token-[redacted:jwt] next"],
+    // A literal escape before `eyJ` is a boundary too.
+    [`a\\n${jwt}`, "a\\n[redacted:jwt]"],
     [`a.${jwt}.b`, "a.[redacted:jwt].b"],
     [`${jwt}.${jwt}`, "[redacted:jwt].[redacted:jwt]"],
     ["xeyJabcd.efgh.ij", "xeyJabcd.efgh.ij"],
@@ -1100,6 +1102,11 @@ test("bounded key and path patterns still mask the shapes they did before", () =
     [`x\\u000A${"xy1z".repeat(10)}`, "x\\[redacted:long-token]"],
     // Otherwise the escape stays and only the run after it is masked.
     [`id\\n${"a1B_".repeat(10)}`, "id\\n[redacted:long-token]"],
+    // A known token prefix right after a literal escape.
+    [`list\\nghp_${value}`, "list\\n[redacted:token]"],
+    [`list\\nhf_${"a1".repeat(17)}`, "list\\n[redacted:token]"],
+    [`list\\nAKIA${"A2".repeat(8)}`, "list\\n[redacted:aws-key]"],
+    [`list\\nAIza${"b3".repeat(16)}`, "list\\n[redacted:google-key]"],
     // A value an earlier rule masked keeps its mark: the gap before it is not a value.
     [`--github-token\\n\\nghp_${value}`, "--github-token\\n\\n[redacted:token]"],
     [`MY_SERVICE_KEY=\\nghp_${value}`, "MY_SERVICE_KEY=\\n[redacted:token]"],

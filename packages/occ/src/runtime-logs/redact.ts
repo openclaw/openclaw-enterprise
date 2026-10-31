@@ -209,8 +209,13 @@ const RULES: readonly Rule[] = [
     // `maskJwts` then finds the tokens inside the run in linear time. A plain
     // `\beyJ[A-Za-z0-9_-]{4,}\.` backtracks quadratically on runs such as `-eyJa-eyJa-...`,
     // where `\b` holds before every `eyJ` and `-` is inside the segment alphabet.
-    pattern: /(?<![A-Za-z0-9_.-])(?=([A-Za-z0-9_.-]{11,}))\1/g,
-    replace: (match) => (match.includes("eyJ") ? maskJwts(match) : match),
+    // The letters of a literal escape right before `eyJ` (`\neyJ...`) stay outside the run.
+    pattern: new RegExp(
+      `(?<![A-Za-z0-9_.-])(?:(?<=\\\\)(${ESCAPE_LETTERS})(?=eyJ))?(?=([A-Za-z0-9_.-]{11,}))\\2`,
+      "g",
+    ),
+    replace: (_match, escape: string | undefined, run: string) =>
+      `${escape ?? ""}${run.includes("eyJ") ? maskJwts(run) : run}`,
     // The replacement keeps every run without `eyJ`.
     applies: (text) => text.includes("eyJ"),
   },
@@ -221,22 +226,24 @@ const RULES: readonly Rule[] = [
     applies: (text) => text.includes("://"),
   },
   {
-    pattern:
-      /\b(?:sk-ant-|sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[abpr]-|xapp-|glpat-|npm_|[sr]k_(?:live|test)_)[A-Za-z0-9_-]{8,}/g,
+    pattern: new RegExp(
+      `${START}(?:sk-ant-|sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[abpr]-|xapp-|glpat-|npm_|[sr]k_(?:live|test)_)[A-Za-z0-9_-]{8,}`,
+      "g",
+    ),
     replace: () => mark("token"),
   },
   {
     // Hugging Face access tokens. The length floor keeps identifiers such as
     // `hf_hub_download` readable.
-    pattern: /\bhf_[A-Za-z0-9]{30,}/g,
+    pattern: new RegExp(`${START}hf_[A-Za-z0-9]{30,}`, "g"),
     replace: () => mark("token"),
   },
   {
-    pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
+    pattern: new RegExp(`${START}(?:AKIA|ASIA)[0-9A-Z]{16}\\b`, "g"),
     replace: () => mark("aws-key"),
   },
   {
-    pattern: /\bAIza[0-9A-Za-z_-]{30,}/g,
+    pattern: new RegExp(`${START}AIza[0-9A-Za-z_-]{30,}`, "g"),
     replace: () => mark("google-key"),
   },
   {
