@@ -6898,13 +6898,6 @@ export class ControllerWorker {
   }
 
   /**
-   * Whether an earlier version of this Agent was activated by its own deployment. A stopped or
-   * superseded deployment completes without activation and does not count
-   * (controllerWorkDeploymentStatus). Revisions belong to one Agent, whose service principal
-   * never changes. Newest first; a fail path, so the linear scan is bounded by the Agent's
-   * revision history.
-   */
-  /**
    * The newest later version of this Agent on this Compute whose deployment has ended (succeeded
    * or failed), for a version without exclusive replacement (finding 3066). Shared Compute keeps
    * one runtime per Agent: an embedded Kubernetes Gateway or an SSH unit. A newer candidate takes
@@ -6947,6 +6940,13 @@ export class ControllerWorker {
     return undefined;
   }
 
+  /**
+   * Whether an earlier version of this Agent was activated by its own deployment. A stopped or
+   * superseded deployment completes without activation and does not count
+   * (controllerWorkDeploymentStatus). Revisions belong to one Agent, whose service principal
+   * never changes. Newest first; a fail path, so the linear scan is bounded by the Agent's
+   * revision history.
+   */
   private async activatedEarlierRevision(
     unit: PlatformUnitOfWork,
     queue: Pick<PostgresWorkQueue, keyof PostgresWorkQueue>,
