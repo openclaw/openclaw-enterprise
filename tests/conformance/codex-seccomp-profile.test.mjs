@@ -785,6 +785,7 @@ test("relocated preparation entrypoints require and deliver the local shell asse
     "ci/codex-seccomp.mjs",
     "lib/codex-seccomp-k3d.mjs",
     "lib/codex-seccomp-profile.mjs",
+    "lib/codex-seccomp-profile.ts",
     "prepare-development-codex-seccomp.mjs",
   ]) {
     await writeFile(join(scripts, path), await readFile(join(repositoryRoot, "scripts", path)));
