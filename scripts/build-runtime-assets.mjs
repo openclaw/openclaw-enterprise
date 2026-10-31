@@ -55,6 +55,10 @@ const appliedPatches = [
     file: "openclaw-linux-private-store-setgid.patch",
     sha256: "e97b0274d925f886638b0d8508d88842886b7ac3d84eacd29d76baf6cc487c8c",
   },
+  {
+    file: "openclaw-plugin-config-startup-report.patch",
+    sha256: "47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93",
+  },
 ];
 const [command, sourceRoot, output, sourceManifest] = process.argv.slice(2);
 const root = await realpath(sourceRoot);

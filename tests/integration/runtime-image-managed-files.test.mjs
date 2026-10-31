@@ -297,8 +297,9 @@ test(
   "runtime image holds a Kubernetes Gateway whose plugin configuration fails its schema",
   imageTestOptions,
   async (t) => {
-    // A beam plugin entry without its required mirror settings. OpenClaw exits at startup,
-    // and for a plugin setting it logs only "config validity changed" (finding 3043).
+    // A beam plugin entry without its required mirror settings. OpenClaw exits at startup
+    // with status 78 and names each failing setting (finding 3043; the image carries
+    // openclaw/openclaw#189392, before which it exited 1 with "config validity changed").
     const admitted = createAdmittedRuntimeImageConfiguration("openclaw");
     const configuration = {
       ...admitted,
@@ -351,8 +352,15 @@ test(
     // on one line that runtime logs keep.
     const logs = await runDocker(["logs", containerName]);
     const output = `${logs.stdout}\n${logs.stderr}`;
+    // OpenClaw's own refusal names the plugin setting; it no longer reports a config change.
+    assert.match(
+      output,
+      /^\s+- (?:\S+ — )?plugins\.entries\.beam\.config\.mirror\.endpoint: invalid config: must have required property 'endpoint'$/m,
+      output,
+    );
+    assert.doesNotMatch(output, /config validity changed/);
     const summary =
-      /^The OpenClaw Gateway exited \(exit-1\) before it served, and OpenClaw reports its configuration invalid \(plugins\.entries\.beam\.config\.mirror\.endpoint: must have required property 'endpoint'; plugins\.entries\.beam\.config\.mirror\.catalogs: must have required property 'catalogs'\)\. It is held, not restarted: fix or remove the invalid settings in the Agent's Configuration, then deploy a new version\.$/m;
+      /^The OpenClaw Gateway exited \(exit-78\) before it served, and OpenClaw reports its configuration invalid \(plugins\.entries\.beam\.config\.mirror\.endpoint: must have required property 'endpoint'; plugins\.entries\.beam\.config\.mirror\.catalogs: must have required property 'catalogs'\)\. It is held, not restarted: fix or remove the invalid settings in the Agent's Configuration, then deploy a new version\.$/m;
     assert.match(output, summary, output);
     assert.doesNotMatch(output, /synthetic-beam-token-value/);
     const { records } = sanitizeRuntimeLogChunk({

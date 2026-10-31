@@ -199,6 +199,12 @@ COPY deploy/runtime/openclaw-linux-private-store-setgid.patch /tmp/openclaw-linu
 RUN echo 'e97b0274d925f886638b0d8508d88842886b7ac3d84eacd29d76baf6cc487c8c  /tmp/openclaw-linux-private-store-setgid.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-linux-private-store-setgid.patch
 
+# Name each invalid plugin setting and exit 78 when Gateway startup refuses its config
+# (openclaw/openclaw#189392). Remove after selecting an OpenClaw commit that contains it.
+COPY deploy/runtime/openclaw-plugin-config-startup-report.patch /tmp/openclaw-plugin-config-startup-report.patch
+RUN echo '47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93  /tmp/openclaw-plugin-config-startup-report.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-plugin-config-startup-report.patch
+
 # Run the bridge tests alongside the build using the same patched source.
 # Packaging mounts this stage so a failed test still blocks the runtime image.
 FROM openclaw-patched-source AS openclaw-bridge-tests

@@ -4670,7 +4670,8 @@ test("Kubernetes Gateway holds a configuration OpenClaw refuses when its first s
   gateway.serving = false;
   assert.equal((await readReadyStatusFromHandler(gateway.statusHandler)).status, 503);
   const validationsBefore = gateway.validations;
-  gateway.children[0].exit(1, null);
+  // OpenClaw refuses an invalid configuration with status 78 (EX_CONFIG).
+  gateway.children[0].exit(78, null);
 
   // The wrapper holds the failure instead of restarting the container into the same refusal.
   assert.deepEqual(gateway.exits, []);
@@ -4682,7 +4683,7 @@ test("Kubernetes Gateway holds a configuration OpenClaw refuses when its first s
   // setting value, stay beside their paths: the configuration may hold secrets.
   assert.ok(
     gateway.logs.includes(
-      "The OpenClaw Gateway exited (exit-1) before it served, and OpenClaw reports its configuration invalid (" +
+      "The OpenClaw Gateway exited (exit-78) before it served, and OpenClaw reports its configuration invalid (" +
         "plugins.entries.beam.config.mirror.endpoint: must have required property 'endpoint'; " +
         'plugins.entries.google.config.webSearch: must not have additional properties: "region"; ' +
         "tools.web.search.provider; plugins.entries.beam.config.mirror.catalogs: x; logging.level). " +

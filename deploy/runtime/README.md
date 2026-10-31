@@ -61,6 +61,11 @@ under the Sandbox workspace without changing existing parent permissions or
 relaxing ownership and symlink checks. The build runs the owning private-store
 regressions with the patched source. Remove this bridge after selecting an
 OpenClaw commit that contains the repair.
+`openclaw-plugin-config-startup-report.patch` carries upstream
+openclaw/openclaw#189392. When a plugin entry fails its config schema, Gateway
+startup now names each invalid setting and exits with status 78, as it does for
+core settings. Before, it exited with status 1 and logged only "config validity
+changed". Remove this bridge after selecting an OpenClaw commit that contains it.
 The source archive and patch hashes identify the resulting custom build.
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
