@@ -668,7 +668,10 @@ for (const c of inPlaceCases) {
     }
     if (grants) {
       await grants.requested;
-      assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+      assert.equal(
+        await page.getByRole("button", { name: "Deploy new version" }).isDisabled(),
+        true,
+      );
       grants.release();
     }
     // The saved status, generation, focus and placement do not synchronize the grant gate.
