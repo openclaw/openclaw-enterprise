@@ -260,6 +260,12 @@ export function createCodexStartup(
                 );
                 assert.deepEqual(Array.from(args), [
                   "-c",
+                  'otel.exporter="none"',
+                  "-c",
+                  'otel.metrics_exporter="none"',
+                  "-c",
+                  "otel.log_user_prompt=false",
+                  "-c",
                   "cli_auth_credentials_store=file",
                   "login",
                   providerPat

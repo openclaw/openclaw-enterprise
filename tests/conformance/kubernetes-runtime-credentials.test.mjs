@@ -1027,7 +1027,18 @@ test("Codex startup logs in, probes and starts the app server in each login mode
     );
     if (flag !== undefined) {
       assert.deepEqual(calls[0], {
-        args: ["-c", "cli_auth_credentials_store=file", "login", flag],
+        args: [
+          "-c",
+          'otel.exporter="none"',
+          "-c",
+          'otel.metrics_exporter="none"',
+          "-c",
+          "otel.log_user_prompt=false",
+          "-c",
+          "cli_auth_credentials_store=file",
+          "login",
+          flag,
+        ],
         input,
       });
     }
