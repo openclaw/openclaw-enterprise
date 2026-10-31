@@ -32,6 +32,8 @@ import {
   dedicatedCodexVariableRefusal,
   unboundPluginSecretRefusal,
   unreadablePluginSecretRefusal,
+  appServerUnreadablePluginSecretRefusal,
+  unreadableGatewayPasswordRefusal,
   unboundReferenceRefusal,
   unreadableSlackTokenRefusal,
   unsubstitutedFallbackRefusal,
@@ -1991,6 +1993,19 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     ],
     // An explicit null is unset to the save rule, as for model credentials; Kubernetes refuses it.
     [password(null), 409, KUBERNETES_GATEWAY_PASSWORD_REFUSAL],
+    // The right name on a provider OpenClaw does not read from the Gateway's environment stops
+    // every start while its configuration validates (finding 3057), and one without a provider
+    // fails OpenClaw's schema: Kubernetes refuses both.
+    [
+      password({ source: "env", provider: "vault", id: "OPENCLAW_GATEWAY_PASSWORD" }),
+      409,
+      unreadableGatewayPasswordRefusal("provider", "vault"),
+    ],
+    [
+      password({ source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" }),
+      409,
+      unreadableGatewayPasswordRefusal("providerless"),
+    ],
     [
       { ...valid, channels: { slack: { enabled: true } } },
       400,
@@ -2083,6 +2098,35 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
         "beam",
         "provider",
         "vault",
+      ),
+    ],
+    // An APP_SERVER_ name at an enabled Beam is never set on this embedded Agent, and the
+    // allowlist's denial of the SecretRef OpenClaw then keeps stops the Gateway (finding 3060).
+    [
+      {
+        ...withPluginEntries(valid, {
+          beam: {
+            enabled: true,
+            config: {
+              mirror: {
+                endpoint: "https://beam.example.test/mirror",
+                catalogs: ["main"],
+                token: "${APP_SERVER_TOKEN}",
+              },
+            },
+          },
+        }),
+        secrets: {
+          providers: { default: { source: "env", allowlist: ["OPENCLAW_GATEWAY_PASSWORD"] } },
+        },
+      },
+      400,
+      appServerUnreadablePluginSecretRefusal(
+        "plugins.entries.beam.config.mirror.token",
+        "beam",
+        "an embedded",
+        "allowlist",
+        "APP_SERVER_TOKEN",
       ),
     ],
   ]) {

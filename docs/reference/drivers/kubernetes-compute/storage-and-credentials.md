@@ -270,6 +270,8 @@ creating initial Secrets.
 
 The Driver projects `gateway-password` as `OPENCLAW_GATEWAY_PASSWORD` only when
 `gateway.auth.password` explicitly uses an environment SecretRef with that ID.
+Deployment refuses a reference OpenClaw cannot read from the environment, as for
+[plugin secret inputs](../../harness-execution.md#native-runtime-selection).
 This supports native local-direct password access alongside
 [trusted-proxy authentication](networking-and-isolation.md#gateway-authentication),
 the only Kubernetes gateway mode; the API never returns the password. Plaintext password Configuration

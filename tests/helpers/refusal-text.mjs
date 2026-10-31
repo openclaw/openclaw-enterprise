@@ -340,7 +340,7 @@ export const codexApiKeyRefusal = (setting) =>
   `Configuration setting ${setting} must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.`;
 // Kubernetes Compute generates the Gateway password, so gateway.auth.password may only reference it.
 export const KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT =
-  'must be the environment reference {source: "env", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates';
+  'must be the environment reference {source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates';
 export const KUBERNETES_GATEWAY_PASSWORD_REFUSAL = `Configuration setting gateway.auth.password ${KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT}.`;
 // Deploy and Agent provisioning of dedicated OpenClaw where the Installation selects no
 // provisioning SandboxDriver with all three containment facets (409 RESOURCE_CONFLICT). It names
@@ -594,6 +594,14 @@ export const unreadablePluginSecretRefusal = (setting, plugin, held, ...shown) =
 // reads it as a SecretRef only while NAME is unset, so deployment refuses it while unbound.
 export const unboundUnreadablePluginSecretRefusal = (setting, plugin, name, held, ...shown) =>
   `Configuration setting ${setting} ${UNREADABLE_PLUGIN_SECRETS[held](...shown)}: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
+// The same refusal of a whole `${APP_SERVER_*}` there on an embedded or Dedicated OpenClaw Agent
+// (`agent`: "an embedded" or "a Dedicated OpenClaw"), which never sets it (finding 3060).
+export const appServerUnreadablePluginSecretRefusal = (setting, plugin, agent, held, ...shown) =>
+  `Configuration setting ${setting} ${UNREADABLE_PLUGIN_SECRETS[held](...shown)}, and it is never set on ${agent} Agent: remove plugins.entries.${plugin} or set its enabled to false.`;
+// Kubernetes Compute's refusal of the gateway.auth.password reference when OpenClaw cannot read
+// it from the Gateway's environment, which stops every start (finding 3057).
+export const unreadableGatewayPasswordRefusal = (held, ...shown) =>
+  `Configuration setting gateway.auth.password ${UNREADABLE_PLUGIN_SECRETS[held](...shown)}, so the Gateway cannot read the password Kubernetes Compute generates.`;
 const USE_UPPERCASE =
   "use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}";
 export const unsubstitutedReferenceRefusal = (setting, shown) =>
