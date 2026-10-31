@@ -4,6 +4,8 @@ Give an existing dedicated Codex Agent access to one GitHub repository. The OCE 
 
 This walkthrough makes two empty commits on one new test branch. Use the same Agent revision for both pushes and verify that the second push used newly minted material. GitHub branch rules still apply.
 
+**Token renewal testing is pending.** The same-Agent, same-revision two-push test below has not completed. Earlier successful Git pushes used a manually supplied static token and do not verify this managed repository-binding procedure.
+
 ## Before you start
 
 - **Supervisor trust:** Verify the Supervisor's public CA bundle trusts the actual GitHub TLS path. A successful model turn does not prove this. If the network uses a private CA, complete [upstream CA setup](../deploy/local-openshell-images.md#trust-an-upstream-ca-on-local-k3d) before deployment. A failed held request closes that revision; correct trust and deploy a new revision without replaying its challenge.

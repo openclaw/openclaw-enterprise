@@ -2,6 +2,8 @@
 
 Install OpenClaw Enterprise (OCE) in a private k3d cluster. Then create a dedicated Codex Agent through the OCE API and send it a message through OpenClaw. Start here once before [adding Git support](../repository-credentials/openshell-git-push.md) or [adding Codex plugins](../integrations/codex-plugins.md). For managed Git, check the [repository-binding release prerequisites](../repository-credentials/openshell-git-push.md#before-you-start) before choosing images. Keep Credential Gateway for the Codex service account and its authorized Linear connection.
 
+The [managed Git token renewal test is pending](../repository-credentials/openshell-git-push.md). Treat the repository-binding instructions as awaiting end-to-end verification.
+
 ## Before you start
 
 - Install the [local Kubernetes tools on Linux](local-kubernetes-tools.md). Use Bash, curl and jq.
