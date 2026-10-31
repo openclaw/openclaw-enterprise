@@ -23,6 +23,7 @@ import {
   waitForEnabled,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
+import { confirmAgentAction } from "./console-action-helpers.mjs";
 import {
   focusedLabel,
   fulfillMethod,
@@ -210,10 +211,7 @@ test("refocusing an Agents list that rebuilds keeps focus on the row's icon", as
     .getByRole("button", { name: "Delete Regranted Row", exact: true });
   await waitForEnabled(remove);
   await remove.click();
-  await page
-    .getByRole("dialog", { name: "Delete Regranted Row?" })
-    .getByRole("button", { name: "Permanently delete Agent", exact: true })
-    .click();
+  await confirmAgentAction(page, "Delete Regranted Row?", "Delete");
   const alert = page.getByRole("alert").filter({ hasText: deleteRefused("Regranted Row") });
   await alert.waitFor();
   assert.equal(await hasFocus(remove), true);
@@ -295,10 +293,7 @@ test("refocusing after a refused row's Agent was deleted elsewhere drops the ref
   const stop = view.getByRole("button", { name: "Stop Removed Row", exact: true });
   await waitForEnabled(stop);
   await stop.click();
-  await page
-    .getByRole("dialog", { name: "Stop Removed Row?" })
-    .getByRole("button", { name: "Stop Agent", exact: true })
-    .click();
+  await confirmAgentAction(page, "Stop Removed Row?", "Stop");
   const alert = page.getByRole("alert").filter({ hasText: message });
   await alert.waitFor();
   assert.equal(await hasFocus(stop), true);

@@ -47,6 +47,7 @@ import {
   pathRequests,
   settledView,
 } from "./console-agents-browser-helpers.mjs";
+import { responseTo } from "./console-action-helpers.mjs";
 
 const browser = fileBrowser();
 type Namespace = Pick<NamespaceWire, "id">;
@@ -384,9 +385,7 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
     method: "GET",
     once: true,
   });
-  const initialRead = page.waitForResponse(
-    (response) => response.url() === detailUrl && response.request().method() === "GET",
-  );
+  const initialRead = responseTo(page, "GET", detailUrl);
   await page.getByRole("button", { name: privateSecret.name, exact: true }).click();
   const initialResponse = await initialRead;
   assert.equal(initialResponse.status(), 200, "the first Secret read must succeed");
@@ -396,9 +395,7 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   await heldNames.requested;
   // fixture.request uses the separate administrator session, not the scoped browser member.
   assert.equal((await fixture.request("DELETE", privateAgentRead)).status, 204);
-  const nameRead = page.waitForResponse(
-    (response) => response.url() === agentsUrl && response.request().method() === "GET",
-  );
+  const nameRead = responseTo(page, "GET", agentsUrl);
   heldNames.release();
   const nameResponse = await nameRead;
   assert.equal(nameResponse.status(), 200, "the subsequent genuine Agent list must succeed");
@@ -425,9 +422,7 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   await raceDetail.getByRole("button", { name: "Close" }).click();
 
   // A fresh read is the control: IAM now counts the hidden consumer without returning its ID.
-  const freshRead = page.waitForResponse(
-    (response) => response.url() === detailUrl && response.request().method() === "GET",
-  );
+  const freshRead = responseTo(page, "GET", detailUrl);
   await page.getByRole("button", { name: privateSecret.name, exact: true }).click();
   const freshResponse = await freshRead;
   assert.equal(freshResponse.status(), 200);
@@ -510,9 +505,7 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
     const creating = action === "create";
     const url = creating ? collection : `${collection}/${secret.id}`;
     const callCount = storage.calls.length;
-    const response = page.waitForResponse(
-      (result) => result.url() === url && result.request().method() === method,
-    );
+    const response = responseTo(page, method, url);
     const submit = form.getByRole("button", { name, exact: true });
     await submit.click();
     const refused = await response;
@@ -666,9 +659,7 @@ test("a Secret name conflict allows correction, but a Namespace that stops being
   const createName = create.getByLabel("Secret name");
   await createName.fill(secret.name);
   await createValue.fill("synthetic-conflicting");
-  const duplicate = page.waitForResponse(
-    (r) => r.url() === fixture.origin + path && r.request().method() === "POST",
-  );
+  const duplicate = responseTo(page, "POST", fixture.origin + path);
   await create.getByRole("button", { name: "Create Secret", exact: true }).click();
   const conflict = await duplicate;
   assert.equal(conflict.status(), 409);
@@ -702,9 +693,7 @@ test("a Secret name conflict allows correction, but a Namespace that stops being
     [replace, "Replace value", path + "/" + secret.id, "PATCH"],
   ] as const) {
     const submit = form.getByRole("button", { name: action, exact: true });
-    const refused = form
-      .page()
-      .waitForResponse((r) => r.url() === fixture.origin + url && r.request().method() === method);
+    const refused = responseTo(form.page(), method, fixture.origin + url);
     await submit.click();
     const response = await refused;
     assert.equal(response.status(), 409);
