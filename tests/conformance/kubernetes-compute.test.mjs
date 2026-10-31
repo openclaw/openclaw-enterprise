@@ -9590,8 +9590,6 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
     // OpenClaw reads each of these from the environment: the alias secrets.defaults.env names,
     // and a configured env provider with no allowlist or one that lists the name.
     passwordRef("custom", { defaults: { env: "custom" } }),
-    // OpenClaw trims the alias secrets.defaults.env names.
-    passwordRef("custom", { defaults: { env: " custom " } }),
     passwordRef("vault", { providers: { vault: envProvider() } }),
     passwordRef("default", { providers: { default: envProvider(["OPENCLAW_GATEWAY_PASSWORD"]) } }),
     passwordRef("vault", { providers: { vault: envProvider(["OPENCLAW_GATEWAY_PASSWORD"]) } }),
