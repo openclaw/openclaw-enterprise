@@ -64,6 +64,7 @@ import {
   runtimeIdRequired,
   runtimePoliciesConflict,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
+  selectablePrimaryRuntimeRequired,
 } from "../helpers/refusal-text.mjs";
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
@@ -3459,6 +3460,12 @@ test(
     const provider = "models.providers.codex";
     for (const [defaults, providers, status, message] of [
       [{ model }, undefined, 400, runtimeIdRequired(policy, "codex")],
+      [
+        { model, models: { [`${model}-mini`]: {} } },
+        undefined,
+        400,
+        selectablePrimaryRuntimeRequired(policy, "codex"),
+      ],
       [
         { model, models: { [model]: { agentRuntime: { id: "openclaw" } } } },
         { codex: { agentRuntime: { id: "codex" } } },
