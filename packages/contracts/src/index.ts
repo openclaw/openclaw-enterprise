@@ -1447,7 +1447,7 @@ export type {
 
 export type JSONSchema = Readonly<Record<string, unknown>>;
 
-export { normalizeSecretBindings } from "./secret-bindings.ts";
+export { isAllowedSecretBindingDestination, normalizeSecretBindings } from "./secret-bindings.ts";
 
 export * from "./api/common.ts";
 export * from "./api/resources.ts";

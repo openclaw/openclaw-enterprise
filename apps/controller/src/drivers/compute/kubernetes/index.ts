@@ -203,7 +203,7 @@ import {
   enabledChannelProviders,
   OPENCLAW_GATEWAY_PASSWORD,
   requireChannelTopology,
-  requireEmbeddedCodexPluginCredentials,
+  requireEmbeddedPluginSecretInputs,
   type KubernetesHarnessTopology,
   kubernetesHarnessAuthMethods,
   providerWaitsOnVariable,
@@ -4809,11 +4809,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       },
       callerSettingError,
     );
-    // An embedded Gateway would exit at every start on such a Codex plugin entry, and the
-    // deployment would wait for its convergence deadline. The Agent's mode decides it, so Agent
-    // save refuses it too.
+    // An embedded Gateway would exit at every start on a plugin secret input it cannot resolve,
+    // and the deployment would wait for its convergence deadline. The Agent's mode decides the
+    // APP_SERVER_ case, so Agent save refuses it too; the rest waits for the bindings.
     if (embedded) {
-      requireEmbeddedCodexPluginCredentials(configuration, callerSettingError);
+      this.requireEmbeddedPluginSecretInputs(configuration, secretBindings);
     }
     requireProviderApiKeys(configuration, openclaw, authentication);
     if (!agentSave) {
@@ -14742,6 +14742,35 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
     return providers.map(
       (provider) => CHANNEL_REQUIREMENTS[provider as keyof typeof CHANNEL_REQUIREMENTS],
+    );
+  }
+
+  // An embedded Gateway's environment sets a name a Secret binding could set only from a binding
+  // or from what the Installation's Drivers add at launch (beforeWorkloadStart), whose names are
+  // unknown before then; null bindings (Agent save) check only what the Agent's mode decides.
+  private requireEmbeddedPluginSecretInputs(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    secretBindings: SecretBindings | null | undefined,
+  ): void {
+    let bindings: ReturnType<typeof normalizeSecretBindings> | undefined;
+    requireEmbeddedPluginSecretInputs(
+      configuration,
+      secretBindings === null
+        ? undefined
+        : (name) => {
+            if (this.lifecycle.contributesLaunchEnvironment) {
+              return true;
+            }
+            if (bindings === undefined) {
+              try {
+                bindings = normalizeSecretBindings(secretBindings);
+              } catch {
+                throw new ConfigurationFailure("AgentRevision Secret bindings are invalid.");
+              }
+            }
+            return Object.hasOwn(bindings, name);
+          },
+      callerSettingError,
     );
   }
 
