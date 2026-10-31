@@ -329,6 +329,18 @@ export const EMBEDDED_API_KEY_REQUIRED =
   "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.";
 export const codexApiKeyRefusal = (setting) =>
   `Configuration setting ${setting} must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.`;
+// Deploy and Agent provisioning of dedicated OpenClaw where the Installation selects no
+// provisioning SandboxDriver with all three containment facets (409 RESOURCE_CONFLICT). It names
+// the next step: codex for the selected models when Codex runs them (`codexRuns`), else a Codex
+// model (finding 3036). Stored provisioning work keeps the first sentence alone, as a 503.
+export const DEDICATED_OPENCLAW_SANDBOX_REQUIRED =
+  "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.";
+export const dedicatedOpenClawSandboxRefusal = (codexRuns) =>
+  `${DEDICATED_OPENCLAW_SANDBOX_REQUIRED} To deploy this Agent, ${
+    codexRuns
+      ? "set agentRuntime.id to codex for its selected models"
+      : "select a codex/<model> model with agentRuntime.id codex"
+  }, or ask an Installation administrator to select such a SandboxDriver.`;
 // Model policy refusals at Configuration save and deploy (packages/occ/src/configured-harness.ts).
 // `policy` is the setting path of the object that holds agentRuntime, such as
 // agents.defaults.models["openai/gpt-4.1"] or models.providers.openai.models[0]; `parent` is
@@ -336,14 +348,15 @@ export const codexApiKeyRefusal = (setting) =>
 export const runtimeIdUnsupported = (policy) =>
   `Configuration setting ${policy}.agentRuntime.id must be openclaw or codex.`;
 // `offer` lists only values deployment then accepts: "openclaw", "openclaw or codex" where Codex
-// runs the model, or the runtime the other selected models use.
+// runs the model ("codex" alone for a dedicated Agent on an Installation that cannot run
+// dedicated OpenClaw, finding 3036), or the runtime the other selected models use.
 export const runtimeIdRequired = (policy, offer) =>
   `Configuration setting ${policy}.agentRuntime.id is required for the selected model: set it to ${offer}.`;
 export const runtimeOfOtherModels = (runtime) =>
   `${runtime}, the runtime the other selected models use`;
 // `remedy` offers only values deployment then accepts: BOTH_RUNTIMES, or keepRuntime(...) when
-// only one runtime is accepted (Codex does not run the model, or another policy or an earlier
-// selected model already selects it).
+// only one runtime is accepted (Codex does not run the model, another policy or an earlier
+// selected model already selects it, or the Agent is dedicated where dedicated OpenClaw is not).
 export const runtimePoliciesConflict = (first, firstId, second, secondId, remedy) =>
   `Configuration settings ${first}.agentRuntime.id (${firstId}) and ${second}.agentRuntime.id (${secondId}) conflict: ${remedy}.`;
 export const BOTH_RUNTIMES = "set both to openclaw or both to codex, or remove one";
