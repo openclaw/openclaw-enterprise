@@ -34,10 +34,13 @@ import {
   catalogRowUnselected,
   codexRuntimeOffProvider,
   BOTH_RUNTIMES,
+  CODEX_NEEDS_DEDICATED,
   dedicatedOpenClawSandboxRefusal,
   GATEWAY_MANAGED_MODE_DENIED,
   keepRuntime,
+  noRunnableRuntime,
   runtimeIdRequired,
+  runtimeIdRequiredNextStep,
   runtimeOfEntries,
   runtimeOfListedModels,
   runtimeOfOtherModels,
@@ -47,6 +50,7 @@ import {
   selectableModelOffProvider,
   selectableModelRuntimeMismatch,
   selectableModelsNotObject,
+  selectablePrimaryRuntimeNextStep,
   selectablePrimaryRuntimeRequired,
 } from "../helpers/refusal-text.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -2684,9 +2688,7 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
     configurationId: codexConfiguration.id,
   });
   const mismatch = (error) =>
-    error instanceof ConfigurationHarnessError &&
-    error.message ===
-      "The Configuration selects the Codex Harness, which needs dedicated execution; this Agent uses embedded execution. Change the Agent's execution mode or its Configuration.";
+    error instanceof ConfigurationHarnessError && error.message === CODEX_NEEDS_DEDICATED;
   // Agent save given the deploy route's Harness resolver refuses the same pair with the same
   // message (finding 1117). The update above, without it, stands in for an Agent stored earlier.
   await assert.rejects(
@@ -2971,9 +2973,15 @@ test("a dedicated Agent's runtime refusals offer only what the Installation runs
     error.message === runtimeIdRequired(policy, offer);
 
   // Without a provisioning Sandbox Driver the dedicated Agent cannot run OpenClaw, so the missing
-  // runtime offers codex alone. The embedded Agent of the same Configuration can: both stay.
+  // runtime offers codex alone. The embedded Agent of the same Configuration runs neither runtime
+  // for this codex/<model> model, so it gets the next step instead (finding 3037).
   await assert.rejects(deploy(dedicated.id), runtimeRequired("codex"));
-  await assert.rejects(deploy(embedded.id), runtimeRequired("openclaw or codex"));
+  await assert.rejects(
+    deploy(embedded.id),
+    (error) =>
+      error instanceof ConfigurationHarnessError &&
+      error.message === runtimeIdRequiredNextStep(policy),
+  );
   // The offered value deploys.
   await use(dedicated.id, "codex");
   assert.deepEqual((await deploy(dedicated.id)).harness, {
@@ -2992,6 +3000,144 @@ test("a dedicated Agent's runtime refusals offer only what the Installation runs
   ]);
   await use(dedicated.id, "none");
   await assert.rejects(deploy(dedicated.id), runtimeRequired("openclaw or codex"));
+});
+
+// D833: where the Installation approves Codex only for dedicated execution, an embedded Agent's
+// deploy offered codex, which then failed as needing dedicated execution. On a codex/<model>
+// model the openclaw offer failed too, so neither offer deployed (finding 3037).
+test("an embedded Agent's runtime refusals offer only what it runs, and name the next step where it runs neither", async () => {
+  const { bindHarnessAuth, configurationDriver, controller, namespace } = await fixture();
+  const websocketCodex = {
+    entries: { codex: { enabled: true, config: { appServer: { transport: "websocket" } } } },
+  };
+  const create = (values) =>
+    controller.createConfiguration(administrator, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values,
+    });
+  // Codex runs both models: openai only through the Codex plugin's WebSocket app server.
+  const cases = {
+    openai: { model: "openai/gpt-5.1", plugins: websocketCodex },
+    codex: { model: "codex/gpt-5.1" },
+  };
+  for (const entry of Object.values(cases)) {
+    entry.policy = `agents.defaults.models["${entry.model}"]`;
+    entry.values = (runtime) => ({
+      agents: {
+        defaults: {
+          model: entry.model,
+          ...(runtime === undefined
+            ? {}
+            : { models: { [entry.model]: { agentRuntime: { id: runtime } } } }),
+        },
+      },
+      ...(entry.plugins === undefined ? {} : { plugins: entry.plugins }),
+    });
+    entry.configurations = {};
+    for (const runtime of [undefined, "openclaw", "codex"]) {
+      entry.configurations[runtime ?? "none"] = await create(entry.values(runtime));
+    }
+  }
+  const agent = await bindHarnessAuth(
+    await controller.createAgent(administrator, {
+      namespaceId: namespace.id,
+      name: "Embedded Codex model",
+      configurationId: cases.openai.configurations.none.id,
+      executionMode: "embedded",
+    }),
+  );
+  const deploy = (resolveHarness = resolveApprovedProductionHarness) =>
+    controller.deployAgent(
+      administrator,
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveHarness,
+    );
+  // Agent save without the deploy route's resolver keeps a pair deploy refuses, as one stored
+  // before that rule.
+  const use = (configuration) =>
+    controller.updateAgent(administrator, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      configurationId: configuration.id,
+    });
+  const refusedWith = (message) => (error) =>
+    error instanceof ConfigurationHarnessError && error.message === message;
+
+  // Embedded OpenClaw runs an openai model, so the missing runtime offers openclaw alone, and that
+  // offer deploys. codex, no longer offered, needs dedicated execution.
+  await use(cases.openai.configurations.none);
+  await assert.rejects(deploy(), refusedWith(runtimeIdRequired(cases.openai.policy, "openclaw")));
+  await use(cases.openai.configurations.codex);
+  await assert.rejects(deploy(), refusedWith(CODEX_NEEDS_DEDICATED));
+  await use(cases.openai.configurations.openclaw);
+  assert.deepEqual((await deploy()).harness, {
+    id: "openclaw",
+    version: "1.0.0",
+    mode: "embedded",
+  });
+
+  // On a codex/<model> model neither runtime deploys an embedded Agent, so the refusal names the
+  // next step instead of an offer. A resolver that approves Codex for embedded execution keeps
+  // both offers.
+  await use(cases.codex.configurations.none);
+  await assert.rejects(deploy(), refusedWith(runtimeIdRequiredNextStep(cases.codex.policy)));
+  await assert.rejects(
+    deploy((harnessId) => ({ id: harnessId, version: "1.0.0" })),
+    refusedWith(runtimeIdRequired(cases.codex.policy, "openclaw or codex")),
+  );
+  await use(cases.codex.configurations.codex);
+  await assert.rejects(deploy(), refusedWith(CODEX_NEEDS_DEDICATED));
+
+  // Configuration save refuses the next two rules, so deploy meets them only on a Configuration
+  // stored before them. Write such rows directly to the Configuration Driver's storage.
+  const storeValues = async (configuration, values) => {
+    await configurationDriver.update({
+      ...configurationDriver.stored(configuration),
+      values,
+    });
+    await use(configuration);
+  };
+  for (const [name, { model, values }] of Object.entries(cases)) {
+    // The primary model's runtime is missing while another model is listed beside it.
+    const listed = values();
+    listed.agents.defaults.models = { [model]: {}, [`${model}-mini`]: {} };
+    await storeValues(cases[name].configurations.none, listed);
+    await assert.rejects(
+      deploy(),
+      refusedWith(
+        name === "codex"
+          ? selectablePrimaryRuntimeNextStep(cases.codex.policy)
+          : selectablePrimaryRuntimeRequired(cases.openai.policy, "openclaw"),
+      ),
+    );
+    // Two policies select different runtimes for the model.
+    const conflicting = values("openclaw");
+    conflicting.models = {
+      providers: { [model.split("/")[0]]: { agentRuntime: { id: "codex" } } },
+    };
+    await storeValues(cases[name].configurations.none, conflicting);
+    const provider = `models.providers.${model.split("/")[0]}`;
+    await assert.rejects(
+      deploy(),
+      refusedWith(
+        runtimePoliciesConflict(
+          cases[name].policy,
+          "openclaw",
+          provider,
+          "codex",
+          name === "codex" ? noRunnableRuntime("both") : keepRuntime("openclaw", "codex"),
+        ),
+      ),
+    );
+    // Configuration save, which serves any Agent, keeps both offers for the same document.
+    await assert.rejects(
+      create(conflicting),
+      refusedWith(
+        runtimePoliciesConflict(cases[name].policy, "openclaw", provider, "codex", BOTH_RUNTIMES),
+      ),
+    );
+  }
 });
 
 test("The Installation lists exactly the OpenClaw execution modes Agent save and deploy admit", async () => {

@@ -10331,7 +10331,7 @@ export class OpenClawController {
       );
       const configuredHarnessId = resolveConfiguredHarnessId(
         configuration.values,
-        this.modelPolicyAgent(lockedAgent.executionMode),
+        this.modelPolicyAgent(lockedAgent.executionMode, resolveHarness),
       );
       const approvedHarness = resolveAgentHarness(
         resolveHarness,
@@ -14419,11 +14419,23 @@ export class OpenClawController {
   /**
    * The Agent a model policy refusal offers runtimes for: a dedicated Agent cannot run OpenClaw
    * where the Installation does not list dedicated OpenClaw (openClawExecutionModes), so its
-   * refusals offer codex alone where Codex runs the model (finding 3036). Read only to word a
-   * refusal: an unavailable Sandbox Driver keeps every offer, and admission refuses it later.
+   * refusals offer codex alone where Codex runs the model (finding 3036). With the deploy route's
+   * `resolveHarness`, an embedded Agent cannot run Codex where the Installation approves the Codex
+   * Harness only for dedicated execution (resolveAgentHarness refuses it), so its refusals offer
+   * openclaw alone, or name the next step on a codex/<model> model (finding 3037). Read only to
+   * word a refusal: an unavailable Sandbox Driver or no resolver keeps every offer, and admission
+   * refuses it later.
    */
-  private modelPolicyAgent(executionMode: HarnessExecutionMode): ModelPolicyAgent {
+  private modelPolicyAgent(
+    executionMode: HarnessExecutionMode,
+    resolveHarness?: HarnessResolver,
+  ): ModelPolicyAgent {
     return {
+      codexRuns: () =>
+        executionMode !== "embedded" ||
+        resolveHarness === undefined ||
+        resolveHarness("codex", "embedded")?.id === "codex" ||
+        resolveHarness("codex", "dedicated")?.id !== "codex",
       openclawRuns: () => {
         if (executionMode !== "dedicated") {
           return true;

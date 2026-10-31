@@ -221,7 +221,10 @@ only values that deployment accepts: `codex` only where Codex accepts the model,
 runtime that the other selected models, the listed models, or another policy already select.
 Deployment and Agent provisioning also check the Agent: if the Agent is dedicated and the
 Installation does not list dedicated OpenClaw, the refusal offers only `codex` where Codex
-accepts the model. Configuration save can serve any Agent, so it offers both values.
+accepts the model. Deployment of an embedded Agent, where the Installation approves Codex only
+for dedicated execution, offers only `openclaw`. For a `codex/<model>` model, embedded OpenClaw
+cannot run it either, so the refusal tells you to set `codex` on a dedicated Agent or to select
+a model of another provider. Configuration save can serve any Agent, so it offers both values.
 A Preset is checked when a launch creates its Configuration.
 
 ## Limits
