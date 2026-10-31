@@ -111,22 +111,38 @@ export function requireChannelTopology(
 const CODEX_APP_SERVER_VARIABLE = /^APP_SERVER_/i;
 
 /**
- * The plugin secret inputs that stop the OpenClaw Gateway at startup when their reference is
- * unset, for each plugin the runtime image ships with any: the `configContracts.secretInputs`
- * paths without an `ownerKind` in `extensions/<id>/openclaw.plugin.json` at the commit in
- * `deploy/runtime/openclaw-source.json` (`*` matches each key). OpenClaw resolves those for no
- * runtime owner and ends startup with "required secrets are unavailable". An input with an
- * `ownerKind` (beam, imap) only makes its owner unavailable, and the Gateway skips an entry for a
- * plugin the image does not ship. Update this list when that pin or the image's plugins change.
+ * The plugin secret inputs of each plugin the runtime image ships with any: the
+ * `configContracts.secretInputs` paths in `extensions/<id>/openclaw.plugin.json` at the commit in
+ * `deploy/runtime/openclaw-source.json` (`*` matches each key). OpenClaw resolves those of an
+ * active plugin at startup, and a reference it cannot read at all ends startup with "required
+ * secrets are unavailable" (`secretInputReference`). `required`: the inputs without an
+ * `ownerKind`, whose unset variable also ends startup; one with an `ownerKind` (beam, imap) then
+ * only makes its owner unavailable. `enabledByDefault: false` (the manifest's
+ * `bundledDefaultEnabled`): the plugin is active only when its entry sets `enabled: true`. The
+ * Gateway skips an entry for a plugin the image does not ship. Update this list when that pin or
+ * the image's plugins change.
  */
-const GATEWAY_REQUIRED_PLUGIN_SECRET_INPUTS: Readonly<
-  Record<string, readonly (readonly string[])[]>
+const PLUGIN_SECRET_INPUTS: Readonly<
+  Record<
+    string,
+    {
+      readonly paths: readonly (readonly string[])[];
+      readonly required: boolean;
+      readonly enabledByDefault: boolean;
+    }
+  >
 > = {
-  codex: [
-    ["appServer", "authToken"],
-    ["appServer", "headers", "*"],
-  ],
-  google: [["webSearch", "headers", "*"]],
+  beam: { paths: [["mirror", "token"]], required: false, enabledByDefault: false },
+  codex: {
+    paths: [
+      ["appServer", "authToken"],
+      ["appServer", "headers", "*"],
+    ],
+    required: true,
+    enabledByDefault: true,
+  },
+  google: { paths: [["webSearch", "headers", "*"]], required: true, enabledByDefault: true },
+  imap: { paths: [["accounts", "*", "password"]], required: false, enabledByDefault: false },
 };
 
 // Variables a Gateway may receive without a binding that a Secret binding may also name: the
@@ -135,19 +151,92 @@ const GATEWAY_REQUIRED_PLUGIN_SECRET_INPUTS: Readonly<
 const RUNTIME_VARIABLE =
   /^(?:HOSTNAME|YARN_VERSION|GIT_SSL_CAINFO)$|_SERVICE_(?:HOST|PORT)(?:_|$)|_PORT(?:_|$)/;
 
-// The variable a secret-input value reads as an environment SecretRef, if any: a whole `${NAME}`
-// with no fallback, the `$NAME` shorthand or an env SecretRef object. OpenClaw trims the value
-// first (`parseEnvTemplateSecretRef`), so a padded `${NAME}` counts too. It keeps a reference
-// inside other text as written, and a fallback replaces an unset name, so neither stops it.
-function secretInputVariable(value: unknown): string | undefined {
-  const reference = asRecord(value);
-  const name =
-    typeof value === "string"
-      ? (wholeEnvironmentReferenceName(value.trim()) ?? secretInputShorthandName(value))
-      : reference?.source === "env"
-        ? reference.id
-        : undefined;
-  return typeof name === "string" && name.length > 0 ? name : undefined;
+// OpenClaw's SecretRef grammar at the pin (`src/secrets/ref-contract.ts`): the sources, the
+// provider alias and the id of an env or store SecretRef.
+const SECRET_REF_SOURCES = ["env", "file", "exec", "store"];
+const SECRET_PROVIDER_ALIAS = /^[a-z][a-z0-9_-]{0,63}$/;
+const ENV_SECRET_REF_ID = /^[A-Z][A-Z0-9_]{0,127}$/;
+
+type SecretInputReference =
+  // The variable the Gateway reads from its environment.
+  | { readonly variable: string }
+  // Why OpenClaw cannot read the reference at all, which ends startup.
+  | { readonly requirement: string };
+
+/**
+ * How OpenClaw reads a secret-input value at startup, or undefined when it keeps the value as
+ * written (a reference inside other text, a `${NAME:-fallback}`, any other object). A whole
+ * `${NAME}` with no fallback (padded too, finding 3046) and the `$NAME` shorthand are env
+ * SecretRefs on the default env provider alias (`secrets.defaults.env`, else "default";
+ * `parseEnvTemplateSecretRef`); a `${_NAME}` is only substituted from the environment. OpenClaw
+ * refuses a SecretRef object without a provider (`collectCanonicalSecretInputAssignment`), a
+ * provider alias that breaks its grammar or that `secrets.providers` does not configure for the
+ * ref's source (only env and store have a built-in default alias: `resolveConfiguredProvider`),
+ * an env or store id that breaks its grammar (`normalizeAndGroupSecretRefs`, which also refuses
+ * padding) and an id a configured env provider's `allowlist` omits.
+ */
+function secretInputReference(
+  value: unknown,
+  secrets: Readonly<Record<string, unknown>> | undefined,
+  shownName: (name: string) => string,
+): SecretInputReference | undefined {
+  const text = typeof value === "string" ? value : undefined;
+  const substituted = text === undefined ? undefined : wholeEnvironmentReferenceName(text.trim());
+  if (substituted !== undefined && !ENV_SECRET_REF_ID.test(substituted)) {
+    return { variable: substituted };
+  }
+  const template = substituted ?? (text === undefined ? undefined : secretInputShorthandName(text));
+  const object = template === undefined ? asRecord(value) : undefined;
+  const source = template === undefined ? object?.source : "env";
+  const id = template ?? object?.id;
+  if (
+    typeof source !== "string" ||
+    !SECRET_REF_SOURCES.includes(source) ||
+    typeof id !== "string" ||
+    id.trim() === ""
+  ) {
+    return undefined;
+  }
+  const defaults = asRecord(secrets?.defaults);
+  const defaultAlias = (refSource: string): string => {
+    const alias = defaults?.[refSource];
+    return typeof alias === "string" && alias.trim() !== "" ? alias.trim() : "default";
+  };
+  const provider = template === undefined ? object?.provider : defaultAlias("env");
+  if (provider === undefined) {
+    return {
+      requirement: `is a SecretRef without a provider: add provider "${defaultAlias("env")}" for an env SecretRef`,
+    };
+  }
+  if (
+    (object !== undefined && Object.keys(object).length !== 3) ||
+    typeof provider !== "string" ||
+    provider.trim() === ""
+  ) {
+    return undefined;
+  }
+  const configured = asRecord(asRecord(secrets?.providers)?.[provider]);
+  const builtIn =
+    configured?.source !== source &&
+    ["env", "store"].includes(source) &&
+    provider === defaultAlias(source);
+  if (!SECRET_PROVIDER_ALIAS.test(provider) || (!builtIn && configured?.source !== source)) {
+    return {
+      requirement: `uses secret provider ${shownName(provider)}, which secrets.providers does not configure for ${source}`,
+    };
+  }
+  if (["env", "store"].includes(source) && !ENV_SECRET_REF_ID.test(id)) {
+    return {
+      requirement: `references ${shownName(id)}, not an id OpenClaw reads in ${source} SecretRefs (A-Z, 0-9 and _, from a letter)`,
+    };
+  }
+  const allowlist = builtIn ? undefined : configured?.allowlist;
+  if (source === "env" && Array.isArray(allowlist) && !allowlist.includes(id)) {
+    return {
+      requirement: `references ${shownName(id)}, which secrets.providers.${provider}.allowlist omits`,
+    };
+  }
+  return source === "env" ? { variable: id } : undefined;
 }
 
 // Each value at `keys` below `value`, with its setting path; `*` matches every key of an object.
@@ -170,16 +259,17 @@ function settingValues(
 }
 
 /**
- * A Gateway starts only if every Gateway-required secret input of an active plugin
- * (`GATEWAY_REQUIRED_PLUGIN_SECRET_INPUTS`) resolves; otherwise it exits at every start and the
- * deployment waits for its convergence deadline (findings 3040, 3041, 3042). Every topology's
- * Gateway keeps the caller's plugin entries. Refuses the first such reference to a variable the
- * Gateway would lack: an APP_SERVER_ variable, which only a Dedicated Codex Gateway receives,
- * and, when `bound` is given, a name a Secret binding could set but `bound` says nothing sets.
- * `bound` answers for the Configuration's bindings and what the Installation adds at launch;
- * Agent save, which knows neither, passes none. Other reserved names pass: Compute or the image
- * may set them. OpenClaw skips the secret inputs of an entry whose `enabled` is false, of a
- * denied plugin and of `plugins.enabled: false`, and so does this rule.
+ * A Gateway starts only if OpenClaw can read every secret input of an active plugin
+ * (`PLUGIN_SECRET_INPUTS`) and every required one resolves; otherwise it exits at every start,
+ * its configuration still validates, and the deployment waits for its convergence deadline
+ * (findings 3040, 3041, 3042, 3056). Every topology's Gateway keeps the caller's plugin entries.
+ * Refuses the first reference OpenClaw cannot read (`secretInputReference`), then the first
+ * required one to a variable the Gateway would lack: an APP_SERVER_ variable, which only a
+ * Dedicated Codex Gateway receives, and, when `bound` is given, a name a Secret binding could set
+ * but `bound` says nothing sets. `bound` answers for the Configuration's bindings and what the
+ * Installation adds at launch; Agent save, which knows neither, passes none. Other reserved names
+ * pass: Compute or the image may set them. OpenClaw skips the secret inputs of an entry whose
+ * `enabled` is false, of a denied plugin and of `plugins.enabled: false`, and so does this rule.
  */
 export function requirePluginSecretInputs(
   configuration: Readonly<OpenClawConfigurationDocument>,
@@ -196,27 +286,35 @@ export function requirePluginSecretInputs(
   const policyId = (name: unknown): string | undefined =>
     typeof name === "string" ? name.trim().toLowerCase() : undefined;
   const denied = Array.isArray(plugins?.deny) ? plugins.deny.map(policyId) : [];
+  const secrets = asRecord(configuration.secrets);
+  const shownName = (name: string): string =>
+    /^[A-Za-z0-9_]{1,32}$/.test(name) ? name : quotedSettingKey(name, 32);
   for (const [key, value] of Object.entries(entries)) {
     const id = policyId(key)!;
     const entry = asRecord(value);
+    const inputs = Object.hasOwn(PLUGIN_SECRET_INPUTS, id) ? PLUGIN_SECRET_INPUTS[id] : undefined;
     if (
-      !Object.hasOwn(GATEWAY_REQUIRED_PLUGIN_SECRET_INPUTS, id) ||
+      inputs === undefined ||
       entry === undefined ||
-      entry.enabled === false ||
+      (inputs.enabledByDefault ? entry.enabled === false : entry.enabled !== true) ||
       denied.includes(id)
     ) {
       continue;
     }
     const path = keyedSettingPath("plugins.entries", key);
     const disable = `remove ${path} or set its enabled to false`;
-    for (const [setting, value] of GATEWAY_REQUIRED_PLUGIN_SECRET_INPUTS[id]!.flatMap((keys) =>
+    for (const [setting, value] of inputs.paths.flatMap((keys) =>
       settingValues(entry.config, keys, `${path}.config`),
     )) {
-      const name = secretInputVariable(value);
-      if (name === undefined) {
+      const reference = secretInputReference(value, secrets, shownName);
+      if (reference !== undefined && "requirement" in reference) {
+        throw createError(setting, `${reference.requirement}, or ${disable}`);
+      }
+      if (reference === undefined || !inputs.required) {
         continue;
       }
-      const shown = /^[A-Za-z0-9_]{1,32}$/.test(name) ? name : quotedSettingKey(name, 32);
+      const name = reference.variable;
+      const shown = shownName(name);
       if (topology !== "Dedicated Codex" && CODEX_APP_SERVER_VARIABLE.test(name)) {
         const agent = topology === "embedded OpenClaw" ? "an embedded" : "a Dedicated OpenClaw";
         throw createError(

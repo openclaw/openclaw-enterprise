@@ -211,7 +211,11 @@ secret input reads an unset variable: Codex `appServer.authToken` or
 Agent save refuse them for other Agents. Deployment also refuses another
 variable that no Configuration Secret binding sets, unless an Installation
 Driver adds launch variables. Bind a Secret to it, or remove or disable the
-plugin entry.
+plugin entry. Deployment and Agent save also refuse a reference OpenClaw cannot
+read in any active plugin's secret input, including an enabled Beam or IMAP
+entry: a SecretRef without a provider, a provider that `secrets.providers` does
+not configure, an env id that is not uppercase (`A-Z`, `0-9`, `_`), or an id that
+the env provider's `allowlist` omits.
 
 Configuration writes run these rules in deployment's order. They refuse settings
 that conflict, with deployment's message: an entry primary that differs, selectable
