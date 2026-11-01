@@ -19,6 +19,144 @@ import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-sta
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { staticEgressFixture, syntheticDispatchFixture } from "../helpers/static-egress.mjs";
 
+test("fresh static source refuses duplicate provider identity in either catalog order", async (t) => {
+  const f = await staticEgressFixture(t);
+  assert.ok("egress" in f && "createNamespaceMember" in f && "signIn" in f);
+  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
+  const saved = [...providers];
+  t.after(() => providers.splice(0, providers.length, ...saved));
+  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  const injections = [0, 0];
+  const entries = injections.map((_, index): CredentialProviderDefinition => ({
+    ...original,
+    ref: { ...original.ref },
+    inject(value) {
+      injections[index]! += 1;
+      return Reflect.apply(original.inject, this, [value]);
+    },
+  }));
+  const sources = () =>
+    f.controller.transact((unit: PlatformUnitOfWork) =>
+      unit.credentialSources.listCredentialSources(f.namespace.id),
+    );
+  const body = { name: "ambiguous-fresh", type: "openai", secrets: { api_key: f.secret.ref } };
+  providers.splice(0, providers.length, ...entries);
+  assert.equal((await f.request("POST", f.path, { session: null, body })).status, 401);
+  assert.equal((await f.request("POST", f.path, { body: { ...body, name: "" } })).status, 400);
+  const denied = await f.createNamespaceMember("no-source-access", f.namespace.id, []);
+  const session = await f.signIn(denied.credentials);
+  assert.equal((await f.request("POST", f.path, { session, body })).status, 403);
+
+  const outcomes = [];
+  for (const [index, order] of [entries, [...entries].reverse()].entries()) {
+    providers.splice(0, providers.length, ...order);
+    injections.fill(0);
+    const count = (await sources()).length;
+    const reads = f.secretReads;
+    const result = await f.request("POST", f.path, {
+      body: { ...body, name: `ambiguous-${index}` },
+    });
+    outcomes.push({
+      status: result.status,
+      injections: [...injections],
+      secretReads: f.secretReads - reads,
+      sourceCountDelta: (await sources()).length - count,
+    });
+  }
+  const refused = { status: 409, injections: [0, 0], secretReads: 0, sourceCountDelta: 0 };
+  assert.deepEqual(outcomes, [refused, refused]);
+  assert.equal(f.providerRequests.length, 0);
+});
+
+test("fresh static source keeps catalog order for distinct provider identities", async (t) => {
+  const f = await staticEgressFixture(t);
+  assert.ok("egress" in f);
+  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
+  const saved = [...providers];
+  t.after(() => providers.splice(0, providers.length, ...saved));
+  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  const injections: string[] = [];
+  const make = (id: string): CredentialProviderDefinition => ({
+    ...original,
+    ref: { ...original.ref, id },
+    inject(value) {
+      injections.push(id);
+      return Reflect.apply(original.inject, this, [value]);
+    },
+  });
+  const a = make("catalog-a");
+  const b = make("catalog-b");
+  for (const entries of [[a], [a, b], [b, a]]) {
+    providers.splice(0, providers.length, ...entries);
+    const reads: number = f.secretReads;
+    const result: { status: number; data: { id: string } } = await f.request("POST", f.path, {
+      body: {
+        name: `catalog-${injections.length}`,
+        type: "openai",
+        secrets: { api_key: f.secret.ref },
+      },
+    });
+    assert.equal(result.status, 201);
+    const source: Readonly<CredentialSource> | undefined = await f.controller.transact(
+      (unit: PlatformUnitOfWork) =>
+        unit.credentialSources.findCredentialSource(f.namespace.id, result.data.id),
+    );
+    assert.deepEqual(source?.egress?.key.provider, entries[0]!.ref);
+    assert.equal(f.secretReads, reads + 1);
+  }
+  assert.deepEqual(injections, [a.ref.id, a.ref.id, b.ref.id]);
+  assert.equal(f.providerRequests.length, 0);
+});
+
+test("fresh static source refuses a provider duplicate added during material resolution", async (t) => {
+  const f = await staticEgressFixture(t);
+  assert.ok("egress" in f);
+  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
+  const saved = [...providers];
+  t.after(() => providers.splice(0, providers.length, ...saved));
+  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  let injections = 0;
+  const provider: CredentialProviderDefinition = {
+    ...original,
+    inject(value) {
+      injections += 1;
+      return Reflect.apply(original.inject, this, [value]);
+    },
+  };
+  providers.splice(0, providers.length, provider);
+  const sources = () =>
+    f.controller.transact((unit: PlatformUnitOfWork) =>
+      unit.credentialSources.listCredentialSources(f.namespace.id),
+    );
+  const count = (await sources()).length;
+  const reads = f.secretReads;
+  const release = f.pauseSecretReads();
+  t.after(release);
+  const pending = f.request("POST", f.path, {
+    body: {
+      name: "pending-create",
+      type: "openai",
+      secrets: { api_key: f.secret.ref },
+    },
+  });
+  try {
+    const until = Date.now() + 5_000;
+    while (f.secretReads === reads && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(f.secretReads, reads + 1);
+    // The selected pointer and callbacks stay unchanged; only identity uniqueness changes.
+    providers.push({ ...provider, ref: { ...provider.ref } });
+  } finally {
+    release();
+  }
+  const result = await pending;
+  assert.equal(result.status, 409);
+  assert.equal(injections, 0);
+  assert.equal((await sources()).length, count);
+  assert.equal(f.providerRequests.length, 0);
+});
+
 test("credential exchange refuses a conflicted eligible provider before route fallback", async (t) => {
   const view: { installation?: (installation: EgressInstallation) => EgressInstallation } = {};
   const f = await staticEgressFixture(t, {

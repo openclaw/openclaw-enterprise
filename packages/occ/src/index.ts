@@ -6180,10 +6180,11 @@ export class OpenClawController {
     const driver = this.selectedDriver("credential_proxy");
     const control = driver.sourceControl;
     // A new admission uses catalog order. An existing approval names a specific registration.
-    const resolve = () =>
-      previous
-        ? registeredCredentialProvider(control.providers, previous)
-        : control.providers.find((entry) => entry.sourceType.type === type);
+    const resolve = () => {
+      const ref =
+        previous ?? control.providers.find((entry) => entry.sourceType.type === type)?.ref;
+      return ref ? registeredCredentialProvider(control.providers, ref) : undefined;
+    };
     const provider = resolve();
     if (provider === "ambiguous") {
       throw new ResourceStateConflictError(

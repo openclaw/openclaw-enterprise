@@ -70,6 +70,12 @@ retry follows. Retain that uncertain receipt.
 
 ## Static source and response policy
 
+Fresh static sources select the first provider for their type in catalog order.
+The selected provider ID and generation must identify one registration; duplicates
+return `409` before credential material is read. Multiple distinct providers for
+the same type remain supported. Reordering distinct providers does not change the
+provider selected for an existing source update.
+
 The static OpenAI profile admits an explicitly configured model and a closed set of
 text inference requests. Unsupported operations, remote provider tools, arbitrary
 model selection and discovery are refused before reading the Secret. The trusted

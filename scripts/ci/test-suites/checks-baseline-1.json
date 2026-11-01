@@ -512,6 +512,9 @@
     {
       "path": "tests/integration/credential-proxy-provider-pin.test.ts",
       "expectedTests": [
+        "fresh static source refuses duplicate provider identity in either catalog order",
+        "fresh static source keeps catalog order for distinct provider identities",
+        "fresh static source refuses a provider duplicate added during material resolution",
         "credential exchange refuses a conflicted eligible provider before route fallback",
         "credential exchange refuses duplicate and substituted providers before material access",
         "credential exchange refuses provider replacement during a pending Secret read",
