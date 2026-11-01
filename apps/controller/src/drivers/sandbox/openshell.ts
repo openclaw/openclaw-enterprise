@@ -3,7 +3,11 @@ import {
   type OpenShellGitPolicyOverlap,
   type OpenShellGitRuntime,
 } from "../egress-proxy/openshell-git-runtime.ts";
-import { networkPolicySpecToJson, networkPolicyToSdk } from "../kubernetes/network-policy.ts";
+import {
+  isCoreNetworkPolicy,
+  networkPolicySpecToJson,
+  networkPolicyToSdk,
+} from "../kubernetes/network-policy.ts";
 import {
   openShellEgressConfiguration,
   type OpenShellProxyOptions,
@@ -442,20 +446,29 @@ function validateKubernetesResource(value: unknown, path: string): void {
 function refuseIngressAlias(value: unknown, pointer: string): void {
   const resource = asRecord(value);
   const ingress = asRecord(resource?.spec)?.ingress;
-  if (resource?.kind !== "NetworkPolicy" || !Array.isArray(ingress)) {
+  if (resource === undefined || !isCoreNetworkPolicy(resource) || !Array.isArray(ingress)) {
     return;
   }
-  const index = ingress.findIndex(
-    (rule) => asRecord(rule) !== undefined && Object.hasOwn(rule, "_from"),
-  );
-  if (index !== -1) {
-    throw new ConfigurationValidationError([
-      {
-        path: `${pointer}/spec/ingress/${index}/_from`,
-        code: "INVALID_VALUE",
-        message: "Name NetworkPolicy ingress sources with the Kubernetes field from.",
-      },
-    ]);
+  for (const [index, rule] of ingress.entries()) {
+    const fields = asRecord(rule);
+    if (fields === undefined) {
+      throw new ConfigurationValidationError([
+        {
+          path: `${pointer}/spec/ingress/${index}`,
+          code: "INVALID_VALUE",
+          message: "Write each NetworkPolicy ingress rule as an object.",
+        },
+      ]);
+    }
+    if (Object.hasOwn(fields, "_from")) {
+      throw new ConfigurationValidationError([
+        {
+          path: `${pointer}/spec/ingress/${index}/_from`,
+          code: "INVALID_VALUE",
+          message: "Name NetworkPolicy ingress sources with the Kubernetes field from.",
+        },
+      ]);
+    }
   }
 }
 

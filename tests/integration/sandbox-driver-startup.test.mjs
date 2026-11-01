@@ -4315,6 +4315,29 @@ test("startup refuses OpenShell settings its schema leaves open", async (t) => {
   await loadInstallationFile(t, accepted);
 });
 
+// A non-object ingress rule cannot be mapped for the client; startup names the field instead of
+// the apply failing later.
+test("startup refuses NetworkPolicy ingress rules that are not objects", async (t) => {
+  for (const list of ["operatorWorkspaceResources", "networkPolicyResources"]) {
+    for (const rule of [null, "allow"]) {
+      await rejectsAtStartup(
+        t,
+        (c) =>
+          (sandboxOf(c).gateway[list] = [
+            {
+              apiVersion: "networking.k8s.io/v1",
+              kind: "NetworkPolicy",
+              metadata: { name: "sandbox-ingress" },
+              spec: { podSelector: {}, ingress: [rule] },
+            },
+          ]),
+        // Both lists are write-only, so the detail names the list, not the item.
+        invalidValue(`/gateway/${list}`, "Write each NetworkPolicy ingress rule as an object."),
+      );
+    }
+  }
+});
+
 test("startup refuses OpenShell Agent resources that are not objects", async (t) => {
   for (const [field, value] of [
     ["requests", "1"],
@@ -6457,8 +6480,20 @@ test("OpenShell operator mode applies NetworkPolicy ingress sources through the 
       ingress: structuredClone(ingress),
     },
   });
+  // A provider CRD that is also named NetworkPolicy has no SDK model: the client sends it as
+  // written, so renaming its `from` would make the API server drop the field.
+  const crdIngress = [{ action: "Allow", ...structuredClone(ingress[0]) }];
+  const crdPolicy = {
+    apiVersion: "crd.antrea.io/v1beta1",
+    kind: "NetworkPolicy",
+    metadata: { name: "provider-crd-ingress" },
+    spec: {
+      appliedTo: [{ podSelector: { matchLabels: { "openshell.ai/managed-by": "openshell" } } }],
+      ingress: structuredClone(crdIngress),
+    },
+  };
   configuration.gateway.operatorWorkspaceResources = [policy("openshell-workspace-sandbox-ssh")];
-  configuration.gateway.networkPolicyResources = [policy("provider-ingress")];
+  configuration.gateway.networkPolicyResources = [policy("provider-ingress"), crdPolicy];
   const gatewayClient = workspaceGatewayClient();
   const driver = openShellDriver(gatewayClient, configuration);
   const context = namespaceContext();
@@ -6468,6 +6503,9 @@ test("OpenShell operator mode applies NetworkPolicy ingress sources through the 
   );
   api.apiVersionResourceCache = {
     "networking.k8s.io/v1": {
+      resources: [{ name: "networkpolicies", kind: "NetworkPolicy", namespaced: true }],
+    },
+    "crd.antrea.io/v1beta1": {
       resources: [{ name: "networkpolicies", kind: "NetworkPolicy", namespaced: true }],
     },
   };
@@ -6484,12 +6522,14 @@ test("OpenShell operator mode applies NetworkPolicy ingress sources through the 
   context.kubernetes = api;
 
   await driver.ensureNamespace(context);
-  // Both lists reach the API server with their source restriction intact.
+  // Both lists reach the API server with their source restriction intact; the CRD body keeps
+  // its wire `from` and carries no `_from`.
   assert.deepEqual(
     applied.map(([method, body]) => [method, body.metadata.name, body.spec.ingress]),
     [
       ["PATCH", "openshell-workspace-sandbox-ssh", ingress],
       ["PATCH", "provider-ingress", ingress],
+      ["PATCH", "provider-crd-ingress", crdIngress],
     ],
   );
   assert.equal(callCount(gatewayClient, "createWorkspace"), 1);
