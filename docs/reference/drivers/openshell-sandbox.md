@@ -196,19 +196,13 @@ OpenShell, and dedicated Agent Gateway Pods, but cannot give Agent Gateways
 service-only authority on that shared listener. Accept this only in an owned
 disposable development cluster; never qualify this topology for production.
 
-`gateway.operatorWorkspaceResources` accepts the namespace-scoped
-ServiceAccount, Role, RoleBinding, and NetworkPolicy objects rendered from the
-workspace chart. The Driver injects the Compute-owned namespace and OCC
-ownership metadata before server-side apply. Only `operator` mode applies it;
-never include Secrets or cluster-scoped objects.
-
-`gateway.networkPolicyResources` accepts namespace-scoped Kubernetes objects
-for provider networking, applied during `ensureNamespace`. Secrets are rejected;
-OpenShell credentials must not appear in startup YAML.
-
-Write both lists as Kubernetes manifests, as `kubectl` accepts them. A
-NetworkPolicy ingress rule names its sources in `from`; startup refuses the
-client-library alias `_from`.
+`gateway.operatorWorkspaceResources` takes the ServiceAccount, Role,
+RoleBinding, and NetworkPolicy manifests the workspace chart renders;
+`gateway.networkPolicyResources` takes namespaced provider networking
+manifests. In `operator` mode, `ensureNamespace` server-side applies both with
+the Compute-owned namespace and OCC ownership metadata. Startup rejects Secrets
+and a NetworkPolicy ingress `_from` (write `from`). Keep OpenShell credentials
+and cluster-scoped objects out of both lists.
 
 `kubernetes.sandboxDataMount` must match exactly one approved dedicated Harness
 workspace mount. It may not mount the PVC root or use `..`, and must mount
