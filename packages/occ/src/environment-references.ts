@@ -575,9 +575,11 @@ export function trustedProxyIdentitiesProblem(
       new Set(allowUsers.map((user) => proxyIdentityMatchKey(user as string))).size !==
         allowUsers.length)
   ) {
+    // The case hint keeps a case duplicate from reading as two distinct identities (finding 3122);
+    // the whole message stays under configurationSettingMessage's 256-character cap.
     return {
       setting: "gateway.auth.trustedProxy.allowUsers",
-      requirement: `must include ${TRUSTED_PROXY_IDENTITY} and list distinct, nonblank, trimmed, printable ASCII identities that are not object property names; ${TRUSTED_PROXY_IDENTITY} and identities containing @ match case-insensitively`,
+      requirement: `must include ${TRUSTED_PROXY_IDENTITY} and list distinct (case-insensitive for ${TRUSTED_PROXY_IDENTITY} and @ identities), nonblank, trimmed, printable ASCII identities that are not object property names`,
     };
   }
   const deviceAutoApprove = trustedProxy.deviceAutoApprove;

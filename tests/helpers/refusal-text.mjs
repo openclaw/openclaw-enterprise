@@ -394,7 +394,7 @@ export const KUBERNETES_GATEWAY_PASSWORD_REFUSAL = `Configuration setting gatewa
 // The allowlist text says which identities match case-insensitively, so a case duplicate reads as
 // one (finding 3122).
 export const KUBERNETES_ALLOW_USERS_REFUSAL =
-  "Configuration setting gateway.auth.trustedProxy.allowUsers must include occ-workspace-files and list distinct, nonblank, trimmed, printable ASCII identities that are not object property names; occ-workspace-files and identities containing @ match case-insensitively.";
+  "Configuration setting gateway.auth.trustedProxy.allowUsers must include occ-workspace-files and list distinct (case-insensitive for occ-workspace-files and @ identities), nonblank, trimmed, printable ASCII identities that are not object property names.";
 export const KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL =
   "Configuration setting gateway.auth.trustedProxy.deviceAutoApprove must be an object with only an optional boolean enabled and an optional array of nonblank scope names.";
 // Deploy and Agent provisioning of dedicated OpenClaw where the Installation selects no

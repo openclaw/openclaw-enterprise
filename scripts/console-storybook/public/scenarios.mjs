@@ -5297,7 +5297,7 @@ export const scenarios = {
         status: 400,
         code: "INVALID_REQUEST",
         message:
-          "Configuration setting gateway.auth.trustedProxy.allowUsers must include occ-workspace-files and list distinct, nonblank, trimmed, printable ASCII identities that are not object property names; occ-workspace-files and identities containing @ match case-insensitively.",
+          "Configuration setting gateway.auth.trustedProxy.allowUsers must include occ-workspace-files and list distinct (case-insensitive for occ-workspace-files and @ identities), nonblank, trimmed, printable ASCII identities that are not object property names.",
       },
     ],
     description:
