@@ -41,6 +41,7 @@ import {
   unsubstitutedReferenceRefusal,
   codexApiKeyRefusal,
   codexRuntimeOffProvider,
+  configIncludeRefusal,
   KUBERNETES_GATEWAY_PASSWORD_REFUSAL,
   keepRuntime,
   OPENCLAW_ONLY,
@@ -1730,6 +1731,51 @@ test("Configuration save and deployment refuse another spelling of the codex or 
     context,
     withEntries({ ...exact.plugins.entries, Google: { enabled: false } }),
   );
+});
+
+test("Configuration save and deployment refuse OpenClaw's $include directive", async () => {
+  // Finding 3078. The pinned OpenClaw replaces an object holding $include with the named files'
+  // settings, merged under its other keys with arrays concatenated, and re-reads them when they
+  // change. Configuration rules and Compute read the document as written, so an include would add
+  // settings no rule checked, such as a gateway.auth.mode Kubernetes Compute refuses, from a file
+  // in the Gateway's config directory. Every save path, Agent save and deployment refuse it at any
+  // depth; configuration-occ.test.mjs proves the paths the refusal names.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-include-integration", ...configurationRules),
+  });
+  const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+    name: "Config include consumer",
+    secretName: "config-include",
+  });
+  for (const [values, path] of [
+    [{ $include: "./extra.json", ...runtimeSelected }, "$include"],
+    [
+      { ...runtimeSelected, gateway: { auth: { $include: "./auth.json" } } },
+      "gateway.auth.$include",
+    ],
+  ]) {
+    const message = configIncludeRefusal(path);
+    await refusedAtSaveAndDeploy(context, agent, values, message);
+    await refusedOnSave(context, values, message);
+  }
+  // Agent save refuses a stored row the same way, before any deployment.
+  await writePastOcc(configurationDriver, agent.configurationId, {
+    ...runtimeSelected,
+    tools: { $include: "./tools.json" },
+  });
+  assertRefused(
+    await request(context.app, "PATCH", agent.agentPath, {
+      body: { configurationId: agent.configurationId },
+    }),
+    configIncludeRefusal("tools.$include"),
+    { label: "Agent save" },
+  );
+  // Without the directive the same Agent deploys.
+  await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
+  const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
 });
 
 test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE runtime cannot run", async () => {

@@ -232,6 +232,50 @@ function refusePluginEntryKeyVariants(values: Readonly<OpenClawConfigurationDocu
   }
 }
 
+// OpenClaw's include directive key (`INCLUDE_KEY` in `src/config/includes.ts` at the pin).
+const CONFIG_INCLUDE_KEY = "$include";
+
+/**
+ * Refuses OpenClaw's `$include` directive anywhere in the document. The pinned OpenClaw
+ * (`src/config/includes.ts`) resolves it from the Gateway's config directory and replaces the
+ * object holding it with the named files' settings, merged under the object's other keys (arrays
+ * concatenated). Configuration rules and Compute read the document as written, so an include would
+ * add settings no rule checked; settings must be written in the Configuration instead (finding
+ * 3078). Configuration save runs it after the model provider settings, first of the other content
+ * rules; Agent save, deploy admission and the upgrade preflight run it on the stored Configuration.
+ */
+function refuseConfigIncludes(values: Readonly<OpenClawConfigurationDocument>): void {
+  const pending: [unknown, string][] = [[values, ""]];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const [value, path] = next;
+    if (Array.isArray(value)) {
+      for (let index = value.length - 1; index >= 0; index -= 1) {
+        pending.push([value[index], `${path}[${index}]`]);
+      }
+      continue;
+    }
+    const record = asRecord(value);
+    if (record === undefined) {
+      continue;
+    }
+    if (Object.hasOwn(record, CONFIG_INCLUDE_KEY)) {
+      throw new ConfigurationHarnessError(
+        configurationSettingMessage(
+          path === "" ? CONFIG_INCLUDE_KEY : `${path}.${CONFIG_INCLUDE_KEY}`,
+          "is not supported: OpenClaw would merge settings from another file that OCE does not check. Write those settings in the Configuration instead",
+        ),
+      );
+    }
+    // Pushed in reverse, so the stack checks the first key in document order first.
+    for (const [key, child] of Object.entries(record).reverse()) {
+      pending.push([
+        child,
+        path === "" && /^[A-Za-z0-9_-]+$/.test(key) ? key : keyedSettingPath(path, key),
+      ]);
+    }
+  }
+}
+
 const OPENCLAW_SANDBOX_UNSUPPORTED =
   "OCE runs each Agent in its own isolated runtime and does not support OpenClaw's sandbox";
 
@@ -315,6 +359,7 @@ function isCredentialReference(value: unknown): boolean {
  * when a Configuration is created, replaced or provisioned, and when a Preset is saved, with
  * `options` locating its unfilled variables. A stored Configuration that predates a rule still
  * reads; deployment refuses it.
+ * - OpenClaw's $include directive (refuseConfigIncludes).
  * - The Codex session approval policy (codexApprovalPolicy).
  * - A literal gateway.auth.password would be stored in plain text, as a model credential
  *   would; every Compute Driver accepts only an environment reference there.
@@ -329,6 +374,7 @@ export function validateConfigurationSettings(
   values: OpenClawConfigurationDocument,
   options?: ConfigurationValidationOptions,
 ): void {
+  refuseConfigIncludes(values);
   codexApprovalPolicy(
     values,
     (setting, requirement) =>
@@ -347,9 +393,10 @@ export function validateConfigurationSettings(
 /**
  * The rules above that Agent save and deploy admission run again on a stored Configuration, so
  * one saved before a rule existed gets the message its next save would (findings 2699, 2709,
- * 2767, 3063, 3064, 3073).
+ * 2767, 3063, 3064, 3073, 3078).
  */
 export function refuseStoredConfigurationSettings(values: OpenClawConfigurationDocument): void {
+  refuseConfigIncludes(values);
   refuseInvalidSecretProviderDefaults(values);
   refuseUnreadableGatewayPassword(values);
   validateWorkspaceBootstrapSettings(values);

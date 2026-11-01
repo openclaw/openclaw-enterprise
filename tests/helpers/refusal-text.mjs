@@ -343,6 +343,11 @@ export const codexApiKeyRefusal = (setting) =>
 // such as plugins.entries.Codex or plugins.entries[" codex"]; `id` is codex or acpx.
 export const pluginEntryKeyVariantRefusal = (path, id) =>
   `Configuration setting ${path} must be named ${id}: OpenClaw applies it to the ${id} plugin, whose settings OCE checks only under plugins.entries.${id}. Rename it to ${id}, or merge it into that entry.`;
+// Configuration save, Agent save and deploy admission refuse OpenClaw's $include directive anywhere
+// in the document (finding 3078). `path` is the setting as the message shows it, such as $include
+// or gateway.auth.$include.
+export const configIncludeRefusal = (path) =>
+  `Configuration setting ${path} is not supported: OpenClaw would merge settings from another file that OCE does not check. Write those settings in the Configuration instead.`;
 // Kubernetes Compute generates the Gateway password, so gateway.auth.password may only reference it,
 // on the default env provider alias (secrets.defaults.env, else "default").
 export const kubernetesGatewayPasswordRequirement = (alias = "default") =>
