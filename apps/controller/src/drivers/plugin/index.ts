@@ -37,12 +37,17 @@ import {
 import {
   hasAliasedSelections,
   openClawCatalogEntries,
+  openClawManagedPluginIds,
   validatePolicies,
   type CodexPluginCatalogReader,
 } from "./runtime-translator.ts";
 import { NativeCodexPluginCatalogReader } from "./stdio-catalog-reader.ts";
 import { discoverHostedPlugins, getHostedPlugin } from "./hosted-catalog.ts";
 import { deniedOpenClawSelection, openClawToolDenialMessage } from "./openclaw-tool-denial.ts";
+import {
+  openClawPluginSettingConflict,
+  openClawPluginSettingMessage,
+} from "./openclaw-plugin-settings.ts";
 import { validateCodexAutomaticReviewerPolicy } from "../../gateway/codex-approval-policy.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
@@ -463,6 +468,16 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     selections: PluginDesiredState,
     configuration: Readonly<OpenClawConfigurationDocument>,
   ): void {
+    // The Gateway refuses these settings at every start, before any turn (finding 3091).
+    const conflict = openClawPluginSettingConflict(
+      selections,
+      configuration,
+      openClawManagedPluginIds(),
+      `${OCC_DRIVER_ID}:`,
+    );
+    if (conflict !== undefined) {
+      throw new ConfigurationHarnessError(openClawPluginSettingMessage(conflict));
+    }
     const denied = deniedOpenClawSelection(OCC_CATALOG, selections, configuration);
     if (denied !== undefined) {
       throw new ConfigurationHarnessError(openClawToolDenialMessage(denied));

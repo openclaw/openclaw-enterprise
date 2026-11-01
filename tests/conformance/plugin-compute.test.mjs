@@ -22,6 +22,7 @@ import {
   gatewayRuntimeEntrypoint,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { startupPhaseHelper } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   PLUGIN_RUNTIME_CODEX_CONFIG,
   PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT,
@@ -2408,6 +2409,58 @@ test("OpenClaw runtime helper rejects foreign OpenClaw plugin config before nati
   assert.match(result.error.message, /configuration conflicts with managed plugin selections/);
   assert.deepEqual(result.calls, []);
   assert.equal(result.files.has("/home/node/.openclaw/openclaw.json"), false);
+});
+
+test("Agent save refuses exactly the Configuration plugin settings the Gateway entrypoint refuses for a selected catalog plugin", () => {
+  // Finding 3091. The entrypoint writes each selected catalog plugin's entry and exits
+  // at every start on a setting that turns an enabled one off or replaces that entry; the OpenClaw
+  // Plugin Driver refuses the same settings at Agent save, provisioning and deploy admission. Each
+  // case runs both; one that passes the entrypoint's check reaches the (failing) package install.
+  const driver = new OCCPluginDriver();
+  const enabled = occSelection();
+  const disabled = { "occ-plugin:diffs": { enabled: false } };
+  const cases = [
+    [{ enabled: false }, enabled, true],
+    [{ deny: [" DIFFS "] }, enabled, true],
+    [{ allow: ["codex"] }, enabled, true],
+    [{ entries: { diffs: { config: {} } } }, enabled, true],
+    [{ entries: { diffs: { enabled: true } } }, disabled, true],
+    [{ entries: { diffs: null } }, enabled, true],
+    [{ enabled: true, allow: ["codex", " Diffs"], deny: ["slack"] }, enabled, false],
+    [{ allow: [" "], entries: { slack: { enabled: true } } }, enabled, false],
+    [{ enabled: false, deny: ["diffs"], allow: ["codex"] }, disabled, false],
+  ];
+  for (const [index, [settings, plugins, refused]] of cases.entries()) {
+    const configuration = { gateway: { port: 8080 }, plugins: settings };
+    const runtime = {
+      manifest: pluginRuntimeSpecForRevision(
+        revision({
+          harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+          plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },
+        }),
+      ),
+    };
+    const result = runOpenClawRuntimeHelper(
+      runtime,
+      [{ status: null, signal: "SIGTERM", stdout: "", stderr: "" }],
+      { captureError: true, baseConfig: configuration },
+    );
+    assert.equal(
+      /conflicts with managed plugin selection/.test(result.error?.message ?? ""),
+      refused,
+      `${index}: entrypoint ${result.error?.message}`,
+    );
+    if (refused) {
+      assert.throws(
+        () => driver.validateAgentConfiguration(plugins, configuration),
+        { name: "ConfigurationHarnessError" },
+        `${index}: Agent save`,
+      );
+    } else {
+      assert.match(result.error.message, /OpenClaw plugin install failed/, `${index}`);
+      driver.validateAgentConfiguration(plugins, configuration);
+    }
+  }
 });
 
 test("OpenClaw runtime helper keeps install signals generic", () => {
