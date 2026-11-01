@@ -97,13 +97,14 @@ Deployment. Use the same procedure, with these changes:
   deleted. Record the Pod name from the log's `holder N at POD_NAME/pid-ns`
   text, not the current Pod. Before you stop the Agent (stopping deletes the
   Harness Deployment), find the Deployment's volume mount at
-  `/home/node/.openclaw-node` and record its claim and `workspace-node-…`
-  subPath. After the stop, `kubectl get pods -A -l openclaw.dev/agent=AGENT_ID`
+  `/home/node/.openclaw-node` and record its claim, `workspace-node-…` subPath
+  and the Pod's `securityContext`. After the stop, `kubectl get pods -A -l openclaw.dev/agent=AGENT_ID`
   must list no Pod, including `Terminating` Pods, and the holder Pod must not
   exist. Kubernetes removes a Pod only after its kubelet reports that the
   containers stopped, unless someone force-deleted the Pod, deleted its node or
-  tainted the node `node.kubernetes.io/out-of-service`. If one of these
-  occurred, or a node is unreachable, keep the Agent stopped until the
+  tainted the node `node.kubernetes.io/out-of-service`; `kubectl get nodes`
+  shows every node Ready without that taint. If one of these occurred, or a
+  node is unreachable, keep the Agent stopped until the
   infrastructure operator verifies on the node that the holder's containers
   exited.
 - Step 2: Start the maintenance container from the Harness image with the
@@ -118,8 +119,8 @@ Deployment. Use the same procedure, with these changes:
 - Step 3: Run the inspection and `--confirm` in the same container, for example
   a Pod that sleeps, with `kubectl exec` for each command. A new Pod can change
   the lock files' metadata, and OpenClaw then reports a changed record.
-- If a version already fails with `Runtime pin store owner is unsafe`, keep the
-  Agent stopped. From a maintenance container without `fsGroup`, run
+- If a version already fails with `Runtime pin store owner is unsafe`, stop the
+  Agent and verify as in step 1. From a maintenance container without `fsGroup`, run
   `chmod -R go-rwx,g-s /home/node/.openclaw-node`, then deploy again.
 
 1. Record the Agent, state volume and original container ID. On Kubernetes,
