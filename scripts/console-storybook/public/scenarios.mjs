@@ -5145,6 +5145,34 @@ export const scenarios = {
     ],
     gap: "The stored reference is simulated; this story does not call save or deploy admission or start a Gateway.",
   },
+  configIncludeRefused: {
+    group: "Pages/Agent detail",
+    name: "Configuration include OCE refuses",
+    path: draft,
+    deployed: true,
+    configInclude: true,
+    description:
+      "An older release saved OpenClaw's $include in agents.defaults. OpenClaw would merge settings from another file that OCE does not check, and every Compute refuses to save or deploy it, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Remove the $include setting.",
+      "Deploy new version is disabled with Configuration setting agents.defaults.$include is not supported: OpenClaw would merge settings from another file that OCE does not check. Write those settings in the Configuration instead.",
+    ],
+    gap: "The stored include is simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
+  pluginEntryKeyVariantRefused: {
+    group: "Pages/Agent detail",
+    name: "Plugin entry key in another spelling",
+    path: draft,
+    deployed: true,
+    pluginEntryKeyVariant: true,
+    description:
+      "An older release saved a plugins.entries.Codex entry beside codex. OpenClaw merges it into codex, and every Compute refuses to save or deploy it, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the plugin entry key.",
+      "Deploy new version is disabled with Configuration setting plugins.entries.Codex must be named codex: OpenClaw merges it into plugins.entries.codex, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key.",
+    ],
+    gap: "The stored key is simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
   gatewayPasswordAllowlistOmits: {
     group: "Pages/Agent detail",
     name: "Gateway password reference an allowlist omits",

@@ -598,10 +598,12 @@ export { retiredOpenClawSettingMessage } from "./retired-openclaw-settings.ts";
 export type { DeploymentFailureStep } from "./deployment-failure-steps.ts";
 export {
   activePluginSecretInputs,
+  configIncludeProblem,
   environmentReference,
   environmentReferenceNames,
   gatewayPasswordRequirement,
   generatedGatewayPasswordReference,
+  pluginEntryKeyVariantProblem,
   pluginPolicyId,
   pluginSecretInputReference,
   secretInputReference,

@@ -1735,6 +1735,33 @@ test("Configuration save and deployment refuse another spelling of the codex or 
   const renamed = await request(context.app, "PATCH", agent.item, { body: { values: exact } });
   assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
   assert.deepEqual(renamed.body.data.values, exact);
+  // Beside an exact entry, the refusal's step moves the variant's settings into it and removes the
+  // variant, in either key order, and that update saves with both entries' settings. Renaming it
+  // instead would leave a duplicate key, whose last copy JSON keeps, losing one entry's settings
+  // without notice (finding 3087).
+  const followStep = (entries, key, id) => {
+    const { [key]: moved, ...rest } = entries;
+    return { ...rest, [id]: { ...rest[id], ...moved } };
+  };
+  for (const entries of [
+    { codex, Codex: { enabled: true } },
+    { Codex: { enabled: true }, codex },
+  ]) {
+    await writePastOcc(configurationDriver, agent.configurationId, withEntries(entries));
+    assertRefused(
+      await request(context.app, "PATCH", agent.agentPath, {
+        body: { configurationId: agent.configurationId },
+      }),
+      pluginEntryKeyVariantRefusal("plugins.entries.Codex", "codex"),
+      { label: Object.keys(entries).join(" before ") },
+    );
+    const followed = withEntries(followStep(entries, "Codex", "codex"));
+    assert.deepEqual(followed.plugins.entries, { codex: { ...codex, enabled: true } });
+    const saved = await request(context.app, "PATCH", agent.item, { body: { values: followed } });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.deepEqual(saved.body.data.values, followed);
+  }
+  await writePastOcc(configurationDriver, agent.configurationId, exact);
   // The exact keys deploy, and other plugins' keys in another spelling still save (finding 3072).
   const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));

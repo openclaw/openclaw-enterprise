@@ -584,6 +584,79 @@ export function unreadablePluginSecretInput(
   return undefined;
 }
 
+// OpenClaw's include directive key (`INCLUDE_KEY` in `src/config/includes.ts` at the pin).
+const CONFIG_INCLUDE_KEY = "$include";
+
+/**
+ * The first OpenClaw `$include` directive in the Configuration `values`, in document order, as
+ * its setting and why OCE refuses it (refuseConfigIncludes in configuration-settings.ts, finding
+ * 3078). The Console holds Deploy with this text (finding 3086).
+ */
+export function configIncludeProblem(
+  values: unknown,
+): { readonly setting: string; readonly requirement: string } | undefined {
+  const pending: [unknown, string][] = [[values, ""]];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const [value, path] = next;
+    if (Array.isArray(value)) {
+      for (let index = value.length - 1; index >= 0; index -= 1) {
+        pending.push([value[index], `${path}[${index}]`]);
+      }
+      continue;
+    }
+    const record = asObject(value);
+    if (record === undefined) {
+      continue;
+    }
+    if (Object.hasOwn(record, CONFIG_INCLUDE_KEY)) {
+      return {
+        setting: path === "" ? CONFIG_INCLUDE_KEY : `${path}.${CONFIG_INCLUDE_KEY}`,
+        requirement:
+          "is not supported: OpenClaw would merge settings from another file that OCE does not check. Write those settings in the Configuration instead",
+      };
+    }
+    // Pushed in reverse, so the stack checks the first key in document order first.
+    for (const [key, child] of Object.entries(record).reverse()) {
+      pending.push([
+        child,
+        path === "" && /^[A-Za-z0-9_-]+$/.test(key) ? key : keyedSettingPath(path, key),
+      ]);
+    }
+  }
+  return undefined;
+}
+
+// The plugins whose plugins.entries entry OCC rules read at its exact key on every Compute:
+// Configuration rules check codex and acpx settings there (the codex approval policy, proxy URLs,
+// acpx MCP server environments), and Compute renders codex settings there (the Gateway-local tool
+// exclusions, the native hook relay, the OpenShell app-server policy). Kubernetes Compute adds the
+// plugins only it reads or renders at their exact key (file-transfer and the managed plugins).
+const EXACT_KEY_PLUGINS: readonly string[] = ["codex", "acpx"];
+
+/**
+ * The first plugins.entries key in the Configuration `values` that names a plugin of `plugins`
+ * (by default codex and acpx) in another spelling, as its setting and why OCE refuses it
+ * (refusePluginEntryKeyVariants in configuration-settings.ts, findings 3073, 3077). Renaming the
+ * key while the exact entry exists would leave a duplicate key, whose last copy JSON keeps, so
+ * the step says to move its settings into that entry then (finding 3087). The Console holds
+ * Deploy with this text for codex and acpx (finding 3086).
+ */
+export function pluginEntryKeyVariantProblem(
+  values: unknown,
+  plugins: readonly string[] = EXACT_KEY_PLUGINS,
+): { readonly setting: string; readonly requirement: string } | undefined {
+  for (const key of Object.keys(asObject(asObject(asObject(values)?.plugins)?.entries) ?? {})) {
+    const id = key.trim().toLowerCase();
+    if (key !== id && plugins.includes(id)) {
+      return {
+        setting: keyedSettingPath("plugins.entries", key),
+        requirement: `must be named ${id}: OpenClaw merges it into plugins.entries.${id}, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key`,
+      };
+    }
+  }
+  return undefined;
+}
+
 /**
  * The environment SecretRef to the Gateway password every Compute generates, on the default env
  * provider alias of `secrets` (the Configuration's): the value Enable gateway password access

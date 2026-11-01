@@ -5,7 +5,9 @@ import type {
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import {
+  configIncludeProblem,
   gatewayPasswordRequirement,
+  pluginEntryKeyVariantProblem,
   secretProviderDefaultsProblem,
 } from "./environment-references.ts";
 import {
@@ -13,7 +15,6 @@ import {
   configurationSettingMessage,
   ConfigurationHarnessError,
   GatewayPasswordValueError,
-  keyedSettingPath,
 } from "./errors.ts";
 import { validateModelProviderSettings } from "./model-provider-settings.ts";
 import { retiredOpenClawSettingMessage } from "./retired-openclaw-settings.ts";
@@ -202,87 +203,50 @@ export function refuseRetiredOpenClawSettings(
   }
 }
 
-// The plugins whose plugins.entries entry OCC rules read at its exact key on every Compute:
-// Configuration rules check codex and acpx settings there (the codex approval policy, proxy URLs,
-// acpx MCP server environments), and Compute renders codex settings there (the Gateway-local tool
-// exclusions, the native hook relay, the OpenShell app-server policy). Kubernetes Compute adds the
-// plugins only it reads or renders at their exact key (file-transfer and the managed plugins).
-const EXACT_KEY_PLUGINS: readonly string[] = ["codex", "acpx"];
-
 /**
- * Refuses a plugins.entries key that names a plugin of `plugins` (by default EXACT_KEY_PLUGINS) in
- * another spelling, such as `Codex` or ` codex`. The pinned OpenClaw (`normalizePluginEntries` in
- * `src/plugins/config-normalization-shared.ts`) merges entries whose keys match trimmed and
- * lowercased, and the last one with a `config` replaces the plugin's whole config: a `Codex` entry
- * after `codex` would replace the settings OCE checked and Compute rendered (finding 3073). Its
- * built-in plugin ID aliases name none of these plugins, and the aliases plugin manifests declare
- * apply to providers and channels, not to this merge. Other plugins' keys stay accepted: OCE reads
- * no settings at their exact key (finding 3072). Configuration save runs it with the other content
- * rules; Agent save and deploy admission run it on the stored Configuration. On a Preset save, a
- * key that waits on a variable holds its placeholder and is checked once filled, on the
- * Configuration a launch creates: a launch can always fill it with text that names no such plugin,
- * and Preset save refuses only text that no filling makes acceptable, as the canSpell rules do.
+ * Refuses a plugins.entries key that names a plugin of `plugins` (by default codex and acpx) in
+ * another spelling, such as `Codex` or ` codex` (pluginEntryKeyVariantProblem). The pinned OpenClaw
+ * (`normalizePluginEntries` in `src/plugins/config-normalization-shared.ts`) merges entries whose
+ * keys match trimmed and lowercased, and the last one with a `config` replaces the plugin's whole
+ * config: a `Codex` entry after `codex` would replace the settings OCE checked and Compute rendered
+ * (finding 3073). Its built-in plugin ID aliases name none of these plugins, and the aliases plugin
+ * manifests declare apply to providers and channels, not to this merge. Other plugins' keys stay
+ * accepted: OCE reads no settings at their exact key (finding 3072). Configuration save runs it
+ * with the other content rules; Agent save and deploy admission run it on the stored
+ * Configuration. On a Preset save, a key that waits on a variable holds its placeholder and is
+ * checked once filled, on the Configuration a launch creates: a launch can always fill it with
+ * text that names no such plugin, and Preset save refuses only text that no filling makes
+ * acceptable, as the canSpell rules do.
  */
 export function refusePluginEntryKeyVariants(
   values: Readonly<OpenClawConfigurationDocument>,
-  plugins: readonly string[] = EXACT_KEY_PLUGINS,
+  plugins?: readonly string[],
 ): void {
-  for (const key of Object.keys(asRecord(asRecord(values.plugins)?.entries) ?? {})) {
-    const id = key.trim().toLowerCase();
-    if (key !== id && plugins.includes(id)) {
-      throw new ConfigurationHarnessError(
-        configurationSettingMessage(
-          keyedSettingPath("plugins.entries", key),
-          `must be named ${id}: OpenClaw merges it into plugins.entries.${id}, the only entry OCE checks for that plugin. Rename it, or merge it into that entry`,
-        ),
-      );
-    }
+  const problem = pluginEntryKeyVariantProblem(values, plugins);
+  if (problem !== undefined) {
+    throw new ConfigurationHarnessError(
+      configurationSettingMessage(problem.setting, problem.requirement),
+    );
   }
 }
 
-// OpenClaw's include directive key (`INCLUDE_KEY` in `src/config/includes.ts` at the pin).
-const CONFIG_INCLUDE_KEY = "$include";
-
 /**
- * Refuses OpenClaw's `$include` directive anywhere in the document. The pinned OpenClaw
- * (`src/config/includes.ts`) resolves it from the Gateway's config directory and replaces the
- * object holding it with the named files' settings, merged under the object's other keys (arrays
- * concatenated). Configuration rules and Compute read the document as written, so an include would
- * add settings no rule checked; settings must be written in the Configuration instead (finding
- * 3078). Configuration save runs it after the model provider settings, first of the other content
- * rules; Agent save, deploy admission and the upgrade preflight run it on the stored Configuration.
- * A Preset key that waits on a variable holds its placeholder, so it is checked once filled
- * (refusePluginEntryKeyVariants).
+ * Refuses OpenClaw's `$include` directive anywhere in the document (configIncludeProblem). The
+ * pinned OpenClaw (`src/config/includes.ts`) resolves it from the Gateway's config directory and
+ * replaces the object holding it with the named files' settings, merged under the object's other
+ * keys (arrays concatenated). Configuration rules and Compute read the document as written, so an
+ * include would add settings no rule checked; settings must be written in the Configuration
+ * instead (finding 3078). Configuration save runs it after the model provider settings, first of
+ * the other content rules; Agent save, deploy admission and the upgrade preflight run it on the
+ * stored Configuration. A Preset key that waits on a variable holds its placeholder, so it is
+ * checked once filled (refusePluginEntryKeyVariants).
  */
 function refuseConfigIncludes(values: Readonly<OpenClawConfigurationDocument>): void {
-  const pending: [unknown, string][] = [[values, ""]];
-  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
-    const [value, path] = next;
-    if (Array.isArray(value)) {
-      for (let index = value.length - 1; index >= 0; index -= 1) {
-        pending.push([value[index], `${path}[${index}]`]);
-      }
-      continue;
-    }
-    const record = asRecord(value);
-    if (record === undefined) {
-      continue;
-    }
-    if (Object.hasOwn(record, CONFIG_INCLUDE_KEY)) {
-      throw new ConfigurationHarnessError(
-        configurationSettingMessage(
-          path === "" ? CONFIG_INCLUDE_KEY : `${path}.${CONFIG_INCLUDE_KEY}`,
-          "is not supported: OpenClaw would merge settings from another file that OCE does not check. Write those settings in the Configuration instead",
-        ),
-      );
-    }
-    // Pushed in reverse, so the stack checks the first key in document order first.
-    for (const [key, child] of Object.entries(record).reverse()) {
-      pending.push([
-        child,
-        path === "" && /^[A-Za-z0-9_-]+$/.test(key) ? key : keyedSettingPath(path, key),
-      ]);
-    }
+  const problem = configIncludeProblem(values);
+  if (problem !== undefined) {
+    throw new ConfigurationHarnessError(
+      configurationSettingMessage(problem.setting, problem.requirement),
+    );
   }
 }
 

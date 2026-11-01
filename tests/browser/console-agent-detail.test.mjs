@@ -106,6 +106,8 @@ import {
   invalidSecretProviderDefaultsRefusal,
   unreadableGatewayPasswordRefusal,
   unreadablePluginSecretRefusal,
+  configIncludeRefusal,
+  pluginEntryKeyVariantRefusal,
   namespaceListDenied,
   notIncluded,
   secretOperateRefused,
@@ -1532,6 +1534,102 @@ for (const viewport of [
       ),
       true,
     );
+  });
+}
+
+// A Configuration an older release saved with OpenClaw's $include, or with a Codex entry beside
+// codex: every Compute refuses to save or deploy it (findings 3077, 3078), so the draft holds
+// Deploy with that refusal and names it in the Configuration step, as for a plugin secret input
+// (finding 3086). Following the refusal's step saves, and the draft is ready again: the include
+// is written out, and the variant's settings move into codex instead of being renamed onto a
+// duplicate key (finding 3087).
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`A stored include or plugin entry key variant holds Deploy at ${viewport.width}px`, async (t) => {
+    const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
+    const fixture = await createConsoleAppFixture(t, { configurationDriver });
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Stored rules", { ready: true });
+    const values = nativeAdminValues("stored-rules", "http://127.0.0.1:18789");
+    const codex = { config: { appServer: { approvalPolicy: "on-request" } } };
+    const withEntries = (entries) => ({
+      ...structuredClone(values),
+      plugins: { entries: { ...values.plugins.entries, ...entries } },
+    });
+    for (const { name, stored, reason, step, fixed } of [
+      {
+        name: "Include",
+        stored: {
+          ...structuredClone(values),
+          agents: {
+            ...values.agents,
+            defaults: { ...values.agents.defaults, $include: "./d.json" },
+          },
+        },
+        reason: configIncludeRefusal("agents.defaults.$include"),
+        step: "Remove the $include setting",
+        fixed: values,
+      },
+      {
+        name: "Entry key",
+        stored: withEntries({ codex, Codex: { enabled: true } }),
+        reason: pluginEntryKeyVariantRefusal("plugins.entries.Codex", "codex"),
+        step: "Fix the plugin entry key",
+        fixed: withEntries({ codex: { enabled: true, ...codex } }),
+      },
+    ]) {
+      const agent = await fixture.createAgent(namespace.id, `${name} Agent`, values);
+      const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+      const refusedSave = await fixture.request("PATCH", configurationPath, {
+        body: { values: stored },
+      });
+      assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
+      assert.equal(refusedSave.body.error.message, reason);
+      // The row as a release before the save rule stored it.
+      await configurationDriver.update({
+        ...configurationDriver.stored({ namespaceId: namespace.id, id: agent.configurationId }),
+        values: stored,
+      });
+
+      const { page } = await newPage(t, fixture, { context: { viewport } });
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      );
+      const card = page.locator(".agent-draft-actions");
+      const deploy = card.getByRole("button", { name: "Deploy new version", exact: true });
+      const firstStep = card.getByRole("listitem").first().locator(".checklist-detail");
+      await card.getByText(reason, { exact: true }).waitFor();
+      assert.equal(await deploy.isDisabled(), true);
+      assert.equal(await card.getByText("Ready to deploy.", { exact: true }).count(), 0);
+      assert.ok((await firstStep.textContent()).startsWith(`${step} · Configuration `), name);
+      // Deploy admission refuses the stored row with the text the page shows.
+      const refusedDeploy = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+      );
+      assert.equal(refusedDeploy.body.error.message, reason, JSON.stringify(refusedDeploy.body));
+
+      // The step, followed in the editor, saves and the draft is ready.
+      const edit = page.getByRole("button", { name: "Edit Configuration", exact: true });
+      await edit.scrollIntoViewIfNeeded();
+      await edit.click();
+      await page.getByLabel("Configuration JSON").fill(JSON.stringify(fixed, null, 2));
+      await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+      await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+      assert.equal(await deploy.isDisabled(), false);
+      assert.match(await firstStep.textContent(), /^Saved · Configuration /);
+      // The page fits the viewport: no horizontal scroll.
+      assert.equal(
+        await page.evaluate(
+          () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+        ),
+        true,
+      );
+    }
   });
 }
 
