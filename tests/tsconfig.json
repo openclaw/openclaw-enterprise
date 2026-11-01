@@ -32,6 +32,7 @@
     "fixtures/codex-local-plugins/probe.ts",
     "fixtures/codex-local-plugins/enrollment.ts",
     "fixtures/repository-credentials/module-guard.ts",
+    "fixtures/repository-credentials/installation-module-guard.ts",
     "fixtures/repository-credentials/planning.ts",
     "helpers/protected-static-secret-read.ts"
   ],
