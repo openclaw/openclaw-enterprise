@@ -21,9 +21,9 @@ import {
 } from "../helpers/runtime-image-startup.mjs";
 
 // A short setup wait for the Driver under test (the internal workspaceSetupWaitMs; the
-// default is 120 s), so the wait ends while native setup is paused holding its lock. Capped
-// below the paused native run's own fixed 120 s bound under any timeout multiplier.
-const driverSetupWaitMs = Math.min(cpuScaledImageTimeoutMs(15_000), 60_000);
+// default is 120 s). The test holds the setup's start response until native setup is paused
+// holding its lock, so this wait starts and ends while the lock is held.
+const driverSetupWaitMs = 1_000;
 // The Driver's default wait, which bounds the poll-failure attempt below.
 const defaultSetupWaitMs = 120_000;
 const timeoutMs = cpuScaledImageTimeoutMs(60_000);
@@ -142,30 +142,41 @@ async function pauseSetupHoldingLock(name: string) {
   return paused;
 }
 
-// Wraps the Driver's private Docker API request so that the next request the armed fault
-// matches fails as a request timeout would; every other request reaches the engine. With
-// `lostResponse`, the engine completes that request first and only its response is lost.
-function injectRequestTimeout(driver: DockerComputeDriver) {
-  type Fault = { matches: (method: string, path: string) => boolean; lostResponse: boolean };
+// Wraps the Driver's private Docker API request so that the next request the armed hook
+// matches goes through the hook, which may send it to the engine (`send`), delay its
+// response or fail it; every other request reaches the engine unchanged.
+function interceptRequest(driver: DockerComputeDriver) {
+  type Hook = {
+    matches: (method: string, path: string) => boolean;
+    run: (send: () => Promise<unknown>) => Promise<unknown>;
+  };
   const internals = driver as unknown as {
     request: (method: string, path: string, ...rest: unknown[]) => Promise<unknown>;
   };
   const request = internals.request.bind(driver);
-  let armed: Fault | undefined;
+  let armed: Hook | undefined;
   internals.request = async (method, path, ...rest) => {
-    const fault = armed;
-    if (fault === undefined || !fault.matches(method, path)) {
+    const hook = armed;
+    if (hook === undefined || !hook.matches(method, path)) {
       return request(method, path, ...rest);
     }
     armed = undefined;
-    if (fault.lostResponse) {
-      await request(method, path, ...rest);
-    }
-    throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    return hook.run(() => request(method, path, ...rest));
   };
-  return (fault: Fault) => {
-    armed = fault;
+  return (hook: Hook) => {
+    armed = hook;
   };
+}
+
+// The error a Docker request that runs out of time fails with.
+function requestTimeout() {
+  return new DOMException("The operation was aborted due to timeout", "TimeoutError");
+}
+
+// The setup container's start request; the setup container is the only one whose name
+// ends in "-setup".
+function setupStart(method: string, path: string) {
+  return method === "POST" && path.endsWith("-setup/start");
 }
 
 // Continues the stopped native run and waits for setup to exit 0.
@@ -182,6 +193,13 @@ async function resumeSetup(name: string, paused: string) {
   ]);
   const { stdout: exitCode } = await runDocker(["wait", name], { timeout: timeoutMs });
   assert.equal(exitCode.trim(), "0", "the resumed setup completed");
+}
+
+// While setup runs, the next attempt stays unready instead of starting a second setup or a
+// Gateway on that state, and leaves setup running with its lock.
+async function assertNextAttemptWaits(attempt: Promise<{ ready: boolean }>, name: string) {
+  assert.equal((await attempt).ready, false, "the next attempt waits while setup runs");
+  await assertSetupHoldsLock(name, "after the next attempt");
 }
 
 test(
@@ -202,11 +220,12 @@ test(
     });
     const images = { gateway: image!, agent: image! };
     const driver = new DockerComputeDriver({ images, workspaceSetupWaitMs: driverSetupWaitMs });
-    // Two more Drivers with the default wait, whose Docker API fails one request on request.
+    const delaySetupStart = interceptRequest(driver);
+    // Two more Drivers with the default wait, each of which fails one armed Docker request.
     const pollFailing = new DockerComputeDriver({ images });
-    const failPollRequest = injectRequestTimeout(pollFailing);
+    const failPollRequest = interceptRequest(pollFailing);
     const startFailing = new DockerComputeDriver({ images });
-    const failStartRequest = injectRequestTimeout(startFailing);
+    const failStartRequest = interceptRequest(startFailing);
     const createdAt = new Date().toISOString();
     const namespace = {
       id: `ns-setup-lock-${randomUUID()}`,
@@ -271,17 +290,30 @@ test(
     const slowSetup = async () => {
       const agentId = `agent-setup-lock-${randomUUID()}`;
       const context = contextFor(agentId);
+      // The Driver's wait starts when the start request returns: Docker starts setup, and
+      // the response reaches the Driver once native setup is paused holding the lock.
+      const { promise: setupPaused, resolve: releaseStartResponse } = Promise.withResolvers<void>();
+      delaySetupStart({
+        matches: setupStart,
+        run: async (send) => {
+          const response = await send();
+          await setupPaused;
+          return response;
+        },
+      });
       const first = driver.prepareRevision(revisionAt(agentId, 1), context);
-      const name = await firstSetupStart(t, agentId);
-      const paused = await pauseSetupHoldingLock(name);
+      let name: string;
+      let paused: string;
+      try {
+        name = await firstSetupStart(t, agentId);
+        paused = await pauseSetupHoldingLock(name);
+      } finally {
+        // Also on a failed pause, so the held response never outlives this case.
+        releaseStartResponse();
+      }
       assert.equal((await first).ready, false, "the attempt waits for the running setup");
       await assertSetupHoldsLock(name, "after the wait");
-      assert.equal(
-        (await driver.prepareRevision(revisionAt(agentId, 2), context)).ready,
-        false,
-        "the next attempt waits while setup runs",
-      );
-      await assertSetupHoldsLock(name, "after the next attempt");
+      await assertNextAttemptWaits(driver.prepareRevision(revisionAt(agentId, 2), context), name);
       await resumeSetup(name, paused);
       // The next attempt reuses the completed setup, and the Gateway takes over the
       // state that setup released.
@@ -306,16 +338,16 @@ test(
       failPollRequest({
         matches: (method, path) =>
           method === "GET" && path === `/containers/${encodeURIComponent(name)}/json`,
-        lostResponse: false,
+        run: async () => {
+          throw requestTimeout();
+        },
       });
       await first;
       await assertSetupHoldsLock(name, "after a failed poll");
-      assert.equal(
-        (await pollFailing.prepareRevision(revisionAt(agentId, 2), context)).ready,
-        false,
-        "the next attempt waits while setup runs",
+      await assertNextAttemptWaits(
+        pollFailing.prepareRevision(revisionAt(agentId, 2), context),
+        name,
       );
-      await assertSetupHoldsLock(name, "after the next attempt");
       await resumeSetup(name, paused);
     };
 
@@ -327,8 +359,11 @@ test(
       const agentId = `agent-setup-start-${randomUUID()}`;
       const context = contextFor(agentId);
       failStartRequest({
-        matches: (method, path) => method === "POST" && path.endsWith("-setup/start"),
-        lostResponse: true,
+        matches: setupStart,
+        run: async (send) => {
+          await send();
+          throw requestTimeout();
+        },
       });
       const first = assert.rejects(startFailing.prepareRevision(revisionAt(agentId, 1), context), {
         name: "TimeoutError",
@@ -341,16 +376,20 @@ test(
       assert.equal(await setupState(name), "running", "a lost start response left the setup");
       const paused = await pause;
       await assertSetupHoldsLock(name, "after a lost start response");
-      assert.equal(
-        (await startFailing.prepareRevision(revisionAt(agentId, 2), context)).ready,
-        false,
-        "the next attempt waits while setup runs",
+      await assertNextAttemptWaits(
+        startFailing.prepareRevision(revisionAt(agentId, 2), context),
+        name,
       );
-      await assertSetupHoldsLock(name, "after the next attempt");
       await resumeSetup(name, paused);
     };
 
-    // Three Agents in one Namespace, side by side.
-    await Promise.all([slowSetup(), failedPoll(), lostStartResponse()]);
+    // Three Agents in one Namespace, side by side. Cleanup waits until every case settles,
+    // so a failed case never deletes the Namespace under another case's next Docker step.
+    const outcomes = await Promise.allSettled([slowSetup(), failedPoll(), lostStartResponse()]);
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") {
+        throw outcome.reason;
+      }
+    }
   },
 );
