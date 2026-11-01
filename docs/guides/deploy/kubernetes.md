@@ -82,7 +82,7 @@ Keep the console route's request timeout at 15 seconds or more; Envoy Gateway's
 default is 15 seconds. Configuration and Secret create, update and delete send no
 Kubernetes call later than 12 seconds after the API starts the request, so on a slow
 cluster they fail with `503` instead of saving after the ingress answered `504`. The
-database commit runs after those 12 seconds.
+database commit is not bounded by them.
 
 Follow the [storage contract](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 when choosing disks. A NetworkPolicy object alone is not proof of enforcement:
