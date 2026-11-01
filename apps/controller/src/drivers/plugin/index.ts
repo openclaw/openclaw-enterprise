@@ -428,7 +428,14 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
 
   async getCatalogPlugin(input: { readonly pluginId: string }): Promise<PluginCatalogEntry> {
     if (input.pluginId !== googlePackage.id) {
-      throw new PluginDiscoveryError("invalid_response");
+      // An unknown ID is the caller's error (finding 2790); name the versioned package ID
+      // when the caller left out the version.
+      throw new PluginPolicyValidationError(
+        "unknownPlugin",
+        this.id,
+        input.pluginId,
+        googlePackage.id.startsWith(`${input.pluginId}@`) ? googlePackage.id : undefined,
+      );
     }
     return this.catalog([googlePackage])[0]!;
   }
@@ -567,7 +574,7 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
     if (this.catalogSource === "openai-curated") {
       const entry = OPENAI_CURATED_CATALOG.find((plugin) => plugin.remoteId === input.pluginId);
       if (!entry) {
-        throw new PluginDiscoveryError("invalid_response");
+        throw new PluginPolicyValidationError("unknownPlugin", this.id, input.pluginId);
       }
       return this.catalog([entry])[0]!;
     }
