@@ -2176,6 +2176,9 @@ test("Agent save, deployment and the Console's draft hold name the same first st
     ["retiredSetting", ["security", "preset"], "strict"],
     ["openClawSandbox", ["agents", "defaults", "sandbox", "mode"], "all"],
     ["pluginEntryKey", ["plugins", "entries", "Codex"], { enabled: true }],
+    // Last, after the plugin entry key: another spelling of openai (finding 3097), whose entry
+    // deploy's model provider settings rule, which runs before this list, accepts.
+    ["providerKey", ["models", "providers", "OpenAI"], { baseUrl: "https://models.example/v1" }],
   ];
   // Deploy's and Agent save's refusal of the stored row `values`, each as its 400 message.
   const refusals = async (values) => {

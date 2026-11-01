@@ -11,6 +11,8 @@ import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revisio
 import {
   completedPasses,
   repositoryBoundary,
+  waitForWorkPass,
+  waitForWorkStateDue,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   assertWorkEnds,
@@ -553,18 +555,24 @@ test(
         },
       });
       await waitFor("two failed refused stops", async () => (failedStops >= 2 ? true : undefined));
+      // The waits below make the candidate's queued stop retry due instead of waiting out its
+      // doubling backoff; the worker still claims and runs every pass.
       // One failed read: the same pass reads the refusal again and retries the stop.
       let before = failedStops;
       readFailures = 1;
-      await waitFor(
+      await waitForWorkPass(
         "a failed read, then the stop retried",
+        fixture,
+        replacement,
         async () => (injected >= 1 && failedStops >= before + 1 ? true : undefined),
         30_000,
       );
       // Both reads fail: the pass leaves its claim, and lease recovery keeps the refusal.
       readFailures = 2;
-      await waitFor(
+      await waitForWorkPass(
         "two failed reads in one pass",
+        fixture,
+        replacement,
         async () => {
           const ended = await fixture.workResult(replacement);
           assert.equal(ended.rows[0].reason_code, null, "the wait ended");
@@ -585,13 +593,15 @@ test(
       assert.equal(claimed.rowCount, 1, "the failed pass left its claim");
       before = failedStops;
       await fixture.expireClaim(replacement, claimed.rows[0].claim_token);
-      await waitFor(
+      await waitForWorkPass(
         "the recovered wait retries the stop",
+        fixture,
+        replacement,
         async () => (failedStops >= before + 1 ? true : undefined),
         30_000,
       );
       stopping = true;
-      await fixture.work(replacement, "failed_permanent", 30_000);
+      await waitForWorkStateDue(fixture, replacement, "failed_permanent");
       const result = await fixture.workResult(replacement);
       assert.equal(result.rows[0].reason_code, "SANDBOX_HARNESS_UNSUPPORTED");
       assert.equal(driver.count(replacement), 1, "the refused candidate was stopped");
@@ -665,8 +675,13 @@ test(
     const { owner, first, replacement, driver } = scenario;
     admitted = Date.now();
     await waitFor("the grant past the deadline", async () => (lifted ? true : undefined), 30_000);
-    await waitFor(
+    // The passes after the grant retry the failed stop on its doubling backoff (about 4, 8 and
+    // 16 s here). Make each queued retry due instead of waiting it out: the worker still claims
+    // and runs every pass, and the deadline had already passed at the grant.
+    await waitForWorkPass(
       "a wait on the deadline",
+      fixture,
+      replacement,
       async () =>
         refusedStopWaits(events, replacement).some(
           ({ refusal }) => refusal === "CONVERGENCE_DEADLINE_EXCEEDED",
@@ -681,7 +696,7 @@ test(
       waiting.progress.lastAttempt.message,
       "Deployment missed its convergence deadline; stopping the candidate before recording the failure. The controller will retry.",
     );
-    await fixture.work(replacement, "failed_permanent", 60_000);
+    await waitForWorkStateDue(fixture, replacement, "failed_permanent");
     const result = await fixture.workResult(replacement);
     assert.equal(result.rows[0].reason_code, "CONVERGENCE_DEADLINE_EXCEEDED");
     assert.deepEqual(result.rows[0].result_data, { timeoutMs: 2_000 });

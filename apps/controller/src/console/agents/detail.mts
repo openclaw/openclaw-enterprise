@@ -461,6 +461,7 @@ const STORED_RULE_STEPS: Readonly<Record<StoredConfigurationRule, string>> = {
   retiredSetting: "Remove the retired setting",
   openClawSandbox: "Turn off OpenClaw's sandbox",
   pluginEntryKey: ENTRY_KEY_STEP,
+  providerKey: "Fix the model provider key",
 };
 const CONFIGURATION_READ_ONLY = CONFIGURATION_UPDATE_DENIED;
 // Saving a Configuration also needs Secret operate on every Secret it binds (finding 2437).
@@ -3485,7 +3486,8 @@ export async function renderAgentDetail(
     }
     // The refusals every Compute's deploy gives, before Compute admission: OCC's stored-row rules,
     // in deploy's order, so the page names the problem deploy's 400 names first (finding 3093).
-    // Deploy checks the model provider settings before these; that rule stays server-only.
+    // Only deploy's model provider settings rule (validateModelProviderSettings), which runs before
+    // these, stays server-only.
     function configurationSettingsRefusal(): {
       readonly message: string;
       readonly step: string;

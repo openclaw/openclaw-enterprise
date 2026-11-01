@@ -112,6 +112,7 @@ import {
   namespaceListDenied,
   notIncluded,
   pluginEntryKeyVariantRefusal,
+  providerKeyVariantRefusal,
   secretOperateRefused,
   stopRefused,
   stopStatusRefreshFailed,
@@ -1544,16 +1545,17 @@ for (const viewport of [
 }
 
 // A Configuration an older release saved with OpenClaw's $include, with a Codex entry beside
-// codex, or with OpenClaw's sandbox as well: every Compute refuses to save or deploy it (findings
-// 2767, 3077, 3078), so the draft holds Deploy with the refusal deploy gives first and names it in
-// the Configuration step, as for a plugin secret input (findings 3086, 3093). Following the refusal's step saves, and the draft is ready again: the include
-// is written out, and the variant's settings move into codex instead of being renamed onto a
-// duplicate key (finding 3087).
+// codex, with OpenClaw's sandbox as well, or with an OpenAI model provider key: every Compute
+// refuses to save or deploy it (findings 2767, 3077, 3078, 3097), so the draft holds Deploy with
+// the refusal deploy gives first and names it in the Configuration step, as for a plugin secret
+// input (findings 3086, 3093). Following the refusal's step saves, and the draft is ready again:
+// the include is written out, and the variant's settings move into codex instead of being
+// renamed onto a duplicate key (finding 3087).
 for (const viewport of [
   { width: 1440, height: 900 },
   { width: 390, height: 844 },
 ]) {
-  test(`A stored include, plugin entry key variant or sandbox holds Deploy at ${viewport.width}px`, async (t) => {
+  test(`A stored include, entry or provider key variant or sandbox holds Deploy at ${viewport.width}px`, async (t) => {
     const [sandboxMode] = OPENCLAW_SANDBOX_SETTINGS;
     const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
     const fixture = await createConsoleAppFixture(t, { configurationDriver });
@@ -1599,6 +1601,18 @@ for (const viewport of [
         },
         reason: openClawSandboxRefusal(sandboxMode, sandboxMode.path),
         step: "Turn off OpenClaw's sandbox",
+        fixed: values,
+      },
+      // A model provider key spelling is the only problem: deploy refuses it after the other
+      // stored-row rules, so the page holds Deploy instead of showing Ready to deploy (3093).
+      {
+        name: "Provider key",
+        stored: {
+          ...structuredClone(values),
+          models: { providers: { OpenAI: { baseUrl: "https://models.example/v1" } } },
+        },
+        reason: providerKeyVariantRefusal("models.providers.OpenAI", "openai"),
+        step: "Fix the model provider key",
         fixed: values,
       },
     ]) {
