@@ -14,6 +14,8 @@ Let an Agent use a provider without giving it the provider credential. If `build
 
 Replace `CredentialGatewayDriver` with the `credential_proxy` Installation capability and its `CredentialProxyDriver`. It configures and withdraws egress; `SandboxDriver` installs that configuration and prevents bypass. We retain `SecretDriver` and `CredentialRefreshDriver` for credential access and preparation. These are [distinct responsibilities](contracts.md), not a requirement to run four services.
 
+[Proposed amendment: recheck the selected Secret reader before each storage read](secret-read-selection.md).
+
 ![Proposed protected egress: Sandbox prevents bypass; a trusted sender checks current authority, resolves a credential if needed, and sends the request](assets/overview.svg)
 
 [Diagram source](assets/overview.mmd)
