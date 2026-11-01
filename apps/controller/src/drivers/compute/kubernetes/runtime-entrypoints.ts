@@ -4442,7 +4442,7 @@ function agentWithNodeEntrypoint(entrypoint: string): string {
   return String.raw`
 const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
-const { execFile, spawn, spawnSync } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
@@ -4561,11 +4561,12 @@ if (outdatedDatabases.length > 0 && !(await migrateOpenClawState(state, outdated
 }
 // The workspace belongs to the Harness. Native setup creates missing defaults
 // without replacing owner edits; neither child may serve an uninitialized workspace.
-// Its JSON result goes to a file: spawnSync kills a child whose output outgrows a
-// pipe's buffer, which would fail a setup that succeeded. The result is a multi-line
-// document that runtime logs withhold as a possible payload, so a failure names only
-// its message and invalid setting paths, on one bounded line. A failure holds the
-// Harness: a restart would run the same setup on the same configuration.
+// Its JSON result goes to a file: a pipe would need the whole result buffered, and
+// spawnSync killed a child whose output outgrew it, failing a setup that succeeded.
+// The result is a multi-line document that runtime logs withhold as a possible
+// payload, so a failure names only its message and invalid setting paths, on one
+// bounded line. A failure holds the Harness: a restart would run the same setup on
+// the same configuration.
 const baselineStartedAt = Date.now();
 const baselineResultPath = join(state, "workspace-baseline.json");
 const baselineResult = openSync(baselineResultPath, "w", 0o600);
@@ -4575,13 +4576,19 @@ const baselineOutputPath = join(state, "workspace-baseline.log");
 const baselineOutput = openSync(baselineOutputPath, "w", 0o600);
 let baseline;
 try {
-  baseline = spawnSync(process.execPath, [
-    "/app/openclaw.mjs", "setup", "--baseline", "--workspace", workspaceDirectory, "--json",
-  ], { env: nodeEnv, stdio: ["inherit", baselineResult, baselineOutput] });
+  // Setup holds the node state's owner lock on the workspace claim, which every
+  // later revision's Harness opens. A Pod stopped during setup lets it finish and
+  // release the lock before the container ends.
+  baseline = await runOpenClawStateOwner(
+    ["setup", "--baseline", "--workspace", workspaceDirectory, "--json"],
+    { env: nodeEnv, stdio: ["inherit", baselineResult, baselineOutput] },
+    { forwardStop: false },
+  );
 } finally {
   closeSync(baselineResult);
   closeSync(baselineOutput);
 }
+if (baseline.terminating) process.exit(0);
 try {
   for (const line of workspaceBaselineOutput(baselineOutputPath, true).split("\n")) {
     const kept = withoutOpenClawCommandHints(line);

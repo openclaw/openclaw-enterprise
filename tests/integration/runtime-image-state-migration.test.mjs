@@ -332,12 +332,12 @@ process.stdout.write(JSON.stringify({
 }));
 `;
 
-// The Harness's node and Codex children, replaced; Doctor runs for real.
+// The Harness's node and Codex children, replaced; Doctor and native setup run for real.
 const HARNESS_CHILDREN = [
   'const cp = require("node:child_process");',
   "const realSpawn = cp.spawn;",
   "cp.spawn = (command, args, options) => {",
-  '  if (args[1] === "doctor") return realSpawn(command, args, options);',
+  '  if (["doctor", "setup"].includes(args[1])) return realSpawn(command, args, options);',
   '  console.log("HARNESS_CHILD_STARTED " + (args[0] === "/app/openclaw.mjs" ? "node" : "codex"));',
   '  return new (require("node:events").EventEmitter)();',
   "};",
