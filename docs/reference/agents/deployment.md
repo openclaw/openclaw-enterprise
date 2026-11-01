@@ -215,8 +215,9 @@ then ends superseded.
 
 `AGENT_STOP_YIELDED` means the Agent was stopped and its gateway is
 still draining; `PREDECESSOR_STOP_YIELDED` means a dedicated replacement waits for
-the previous version's gateway to drain. Meanwhile the worker runs other due work,
-then repeats the stop without spending attempts.
+the previous version's gateway to drain; `SUPERSEDED_STOP_YIELDED` means a newer
+version replaced this dedicated one, whose gateway drains before it stops.
+Meanwhile the worker runs other due work, then repeats the stop without spending attempts.
 
 ### Model check failure cause
 
