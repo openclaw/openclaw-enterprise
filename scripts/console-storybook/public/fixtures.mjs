@@ -105,6 +105,11 @@ function configurationValues(scenario) {
       },
     };
   }
+  if (scenario.kubernetesEntryKeyVariant) {
+    // A File-Transfer entry saved before Kubernetes Compute refused it, which OpenClaw merges into
+    // file-transfer, the entry Kubernetes Compute enables for the workspace node.
+    values.plugins = { entries: { "File-Transfer": { enabled: true } } };
+  }
   if (scenario.gatewayPasswordAllowlistOmits) {
     // A default env alias on a configured env provider whose allowlist leaves out the generated
     // password, so OpenClaw cannot read the reference Enable gateway password access would write.
