@@ -1185,6 +1185,30 @@ async function reuseEngineImage(state, role, args, tag) {
   }
 }
 
+// A checkout's own Dockerfile adds no OCE provenance, which the dedicated Gateway requires
+// (finding 3897). Layer the checkout's commit over the image; the Gateway still compares it.
+async function addLocalSourceProvenance(buildArgs, tag, commit) {
+  const directory = await mkdtemp(
+    join(process.env.RUNNER_TEMP ?? tmpdir(), "oce-runtime-provenance-"),
+  );
+  try {
+    const provenance = join(directory, "provenance.json");
+    await writeFile(
+      provenance,
+      `${JSON.stringify({ source: "https://github.com/openclaw/openclaw", commit, artifactKind: "local-source-build" })}\n`,
+    );
+    // The copy keeps this mode, so the Gateway user can read it whatever the umask.
+    await chmod(provenance, 0o644);
+    await writeFile(
+      join(directory, "Dockerfile"),
+      `FROM ${tag}\nCOPY provenance.json /opt/oce/runtime/provenance.json\n`,
+    );
+    await laneImageCommand("runtime", [...buildArgs, "--pull=false", "-t", tag, directory]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 async function buildRuntimeImages(
   statePath,
   state,
@@ -1348,6 +1372,15 @@ async function buildRuntimeImages(
           ? {}
           : { OCC_K3D_OPENCLAW_COMMIT: process.env.OCC_K3D_OPENCLAW_COMMIT }),
       },
+      afterBuild:
+        openclawSource === undefined
+          ? undefined
+          : () =>
+              addLocalSourceProvenance(
+                imageBuildArgs(state, "runtime", localStore),
+                tag,
+                process.env.OCC_K3D_OPENCLAW_COMMIT,
+              ),
     });
   }
   // Record every tag before any build starts. The builds are independent, so
@@ -1363,6 +1396,7 @@ async function buildRuntimeImages(
       if (cacheWarm || !(await reuseEngineImage(state, entry.role, entry.args, entry.tag))) {
         await build(entry.role, entry.args);
       }
+      await entry.afterBuild?.();
       await markResourceReady(statePath, state, entry.resource);
     }),
   );
@@ -3440,7 +3474,14 @@ async function main() {
   );
 }
 
-export { defaultK3sImage, imageCacheLanes, lanesWithoutK3sAddons, prepareFile, prepareLane };
+export {
+  addLocalSourceProvenance,
+  defaultK3sImage,
+  imageCacheLanes,
+  lanesWithoutK3sAddons,
+  prepareFile,
+  prepareLane,
+};
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((error) => {

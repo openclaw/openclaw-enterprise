@@ -10,10 +10,15 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, test } from "node:test";
+import { createContext, runInContext } from "node:vm";
+import {
+  GATEWAY_TOOL_POLICY_RUNTIME,
+  GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
+} from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
-import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
+import { addLocalSourceProvenance, defaultK3sImage } from "../../scripts/ci/prepare.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.mjs";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
@@ -37,6 +42,8 @@ import { startFakePostgres } from "../helpers/fake-postgres-server.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const preparePath = join(repositoryRoot, "scripts/ci/prepare.mjs");
+const dockerEngineAvailable =
+  spawnSync("docker", ["version", "--format", "{{.Server.Version}}"]).status === 0;
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "@kubernetes/client-node",
 );
@@ -2868,4 +2875,65 @@ await assert.rejects(() => prepareFile({ lane: "postgres-application",
       );
     });
   }
+
+  // Real engine and the Gateway's own check. A stand-in checkout image has no OCE provenance,
+  // as the image the k3d helper builds from an OpenClaw checkout did (finding 3897).
+  test(
+    "a locally built OpenClaw image gets the provenance a dedicated Gateway requires",
+    { skip: dockerEngineAvailable ? false : "No Docker engine is available." },
+    async (t) => {
+      const root = await fixture(t);
+      const source = join(root, "source");
+      await mkdir(source);
+      await writeFile(join(source, "Dockerfile"), "FROM scratch\nCOPY marker /marker\n");
+      await writeFile(join(source, "marker"), "openclaw\n");
+      const tag = `localhost/openclaw-ci-provenance-test/${randomUUID()}:local`;
+      const buildArgs = ["build", "--builder", "default", "--load"];
+      const engine = (...args) => {
+        const result = spawnSync("docker", args, { encoding: "utf8" });
+        assert.equal(result.status, 0, result.stderr);
+        return result.stdout.trim();
+      };
+      // Each step leaves the tag's earlier image untagged, so remove those too.
+      const imageIds = [];
+      t.after(() => spawnSync("docker", ["rmi", "--force", tag, ...imageIds]));
+      engine(...buildArgs, "-t", tag, source);
+
+      // Runs the Gateway's check against the provenance file the image holds, if any.
+      const gatewayAccepts = (name) => {
+        imageIds.push(engine("image", "inspect", "--format", "{{.Id}}", tag));
+        const container = engine("create", tag, "/unused");
+        const copied = join(root, `${name}.json`);
+        const present = spawnSync("docker", [
+          "cp",
+          `${container}:/opt/oce/runtime/provenance.json`,
+          copied,
+        ]);
+        spawnSync("docker", ["rm", container]);
+        const context = createContext({
+          pluginReadFileSync: (path) => {
+            assert.equal(path, "/opt/oce/runtime/provenance.json");
+            return readFileSync(copied, "utf8");
+          },
+        });
+        try {
+          runInContext(
+            `${GATEWAY_TOOL_POLICY_RUNTIME}\nrequireGatewayToolPolicyRuntime();`,
+            context,
+          );
+          return present.status === 0;
+        } catch (error) {
+          assert.match(error.message, /cannot apply its required tool policy/);
+          return false;
+        }
+      };
+
+      assert.equal(gatewayAccepts("before"), false);
+      await addLocalSourceProvenance(buildArgs, tag, GATEWAY_TOOL_POLICY_SOURCE_COMMIT);
+      assert.equal(gatewayAccepts("reviewed"), true);
+      // A checkout at another commit is labelled truthfully, so the Gateway still refuses it.
+      await addLocalSourceProvenance(buildArgs, tag, "b".repeat(40));
+      assert.equal(gatewayAccepts("other"), false);
+    },
+  );
 });
