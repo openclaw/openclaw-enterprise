@@ -886,6 +886,7 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     state.harnessError = undefined;
     const { page, harnessReads } = await openOverview(consoleViewports[0]);
     await liveServing(page).getByText("Sandbox lost", { exact: true }).waitFor();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await page.getByRole("button", { name: "Stop Agent" }).click();
     await page
       .getByRole("dialog", { name: "Stop this Agent?" })

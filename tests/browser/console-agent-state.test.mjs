@@ -2425,7 +2425,7 @@ test("A share after a revoke rereads the policy one list at a time, audited once
 // it sends no policy read and adds no audited refusal.
 async function shareRefusedAfterRevoke(t, name) {
   const opened = await openAsRevocableAdministrator(t, name, "draft");
-  const { fixture, page, revoke, stop, remove } = opened;
+  const { fixture, page, revoke } = opened;
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await waitForEnabled(panel.getByRole("button", { name: "Share Agent", exact: true }));
   revoke();
@@ -2436,9 +2436,6 @@ async function shareRefusedAfterRevoke(t, name) {
   await panel
     .getByText("Sharing policy requires Installation administration.", { exact: false })
     .waitFor();
-  // The page takes the member's answer: no Stop or Delete.
-  await stop.waitFor({ state: "hidden" });
-  await remove.waitFor({ state: "hidden" });
   await waitForIdleFetches(page);
   return { ...opened, panel, audited };
 }
@@ -2459,9 +2456,6 @@ test("Refresh sharing after administration is granted again rereads access, then
   const sent = requests.length;
   await panel.getByRole("button", { name: "Refresh sharing", exact: true }).click();
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
-  // The page follows the administrator's answer again, without the page's Refresh.
-  await waitForEnabled(stop);
-  await waitForEnabled(remove);
   await waitForIdleFetches(page);
   assert.equal(await accessTab.getAttribute("aria-selected"), "true");
   for (const control of [
@@ -2491,6 +2485,9 @@ test("Refresh sharing after administration is granted again rereads access, then
       .map(({ action }) => action),
     ["openclaw.iam.roles.list"],
   );
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await waitForEnabled(stop);
+  await waitForEnabled(remove);
 });
 
 test("Refresh sharing while still revoked sends no policy read and adds no audited refusal", async (t) => {
@@ -2505,6 +2502,8 @@ test("Refresh sharing while still revoked sends no policy read and adds no audit
   await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
   await waitForIdleFetches(page);
   assert.equal(await accessTab.count(), 0);
+  assert.equal(await opened.stop.isVisible(), false);
+  assert.equal(await opened.remove.isVisible(), false);
   const after = requests.slice(sent);
   assert.deepEqual(
     permissionReads(after, opened.namespaceId, opened.permissionsPath),
@@ -2575,6 +2574,7 @@ test("A revoke the Access tab settles takes away administrator controls without 
   reread.release();
   await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
   // She holds Agent read only: no deploy, operate or delete.
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await stop.waitFor({ state: "hidden" });
   await remove.waitFor({ state: "hidden" });
   assert.equal(await deploy.isDisabled(), true);
@@ -2865,14 +2865,15 @@ async function openAsRevocableAdministrator(t, name, version = "active") {
   await login(
     page,
     fixture,
-    String(detailUrl(fixture, namespace.id, agent.id, shown, "access")),
+    String(detailUrl(fixture, namespace.id, agent.id, shown, "configuration")),
     account.credentials,
   );
-  await page.getByText("Current policy loaded.", { exact: true }).waitFor();
   const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
   const stop = stopAgentButton(page);
   await waitForEnabled(stop);
   await waitForEnabled(remove);
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await page.getByText("Current policy loaded.", { exact: true }).waitFor();
   await waitForIdleFetches(page);
   const permissionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
   return {
@@ -3020,6 +3021,7 @@ test("Plugins opened while a newer permission reread is in flight waits for it",
   await waitForIdleFetches(page, { except: permissionsPath });
   newer.release();
   await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await stop.waitFor({ state: "hidden" });
   await waitForIdleFetches(page);
   assert.equal(await remove.isVisible(), false);
