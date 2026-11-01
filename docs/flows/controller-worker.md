@@ -164,8 +164,8 @@ finalization or maintenance. Older versions end superseded, also once the newest
 without Git, has a held runtime failure. Under
 [exclusive replacement](../reference/drivers/compute.md#production-revision-stages),
 a newer admission supersedes older active maintenance before Compute effects,
-even after candidate failure; a superseded inactive version stops itself.
-Recovery uses a new version.
+even after candidate failure; a superseded inactive version stops itself, its
+drain yielding as `SUPERSEDED_STOP_YIELDED`. Recovery uses a new version.
 
 Agent-stop work rechecks current exact-Agent `operate`; superseded desired state
 completes without shutdown.
@@ -189,10 +189,10 @@ When Compute's `requiresStoppedPredecessors` capability is set,
 `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` performs
 [exclusive replacement](../reference/drivers/compute.md#production-revision-stages):
 it loads earlier snapshots, including failed candidates, closes their credential
-sessions, and stops them before preparing the candidate; a release failure
-prevents preparation. Their drains yield like a stopped Agent's
-(`PREDECESSOR_STOP_YIELDED`); failing, superseded or stopped work first finishes that stop. The
-dispatch guard keeps maintenance from recreating a predecessor.
+sessions, and stops them first; a release failure prevents preparation. Their
+drains yield like a stopped Agent's (`PREDECESSOR_STOP_YIELDED`); failing,
+superseded or stopped work first finishes that stop. The dispatch guard keeps
+maintenance from recreating a predecessor.
 
 The worker validates Compute's startup plugin warning codes and selection keys
 against the immutable version; the

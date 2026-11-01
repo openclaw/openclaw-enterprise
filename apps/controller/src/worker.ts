@@ -137,6 +137,7 @@ import {
   PredecessorStopYieldedError,
   type StopYieldedCode,
   StopYields,
+  SupersededStopYieldedError,
   stopWithDrainYield,
   stopYieldedCode,
   stopYieldRecheckMs,
@@ -4546,8 +4547,18 @@ export class ControllerWorker {
           // while this version holds it). A failed stop fails this pass, and the next pass
           // repeats it. Skipped when a stored refusal's wait above, or a newer sweep, already
           // stopped it in this process; the record also spares the newer sweep a second stop.
+          // Its Gateway drain yields like the newer sweep's, which may have started it (finding
+          // 3080): the pass ends pending as SUPERSEDED_STOP_YIELDED, and the next pass repeats
+          // the stop before superseding. Work past the convergence deadline keeps the full
+          // bounded wait.
           await this.closeRevisionCredentials(claim, revision);
-          await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
+          try {
+            await this.stopYieldingDrain(claim, revision);
+          } catch (error) {
+            throw error instanceof ComputeStopYieldedError
+              ? new SupersededStopYieldedError(error)
+              : error;
+          }
           this.recordStopped(revision.id, this.leaseDurationMs);
         }
         await this.finalizeRevision(

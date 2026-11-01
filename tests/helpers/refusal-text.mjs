@@ -587,8 +587,10 @@ export const dedicatedCodexVariableRefusal = (
   agent = "an embedded",
 ) =>
   `Configuration setting ${setting} references ${name}, which only a Dedicated Codex Agent receives: on ${agent} Agent, remove plugins.entries.${plugin} or set its enabled to false.`;
-export const unboundPluginSecretRefusal = (setting, name, plugin) =>
-  `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
+// `enabledBy`: the key of a later entry for the same plugin that enables it, such as GOOGLE; the
+// step names it instead of the entry itself (finding 3074).
+export const unboundPluginSecretRefusal = (setting, name, plugin, enabledBy) =>
+  `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set ${enabledBy === undefined ? "its enabled" : `plugins.entries.${enabledBy}.enabled`} to false.`;
 // Why OpenClaw cannot read a SecretRef, as [problem, step] (packages/occ/src/environment-
 // references.ts): every refusal names one next step (finding 3067). `alias` is the default alias
 // of the ref's source (secrets.defaults.<source>, else "default"). `substitutedAlias`: that alias
