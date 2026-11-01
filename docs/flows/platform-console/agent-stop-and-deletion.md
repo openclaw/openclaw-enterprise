@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-10-20
-last_updated_session: 8b95a6fb-7095-4556-9028-0723f32cc534
+updated: 2026-11-01
+last_updated_session: authoring-run/66929759-4566-4a73-bb19-97213ee54faf
 ---
 
 # Console Agent stop and deletion
@@ -14,10 +14,10 @@ from confirmation to readback. See the [parent flow](../platform-console.md) and
 
 ## Entry Points
 
-- `apps/controller/src/console/agents/stop.mjs:createAgentStop` sends the stop request.
-- `apps/controller/src/console/agents/deletion.mjs:createAgentDeletion` sends the deletion request.
-- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` mounts both as rows of one **Danger zone** card;
-  [Agents list rows](#stop-or-delete-from-an-agents-list-row) also offer them.
+- `apps/controller/src/console/agents/stop.mts:createAgentStop` sends the stop request.
+- `apps/controller/src/console/agents/deletion.mts:createAgentDeletion` sends the deletion request.
+- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` shows the **Danger zone** on **Configuration**. When deletion starts, the deletion row replaces the tabbed view.
+  [Agents list rows](#stop-or-delete-from-an-agents-list-row) also offer Stop and Delete.
 - A signed-in caller needs Agent `operate` to stop and Agent `delete` to delete.
 
 ## Flow
@@ -53,7 +53,7 @@ A negative [permission answer](../../reference/api.md#get-namespacesnamespaceida
 hides the Stop or Delete row, and the card when neither remains. If the dialog is open, it disables
 confirmation, focuses Cancel and keeps the row. A missing answer keeps the rows; late advice cannot recall a request.
 
-`apps/controller/src/console/agents/stop.mjs:createAgentStop` sends a bodyless `POST` to the
+`apps/controller/src/console/agents/stop.mts:createAgentStop` sends a bodyless `POST` to the
 Agent’s `/stop` route. OCC’s `packages/occ/src/index.ts:stopAgent` checks Agent `operate`,
 persists the requested stopped state, and queues reconciliation. Success means admission,
 not that Compute has shut down. Cancel restores focus to the invoking button; submission focuses
@@ -88,7 +88,7 @@ reference covers worker shutdown and preservation of versions, credentials, and 
 
 ### 8. Confirm deletion and read back the Agent
 
-`apps/controller/src/console/agents/deletion.mjs:createAgentDeletion`
+`apps/controller/src/console/agents/deletion.mts:createAgentDeletion`
 
 **Delete Agent** requests confirmation before sending a bodyless `DELETE` to the
 exact Agent URL. The controller requires Agent `delete`. A `403` shows the Console's
@@ -159,6 +159,8 @@ the row is gone.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-01 18:19: Limit the Danger zone to Configuration and preserve standalone deletion recovery in the accompanying change. (authoring-run/66929759-4566-4a73-bb19-97213ee54faf - 7bb67ab81e65bfcea35aeddf2a9f02c4f258b138)
 
 - 2026-10-20 08:02: Trace Stop and Delete from Agents list rows, moved from the Agent editing flow, in the accompanying merge. (8b95a6fb-7095-4556-9028-0723f32cc534 - a8fb50b1babb68f3eb759841f92b042da039248e)
 - 2026-10-20 07:57: Describe deletion discovered by a stop-status read in the accompanying change. (authoring-run/28365356-ae7e-47dc-9790-888c3592251f - 6aedac546aad8308b4e9954648268f14545e39b2)

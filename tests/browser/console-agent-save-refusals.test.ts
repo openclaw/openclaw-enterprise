@@ -841,6 +841,7 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
 // The page's other operate-gated controls follow the same observed answer as Workspace: the Stop
 // row hides and each version's Run diagnostics disables while operate is denied (finding 2328).
 async function expectOperateControls(page: Page, allowed: boolean) {
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
   await stopRow.waitFor({ state: allowed ? "visible" : "hidden" });
   await page.getByRole("tab", { name: "Deployment", exact: true }).click();
@@ -1012,6 +1013,7 @@ test("a Stop refusal clears once a later answer grants Agent operate", async (t)
   const { page } = scenario;
   await withholdPermissionSummary(page, scenario.fixture, scenario.namespace.id, scenario.agent.id);
   await scenario.open({ answered: false });
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
   await stopRow.getByRole("button", { name: "Stop Agent", exact: true }).click();
   await page
@@ -1026,12 +1028,14 @@ test("a Stop refusal clears once a later answer grants Agent operate", async (t)
   // Exact: the refusal repeats the reason after "Stop was refused:".
   const notice = stopRow.getByText(AGENT_STOP_DENIED, { exact: true });
   await scenario.rereadThroughLogs();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await notice.waitFor();
   // The refused Stop stays in the Tab order, described by that notice (finding 2935).
   const stop = stopRow.getByRole("button", { name: "Stop Agent", exact: true });
   await expectReachableReason(page, stop, AGENT_STOP_DENIED);
   scenario.operate(true);
   await scenario.rereadThroughLogs();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await notice.waitFor({ state: "hidden" });
   await waitForEnabled(stop);
   // The grant leaves no stale reason on Stop.
@@ -1053,6 +1057,7 @@ test("a refused Request Stop again stays reachable with its reason", async (t) =
   const { page } = scenario;
   scenario.operate(true);
   await scenario.open({ answered: false });
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
   const stop = stopRow.getByRole("button", { name: "Stop Agent", exact: true });
   await waitForEnabled(stop);
@@ -1066,6 +1071,7 @@ test("a refused Request Stop again stays reachable with its reason", async (t) =
   scenario.operate(false);
   await scenario.rememberStatusDenial();
   await scenario.rereadThroughLogs();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await stopRow.getByText(AGENT_STOP_DENIED, { exact: true }).waitFor();
   await expectReachableReason(page, repeat, AGENT_STOP_DENIED);
   assert.equal(await page.getByRole("dialog", { name: "Stop this Agent?" }).count(), 0);

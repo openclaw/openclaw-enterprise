@@ -671,6 +671,7 @@ test("Agent detail keeps Stop when its Agent reread fails after a first deployme
   const activity = await openDeploymentActivity(page);
   await activity.getByRole("button", { name: "Refresh deployment" }).click();
   await summary.getByText("v1 · Completed", { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   const stop = stopRegion.getByRole("button", { name: "Stop Agent", exact: true });
   await waitForEnabled(stop);
   await stopRegion.getByText(STOP_RUNNING_VERSION, { exact: true }).waitFor();
@@ -1982,10 +1983,8 @@ test("opening the Logs tab by URL does not move the page", async (t) => {
   }
 });
 
-// Clicking the Logs tab left an empty Logs area with Stop and Delete right under it, then the
-// strip and output pushed them down 0.6-1.7 s later: CLS up to 0.444 (finding 1479). The tab
-// now keeps its height and hides those cards until the view shows.
-test("opening the Logs tab by click does not move the cards below it", async (t) => {
+// A slow runtime read must not shift the Logs output once the tab opens.
+test("opening the Logs tab keeps its output steady", async (t) => {
   const logs = runtimeLogs();
   const { fixture, namespace } = await readyNamespace(t, "Steady logs tab", logs);
   const agent = await fixture.createAgent(namespace.id, "Steady Logs Tab", nativeValues("v1"));
@@ -2026,19 +2025,15 @@ test("opening the Logs tab by click does not move the cards below it", async (t)
     // The slow status read and every other read have landed and painted.
     await waitForIdleFetches(page);
     await nextFrames(page);
-    // The Logs view and the cards below it; headless Chromium also reports a body shift at
+    // Measure the Logs view. Headless Chromium also reports a body shift at
     // phone width after any tab click, on main as well, that a reader does not see.
     const { shifts } = await takeLayoutShifts(page);
     const shift = shifts
-      .filter((entry) =>
-        entry.sources.some((source) =>
-          /danger-zone|stop-note|deletion-note|agent-logs|log-/.test(source.node),
-        ),
-      )
+      .filter((entry) => entry.sources.some((source) => /agent-logs|log-/.test(source.node)))
       .reduce((sum, entry) => sum + entry.value, 0);
     t.diagnostic(`${viewport.width}x${viewport.height} shift ${shift}: ${JSON.stringify(shifts)}`);
     assert.ok(shift < 0.01, `${viewport.width}x${viewport.height} shift ${shift}`);
-    assert.equal(await page.locator(".agent-logs-opening").count(), 0);
+    assert.equal(await page.getByRole("region", { name: "Danger zone" }).count(), 0);
   }
 });
 
@@ -3522,7 +3517,8 @@ test("Delete during a share in flight keeps saying why the page stays open", asy
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
   await write.requested;
-
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  const beforeDelete = page.url();
   await page.getByRole("button", { name: "Delete Agent" }).click();
   await page
     .getByRole("dialog", { name: "Delete Delete Hold Agent?" })
@@ -3534,7 +3530,7 @@ test("Delete during a share in flight keeps saying why the page stays open", asy
   await page.getByRole("link", { name: "← Agents" }).click();
   await held.waitFor();
   assert.equal(await held.isVisible(), true);
-  assert.equal(page.url(), url.href);
+  assert.equal(page.url(), beforeDelete);
 
   write.release();
   await held.waitFor({ state: "detached" });
@@ -3603,7 +3599,9 @@ test("A page that opens on a deleting Agent can still be left", async (t) => {
   const { page } = await newPage(t, fixture, { browser });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "workspace"));
+  await page.getByRole("button", { name: "Refresh deletion status" }).waitFor();
+  assert.equal(await page.getByRole("tablist").count(), 0);
   await page.getByRole("button", { name: "Request deletion again" }).waitFor();
   assert.equal(await asksBeforeUnload(page), false);
   await page.getByRole("link", { name: "← Agents" }).click();

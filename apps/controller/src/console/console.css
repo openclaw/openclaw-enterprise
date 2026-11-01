@@ -3064,7 +3064,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   color: color-mix(in srgb, var(--danger) 60%, var(--color-surface));
   border-color: color-mix(in srgb, var(--danger) 60%, var(--color-surface));
 }
-/* Danger zone (UX spec 3.9): one card at the end of the Agent page with a row each for Stop and
+/* Danger zone (UX spec 3.9): one card at the end of Configuration with a row each for Stop and
    Delete: title and one sentence, the outlined danger button at the right, and any status the
    row reports full width below. The confirmations carry the detail. */
 .danger-zone > h2 {
@@ -4569,6 +4569,10 @@ html:has(#create-agent-form) {
   }
 }
 
+/* Leave enough scroll range to align the tabs on a direct Logs link, even with short output. */
+.agent-version-detail:has(.agent-logs) {
+  min-height: 100dvh;
+}
 /* Held back until the Logs view's first reads settle (finding 1413). */
 .agent-logs-pending > .runtime-strip,
 .agent-logs-pending > .log-running-version,
@@ -4576,10 +4580,6 @@ html:has(#create-agent-form) {
 .agent-logs-pending > .log-serving-change,
 .agent-logs-pending > .log-viewer {
   display: none;
-}
-/* The cards below a pending Logs view appear where the shown view puts them (finding 1479). */
-.agent-logs-opening > .danger-zone {
-  visibility: hidden;
 }
 /* Pod cards share the panel's width: auto-fit collapses the empty columns that left one or two
    cards near the 260 px minimum with the rest of the row blank (finding 2100). */

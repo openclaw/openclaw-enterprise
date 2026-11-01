@@ -125,6 +125,7 @@ export const DiagnosticsSuccess = story("diagnosticsSuccess");
 export const DiagnosticsFast = story("diagnosticsFast");
 export const DiagnosticsNoSlack = story("diagnosticsNoSlack");
 export const DiagnosticsReader = story("diagnosticsReader");
+export const DangerZoneTabs = story("dangerZoneTabs");
 export const DangerZoneReader = story("dangerZoneReader");
 export const DiagnosticsRefused = story("diagnosticsRefused");
 export const DiagnosticsUnknown = story("diagnosticsUnknown");
