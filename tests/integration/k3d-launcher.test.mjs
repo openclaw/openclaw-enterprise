@@ -82,7 +82,6 @@ async function runLauncher(
   await mkdir(bin);
 
   await writeCommand(bin, "uname", `printf '${platform}\\n'\n`);
-  await writeCommand(bin, "git", `printf '${"a".repeat(40)}\\n'\n`);
   await writeCommand(bin, clipboardCommand, `/usr/bin/tee '${clipboard}' >/dev/null\n`);
 
   let expectedDockerHost = "";
@@ -161,8 +160,6 @@ if printf '%s' "$*" | grep -q 'scripts/ci/prepare.mjs'; then
   [ -z "$OCC_TEST_KUBERNETES_CODEX_IMAGE" ] || exit 92
   [ -z "$OCC_TEST_PRODUCTION_CONTROLLER_IMAGE" ] || exit 92
   [ -n "$NODE_BASE_IMAGE" ] || exit 94
-  [ '${selectedHarness}' != openclaw ] || [ "$OCC_K3D_OPENCLAW_SOURCE" = '${join(root, "openclaw-source")}' ] || exit 95
-  [ '${selectedHarness}' != openclaw ] || [ "$OCC_K3D_OPENCLAW_COMMIT" = '${"a".repeat(40)}' ] || exit 96
   count="$(cat '${prepareCount}' 2>/dev/null || printf '0')"
   count="$((count + 1))"
   printf '%s\\n' "$count" > '${prepareCount}'
@@ -172,9 +169,6 @@ if printf '%s' "$*" | grep -q 'scripts/ci/prepare.mjs'; then
     'OCC_TEST_PRODUCTION_CONTROLLER_IMAGE=localhost/controller@sha256:${"e".repeat(64)}' \
     'OCC_TEST_KUBERNETES_KUBECONFIG=/private/demo/kubeconfig' \
     'OCC_TEST_KUBERNETES_CONTEXT=k3d-demo' > '${join(state, "env")}'
-  if [ -n "$OCC_K3D_OPENCLAW_COMMIT" ]; then
-    printf 'OCC_K3D_OPENCLAW_COMMIT=%s\n' "$OCC_K3D_OPENCLAW_COMMIT" >> '${join(state, "env")}'
-  fi
   printf '%s\n' '${preparedModel === undefined ? "" : `OCC_TEST_OPENAI_MODEL=${preparedModel}`}' '${preparedBaseUrl === undefined ? "" : `${selectedHarness === "openclaw" ? "OCC_TEST_OPENSHELL_MODEL_BASE_URL" : "OCC_TEST_CODEX_OPENAI_BASE_URL"}=${preparedBaseUrl}`}' >> '${join(state, "env")}'
   exit 0
 fi
@@ -261,10 +255,6 @@ INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${${selecte
     }
   }
 
-  const openclawSource = join(root, "openclaw-source");
-  await mkdir(openclawSource);
-  await writeFile(join(openclawSource, "Dockerfile"), "FROM scratch\n");
-
   const { stdout } = await execute("scripts/k3d", args, {
     env: {
       ...process.env,
@@ -279,7 +269,6 @@ INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${${selecte
       OCC_TEST_KUBERNETES_RUNTIME_IMAGE: "localhost/stale-runtime@sha256:" + "c".repeat(64),
       OCC_TEST_KUBERNETES_CODEX_IMAGE: "localhost/stale-codex@sha256:" + "d".repeat(64),
       OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: "localhost/stale-controller@sha256:" + "e".repeat(64),
-      OCC_K3D_OPENCLAW_SOURCE: openclawSource,
       XDG_STATE_HOME: join(root, "state"),
       PATH: clipboardCommand === "pbcopy" ? `${bin}:/usr/bin:/bin` : `${bin}:/bin`,
     },
@@ -348,10 +337,7 @@ INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${${selecte
   assert.equal(recorded.composeProvider, engine === "podman" ? join(bin, "podman-compose") : "");
   assert.match(stdout, new RegExp(`\\[k3d:${engine}\\]`));
   if (selectedHarness === "openclaw") {
-    assert.match(
-      stdout,
-      /WARNING: Dedicated native OpenClaw is experimental\. The current OpenClaw release image does not include native worker-inference support/,
-    );
+    assert.match(stdout, /WARNING: Dedicated native OpenClaw is experimental\./);
   } else {
     assert.doesNotMatch(stdout, /Dedicated native OpenClaw is experimental/);
   }

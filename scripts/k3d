@@ -38,8 +38,7 @@ The helper detects a running Podman API socket or Docker daemon. Set
 OCC_K3D_CONTAINER_ENGINE=podman or docker to select one explicitly.
 --harness defaults to codex. Select openclaw for the dedicated native worker
 test or browser demo through OpenShell.
-The openclaw choice prepares the OpenShell lane and builds ../openclaw by
-default; override it with the absolute OCC_K3D_OPENCLAW_SOURCE path.
+The openclaw choice prepares the OpenShell lane with the pinned runtime image.
 demo prompts for OPENAI_API_KEY when it is not already set. test requires the
 variable explicitly; reset does not require it.
 OCC_TEST_OPENAI_MODEL defaults to gpt-4o-mini.
@@ -272,7 +271,7 @@ done
 select_engine
 
 if [ "$harness" = "openclaw" ] && { [ "$action" = "demo" ] || [ "$action" = "test" ]; }; then
-  info "WARNING: Dedicated native OpenClaw is experimental. The current OpenClaw release image does not include native worker-inference support, so this workflow builds ../openclaw from source."
+  info "WARNING: Dedicated native OpenClaw is experimental."
 fi
 
 k3d_bin="$(command -v k3d)"
@@ -706,17 +705,6 @@ fi
 
 [ -n "${OPENAI_API_KEY:-}" ] || fail "OPENAI_API_KEY is required for the real model turn"
 
-openclaw_source_commit=""
-if [ "$harness" = "openclaw" ]; then
-  openclaw_source="${OCC_K3D_OPENCLAW_SOURCE:-$repo_root/../openclaw}"
-  [ -f "$openclaw_source/Dockerfile" ] ||
-    fail "OCC_K3D_OPENCLAW_SOURCE must select an OpenClaw source checkout"
-  openclaw_source_commit="$(git -C "$openclaw_source" rev-parse HEAD)" ||
-    fail "OpenClaw source revision is unavailable"
-  export OCC_K3D_OPENCLAW_SOURCE="$openclaw_source"
-  export OCC_K3D_OPENCLAW_COMMIT="$openclaw_source_commit"
-fi
-
 NODE_BASE_IMAGE="$(sed -n 's/^ARG NODE_BASE_IMAGE=//p' deploy/runtime/Dockerfile | head -1)"
 NODE_RUNTIME_BASE_IMAGE="$(sed -n 's/^ARG NODE_RUNTIME_BASE_IMAGE=//p' deploy/runtime/Dockerfile | head -1)"
 export NODE_BASE_IMAGE
@@ -763,10 +751,6 @@ fi
 
 validate_prepared_environment
 load_environment
-
-if [ -n "$openclaw_source_commit" ] && [ "${OCC_K3D_OPENCLAW_COMMIT:-}" != "$openclaw_source_commit" ]; then
-  fail "prepared native OpenClaw image belongs to another source revision; run './scripts/k3d down --harness openclaw'"
-fi
 
 [ -n "${OCC_TEST_PRODUCTION_CONTROLLER_IMAGE:-}" ] ||
   fail "prepared state predates the in-cluster OCC API; run './scripts/k3d down' before retrying"
