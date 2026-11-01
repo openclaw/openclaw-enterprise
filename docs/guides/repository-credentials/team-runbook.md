@@ -1,6 +1,12 @@
+---
+searchable: false
+---
+
 # Set up repository access for a team
 
-Connect one team repository to an organization-owned GitHub App, then ask an
+**Deprecated.** For new installations, use [OpenShell Git push](openshell-git-push.md) for a sandboxed Agent or [repository access](../repository-credentials.md) for the Kubernetes worker Token Service.
+
+Connect one team repository to an organization-owned GitHub App, then ask a
 dedicated Codex Agent to push a branch and open a draft PR. Start with an
 existing [Kubernetes installation](../deploy/production-installation.md), an OCC
 Namespace, and a repository approved for this exercise.

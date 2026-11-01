@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-29
-last_updated_session: 01a184cd-7ec2-7fa2-8547-9629c51ad0ba
+updated: 2026-10-31
+last_updated_session: authoring-run/86b48c89-0c80-493f-b48a-6999988d4766
 ---
 
 # Agent Plugin Deployment Flow
@@ -205,7 +205,12 @@ describe the generated bridge.
 <!-- Internal preparation threads one explicit RPC caller through these reads,
 writes, reviewer checks, and no-account disablement; ordinary transport is unchanged. -->
 
-After `plugin/search` resolves each selected ID,
+Startup enables experimental APIs and resolves selected IDs through `plugin/search`.
+`codex-plugin-stdio.ts:withCodexPluginStdio` retains fixed
+`nativeErrorType`/`nativeSubErrorType` values, discarding other stderr/RPC content
+and lines over 64 KiB while draining. RPC errors alone do not prove backend
+installation.
+
 `runtime-entrypoints.ts:readCodexPluginDetails` reads up to four
 selections concurrently before and after installs. Batches preserve order and drain
 before retries and final verification; writes stay sequential.
@@ -218,8 +223,6 @@ Install rejections or missing app authentication warn. Explicit tool policies
 require `mcpServerStatus/list`'s `codex_apps` inventory; `codexAppToolSettings`
 binds catalog action IDs through `_meta._codex_apps.resource_uri`. Native IDs
 work. Unknown, unowned, ambiguous, or duplicate IDs fail startup.
-
-`codexRuntimeArtifact` applies the [native policy mappings](../reference/drivers/plugin-bundled.md).
 
 After installation, startup rechecks catalog identity, version, apps and components
 before final app/tool grants; `plugin/read` cannot inspect bundles.
@@ -246,8 +249,7 @@ and `configRequirements/read`. Forbidden reviewers, incompatible automatic-revie
 settings or conflicting model requirements block startup. Checks exclude later
 workspace/session/model changes and strict review. Codex 0.156 readback omits
 execution-time managed app/tool requirements; [effective-policy proof](../testing/plugins.md#current-proof-notes)
-remains necessary. Codex owns cache integrity and health;
-[older binaries](../reference/drivers/plugin-bundled.md#native-mappings-and-limits) may ignore plugin defaults.
+remains necessary.
 
 `runtime-entrypoints.ts:disableCodexSelectionsWithoutChatGptLogin` disables enabled
 selections and app/plugin features for API-key logins when best-effort preparation
@@ -350,9 +352,6 @@ establish starvation.
 - Prove behavior with a model-chosen plugin call in a normal Agent turn, then
   disable or remove the plugin and verify another Agent is unchanged. Source or
   fixture tests are not native runtime proof.
-- The opt-in [Agent plugin testing](../testing/plugins.md) real-runtime lane covers
-  Kubernetes, database, credential, native-runtime, and historical proof. Skipped
-  native tests are not proof.
 
 ## Related docs
 
@@ -370,6 +369,7 @@ establish starvation.
 
 ## Changelog
 
-- 2026-10-29 22:19: Release deferred catalog loading when its tab is no longer current. (authoring-run/7a2bb516-4223-4156-b1a8-1d89f60a54d4)
+- 2026-10-31 05:52: Classify native install failures. (authoring-run/86b48c89-0c80-493f-b48a-6999988d4766 - 6d941c15081e95ef36b4ba1ffbbbc0b117972c0a)
+- 2026-10-31 03:36: Restore experimental plugin search with the upstream Codex version. (authoring-run/dc99918c-2f5c-4141-bffd-b216830017d0 - 25364fcfdc905e95b5a813a6cd7b2de47b66ca71)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

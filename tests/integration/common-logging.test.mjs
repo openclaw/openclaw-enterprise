@@ -718,6 +718,25 @@ test("worker log keeps fixed codes and route fences, and drops anything shaped o
     },
     { event: "worker.openshell-git-route", status: "adopted", fence: 7 },
     { event: "worker.completed", code: "REPOSITORY_EXECUTION_UNVERIFIED", harnessState: "lost" },
+    {
+      event: "worker.error",
+      code: "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
+      attemptId: randomUUID(),
+      stage: "publication",
+      firstFailureStage: "validation",
+      errorClass: "validation-failed",
+      httpStatus: 401,
+      responseComplete: true,
+      candidateIdentified: false,
+      requestEndCalled: true,
+      admissionCurrent: true,
+      inBounds: true,
+      stale: false,
+      clockTolerance: true,
+      validationKind: "reauthorization-required",
+      validationCode: "authority-unavailable",
+      publication: "unknown",
+    },
   ];
   for (const event of kept) {
     emit(event);
@@ -746,6 +765,14 @@ test("worker log keeps fixed codes and route fences, and drops anything shaped o
     ["fence", 1.5],
     ["fence", "3"],
     ["fence", Number.MAX_SAFE_INTEGER + 1],
+    ["httpStatus", "401"],
+    ["httpStatus", 99],
+    ["httpStatus", 600],
+    ["responseComplete", "true"],
+    ["candidateIdentified", "sentinel-secret"],
+    ["requestEndCalled", 1],
+    ["firstFailureStage", "sentinel private message"],
+    ["validationCode", "sentinel private message"],
   ];
   for (const [key, value] of rejected) {
     emit({ event: "worker.openshell-git-expiry", outcome: "pending", [key]: value });

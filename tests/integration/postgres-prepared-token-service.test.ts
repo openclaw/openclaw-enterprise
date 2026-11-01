@@ -21,7 +21,10 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import type { readPreparedGitHubMetadata } from "../../packages/occ/src/index.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
-import { createTokenPreparation } from "../../apps/controller/src/backends/token-service/preparation.ts";
+import {
+  createTokenPreparation,
+  type TokenPreparationObservation,
+} from "../../apps/controller/src/backends/token-service/preparation.ts";
 import type {
   TokenAdmission,
   TokenAttempt,
@@ -349,6 +352,7 @@ test(
     );
 
     let issues = 0;
+    const observations: TokenPreparationObservation[] = [];
     const familyId = family.familyId;
     const retirements: string[] = [];
     const retirementReplyLost = new Error("fixture issuer retirement reply lost");
@@ -402,10 +406,15 @@ test(
             clock: { wallNow: Date.now, monotonicNow: () => performance.now() },
             renewBeforeMs: 90_000,
             minimumValidityMs: 1_000,
+            observe(observation) {
+              observations.push(observation);
+              // Even a failing reporter cannot change real PostgreSQL publication or retirement.
+              throw new Error("sentinel-private-reporting-secret");
+            },
             async issue({ assertIssuing, capture }) {
               await assertIssuing();
               if (++issues === 3) {
-                throw new Error("fixture issuer reply lost");
+                throw new Error("sentinel-private-provider-secret");
               }
               capture(Buffer.from("fixture-only-" + issues));
               const until = Date.now() + 60_000;
@@ -455,6 +464,16 @@ test(
     assert.equal(await worker.maintain(), "quarantined");
     assert.equal(await worker.maintain(), "blocked");
     assert.equal(issues, 3, "an ambiguous issuance must not be replayed");
+    assert(observations.some((entry) => entry.error === "issuer-error"));
+    assert.equal(observations.filter((entry) => entry.publication === "committed").length, 2);
+    assert.equal(observations.filter((entry) => entry.publication === "quarantined").length, 1);
+    for (const secret of [
+      "sentinel-private-reporting-secret",
+      "sentinel-private-provider-secret",
+      "fixture-only-",
+    ]) {
+      assert.equal(JSON.stringify(observations).includes(secret), false);
+    }
 
     const held = await select();
     assert(held.ready);

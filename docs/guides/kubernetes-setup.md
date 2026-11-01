@@ -3,7 +3,7 @@
 Prepare a Kubernetes cluster you already operate, then follow the shared
 [production installation runbook](deploy/production-installation.md) to install
 and authenticate to the OpenClaw Control Plane (OCC). If you want to try
-OpenClaw Enterprise on your machine, use [Local Setup](quickstart.md).
+OpenClaw Enterprise on your machine, use [Setup OCE on local k3d](deploy/local-openshell-setup.md). For an Amazon EKS cluster, start with the [EKS prerequisites](deploy/eks.md#prepare-aws-infrastructure), then return here for the shared Helm installation.
 
 ## What the install creates
 
@@ -29,7 +29,7 @@ You need:
 - Bash for the image-selection and model-verification commands. Node.js 24.22.1 or newer
   for profile generation and the API transport-credential example. Manual YAML
   plus console transport provisioning avoids those Node commands.
-- Docker and Git to [select the latest published images](deploy/published-images.md)
+- Docker and Git to [select the stable published images](deploy/published-images.md)
   and their matching source checkout; Buildx only if building your own images.
 - External PostgreSQL with separate application and migration roles, verified TLS, and a registry your cluster can pull controller and runtime images from.
 - Storage for the bootstrap and gateway volumes, and an approved internal HTTPS origin for OCC. Dedicated Agent workspaces also need a default StorageClass that supports `ReadWriteOnce`. The chart does not create public Ingress or TLS.
@@ -74,3 +74,9 @@ A ready control plane and a passing
 do not prove that an Agent can answer a model request.
 
 Keep the same shell and temporary key copy to [prepare Namespaces and deploy Agents](deploy/production-agents.md), then [verify workspace access](deploy/production-agents.md#verify-workspace-access) and [a real model response from that Agent](deploy/production-agents.md#verify-production-workloads). These are separate completion checks; a successful deployment does not establish either one. At the end, [remove only the temporary credential copies](deploy/production-agents.md#end-the-operator-session). The [local first-Agent walkthrough](first-agent.md) uses a different installation and should not be run against this one.
+
+## Next steps
+
+- [Attach the OpenClaw TUI](deploy/production-agents.md#attach-with-the-openclaw-tui) to a deployed Agent through its private Gateway.
+- [Complete the production handoff](deploy/production-handoff.md) to assign operating ownership and prepare for recovery.
+- Browse the [product guides](README.md) for the CLI, Agent management and observability.

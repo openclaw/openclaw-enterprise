@@ -9,7 +9,7 @@ platform itself, start with [Contribute](../contributing/README.md).
 
 Read [Concepts](concepts.md) for Namespaces, Agents, versions, and Secrets. Then choose a setup:
 
-- [Local Setup](quickstart.md): run the platform on your machine and [deploy your first Agent](first-agent.md).
+- [Set up OCE locally](deploy/local-openshell-setup.md) on k3d with OpenShell and Codex. Continue with [Git support](repository-credentials/openshell-git-push.md) or [Codex plugins](integrations/codex-plugins.md).
 - [Kubernetes Setup](kubernetes-setup.md): install the control plane on an existing cluster, then [deploy and verify an Agent on it](deploy/production-agents.md).
 
 ## Work with Agents

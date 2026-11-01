@@ -550,6 +550,22 @@ async function driverBuiltRuntimeValues() {
       const value = (key) =>
         new RegExp(`\\b${key}\\s*:\\s*("[^"\\n]*"|[^,\\n}]+)`, "u").exec(literal)?.[1].trim();
       const [check, code] = [value("check"), value("code")];
+      // Continuity comparisons are emitted as telemetry, not runtime failures.
+      // Limit this exemption to their exact event or the owning report call.
+      if (
+        path === "egress-proxy/openshell-git-runtime.ts" &&
+        code === undefined &&
+        value("state") === undefined &&
+        (value("event") === '"worker.openshell-git-continuity-refused"' ||
+          (/^"(held-startup-(recorded|observed)|sandbox-(restart-count|restart-policy-never|id-changed))"$/u.test(
+            check,
+          ) &&
+            /this\.reportContinuity\([^;]*$/su.test(
+              text.slice(Math.max(0, object.index - 512), object.index),
+            )))
+      ) {
+        continue;
+      }
       if (/^[A-Za-z_$][\w$]*\.check$/u.test(check) && /^[A-Za-z_$][\w$]*\.code$/u.test(code)) {
         continue;
       }

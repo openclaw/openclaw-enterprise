@@ -213,10 +213,10 @@ packages:
     assert.equal(createHash("sha256").update(bytes).digest("hex"), sha256, file);
   }
   assert.deepEqual(Object.entries(provenance.patches), applied);
-  // The per-patch fields recorded before `patches` keep their names and values.
+  assert.equal(Object.hasOwn(provenance, "codexDependencyPinPatchSha256"), false);
+  // The remaining per-patch fields keep their names and values.
   for (const [field, file] of [
     ["openclawBridgePatchSha256", "openclaw-codex-read-only-paths.patch"],
-    ["codexDependencyPinPatchSha256", "stock-codex-0.163.0-alpha.2-dependency-pin.patch"],
     [
       "openclawRequiredWorkerAuthorityRegressionPatchSha256",
       "openclaw-required-worker-authority-regression.patch",
