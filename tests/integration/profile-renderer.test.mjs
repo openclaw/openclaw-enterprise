@@ -33,7 +33,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { fileTemporaryDirectory, temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 import { helmTemplate } from "../helpers/production-chart.mjs";
 import {
   RenderRefusal,
@@ -416,8 +416,7 @@ test("preflight rejects noncanonical SHA-256 image digests", async (t) => {
   for (const profile of ["openclaw", "codex"]) {
     const input = profile === "codex" ? codexInput() : baseInput();
     input.repository = repositoryConfiguration();
-    const directory = mkdtempSync(join(tmpdir(), "oce-profile-digest-"));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const directory = temporaryDirectorySync(t, "oce-profile-digest-");
     for (const [section, key] of [
       ["controlPlane", "controllerImage"],
       ["runtime", "image"],
@@ -488,8 +487,7 @@ test("managed ChatGPT service-account wiring is optional and explicit", async ()
 test("profiles reject invalid Helm release names before emitting deployment files", async (t) => {
   for (const profile of ["openclaw", "codex"]) {
     const input = profile === "codex" ? codexInput() : baseInput();
-    const directory = mkdtempSync(join(tmpdir(), `oce-release-name-${profile}-`));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const directory = temporaryDirectorySync(t, `oce-release-name-${profile}-`);
     for (const releaseName of ["r".repeat(54), "Oce", "oce-", "oce..example", "oce example"]) {
       // A failed rerender must also remove files from a previously valid release.
       await render(profile, input, directory);
@@ -682,8 +680,7 @@ test(
       // Provider ranges must survive rendering; individual DNS answers are not stable.
       const input = profile === "codex" ? codexInput() : baseInput();
       input.repository = repositoryConfiguration(["140.82.112.0/20", "192.30.252.0/22"]);
-      const directory = mkdtempSync(join(tmpdir(), `oce-profile-egress-${profile}-`));
-      t.after(() => rmSync(directory, { recursive: true, force: true }));
+      const directory = temporaryDirectorySync(t, `oce-profile-egress-${profile}-`);
       const output = renderCli(profile, input, directory, repository, dns.server);
       const manifests = helmTemplate(output);
       assert.match(manifests, /repository-credentials/);
@@ -2171,8 +2168,7 @@ test("profiles render without installed dependencies unless native admin is on",
     ["openclaw", externalSignInInput()],
     ["codex", codexInput({ controlPlane: externalSignInInput().controlPlane })],
   ]) {
-    const directory = mkdtempSync(join(tmpdir(), `oce-profile-${profile}-`));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const directory = temporaryDirectorySync(t, `oce-profile-${profile}-`);
     let output;
     try {
       output = renderCli(profile, input, directory, root);
@@ -2184,8 +2180,7 @@ test("profiles render without installed dependencies unless native admin is on",
   }
 
   // Native admin needs the API's public suffix list, so it asks for the install, with a preflight.
-  const directory = mkdtempSync(join(tmpdir(), "oce-profile-native-admin-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const directory = temporaryDirectorySync(t, "oce-profile-native-admin-");
   const error = await renderError(() => renderCli("openclaw", baseInput(), directory, root));
   assert.match(
     error.profileRendererOutput,

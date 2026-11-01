@@ -23,6 +23,7 @@ import test, { describe } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
@@ -3896,8 +3897,7 @@ test("drafts that do not fit in the preflight Secret warn, and the preflight pas
 // The drafts get the part of the Secret's 1 MiB that the candidate Installation leaves: about
 // 700 KiB of gzipped drafts fit beside a small Installation, but not beside a 400 KiB one.
 test("the drafts budget is the Secret limit less the candidate Installation", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-upgrade-drafts-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-upgrade-drafts-");
   const drafts = join(directory, "agent-drafts.jsonl");
   await writeFile(
     drafts,

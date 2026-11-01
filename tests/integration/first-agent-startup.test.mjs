@@ -16,6 +16,7 @@ import {
 import { listen } from "../helpers/listen.mjs";
 import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   GATEWAY_SECURITY_DEFAULTS,
   withGatewaySecurityDefaults,
@@ -99,8 +100,7 @@ function runFirstAgent(env, ...args) {
 }
 
 test("first-Agent starts without installed workspace dependencies", async (t) => {
-  const directory = await mkdtemp(join(await realpath(tmpdir()), "oce-first-agent-source-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await realpath(await temporaryDirectory(t, "oce-first-agent-source-"));
 
   // Run real sources outside the checkout so installed workspace packages cannot
   // hide import failures in the host-run command used by First Agent Smoke.
