@@ -91,7 +91,7 @@ uses OpenShell's experimental provider-file and bearer-passthrough APIs, so it
 is a development workflow rather than production qualification. Reuse the same
 `--harness` selection with that Agent name.
 
-When Local setup runs OCC in Compose with both Kubernetes Compute and OpenShell,
+When Local setup uses Kubernetes Compute and OpenShell,
 you can also expose this Agent's native Control UI through OCC:
 
 ```bash

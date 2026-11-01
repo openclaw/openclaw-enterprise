@@ -215,6 +215,7 @@ test(
     const kubernetesPort = await availablePort();
     const environment = {
       ...process.env,
+      OCC_DEVELOPMENT_BROWSER_PORT: String(await availablePort()),
       OPENCLAW_DEV_PORT: String(apiPort),
       OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
       OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
@@ -265,6 +266,22 @@ test(
     assert.equal(state.deploymentMode, "k3d");
     assert.equal(state.platformNamespace, "oce-system");
     assert.equal(existsSync(join(stateDirectory, "compose.yaml")), false);
+    // An owner must be able to reach the session endpoint over the generated CA and
+    // DNS name, without accepting an untrusted certificate or a preexisting login.
+    const browser = new URL(state.browserOrigin);
+    const session = await execute("curl", [
+      "--noproxy",
+      "*",
+      "--fail",
+      "--silent",
+      "--show-error",
+      "--cacert",
+      join(stateDirectory, "browser-ca.crt"),
+      "--resolve",
+      `${browser.hostname}:${state.browserPort}:127.0.0.1`,
+      new URL("/api/auth/session", browser).href,
+    ]);
+    assert.equal(JSON.parse(session.stdout).data, null);
     const kubectl = [
       "--kubeconfig",
       join(stateDirectory, "kubeconfig"),

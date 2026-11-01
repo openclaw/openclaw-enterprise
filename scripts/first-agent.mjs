@@ -230,7 +230,11 @@ async function loadLocalInstallation(harness, controlUi) {
     ) {
       throw new Error("The recorded Local Setup native admin endpoint is invalid.");
     }
-    nativeAdmin = { browserOrigin: browserOrigin.origin, domain: state.nativeAdminDomain };
+    nativeAdmin = {
+      browserOrigin: browserOrigin.origin,
+      domain: state.nativeAdminDomain,
+      bootstrapWorkspace: state.deploymentMode === "k3d",
+    };
   }
   if (controlUi && nativeAdmin === undefined) {
     throw new Error(
@@ -560,7 +564,7 @@ async function modelKey(authMethod) {
   return value;
 }
 
-function nativeConfiguration(model, harness, nativeAdminOrigin) {
+function nativeConfiguration(model, harness, nativeAdminOrigin, bootstrapWorkspace = false) {
   const selected = `${harness === "codex" ? "codex" : "openai"}/${model}`;
   const provider =
     harness === "codex"
@@ -609,7 +613,7 @@ function nativeConfiguration(model, harness, nativeAdminOrigin) {
       agents: {
         defaults: {
           model: selected,
-          ...(nativeAdminOrigin === undefined ? { skipBootstrap: true } : {}),
+          ...(bootstrapWorkspace ? {} : { skipBootstrap: true }),
           models: { [selected]: { agentRuntime: { id: harness } } },
         },
       },
@@ -973,7 +977,12 @@ async function main(options) {
         record.controlUiOrigin = target.origin;
         await save(record);
       }
-      const expected = nativeConfiguration(model, record.harness, record.controlUiOrigin);
+      const expected = nativeConfiguration(
+        model,
+        record.harness,
+        record.controlUiOrigin,
+        record.controlUi && local.nativeAdmin.bootstrapWorkspace,
+      );
       let stored = await api("GET", `${base}/configurations/${record.configurationId}`);
       if (record.controlUi) {
         if (stored.generation === 1) {
@@ -981,6 +990,7 @@ async function main(options) {
           assertManagedConfiguration(stored, record, baseConfiguration);
           progress("Enabling durable native Control UI access...");
           stored = await api("PATCH", `${base}/configurations/${record.configurationId}`, {
+            expectedGeneration: stored.generation,
             values: expected.values,
           });
         }
