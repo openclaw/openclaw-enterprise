@@ -116,7 +116,7 @@ A focused, disabled **Save Configuration** moves focus to **Checking Configurati
 Success focuses **Edit Configuration** unless the reader moved focus.
 
 **Enable gateway password access** and **Collaboration and safety**
-(`agents/gateway-safety.mts`) stage edits here; **Cancel** discards them. Password access writes an env SecretRef to the Compute-supplied `OPENCLAW_GATEWAY_PASSWORD` on the default env alias. Some saved settings deploy refuses, such as an unreadable reference, a refused alias or `$include`, hold **Deploy** with their refusal; for a key spelling only Kubernetes refuses, Create Agent's preflight answers. A hint replaces the button when save would refuse its reference.
+(`agents/gateway-safety.mts`) stage edits here; **Cancel** discards them. Password access writes an env SecretRef to the Compute-supplied `OPENCLAW_GATEWAY_PASSWORD` on the default env alias. Some saved settings deploy refuses (an unreadable reference, a refused alias, `$include`, a Kubernetes-only key spelling `agents/validate` refuses) hold **Deploy** with their refusal. A hint replaces the button when save would refuse its reference.
 
 Saves preserve scroll, focus and admitted snapshots. Rejected edits stay. Unsaved edits block deployment; pending saves block tab and version changes.
 A refused write lists required grants without guessing which; a refused preflight read names read
