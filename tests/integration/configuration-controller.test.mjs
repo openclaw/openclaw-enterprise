@@ -16,6 +16,7 @@ import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/sr
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { FlakyConfigurationCoreV1Api } from "../helpers/kubernetes-configuration-core.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   authenticatedHeaders,
@@ -704,6 +705,55 @@ test("Configuration HTTP PATCH refuses a stale expectedGeneration and keeps the 
       "openclaw.configurations.update",
     ],
   );
+});
+
+test("Configuration HTTP PATCH on a slow Kubernetes API answers 503 within its budget and saves nothing", async (t) => {
+  // Finding 3106: a PATCH whose chained Kubernetes calls each took seconds, under their own 10 s
+  // limit, committed after the Console ingress had answered 504 at 15 s, so the caller thought
+  // the save had failed. The real Kubernetes Configuration Driver runs here over an in-memory
+  // CoreV1Api (not cluster proof); the Fastify, IAM, OCC and transaction paths are real.
+  const client = new FlakyConfigurationCoreV1Api();
+  const configurationDriver = new KubernetesConfigurationDriver({
+    authentication: { mode: "inCluster" },
+  });
+  configurationDriver.client = Promise.resolve(client);
+  const { collection, namespace, ...context } = await fixture({ configurationDriver });
+  client.addNamespace(namespace.id);
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: { model: "created" } },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const pathname = `${collection}/${created.body.data.id}`;
+
+  // Each Kubernetes call now takes 4 s of the API's clock. The PATCH needs five (namespace
+  // verification and read for the locked record, then again with the replace), 20 s in all.
+  let lag = 0;
+  const clock = Date.now;
+  t.mock.method(Date, "now", () => clock() + lag);
+  const called = client.called.bind(client);
+  client.called = (method) => {
+    lag += 4_000;
+    return called(method);
+  };
+  const slow = await request(context.app, "PATCH", pathname, {
+    body: { values: { model: "edited" } },
+  });
+  assert.equal(slow.status, 503, JSON.stringify(slow.body));
+  assert.equal(slow.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  // The 12 s budget ran out before the replace, so it was never sent; the failure stands.
+  assert.equal(client.calls.replaceNamespacedConfigMap, 0);
+  const read = await request(context.app, "GET", pathname);
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(read.body.data.generation, 1);
+  assert.deepEqual(read.body.data.values, { model: "created" });
+
+  // Within the budget the same save succeeds.
+  client.called = called;
+  const saved = await request(context.app, "PATCH", pathname, {
+    body: { values: { model: "edited" } },
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal(saved.body.data.generation, 2);
 });
 
 test("Configuration HTTP requires native supported requests and rejects immutable metadata changes", async () => {

@@ -15,10 +15,12 @@ import {
   KubernetesConfigurationDriver,
   kubernetesConfigurationName,
 } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
+import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { withKubernetesMutationDeadline } from "../../apps/controller/src/drivers/kubernetes/request.ts";
 import {
-  currentComputeAbortSignal,
-  withComputeAbortSignal,
-} from "../../apps/controller/src/drivers/compute/operation-context.ts";
+  FakeConfigurationCoreV1Api,
+  FlakyConfigurationCoreV1Api,
+} from "../helpers/kubernetes-configuration-core.mjs";
 import { READ_RETRY_PAUSES_MS, withRetryTimers } from "../helpers/kubernetes-request-retry.mjs";
 import { writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -52,92 +54,6 @@ const configuration = {
 
 function createDriver(authentication = { mode: "inCluster" }) {
   return new KubernetesConfigurationDriver({ authentication });
-}
-
-function physicalNamespaceName(id) {
-  return `oce-${createHash("sha256").update(id).digest("hex").slice(0, 15)}`;
-}
-
-class FakeConfigurationCoreV1Api {
-  namespaces = new Map();
-  configMaps = new Map();
-  creates = 0;
-
-  addNamespace(id, layout = "shared") {
-    const name =
-      layout === "split"
-        ? `oce-gateways-${createHash("sha256").update(id).digest("hex").slice(0, 24)}`
-        : layout === "adopted"
-          ? "customer-support"
-          : physicalNamespaceName(id);
-    this.namespaces.set(name, {
-      metadata: {
-        name,
-        labels: {
-          "app.kubernetes.io/managed-by": "openclaw-enterprise",
-          "openclaw.dev/gateway-namespace": id,
-          ...(layout === "split" ? {} : { "openclaw.dev/namespace": id }),
-          ...(layout === "adopted"
-            ? Object.fromEntries(
-                ["enforce", "audit", "warn"].map((mode) => [
-                  `pod-security.kubernetes.io/${mode}`,
-                  "restricted",
-                ]),
-              )
-            : {}),
-        },
-        annotations: {
-          "openclaw.dev/namespace-id": id,
-          ...(layout === "adopted" ? { "openclaw.dev/namespace-lifecycle": "external" } : {}),
-        },
-      },
-      status: { phase: "Active" },
-    });
-    return name;
-  }
-
-  async listNamespace({ labelSelector }) {
-    const [label, id] = labelSelector.split("=");
-    return {
-      items: [...this.namespaces.values()].filter(
-        ({ metadata }) => metadata.labels?.[label] === id,
-      ),
-    };
-  }
-
-  async readNamespace({ name }) {
-    const namespace = this.namespaces.get(name);
-    if (namespace === undefined) {
-      throw Object.assign(new Error("missing Namespace"), { code: 404 });
-    }
-    return structuredClone(namespace);
-  }
-
-  async createNamespacedConfigMap({ namespace, body }) {
-    this.creates += 1;
-    const key = `${namespace}/${body.metadata.name}`;
-    if (this.configMaps.has(key)) {
-      throw Object.assign(new Error("conflict"), { code: 409 });
-    }
-    const stored = {
-      ...structuredClone(body),
-      metadata: {
-        ...body.metadata,
-        uid: `uid-${this.configMaps.size + 1}`,
-        resourceVersion: "1",
-      },
-    };
-    this.configMaps.set(key, stored);
-    return structuredClone(stored);
-  }
-
-  async readNamespacedConfigMap({ namespace, name }) {
-    const stored = this.configMaps.get(`${namespace}/${name}`);
-    if (stored === undefined) {
-      throw Object.assign(new Error("missing ConfigMap"), { code: 404 });
-    }
-    return structuredClone(stored);
-  }
 }
 
 test("Kubernetes configuration implementations expose a closed preconstruction schema", () => {
@@ -682,72 +598,6 @@ test("Kubernetes Configuration cancels an in-flight request when its provisionin
   }
 });
 
-// The fake API with failures queued per method, each thrown before the call takes
-// effect, and a method that can stall until its request is aborted.
-class FlakyConfigurationCoreV1Api extends FakeConfigurationCoreV1Api {
-  failureCodes = {
-    listNamespace: [],
-    readNamespacedConfigMap: [],
-    createNamespacedConfigMap: [],
-    replaceNamespacedConfigMap: [],
-    deleteNamespacedConfigMap: [],
-  };
-  calls = Object.fromEntries(Object.keys(this.failureCodes).map((method) => [method, 0]));
-  stalls = new Set();
-
-  async called(method) {
-    this.calls[method] += 1;
-    const failure = this.failureCodes[method].shift();
-    if (failure === "dropped") {
-      // What the client throws when the API server closes the connection unanswered.
-      throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
-    }
-    if (failure !== undefined) {
-      throw Object.assign(new Error(`${method} failed with ${failure}`), { code: failure });
-    }
-    if (this.stalls.has(method)) {
-      const signal = currentComputeAbortSignal();
-      if (signal === undefined) {
-        throw new Error(`${method} would stall with no deadline`);
-      }
-      await new Promise((_, reject) =>
-        signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
-      );
-    }
-  }
-
-  async listNamespace(request) {
-    await this.called("listNamespace");
-    return super.listNamespace(request);
-  }
-
-  async readNamespacedConfigMap(request) {
-    await this.called("readNamespacedConfigMap");
-    return super.readNamespacedConfigMap(request);
-  }
-
-  async createNamespacedConfigMap(request) {
-    await this.called("createNamespacedConfigMap");
-    return super.createNamespacedConfigMap(request);
-  }
-
-  async replaceNamespacedConfigMap({ namespace, name, body }) {
-    await this.called("replaceNamespacedConfigMap");
-    const stored = {
-      ...structuredClone(body),
-      metadata: { ...body.metadata, resourceVersion: "2" },
-    };
-    this.configMaps.set(`${namespace}/${name}`, stored);
-    return structuredClone(stored);
-  }
-
-  async deleteNamespacedConfigMap({ namespace, name }) {
-    await this.called("deleteNamespacedConfigMap");
-    this.configMaps.delete(`${namespace}/${name}`);
-    return {};
-  }
-}
-
 async function storedConfiguration() {
   const client = new FlakyConfigurationCoreV1Api();
   client.addNamespace(namespaceId);
@@ -936,6 +786,89 @@ test("Kubernetes Configuration gives up on a request at its deadline and never r
       await result.catch(() => {});
     }
   }
+});
+
+test("Kubernetes Configuration sends no call past an API mutation's deadline", async (t) => {
+  // Finding 3106: a save's chained calls each had 10 s, so a slow API server let the save commit
+  // after the ingress answered 504. Under a mutation deadline each call gets only the time left,
+  // a retry pause must fit before it, and nothing is sent once it has passed.
+  let now = Date.parse("2026-11-01T00:00:00.000Z");
+  t.mock.method(Date, "now", () => now);
+  const delays = [];
+  const deadlines = [];
+  t.mock.method(AbortSignal, "timeout", (delay) => {
+    delays.push(delay);
+    const deadline = new AbortController();
+    deadlines.push(deadline);
+    return deadline.signal;
+  });
+  const sent = (client) => ({ ...client.calls });
+  const updateBy = (driver, deadline) =>
+    withKubernetesMutationDeadline(deadline, () => driver.update(nextGeneration));
+  const notSent = (action) => (error) =>
+    error instanceof ConfigurationBackendUnavailableError &&
+    error.message ===
+      `The Kubernetes ConfigMap ${action} was not sent: the request ran out of time.`;
+
+  // A stalled read is cut when the deadline arrives, not after its own 10 s, and the write that
+  // would follow is never sent.
+  let { client, driver } = await storedConfiguration();
+  let before = sent(client);
+  delays.length = 0;
+  client.stalls.add("readNamespacedConfigMap");
+  const stalled = updateBy(driver, now + 3_000);
+  try {
+    for (let turn = 0; client.calls.readNamespacedConfigMap === before.readNamespacedConfigMap;) {
+      assert.ok((turn += 1) < 100, "the read was never sent");
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.deepEqual(delays, [3_000, 3_000], "namespace verification, then the read");
+    deadlines.at(-1).abort(new DOMException("deadline", "TimeoutError"));
+    await assert.rejects(
+      stalled,
+      (error) =>
+        error instanceof ConfigurationBackendUnavailableError &&
+        error.message === "The Kubernetes ConfigMap read outcome is unknown after timeout.",
+    );
+  } finally {
+    // Settles the update even when an assertion above failed first.
+    for (const deadline of deadlines) {
+      deadline.abort();
+    }
+    await stalled.catch(() => {});
+  }
+  assert.equal(client.calls.replaceNamespacedConfigMap, before.replaceNamespacedConfigMap);
+
+  // A deadline that passes while the read is answered stops the update before its write.
+  ({ client, driver } = await storedConfiguration());
+  before = sent(client);
+  const read = client.readNamespacedConfigMap.bind(client);
+  client.readNamespacedConfigMap = async (request) => {
+    const answer = await read(request);
+    now += 3_000;
+    return answer;
+  };
+  await assert.rejects(updateBy(driver, now + 3_000), notSent("update"));
+  assert.equal(client.calls.replaceNamespacedConfigMap, before.replaceNamespacedConfigMap);
+  assert.equal(
+    client.configMaps.values().next().value.metadata.annotations[
+      "openclaw.dev/configuration-generation"
+    ],
+    "1",
+  );
+
+  // An expired deadline sends nothing at all.
+  ({ client, driver } = await storedConfiguration());
+  before = sent(client);
+  await assert.rejects(updateBy(driver, now), notSent("namespace verification"));
+  assert.deepEqual(sent(client), before);
+
+  // A dropped read is not retried when its first pause would end past the deadline.
+  ({ client, driver } = await storedConfiguration());
+  before = sent(client);
+  client.failureCodes.listNamespace.push("dropped");
+  await assert.rejects(updateBy(driver, now + READ_RETRY_PAUSES_MS[0]), { code: "ECONNRESET" });
+  assert.equal(client.calls.listNamespace - before.listNamespace, 1);
 });
 
 test("Kubernetes Configuration reads a ConfigMap only when every ownership mark is its own", async () => {

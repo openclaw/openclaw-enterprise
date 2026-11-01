@@ -15,6 +15,7 @@ import {
   currentComputeAbortSignal,
   withComputeAbortSignal,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { withKubernetesMutationDeadline } from "../../apps/controller/src/drivers/kubernetes/request.ts";
 import { READ_RETRY_PAUSES_MS, withRetryTimers } from "../helpers/kubernetes-request-retry.mjs";
 
 import { assertProtectedStaticSecretRead } from "../helpers/protected-static-secret-read.ts";
@@ -859,6 +860,34 @@ test("kubernetes-secret-driver removes a Secret whose create applied but answere
   await assert.rejects(() => create(driver, nsId), cleanupFailed);
   assert.equal(client.secrets.size, 1);
   assert.equal(client.calls.deleteNamespacedSecret, 1);
+});
+
+test("kubernetes-secret-driver cleans up a create the API mutation's deadline cut off", async (t) => {
+  // Finding 3106: an API mutation's Kubernetes calls end at its deadline, but a create that
+  // applied before then and lost its answer is still found and removed afterwards; its cleanup
+  // calls keep their own timeouts instead of the spent deadline.
+  let now = Date.parse("2026-11-01T00:00:00.000Z");
+  t.mock.method(Date, "now", () => now);
+  const client = new FakeCoreV1Api();
+  const nsId = namespaceId();
+  client.addNamespace(nsId);
+  const create = client.createNamespacedSecret.bind(client);
+  client.createNamespacedSecret = async (request) => {
+    now += 5_000;
+    return create(request);
+  };
+  client.createAppliedFailureCodes.push("dropped");
+  const driver = driverWithClient(client);
+  await assert.rejects(
+    withKubernetesMutationDeadline(now + 3_000, () =>
+      driver.create({ id: secretId(), namespaceId: nsId, name: "model-key" }, "value"),
+    ),
+    (error) =>
+      error instanceof SecretBackendUnavailableError &&
+      error.message === "The Kubernetes Secret create failed.",
+  );
+  assert.equal(client.secrets.size, 0);
+  assert.deepEqual(client.deletes, [{ uid: "uid-1", resourceVersion: "1" }]);
 });
 
 const ownershipRefused = (error) =>
