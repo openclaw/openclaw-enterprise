@@ -602,6 +602,7 @@ export {
   environmentReferenceNames,
   gatewayPasswordRequirement,
   generatedGatewayPasswordReference,
+  pluginPolicyId,
   pluginSecretInputReference,
   secretInputReference,
   secretInputShorthandName,

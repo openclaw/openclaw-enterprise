@@ -24,3 +24,4 @@ export declare function unreadablePluginSecretInput(
   values: unknown,
 ): { readonly setting: string; readonly requirement: string } | undefined;
 export declare function configurationSettingMessage(setting: string, requirement: string): string;
+export declare function pluginPolicyId(name: unknown): string | undefined;
