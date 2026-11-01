@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";
+import { withPool } from "../helpers/postgres-database.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor, within } from "../helpers/wait-for.mjs";
@@ -17,6 +19,13 @@ import { waitFor, within } from "../helpers/wait-for.mjs";
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const workerEntrypoint = join(repository, "apps/controller/src/worker.mjs");
+const execute = promisify(execFile);
+const dockerBin = process.env.OCC_DOCKER_BIN ?? "docker";
+const namespaceLabel = "org.openclaw.enterprise.namespace-id";
+const dockerComputeLabels = [
+  "org.openclaw.enterprise.managed=true",
+  "org.openclaw.enterprise.compute-driver=docker",
+];
 
 // The `event` names of the structured log lines in a process's output, in order.
 function events(output: string): unknown[] {
@@ -44,6 +53,40 @@ async function localRuntimeImage(): Promise<string> {
   const image = /^\s+image:\s*(\S+)\s*$/m.exec(compose)?.[1];
   assert.ok(image, "compose.postgres.yaml must name the PostgreSQL image");
   return image;
+}
+
+async function docker(args: string[]): Promise<string[]> {
+  const { stdout } = await execute(dockerBin, args, { timeout: 30_000 });
+  return stdout.split("\n").filter(Boolean);
+}
+
+// The worker provisions every Namespace in its database on the real Docker Engine, which
+// creates a Namespace network (bootstrap's default Namespace, at least). The Docker Compute
+// Driver removes it only when the Namespace is deleted, which this case never does, so each
+// run left one network behind; enough of them exhaust Docker's address pools and fail other
+// jobs' network creation (finding 3084). After the worker has stopped, remove the Docker
+// Compute containers and networks of this database's Namespaces, and fail if any remain.
+async function removeDockerComputeNamespaces(): Promise<void> {
+  const owned = new Set(
+    await withPool(databaseUrl, async (pool) =>
+      (await pool.query("SELECT id FROM occ.namespaces")).rows.map((row: { id: string }) => row.id),
+    ),
+  );
+  const filters = dockerComputeLabels.flatMap((label) => ["--filter", `label=${label}`]);
+  const listed = async () =>
+    (
+      await docker(["network", "ls", ...filters, "--format", `{{.Label "${namespaceLabel}"}}`])
+    ).filter((namespaceId) => owned.has(namespaceId));
+  for (const namespaceId of await listed()) {
+    const namespaceFilter = ["--filter", `label=${namespaceLabel}=${namespaceId}`];
+    const containers = await docker(["ps", "-aq", ...filters, ...namespaceFilter]);
+    if (containers.length > 0) {
+      await docker(["rm", "-f", "-v", ...containers]);
+    }
+    const networks = await docker(["network", "ls", "-q", ...filters, ...namespaceFilter]);
+    await docker(["network", "rm", ...networks]);
+  }
+  assert.deepEqual(await listed(), [], "the worker's Namespace networks outlived the test");
 }
 
 // Finding 2994: worker.mjs hands its started parts to closeWorkerComposition on SIGTERM. The
@@ -95,7 +138,10 @@ test(
       stdio: ["ignore", "pipe", "pipe"],
     });
     // A worker that never exits is killed after the test, so it cannot outlive the file.
+    // node:test runs after hooks in registration order, so the worker has stopped (and
+    // cannot provision again) before its Docker resources are removed.
     t.after(() => stopProcess(child, { graceMs: 1_000 }));
+    t.after(removeDockerComputeNamespaces);
     let output = "";
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
