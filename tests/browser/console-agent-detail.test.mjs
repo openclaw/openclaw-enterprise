@@ -105,6 +105,7 @@ import {
   credentialCheckedAtDeploy,
   invalidSecretProviderDefaultsRefusal,
   unreadableGatewayPasswordRefusal,
+  unreadablePluginSecretRefusal,
   namespaceListDenied,
   notIncluded,
   secretOperateRefused,
@@ -1435,6 +1436,95 @@ for (const viewport of [
       .waitFor();
     await card.getByText("Ready to deploy.", { exact: true }).waitFor();
     assert.equal(await card.getByText(reason).count(), 0);
+    // The page fits the viewport: no horizontal scroll.
+    assert.equal(
+      await page.evaluate(
+        () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+      ),
+      true,
+    );
+  });
+}
+
+// A Configuration an older release saved with a Google web search header that is a SecretRef
+// without a provider: OpenClaw cannot read it, so the Gateway exits at every start, and Kubernetes
+// Compute refuses to save or deploy it. The draft holds Deploy with that refusal and the
+// Configuration step names it, as for the password and alias cases (finding 3076); once the
+// header names a provider, the draft is ready again.
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`A plugin secret input OpenClaw cannot read holds Deploy at ${viewport.width}px`, async (t) => {
+    const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
+    const fixture = await createConsoleAppFixture(t, { configurationDriver });
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Plugin input", { ready: true });
+    const values = nativeAdminValues("plugin-input", "http://127.0.0.1:18789");
+    const agent = await fixture.createAgent(namespace.id, "Plugin input Agent", values);
+    const header = (reference) => ({
+      ...structuredClone(values),
+      plugins: {
+        entries: {
+          google: { config: { webSearch: { headers: { "X-Goog-User-Project": reference } } } },
+        },
+      },
+    });
+    const providerless = header({ source: "env", id: "GOOG_TOKEN" });
+    const reason = unreadablePluginSecretRefusal(
+      "plugins.entries.google.config.webSearch.headers.X-Goog-User-Project",
+      "google",
+      "providerless",
+    );
+    const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+    const refusedSave = await fixture.request("PATCH", configurationPath, {
+      body: { values: providerless },
+    });
+    assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
+    assert.equal(refusedSave.body.error.message, reason);
+    // The row as a release before the save rule stored it.
+    const stored = configurationDriver.stored({
+      namespaceId: namespace.id,
+      id: agent.configurationId,
+    });
+    await configurationDriver.update({ ...stored, values: providerless });
+
+    const { page } = await newPage(t, fixture, { context: { viewport } });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    );
+    const card = page.locator(".agent-draft-actions");
+    const deploy = card.getByRole("button", { name: "Deploy new version", exact: true });
+    await card.getByText(reason, { exact: true }).waitFor();
+    assert.equal(await deploy.isDisabled(), true);
+    assert.equal(await card.getByText("Ready to deploy.", { exact: true }).count(), 0);
+    assert.match(
+      await card.getByRole("listitem").first().locator(".checklist-detail").textContent(),
+      /^Fix the plugin secret input · Configuration /,
+    );
+    // Deploy admission refuses the stored row with the text the page shows.
+    const refusedDeploy = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+    );
+    assert.equal(refusedDeploy.body.error.message, reason, JSON.stringify(refusedDeploy.body));
+
+    // A header on the default provider is one OpenClaw reads: it saves and the draft is ready.
+    const edit = page.getByRole("button", { name: "Edit Configuration", exact: true });
+    await edit.scrollIntoViewIfNeeded();
+    await edit.click();
+    const fixed = header({ source: "env", provider: "default", id: "GOOG_TOKEN" });
+    await page.getByLabel("Configuration JSON").fill(JSON.stringify(fixed, null, 2));
+    await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+    await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+    assert.equal(await card.getByText(reason).count(), 0);
+    assert.equal(await deploy.isDisabled(), false);
+    assert.match(
+      await card.getByRole("listitem").first().locator(".checklist-detail").textContent(),
+      /^Saved · Configuration /,
+    );
     // The page fits the viewport: no horizontal scroll.
     assert.equal(
       await page.evaluate(

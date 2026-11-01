@@ -5131,6 +5131,20 @@ export const scenarios = {
     ],
     gap: "The stored alias is simulated; this story does not call OCC's save or deploy admission or start a Gateway.",
   },
+  pluginSecretInputUnreadable: {
+    group: "Pages/Agent detail",
+    name: "Plugin secret input OpenClaw cannot read",
+    path: draft,
+    deployed: true,
+    pluginSecretInputProviderless: true,
+    description:
+      "An older release saved a Google web search header as a SecretRef without a provider. OpenClaw cannot read it and Kubernetes Compute refuses to save or deploy it, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the plugin secret input.",
+      "Deploy new version is disabled with Configuration setting plugins.entries.google.config.webSearch.headers.X-Goog-User-Project is a SecretRef without a provider: add provider default, or remove plugins.entries.google or set its enabled to false.",
+    ],
+    gap: "The stored reference is simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
   gatewayPasswordAllowlistOmits: {
     group: "Pages/Agent detail",
     name: "Gateway password reference an allowlist omits",
