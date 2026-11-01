@@ -56,9 +56,13 @@ const timer = setInterval(() => {
 }, 1);
 `;
 
-// Resolves with the name of this Agent's first workspace setup container to start.
+// A started workspace setup container: its ID tells it apart from a later container that
+// reuses its name.
+type Setup = { id: string; name: string };
+
+// Resolves with this Agent's first workspace setup container to start.
 // Docker replays events from `since`, so a start before the stream opens is kept.
-function firstSetupStart(t: TestContext, agentId: string): Promise<string> {
+function firstSetupStart(t: TestContext, agentId: string): Promise<Setup> {
   const events = spawn(docker, [
     "events",
     "--since",
@@ -72,7 +76,7 @@ function firstSetupStart(t: TestContext, agentId: string): Promise<string> {
     "--filter",
     "label=org.openclaw.enterprise.role=workspace-setup",
     "--format",
-    "{{.Actor.Attributes.name}}",
+    "{{.Actor.ID}} {{.Actor.Attributes.name}}",
   ]);
   t.after(() => {
     events.kill();
@@ -86,10 +90,10 @@ function firstSetupStart(t: TestContext, agentId: string): Promise<string> {
     events.stdout.setEncoding("utf8");
     events.stdout.on("data", (chunk: string) => {
       output += chunk;
-      const name = output.split("\n")[0]!;
-      if (output.includes("\n") && name.length > 0) {
+      const [id = "", name = ""] = output.split("\n")[0]!.split(" ");
+      if (output.includes("\n") && id.length > 0 && name.length > 0) {
         clearTimeout(timer);
-        resolve(name);
+        resolve({ id, name });
       }
     });
     events.once("error", reject);
@@ -110,12 +114,18 @@ async function setupState(name: string) {
   return stdout.trim() || "removed";
 }
 
-async function lockHeld(name: string) {
+// The ID of the container that now has this name.
+async function containerId(name: string) {
+  const { stdout } = await runDocker(["container", "inspect", "--format", "{{.Id}}", name]);
+  return stdout.trim();
+}
+
+async function lockHeld(setup: Setup) {
   const { stdout } = await runDocker([
     "exec",
     "--user",
     "1000:1000",
-    name,
+    setup.id,
     "node",
     "-e",
     "console.log(require('node:fs').existsSync(process.argv[1]))",
@@ -124,17 +134,28 @@ async function lockHeld(name: string) {
   return stdout.trim() === "true";
 }
 
-// The Driver left this setup running, and its native run still holds the state lock.
-async function assertSetupHoldsLock(name: string, when: string) {
-  assert.equal(await setupState(name), "running", `${when}: the Driver left the running setup`);
-  assert.equal(await lockHeld(name), true, `${when}: native setup still holds the state lock`);
+// The Driver left this setup running, and its native run still holds the state lock. The
+// lock file outlives a killed holder, so the running container must be the same one, not a
+// same-name replacement.
+async function assertSetupHoldsLock(setup: Setup, when: string) {
+  assert.equal(
+    await setupState(setup.name),
+    "running",
+    `${when}: the Driver left the running setup`,
+  );
+  assert.equal(
+    await containerId(setup.name),
+    setup.id,
+    `${when}: the running setup is the one that took the lock, not a same-name replacement`,
+  );
+  assert.equal(await lockHeld(setup), true, `${when}: native setup still holds the state lock`);
 }
 
 // Stops the setup's first native run once it holds the state lock and resolves with the
 // stopped PIDs.
-async function pauseSetupHoldingLock(name: string) {
+async function pauseSetupHoldingLock(setup: Setup) {
   const { stdout } = await runDocker(
-    ["exec", "--user", "1000:1000", name, "node", "-e", pauser, stateLock, String(timeoutMs)],
+    ["exec", "--user", "1000:1000", setup.id, "node", "-e", pauser, stateLock, String(timeoutMs)],
     { timeout: timeoutMs + 30_000 },
   );
   const paused = /SETUP_PAUSED ([\d,]+)/.exec(stdout)?.[1];
@@ -180,26 +201,26 @@ function setupStart(method: string, path: string) {
 }
 
 // Continues the stopped native run and waits for setup to exit 0.
-async function resumeSetup(name: string, paused: string) {
+async function resumeSetup(setup: Setup, paused: string) {
   await runDocker([
     "exec",
     "--user",
     "1000:1000",
-    name,
+    setup.id,
     "node",
     "-e",
     "for (const pid of process.argv[1].split(',')) process.kill(Number(pid), 'SIGCONT')",
     paused,
   ]);
-  const { stdout: exitCode } = await runDocker(["wait", name], { timeout: timeoutMs });
+  const { stdout: exitCode } = await runDocker(["wait", setup.id], { timeout: timeoutMs });
   assert.equal(exitCode.trim(), "0", "the resumed setup completed");
 }
 
 // While setup runs, the next attempt stays unready instead of starting a second setup or a
 // Gateway on that state, and leaves setup running with its lock.
-async function assertNextAttemptWaits(attempt: Promise<{ ready: boolean }>, name: string) {
+async function assertNextAttemptWaits(attempt: Promise<{ ready: boolean }>, setup: Setup) {
   assert.equal((await attempt).ready, false, "the next attempt waits while setup runs");
-  await assertSetupHoldsLock(name, "after the next attempt");
+  await assertSetupHoldsLock(setup, "after the next attempt");
 }
 
 test(
@@ -293,28 +314,37 @@ test(
       // The Driver's wait starts when the start request returns: Docker starts setup, and
       // the response reaches the Driver once native setup is paused holding the lock.
       const { promise: setupPaused, resolve: releaseStartResponse } = Promise.withResolvers<void>();
+      // Set once the hook holds the start response; without the hold the wait would end
+      // before native setup takes the lock.
+      let held = false;
       delaySetupStart({
         matches: setupStart,
         run: async (send) => {
           const response = await send();
+          held = true;
           await setupPaused;
           return response;
         },
       });
       const first = driver.prepareRevision(revisionAt(agentId, 1), context);
-      let name: string;
+      let setup: Setup;
       let paused: string;
       try {
-        name = await firstSetupStart(t, agentId);
-        paused = await pauseSetupHoldingLock(name);
+        setup = await firstSetupStart(t, agentId);
+        paused = await pauseSetupHoldingLock(setup);
       } finally {
         // Also on a failed pause, so the held response never outlives this case.
         releaseStartResponse();
       }
       assert.equal((await first).ready, false, "the attempt waits for the running setup");
-      await assertSetupHoldsLock(name, "after the wait");
-      await assertNextAttemptWaits(driver.prepareRevision(revisionAt(agentId, 2), context), name);
-      await resumeSetup(name, paused);
+      assert.equal(
+        held,
+        true,
+        "the setup start response was held until setup paused with the lock",
+      );
+      await assertSetupHoldsLock(setup, "after the wait");
+      await assertNextAttemptWaits(driver.prepareRevision(revisionAt(agentId, 2), context), setup);
+      await resumeSetup(setup, paused);
       // The next attempt reuses the completed setup, and the Gateway takes over the
       // state that setup released.
       assert.equal(
@@ -333,22 +363,22 @@ test(
       const first = assert.rejects(pollFailing.prepareRevision(revisionAt(agentId, 1), context), {
         name: "TimeoutError",
       });
-      const name = await firstSetupStart(t, agentId);
-      const paused = await pauseSetupHoldingLock(name);
+      const setup = await firstSetupStart(t, agentId);
+      const paused = await pauseSetupHoldingLock(setup);
       failPollRequest({
         matches: (method, path) =>
-          method === "GET" && path === `/containers/${encodeURIComponent(name)}/json`,
+          method === "GET" && path === `/containers/${encodeURIComponent(setup.name)}/json`,
         run: async () => {
           throw requestTimeout();
         },
       });
       await first;
-      await assertSetupHoldsLock(name, "after a failed poll");
+      await assertSetupHoldsLock(setup, "after a failed poll");
       await assertNextAttemptWaits(
         pollFailing.prepareRevision(revisionAt(agentId, 2), context),
-        name,
+        setup,
       );
-      await resumeSetup(name, paused);
+      await resumeSetup(setup, paused);
     };
 
     // The start request's response is lost after Docker started setup (here the engine
@@ -368,19 +398,19 @@ test(
       const first = assert.rejects(startFailing.prepareRevision(revisionAt(agentId, 1), context), {
         name: "TimeoutError",
       });
-      const name = await firstSetupStart(t, agentId);
-      const pause = pauseSetupHoldingLock(name);
+      const setup = await firstSetupStart(t, agentId);
+      const pause = pauseSetupHoldingLock(setup);
       // Settled below; a removed setup fails the state assertion first.
       pause.catch(() => {});
       await first;
-      assert.equal(await setupState(name), "running", "a lost start response left the setup");
+      assert.equal(await setupState(setup.name), "running", "a lost start response left the setup");
       const paused = await pause;
-      await assertSetupHoldsLock(name, "after a lost start response");
+      await assertSetupHoldsLock(setup, "after a lost start response");
       await assertNextAttemptWaits(
         startFailing.prepareRevision(revisionAt(agentId, 2), context),
-        name,
+        setup,
       );
-      await resumeSetup(name, paused);
+      await resumeSetup(setup, paused);
     };
 
     // Three Agents in one Namespace, side by side. Cleanup waits until every case settles,
