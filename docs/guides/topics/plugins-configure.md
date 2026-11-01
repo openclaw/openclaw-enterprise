@@ -95,7 +95,8 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
   may rewrite the model ID it matches.
 - Check the Configuration's plugin settings. With Diffs enabled, the Gateway
   does not start when `plugins.enabled` is `false`, `plugins.deny` lists
-  `diffs`, or a non-empty `plugins.allow` leaves it out. OCE writes the
+  `diffs`, or a non-empty `plugins.allow` leaves it out. An item in either list
+  that is not text, such as `1`, stops it even with Diffs disabled. OCE writes the
   `plugins.entries.diffs` entry from the selection. The Configuration can hold
   only an exact copy: `{"enabled": true}` with Diffs enabled, or
   `{"enabled": false}` with it disabled. With `gateway.publicOrigin` listed in

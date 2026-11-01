@@ -470,10 +470,12 @@ describe("Agent channels", { concurrency: 3 }, () => {
       ["exact", ["slack"], true],
       // Not a non-text item: Dedicated Codex refuses one at save (finding 3096).
       ["other", ["discord", "telegram"], false],
+      // An OpenClaw Configuration with no catalog plugin selected still saves one.
+      ["openclaw", ["discord", 7], false, "openclaw"],
     ];
     const agents = [];
-    for (const [slug, deny] of cases) {
-      const values = nativeValues(slug, { harnessId: "codex" });
+    for (const [slug, deny, , harnessId = "codex"] of cases) {
+      const values = nativeValues(slug, { harnessId });
       values.plugins.deny = deny;
       agents.push(
         await fixture.createAgent(namespace.id, `Deny ${slug} Agent`, values, {

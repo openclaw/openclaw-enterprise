@@ -5,7 +5,7 @@ import type {
 import {
   configurationSettingMessage,
   keyedSettingPath,
-  pluginPolicyId,
+  pluginPolicyList,
 } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 
@@ -41,8 +41,9 @@ function listsGatewayPublicOrigin(configuration: Readonly<OpenClawConfigurationD
  * entrypoint writes each selected plugin's `plugins.entries.<nativeId>` from the selection and,
  * for an enabled selection, exits at every start when `plugins.enabled` is false, `plugins.deny`
  * names the plugin, or a non-empty `plugins.allow` leaves it out. It compares the trimmed,
- * lowercased IDs, as OpenClaw does (pluginPolicyId; no built-in alias names a catalog plugin) and
- * ignores blank list items. It also exits when the Configuration already holds an entry at that
+ * lowercased IDs, as OpenClaw does (pluginPolicyList; no built-in alias names a catalog plugin),
+ * ignores blank list items, and exits for any selection on a list item that is not text (finding
+ * 3099). It also exits when the Configuration already holds an entry at that
  * plugin's exact key whose JSON differs from the one it writes. An exact copy passes: `{"enabled":
  * false}` for a disabled selection, and `{"enabled":true}` for an enabled one while the Gateway
  * serves no public origin. Any other entry is refused, including both copies where the Gateway
@@ -63,10 +64,9 @@ export function openClawPluginSettingConflict(
   if (plugins === undefined) {
     return undefined;
   }
-  const policyIds = (value: unknown): (string | undefined)[] =>
-    Array.isArray(value) ? value.map(pluginPolicyId).filter((id) => id !== "") : [];
-  const allow = policyIds(plugins.allow);
-  const deny = policyIds(plugins.deny);
+  const allow = pluginPolicyList(plugins, "allow");
+  const deny = pluginPolicyList(plugins, "deny");
+  const unreadable = allow.problem ?? deny.problem;
   const entries = asRecord(plugins.entries);
   for (const [pluginId, selection] of Object.entries(selections)) {
     const nativeId = pluginId.startsWith(catalogPrefix)
@@ -74,6 +74,15 @@ export function openClawPluginSettingConflict(
       : pluginId;
     if (!catalogIds.includes(nativeId)) {
       continue;
+    }
+    // The entrypoint reads both lists before it checks any entry it writes, enabled or not.
+    if (unreadable !== undefined) {
+      return {
+        pluginId,
+        setting: unreadable.setting,
+        rule: unreadable.requirement,
+        step: "remove any other item or deselect the plugin",
+      };
     }
     if (selection?.enabled === true) {
       if (plugins.enabled === false) {
@@ -84,7 +93,7 @@ export function openClawPluginSettingConflict(
           step: "remove it or deselect the plugin",
         };
       }
-      if (deny.includes(nativeId)) {
+      if (deny.ids.includes(nativeId)) {
         return {
           pluginId,
           setting: "plugins.deny",
@@ -92,7 +101,7 @@ export function openClawPluginSettingConflict(
           step: "remove that item or deselect the plugin",
         };
       }
-      if (allow.length > 0 && !allow.includes(nativeId)) {
+      if (allow.ids.length > 0 && !allow.ids.includes(nativeId)) {
         return {
           pluginId,
           setting: "plugins.allow",
@@ -108,7 +117,8 @@ export function openClawPluginSettingConflict(
         pluginRuntimeTranslator.openClawManagedEntryConfig(nativeId) !== undefined &&
         listsGatewayPublicOrigin(configuration);
       // Accepting `{"enabled":true}` is safe only while no plugin failures (pluginWarnings) reach
-      // an openclaw Gateway before its first check, or the entrypoint writes `{"enabled":false}`.
+      // an openclaw Gateway before its first check; otherwise the entrypoint writes
+      // `{"enabled":false}` and this copy no longer matches.
       const copy = JSON.stringify({ enabled });
       if (publicOrigin || JSON.stringify(entries[nativeId]) !== copy) {
         return {

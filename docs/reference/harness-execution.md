@@ -206,6 +206,10 @@ When no model is selected at all, that refusal says so and names
 `agents.defaults.model` or an `agents.entries` model as the setting to set.
 Codex accepts its native `codex` provider, or `openai` with the
 Codex plugin explicitly enabled for WebSocket app-server transport.
+Saves, Agent save and deployment refuse a `models.providers` key with
+surrounding whitespace, or another spelling of `openai`, `anthropic` or
+`codex`, such as `OpenAI`. OpenClaw applies that entry to the provider, but
+OCE rules and the startup model check read only the exact key.
 An embedded or dedicated Gateway cannot start when an active plugin's startup
 secret input reads an unset variable: Codex `appServer.authToken` or
 `appServer.headers`, or Google `webSearch.headers`. Kubernetes sets the

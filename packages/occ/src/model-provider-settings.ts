@@ -386,9 +386,9 @@ function validateSettings(
 // The providers whose models.providers entry OCE reads at its exact lowercase key, though a
 // Configuration may leave the entry out: the Harness authentication built-ins
 // (harnessModelAuthentication in Kubernetes Compute). The startup model probe, Dedicated
-// OpenClaw's native catalog and Dedicated Codex's model projection read their entry there. A
-// custom provider's entry is required at its exact key, so another spelling of it alone fails
-// closed.
+// OpenClaw's native catalog and Dedicated Codex's model projection read their entry there. Any
+// other key may keep its case: Kubernetes Compute selects only these providers, fallbacks must use
+// the selected one (finding 1298), and the per-entry rules check every key as written.
 const EXACT_KEY_PROVIDERS: readonly string[] = ["openai", "anthropic", "codex"];
 
 /**

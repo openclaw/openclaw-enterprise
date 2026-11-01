@@ -2429,6 +2429,7 @@ test("Agent save refuses the Configuration plugin settings the Gateway entrypoin
     controlUi: { allowedOrigins: [origin] },
   };
   const viewer = { security: { allowRemoteViewer: true } };
+  const unreadableItem = /id\.trim is not a function/;
   const cases = [
     [{ enabled: false }, enabled, true],
     [{ deny: [" DIFFS "] }, enabled, true],
@@ -2438,6 +2439,13 @@ test("Agent save refuses the Configuration plugin settings the Gateway entrypoin
     [{ entries: { diffs: { enabled: false } } }, enabled, true],
     [{ entries: { diffs: { enabled: true } } }, disabled, true],
     [{ entries: { diffs: null } }, enabled, true],
+    // The entrypoint trims every allow and deny item before it checks any entry it writes, so an
+    // item that is not text stops it, for a disabled selection too (finding 3099).
+    [{ allow: ["diffs", 1] }, enabled, unreadableItem],
+    [{ deny: [null] }, disabled, unreadableItem],
+    [{ allow: ["diffs"], deny: [{ id: "slack" }] }, enabled, unreadableItem],
+    // A list that is not an array is ignored, as the entrypoint ignores it.
+    [{ allow: "codex", deny: 1 }, enabled, false],
     // An exact copy of the entry the entrypoint writes passes.
     [{ entries: { diffs: { enabled: true } } }, enabled, false],
     [{ entries: { diffs: { enabled: false } } }, disabled, false],
@@ -2490,7 +2498,7 @@ test("Agent save refuses the Configuration plugin settings the Gateway entrypoin
     if (entrypointRefuses) {
       assert.match(
         result.error?.message ?? "",
-        /conflicts with managed plugin selection/,
+        entrypointRefuses === true ? /conflicts with managed plugin selection/ : entrypointRefuses,
         `${index}: entrypoint`,
       );
     } else {

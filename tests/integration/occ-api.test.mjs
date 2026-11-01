@@ -4412,6 +4412,7 @@ test("the OpenClaw Plugin Driver refuses Configuration plugin settings the Gatew
     enabled: "remove it or deselect the plugin",
     deny: "remove that item or deselect the plugin",
     allow: "add it or deselect the plugin",
+    text: "remove any other item or deselect the plugin",
     entry: "OCE writes that entry from the selection; remove it or deselect the plugin",
     origin:
       "OCE writes that entry from the selection and gateway.publicOrigin; remove it or deselect the plugin",
@@ -4422,12 +4423,17 @@ test("the OpenClaw Plugin Driver refuses Configuration plugin settings the Gatew
   // these (finding 3091); deployment was admitted and the Gateway never started. A
   // Configuration save does not know the Agents' plugins, so each one saves.
   const copy = (enabled) => `must be unset or ${JSON.stringify({ enabled })}`;
+  const textOnly = "must list only plugin IDs as text";
   const refusals = [
     [{ enabled: false }, plugins, "plugins.enabled", "must not be false", step.enabled],
     // OpenClaw compares plugin IDs trimmed and lowercased.
     [{ deny: ["slack", " DIFFS "] }, plugins, "plugins.deny", "must not list diffs", step.deny],
     // The Standard Codex Presets and channel saves write a non-empty allowlist.
     [{ allow: ["codex"] }, plugins, "plugins.allow", "must list diffs", step.allow],
+    // The entrypoint trims every list item, so one that is not text stops it, even for a disabled
+    // selection (finding 3099).
+    [{ allow: ["diffs", 1] }, plugins, "plugins.allow", textOnly, step.text],
+    [{ deny: [null] }, disabled, "plugins.deny", textOnly, step.text],
     [{ entries: { diffs: { config: {} } } }, plugins, "plugins.entries.diffs", copy(true)],
     [{ entries: { diffs: { enabled: false } } }, plugins, "plugins.entries.diffs", copy(true)],
     // A disabled selection still writes its entry, so another one conflicts there too.

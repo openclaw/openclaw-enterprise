@@ -605,6 +605,7 @@ export {
   generatedGatewayPasswordReference,
   pluginEntryKeyVariantProblem,
   pluginPolicyId,
+  pluginPolicyList,
   pluginSecretInputReference,
   secretInputReference,
   secretInputShorthandName,
