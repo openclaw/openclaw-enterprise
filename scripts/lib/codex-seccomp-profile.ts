@@ -9,6 +9,7 @@ const reviewedCodexVersions = Object.freeze([
   "0.160.0",
   "0.163.0-alpha.1",
   "0.163.0-alpha.2",
+  "0.164.0",
 ]);
 const supportedSeccompArchitectureGroups = Object.freeze([
   Object.freeze({
@@ -29,6 +30,8 @@ const supportedSeccompArchitectureGroups = Object.freeze([
 // Codex 0.163.0-alpha.1 changes executable discovery and bind-data descriptor reuse,
 // without changing the default namespace flags or mount operations.
 // Codex 0.163.0-alpha.2 keeps every listed sandbox source byte-identical to 0.163.0-alpha.1.
+// Codex 0.164.0 removes protected-create monitoring and renames the seccomp entry point.
+// Its default namespace and mount operations remain unchanged.
 // Version admission does not change the syscall rules or the live positive/negative probes.
 const codexBwrapSourceProvenance = Object.freeze([
   {
@@ -80,15 +83,30 @@ const codexBwrapSourceProvenance = Object.freeze([
     sha256: "28da335d8f5647d1b401df74fe0fb4c67d4f59bc1e7f6f566cf7e9d7e28da45a",
   },
   {
+    name: "Codex 0.164.0 bubblewrap launcher",
+    source: "openai/codex rust-v0.164.0 codex-rs/linux-sandbox/src/bwrap.rs",
+    sha256: "69a23ea16d525de5938c1fd47561c90d6047eb58f9864ca47749d696e5d9fa76",
+  },
+  {
+    name: "Codex 0.164.0 sandbox entry point",
+    source: "openai/codex rust-v0.164.0 codex-rs/linux-sandbox/src/linux_run_main.rs",
+    sha256: "2c8cdf628b8b8467cccf38227cada5295f5cb6a04888b860ea1b882fe2d19d53",
+  },
+  {
+    name: "Codex 0.164.0 permission-aware launcher selection",
+    source: "openai/codex rust-v0.164.0 codex-rs/linux-sandbox/src/launcher.rs",
+    sha256: "2121245986b3eace784d404d27cfe44612929206ebc008a7c617db05fa53151b",
+  },
+  {
     name: "bubblewrap mount setup",
     source:
-      "openai/codex rust-v0.152.1, rust-v0.154.0, rust-v0.156.0, rust-v0.158.0, rust-v0.160.0, rust-v0.163.0-alpha.1 and rust-v0.163.0-alpha.2 codex-rs/vendor/bubblewrap/bubblewrap.c",
+      "openai/codex rust-v0.152.1, rust-v0.154.0, rust-v0.156.0, rust-v0.158.0, rust-v0.160.0, rust-v0.163.0-alpha.1, rust-v0.163.0-alpha.2 and rust-v0.164.0 codex-rs/vendor/bubblewrap/bubblewrap.c",
     sha256: "9bc38fb46080b6854e0c414ccb5fbd369d9d7c0230fdfa877283d31aef0c5720",
   },
   {
     name: "bubblewrap bind mount flags",
     source:
-      "openai/codex rust-v0.152.1, rust-v0.154.0, rust-v0.156.0, rust-v0.158.0, rust-v0.160.0, rust-v0.163.0-alpha.1 and rust-v0.163.0-alpha.2 codex-rs/vendor/bubblewrap/bind-mount.c",
+      "openai/codex rust-v0.152.1, rust-v0.154.0, rust-v0.156.0, rust-v0.158.0, rust-v0.160.0, rust-v0.163.0-alpha.1, rust-v0.163.0-alpha.2 and rust-v0.164.0 codex-rs/vendor/bubblewrap/bind-mount.c",
     sha256: "19a6ae020803e342667dd562efab027967b1c1f2965525ec7ee09521554f8f71",
   },
 ]);
@@ -334,7 +352,7 @@ function validateRuntimeDefaultSeccompProfile(
 
 function deriveCodexBwrapProfile(
   baseline: unknown,
-  { codexVersion = "0.163.0-alpha.2" }: { codexVersion?: string } = {},
+  { codexVersion = "0.164.0" }: { codexVersion?: string } = {},
 ) {
   assertReviewedCodexVersion(codexVersion);
   validateRuntimeDefaultSeccompProfile(baseline);

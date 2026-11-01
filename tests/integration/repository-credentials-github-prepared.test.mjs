@@ -36,8 +36,10 @@ function readRepository(github, material) {
 }
 
 async function setup(t, options = {}) {
+  const { observeDiagnostic, ...githubOptions } = options;
+  const diagnostics = [];
   const clock = createControlledClock();
-  const github = await startGitHubFixture(t, { clock, ...options });
+  const github = await startGitHubFixture(t, { clock, ...githubOptions });
   const admission = {
     issuerAuthority: preparationIssuerAuthority(github.origin, github.tls.ca),
     familyId: "family",
@@ -68,6 +70,10 @@ async function setup(t, options = {}) {
       ca: github.tls.ca,
       renewBeforeMs: 120000,
       minimumValidityMs: 10000,
+      observe(diagnostic) {
+        diagnostics.push(diagnostic);
+        observeDiagnostic?.(diagnostic);
+      },
       async getKey() {
         keyReads++;
         // Secret resolution is downstream of the committed uncertainty marker.
@@ -86,6 +92,7 @@ async function setup(t, options = {}) {
   });
   return {
     clock,
+    diagnostics,
     admission,
     database,
     store,
@@ -272,6 +279,12 @@ test("lost transaction receipts never replay issuance and readiness requires com
           fail = () => f.database.failNextCommit(failure);
         }
         assert.equal(await f.run("ambiguous"), "quarantined");
+        assert.equal(
+          f.diagnostics[0].firstFailureStage,
+          phase === "begin" ? "intent" : "publication",
+        );
+        assert.equal(f.diagnostics[0].publication, "unknown");
+        assert.equal(JSON.stringify(f.diagnostics).includes("fixture commit"), false);
         const warm = await f.warm();
         assert.equal(warm.kind, phase === "publish" && failure === "after" ? "warm" : "not_ready");
         // Reconnect an owner to committed storage: no process-local deduplication proof.
@@ -296,6 +309,9 @@ test("lost provider reply and cancellation quarantine issuance; no takeover repl
     "quarantined",
   );
   assert.equal((await f.warm()).kind, "not_ready");
+  assert.equal(f.diagnostics[0].error, "cancelled");
+  assert.equal(f.diagnostics[0].requestEndCalled, true);
+  assert.equal(f.diagnostics[0].outcome, "quarantined");
   await f.store.transact(f.admission.familyId, (row) => {
     row.admission.ownerEpoch++;
   });

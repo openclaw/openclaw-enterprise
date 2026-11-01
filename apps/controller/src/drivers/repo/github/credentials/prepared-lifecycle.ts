@@ -66,8 +66,12 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
   private readonly clock = createSystemClock();
   private readonly maintenance;
   private report: (
-    code: "PREPARED_GITHUB_RECOVERY_REQUIRED" | "PREPARED_GITHUB_MAINTENANCE_FAILED",
-    context?: Readonly<Record<string, string>>,
+    code:
+      | "PREPARED_GITHUB_RECOVERY_REQUIRED"
+      | "PREPARED_GITHUB_MAINTENANCE_FAILED"
+      | "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
+    context?: Readonly<Record<string, string | number | boolean | undefined>>,
+    severity?: "info" | "error",
   ) => void = () => {};
   readonly provider = preparedGitHubProviderRef;
   readonly sourceFromRoute = preparedGitHubSourceFromRoute;
@@ -151,6 +155,15 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
               ...(this.ca ? { ca: this.ca } : {}),
               renewBeforeMs: 600_000,
               minimumValidityMs: 60_000,
+              observe: ({ error, ...diagnostic }) =>
+                this.report(
+                  "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
+                  {
+                    ...diagnostic,
+                    ...(error ? { errorClass: error } : {}),
+                  },
+                  "info",
+                ),
             }),
           );
           if (outcome === "quarantined" || outcome === "blocked") {

@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { dirname } from "node:path";
@@ -205,6 +205,7 @@ export function openShellGitRouteReadiness(
 export type OpenShellGitRuntimeEmit = (event: Readonly<Record<string, unknown>>) => void;
 
 interface Entry extends OpenShellGitObservationEntry {
+  continuityDiagnosticReported?: true;
   readonly bindingId: string;
   readonly authorization: RepositoryGitDeliveryBinding;
   /** The loss of material the route had was reported (on the first request it refused). */
@@ -672,6 +673,16 @@ export class OpenShellGitRuntime {
           (!persisted ||
             !isDeepStrictEqual({ ...known.route, fence: known.route.fence + 1 }, persisted))
         ) {
+          try {
+            this.emit?.({
+              event: "worker.openshell-git-continuity-refused",
+              check: "standing-route-adoption",
+              result: false,
+              ...revisionIdentity(revision),
+            });
+          } catch {
+            // Reporting cannot change adoption or its existing refusal.
+          }
           throw new OpenShellGitRouteBlockedError("execution_replaced");
         }
         if (persisted !== undefined) {
@@ -1204,6 +1215,20 @@ export class OpenShellGitRuntime {
       return;
     }
     if (preview.hook && preview.hook.startupId !== startupId) {
+      try {
+        this.reportContinuity(entry, [
+          {
+            check: "held-startup-recorded",
+            keyHash: createHash("sha256").update(preview.hook.startupId).digest("hex"),
+          },
+          {
+            check: "held-startup-observed",
+            keyHash: createHash("sha256").update(startupId).digest("hex"),
+          },
+        ]);
+      } catch {
+        // Hash/report failures do not change the original startup-identity refusal.
+      }
       this.block(entry, "execution_replaced");
       return;
     }
@@ -1608,7 +1633,34 @@ export class OpenShellGitRuntime {
           reason: "environment_not_installed",
           ...this.identity(entry),
         }),
+      reportExecutionChange: ({ restartCount, neverRestartPolicy, sandboxIdChanged }) =>
+        this.reportContinuity(entry, [
+          { check: "sandbox-restart-count", result: restartCount ?? "invalid" },
+          { check: "sandbox-restart-policy-never", result: neverRestartPolicy },
+          { check: "sandbox-id-changed", result: sandboxIdChanged },
+        ]),
     });
+  }
+
+  private reportContinuity(
+    entry: Entry,
+    checks: readonly Readonly<Record<string, string | number | boolean>>[],
+  ): void {
+    if (entry.continuityDiagnosticReported) {
+      return;
+    }
+    entry.continuityDiagnosticReported = true;
+    try {
+      for (const check of checks) {
+        this.emit?.({
+          event: "worker.openshell-git-continuity-refused",
+          ...check,
+          ...this.identity(entry),
+        });
+      }
+    } catch {
+      // Preserve the first failed comparison; a failing sink never changes the guard.
+    }
   }
 
   private identity(entry: Entry): Readonly<Record<string, string>> {

@@ -41,8 +41,9 @@ Check these before qualifying a protected release; each one can stop Git or the 
 <a id="install-without-the-repository-broker"></a>
 
 Select Kubernetes Compute, dedicated Codex, and Sandbox and Credential Proxy
-from the same Driver registration. Use the
-[OpenShell Installation fragment](../../../deploy/examples/repository-credentials/openshell.fragment.yaml).
+from one Driver registration. Use
+[Installation configuration](../../../deploy/examples/repository-credentials/openshell.fragment.yaml);
+declare [artifact rules](../drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 Keep `repository.preparedGitHub`, `repository.openShell`, the session duration,
 and the GitHub Backend registry at `/etc/openclaw/repository-registry/registry.json`.
 Omit `controlSocket`, `publicCaPath`, and `repository.nativeSender`. Remove
@@ -166,8 +167,8 @@ Retain HTTPS, hostname verification and authenticated Gateway JWTs; do not enabl
 
 ## Grant access to a GitHub App installation
 
-Use [GitHub App setup](../../guides/repository-credentials/team-runbook.md#register-and-install-the-github-app)
-for permissions and the
+Use the [GitHub App installation guide](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app)
+for membership and permissions, and the
 [registry reference](../repository-credentials.md#canonical-platform-registry)
 for policy. Prefer repository scope. To expose an
 installation scope, set a distinct `installationAccess.repositoryRef`, allow the
