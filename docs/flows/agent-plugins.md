@@ -122,7 +122,11 @@ stores the `plugins` map. Shared validators check the nested selection shape.
 `validateAgentConfiguration` checks selections against Configuration values here and at
 deployment. The OpenClaw Driver refuses a selection whose tools `tools.deny`, the sole
 `agents.entries` entry's list, the primary provider's `byProvider` lists, or these together block,
-any selection beside an entry denying `*`, or one a sole entry's `alsoAllow` hides under a profile. Unsupported
+any selection beside an entry denying `*`, or one a sole entry's `alsoAllow` hides under a profile.
+With an OpenClaw Harness, [`openClawPluginSettingConflict`](../../apps/controller/src/drivers/plugin/openclaw-plugin-settings.ts)
+first refuses `plugins.enabled:false`, a `plugins.deny` item or a nonempty `plugins.allow` that leaves out an
+enabled selection, and a `plugins.entries` entry at its key that is not an exact copy of the entry the Gateway
+entrypoint writes. Unsupported
 controls, reviewer scopes, and combinations return `400 INVALID_REQUEST`;
 a missing selected Driver returns `501 NOT_IMPLEMENTED`. Validation is static: native app mapping,
 authentication, and release/tool metadata remain startup checks. Agent mutations store desired state and audit evidence atomically without changing

@@ -9,12 +9,29 @@ import {
 } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 
+import { pluginRuntimeTranslator } from "./runtime-translator.ts";
+
 /** A Configuration plugin setting the Gateway refuses beside a selected catalog plugin. */
 export interface OpenClawPluginSettingConflict {
   readonly pluginId: string;
   readonly setting: string;
   readonly rule: string;
   readonly step: string;
+}
+
+// The entrypoint's gatewayServesPublicOrigin without its auth mode test: Kubernetes Compute always
+// renders trusted-proxy auth, so only these Configuration values decide it there. No Compute
+// writes gateway.publicOrigin or gateway.controlUi.allowedOrigins.
+function listsGatewayPublicOrigin(configuration: Readonly<OpenClawConfigurationDocument>): boolean {
+  const gateway = asRecord(configuration.gateway);
+  const origin = gateway?.publicOrigin;
+  const allowedOrigins = asRecord(gateway?.controlUi)?.allowedOrigins;
+  return (
+    typeof origin === "string" &&
+    /^https:\/\/[a-z0-9.-]+(:[0-9]{1,5})?$/.test(origin) &&
+    Array.isArray(allowedOrigins) &&
+    allowedOrigins.includes(origin)
+  );
 }
 
 /**
@@ -26,10 +43,15 @@ export interface OpenClawPluginSettingConflict {
  * names the plugin, or a non-empty `plugins.allow` leaves it out. It compares the trimmed,
  * lowercased IDs, as OpenClaw does (pluginPolicyId; no built-in alias names a catalog plugin) and
  * ignores blank list items. It also exits when the Configuration already holds an entry at that
- * plugin's exact key other than the one it writes; this refuses any entry there, since only a copy
- * of the entry OCE writes would pass and the selection already writes it. Kubernetes Compute
- * refuses the key's other spellings at Configuration save (refuseKubernetesPluginEntryKeyVariants).
- * Selections name a plugin by catalog ID or by its native ID alone.
+ * plugin's exact key whose JSON differs from the one it writes. An exact copy passes: `{"enabled":
+ * false}` for a disabled selection, and `{"enabled":true}` for an enabled one while the Gateway
+ * serves no public origin. Any other entry is refused, including both copies where the Gateway
+ * can serve one (listsGatewayPublicOrigin): the entrypoint then writes `{"enabled":true,"config":
+ * ...}`, and PostgreSQL's jsonb stores `config` first, so the stored copy never matches. That
+ * over-refuses only `{"enabled":true}` on Docker Compute with password auth, which serves no
+ * public origin. Kubernetes Compute refuses the key's other spellings at Configuration save
+ * (refuseKubernetesPluginEntryKeyVariants). Selections name a plugin by catalog ID or by its
+ * native ID alone.
  */
 export function openClawPluginSettingConflict(
   selections: PluginDesiredState,
@@ -80,12 +102,22 @@ export function openClawPluginSettingConflict(
       }
     }
     if (entries !== undefined && Object.hasOwn(entries, nativeId)) {
-      return {
-        pluginId,
-        setting: keyedSettingPath("plugins.entries", nativeId),
-        rule: "must be unset",
-        step: "OCE writes this entry from the selection, so remove it or deselect the plugin",
-      };
+      const enabled = selection?.enabled === true;
+      const publicOrigin =
+        enabled &&
+        pluginRuntimeTranslator.openClawManagedEntryConfig(nativeId) !== undefined &&
+        listsGatewayPublicOrigin(configuration);
+      const copy = JSON.stringify({ enabled });
+      if (publicOrigin || JSON.stringify(entries[nativeId]) !== copy) {
+        return {
+          pluginId,
+          setting: keyedSettingPath("plugins.entries", nativeId),
+          rule: publicOrigin ? "must be unset" : `must be unset or ${copy}`,
+          step: publicOrigin
+            ? "OCE writes that entry from the selection and gateway.publicOrigin; remove it or deselect the plugin"
+            : "OCE writes that entry from the selection; remove it or deselect the plugin",
+        };
+      }
     }
   }
   return undefined;

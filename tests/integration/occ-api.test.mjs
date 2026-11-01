@@ -4412,27 +4412,44 @@ test("the OpenClaw Plugin Driver refuses Configuration plugin settings the Gatew
     enabled: "remove it or deselect the plugin",
     deny: "remove that item or deselect the plugin",
     allow: "add it or deselect the plugin",
-    entry: "OCE writes this entry from the selection, so remove it or deselect the plugin",
+    entry: "OCE writes that entry from the selection; remove it or deselect the plugin",
+    origin:
+      "OCE writes that entry from the selection and gateway.publicOrigin; remove it or deselect the plugin",
   };
+  const origin = "https://agent.example.com";
+  const servedOrigin = { publicOrigin: origin, controlUi: { allowedOrigins: [origin] } };
   // The Gateway entrypoint writes the selected plugin's entry and exits at every start on each of
   // these (finding 3091); deployment was admitted and the Gateway never started. A
   // Configuration save does not know the Agents' plugins, so each one saves.
+  const copy = (enabled) => `must be unset or ${JSON.stringify({ enabled })}`;
   const refusals = [
     [{ enabled: false }, plugins, "plugins.enabled", "must not be false", step.enabled],
     // OpenClaw compares plugin IDs trimmed and lowercased.
     [{ deny: ["slack", " DIFFS "] }, plugins, "plugins.deny", "must not list diffs", step.deny],
     // The Standard Codex Presets and channel saves write a non-empty allowlist.
     [{ allow: ["codex"] }, plugins, "plugins.allow", "must list diffs", step.allow],
-    [{ entries: { diffs: { config: {} } } }, plugins, "plugins.entries.diffs", "must be unset"],
+    [{ entries: { diffs: { config: {} } } }, plugins, "plugins.entries.diffs", copy(true)],
+    [{ entries: { diffs: { enabled: false } } }, plugins, "plugins.entries.diffs", copy(true)],
     // A disabled selection still writes its entry, so another one conflicts there too.
-    [{ entries: { diffs: { enabled: true } } }, disabled, "plugins.entries.diffs", "must be unset"],
+    [{ entries: { diffs: { enabled: true } } }, disabled, "plugins.entries.diffs", copy(false)],
+    // Where the Gateway can serve a public origin, the entrypoint writes the entry with the Diffs
+    // viewer's config, and PostgreSQL stores a copy of it with its keys reordered: no copy matches.
+    [
+      { entries: { diffs: { enabled: true } } },
+      plugins,
+      "plugins.entries.diffs",
+      "must be unset",
+      step.origin,
+      servedOrigin,
+    ],
   ];
   for (const [
     index,
-    [settings, selection, setting, rule, fix = step.entry],
+    [settings, selection, setting, rule, fix = step.entry, gateway],
   ] of refusals.entries()) {
     const configuration = await createConfiguration(controller, namespace.id, {
       plugins: settings,
+      ...(gateway === undefined ? {} : { gateway }),
     });
     const refused = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
       body: {
@@ -4452,15 +4469,19 @@ test("the OpenClaw Plugin Driver refuses Configuration plugin settings the Gatew
     [],
   );
   // Settings that leave the selected plugin on, and a disabled selection's plugin turned off, save.
+  // So does an exact copy of the entry the entrypoint writes, which the Gateway starts with.
   const accepted = [
     [{ enabled: true, allow: ["codex", " Diffs"], deny: ["slack"] }, plugins],
     [{ allow: [" "], entries: { slack: { enabled: true } } }, plugins],
     [{ enabled: false, deny: ["diffs"], allow: ["codex"] }, disabled],
+    [{ entries: { diffs: { enabled: true } } }, plugins],
+    [{ entries: { diffs: { enabled: false } } }, disabled, servedOrigin],
   ];
   const agents = [];
-  for (const [index, [settings, selection]] of accepted.entries()) {
+  for (const [index, [settings, selection, gateway]] of accepted.entries()) {
     const configuration = await createConfiguration(controller, namespace.id, {
       plugins: settings,
+      ...(gateway === undefined ? {} : { gateway }),
     });
     const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
       body: {

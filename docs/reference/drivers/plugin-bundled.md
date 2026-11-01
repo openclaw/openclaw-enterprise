@@ -247,18 +247,29 @@ when best-effort preparation allows authentication warnings, startup disables
 their selections and app/plugin features rather than retrying an unsupported
 login mode.
 
-The Driver rejects, rather than overwrites, raw Configuration that conflicts
-with its managed fields: for OpenClaw, a selected plugin entry in
-`values.plugins.entries` whose JSON differs from the managed entry; for Codex, a
-differing `values.plugins.entries.codex.config.codexPlugins` bridge selection.
-Identical managed entries are accepted. An enabled native plugin entry also
-conflicts with `plugins.enabled:false`, a matching `plugins.deny` entry, or a
-nonempty `plugins.allow` that excludes it. This includes the Codex transport
-plugin required by selected Codex apps. Disabled OpenClaw selections can remain
-denied. Gateway startup rejects these conflicts before OpenClaw package
-installation or starting the gateway; save-time policy checks do not inspect raw
-native Configuration for them. Native configuration outside managed fields,
-including tool denies and profiles, is retained.
+Gateway startup rejects, rather than overwrites, raw Configuration that
+conflicts with the Driver's managed fields, before OpenClaw package installation:
+for OpenClaw, a selected plugin entry in `values.plugins.entries` whose JSON
+differs from the managed entry; for Codex, a differing
+`values.plugins.entries.codex.config.codexPlugins` bridge selection. An enabled
+native plugin entry also conflicts with `plugins.enabled:false`, a matching
+`plugins.deny` entry, or a nonempty `plugins.allow` that excludes it. This
+includes the Codex transport plugin required by selected Codex apps. Disabled
+OpenClaw selections can remain denied.
+
+When the Configuration selects the OpenClaw Harness, the OpenClaw Driver also
+refuses the OpenClaw conflicts at Agent create and update, provisioning and
+deployment with `400`; for another Harness, the placement refusal applies.
+The Driver accepts an exact copy of the managed entry: `{"enabled":false}` for
+a disabled selection, and `{"enabled":true}` for an enabled one when the
+Gateway serves no public origin. When `gateway.publicOrigin` is an HTTPS origin
+listed in `gateway.controlUi.allowedOrigins`, it refuses any entry at that key.
+Kubernetes Compute then writes the entry with the plugin's public-origin
+`config`, and PostgreSQL stores a copy with its keys in another order, so no
+copy matches. This also refuses `{"enabled":true}` on Docker Compute with
+password authentication, which the Gateway accepts. Save does not check the
+Codex conflicts. Native configuration outside managed fields, including tool
+denies and profiles, is retained.
 
 ## Preparation and security
 
