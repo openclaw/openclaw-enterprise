@@ -36,6 +36,7 @@ import {
 } from "./console-refocus-helpers.mjs";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { within } from "../helpers/wait-for.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { deleteRefused } from "../helpers/refusal-text.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
@@ -408,11 +409,22 @@ for (const view of ["Agent page", "Create Agent"] as const) {
     holdSession();
     t.after(() => releaseSession());
     let sessionReads = 0;
+    const readWaiters = new Map<number, () => void>();
     await page.route("**/api/auth/session", async (route) => {
       sessionReads += 1;
+      readWaiters.get(sessionReads)?.();
       await sessionHeld;
       await route.fallback();
     });
+    // The page holds its view inert as the recheck starts, before the recheck's session read
+    // leaves the browser and reaches the route above. So the held view does not prove the read
+    // was counted yet (finding 3119): wait for the read itself, then check it was the only one.
+    const sessionReadsReach = async (count: number, message: string) => {
+      if (sessionReads < count) {
+        await within(new Promise<void>((resolve) => readWaiters.set(count, resolve)), message);
+      }
+      assert.equal(sessionReads, count, message);
+    };
     const focusIn = () =>
       page.evaluate(() => {
         const active = globalThis.document.activeElement;
@@ -448,7 +460,7 @@ for (const view of ["Agent page", "Create Agent"] as const) {
     // A refocus that no Tab started is the reader coming back: it rechecks and holds the page.
     await refocus(page);
     await page.locator(heldView).waitFor();
-    assert.equal(sessionReads, 1);
+    await sessionReadsReach(1, "a refocus no Tab started rechecks");
     releaseSession();
     await page.locator(settledView).waitFor();
 
@@ -460,7 +472,7 @@ for (const view of ["Agent page", "Create Agent"] as const) {
     await page.evaluate(() => globalThis.dispatchEvent(new Event("blur")));
     await refocus(page);
     await page.locator(heldView).waitFor();
-    assert.equal(sessionReads, 2, "a return from a blur no Tab started rechecks");
+    await sessionReadsReach(2, "a return from a blur no Tab started rechecks");
     releaseSession();
     await page.locator(settledView).waitFor();
 
@@ -472,7 +484,7 @@ for (const view of ["Agent page", "Create Agent"] as const) {
       await new Promise((resolve) => setTimeout(resolve, 10_500));
       await page.keyboard.press("Tab");
       await page.locator(heldView).waitFor();
-      assert.equal(sessionReads, 3, "a return after the lap window rechecks");
+      await sessionReadsReach(3, "a return after the lap window rechecks");
       releaseSession();
       await page.locator(settledView).waitFor();
     }
