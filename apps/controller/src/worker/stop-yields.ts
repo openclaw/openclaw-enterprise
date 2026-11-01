@@ -1,5 +1,5 @@
 // Bookkeeping for stops whose Gateway drain yielded to other Work (AGENT_STOP_YIELDED,
-// PREDECESSOR_STOP_YIELDED).
+// PREDECESSOR_STOP_YIELDED, SUPERSEDED_STOP_YIELDED).
 
 import {
   ComputeStopYieldedError,
@@ -29,7 +29,8 @@ export function stopYieldRecheckMs(ageMs: number): number {
 }
 
 /** The pending code of a pass whose stop yielded during a Gateway drain. */
-export type StopYieldedCode = "AGENT_STOP_YIELDED" | "PREDECESSOR_STOP_YIELDED";
+export type StopYieldedCode =
+  "AGENT_STOP_YIELDED" | "PREDECESSOR_STOP_YIELDED" | "SUPERSEDED_STOP_YIELDED";
 
 interface YieldedStop {
   readonly code: StopYieldedCode;
@@ -44,9 +45,10 @@ interface YieldedStop {
  * - A draining stop does not yield to these: they are draining stops too. Several stops draining
  *   at once would otherwise yield to each other and repeat their passes back to back for the
  *   whole drain.
- * - Other optional waits do not end for a stopped Agent's yielded stop, whose next pass only
- *   rechecks its drain. They do end for a deployment whose predecessor stop yielded: once that
- *   drain is over, its next pass deletes the predecessor's Harness and deploys.
+ * - Other optional waits do not end for a stopped Agent's yielded stop or a superseded version's
+ *   own yielded stop, whose next pass only rechecks its drain. They do end for a deployment whose
+ *   predecessor stop yielded: once that drain is over, its next pass deletes the predecessor's
+ *   Harness and deploys.
  * - Their `worker.completed` lines are throttled: the first yield is logged, then at most one
  *   a minute, each with the work's yield count so far, which the work's next other line
  *   (usually its completion) carries too.
@@ -90,13 +92,13 @@ export class StopYields {
   }
 
   /**
-   * The keys of yielded stops that `wait` does not end for: every one for a Gateway drain, only a
-   * stopped Agent's (AGENT_STOP_YIELDED) for any other wait.
+   * The keys of yielded stops that `wait` does not end for: every one for a Gateway drain, all but
+   * a deployment's predecessor stop (PREDECESSOR_STOP_YIELDED) for any other wait.
    */
   waiting(wait: ComputeWorkWait): string[] {
     this.prune(this.now());
     return [...this.stops]
-      .filter(([, stop]) => wait === "gateway-drain" || stop.code === "AGENT_STOP_YIELDED")
+      .filter(([, stop]) => wait === "gateway-drain" || stop.code !== "PREDECESSOR_STOP_YIELDED")
       .map(([key]) => key);
   }
 
@@ -120,15 +122,35 @@ export class PredecessorStopYieldedError extends ComputeStopYieldedError {
   }
 }
 
+/**
+ * A superseded, inactive exclusive version's stop of its own runtime yielded during its Gateway
+ * drain: the pass ends pending as `SUPERSEDED_STOP_YIELDED`, and a later pass finishes the stop
+ * before the version ends superseded (finding 3080). Its own code, not PREDECESSOR_STOP_YIELDED:
+ * that evidence makes a later pass stop every earlier version, which this stop never swept.
+ */
+export class SupersededStopYieldedError extends ComputeStopYieldedError {
+  constructor(cause: ComputeStopYieldedError) {
+    super(cause.message);
+    this.name = "SupersededStopYieldedError";
+  }
+}
+
 /** Whether `code` is the pending code of revision work whose stop yielded during a drain. */
 export function isStopYieldedCode(code: string): code is StopYieldedCode {
-  return code === "AGENT_STOP_YIELDED" || code === "PREDECESSOR_STOP_YIELDED";
+  return (
+    code === "AGENT_STOP_YIELDED" ||
+    code === "PREDECESSOR_STOP_YIELDED" ||
+    code === "SUPERSEDED_STOP_YIELDED"
+  );
 }
 
 /** The pending code of a pass whose stop yielded with `error`, if it did. */
 export function stopYieldedCode(error: unknown): StopYieldedCode | undefined {
   if (error instanceof PredecessorStopYieldedError) {
     return "PREDECESSOR_STOP_YIELDED";
+  }
+  if (error instanceof SupersededStopYieldedError) {
+    return "SUPERSEDED_STOP_YIELDED";
   }
   return error instanceof ComputeStopYieldedError ? "AGENT_STOP_YIELDED" : undefined;
 }

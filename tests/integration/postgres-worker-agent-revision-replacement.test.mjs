@@ -1108,11 +1108,17 @@ revisionTest(
 );
 
 /** A newer exclusive version whose deployer lacks `deploy`: the worker refuses it before Compute. */
-async function refusedExclusiveVersion(fixture, driver, owner, number) {
+async function refusedExclusiveVersion(
+  fixture,
+  driver,
+  owner,
+  number,
+  shape = olderShapes.exclusive,
+) {
   const requester = `refused-exclusive-requester-${randomUUID()}`;
   await fixture.copyActorGrants(requester, { withoutActions: ["deploy"] });
   const refused = await fixture.revision(owner, number, {
-    ...olderShapes.exclusive,
+    ...shape,
     actorId: requester,
   });
   await assertWorkEnds(fixture, refused, "failed_permanent", "AUTHORIZATION_DENIED");
@@ -1158,7 +1164,7 @@ for (const { shape, stopFailures = 0 } of [
       const newer = await refusedExclusiveVersion(fixture, driver, owner, older.revision + 1);
       const olderPasses = driver.passes(older);
       await assertWorkEnds(fixture, older, "succeeded", "REVISION_SUPERSEDED");
-      assert.equal(driver.passes(older), olderPasses, "no preparation after the newer admission");
+      assert.equal(driver.passes(older), olderPasses, "no preparation after the newer refusal");
       // Nothing else stops the superseded version: it stopped its Harness and the Gateway it held.
       assert.equal(driver.stops(older), 1);
       assert.deepEqual([...driver.harnesses], []);
@@ -1187,6 +1193,52 @@ for (const { shape, stopFailures = 0 } of [
     },
   );
 }
+
+// Finding 3080 (review nit): the superseded version closes its repository credential sessions
+// before it stops its runtime, as a newer version's sweep does, so the stopped Harness is not
+// left the only holder of a live session. Repository cleanup closes them again after the version
+// ends superseded, so only the closes made before the stop tell the self-stop's close apart.
+test(
+  "an older exclusive version with repository credentials superseded by a refused newer exclusive version closes its sessions before its own stop",
+  requiresPostgres,
+  async (context) => {
+    const repository = repositoryBoundary();
+    const fixture = await setup(context, { repoDriver: repository.driver });
+    const driver = sharedGatewayCompute(fixture);
+    // Kubernetes admits repository credentials for a dedicated Codex Harness, which declares
+    // exclusive replacement, as well as for embedded OpenClaw.
+    driver.compute.validateRepositoryCredentials = (harness, sandboxDriverId) => {
+      assert.deepEqual([harness.id, harness.mode], ["codex", "dedicated"]);
+      assert.equal(sandboxDriverId, undefined);
+    };
+    const closes = () => repository.calls.filter(({ operation }) => operation === "close").length;
+    const closesAtStop = new Map();
+    const stop = driver.compute.stopRevision;
+    driver.compute.stopRevision = (revision) => {
+      closesAtStop.set(revision.id, [...(closesAtStop.get(revision.id) ?? []), closes()]);
+      return stop(revision);
+    };
+    await fixture.start(driver.compute);
+    const owner = await fixture.agent("exclusive-refused-successor-git", {
+      executionMode: "dedicated",
+    });
+    const codex = { harness: { ...fixture.productionHarness, mode: "dedicated" } };
+    const older = await fixture.revision(owner, 1, {
+      ...codex,
+      repositoryCredentials: repository.snapshot,
+    });
+    await waitFor("the older version's first preparation", async () =>
+      driver.passes(older) > 0 ? true : undefined,
+    );
+    assert.ok(repository.calls.some(({ operation }) => operation === "open"));
+    assert.equal(closes(), 0);
+    await refusedExclusiveVersion(fixture, driver, owner, 2, codex);
+    await assertWorkEnds(fixture, older, "succeeded", "REVISION_SUPERSEDED");
+    assert.equal(driver.stops(older), 1);
+    assert.deepEqual(closesAtStop.get(older.id), [1]);
+    assert.deepEqual([...driver.harnesses], []);
+  },
+);
 
 // The selected version is never stopped by its own superseded pass. A newer exclusive admission
 // supersedes its maintenance before Compute effects, even when that version is refused before its

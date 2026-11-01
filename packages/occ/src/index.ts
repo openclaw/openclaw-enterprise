@@ -632,6 +632,7 @@ export {
   CODEX_APPROVAL_POLICY_SETTING,
   codexApprovalPolicy,
   refuseLiteralGatewayPassword,
+  refusePluginEntryKeyVariants,
   waitsOnVariable,
 } from "./configuration-settings.ts";
 export { PostgresCommitOutcomeUnknownError };
