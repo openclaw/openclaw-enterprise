@@ -2691,6 +2691,93 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
   for (const [values, message] of unreadablePluginInputs) {
     await refusedAtSaveAndDeploy(context, agent, values, message);
   }
+  // A trusted-proxy allowlist or device auto-approval the Gateway refuses failed only in
+  // preparation, after a dedicated deployment stopped its predecessor (findings 3006, 3032). Save
+  // refuses each shape, naming the setting and never an identity; a stored row still reads, and
+  // deployment refuses it with the same text before any revision.
+  const trustedProxy = (fields) => ({
+    ...valid,
+    gateway: { auth: { trustedProxy: { allowUsers: ["occ-workspace-files"], ...fields } } },
+  });
+  const trustedProxyRefusals = [
+    // The machine identity left out, a case-duplicate e-mail identity, and an empty list, which
+    // admits every proxy user upstream.
+    [trustedProxy({ allowUsers: ["oidc:member-01"] }), KUBERNETES_ALLOW_USERS_REFUSAL],
+    [
+      trustedProxy({
+        allowUsers: ["occ-workspace-files", "member@example.com", "Member@Example.com"],
+      }),
+      KUBERNETES_ALLOW_USERS_REFUSAL,
+    ],
+    [trustedProxy({ allowUsers: [] }), KUBERNETES_ALLOW_USERS_REFUSAL],
+    // Shapes the Gateway's strict schema refuses at startup.
+    [
+      trustedProxy({ deviceAutoApprove: { enabled: true, scopes: "operator.read" } }),
+      KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL,
+    ],
+    [
+      trustedProxy({ deviceAutoApprove: { enabled: "true" } }),
+      KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL,
+    ],
+    [
+      trustedProxy({ deviceAutoApprove: { enabled: true, approvers: ["oidc:member-01"] } }),
+      KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL,
+    ],
+  ];
+  for (const [values, message] of trustedProxyRefusals) {
+    await refusedAtSaveAndDeploy(context, agent, values, message);
+  }
+  const trustedProxyRevisions = await request(context.app, "GET", `${agentPath}/revisions`);
+  assert.deepEqual(trustedProxyRevisions.body.data, []);
+  // A Preset save refuses it too, unless the setting waits on a variable: the launch checks it.
+  assertRefused(
+    await savePreset(context, { configuration: { values: trustedProxyRefusals[0][0] } }),
+    KUBERNETES_ALLOW_USERS_REFUSAL,
+  );
+  // Each would be refused as written: an allowlist whose machine identity is a variable, and a
+  // boolean variable that turns auto-approval on.
+  for (const [name, variables, fields] of [
+    [
+      "Allowlist-deferred",
+      { identity: { type: "string" } },
+      { allowUsers: ["{{ vars.identity }}", "oidc:member-01"] },
+    ],
+    [
+      "Auto-approval-deferred",
+      { autoApprove: { type: "boolean" } },
+      { deviceAutoApprove: { enabled: "{{ vars.autoApprove }}" } },
+    ],
+  ]) {
+    const waiting = await savePreset(
+      context,
+      { variables, configuration: { values: trustedProxy(fields) } },
+      name,
+    );
+    assert.equal(waiting.status, 201, `${name}: ${JSON.stringify(waiting.body)}`);
+  }
+  // A custom allowlist with one human, its grant and a device policy the Gateway accepts saves and
+  // deploys.
+  const humanAgent = await deployableAgent(context, context.namespace, {
+    values: {
+      ...valid,
+      gateway: {
+        auth: {
+          trustedProxy: {
+            allowUsers: ["occ-workspace-files", "member@example.com"],
+            deviceAutoApprove: { enabled: true, scopes: ["operator.read"] },
+          },
+          identityScopes: {
+            "occ-workspace-files": ["operator.admin"],
+            "member@example.com": ["operator.read"],
+          },
+        },
+      },
+    },
+    name: "Trusted proxy human consumer",
+    secretName: "trusted-proxy-human-key",
+  });
+  await deployAccepted(context, humanAgent.agentPath);
+
   // A Preset save refuses it too, unless the plugins or secrets wait on a variable: then it is
   // checked once filled.
   const [[unreadableValues, unreadableMessage]] = unreadablePluginInputs;
@@ -2936,81 +3023,6 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
       "google ": { enabled: false },
     }),
   );
-
-  // A trusted-proxy allowlist or device auto-approval the Gateway refuses failed only in
-  // preparation, after a dedicated deployment stopped its predecessor (findings 3006, 3032). Save
-  // refuses each shape, naming the setting and never an identity; a stored row still reads, and
-  // deployment refuses it with the same text before any revision.
-  const trustedProxy = (fields) => ({
-    ...valid,
-    gateway: { auth: { trustedProxy: { allowUsers: ["occ-workspace-files"], ...fields } } },
-  });
-  const trustedProxyRefusals = [
-    // The machine identity left out, a case-duplicate e-mail identity, and an empty list, which
-    // admits every proxy user upstream.
-    [trustedProxy({ allowUsers: ["oidc:member-01"] }), KUBERNETES_ALLOW_USERS_REFUSAL],
-    [
-      trustedProxy({
-        allowUsers: ["occ-workspace-files", "member@example.com", "Member@Example.com"],
-      }),
-      KUBERNETES_ALLOW_USERS_REFUSAL,
-    ],
-    [trustedProxy({ allowUsers: [] }), KUBERNETES_ALLOW_USERS_REFUSAL],
-    // Shapes the Gateway's strict schema refuses at startup.
-    [
-      trustedProxy({ deviceAutoApprove: { enabled: true, scopes: "operator.read" } }),
-      KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL,
-    ],
-    [
-      trustedProxy({ deviceAutoApprove: { enabled: "true" } }),
-      KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL,
-    ],
-    [
-      trustedProxy({ deviceAutoApprove: { enabled: true, approvers: ["oidc:member-01"] } }),
-      KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL,
-    ],
-  ];
-  for (const [values, message] of trustedProxyRefusals) {
-    await refusedAtSaveAndDeploy(context, agent, values, message);
-  }
-  // A Preset save refuses it too, unless the setting waits on a variable: the launch checks it.
-  assertRefused(
-    await savePreset(context, { configuration: { values: trustedProxyRefusals[0][0] } }),
-    KUBERNETES_ALLOW_USERS_REFUSAL,
-  );
-  const waitingAllowlist = await savePreset(
-    context,
-    {
-      variables: { member: { type: "string" } },
-      configuration: {
-        values: trustedProxy({ allowUsers: ["occ-workspace-files", "{{ vars.member }}"] }),
-      },
-    },
-    "Allowlist-deferred",
-  );
-  assert.equal(waitingAllowlist.status, 201, JSON.stringify(waitingAllowlist.body));
-  // A custom allowlist with one human, its grant and a device policy the Gateway accepts saves and
-  // deploys.
-  const humanAgent = await deployableAgent(context, context.namespace, {
-    values: {
-      ...valid,
-      gateway: {
-        auth: {
-          trustedProxy: {
-            allowUsers: ["occ-workspace-files", "member@example.com"],
-            deviceAutoApprove: { enabled: true, scopes: ["operator.read"] },
-          },
-          identityScopes: {
-            "occ-workspace-files": ["operator.admin"],
-            "member@example.com": ["operator.read"],
-          },
-        },
-      },
-    },
-    name: "Trusted proxy human consumer",
-    secretName: "trusted-proxy-human-key",
-  });
-  await deployAccepted(context, humanAgent.agentPath);
 
   // Values every Gateway accepts still save.
   for (const values of [
