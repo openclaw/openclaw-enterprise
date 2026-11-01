@@ -576,16 +576,19 @@ export function activePluginSecretInputs(values: unknown): {
       return [];
     }
     const path = keyedSettingPath("plugins.entries", key);
-    // The step turns off, in each order that activates the plugin, the entry that order merges
-    // last: a later entry for the same plugin that enables or clears it, else this one. When the
-    // two orders end on different entries, it names both, so one step turns the plugin off: with
-    // `GOOGLE: null` written after google and a slot set to google, the order written ends on
-    // `GOOGLE` and jsonb order on google (finding 3095).
-    const by = [...new Set(active.map(({ enabledBy }) => enabledBy.get(key) ?? key))];
+    // A later entry for the same plugin that enables or clears it is the one to turn off. When
+    // the two orders that activate the plugin end on different entries, setting one entry's
+    // enabled to false leaves it active in the other order, so the step offers only the removal
+    // that turns it off in both: with `GOOGLE: null` written after google and a slot set to
+    // google, the order written ends on `GOOGLE` and jsonb order on google (finding 3095).
+    const by = new Set(active.map(({ enabledBy }) => enabledBy.get(key) ?? key));
+    const [last] = by;
     const disable =
-      by.length === 1 && by[0] === key
-        ? `remove ${path} or set its enabled to false`
-        : `remove ${path} or set ${by.map((name) => `${keyedSettingPath("plugins.entries", name)}.enabled`).join(" and ")} to false`;
+      by.size > 1 || last === undefined
+        ? `remove ${path}`
+        : last === key
+          ? `remove ${path} or set its enabled to false`
+          : `remove ${path} or set ${keyedSettingPath("plugins.entries", last)}.enabled to false`;
     return inputs.paths
       .flatMap((keys) => settingValues(entry.config, keys, `${path}.config`))
       .map(([setting, input]) => ({ setting, value: input, required: inputs.required, disable }));

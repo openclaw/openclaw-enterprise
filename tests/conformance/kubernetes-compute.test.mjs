@@ -10254,27 +10254,18 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
     plugins: { ...configuration.plugins, slots },
   });
   // The cleared entry comes after google in the order written and in the stored order (finding
-  // 3092): a longer key, such as the google-gemini-cli alias, so the step names it alone. A
-  // `GOOGLE: null` written after google comes first in the stored order, where startup auto-enable
-  // enables the google entry last, so the step names both entries: setting only `GOOGLE`'s enabled
-  // to false would leave google active there (finding 3095).
+  // 3092): a longer key. A `GOOGLE: null` written after google comes first in the stored order,
+  // where startup auto-enable enables the google entry last, so setting only `GOOGLE`'s enabled to
+  // false would leave google active there: the step offers only removal (finding 3095).
   const clearedSearchHeader = withEntries(withSearchHeader("${RELAY_TOKEN}"), { "google ": null });
   const clearedByVariant = withEntries(withSearchHeader("${RELAY_TOKEN}"), { GOOGLE: null });
   for (const slots of [{ memory: "google" }, { contextEngine: " google " }]) {
-    for (const [configuration, enabledBy] of [
-      [
-        withEntries(withSearchHeader("${RELAY_TOKEN}"), { "google-gemini-cli": null }),
-        "google-gemini-cli",
-      ],
-      [clearedByVariant, ["GOOGLE", "google"]],
-    ]) {
-      refusedUntilBound(embeddedAdmission, withSlots(configuration, slots), [
-        searchHeader,
-        "RELAY_TOKEN",
-        "google",
-        enabledBy,
-      ]);
-    }
+    refusedUntilBound(embeddedAdmission, withSlots(clearedByVariant, slots), [
+      searchHeader,
+      "RELAY_TOKEN",
+      "google",
+      null,
+    ]);
   }
   const unsetBeam = { ...withBeam("${RELAY_TOKEN}", {}), ...allowlist(["OTHER"]) };
   const unsetImap = {
