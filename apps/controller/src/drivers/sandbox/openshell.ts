@@ -474,15 +474,16 @@ function refuseIngressAlias(value: unknown, pointer: string): void {
 }
 
 /** Refuse fields the client would drop or change, before they could widen a rule (finding 3111). */
-function refuseUnsentFields(value: unknown, pointer: string): void {
-  const index = pointer.slice(pointer.lastIndexOf("/") + 1);
+function refuseUnsentFields(value: unknown, list: string, index: number): void {
   const fields = unsentManifestFields(value as KubernetesNamespacedResource);
   if (fields.length === 0) {
     return;
   }
+  const item = `/gateway/${list}/${index}`;
   throw new ConfigurationValidationError(
     fields.map((field) => ({
-      path: `${pointer}${field}`,
+      // ErrorDetail bounds paths and messages to 512 characters.
+      path: item.length + field.length <= 512 ? `${item}${field}` : item,
       code: "INVALID_VALUE",
       // The write-only list is reported at its own path, so the message names the field.
       message:
@@ -2410,12 +2411,12 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
   options.gateway.networkPolicyResources?.forEach((resource, index) => {
     validateKubernetesResource(resource, `gateway.networkPolicyResources[${index}]`);
     refuseIngressAlias(resource, `/gateway/networkPolicyResources/${index}`);
-    refuseUnsentFields(resource, `/gateway/networkPolicyResources/${index}`);
+    refuseUnsentFields(resource, "networkPolicyResources", index);
   });
   options.gateway.operatorWorkspaceResources?.forEach((resource, index) => {
     validateOperatorWorkspaceResource(resource, `gateway.operatorWorkspaceResources[${index}]`);
     refuseIngressAlias(resource, `/gateway/operatorWorkspaceResources/${index}`);
-    refuseUnsentFields(resource, `/gateway/operatorWorkspaceResources/${index}`);
+    refuseUnsentFields(resource, "operatorWorkspaceResources", index);
   });
   nonempty(options.kubernetes.runtimeClassName, "OpenShell RuntimeClass name");
   if (options.kubernetes.serviceAccount.mode !== "gatewayConfigured") {
