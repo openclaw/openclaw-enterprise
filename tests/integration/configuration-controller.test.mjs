@@ -40,6 +40,7 @@ import {
   unsubstitutedFallbackRefusal,
   unsubstitutedReferenceRefusal,
   codexApiKeyRefusal,
+  codexPluginRefusal,
   codexRuntimeOffProvider,
   configIncludeRefusal,
   KUBERNETES_GATEWAY_PASSWORD_REFUSAL,
@@ -2814,6 +2815,81 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     const saved = await request(context.app, "PATCH", item, { body: { values } });
     assert.equal(saved.status, 200, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
   }
+});
+
+test("Configuration save, Agent save and Kubernetes deployment refuse a plugin policy that turns off a Dedicated Codex Agent's codex plugin", async () => {
+  // Finding 3096. Every Dedicated Codex Gateway runs the codex plugin: its plugin runtime enables
+  // plugins.entries.codex even when the Agent selects no plugin, and the Gateway entrypoint exits
+  // at every start when the Configuration turns that plugin off. Each of these used to save and
+  // deploy, and the new Gateway never started. Now every save of a Configuration whose model
+  // policy selects Codex refuses it, naming the setting and the fix, and deployment refuses a row
+  // stored before the rule, before any revision exists.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-codex-plugin-policy", ...configurationRules),
+  });
+  const valid = createHarnessConfiguration("codex", "gpt-5");
+  const agent = await deployableAgent(context, context.namespace, {
+    values: valid,
+    name: "Codex plugin policy consumer",
+    secretName: "codex-plugin-policy-key",
+    executionMode: "dedicated",
+  });
+  const storedRow = { ...agent, configurationDriver, valid };
+  const withPlugins = (plugins) => ({ ...valid, plugins: { ...valid.plugins, ...plugins } });
+  const refused = [
+    [{ enabled: false }, ["plugins.enabled", "must not be false", "Remove it"]],
+    // OpenClaw compares plugin IDs trimmed and lowercased.
+    [{ deny: [" Codex "] }, ["plugins.deny", "must not list codex", "Remove that item"]],
+    [{ allow: ["slack"] }, ["plugins.allow", "must list codex", "Add it"]],
+    // The entrypoint stops on a list item that is not text.
+    [
+      { allow: ["codex", 1] },
+      ["plugins.allow", "must list only plugin IDs as text", "Remove any other item"],
+    ],
+  ];
+  for (const [plugins, refusal] of refused) {
+    await refusedAtSaveAndDeploy(
+      context,
+      storedRow,
+      withPlugins(plugins),
+      codexPluginRefusal(...refusal),
+    );
+  }
+  // Agent save checks the Configuration it selects: a row stored before the rule is refused.
+  const [[storedPlugins, storedRefusal]] = refused;
+  const other = await request(context.app, "POST", context.collection, {
+    body: { kind: "agent", values: valid },
+  });
+  assert.equal(other.status, 201, JSON.stringify(other.body));
+  await writePastOcc(configurationDriver, other.body.data.id, withPlugins(storedPlugins));
+  assertRefused(
+    await request(context.app, "PATCH", agent.agentPath, {
+      body: { configurationId: other.body.data.id },
+    }),
+    codexPluginRefusal(...storedRefusal),
+  );
+  assert.deepEqual(
+    (await request(context.app, "GET", `${agent.agentPath}/revisions`)).body.data,
+    [],
+  );
+  // An OpenClaw Configuration does not run the codex plugin, so it saves.
+  const openclaw = await request(context.app, "POST", context.collection, {
+    body: { kind: "agent", values: { ...runtimeSelected, plugins: { enabled: false } } },
+  });
+  assert.equal(openclaw.status, 201, JSON.stringify(openclaw.body));
+  // Settings the entrypoint starts with save and deploy: the codex plugin's overlay turns a
+  // disabled codex entry back on, and an allowlist that names codex in another case keeps it.
+  const startable = withPlugins({
+    allow: [" CODEX ", "slack"],
+    deny: ["slack"],
+    entries: { codex: { ...valid.plugins.entries.codex, enabled: false } },
+  });
+  const saved = await request(context.app, "PATCH", agent.item, { body: { values: startable } });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
 });
 
 test("Preset save refuses a Codex approval policy every Gateway refuses, as Configuration save does", async (t) => {

@@ -468,7 +468,8 @@ describe("Agent channels", { concurrency: 3 }, () => {
       ["padded", [" Slack"], true],
       ["upper", ["SLACK "], true],
       ["exact", ["slack"], true],
-      ["other", ["discord", 7], false],
+      // Not a non-text item: Dedicated Codex refuses one at save (finding 3096).
+      ["other", ["discord", "telegram"], false],
     ];
     const agents = [];
     for (const [slug, deny] of cases) {

@@ -3,6 +3,8 @@ import test from "node:test";
 import vm from "node:vm";
 import { WORKSPACE_FILE_NAMES } from "../../packages/contracts/src/index.ts";
 import { requireWorkspaceNodePlugins } from "../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { apiKeyAuth, options, routedOptions } from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
   WORKSPACE_NODE_BINDING_PATH,
   runOpenClawRuntimeHelper,
@@ -1585,6 +1587,107 @@ test("deployment admission and the Gateway entrypoint agree on the workspace nod
     assert.equal(await entrypointStarts(structuredClone(config)), starts, label);
     assert.equal(admits(config), starts, label);
   }
+});
+
+test("Kubernetes admission and the Dedicated Codex Gateway entrypoint agree on the codex plugin policy", async () => {
+  // Finding 3096. Every Dedicated Codex Gateway gets a codex plugin runtime, even with no plugin
+  // selected, whose overlay enables plugins.entries.codex; the entrypoint exits at every start on
+  // a Configuration that turns it off, and admission accepted each such Configuration. Each row
+  // runs the real entrypoint and the real Kubernetes Compute admission: Configuration save (the
+  // model policy selects Codex), Agent save (null bindings) and deployment, with and without a
+  // workspace node. Admission must refuse exactly the rows the entrypoint refuses, and an
+  // accepted row must reach Gateway start.
+  const manifest = { kind: "codex", selections: {} };
+  const codexSelected = {
+    agents: {
+      defaults: {
+        model: "codex/gpt-5",
+        models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
+      },
+    },
+  };
+  const harness = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
+  const topologies = [
+    ["without workspace node", new KubernetesComputeDriver(options()), undefined],
+    [
+      "with workspace node",
+      new KubernetesComputeDriver(routedOptions({ runtime }), { nodeEnrollment: {} }),
+      "enrolled-node",
+    ],
+  ];
+  const entrypointStarts = async (plugins, workspaceNodeId) => {
+    try {
+      await runOpenClawRuntimeHelper({ manifest }, [], {
+        env: {
+          APP_SERVER_URL: "ws://harness.example.test:18790",
+          OPENCLAW_PLUGIN_RUNTIME_JSON: JSON.stringify({ manifest }),
+        },
+        baseConfig: { gateway: { port: 8080 }, plugins: structuredClone(plugins) },
+        workspaceNodeId,
+      });
+      return true;
+    } catch (error) {
+      assert.match(
+        String(error?.message),
+        /conflicts with managed plugin selection codex|is not a function|reading 'trim'|requires the file-transfer plugin/,
+      );
+      return false;
+    }
+  };
+  const admits = (admit) => {
+    try {
+      admit();
+      return true;
+    } catch (error) {
+      assert.equal(error.name, "ConfigurationHarnessError", String(error?.message));
+      return false;
+    }
+  };
+  const rows = [
+    {},
+    { allow: ["codex"] },
+    { allow: [" CODEX ", "slack"], deny: ["slack", "codex-extra"], enabled: true },
+    // Blank items are ignored, so this allowlist is empty.
+    { allow: [" ", ""] },
+    // The overlay turns the codex entry back on.
+    { allow: ["codex"], entries: { codex: { enabled: false } } },
+    // The entrypoint does not read an allowlist that is not an array.
+    { allow: "slack" },
+    { enabled: false },
+    { enabled: false, entries: { codex: { enabled: true } } },
+    { deny: [" Codex "] },
+    { allow: ["slack"] },
+    { allow: ["codex", 1] },
+    { deny: [null] },
+    // Only a workspace node needs file-transfer.
+    { deny: ["file-transfer"] },
+  ];
+  const mismatches = [];
+  for (const plugins of rows) {
+    const configuration = { ...codexSelected, plugins };
+    for (const [topology, driver, workspaceNodeId] of topologies) {
+      const starts = await entrypointStarts(plugins, workspaceNodeId);
+      const admissions = {
+        "Agent save": () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration, null),
+        deployment: () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration, {}),
+      };
+      for (const [stage, admit] of Object.entries(admissions)) {
+        if (admits(admit) !== starts) {
+          mismatches.push(
+            `${topology} ${stage} ${JSON.stringify(plugins)}: Gateway starts ${starts}`,
+          );
+        }
+      }
+      // Configuration save does not know the workspace node, so it may admit a row that only a
+      // workspace node refuses, and never refuses one that starts.
+      const saved = admits(() => driver.validateConfiguration(configuration));
+      if (saved !== starts && !(saved && workspaceNodeId !== undefined)) {
+        mismatches.push(`${topology} save ${JSON.stringify(plugins)}: Gateway starts ${starts}`);
+      }
+    }
+  }
+  assert.deepEqual(mismatches, []);
 });
 
 test("a timed-out workspace binding probe releases the poll and can recover", async () => {

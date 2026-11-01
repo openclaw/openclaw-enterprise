@@ -344,6 +344,12 @@ export const codexApiKeyRefusal = (setting) =>
 // satisfy, such as "must not be false".
 export const workspaceNodePluginRefusal = (setting, rule) =>
   `Configuration setting ${setting} ${rule}: the Agent's workspace node requires the file-transfer plugin.`;
+// Kubernetes Configuration save, Agent save, provisioning and deploy admission refuse a plugin
+// setting that turns off the codex plugin every Dedicated Codex Gateway runs (finding 3096).
+// `setting` is plugins.allow, plugins.deny or plugins.enabled; `rule` is what it must satisfy,
+// such as "must list codex"; `step` is the fix, such as "Add it".
+export const codexPluginRefusal = (setting, rule, step) =>
+  `Configuration setting ${setting} ${rule}: Dedicated Codex runs the codex plugin, so its Gateway would not start. ${step}.`;
 // Configuration save, Agent save and deploy admission refuse a plugins.entries key that spells the
 // codex or acpx plugin another way (finding 3073), and on Kubernetes file-transfer or a managed
 // plugin (finding 3077). `path` is the setting as the message shows it, such as
