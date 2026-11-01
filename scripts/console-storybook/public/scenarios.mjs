@@ -5217,6 +5217,45 @@ export const scenarios = {
     ],
     gap: "The stored key and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes and SSH Compute rules.",
   },
+  kubernetesEntryKeyVariantChecking: {
+    group: "Pages/Agent detail",
+    name: "Plugin entry key, Compute check in flight",
+    path: draft,
+    deployed: true,
+    kubernetesEntryKeyVariant: true,
+    rules: [{ suffix: "/agents/validate", method: "POST", hold: true }],
+    description:
+      "An older release saved a plugins.entries.File-Transfer entry, and Create Agent's preflight has not answered yet. Deploy waits for it, and after 250 ms the draft says it is checking the Configuration with this Installation's Compute.",
+    steps: [
+      "Deploy new version is disabled with Checking the Configuration with this Installation's Compute before deploying.",
+    ],
+    gap: "The preflight is held by the fixture; the API client gives up after 15 seconds, and then the page holds nothing and Deploy is enabled.",
+  },
+  kubernetesEntryKeyVariantCreateDenied: {
+    group: "Pages/Agent detail",
+    name: "Plugin entry key, caller without Agent create",
+    path: draft,
+    deployed: true,
+    kubernetesEntryKeyVariant: true,
+    agentCreateRestricted: true,
+    rules: [
+      {
+        suffix: "/agents/validate",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting plugins.entries.File-Transfer must be named file-transfer: OpenClaw merges it into plugins.entries.file-transfer, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key.",
+      },
+    ],
+    description:
+      "An older release saved a plugins.entries.File-Transfer entry, and the Namespace permission answer says this caller may not create Agents. Create Agent's preflight needs that permission, so the page does not ask it and holds nothing. Deploy stays the authority and gives Kubernetes Compute's refusal, if any.",
+    steps: [
+      "Deploy new version is enabled and the draft reads Ready to deploy.",
+      "The fixture would refuse the preflight, yet no refusal is shown: the page never sent it.",
+    ],
+    gap: "The permission answer is simulated; tests/browser/console-agent-detail.test.mjs covers a member without Agent create against the real API, with no preflight request and no audited denial.",
+  },
   gatewayPasswordAllowlistOmits: {
     group: "Pages/Agent detail",
     name: "Gateway password reference an allowlist omits",
