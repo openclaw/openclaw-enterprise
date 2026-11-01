@@ -1196,8 +1196,11 @@ for (const { shape, stopFailures = 0 } of [
 
 // Finding 3080 (review nit): the superseded version closes its repository credential sessions
 // before it stops its runtime, as a newer version's sweep does, so the stopped Harness is not
-// left the only holder of a live session. Repository cleanup closes them again after the version
-// ends superseded, so only the closes made before the stop tell the self-stop's close apart.
+// left the only holder of a live session. Superseding a version with repository credentials also
+// queues its runtime retirement (`repository_cleanup:retire:`), which closes its sessions again
+// and repeats the stop once the version has ended superseded. Whether that second stop ran before
+// the superseded work was observed depended on timing (finding 3089), so the case waits for the
+// retirement and tells the stops apart by the state of the version's own work at each stop.
 test(
   "an older exclusive version with repository credentials superseded by a refused newer exclusive version closes its sessions before its own stop",
   requiresPostgres,
@@ -1212,10 +1215,16 @@ test(
       assert.equal(sandboxDriverId, undefined);
     };
     const closes = () => repository.calls.filter(({ operation }) => operation === "close").length;
-    const closesAtStop = new Map();
+    // Each stop records the closes made before it and the state of the version's own deployment
+    // work: "claimed" while its own pass runs, "succeeded" once it ended superseded.
+    const stopsAt = new Map();
     const stop = driver.compute.stopRevision;
-    driver.compute.stopRevision = (revision) => {
-      closesAtStop.set(revision.id, [...(closesAtStop.get(revision.id) ?? []), closes()]);
+    driver.compute.stopRevision = async (revision) => {
+      const closed = closes();
+      const own = await workState(fixture, {
+        idempotencyKey: `agent_revision:${revision.id}:reconcile`,
+      });
+      stopsAt.set(revision.id, [...(stopsAt.get(revision.id) ?? []), { closed, own }]);
       return stop(revision);
     };
     await fixture.start(driver.compute);
@@ -1234,8 +1243,19 @@ test(
     assert.equal(closes(), 0);
     await refusedExclusiveVersion(fixture, driver, owner, 2, codex);
     await assertWorkEnds(fixture, older, "succeeded", "REVISION_SUPERSEDED");
-    assert.equal(driver.stops(older), 1);
-    assert.deepEqual(closesAtStop.get(older.id), [1]);
+    await waitFor("the superseded version's runtime retirement", async () => {
+      const retirement = await fixture.observerPool.query(
+        "SELECT state FROM occ.controller_work WHERE revision_id = $1 AND idempotency_key LIKE $2",
+        [older.id, `agent_revision:${older.id}:repository_cleanup:retire:%`],
+      );
+      return retirement.rows[0]?.state === "succeeded" ? true : undefined;
+    });
+    // Its own pass stopped it after closing its one session; the retirement stopped it again
+    // after the version ended superseded, with nothing left to close.
+    assert.deepEqual(stopsAt.get(older.id), [
+      { closed: 1, own: "claimed" },
+      { closed: 1, own: "succeeded" },
+    ]);
     assert.deepEqual([...driver.harnesses], []);
   },
 );
