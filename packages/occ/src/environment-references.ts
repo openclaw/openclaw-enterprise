@@ -443,7 +443,9 @@ function settingValues(
     .flatMap((name) => settingValues(record[name], rest, keyedSettingPath(path, name)));
 }
 
-// The built-in plugin ID aliases of OpenClaw's normalizePluginId (`src/plugins/config-state.ts`).
+// The built-in plugin ID aliases of OpenClaw's normalizePluginId (`src/plugins/config-state.ts`
+// at the pin). Update them, and the merge and auto-enable model in activePluginSecretInputs, when
+// that pin changes.
 const PLUGIN_ID_ALIASES: Readonly<Record<string, string>> = {
   "google-gemini-cli": "google",
   "minimax-portal": "minimax",
@@ -466,9 +468,13 @@ function pluginPolicyId(name: unknown): string | undefined {
  * the step that disables the entry. OpenClaw reads secret inputs only in the entry keyed by the
  * plugin's exact ID (`collectPluginConfigAssignments`): a `Google` or ` google` entry has none
  * (finding 3072). It skips those of a denied plugin, of `plugins.enabled: false` and of a plugin
- * whose `enabled` is false, both looked up by policy ID (pluginPolicyId). `plugins.allow` skips
- * none: Gateway startup first adds every known plugin entry with config to a non-empty allowlist
- * (plugin auto-enable), so these stay active (finding 3071).
+ * whose `enabled` is false, both looked up by policy ID (pluginPolicyId). A non-empty
+ * `plugins.allow` skips none here: Gateway startup first adds the exact entry of every known plugin
+ * with config to it (plugin auto-enable), so these stay active (finding 3071). Startup skips an
+ * exact entry with `enabled: false`, so a later entry for the same plugin that enables it leaves
+ * the allowlist without it and the Gateway starts. This still counts that plugin active, an
+ * over-refusal kept on purpose: activation's slot and channel exceptions to the allowlist are
+ * not modeled here (finding 3074).
  */
 export function activePluginSecretInputs(values: unknown): {
   readonly setting: string;
@@ -483,36 +489,48 @@ export function activePluginSecretInputs(values: unknown): {
   }
   const denied = Array.isArray(plugins?.deny) ? plugins.deny.map(pluginPolicyId) : [];
   // OpenClaw merges the entries whose keys share a policy ID in key order: the last boolean
-  // `enabled` wins and a value that is not an object clears it. Before that, startup auto-enable
-  // may set `enabled: true` on the exact entry of a default-on plugin that leaves it unset, so that
-  // entry counts as enabled.
+  // `enabled` wins, and a value that is not an object replaces the merged entry with {}, which
+  // leaves the plugin inactive. Before that, startup auto-enable may set `enabled: true` on the
+  // exact entry of a default-on plugin that leaves it unset, so that entry counts as enabled.
+  // `enabledBy` keeps the key of the entry whose `enabled` is the merged one.
   const enabled = new Map<string | undefined, boolean | undefined>();
+  const enabledBy = new Map<string | undefined, string>();
   for (const [key, value] of Object.entries(entries)) {
     const id = pluginPolicyId(key);
     const entry = asObject(value);
-    let merged = enabled.get(id);
     if (entry === undefined) {
-      merged = undefined;
+      enabled.set(id, false);
+      enabledBy.delete(id);
     } else if (typeof entry.enabled === "boolean") {
-      merged = entry.enabled;
-    } else if (key === id && Object.hasOwn(PLUGIN_SECRET_INPUTS, id)) {
-      merged = PLUGIN_SECRET_INPUTS[id]?.enabledByDefault || merged;
+      enabled.set(id, entry.enabled);
+      enabledBy.set(id, key);
+    } else if (
+      key === id &&
+      Object.hasOwn(PLUGIN_SECRET_INPUTS, id) &&
+      PLUGIN_SECRET_INPUTS[id]?.enabledByDefault === true
+    ) {
+      enabled.set(id, true);
+      enabledBy.set(id, key);
     }
-    enabled.set(id, merged);
   }
-  return Object.entries(entries).flatMap(([id, value]) => {
+  return Object.entries(entries).flatMap(([key, value]) => {
     const entry = asObject(value);
-    const inputs = Object.hasOwn(PLUGIN_SECRET_INPUTS, id) ? PLUGIN_SECRET_INPUTS[id] : undefined;
+    const inputs = Object.hasOwn(PLUGIN_SECRET_INPUTS, key) ? PLUGIN_SECRET_INPUTS[key] : undefined;
     if (
       inputs === undefined ||
       entry === undefined ||
-      (inputs.enabledByDefault ? enabled.get(id) === false : enabled.get(id) !== true) ||
-      denied.includes(id)
+      (inputs.enabledByDefault ? enabled.get(key) === false : enabled.get(key) !== true) ||
+      denied.includes(key)
     ) {
       return [];
     }
-    const path = keyedSettingPath("plugins.entries", id);
-    const disable = `remove ${path} or set its enabled to false`;
+    const path = keyedSettingPath("plugins.entries", key);
+    // A later entry for the same plugin that enables it is the one to turn off.
+    const by = enabledBy.get(key);
+    const disable =
+      by === undefined || by === key
+        ? `remove ${path} or set its enabled to false`
+        : `remove ${path} or set ${keyedSettingPath("plugins.entries", by)}.enabled to false`;
     return inputs.paths
       .flatMap((keys) => settingValues(entry.config, keys, `${path}.config`))
       .map(([setting, input]) => ({ setting, value: input, required: inputs.required, disable }));

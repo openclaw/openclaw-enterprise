@@ -3406,6 +3406,7 @@ export async function renderAgentDetail(
     // says it before Deploy, with the Configuration step. Only Kubernetes Compute refuses the
     // plugin input, but the page does not know which Compute the next version runs on, and the
     // Gateway exits on that input on any Compute that ships the plugin, so it holds Deploy on all.
+    // On SSH or Docker Compute that hold is stricter than OCC, whose deploy admits the input there.
     function configurationRefusal(): { readonly message: string; readonly step: string } | null {
       const defaults = secretProviderDefaultsProblem(values.secrets);
       if (defaults !== undefined) {

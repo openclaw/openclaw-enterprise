@@ -202,26 +202,62 @@ export function refuseRetiredOpenClawSettings(
   }
 }
 
-// The plugins whose plugins.entries entry OCE reads or writes at its exact key: Configuration rules
-// check codex and acpx settings there (the codex approval policy, proxy URLs, acpx MCP server
-// environments), and Compute renders codex settings there (the Gateway-local tool exclusions, the
-// native hook relay, the OpenShell app-server policy).
+// The plugins whose plugins.entries entry OCC rules read at its exact key on every Compute:
+// Configuration rules check codex and acpx settings there (the codex approval policy, proxy URLs,
+// acpx MCP server environments), and Compute renders codex settings there (the Gateway-local tool
+// exclusions, the native hook relay, the OpenShell app-server policy). Kubernetes Compute adds the
+// plugins only it reads or renders at their exact key (file-transfer and the managed plugins).
 const EXACT_KEY_PLUGINS: readonly string[] = ["codex", "acpx"];
 
 /**
- * Refuses a plugins.entries key that names a plugin of EXACT_KEY_PLUGINS in another spelling, such
- * as `Codex` or ` codex`. The pinned OpenClaw (`normalizePluginEntries` in
+ * Whether filling the Preset variables of a key whose written text around them is `literals`
+ * (`options.unresolved(path, true)`) could make it `$include` or another spelling of a plugin ID,
+ * as the trimmed, lowercased `name`. A key that is only variables could spell any key, so it waits
+ * for the filled Configuration, as every rule's check does: a refusal at Preset save would also
+ * refuse every filling that names another key. Text that could spell only the exact plugin ID is
+ * refused too: a Preset writes that key without a variable.
+ */
+function keyCanSpell(literals: readonly string[], name: string, folded: boolean): boolean {
+  if (literals.every((literal) => literal === "")) {
+    return false;
+  }
+  if (!folded) {
+    return canSpell(literals, name);
+  }
+  // A variable can add the padding or capitals; this misses only text whose own padding needs a
+  // variable's to be trimmed, which the filled Configuration's check then refuses.
+  const lowered = literals.map((literal, index) => {
+    const start = index === 0 ? literal.trimStart() : literal;
+    return (index === literals.length - 1 ? start.trimEnd() : start).toLowerCase();
+  });
+  return canSpell(lowered, name);
+}
+
+/**
+ * Refuses a plugins.entries key that names a plugin of `plugins` (by default EXACT_KEY_PLUGINS) in
+ * another spelling, such as `Codex` or ` codex`. The pinned OpenClaw (`normalizePluginEntries` in
  * `src/plugins/config-normalization-shared.ts`) merges entries whose keys match trimmed and
  * lowercased, and the last one with a `config` replaces the plugin's whole config: a `Codex` entry
  * after `codex` would replace the settings OCE checked and Compute rendered (finding 3073). Its
- * built-in plugin ID aliases name neither plugin. Other plugins' keys stay accepted: OCE reads no
- * settings at their exact key (finding 3072). Configuration save runs it with the other content
- * rules; Agent save and deploy admission run it on the stored Configuration.
+ * built-in plugin ID aliases name none of these plugins, and the aliases plugin manifests declare
+ * apply to providers and channels, not to this merge. Other plugins' keys stay accepted: OCE reads
+ * no settings at their exact key (finding 3072). Configuration save runs it with the other content
+ * rules; Agent save and deploy admission run it on the stored Configuration. On a Preset save
+ * (`options`), a key that waits on a variable is refused when its written text could spell such a
+ * key (keyCanSpell).
  */
-function refusePluginEntryKeyVariants(values: Readonly<OpenClawConfigurationDocument>): void {
+export function refusePluginEntryKeyVariants(
+  values: Readonly<OpenClawConfigurationDocument>,
+  plugins: readonly string[] = EXACT_KEY_PLUGINS,
+  options?: ConfigurationValidationOptions,
+): void {
   for (const key of Object.keys(asRecord(asRecord(values.plugins)?.entries) ?? {})) {
-    const id = key.trim().toLowerCase();
-    if (key !== id && EXACT_KEY_PLUGINS.includes(id)) {
+    const literals = options?.unresolved?.(["plugins", "entries", key], true);
+    const id =
+      literals === undefined
+        ? key.trim().toLowerCase()
+        : plugins.find((plugin) => keyCanSpell(literals, plugin, true));
+    if (id !== undefined && key !== id && plugins.includes(id)) {
       throw new ConfigurationHarnessError(
         configurationSettingMessage(
           keyedSettingPath("plugins.entries", key),
@@ -243,14 +279,19 @@ const CONFIG_INCLUDE_KEY = "$include";
  * add settings no rule checked; settings must be written in the Configuration instead (finding
  * 3078). Configuration save runs it after the model provider settings, first of the other content
  * rules; Agent save, deploy admission and the upgrade preflight run it on the stored Configuration.
+ * On a Preset save (`options`), a key that waits on a variable is refused when its written text
+ * could spell `$include` (keyCanSpell).
  */
-function refuseConfigIncludes(values: Readonly<OpenClawConfigurationDocument>): void {
-  const pending: [unknown, string][] = [[values, ""]];
+function refuseConfigIncludes(
+  values: Readonly<OpenClawConfigurationDocument>,
+  options?: ConfigurationValidationOptions,
+): void {
+  const pending: [unknown, string, (string | number)[]][] = [[values, "", []]];
   for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
-    const [value, path] = next;
+    const [value, path, keys] = next;
     if (Array.isArray(value)) {
       for (let index = value.length - 1; index >= 0; index -= 1) {
-        pending.push([value[index], `${path}[${index}]`]);
+        pending.push([value[index], `${path}[${index}]`, [...keys, index]]);
       }
       continue;
     }
@@ -258,10 +299,18 @@ function refuseConfigIncludes(values: Readonly<OpenClawConfigurationDocument>): 
     if (record === undefined) {
       continue;
     }
-    if (Object.hasOwn(record, CONFIG_INCLUDE_KEY)) {
+    const include = Object.keys(record).find((key) => {
+      const literals = options?.unresolved?.([...keys, key], true);
+      return literals === undefined
+        ? key === CONFIG_INCLUDE_KEY
+        : keyCanSpell(literals, CONFIG_INCLUDE_KEY, false);
+    });
+    if (include !== undefined) {
       throw new ConfigurationHarnessError(
         configurationSettingMessage(
-          path === "" ? CONFIG_INCLUDE_KEY : `${path}.${CONFIG_INCLUDE_KEY}`,
+          include === CONFIG_INCLUDE_KEY
+            ? `${path === "" ? "" : `${path}.`}${include}`
+            : keyedSettingPath(path, include),
           "is not supported: OpenClaw would merge settings from another file that OCE does not check. Write those settings in the Configuration instead",
         ),
       );
@@ -271,6 +320,7 @@ function refuseConfigIncludes(values: Readonly<OpenClawConfigurationDocument>): 
       pending.push([
         child,
         path === "" && /^[A-Za-z0-9_-]+$/.test(key) ? key : keyedSettingPath(path, key),
+        [...keys, key],
       ]);
     }
   }
@@ -374,7 +424,7 @@ export function validateConfigurationSettings(
   values: OpenClawConfigurationDocument,
   options?: ConfigurationValidationOptions,
 ): void {
-  refuseConfigIncludes(values);
+  refuseConfigIncludes(values, options);
   codexApprovalPolicy(
     values,
     (setting, requirement) =>
@@ -387,7 +437,7 @@ export function validateConfigurationSettings(
   validateWorkspaceBootstrapSettings(values, options);
   refuseRetiredOpenClawSettings(values);
   refuseOpenClawSandbox(values, options);
-  refusePluginEntryKeyVariants(values);
+  refusePluginEntryKeyVariants(values, EXACT_KEY_PLUGINS, options);
 }
 
 /**

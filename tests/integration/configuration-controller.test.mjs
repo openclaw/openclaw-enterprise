@@ -1703,6 +1703,14 @@ test("Configuration save and deployment refuse another spelling of the codex or 
       "plugins.entries.ACPX",
       "acpx",
     ],
+    // Kubernetes Compute enables file-transfer for a workspace node and renders the managed diffs
+    // plugin at the exact key, so its rules refuse their other spellings too (finding 3077).
+    [
+      { "file-transfer": {}, "File-Transfer": { enabled: false } },
+      "plugins.entries.File-Transfer",
+      "file-transfer",
+    ],
+    [{ diffs: { enabled: true }, Diffs: { config: {} } }, "plugins.entries.Diffs", "diffs"],
   ]) {
     const values = withEntries(entries);
     const message = pluginEntryKeyVariantRefusal(path, id);
@@ -1722,15 +1730,44 @@ test("Configuration save and deployment refuse another spelling of the codex or 
     pluginEntryKeyVariantRefusal("plugins.entries.CODEX", "codex"),
     { label: "Agent save" },
   );
-  // The exact keys deploy, and other plugins' keys in another spelling still save (finding 3072).
+  // An update that renames the key recovers the stored row: a PATCH replaces all values.
   const exact = withEntries({ codex, acpx: { config: {} } });
-  await writePastOcc(configurationDriver, agent.configurationId, exact);
+  const renamed = await request(context.app, "PATCH", agent.item, { body: { values: exact } });
+  assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
+  assert.deepEqual(renamed.body.data.values, exact);
+  // The exact keys deploy, and other plugins' keys in another spelling still save (finding 3072).
   const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   await acceptedOnSave(
     context,
     withEntries({ ...exact.plugins.entries, Google: { enabled: false } }),
   );
+  // A Preset key that waits on a variable is refused when its written text could spell one of
+  // these keys another way; a key that is only a variable, or that no filling makes one, saves.
+  const variables = { key: { type: "string" } };
+  for (const [key, id] of [
+    ["Codex{{ vars.key }}", "codex"],
+    ["{{ vars.key }}ACPX", "acpx"],
+    ["File-{{ vars.key }}", "file-transfer"],
+  ]) {
+    assertRefused(
+      await savePreset(
+        context,
+        { variables, configuration: { values: withEntries({ [key]: { enabled: false } }) } },
+        `Variant-${id}`,
+      ),
+      pluginEntryKeyVariantRefusal(`plugins.entries[${JSON.stringify(key)}]`, id),
+      { label: key },
+    );
+  }
+  for (const key of ["{{ vars.key }}", "codex-{{ vars.key }}"]) {
+    const preset = await savePreset(
+      context,
+      { variables, configuration: { values: withEntries({ [key]: { enabled: false } }) } },
+      `Variant-waits-${key.length}`,
+    );
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  }
 });
 
 test("Configuration save and deployment refuse OpenClaw's $include directive", async () => {
@@ -1772,10 +1809,37 @@ test("Configuration save and deployment refuse OpenClaw's $include directive", a
     configIncludeRefusal("tools.$include"),
     { label: "Agent save" },
   );
-  // Without the directive the same Agent deploys.
-  await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
+  // An update that removes the directive recovers the stored row, and the same Agent deploys.
+  const removed = await request(context.app, "PATCH", agent.item, {
+    body: { values: runtimeSelected },
+  });
+  assert.equal(removed.status, 200, JSON.stringify(removed.body));
+  assert.deepEqual(removed.body.data.values, runtimeSelected);
   const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  // A Preset key that waits on a variable is refused when its written text could spell $include;
+  // a key that is only a variable could spell any key, so it waits for the filled values.
+  const variables = { key: { type: "string" } };
+  const refusedKey = "$inc{{ vars.key }}";
+  assertRefused(
+    await savePreset(
+      context,
+      {
+        variables,
+        configuration: { values: { ...runtimeSelected, tools: { [refusedKey]: "x" } } },
+      },
+      "Include-variable",
+    ),
+    configIncludeRefusal(`tools[${JSON.stringify(refusedKey)}]`),
+  );
+  for (const key of ["{{ vars.key }}", "$includes-{{ vars.key }}"]) {
+    const preset = await savePreset(
+      context,
+      { variables, configuration: { values: { ...runtimeSelected, tools: { [key]: "x" } } } },
+      `Include-waits-${key.length}`,
+    );
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  }
 });
 
 test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE runtime cannot run", async () => {

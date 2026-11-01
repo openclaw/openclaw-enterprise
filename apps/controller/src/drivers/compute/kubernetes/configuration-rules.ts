@@ -15,6 +15,7 @@ import {
   pluginSecretInputReference,
   PROVIDER_MODELS_LIST,
   quotedSettingKey,
+  refusePluginEntryKeyVariants,
   type SecretInputReference,
   shownSecretName,
   unreadablePluginSecretInput,
@@ -22,6 +23,7 @@ import {
 } from "@openclaw-enterprise/occ";
 import { asRecord, splitModelRef } from "@openclaw-enterprise/utils";
 import type { HarnessAuthMethodRule } from "../harness-auth-method.ts";
+import { openClawManagedPluginIds } from "../../plugin/runtime-translator.ts";
 
 /**
  * Kubernetes Compute rules on the caller's own Configuration that preparation or the Gateway
@@ -69,11 +71,34 @@ export function usesGatewayPasswordEnvironment(
   return true;
 }
 
+const FILE_TRANSFER_PLUGIN = "file-transfer";
+
+/**
+ * Refuses another spelling of a plugins.entries key that Kubernetes Compute alone reads or renders
+ * at the exact key (refusePluginEntryKeyVariants): file-transfer, whose entry the Gateway
+ * entrypoint enables and configures for a workspace node, and each managed OpenClaw catalog
+ * plugin, whose entry it renders for the Agent's plugin selection and compares only at the exact
+ * key. OpenClaw would merge a `File-Transfer` entry into file-transfer's and could turn it off
+ * (finding 3077). Configuration save, Preset save and deploy admission run it.
+ */
+export function refuseKubernetesPluginEntryKeyVariants(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  options?: ConfigurationValidationOptions,
+): void {
+  refusePluginEntryKeyVariants(
+    configuration,
+    [FILE_TRANSFER_PLUGIN, ...openClawManagedPluginIds()],
+    options,
+  );
+}
+
 /**
  * A Gateway that hosts the Agent's workspace node needs the file-transfer plugin. The Gateway
  * entrypoint keeps its own copy of this rule (`requireWorkspaceNodePlugins` in
  * runtime-entrypoints.ts) and exits on it at every start; a parity test pins the two. A
- * `plugins.deny` that is not a list also stops that copy (or the Gateway's own schema).
+ * `plugins.deny` that is not a list also stops that copy (or the Gateway's own schema). OpenClaw
+ * matches deny entries trimmed and lowercased (its policy ID; no built-in alias names
+ * file-transfer), so ` File-Transfer` denies it too.
  */
 export function requireWorkspaceNodePlugins(
   configuration: Readonly<OpenClawConfigurationDocument>,
@@ -85,10 +110,13 @@ export function requireWorkspaceNodePlugins(
     throw createError("plugins.deny", "must be a list");
   }
   const requirement = "the Agent's workspace node requires the file-transfer plugin";
-  if (Array.isArray(deny) && deny.includes("file-transfer")) {
+  if (
+    Array.isArray(deny) &&
+    deny.some((id) => typeof id === "string" && id.trim().toLowerCase() === FILE_TRANSFER_PLUGIN)
+  ) {
     throw createError("plugins.deny", `must not list file-transfer: ${requirement}`);
   }
-  if (asRecord(asRecord(plugins?.entries)?.["file-transfer"])?.enabled === false) {
+  if (asRecord(asRecord(plugins?.entries)?.[FILE_TRANSFER_PLUGIN])?.enabled === false) {
     throw createError("plugins.entries.file-transfer.enabled", `must not be false: ${requirement}`);
   }
 }
