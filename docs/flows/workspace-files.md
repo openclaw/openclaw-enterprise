@@ -136,7 +136,9 @@ later edits. Errors omit document contents.
 reports refusals (exit 2) as `WORKSPACE_SETUP_REFUSED`; OpenShell raises
 `SandboxWorkspaceSetupRefusedError`. Kubernetes retries other failures
 (`WORKSPACE_SETUP_RETRYING`). OpenShell reports only RPC status or setup
-exit/timeout. `checkedAt` records termination/observation time.
+exit/timeout. Docker removes a setup container that exited and retries a failed
+setup; a running one stays, and preparation reports it unready until it exits.
+`checkedAt` records termination/observation time.
 
 ### 3. Activation clears staged contents and keeps completion metadata
 

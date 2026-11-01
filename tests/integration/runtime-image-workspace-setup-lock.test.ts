@@ -20,56 +20,36 @@ import {
   runtimeImageModel,
 } from "../helpers/runtime-image-startup.mjs";
 
-// The Docker Compute Driver waits 120 s for its workspace setup container
-// (STARTUP_TIMEOUT_MS in the Driver).
-const driverSetupWaitMs = 120_000;
+// A short setup wait for the Driver under test (the internal workspaceSetupWaitMs; the
+// default is 120 s), so the wait ends while native setup is paused holding its lock.
+const driverSetupWaitMs = cpuScaledImageTimeoutMs(15_000);
+// The Driver's default wait, which bounds the poll-failure attempt below.
+const defaultSetupWaitMs = 120_000;
 const timeoutMs = cpuScaledImageTimeoutMs(60_000);
-// The first native run takes this long, so the second still holds the lock when
-// the Driver's wait ends, well within that run's own 120 s bound.
-const slowFirstRunMs = driverSetupWaitMs - 30_000;
 // OpenClaw's state lock inside the Agent's retained state volume at the runtime
 // image's pin (resolveGatewayLockPaths), for the runtime user 1000.
 const stateLock = "/home/node/.openclaw/tmp/openclaw-1000/gateway.state.lock";
 
-// Runs in the setup container as its runtime user and makes native setup slow.
-// Setup runs OpenClaw's native setup twice, each run bounded by its own 120 s
-// timeout. The first run stops (SIGSTOP: OpenClaw's launcher and the CLI it starts)
-// once it holds the state lock and continues after `slow` ms. The second run stops
-// once it holds the lock and stays stopped, so a live setup holds the lock when the
-// Driver's wait ends, within each run's own bound.
+// Runs in the setup container as its runtime user and makes native setup slow: once the
+// first native run holds the state lock, it stops that run (SIGSTOP: OpenClaw's launcher
+// and the CLI it starts) and prints their PIDs. The run stays stopped until the test
+// continues it, well within that run's own 120 s bound.
 const pauser = String.raw`
 const fs = require("node:fs");
-const [lock, slow, limit] = process.argv.slice(1);
-const started = Date.now();
-const deadline = started + Number(limit);
-const pause = () => {
-  const pids = fs.readdirSync("/proc").filter((entry) => /^\d+$/.test(entry)).map(Number)
-    .filter((pid) => pid !== 1 && pid !== process.pid);
-  for (const pid of pids) {
-    try { process.kill(pid, "SIGSTOP"); } catch {}
-  }
-  return pids;
-};
-let phase = "first";
+const [lock, limit] = process.argv.slice(1);
+const deadline = Date.now() + Number(limit);
 const timer = setInterval(() => {
-  const held = fs.existsSync(lock);
-  if (phase === "first" && held) {
-    phase = "slow";
-    const pids = pause();
-    setTimeout(() => {
-      for (const pid of pids) {
-        try { process.kill(pid, "SIGCONT"); } catch {}
-      }
-      phase = "released";
-    }, Math.max(0, started + Number(slow) - Date.now()));
-  } else if (phase === "released" && !held) {
-    phase = "second";
-  } else if (phase === "second" && held) {
+  if (fs.existsSync(lock)) {
     clearInterval(timer);
-    console.log("SETUP_PAUSED " + pause().join(","));
+    const pids = fs.readdirSync("/proc").filter((entry) => /^\d+$/.test(entry)).map(Number)
+      .filter((pid) => pid !== 1 && pid !== process.pid);
+    for (const pid of pids) {
+      try { process.kill(pid, "SIGSTOP"); } catch {}
+    }
+    console.log("SETUP_PAUSED " + pids.join(","));
   } else if (Date.now() > deadline) {
     clearInterval(timer);
-    console.error("WATCHER_TIMEOUT " + phase);
+    console.error("WATCHER_TIMEOUT");
     process.exitCode = 1;
   }
 }, 1);
@@ -143,9 +123,38 @@ async function lockHeld(name: string) {
   return stdout.trim() === "true";
 }
 
+// Stops this Agent's first native setup run once it holds the state lock and resolves
+// with the setup container's name and the stopped PIDs.
+async function pauseSetupHoldingLock(t: TestContext, agentId: string) {
+  const name = await firstSetupStart(t, agentId);
+  const { stdout } = await runDocker(
+    ["exec", "--user", "1000:1000", name, "node", "-e", pauser, stateLock, String(timeoutMs)],
+    { timeout: timeoutMs + 30_000 },
+  );
+  const paused = /SETUP_PAUSED ([\d,]+)/.exec(stdout)?.[1];
+  assert.ok(paused, stdout);
+  return { name, paused };
+}
+
+// Continues the stopped native run and waits for setup to exit 0.
+async function resumeSetup(name: string, paused: string) {
+  await runDocker([
+    "exec",
+    "--user",
+    "1000:1000",
+    name,
+    "node",
+    "-e",
+    "for (const pid of process.argv[1].split(',')) process.kill(Number(pid), 'SIGCONT')",
+    paused,
+  ]);
+  const { stdout: exitCode } = await runDocker(["wait", name], { timeout: timeoutMs });
+  assert.equal(exitCode.trim(), "0", "the resumed setup completed");
+}
+
 test(
   "Docker Compute leaves a slow workspace setup its state lock until setup ends",
-  { ...imageTestOptions, timeout: driverSetupWaitMs + 4 * timeoutMs },
+  { ...imageTestOptions, timeout: defaultSetupWaitMs + 4 * timeoutMs },
   async (t) => {
     // The real Docker Compute Driver on the local engine with the image under test.
     // No model turn runs; the provider endpoint is a stub, so the synthetic key the
@@ -159,7 +168,10 @@ test(
         process.env.OPENAI_API_KEY = previousKey;
       }
     });
-    const driver = new DockerComputeDriver({ images: { gateway: image!, agent: image! } });
+    const images = { gateway: image!, agent: image! };
+    const driver = new DockerComputeDriver({ images, workspaceSetupWaitMs: driverSetupWaitMs });
+    // A second Driver with the default wait, whose Docker API fails one inspect on request.
+    const pollFailing = new DockerComputeDriver({ images });
     const createdAt = new Date().toISOString();
     const namespace = {
       id: `ns-setup-lock-${randomUUID()}`,
@@ -167,9 +179,8 @@ test(
       status: "ready" as const,
       createdAt,
     };
-    const agentId = `agent-setup-lock-${randomUUID()}`;
     // Docker Compute refuses Harness authentication bindings, so its revisions carry none.
-    const revisionAt = (number: number) =>
+    const revisionAt = (agentId: string, number: number) =>
       ({
         id: `rev-setup-lock-${number}-${randomUUID()}`,
         namespaceId: namespace.id,
@@ -192,87 +203,97 @@ test(
       }) as Omit<AgentRevision, "harnessAuth"> as AgentRevision;
     // Initial workspace files: the setup container runs native setup with OpenClaw's
     // state on the Agent's retained state volume, which every later Gateway opens.
-    const setup = {
-      id: `setup-${randomUUID()}`,
-      namespaceId: namespace.id,
-      agentId,
-      completed: false,
-      files: {
-        "AGENTS.md": "# Setup lock proof\n",
-        "SOUL.md": "",
-        "IDENTITY.md": "",
-        "USER.md": "",
+    const contextFor = (agentId: string): ComputeRevisionContext => ({
+      workspaceSetup: {
+        id: `setup-${randomUUID()}`,
+        namespaceId: namespace.id,
+        agentId,
+        completed: false,
+        files: {
+          "AGENTS.md": "# Setup lock proof\n",
+          "SOUL.md": "",
+          "IDENTITY.md": "",
+          "USER.md": "",
+        },
       },
-    };
-    const context: ComputeRevisionContext = {
-      workspaceSetup: setup,
       harnessAuth: { method: "runtime" },
       secretEnvironment: [],
-    };
+    });
     t.after(async () => {
       const result = await driver.deleteNamespace(namespace);
       assert.equal(result.namespaceDeleted, true, "owned containers, volumes and network removed");
     });
     await driver.preflight();
+    await pollFailing.preflight();
     assert.equal((await driver.ensureNamespace(namespace)).namespaceReady, true);
 
-    // Native setup is slow: it holds the state lock past the Driver's wait (finding 3109).
-    const started = firstSetupStart(t, agentId);
-    const first = assert.rejects(
-      driver.prepareRevision(revisionAt(1), context),
-      /Workspace initialization timed out/,
-    );
-    const name = await started;
-    const { stdout: pausedOutput } = await runDocker(
-      [
-        "exec",
-        "--user",
-        "1000:1000",
-        name,
-        "node",
-        "-e",
-        pauser,
-        stateLock,
-        String(slowFirstRunMs),
-        String(driverSetupWaitMs + timeoutMs),
-      ],
-      { timeout: driverSetupWaitMs + timeoutMs + 30_000 },
-    );
-    const paused = /SETUP_PAUSED ([\d,]+)/.exec(pausedOutput)?.[1];
-    assert.ok(paused, pausedOutput);
-    await first;
+    // Native setup outlasts the Driver's wait while it holds the state lock (finding 3109).
+    // A stop would SIGKILL it (its PID 1 ignores SIGTERM) and leave the lock to a holder no
+    // later container can prove stopped. The Driver leaves it running and reports the
+    // revision unready; while it runs, the next attempt stays unready instead of starting a
+    // second setup or a Gateway on that state.
+    const slowSetup = async () => {
+      const agentId = `agent-setup-lock-${randomUUID()}`;
+      const context = contextFor(agentId);
+      const first = driver.prepareRevision(revisionAt(agentId, 1), context);
+      const { name, paused } = await pauseSetupHoldingLock(t, agentId);
+      assert.equal((await first).ready, false, "the attempt waits for the running setup");
+      assert.equal(await setupState(name), "running", "the Driver left the running setup");
+      assert.equal(await lockHeld(name), true, "native setup still holds the state lock");
+      assert.equal(
+        (await driver.prepareRevision(revisionAt(agentId, 2), context)).ready,
+        false,
+        "the next attempt waits while setup runs",
+      );
+      await resumeSetup(name, paused);
+      // The next attempt reuses the completed setup, and the Gateway takes over the
+      // state that setup released.
+      assert.equal(
+        (await driver.prepareRevision(revisionAt(agentId, 3), context)).ready,
+        true,
+        "the Gateway must start on the state the finished setup released",
+      );
+    };
 
-    // The setup still runs and holds the lock: a stop would SIGKILL it (its PID 1
-    // ignores SIGTERM) and leave the lock to a holder no later container can prove
-    // stopped. While it runs, the next attempt refuses instead of starting a second
-    // setup or a Gateway on that state.
-    assert.equal(await setupState(name), "running", "the Driver left the running setup");
-    assert.equal(await lockHeld(name), true, "native setup still holds the state lock");
-    await assert.rejects(
-      driver.prepareRevision(revisionAt(2), context),
-      /Workspace initialization is already running/,
-    );
+    // A Docker API failure while the Driver polls setup (here one inspect that fails as a
+    // request timeout would; every other request reaches the engine) fails the attempt but
+    // leaves the started setup running with its lock, as the wait's end does (finding 3114).
+    const failedPoll = async () => {
+      const agentId = `agent-setup-poll-${randomUUID()}`;
+      const context = contextFor(agentId);
+      const internals = pollFailing as unknown as {
+        request: (method: string, path: string, ...rest: unknown[]) => Promise<unknown>;
+      };
+      const request = internals.request.bind(pollFailing);
+      let failInspectOf: string | undefined;
+      internals.request = async (method, path, ...rest) => {
+        if (
+          failInspectOf !== undefined &&
+          method === "GET" &&
+          path === `/containers/${failInspectOf}/json`
+        ) {
+          failInspectOf = undefined;
+          throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+        }
+        return request(method, path, ...rest);
+      };
+      const first = assert.rejects(pollFailing.prepareRevision(revisionAt(agentId, 1), context), {
+        name: "TimeoutError",
+      });
+      const { name, paused } = await pauseSetupHoldingLock(t, agentId);
+      failInspectOf = encodeURIComponent(name);
+      await first;
+      assert.equal(await setupState(name), "running", "a failed poll left the running setup");
+      assert.equal(await lockHeld(name), true, "native setup still holds the state lock");
+      assert.equal(
+        (await pollFailing.prepareRevision(revisionAt(agentId, 2), context)).ready,
+        false,
+        "the next attempt waits while setup runs",
+      );
+      await resumeSetup(name, paused);
+    };
 
-    // Setup resumes, finishes and releases the lock.
-    await runDocker([
-      "exec",
-      "--user",
-      "1000:1000",
-      name,
-      "node",
-      "-e",
-      "for (const pid of process.argv[1].split(',')) process.kill(Number(pid), 'SIGCONT')",
-      paused,
-    ]);
-    const { stdout: exitCode } = await runDocker(["wait", name], { timeout: timeoutMs });
-    assert.equal(exitCode.trim(), "0", "the resumed setup completed");
-
-    // The next attempt reuses the completed setup, and the Gateway takes over the
-    // state that setup released.
-    assert.equal(
-      (await driver.prepareRevision(revisionAt(3), context)).ready,
-      true,
-      "the Gateway must start on the state the finished setup released",
-    );
+    // Two Agents in one Namespace, side by side.
+    await Promise.all([slowSetup(), failedPoll()]);
   },
 );

@@ -1531,7 +1531,7 @@ test("Docker dispatches embedded recovery only while Engine can verify the old s
         completed: true,
       };
       // The workspace already exists. Exercise normal Gateway creation, observation and replacement.
-      driver.initializeWorkspace = async () => {};
+      driver.initializeWorkspace = async () => true;
       const lifecycle = driver.request;
       let removed = false;
       driver.request = async (method, path, data) => {
