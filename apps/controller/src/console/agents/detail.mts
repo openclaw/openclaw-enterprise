@@ -20,6 +20,7 @@ import {
   type StoredConfigurationRule,
 } from "../stored-configuration-rules.mjs";
 import {
+  codexPluginPolicyProblem,
   configurationSettingMessage,
   gatewayPasswordRequirement,
   generatedGatewayPasswordReference,
@@ -452,6 +453,7 @@ const CHECKING_CREDENTIAL_ACCESS_STEP = "Checking credential access…";
 const CHECKING_COMPUTE_CONFIGURATION =
   "Checking the Configuration with this Installation's Compute before deploying.";
 const ENTRY_KEY_STEP = "Fix the plugin entry key";
+const CODEX_PLUGIN_STEP = "Let the codex plugin run";
 // The Configuration step that names each OCC stored-row rule's refusal (configurationRefusal).
 const STORED_RULE_STEPS: Readonly<Record<StoredConfigurationRule, string>> = {
   include: "Remove the $include setting",
@@ -3183,8 +3185,8 @@ export async function renderAgentDetail(
     const executionMode = agent.executionMode;
     let deployPending = false;
     let deployReloadMessage = "";
-    // Kubernetes Compute's refusal of a plugin entry key's spelling (checkComputeEntryKeys).
-    let computeEntryKeyRefusal: string | null = null;
+    // A refusal only Kubernetes Compute gives, with its step (checkComputeEntryKeys).
+    let computeEntryKeyRefusal: { readonly message: string; readonly step: string } | null = null;
     let computeEntryKeyChecking = false;
     let computeEntryKeyValues: unknown;
     const managedMode: DraftDetails["managedMode"] = {
@@ -3462,7 +3464,8 @@ export async function renderAgentDetail(
     // password, workspace bootstrap, a retired setting, OpenClaw's sandbox, another spelling of the
     // codex or acpx plugin entry key; findings 2699, 2767, 2810, 3063, 3064, 3073, 3078, 3093),
     // then Compute admission's refusals: Kubernetes Compute's of another spelling of file-transfer
-    // or a managed plugin key (finding 3077, computeEntryKeyRefusal below) and one of a plugin
+    // or a managed plugin key (finding 3077) or of a plugins setting that stops a Dedicated Codex
+    // Gateway (finding 3105), both computeEntryKeyRefusal below, and one of a plugin
     // secret input OpenClaw cannot read (finding 3076), in that order and with this message, so the
     // draft says it before Deploy, with the Configuration step (findings 3076, 3086, 3090). Only
     // Kubernetes Compute refuses the plugin input, but the page does not know which Compute the
@@ -3475,7 +3478,7 @@ export async function renderAgentDetail(
         return settings;
       }
       if (computeEntryKeyRefusal !== null) {
-        return { message: computeEntryKeyRefusal, step: ENTRY_KEY_STEP };
+        return computeEntryKeyRefusal;
       }
       const plugin = unreadablePluginSecretInput(values);
       return plugin === undefined
@@ -3508,20 +3511,35 @@ export async function renderAgentDetail(
     // gives no answer (no Agent create permission, a failed request, another refusal first)
     // holds nothing, and deploy stays the authority. The preflight needs Agent create, so a caller
     // the page knows cannot deploy or create Agents here skips it: the API would audit a 403 on
-    // every load and save (finding 3094). An unknown answer still asks.
+    // every load and save (finding 3094). An unknown answer still asks. Kubernetes Compute alone
+    // also refuses a plugins setting on which a Dedicated Codex Gateway would not start (finding
+    // 3096), so a Dedicated Codex draft with one asks the same way (finding 3105).
     async function checkComputeEntryKeys() {
       const checked = values;
       computeEntryKeyValues = checked;
       computeEntryKeyRefusal = null;
       computeEntryKeyChecking = false;
-      const refusals = new Set<string>();
-      const entries = responseFields(responseFields(checked).plugins).entries;
-      for (const key of Object.keys(responseFields(entries))) {
+      const refusals = new Map<string, string>();
+      const plugins = responseFields(responseFields(checked).plugins);
+      for (const key of Object.keys(responseFields(plugins.entries))) {
         const id = key.trim().toLowerCase();
         const problem = key === id ? undefined : pluginEntryKeyVariantProblem(checked, [id]);
         if (problem !== undefined) {
-          refusals.add(configurationSettingMessage(problem.setting, problem.requirement));
+          refusals.set(
+            configurationSettingMessage(problem.setting, problem.requirement),
+            ENTRY_KEY_STEP,
+          );
         }
+      }
+      const codex =
+        executionMode === "dedicated" && configuredHarnessId(checked) === "codex"
+          ? codexPluginPolicyProblem(plugins)
+          : undefined;
+      if (codex !== undefined) {
+        refusals.set(
+          configurationSettingMessage(codex.setting, codex.requirement),
+          CODEX_PLUGIN_STEP,
+        );
       }
       if (refusals.size === 0 || configurationSettingsRefusal() !== null) {
         return;
@@ -3555,7 +3573,9 @@ export async function renderAgentDetail(
         return;
       }
       computeEntryKeyChecking = false;
-      computeEntryKeyRefusal = refusal !== undefined && refusals.has(refusal) ? refusal : null;
+      const step = refusal === undefined ? undefined : refusals.get(refusal);
+      computeEntryKeyRefusal =
+        refusal !== undefined && step !== undefined ? { message: refusal, step } : null;
       updateDeployControls();
     }
     function updateDeployControls() {

@@ -25,6 +25,9 @@ export declare function unreadablePluginSecretInput(
 ): { readonly setting: string; readonly requirement: string } | undefined;
 export declare function configurationSettingMessage(setting: string, requirement: string): string;
 export declare function pluginPolicyId(name: unknown): string | undefined;
+export declare function codexPluginPolicyProblem(
+  plugins: Readonly<Record<string, unknown>>,
+): { readonly setting: string; readonly requirement: string } | undefined;
 export declare function configIncludeProblem(
   values: unknown,
 ): { readonly setting: string; readonly requirement: string } | undefined;

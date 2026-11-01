@@ -5260,6 +5260,30 @@ export const scenarios = {
     ],
     gap: "The stored key and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes and SSH Compute rules.",
   },
+  codexPluginsDisabledRefused: {
+    group: "Pages/Agent detail",
+    name: "Codex plugin turned off on Dedicated Codex",
+    path: draft,
+    deployed: true,
+    codexPluginsDisabled: true,
+    rules: [
+      {
+        suffix: "/agents/validate",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting plugins.enabled must not be false: Dedicated Codex runs the codex plugin, so its Gateway would not start. Remove it.",
+      },
+    ],
+    description:
+      "An older release saved plugins.enabled false on a Dedicated Codex Agent. Only Kubernetes Compute refuses it, so the page asks Create Agent's preflight, which runs the Installation's Compute rules. Here it refuses, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Let the codex plugin run.",
+      "Deploy new version is disabled with Configuration setting plugins.enabled must not be false: Dedicated Codex runs the codex plugin, so its Gateway would not start. Remove it.",
+    ],
+    gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes Compute rules.",
+  },
   kubernetesEntryKeyVariantChecking: {
     group: "Pages/Agent detail",
     name: "Plugin entry key, Compute check in flight",

@@ -5,6 +5,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   activePluginSecretInputs,
+  codexPluginPolicyProblem,
   enabledChannelEntries,
   gatewayPasswordRequirement,
   generatedGatewayPasswordReference,
@@ -12,7 +13,6 @@ import {
   isAdmittedHeaderName,
   isCredentialHeaderName,
   keyedSettingPath,
-  pluginPolicyList,
   pluginSecretInputReference,
   PROVIDER_MODELS_LIST,
   quotedSettingKey,
@@ -73,7 +73,6 @@ export function usesGatewayPasswordEnvironment(
 }
 
 const FILE_TRANSFER_PLUGIN = "file-transfer";
-const CODEX_PLUGIN = "codex";
 
 /**
  * Refuses another spelling of a plugins.entries key that Kubernetes Compute alone reads or renders
@@ -152,27 +151,13 @@ export function requireCodexPlugin(
   if (plugins === undefined) {
     return;
   }
-  const refusal = (setting: string, rule: string, step: string) =>
-    createError(
-      setting,
-      `${rule}: Dedicated Codex runs the codex plugin, so its Gateway would not start. ${step}`,
-    );
-  const pending = (key: "allow" | "deny") => (item: string, index: number) =>
-    waitsOnVariable(item, ["plugins", key, index], options);
-  const allow = pluginPolicyList(plugins, "allow", pending("allow"));
-  const deny = pluginPolicyList(plugins, "deny", pending("deny"));
-  const unreadable = allow.problem ?? deny.problem;
-  if (unreadable !== undefined) {
-    throw refusal(unreadable.setting, unreadable.requirement, "Remove any other item");
-  }
-  if (plugins.enabled === false) {
-    throw refusal("plugins.enabled", "must not be false", "Remove it");
-  }
-  if (deny.ids.includes(CODEX_PLUGIN)) {
-    throw refusal("plugins.deny", "must not list codex", "Remove that item");
-  }
-  if (allow.ids.length > 0 && !allow.ids.includes(CODEX_PLUGIN) && !allow.ids.includes(undefined)) {
-    throw refusal("plugins.allow", "must list codex", "Add it");
+  // The rule lives in OCC's environment-references.ts, which the Console also loads (finding 3105).
+  const problem = codexPluginPolicyProblem(
+    plugins,
+    (key) => (item, index) => waitsOnVariable(item, ["plugins", key, index], options),
+  );
+  if (problem !== undefined) {
+    throw createError(problem.setting, problem.requirement);
   }
 }
 
