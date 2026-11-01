@@ -5933,8 +5933,9 @@ export const scenarios = {
       { repositoryRef: "handbook", profile: "git-read" },
     ],
     description:
-      "Reopening the desired configuration keeps the Agent default and each explicit override. Saving changes updates the draft; admitted revisions retain their prior access.",
+      "Reopening the desired configuration keeps the Agent default and each explicit override. Saving changes updates the draft; earlier Agent revisions retain their prior access.",
     steps: [
+      "Check that Repository access shows the controls without a Runtime support and access limits disclosure or an empty space in its place. Create Agent keeps that disclosure.",
       "Visit Channels, return to Repositories, change a selection, then press browser Back. The selection stays, with a note to save or cancel before leaving.",
       "Cancel the edit. Back returns to Channels; Forward opens Repositories with the saved selection.",
     ],
