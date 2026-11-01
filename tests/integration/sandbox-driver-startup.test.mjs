@@ -6407,18 +6407,26 @@ test("OpenShell verifies operator NetworkPolicy from actual KubernetesObjectApi 
   const rule = malformed.gateway.networkPolicyResources[0].spec.ingress[0];
   rule._from = rule.from;
   delete rule.from;
-  assert.throws(
-    () =>
-      new OpenShellSandboxDriver(malformed, {
-        id: "openshell-sandbox",
-        implementation: "openshell",
-        backend: backendFor(gatewayClient),
-        operatorOwnedKubernetesResources: true,
-      }),
-    (error) =>
-      error instanceof SharedConfigurationValidationError &&
-      error.error.details[0].path === "/gateway/networkPolicyResources/0/spec/ingress/0/_from",
-  );
+  let refusal;
+  try {
+    new OpenShellSandboxDriver(malformed, {
+      id: "openshell-sandbox",
+      implementation: "openshell",
+      backend: backendFor(gatewayClient),
+      operatorOwnedKubernetesResources: true,
+    });
+  } catch (error) {
+    refusal = error;
+  }
+  assert.ok(refusal instanceof SharedConfigurationValidationError);
+  // The write-only list is reported at its own path; its items stay out of diagnostics.
+  assert.deepEqual(refusal.error.details, [
+    {
+      path: "/gateway/networkPolicyResources",
+      code: "INVALID_VALUE",
+      message: "Name NetworkPolicy ingress sources with the Kubernetes field from.",
+    },
+  ]);
 });
 
 // Finding 3110: KubernetesObjectApi serializes ingress sources only from its `_from` alias, so the
