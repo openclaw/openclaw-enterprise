@@ -5,7 +5,6 @@ import {
   chmod,
   lstat,
   mkdir,
-  mkdtemp,
   readFile,
   readdir,
   realpath,
@@ -14,7 +13,6 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import test, { before } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -83,8 +81,7 @@ before(async (t) => {
 });
 
 async function projectionFixture(t, { count = 1, publicCa } = {}) {
-  const root = await mkdtemp(join(await realpath(tmpdir()), "repository-runtime-material-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await realpath(await temporaryDirectory(t, "repository-runtime-material-"));
   const sourceRoot = join(root, "projection");
   const targetRoot = join(root, "output", "private");
   await mkdir(sourceRoot);

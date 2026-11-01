@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
@@ -20,6 +19,7 @@ import {
   qaRepositoryServiceConfig,
 } from "../helpers/qa-repository.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // The QA matrix's repository leg (manual Full Integration only) writes these files
 // for Compose and hands the registry to `occ dev up` for k3d. Nothing else loads
@@ -59,8 +59,7 @@ async function generatedInputs(
   installation: unknown,
   serviceConfig: unknown,
 ) {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "qa-repository-")));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await realpath(await temporaryDirectory(t, "qa-repository-"));
   const sockets = await socketDirectory(t, "qa-rc-", { longest: "private/prepared-git-use.sock" });
   await mkdir(join(sockets, "private"), { mode: 0o700 });
   const relocate = (value: unknown) =>
