@@ -247,8 +247,8 @@ function withPlugin(values: ChannelValues, provider: ChannelProvider) {
   if (Array.isArray(plugins.allow) && !namesPlugin(plugins.allow, plugin)) {
     plugins.allow = [...plugins.allow, plugin];
   }
-  // The last boolean `enabled` of the merged entries wins, so another spelling's `enabled: false`
-  // after the exact key would keep the plugin off: enable that entry too.
+  // OpenClaw merges the entries of every spelling, and the last boolean `enabled` wins. The stored
+  // key order is not the order the client wrote, so enable every spelling's `enabled: false`.
   for (const key of pluginEntryKeys(entries, plugin)) {
     const variant = entries[key];
     if (key !== plugin && isRecord(variant) && variant.enabled === false) {

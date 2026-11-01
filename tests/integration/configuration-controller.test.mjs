@@ -1784,17 +1784,12 @@ test("Configuration save and deployment refuse another spelling of the codex or 
   // A Preset key that waits on a variable saves, as each canSpell rule decides: a launch can still
   // fill it with a key that names no such plugin, such as Codex-helper. The Configuration a launch
   // creates is checked with the filled key, and a filling that spells another key gets the same
-  // refusal there. co{{ vars.suffix }}dex can spell only the exact codex key.
+  // refusal there. co{{ vars.suffix }}dex can spell only the exact codex key. A launch renders
+  // the template the Preset save returned, as the Console does.
   const variables = { suffix: { type: "string" }, a: { type: "string" }, b: { type: "string" } };
-  const launch = (key, inputs) =>
+  const launch = (template, inputs) =>
     request(context.app, "POST", context.collection, {
-      body: {
-        kind: "agent",
-        ...renderPresetTemplate(
-          { variables, configuration: { values: withEntries({ [key]: {} }) } },
-          inputs,
-        ).configuration,
-      },
+      body: { kind: "agent", ...renderPresetTemplate(template, inputs).configuration },
     });
   for (const [index, [key, refused, accepted]] of [
     [
@@ -1817,13 +1812,14 @@ test("Configuration save and deployment refuse another spelling of the codex or 
       `Variant-waits-${index}`,
     );
     assert.equal(preset.status, 201, `${key}: ${JSON.stringify(preset.body)}`);
+    const saved = preset.body.data.template;
     if (refused !== undefined) {
       const [inputs, path, id] = refused;
-      assertRefused(await launch(key, inputs), pluginEntryKeyVariantRefusal(path, id), {
+      assertRefused(await launch(saved, inputs), pluginEntryKeyVariantRefusal(path, id), {
         label: key,
       });
     }
-    const launched = await launch(key, accepted);
+    const launched = await launch(saved, accepted);
     assert.equal(launched.status, 201, `${key}: ${JSON.stringify(launched.body)}`);
   }
 });
@@ -1877,16 +1873,18 @@ test("Configuration save and deployment refuse OpenClaw's $include directive", a
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   // A Preset key that waits on a variable saves: a launch can still fill it with another key. The
   // Configuration a launch creates is checked with the filled key, and a filling that spells
-  // $include gets the same refusal there.
+  // $include gets the same refusal there. A launch renders the template the Preset save
+  // returned, as the Console does.
   const variables = { key: { type: "string" } };
   const template = (key) => ({
     variables,
     configuration: { values: { ...runtimeSelected, tools: { [key]: "x" } } },
   });
-  const launch = (key, inputs) =>
+  const launch = (saved, inputs) =>
     request(context.app, "POST", context.collection, {
-      body: { kind: "agent", ...renderPresetTemplate(template(key), inputs).configuration },
+      body: { kind: "agent", ...renderPresetTemplate(saved, inputs).configuration },
     });
+  const saved = [];
   for (const [index, key] of [
     "{{ vars.key }}e",
     "$inc{{ vars.key }}",
@@ -1894,12 +1892,11 @@ test("Configuration save and deployment refuse OpenClaw's $include directive", a
   ].entries()) {
     const preset = await savePreset(context, template(key), `Include-waits-${index}`);
     assert.equal(preset.status, 201, `${key}: ${JSON.stringify(preset.body)}`);
+    saved.push(preset.body.data.template);
   }
-  assertRefused(
-    await launch("{{ vars.key }}e", { key: "$includ" }),
-    configIncludeRefusal("tools.$include"),
-  );
-  const launched = await launch("{{ vars.key }}e", { key: "custom-rul" });
+  const [suffixed] = saved;
+  assertRefused(await launch(suffixed, { key: "$includ" }), configIncludeRefusal("tools.$include"));
+  const launched = await launch(suffixed, { key: "custom-rul" });
   assert.equal(launched.status, 201, JSON.stringify(launched.body));
 });
 

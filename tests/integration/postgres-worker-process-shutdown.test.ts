@@ -65,8 +65,9 @@ async function docker(args: string[]): Promise<string[]> {
 // run left one network behind; enough of them exhaust Docker's address pools and fail other
 // jobs' network creation (finding 3084). After the worker has stopped, remove the Docker
 // Compute containers and networks of each Namespace its log names, and fail if any remain.
-// The log, not the database, selects them: without CI's per-file database, concurrent runs
-// share one, and a run must not remove a network another run's worker is still checking.
+// The log selects them: the worker logs each Namespace it ensures. Bootstrap queues that
+// ensure once, when it creates the Namespace, so the case needs a fresh database, as CI
+// prepares one per file; against a reused database, the readiness wait below times out.
 function namespaceReconciled(output: string): boolean {
   return jsonLines(output).some(
     (line: { event?: unknown; operation?: unknown; code?: unknown }) =>

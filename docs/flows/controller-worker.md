@@ -208,7 +208,7 @@ later admissions are not added. Partial failure retries idempotent shutdowns,
 keeping the active pointer and retained workspace data. Before the convergence
 deadline, a stopped Agent's Gateway drain, here or in version work, yields to due
 work (`withYieldingGatewayDrain`) as `AGENT_STOP_YIELDED`, refunding the attempt.
-A drain ignores yielded stops; other waits, only stopped Agents'.
+A drain ignores yielded stops; other waits ignore all but predecessors'.
 
 Before shutdown or retirement, including stopped-version recovery, the worker
 binds the server-owned Namespace and Agent after IAM and exact-resource checks.

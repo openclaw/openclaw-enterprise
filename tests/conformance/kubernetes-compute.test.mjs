@@ -10278,6 +10278,28 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       assert.throws(() => embeddedAdmission(configuration, bindings), expected, plugin);
     }
   }
+  // Configuration save does not know the bindings, so the unset `${NAME}` above waits for
+  // deployment. A reference OpenClaw cannot read at all is refused at save too (finding 3069),
+  // and the slot activates the entry there as well: without the slot, save accepts it.
+  for (const [configuration, slots, setting, plugin] of [
+    [{ ...withBeam("$RELAY_TOKEN", {}), ...allowlist([]) }, { memory: "beam" }, beamToken, "beam"],
+    [
+      {
+        ...withPlugin("imap", { config: { accounts: { main: { password: "$RELAY_TOKEN" } } } }),
+        ...allowlist([]),
+      },
+      { contextEngine: " imap" },
+      imapPassword,
+      "imap",
+    ],
+  ]) {
+    driver.validateConfiguration(configuration);
+    assert.throws(
+      () => driver.validateConfiguration(withSlots(configuration, slots)),
+      refusal(unreadablePluginSecretRefusal(setting, plugin, "allowlist", "RELAY_TOKEN")),
+      plugin,
+    );
+  }
   for (const configuration of [
     clearedSearchHeader,
     unsetBeam,

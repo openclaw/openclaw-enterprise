@@ -102,14 +102,14 @@ import {
   STOP_STATUS_REFRESH_FAILED,
   STOPPED_NO_VERSION,
   WORKSPACE_FILES_UNAVAILABLE,
+  configIncludeRefusal,
   credentialCheckedAtDeploy,
   invalidSecretProviderDefaultsRefusal,
   unreadableGatewayPasswordRefusal,
   unreadablePluginSecretRefusal,
-  configIncludeRefusal,
-  pluginEntryKeyVariantRefusal,
   namespaceListDenied,
   notIncluded,
+  pluginEntryKeyVariantRefusal,
   secretOperateRefused,
   stopRefused,
   stopStatusRefreshFailed,
@@ -1611,6 +1611,7 @@ for (const viewport of [
         "POST",
         `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
       );
+      assert.equal(refusedDeploy.status, 400, JSON.stringify(refusedDeploy.body));
       assert.equal(refusedDeploy.body.error.message, reason, JSON.stringify(refusedDeploy.body));
 
       // The step, followed in the editor, saves and the draft is ready.

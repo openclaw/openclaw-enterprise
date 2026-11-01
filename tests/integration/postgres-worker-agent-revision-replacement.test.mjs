@@ -1197,8 +1197,8 @@ for (const { shape, stopFailures = 0 } of [
 // Finding 3080 (review nit): the superseded version closes its repository credential sessions
 // before it stops its runtime, as a newer version's sweep does, so the stopped Harness is not
 // left the only holder of a live session. Superseding a version with repository credentials also
-// queues its runtime retirement (`repository_cleanup:retire:`), which closes its sessions again
-// and repeats the stop once the version has ended superseded. Whether that second stop ran before
+// queues its runtime retirement (`repository_cleanup:retire:`), which runs its session cleanup
+// again (nothing is left to close) and repeats the stop once the version has ended superseded. Whether that second stop ran before
 // the superseded work was observed depended on timing (finding 3089), so the case waits for the
 // retirement and tells the stops apart by the state of the version's own work at each stop.
 test(
