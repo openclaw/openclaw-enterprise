@@ -86,6 +86,11 @@ export interface DockerComputeDriverOptions {
     readonly agent: string;
   };
   readonly loggingAddress?: string;
+  /**
+   * How long one preparation waits for the workspace setup container before it reports the
+   * revision unready (default 120 s). Internal: tests shorten it; configuration never sets it.
+   */
+  readonly workspaceSetupWaitMs?: number;
 }
 
 interface DockerContainerInspect extends EmbeddedContainerInspect {
@@ -504,6 +509,12 @@ export class DockerComputeDriver implements ComputeDriver {
     required(options.images.gateway, "Docker gateway image");
     required(options.images.agent, "Docker Codex Agent image");
     const loggingAddress = dockerLoggingAddress(options.loggingAddress);
+    if (
+      options.workspaceSetupWaitMs !== undefined &&
+      (!Number.isSafeInteger(options.workspaceSetupWaitMs) || options.workspaceSetupWaitMs < 1)
+    ) {
+      throw new Error("Docker workspace setup wait must be a positive integer.");
+    }
     this.options = immutableCopy({
       ...options,
       ...(loggingAddress === undefined ? {} : { loggingAddress }),
@@ -695,8 +706,12 @@ export class DockerComputeDriver implements ComputeDriver {
     let agentCreated: string | undefined;
     let gatewayCreated: string | undefined;
     try {
-      if (context?.workspaceSetup !== undefined) {
-        await this.initializeWorkspace(prepared, context.workspaceSetup);
+      if (
+        context?.workspaceSetup !== undefined &&
+        !(await this.initializeWorkspace(prepared, context.workspaceSetup))
+      ) {
+        // Setup is still running: the worker rechecks within the deployment's deadline.
+        return result;
       }
       const launch = await this.lifecycle.beforeWorkloadStart(prepared);
       launchPrepared = true;
@@ -883,7 +898,7 @@ export class DockerComputeDriver implements ComputeDriver {
   private async initializeWorkspace(
     revision: Readonly<AgentRevision>,
     setup: Readonly<WorkspaceSetup>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (setup.namespaceId !== revision.namespaceId || setup.agentId !== revision.agentId) {
       throw new OwnershipFailure("Workspace setup must belong to the exact Agent.");
     }
@@ -916,7 +931,8 @@ export class DockerComputeDriver implements ComputeDriver {
     if (existing !== undefined) {
       this.verifyOwnership(existing.Config?.Labels, ownership, `container ${name}`);
       if (existing.State?.Running) {
-        throw new Error("Workspace initialization is already running.");
+        // Still running after an earlier attempt (see the end of the wait below).
+        return false;
       }
       await this.removeContainer(name);
     }
@@ -958,7 +974,10 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       },
       [201],
     );
-    let stillRunning = false;
+    // Removed afterwards only if it never started or was seen to exit: a failed poll (for
+    // example a Docker inspect timeout) leaves a started setup running (finding 3114).
+    let started = false;
+    let exited = false;
     try {
       // Docker's archive endpoint keeps the payload out of container arguments and metadata.
       // A single fixed-name, owner-only ustar entry is sufficient; no host files are staged.
@@ -997,17 +1016,20 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         undefined,
         [204, 304],
       );
-      const started = Date.now();
-      while (Date.now() - started < STARTUP_TIMEOUT_MS) {
+      started = true;
+      const startedAt = Date.now();
+      const waitMs = this.options.workspaceSetupWaitMs ?? STARTUP_TIMEOUT_MS;
+      while (Date.now() - startedAt < waitMs) {
         const inspected = await this.container(name);
         if (inspected === undefined) {
           throw new Error("Workspace initializer disappeared.");
         }
         if (inspected.State?.Running === false) {
+          exited = true;
           if (inspected.State.ExitCode !== 0) {
             throw new Error("Workspace initialization failed.");
           }
-          return;
+          return true;
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 100));
       }
@@ -1015,11 +1037,10 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       // OpenClaw's state lock on the retained state volume, and its PID 1 ignores SIGTERM, so
       // a stop would SIGKILL it with the lock held. Every later setup and Gateway on that
       // state, in another PID namespace, would then refuse it. The setup bounds its own
-      // native runs; the next attempt refuses while it runs and removes it once it exits.
-      stillRunning = true;
-      throw new Error("Workspace initialization timed out.");
+      // native runs; preparation stays unready while it runs and removes it once it exits.
+      return false;
     } finally {
-      if (!stillRunning) {
+      if (!started || exited) {
         await this.removeContainer(name);
       }
     }
