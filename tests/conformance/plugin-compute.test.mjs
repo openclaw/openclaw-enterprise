@@ -23,6 +23,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { startupPhaseHelper } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import {
   PLUGIN_RUNTIME_CODEX_CONFIG,
   PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT,
@@ -36,11 +37,13 @@ import {
   pluginRuntimeSpecForRevision,
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { validateConfigurationSettings } from "../../packages/occ/src/configuration-settings.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
 import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { pluginPolicyListRefusal } from "../helpers/refusal-text.mjs";
 import { listen as listenServer } from "../helpers/listen.mjs";
 import {
   gatewayExitedBeforeServing,
@@ -2515,6 +2518,72 @@ test("Agent save refuses the Configuration plugin settings the Gateway entrypoin
       driver.validateAgentConfiguration(plugins, configuration);
     }
   }
+});
+
+test("every Configuration save refuses the non-text plugins.allow and deny items the Gateway entrypoint trims for any OpenClaw plugin runtime", async () => {
+  // Finding 3101. The entrypoint trims every allow and deny item whenever an openclaw plugin
+  // runtime writes plugins.entries, which it does for any such runtime, selection or not. Two
+  // runtimes reach it with no catalog plugin, so the OpenClaw Plugin Driver's rule (above) never
+  // ran: plugin approvers without a plugin, and the managed Google plugin alone on dedicated
+  // OpenClaw, which installGatewayPlugins sets aside. OpenClaw's own config schema refuses the
+  // same items on every Gateway, so every Configuration save refuses them.
+  const unreadableItem = /id\.trim is not a function|reading 'trim'/;
+  const google = { [managedGoogleInstall.id]: { enabled: false } };
+  const approversOnly = (mode) =>
+    pluginRuntimeSpecForRevision(
+      revision({ harness: { id: "openclaw", version: "1.0.0", mode }, pluginApprovers: [] }),
+    );
+  const googleOnly = pluginRuntimeSpecForRevision(
+    revision({
+      harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+      plugins: {
+        driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+        plugins: google,
+      },
+    }),
+  );
+  const driver = new OCCPluginDriver();
+  for (const [plugins, key] of [
+    [{ deny: ["discord", 7] }, "deny"],
+    [{ allow: [null] }, "allow"],
+    [{ allow: ["slack"], deny: [{ id: "discord" }] }, "deny"],
+  ]) {
+    const configuration = { gateway: { port: 8080 }, plugins };
+    for (const mode of ["embedded", "dedicated"]) {
+      const result = runOpenClawRuntimeHelper({ manifest: approversOnly(mode) }, [], {
+        captureError: true,
+        baseConfig: configuration,
+      });
+      assert.match(result.error?.message ?? "", unreadableItem, `approvers ${mode}`);
+    }
+    // The plugin rule skips a plugin outside the native catalog.
+    driver.validateAgentConfiguration(google, configuration);
+    // The full Gateway entrypoint, as a dedicated Gateway that hosts a workspace node runs it.
+    await assert.rejects(
+      runOpenClawRuntimeHelper({ manifest: googleOnly }, [], {
+        baseConfig: configuration,
+        env: {
+          OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID: managedGoogleInstall.id,
+          OPENCLAW_PLUGIN_RUNTIME_JSON: JSON.stringify({ manifest: googleOnly }),
+        },
+        workspaceNodeBindingPath: true,
+      }),
+      unreadableItem,
+      "Google",
+    );
+    assert.throws(() => validateConfigurationSettings(configuration), {
+      name: "ConfigurationHarnessError",
+      message: pluginPolicyListRefusal(key),
+    });
+  }
+  // With text items the entrypoint passes its check and reaches the (failing) package install.
+  const startable = { gateway: { port: 8080 }, plugins: { allow: [" "], deny: ["Discord"] } };
+  validateConfigurationSettings(startable);
+  const result = runOpenClawRuntimeHelper({ manifest: approversOnly("embedded") }, [], {
+    captureError: true,
+    baseConfig: startable,
+  });
+  assert.equal(result.error, undefined);
 });
 
 test("OpenClaw runtime helper keeps install signals generic", () => {

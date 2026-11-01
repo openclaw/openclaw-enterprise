@@ -92,9 +92,9 @@ Agent that fails a check still reads; its next update must fix the pair.
 - once the model policy selects Codex, which runs only as Dedicated Codex, a
   plugin policy that turns off the `codex` plugin every Dedicated Codex Gateway
   enables, which would stop that Gateway at every start: `plugins.enabled: false`,
-  a `plugins.deny` that lists `codex`, a non-empty `plugins.allow` without it
-  (IDs compared trimmed and lowercased, blank items ignored), or an `allow` or
-  `deny` item that is not text. `plugins.entries.codex.enabled: false` passes:
+  a `plugins.deny` that lists `codex`, or a non-empty `plugins.allow` without it
+  (IDs compared trimmed and lowercased, blank items ignored). An item that is not
+  text gets the [save rule](../configuration.md) first. `plugins.entries.codex.enabled: false` passes:
   startup turns that entry back on. A Preset save leaves an item that waits on a
   variable to the launch. `validateHarnessAuth` applies this rule to every
   Dedicated Codex Agent, after the rule that keeps file-transfer on for a

@@ -8,6 +8,7 @@ import {
   configIncludeProblem,
   gatewayPasswordRequirement,
   pluginEntryKeyVariantProblem,
+  pluginPolicyList,
   secretProviderDefaultsProblem,
 } from "./environment-references.ts";
 import {
@@ -155,6 +156,52 @@ export function refusePluginEntryKeyVariants(
 }
 
 /**
+ * Refuses a `plugins.allow` or `plugins.deny` that the pinned OpenClaw's config schema refuses
+ * (`z.array(z.string())` in `src/config/zod-schema.root-shape.ts` at the commit in
+ * `deploy/runtime/openclaw-source.json`): a value that is not a list, null included, or a list item
+ * that is not text (pluginPolicyList). OpenClaw then exits at every start ("OpenClaw config is
+ * invalid", exit 78) on every Compute and Harness mode, with or without plugins. A Gateway whose
+ * plugin runtime applies an overlay stops sooner, when its entrypoint trims each item (findings
+ * 3099, 3101), so the plugin rules' own text checks never get to name it. Configuration save runs
+ * it with the other content rules; Agent save, deploy admission and the upgrade preflight run it
+ * on the stored Configuration (server-only: the Console's Deploy hold does not run it). On a Preset
+ * save, an item that is a whole number or boolean variable is refused, as no filling makes it text;
+ * another item that waits on a variable is checked once filled.
+ */
+export function refuseUnreadablePluginPolicyLists(
+  values: Readonly<OpenClawConfigurationDocument>,
+  options?: ConfigurationValidationOptions,
+): void {
+  const plugins = asRecord(values.plugins);
+  if (plugins === undefined) {
+    return;
+  }
+  for (const key of ["allow", "deny"] as const) {
+    if (Object.hasOwn(plugins, key) && !Array.isArray(plugins[key])) {
+      throw new ConfigurationHarnessError(
+        configurationSettingMessage(
+          `plugins.${key}`,
+          "must be a list of plugin IDs as text, or the Gateway does not start: make it a list or remove it",
+        ),
+      );
+    }
+    const textless = (_item: string, index: number) => {
+      const type = options?.unresolvedType?.(["plugins", key, index]);
+      return type === "number" || type === "boolean";
+    };
+    const { problem, ids } = pluginPolicyList(plugins, key, textless);
+    if (problem !== undefined || ids.includes(undefined)) {
+      throw new ConfigurationHarnessError(
+        configurationSettingMessage(
+          `plugins.${key}`,
+          "must list only plugin IDs as text, or the Gateway does not start: remove any other item",
+        ),
+      );
+    }
+  }
+}
+
+/**
  * Refuses OpenClaw's `$include` directive anywhere in the document (configIncludeProblem). The
  * pinned OpenClaw (`src/config/includes.ts`) resolves it from the Gateway's config directory and
  * replaces the object holding it with the named files' settings, merged under the object's other
@@ -214,6 +261,8 @@ function isCredentialReference(value: unknown): boolean {
  * - Settings the pinned OpenClaw retired (refuseRetiredOpenClawSettings).
  * - OpenClaw's own sandbox (refuseOpenClawSandbox).
  * - Another spelling of the codex or acpx plugin entry key (refusePluginEntryKeyVariants).
+ * - A plugins.allow or plugins.deny OpenClaw's config schema refuses
+ *   (refuseUnreadablePluginPolicyLists).
  * - A model provider key OpenClaw applies to another key (refuseProviderKeyVariants).
  */
 export function validateConfigurationSettings(
@@ -234,20 +283,23 @@ export function validateConfigurationSettings(
   refuseRetiredOpenClawSettings(values);
   refuseOpenClawSandbox(values, options);
   refusePluginEntryKeyVariants(values);
+  refuseUnreadablePluginPolicyLists(values, options);
   refuseProviderKeyVariants(values);
 }
 
 /**
  * The rules above that Agent save and deploy admission run again on a stored Configuration, so
  * one saved before a rule existed gets the message its next save would (findings 2699, 2709,
- * 2767, 3063, 3064, 3073, 3078, 3097): STORED_CONFIGURATION_RULES, which the Console holds Deploy
- * with (finding 3093), then the model provider key rule, which stays server-only.
+ * 2767, 3063, 3064, 3073, 3078, 3097, 3101): STORED_CONFIGURATION_RULES, which the Console holds
+ * Deploy with (finding 3093), then the plugin policy list and model provider key rules, which stay
+ * server-only.
  */
 export function refuseStoredConfigurationSettings(values: OpenClawConfigurationDocument): void {
   const problem = storedConfigurationProblem(values);
   if (problem !== undefined) {
     throw new ConfigurationHarnessError(problem.message);
   }
+  refuseUnreadablePluginPolicyLists(values);
   refuseProviderKeyVariants(values);
 }
 

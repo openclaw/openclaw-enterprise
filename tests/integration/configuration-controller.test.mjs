@@ -47,6 +47,7 @@ import {
   keepRuntime,
   OPENCLAW_ONLY,
   pluginEntryKeyVariantRefusal,
+  pluginPolicyListRefusal,
   providerKeyVariantRefusal,
   runtimeIdRequired,
   runtimeIdUnsupported,
@@ -1973,6 +1974,70 @@ test("Configuration save and deployment refuse OpenClaw's $include directive", a
   assert.equal(launched.status, 201, JSON.stringify(launched.body));
 });
 
+test("Configuration save and deployment refuse a plugins.allow or plugins.deny OpenClaw's config schema refuses", async () => {
+  // Finding 3101. The pinned OpenClaw's config schema takes plugins.allow and plugins.deny only as
+  // lists of text, so the Gateway exits at every start on any other value, with or without
+  // plugins. Where a plugin runtime applies an overlay (plugin approvers, a managed or catalog
+  // plugin), the Gateway entrypoint crashes sooner, when it trims each item. Each of these saved
+  // and deployed. Now every save path, Agent save and deployment refuse it, naming the setting.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-plugin-policy-list", ...configurationRules),
+  });
+  const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+    name: "Plugin policy list consumer",
+    secretName: "plugin-policy-list",
+  });
+  const withPlugins = (plugins) => ({ ...runtimeSelected, plugins });
+  for (const [plugins, message] of [
+    [{ deny: ["discord", 7] }, pluginPolicyListRefusal("deny")],
+    [{ allow: [null] }, pluginPolicyListRefusal("allow")],
+    [{ allow: ["slack"], deny: [{ id: "discord" }] }, pluginPolicyListRefusal("deny")],
+    [{ allow: "slack" }, pluginPolicyListRefusal("allow", false)],
+    [{ deny: null }, pluginPolicyListRefusal("deny", false)],
+  ]) {
+    const values = withPlugins(plugins);
+    await refusedAtSaveAndDeploy(context, agent, values, message);
+    await refusedOnSave(context, values, message);
+  }
+  // Agent save refuses a stored row the same way, before any deployment.
+  await writePastOcc(configurationDriver, agent.configurationId, withPlugins({ deny: [false] }));
+  assertRefused(
+    await request(context.app, "PATCH", agent.agentPath, {
+      body: { configurationId: agent.configurationId },
+    }),
+    pluginPolicyListRefusal("deny"),
+    { label: "Agent save" },
+  );
+  // Lists of text start, blank items and empty lists included; such an update recovers the row.
+  const startable = withPlugins({ allow: [], deny: [" ", "Discord"] });
+  const saved = await request(context.app, "PATCH", agent.item, { body: { values: startable } });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  // On a Preset, a whole number variable can never fill text, so the Preset save refuses it; a
+  // text variable saves, and the launch's Configuration is checked with the filled item.
+  const variables = { name: { type: "string" }, count: { type: "number" } };
+  const template = (item) => ({
+    variables,
+    configuration: { values: withPlugins({ deny: ["discord", item] }) },
+  });
+  assertRefused(
+    await savePreset(context, template("{{ vars.count }}")),
+    pluginPolicyListRefusal("deny"),
+  );
+  const preset = await savePreset(context, template("{{ vars.name }}"), "Plugin-list-waits");
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const launched = await request(context.app, "POST", context.collection, {
+    body: {
+      kind: "agent",
+      ...renderPresetTemplate(preset.body.data.template, { name: "slack", count: 1 }).configuration,
+    },
+  });
+  assert.equal(launched.status, 201, JSON.stringify(launched.body));
+});
+
 test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE runtime cannot run", async () => {
   // Finding 2767. The pinned OpenClaw runs sandboxed tools in Docker, which the OCE runtime does
   // not have: a Configuration that turned the sandbox on saved and deployed, then failed every
@@ -2910,11 +2975,6 @@ test("Configuration save, Agent save and Kubernetes deployment refuse a plugin p
     // OpenClaw compares plugin IDs trimmed and lowercased.
     [{ deny: [" Codex "] }, ["plugins.deny", "must not list codex", "Remove that item"]],
     [{ allow: ["slack"] }, ["plugins.allow", "must list codex", "Add it"]],
-    // The entrypoint stops on a list item that is not text.
-    [
-      { allow: ["codex", 1] },
-      ["plugins.allow", "must list only plugin IDs as text", "Remove any other item"],
-    ],
   ];
   for (const [plugins, refusal] of refused) {
     await refusedAtSaveAndDeploy(
@@ -2924,6 +2984,14 @@ test("Configuration save, Agent save and Kubernetes deployment refuse a plugin p
       codexPluginRefusal(...refusal),
     );
   }
+  // The entrypoint stops on a list item that is not text, but so does OpenClaw on any Agent:
+  // the rule for every Configuration names it first (finding 3101).
+  await refusedAtSaveAndDeploy(
+    context,
+    storedRow,
+    withPlugins({ allow: ["codex", 1] }),
+    pluginPolicyListRefusal("allow"),
+  );
   // Agent save checks the Configuration it selects: a row stored before the rule is refused.
   const [[storedPlugins, storedRefusal]] = refused;
   const other = await request(context.app, "POST", context.collection, {
