@@ -32,6 +32,7 @@ import {
   refocusHeld,
   tagView,
   viewTag,
+  waitForFocusedLabel,
 } from "./console-refocus-helpers.mjs";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
@@ -214,7 +215,9 @@ test("refocusing an Agents list that rebuilds keeps focus on the row's icon", as
   await confirmAgentAction(page, "Delete Regranted Row?", "Delete");
   const alert = page.getByRole("alert").filter({ hasText: deleteRefused("Regranted Row") });
   await alert.waitFor();
-  assert.equal(await hasFocus(remove), true);
+  // Focus returns to Delete in the confirmation's close event, a task after the alert renders
+  // (finding 3112).
+  await waitForFocusedLabel(page, "Delete Regranted Row");
   assert.equal(await remove.getAttribute("aria-disabled"), "true");
   await tagView(page);
   grantMember(fixture, member, [["delete", "agent"]]);
@@ -296,7 +299,7 @@ test("refocusing after a refused row's Agent was deleted elsewhere drops the ref
   await confirmAgentAction(page, "Stop Removed Row?", "Stop");
   const alert = page.getByRole("alert").filter({ hasText: message });
   await alert.waitFor();
-  assert.equal(await hasFocus(stop), true);
+  await waitForFocusedLabel(page, "Stop Removed Row");
   // Another session deletes the Agent, and its deletion completes.
   const { state } = kept;
   assert.ok(state, "the fixture's State");
