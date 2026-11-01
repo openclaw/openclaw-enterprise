@@ -95,7 +95,8 @@ runtime commands continue to use their existing strict contracts.
 `internal/occcli/output.go:printAgent` uses `printBrowsingItems` for individual
 Agents and Agent collections. `printAgentRevisionList` first renders the active
 marker for tables and then uses the same helper; version summaries have no
-error column. Tables add `CONFIGURATION
+error column, so a `failed` status whose code shows that a newer version or a
+Stop ended the work reads `superseded` or `stopped`, as in the console. Tables add `CONFIGURATION
 ERROR` when at least one row has `configurationReadError`; the cell contains
 the formal code and field. Healthy rows in a mixed collection have no error
 value, and all-healthy tables retain their existing columns.
@@ -153,6 +154,8 @@ for each version, and that `--cursor` continues the history. See the PostgreSQL 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-01: The version history table shows `superseded` or `stopped` for work a newer version or a Stop ended; structured output keeps the listed status. (ux-superseded-1101)
 
 - 2026-10-31: Version history keeps the deployment status of each OCC list summary instead of reading each version's status again. (bughunt-1031m)
 

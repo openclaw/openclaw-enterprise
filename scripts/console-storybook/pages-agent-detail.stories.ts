@@ -14,6 +14,7 @@ export const EditCurrentConfiguration = story("editCurrentConfiguration");
 export const CurrentConfigurationReader = story("currentConfigurationReader");
 export const HeaderActions = story("agentHeaderActions");
 export const EarlierFailedVersion = story("earlierFailedVersion");
+export const EarlierSupersededVersion = story("earlierSupersededVersion");
 export const LongVersionHistory = story("longVersionHistory");
 export const FirstDeployment = story("draftAutomaticCredentials");
 export const ConfigurationEditor = { ...story("configurationEditor"), name: "Edit Configuration" };

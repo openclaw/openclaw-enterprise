@@ -3775,11 +3775,11 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
     await waitForChosenVersion(page, 1);
     await expectNeutral(c, c.error.code);
     // A neutral record is not a failure, so the version's notice does not call it failed. The
-    // superseded v1 is not current (the hidden v2 is), so it is history.
+    // superseded v1 is not current (the hidden v2 is), so its notice names how it ended.
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     assert.equal(
       (await page.locator(".version-selection-notice").textContent()).split(" ·")[0],
-      c.newerHidden ? "Historical version" : "Current version",
+      c.newerHidden ? "Superseded version" : "Current version",
     );
     // Diagnostics do not ask the reader to resolve a neutral record first.
     await showDeploymentTab(page);

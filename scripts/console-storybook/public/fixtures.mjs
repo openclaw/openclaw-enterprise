@@ -575,7 +575,8 @@ export function installFixture(scenario, evidence) {
           Date.parse(createdAt) - (scenario.revisionHistory - number) * 86_400_000,
         ).toISOString();
         revisions.set(older.id, older);
-        // An earlier version whose deployment failed before a later one succeeded.
+        // An earlier version whose deployment failed, or that a newer one superseded
+        // (earlierVersionError), before a later one succeeded.
         if (scenario.earlierFailedVersion === number) {
           deployments.set(older.id, {
             deploymentId: older.id,
@@ -584,7 +585,8 @@ export function installFixture(scenario, evidence) {
             status: "failed",
             cleanup: null,
             progress: null,
-            error: candidateDeploymentError(scenario, older.createdAt),
+            error:
+              scenario.earlierVersionError ?? candidateDeploymentError(scenario, older.createdAt),
             warnings: [],
           });
         }

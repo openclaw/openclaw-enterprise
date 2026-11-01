@@ -1122,6 +1122,51 @@ func TestAgentRevisionsShowTheStatusOCCListed(t *testing.T) {
 	}
 }
 
+// OCC lists deployment work that a newer revision or a Stop ended as failed,
+// with the code that says so. The table has no error column, so its STATUS
+// names that ending, as the console does; json and yaml keep OCC's fields.
+// REPOSITORY_REVISION_STOPPED and AUTHORIZATION_DENIED are real failures.
+func TestAgentRevisionsTableNamesNeutralEndings(t *testing.T) {
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	for _, c := range []struct {
+		status, code, shown string
+	}{
+		{"failed", "REVISION_SUPERSEDED", "superseded"},
+		{"failed", "REPOSITORY_REVISION_SUPERSEDED", "superseded"},
+		{"failed", "REVISION_STOPPED", "stopped"},
+		{"failed", "REPOSITORY_REVISION_STOPPED", "failed"},
+		{"failed", "AUTHORIZATION_DENIED", "failed"},
+		// Only a failed status is relabelled.
+		{"succeeded", "REVISION_SUPERSEDED", "succeeded"},
+	} {
+		responses := agentRevisionResponses()
+		responses["GET "+agentPath+"/revisions"] = `[{"id":"` + testRevision2ID + `","revision":2,"agentId":"` + testAgentID + `","configurationGeneration":2,"createdAt":"2026-09-30T01:00:00.000Z","deploymentStatus":"` + c.status + `","deploymentErrorCode":"` + c.code + `"}]`
+		out, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimSpace(out), "\n")
+		if len(lines) != 2 || !strings.Contains(lines[0], "STATUS") || strings.Fields(lines[1])[3] != c.shown {
+			t.Fatalf("%s %s: STATUS must read %s:\n%s", c.status, c.code, c.shown, out)
+		}
+		for _, format := range []string{"json", "yaml"} {
+			out, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "-o", format, "agent", "revisions", testAgentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rows []map[string]any
+			if format == "json" {
+				err = json.Unmarshal([]byte(out), &rows)
+			} else {
+				err = yaml.Unmarshal([]byte(out), &rows)
+			}
+			if err != nil || len(rows) != 1 || rows[0]["deploymentStatus"] != c.status || rows[0]["deploymentErrorCode"] != c.code {
+				t.Fatalf("%s %s: %s must keep OCC's fields: %v\n%s", c.status, c.code, format, err, out)
+			}
+		}
+	}
+}
+
 // The revisions command shows one page; it passes --limit and --cursor through
 // and prints how to read the next page.
 func TestAgentRevisionsPagesWithCursor(t *testing.T) {

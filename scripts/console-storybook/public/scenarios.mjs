@@ -4774,6 +4774,26 @@ export const scenarios = {
     ],
     gap: "The deployment records are simulated; the API reports each listed version's outcome the same way.",
   },
+  earlierSupersededVersion: {
+    group: "Pages/Agent detail",
+    name: "Earlier superseded version",
+    path: draft,
+    deployed: true,
+    revisionHistory: 3,
+    earlierFailedVersion: 2,
+    // The API lists a superseded deployment as failed with this code.
+    earlierVersionError: {
+      code: "REVISION_SUPERSEDED",
+      message: "Deployment was superseded by a newer revision.",
+    },
+    description:
+      "v3 took over before v2's deployment finished. The version picker marks v2 Superseded, not Failed, from the list's own outcome, and v2's page says a newer version took over.",
+    steps: [
+      'Check Viewing version: v3 includes "Selected for service" and v2 reads "v2 · Superseded"; v1 has no outcome label.',
+      'Choose v2. The notice reads "Superseded version · read-only admitted snapshot. A newer version took over before its deployment finished." and names neither the newer version nor a runtime stop.',
+    ],
+    gap: "The deployment records are simulated; the API reports each listed version's outcome the same way.",
+  },
   longVersionHistory: {
     group: "Pages/Agent detail",
     name: "Long version history",
