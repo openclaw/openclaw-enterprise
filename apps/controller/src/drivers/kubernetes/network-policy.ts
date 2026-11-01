@@ -24,3 +24,28 @@ export function networkPolicySpecToJson(spec: V1NetworkPolicySpec | undefined): 
     }),
   );
 }
+
+/**
+ * Map a wire NetworkPolicy manifest to the SDK shape. `KubernetesObjectApi` serializes ingress
+ * peers only from `_from` and silently drops a wire `from`, which leaves a rule open to every
+ * source (finding 3110).
+ */
+export function networkPolicyToSdk<T extends Readonly<Record<string, unknown>>>(resource: T): T {
+  const spec = resource.spec as { readonly ingress?: unknown } | undefined;
+  if (resource.kind !== "NetworkPolicy" || !Array.isArray(spec?.ingress)) {
+    return resource;
+  }
+  return {
+    ...resource,
+    spec: {
+      ...spec,
+      ingress: spec.ingress.map((rule: Readonly<Record<string, unknown>>) => {
+        if (!Object.hasOwn(rule, "from")) {
+          return rule;
+        }
+        const { from, ...rest } = rule;
+        return { ...rest, _from: from };
+      }),
+    },
+  };
+}
