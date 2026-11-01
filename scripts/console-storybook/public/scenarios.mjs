@@ -133,7 +133,8 @@ const presetVariableRefused = [
   click("Create Agent"),
 ];
 // A model policy key a Preset variable filled with a space, which the API quotes in the setting
-// it refuses (finding 3122).
+// it refuses (finding 3122). The message is the API's sentence for that model policy rule
+// (packages/occ/src/configured-harness.ts); tests/browser/console-agent-presets.test.ts pins it.
 const presetQuotedSettingRefusal = {
   standardCodexPreset: true,
   presetModelKeyVariable: true,
