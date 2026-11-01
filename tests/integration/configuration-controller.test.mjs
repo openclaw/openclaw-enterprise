@@ -2786,6 +2786,12 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     unboundSearchHeader("X-Key"),
     { label: "GOOGLE after google" },
   );
+  const shadowedRevisions = await request(
+    context.app,
+    "GET",
+    `${shadowedAgent.agentPath}/revisions`,
+  );
+  assert.deepEqual(shadowedRevisions.body.data, []);
   // A longer key comes after google in both orders, so it still turns google off.
   const longerKey = await request(context.app, "PATCH", item, {
     body: {

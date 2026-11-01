@@ -93,7 +93,7 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
   an Agent entry. A `tools.byProvider` object that also has a
   `<provider>/<model>` key for that provider is not checked, because OpenClaw
   may rewrite the model ID it matches.
-- Check the Configuration's plugin settings. With Diffs selected, the Gateway
+- Check the Configuration's plugin settings. With Diffs enabled, the Gateway
   does not start when `plugins.enabled` is `false`, `plugins.deny` lists
   `diffs`, or a non-empty `plugins.allow` leaves it out. OCE writes the
   `plugins.entries.diffs` entry from the selection. The Configuration can hold
