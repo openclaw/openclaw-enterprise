@@ -228,8 +228,8 @@ startup. Native setup holds the OpenClaw state lock on the state volume.
 Preparation never stops a running setup container, because a killed setup
 leaves its lock. A setup still running after 120 seconds keeps the deployment
 pending within its convergence deadline. A failed Docker request while setup
-starts or during that wait fails that attempt; the next attempt finds setup
-running and reports the deployment pending. Once setup exits, the next attempt
+starts or during that wait fails that attempt; if setup is still running, the
+next attempt reports the deployment pending. Once setup exits, the next attempt
 removes the container and continues. Stop, container replacement, and
 redeployment retain both volumes; Agent or Namespace
 deletion removes them after the owned runtimes are removed.
