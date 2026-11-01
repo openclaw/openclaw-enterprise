@@ -1,6 +1,6 @@
 ---
 created: 2026-08-31
-updated: 2026-10-27
+updated: 2026-11-01
 last_updated_session: Codex/01a16ff3-354f-7873-a064-92d0ff2bcf0f
 ---
 
@@ -210,10 +210,9 @@ Other Harnesses are replaced, restarting their Gateway.
 - `addNodeEnrollmentState` mounts Agent-scoped identity at `/home/node/.openclaw-node`
   from the existing Harness PVC volume (`0700`, nonroot initializer), preserving it
   across versions until Agent deletion.
-- `AGENT_WITH_NODE_ENTRYPOINT` runs native `setup --baseline` before supervising
-  Codex and the node under `tini`. It passes admitted bootstrap options, preserves
-  existing edits, and holds on setup failure. A stop during setup waits until setup
-  ends, so its node state lock does not outlive the Pod. Codex starts at once with the
+- `AGENT_WITH_NODE_ENTRYPOINT` runs native `setup --baseline` with admitted bootstrap
+  options, keeping edits, then supervises Codex and the node under `tini`. A setup
+  failure holds; a stop lets setup finish. Codex starts at once on the
   managed PATH; the node waits for a complete code. Neither gets OCC's key.
 - With the status proxy, a Codex Gateway hot-loads `file-transfer` from an
   Agent-owned ConfigMap (replacing the Codex plugin runtime); activation awaits
