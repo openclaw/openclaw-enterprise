@@ -11,7 +11,6 @@ import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";
-import { withPool } from "../helpers/postgres-database.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor, within } from "../helpers/wait-for.mjs";
@@ -60,23 +59,25 @@ async function docker(args: string[]): Promise<string[]> {
   return stdout.split("\n").filter(Boolean);
 }
 
-// The worker provisions every Namespace in its database on the real Docker Engine, which
-// creates a Namespace network (bootstrap's default Namespace, at least). The Docker Compute
+// The worker provisions the Namespaces in its database (bootstrap's default Namespace, at
+// least) on the real Docker Engine, which creates a Namespace network. The Docker Compute
 // Driver removes it only when the Namespace is deleted, which this case never does, so each
 // run left one network behind; enough of them exhaust Docker's address pools and fail other
 // jobs' network creation (finding 3084). After the worker has stopped, remove the Docker
-// Compute containers and networks of this database's Namespaces, and fail if any remain.
-async function removeDockerComputeNamespaces(): Promise<void> {
-  const owned = new Set(
-    await withPool(databaseUrl, async (pool) =>
-      (await pool.query("SELECT id FROM occ.namespaces")).rows.map((row: { id: string }) => row.id),
-    ),
+// Compute containers and networks of each Namespace its log names, and fail if any remain.
+// The log, not the database, selects them: without CI's per-file database, concurrent runs
+// share one, and a run must not remove a network another run's worker is still checking.
+async function removeDockerComputeNamespaces(output: string): Promise<void> {
+  const worked = new Set(
+    jsonLines(output)
+      .map((line: { namespaceId?: unknown }) => line.namespaceId)
+      .filter((namespaceId: unknown) => typeof namespaceId === "string"),
   );
   const filters = dockerComputeLabels.flatMap((label) => ["--filter", `label=${label}`]);
   const listed = async () =>
     (
       await docker(["network", "ls", ...filters, "--format", `{{.Label "${namespaceLabel}"}}`])
-    ).filter((namespaceId) => owned.has(namespaceId));
+    ).filter((namespaceId) => worked.has(namespaceId));
   for (const namespaceId of await listed()) {
     const namespaceFilter = ["--filter", `label=${namespaceLabel}=${namespaceId}`];
     const containers = await docker(["ps", "-aq", ...filters, ...namespaceFilter]);
@@ -141,12 +142,12 @@ test(
     // node:test runs after hooks in registration order, so the worker has stopped (and
     // cannot provision again) before its Docker resources are removed.
     t.after(() => stopProcess(child, { graceMs: 1_000 }));
-    t.after(removeDockerComputeNamespaces);
     let output = "";
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => (output += chunk));
     child.stderr.on("data", (chunk: string) => (output += chunk));
+    t.after(() => removeDockerComputeNamespaces(output));
     const exited = once(child, "exit");
 
     // Ready means the worker loop ran a pass and wrote the readiness marker, and the metrics
