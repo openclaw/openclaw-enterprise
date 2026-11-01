@@ -4478,6 +4478,27 @@ test("the OpenClaw Plugin Driver refuses Configuration plugin settings the Gatew
     assertApiError(refused, 400, "INVALID_REQUEST", key);
     assert.equal(refused.body.error.message, pluginPolicyListRefusal(key));
   }
+  // A row saved before that rule still holds one. Agent save names it with the catalog rule, whose
+  // step only removes the item: deselecting the plugin cannot help, as OpenClaw's config schema
+  // stops every Gateway on it (finding 3102).
+  const older = await createConfiguration(controller, namespace.id, {});
+  await configurationDriver.update({
+    ...configurationDriver.stored({ namespaceId: namespace.id, id: older.id }),
+    values: { plugins: { deny: ["slack", 7] } },
+  });
+  const refusedOlder = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "plugin-settings-older", configurationId: older.id, plugins },
+  });
+  assertApiError(refusedOlder, 400, "INVALID_REQUEST", "older row");
+  assert.equal(
+    refusedOlder.body.error.message,
+    managedPluginSettingRefusal(
+      "plugins.deny",
+      "must list only plugin IDs as text",
+      diffsPluginId,
+      "remove any other item",
+    ),
+  );
   assert.deepEqual(
     (await controller.request("GET", `/namespaces/${namespace.id}/agents`)).data,
     [],

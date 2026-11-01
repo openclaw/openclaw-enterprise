@@ -15,6 +15,7 @@ import {
   gatewayPasswordRequirement,
   keyedSettingPath,
   pluginEntryKeyVariantProblem,
+  pluginPolicyList,
   quotedSettingKey,
   secretProviderDefaultsProblem,
 } from "./environment-references.ts";
@@ -237,6 +238,50 @@ export function providerKeyVariantProblem(
   return undefined;
 }
 
+/**
+ * The first `plugins.allow` or `plugins.deny` that the pinned OpenClaw's config schema refuses
+ * (`z.array(z.string())` in `src/config/zod-schema.root-shape.ts` at the commit in
+ * `deploy/runtime/openclaw-source.json`), as its setting and why OCE refuses it, or undefined: a
+ * value that is not a list, null included, or a list item that is not text (pluginPolicyList).
+ * OpenClaw then exits at every start ("OpenClaw config is invalid", exit 78) on every Compute and
+ * Harness mode, with or without plugins. A Gateway whose plugin runtime applies an overlay stops
+ * sooner, when its entrypoint trims each item (findings 3099, 3101), so the plugin rules' own text
+ * checks never get to name it. On a Preset save (`options`), an item that is a whole number or
+ * boolean variable is refused, as no filling makes it text; another item that waits on a variable
+ * is checked once filled.
+ */
+export function pluginPolicyListProblem(
+  values: Readonly<OpenClawConfigurationDocument>,
+  options?: ConfigurationValidationOptions,
+): { readonly setting: string; readonly requirement: string } | undefined {
+  const plugins = asObject(values.plugins);
+  if (plugins === undefined) {
+    return undefined;
+  }
+  for (const key of ["allow", "deny"] as const) {
+    if (Object.hasOwn(plugins, key) && !Array.isArray(plugins[key])) {
+      return {
+        setting: `plugins.${key}`,
+        requirement:
+          "must be a list of plugin IDs as text, or the Gateway does not start: make it a list or remove it",
+      };
+    }
+    const textless = (_item: string, index: number) => {
+      const type = options?.unresolvedType?.(["plugins", key, index]);
+      return type === "number" || type === "boolean";
+    };
+    const { problem, ids } = pluginPolicyList(plugins, key, textless);
+    if (problem !== undefined || ids.includes(undefined)) {
+      return {
+        setting: `plugins.${key}`,
+        requirement:
+          "must list only plugin IDs as text, or the Gateway does not start: remove any other item",
+      };
+    }
+  }
+  return undefined;
+}
+
 /** A rule of STORED_CONFIGURATION_RULES; the Console names each rule's step. */
 export type StoredConfigurationRule =
   | "include"
@@ -246,7 +291,8 @@ export type StoredConfigurationRule =
   | "retiredSetting"
   | "openClawSandbox"
   | "pluginEntryKey"
-  | "providerKey";
+  | "providerKey"
+  | "pluginPolicyList";
 
 const settingRefusal = (
   problem: { readonly setting: string; readonly requirement: string } | undefined,
@@ -259,9 +305,9 @@ const settingRefusal = (
  * The Configuration rules Agent save and deploy admission run again on a stored Configuration,
  * in that order, each giving its refusal or undefined (refuseStoredConfigurationSettings in
  * configuration-settings.ts). A Configuration saved before a rule existed still reads, and gets
- * the message its next save would (findings 2699, 2709, 2767, 3063, 3064, 3073, 3078, 3097).
- * Deploy runs the model provider settings before these; that rule stays server-only, since it
- * reads OCC modules the Console does not serve (finding 3093).
+ * the message its next save would (findings 2699, 2709, 2767, 3063, 3064, 3073, 3078, 3097, 3101).
+ * Deploy runs the model provider settings (validateModelProviderSettings) before these; only that
+ * rule stays server-only, since it reads OCC modules the Console does not serve (finding 3093).
  */
 export const STORED_CONFIGURATION_RULES: readonly (readonly [
   StoredConfigurationRule,
@@ -289,6 +335,7 @@ export const STORED_CONFIGURATION_RULES: readonly (readonly [
   ["openClawSandbox", (values) => openClawSandboxProblem(values)],
   ["pluginEntryKey", (values) => settingRefusal(pluginEntryKeyVariantProblem(values))],
   ["providerKey", (values) => settingRefusal(providerKeyVariantProblem(values))],
+  ["pluginPolicyList", (values) => settingRefusal(pluginPolicyListProblem(values))],
 ];
 
 /** The first of STORED_CONFIGURATION_RULES that refuses `values`, with its refusal, or undefined. */

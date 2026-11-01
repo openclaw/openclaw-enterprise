@@ -76,12 +76,14 @@ export function openClawPluginSettingConflict(
       continue;
     }
     // The entrypoint reads both lists before it checks any entry it writes, enabled or not.
+    // Deselecting the plugin does not help: OpenClaw's config schema refuses such a list on every
+    // Gateway (finding 3102), so the step only removes the item.
     if (unreadable !== undefined) {
       return {
         pluginId,
         setting: unreadable.setting,
         rule: unreadable.requirement,
-        step: "remove any other item or deselect the plugin",
+        step: "remove any other item",
       };
     }
     if (selection?.enabled === true) {

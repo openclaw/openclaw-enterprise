@@ -2179,6 +2179,8 @@ test("Agent save, deployment and the Console's draft hold name the same first st
     // Last, after the plugin entry key: another spelling of openai (finding 3097), whose entry
     // deploy's model provider settings rule, which runs before this list, accepts.
     ["providerKey", ["models", "providers", "OpenAI"], { baseUrl: "https://models.example/v1" }],
+    // Last: a plugins.deny item that is not text, which OpenClaw's config schema refuses (3101).
+    ["pluginPolicyList", ["plugins", "deny"], ["discord", 7]],
   ];
   // Deploy's and Agent save's refusal of the stored row `values`, each as its 400 message.
   const refusals = async (values) => {

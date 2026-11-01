@@ -8,7 +8,8 @@ export type StoredConfigurationRule =
   | "retiredSetting"
   | "openClawSandbox"
   | "pluginEntryKey"
-  | "providerKey";
+  | "providerKey"
+  | "pluginPolicyList";
 export declare function storedConfigurationProblem(
   values: unknown,
 ): { readonly rule: StoredConfigurationRule; readonly message: string } | undefined;
