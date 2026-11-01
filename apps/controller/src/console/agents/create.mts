@@ -152,6 +152,8 @@ export interface CreateAgentDraft {
   rendered: PresetLaunchSettings;
   presetOptions: PresetOptions;
   touched: boolean;
+  // The reader changed the Agent form itself, not only the Preset variables (finding 3122).
+  changedHere: boolean;
   inputs: Record<string, string>;
   edited: boolean;
   manualModel: boolean;
@@ -2244,8 +2246,9 @@ function renderAgentForm(
   // Whether the reader changed the form or its Preset variables: Cancel then asks first, and a
   // reload or tab close warns. Restoring a draft and the form's own updates fire no trusted event.
   let touched = Boolean(draft.touched);
-  // Whether the reader changed this form itself, not only the Preset variables before it.
-  let changedHere = false;
+  // Whether the reader changed this form itself, not only the Preset variables before it. A
+  // restored draft keeps it, so Change <variable> still asks before it discards those edits.
+  let changedHere = draft.changedHere ?? false;
   const markTouched = (event: Event) => {
     touched ||= event.isTrusted;
     changedHere ||= event.isTrusted;
@@ -2259,6 +2262,7 @@ function renderAgentForm(
   const isTouched = () => touched || edited;
   const captureDraft = (): CreateAgentDraft => ({
     touched: isTouched(),
+    changedHere,
     rendered,
     presetOptions,
     // Keep raw editor text, including invalid JSON. Password controls are deliberately excluded.

@@ -13,6 +13,7 @@ import {
   element,
   button,
   field as formField,
+  focusSaveOutcome,
   setFieldError,
   setUnavailable,
   statusBlock,
@@ -90,9 +91,10 @@ export interface PresetDraft {
   fields: Record<string, SavedField> | undefined;
 }
 
-// Each Configuration setting a Preset variable filled, by its dotted path, with the variables that
-// filled it. Create Agent maps a refusal that names a setting back to these (finding 3122).
-export type PresetSettingVariables = { setting: string; variables: string[] }[];
+// Each Configuration setting a Preset variable filled, by its path segments (keys and array
+// indexes), with the variables that filled it. Create Agent maps a refusal that names a setting
+// back to these (finding 3122).
+export type PresetSettingVariables = { setting: readonly string[]; variables: string[] }[];
 
 // The Preset step reopened after Create Agent refused a setting its variables filled: the chooser
 // state to restore, and the variables to mark with the refusal.
@@ -107,9 +109,46 @@ const VARIABLE_REFERENCE = /(?<!\\)\{\{\s*vars\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/
 const referencedVariables = (text: string) =>
   [...text.matchAll(VARIABLE_REFERENCE)].map((match) => match[1] ?? "");
 
-// A refusal's setting path with array indexes as dotted segments: the API writes both
-// `allow[0].host` and `allow.0.host`.
-const dottedSetting = (setting: string) => setting.replace(/\[(\d+)\]/g, ".$1");
+// A key as the API shows it in a setting path: control, format, line and paragraph separator
+// characters show as ? (OCC's shownSettingKey).
+const shownSettingKey = (key: string) => key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
+
+// A refusal's setting path as segments. The API writes an array index as `allow[0]` or
+// `allow.0`, and a key that is not a plain ID quoted, as `entries["my agent"].model` (OCC's
+// keyedSettingPath). A path it shortened with … names no exact setting.
+const SETTING_SEGMENT = /\.?([^.[\]"\s]+)|\[(\d+)\]|\[("(?:[^"\\]|\\.)*")\]/uy;
+
+function settingSegments(path: string): string[] | undefined {
+  if (path.endsWith("…")) {
+    return undefined;
+  }
+  const segments: string[] = [];
+  SETTING_SEGMENT.lastIndex = 0;
+  while (SETTING_SEGMENT.lastIndex < path.length) {
+    const match = SETTING_SEGMENT.exec(path);
+    const [, plain, index, quoted] = match ?? [];
+    const segment = quoted === undefined ? (plain ?? index) : parseQuotedKey(quoted);
+    if (segment === undefined) {
+      return undefined;
+    }
+    segments.push(segment);
+  }
+  return segments.length ? segments : undefined;
+}
+
+function parseQuotedKey(quoted: string): string | undefined {
+  try {
+    const key: unknown = JSON.parse(quoted);
+    return typeof key === "string" ? key : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// The setting a refusal names: plain, indexed and quoted segments, up to the colon, comma or
+// space after it.
+const REFUSED_SETTING =
+  /^Configuration setting ((?:[^\s"[]|\[\d+\]|\["(?:[^"\\]|\\.)*"\])+?)[:,]?\s/u;
 
 // Where each variable went in configuration.values. A key that holds a variable is named by its
 // rendered text, as the API names it.
@@ -118,14 +157,14 @@ function presetSettingVariables(
   inputs: Record<string, string | number | boolean>,
 ): PresetSettingVariables {
   const found: PresetSettingVariables = [];
-  const visit = (value: unknown, setting: string) => {
+  const visit = (value: unknown, setting: readonly string[]) => {
     if (typeof value === "string") {
       const variables = referencedVariables(value);
       if (variables.length) {
         found.push({ setting, variables });
       }
     } else if (Array.isArray(value)) {
-      value.forEach((child, index) => visit(child, `${setting}.${index}`));
+      value.forEach((child, index) => visit(child, [...setting, String(index)]));
     } else if (value !== null && typeof value === "object") {
       for (const [key, child] of Object.entries(value)) {
         const keyVariables = referencedVariables(key);
@@ -137,7 +176,7 @@ function presetSettingVariables(
               ).configuration?.values ?? {},
             )[0] ?? key)
           : key;
-        const path = setting ? `${setting}.${rendered}` : rendered;
+        const path = [...setting, shownSettingKey(rendered)];
         if (keyVariables.length) {
           found.push({ setting: path, variables: keyVariables });
         }
@@ -145,7 +184,7 @@ function presetSettingVariables(
       }
     }
   };
-  visit(template.configuration?.values, "");
+  visit(template.configuration?.values, []);
   return found;
 }
 
@@ -155,14 +194,14 @@ export function refusedPresetVariables(
   refusal: string | undefined,
   settings: PresetSettingVariables | undefined,
 ): string[] {
-  const named = /^Configuration setting (\S+?)[:,]?\s/u.exec(refusal ?? "")?.[1];
-  if (!named || !settings) {
+  const named = REFUSED_SETTING.exec(refusal ?? "")?.[1];
+  const refused = named === undefined ? undefined : settingSegments(named);
+  if (!refused || !settings) {
     return [];
   }
-  const refused = dottedSetting(named);
   const variables = new Set<string>();
   for (const { setting, variables: names } of settings) {
-    if (setting === refused || setting.startsWith(`${refused}.`)) {
+    if (refused.every((segment, index) => setting[index] === segment)) {
       names.forEach((name) => variables.add(name));
     }
   }
@@ -741,6 +780,14 @@ export function createPresetFields(
         describeApply();
         // Use Preset stays disabled, so the filled style goes back to the shortcut.
         emphasize(false);
+        // Create Agent sent the reader back here and removed the button they pressed. With no
+        // field to mark, focus goes to the chooser heading, not the document (findings 1446,
+        // 3122).
+        if (refused) {
+          refused = undefined;
+          const chooser = section.closest(".launch-preset");
+          focusSaveOutcome(chooser ?? section, [], chooser?.querySelector("h2"));
+        }
       }
     } finally {
       if (version === loadVersion) {
