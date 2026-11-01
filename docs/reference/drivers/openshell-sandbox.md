@@ -203,7 +203,7 @@ manifests. In `operator` mode, `ensureNamespace` server-side applies both with
 the Compute-owned namespace and OCC ownership metadata. Startup rejects Secrets,
 a NetworkPolicy ingress `_from` (write `from`), and fields the Kubernetes
 client would drop or change (a misspelled selector key, LimitRange `default`).
-Keep cluster-scoped objects out of both lists.
+Keep OpenShell credentials and cluster-scoped objects out of both lists.
 
 `kubernetes.sandboxDataMount` must match exactly one approved dedicated Harness
 workspace mount. It may not mount the PVC root or use `..`, and must mount
