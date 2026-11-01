@@ -683,24 +683,30 @@ export class CredentialSourceUnprotectedError extends ResourceStateConflictError
   }
 }
 
+const REPOSITORY_GIT_PROFILE_UNSUPPORTED_MESSAGES = Object.freeze({
+  several:
+    "To use more than one repository, set each one to use its approved GitHub App permissions. API callers: set `profile` to `github-repository` for each entry in `repositoryBindings`.",
+  single:
+    "A Credential Proxy cannot deliver this repository's Git access level. Use `github-repository` or `git-write` for it, or ask an administrator to use native prepared Git without a Sandbox or Proxy, then deploy again.",
+});
+
 /**
- * Finding 2204: a Credential Proxy delivers repository Git only for one binding with a mapped
- * delivery profile (`git-write` or `github-installation`; `repositoryGitDeliveryProfile`).
- * Protected admission v4-v7 requires that profile, so a `git-read` or `git-full` binding, or
- * several bindings, could never start. Deploy refuses it with 409
- * REPOSITORY_GIT_PROFILE_UNSUPPORTED before reading the counterpart, instead of a generic 503 or
- * 500. The bundled OpenShell `configureRevision` repeats it and the worker fails it at once; that
- * is defence in depth, as PostgreSQL cannot read a stored revision of this shape. HTTP keeps
- * messages under 256 characters.
+ * Finding 2204: a Credential Proxy delivers repository Git for any number of `github-repository`
+ * bindings, or for one `git-write` or `github-installation` binding
+ * (`repositoryGitDeliveryProfile`). Protected admission v4-v7 requires a mapped profile, so a
+ * `git-read` or `git-full` binding, or several bindings that are not all `github-repository`,
+ * could never start. Deploy refuses it with 409 REPOSITORY_GIT_PROFILE_UNSUPPORTED before
+ * reading the counterpart, instead of a generic 503 or 500. The message depends on whether the
+ * selection holds several bindings. The bundled OpenShell `configureRevision` repeats it and the
+ * worker fails it at once; that is defence in depth, as PostgreSQL cannot read a stored revision
+ * of this shape. HTTP keeps messages under 256 characters.
  */
 export class RepositoryGitProfileUnsupportedError extends ResourceStateConflictError {
   static readonly code = "REPOSITORY_GIT_PROFILE_UNSUPPORTED";
-  static readonly description =
-    "A Credential Proxy delivers repository Git only for one git-write or github-installation binding, so this Agent's repository access cannot start. Keep one such binding, remove them, or use native prepared Git without a Sandbox or Proxy, then deploy again.";
   readonly code = RepositoryGitProfileUnsupportedError.code;
 
-  constructor() {
-    super(RepositoryGitProfileUnsupportedError.description);
+  constructor(bindingCount: number) {
+    super(REPOSITORY_GIT_PROFILE_UNSUPPORTED_MESSAGES[bindingCount > 1 ? "several" : "single"]);
     this.name = "RepositoryGitProfileUnsupportedError";
   }
 }

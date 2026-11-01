@@ -755,7 +755,7 @@ function deploymentErrorMessage(code: string): string {
     case "REPOSITORY_GIT_SENDER_UNQUALIFIED":
       return "This version's repository Git delivery needs the git-write profile, and no OpenShell release is qualified for it, so it cannot start. Remove the binding, select a qualified installed sender, or use native prepared Git without a Sandbox, then deploy again.";
     case "REPOSITORY_GIT_PROFILE_UNSUPPORTED":
-      return "This version's repository Git delivery has no profile and cannot start: a Credential Proxy delivers only one binding with the git-write or github-installation profile. Keep one such binding, remove them all, or use native prepared Git, then deploy again.";
+      return "This version's repository Git delivery has no supported profile, so it cannot start: a Credential Proxy delivers any number of github-repository bindings, or one git-write or github-installation binding. Change the bindings, or use native prepared Git, then deploy again.";
     case "REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED":
       return "This revision's repository access deadline, fixed when the revision was admitted, has passed. Deploy again to admit a revision with a new deadline.";
     // Refusals the worker decides again on every pass (finding 1039). The status never names
