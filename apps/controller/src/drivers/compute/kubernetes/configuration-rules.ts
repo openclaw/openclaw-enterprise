@@ -19,6 +19,7 @@ import {
   refusePluginEntryKeyVariants,
   type SecretInputReference,
   shownSecretName,
+  trustedProxyIdentitiesProblem,
   unreadablePluginSecretInput,
   waitsOnVariable,
 } from "@openclaw-enterprise/occ";
@@ -40,78 +41,27 @@ import { openClawManagedPluginIds } from "../../plugin/runtime-translator.ts";
 type SettingError = (setting: string, requirement: string) => Error;
 
 export const OPENCLAW_GATEWAY_PASSWORD = "OPENCLAW_GATEWAY_PASSWORD";
-// The identity OCC's own Gateway route sends; every trusted-proxy allowlist must keep it.
-export const TRUSTED_PROXY_IDENTITY = "occ-workspace-files";
-// Gateways decode proxy headers as Latin-1, so only printable ASCII is unambiguous.
-const PRINTABLE_ASCII_IDENTITY = /^[\x20-\x7e]+$/u;
-
-/**
- * The Gateway resolves identityScopes for "@" identities case-insensitively, so case
- * variants of one would share a grant; a case variant of the machine identity is a spoof.
- */
-function proxyIdentityMatchKey(identity: string): string {
-  const folded = identity.toLowerCase();
-  return identity.includes("@") || folded === TRUSTED_PROXY_IDENTITY ? folded : identity;
-}
+export { TRUSTED_PROXY_IDENTITY } from "@openclaw-enterprise/occ";
 
 /**
  * The trusted-proxy allowlist and device auto-approval shape every Kubernetes topology refuses,
- * whatever the Agent: an allowlist without the machine identity (empty admits every proxy user
- * upstream), with identities a proxy header cannot carry exactly or that share a grant, and a
- * deviceAutoApprove the pinned Gateway's strict schema refuses at startup. Configuration save
- * (validateConfiguration), deployment admission and provisioning, and preparation
- * (kubernetesGatewayConfigurationDocument) apply it, so a dedicated Agent's running revision is
- * not stopped for a typo (findings 3006, 3032). On a Preset save, a setting that waits on a
- * variable is checked once filled. Errors name the setting, never the submitted identities.
+ * whatever the Agent (trustedProxyIdentitiesProblem, in OCC's environment-references.ts, which the
+ * Console also loads: finding 3121). Configuration save (validateConfiguration), deployment
+ * admission and provisioning, and preparation (kubernetesGatewayConfigurationDocument) apply it,
+ * so a dedicated Agent's running revision is not stopped for a typo (findings 3006, 3032). On a
+ * Preset save, a setting that waits on a variable is checked once filled. Errors name the
+ * setting, never the submitted identities.
  */
 export function refuseInvalidTrustedProxyIdentities(
   trustedProxy: Readonly<Record<string, unknown>>,
   createError: SettingError,
   options?: ConfigurationValidationOptions,
 ): void {
-  const path = ["gateway", "auth", "trustedProxy"];
-  const allowUsers = trustedProxy.allowUsers;
-  if (
-    allowUsers !== undefined &&
-    !waitsOnVariable(allowUsers, [...path, "allowUsers"], options) &&
-    (!Array.isArray(allowUsers) ||
-      !allowUsers.includes(TRUSTED_PROXY_IDENTITY) ||
-      allowUsers.some(
-        (user) =>
-          typeof user !== "string" ||
-          user.trim() !== user ||
-          !PRINTABLE_ASCII_IDENTITY.test(user) ||
-          // The Gateway looks grants up by plain property access.
-          Object.hasOwn(Object.prototype, user),
-      ) ||
-      new Set(allowUsers.map((user) => proxyIdentityMatchKey(user as string))).size !==
-        allowUsers.length)
-  ) {
-    throw createError(
-      "gateway.auth.trustedProxy.allowUsers",
-      `must include ${TRUSTED_PROXY_IDENTITY} and list distinct, nonblank, trimmed, printable ASCII identities that are not object property names`,
-    );
-  }
-  const deviceAutoApprove = trustedProxy.deviceAutoApprove;
-  if (
-    deviceAutoApprove === undefined ||
-    waitsOnVariable(deviceAutoApprove, [...path, "deviceAutoApprove"], options)
-  ) {
-    return;
-  }
-  const approval = asRecord(deviceAutoApprove);
-  if (
-    approval === undefined ||
-    Object.keys(approval).some((key) => key !== "enabled" && key !== "scopes") ||
-    (approval.enabled !== undefined && typeof approval.enabled !== "boolean") ||
-    (approval.scopes !== undefined &&
-      (!Array.isArray(approval.scopes) ||
-        approval.scopes.some((scope) => typeof scope !== "string" || scope.trim() === "")))
-  ) {
-    throw createError(
-      "gateway.auth.trustedProxy.deviceAutoApprove",
-      "must be an object with only an optional boolean enabled and an optional array of nonblank scope names",
-    );
+  const problem = trustedProxyIdentitiesProblem(trustedProxy, (key) =>
+    waitsOnVariable(trustedProxy[key], ["gateway", "auth", "trustedProxy", key], options),
+  );
+  if (problem !== undefined) {
+    throw createError(problem.setting, problem.requirement);
   }
 }
 

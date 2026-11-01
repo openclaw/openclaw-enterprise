@@ -5284,6 +5284,30 @@ export const scenarios = {
     ],
     gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes Compute rules.",
   },
+  trustedProxyAllowUsersRefused: {
+    group: "Pages/Agent detail",
+    name: "Trusted-proxy allowlist without the machine identity",
+    path: draft,
+    deployed: true,
+    trustedProxyWithoutMachine: true,
+    rules: [
+      {
+        suffix: "/agents/validate",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting gateway.auth.trustedProxy.allowUsers must include occ-workspace-files and list distinct, nonblank, trimmed, printable ASCII identities that are not object property names; occ-workspace-files and identities containing @ match case-insensitively.",
+      },
+    ],
+    description:
+      "An older release saved a trusted-proxy allowlist without occ-workspace-files. Only Kubernetes Compute refuses it, so the page asks Create Agent's preflight, which runs the Installation's Compute rules. Here it refuses, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the Gateway authentication.",
+      "Deploy new version is disabled with the allowUsers refusal deploy gives.",
+    ],
+    gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes Compute rules.",
+  },
   kubernetesEntryKeyVariantChecking: {
     group: "Pages/Agent detail",
     name: "Plugin entry key, Compute check in flight",
