@@ -413,6 +413,41 @@ async function writePastOcc(configurationDriver, configurationId, values) {
   await configurationDriver.update({ ...stored, values });
 }
 
+// Agent save of `agent` with `configurationId`, which checks the Configuration it selects.
+const agentSave = (context, agent, configurationId = agent.configurationId) =>
+  request(context.app, "PATCH", agent.agentPath, { body: { configurationId } });
+
+// A row an older release stored with `values` under a storedRowAgent: Agent save refuses it with
+// `message`, before any deployment.
+async function refusedAtAgentSave(context, agent, values, message, label = "Agent save") {
+  await writePastOcc(agent.configurationDriver, agent.configurationId, values);
+  assertRefused(await agentSave(context, agent), message, { label });
+}
+
+// An update of the Configuration at `item` to `values` saves and stores them as sent.
+async function updateSaved(context, item, values, label) {
+  const saved = await request(context.app, "PATCH", item, { body: { values } });
+  const prefix = label === undefined ? "" : `${label}: `;
+  assert.equal(saved.status, 200, `${prefix}${JSON.stringify(saved.body)}`);
+  assert.deepEqual(saved.body.data.values, values, label);
+  return saved;
+}
+
+// Deployment of the Agent at `agentPath` is admitted.
+async function deployAccepted(context, agentPath, label) {
+  const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+  const prefix = label === undefined ? "" : `${label}: `;
+  assert.equal(deployed.status, 202, `${prefix}${JSON.stringify(deployed.body)}`);
+  return deployed;
+}
+
+// Creates the Configuration a launch of the Preset `template` with `inputs` renders, as the
+// Console does.
+const launchPreset = (context, template, inputs) =>
+  request(context.app, "POST", context.collection, {
+    body: { kind: "agent", ...renderPresetTemplate(template, inputs).configuration },
+  });
+
 // The refusal texts the save rules name a field or setting with.
 const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
 // A Slack token SecretRef the Slack Channel Driver cannot read (finding 2514).
@@ -794,9 +829,7 @@ test("Configuration HTTP names a model provider baseUrl or api the runtime canno
       },
     },
   };
-  const updated = await request(context.app, "PATCH", item, { body: { values: local } });
-  assert.equal(updated.status, 200, JSON.stringify(updated.body));
-  assert.deepEqual(updated.body.data.values, local);
+  await updateSaved(context, item, local);
 });
 
 test("Deployment refuses a stored model provider baseUrl or api that saves refuse, with the save's text", async () => {
@@ -849,8 +882,7 @@ test("Deployment refuses a stored model provider baseUrl or api that saves refus
     // No refused deployment admitted a revision; the restored row deploys.
     const revisions = await request(context.app, "GET", `${agent.agentPath}/revisions`);
     assert.deepEqual(revisions.body.data, [], label);
-    const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
-    assert.equal(deployed.status, 202, `${label}: ${JSON.stringify(deployed.body)}`);
+    await deployAccepted(context, agent.agentPath, label);
   }
 });
 
@@ -884,9 +916,7 @@ test("Configuration HTTP refuses a model provider models setting that is not a l
   await assertNothingStored(context, [`${created.body.data.id}.json`]);
   // A list, an empty one, or no models setting still saves.
   const listed = { models: { providers: { gateway: { models: [] }, openai: {} } } };
-  const updated = await request(context.app, "PATCH", item, { body: { values: listed } });
-  assert.equal(updated.status, 200, JSON.stringify(updated.body));
-  assert.deepEqual(updated.body.data.values, listed);
+  await updateSaved(context, item, listed);
 });
 
 const withAgents = (agents) => ({ agents: { defaults: runtimeDefaults, ...agents } });
@@ -1000,9 +1030,7 @@ test("Configuration save refuses an agents roster every deployment refuses, with
   const unowned = withAgents({ entries: { main: {}, helper: {} } });
   await writePastOcc(configurationDriver, agent.configurationId, unowned);
   const fixed = withAgents({ ownership: "explicit", entries: { main: {}, helper: {} } });
-  const repaired = await request(context.app, "PATCH", agent.item, { body: { values: fixed } });
-  assert.equal(repaired.status, 200, JSON.stringify(repaired.body));
-  assert.deepEqual(repaired.body.data.values, fixed);
+  await updateSaved(context, agent.item, fixed);
 
   // Rules that depend on the topology stay at deployment: only dedicated execution serves main,
   // so these save (embedded OpenClaw deploys them; see kubernetes-compute.test.mjs).
@@ -1352,9 +1380,7 @@ test("Configuration save refuses a model policy whose settings conflict, with de
         body: { kind: "agent", values },
       });
       assert.equal(created.status, 201, `${label}: ${JSON.stringify(created.body)}`);
-      const saved = await request(context.app, "PATCH", agent.item, { body: { values } });
-      assert.equal(saved.status, 200, `${label}: ${JSON.stringify(saved.body)}`);
-      assert.deepEqual(saved.body.data.values, values, label);
+      await updateSaved(context, agent.item, values, label);
       const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
       assertRefused(deployed, deployMessage, { label });
       await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
@@ -1403,25 +1429,14 @@ test("Configuration save refuses a Gateway tool policy that every OpenClaw topol
   }
 
   // Agent save refuses a stored row the same way, before any deployment.
-  await writePastOcc(
-    configurationDriver,
-    agent.configurationId,
-    withPolicy({ allow: ["sessions"] }),
-  );
-  const saved = await request(context.app, "PATCH", agent.agentPath, {
-    body: { configurationId: agent.configurationId },
-  });
-  assertRefused(saved, sessionsActions, { label: "Agent save" });
+  await refusedAtAgentSave(context, agent, withPolicy({ allow: ["sessions"] }), sessionsActions);
   // An administrator repairs the row by saving a policy that lists the actions.
-  const repairedValues = withPolicy({ allow: ["sessions"], actions: { sessions: ["patch"] } });
-  const repaired = await request(context.app, "PATCH", agent.item, {
-    body: { values: repairedValues },
-  });
-  assert.equal(repaired.status, 200, JSON.stringify(repaired.body));
-  assert.deepEqual(repaired.body.data.values, repairedValues);
-  const resaved = await request(context.app, "PATCH", agent.agentPath, {
-    body: { configurationId: agent.configurationId },
-  });
+  await updateSaved(
+    context,
+    agent.item,
+    withPolicy({ allow: ["sessions"], actions: { sessions: ["patch"] } }),
+  );
+  const resaved = await agentSave(context, agent);
   assert.equal(resaved.status, 200, JSON.stringify(resaved.body));
 
   // A Preset save refuses the same text. A tool that waits on a variable without a default is
@@ -1489,28 +1504,22 @@ test("Configuration save refuses workspace bootstrap settings native setup refus
   }
 
   // Agent save refuses a stored row the same way, before any deployment.
-  await writePastOcc(
-    configurationDriver,
-    agent.configurationId,
+  await refusedAtAgentSave(
+    context,
+    agent,
     withDefaults({ skipOptionalBootstrapFiles: ["NOPE.md"] }),
+    optionalFiles,
   );
-  const saved = await request(context.app, "PATCH", agent.agentPath, {
-    body: { configurationId: agent.configurationId },
-  });
-  assertRefused(saved, optionalFiles, { label: "Agent save" });
   // Saving the accepted values repairs the row, and the Agent saves again.
-  const repairedValues = withDefaults({
-    skipBootstrap: false,
-    skipOptionalBootstrapFiles: ["SOUL.md", "USER.md", "HEARTBEAT.md", "IDENTITY.md"],
-  });
-  const repaired = await request(context.app, "PATCH", agent.item, {
-    body: { values: repairedValues },
-  });
-  assert.equal(repaired.status, 200, JSON.stringify(repaired.body));
-  assert.deepEqual(repaired.body.data.values, repairedValues);
-  const resaved = await request(context.app, "PATCH", agent.agentPath, {
-    body: { configurationId: agent.configurationId },
-  });
+  await updateSaved(
+    context,
+    agent.item,
+    withDefaults({
+      skipBootstrap: false,
+      skipOptionalBootstrapFiles: ["SOUL.md", "USER.md", "HEARTBEAT.md", "IDENTITY.md"],
+    }),
+  );
+  const resaved = await agentSave(context, agent);
   assert.equal(resaved.status, 200, JSON.stringify(resaved.body));
 
   // A Preset save refuses the same text. A value that waits on a variable without a default is
@@ -1611,16 +1620,14 @@ test("Configuration save and deployment refuse settings the pinned OpenClaw reti
     ...runtimeSelected,
     agents: { defaults: { ...runtimeDefaults, compaction: { memoryFlush: { model: "x/m" } } } },
   };
-  await writePastOcc(configurationDriver, agent.configurationId, retired);
-  assertRefused(
-    await request(context.app, "PATCH", agent.agentPath, {
-      body: { configurationId: agent.configurationId },
-    }),
+  await refusedAtAgentSave(
+    context,
+    agent,
+    retired,
     setting(
       "agents.defaults.compaction.memoryFlush.model",
       `must be removed: the OpenClaw runtime retired it (${flushes})`,
     ),
-    { label: "Agent save" },
   );
   // A saved corporate draft remains editable. A deploy must fail before enqueuing a replacement.
   const corrected = {
@@ -1647,8 +1654,7 @@ test("Configuration save and deployment refuse settings the pinned OpenClaw reti
     body: { values: corrected, expectedGeneration: read.body.data.generation },
   });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
-  const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  const deployed = await deployAccepted(context, agent.agentPath);
   assert.deepEqual(deployed.body.data.configuration.security, corrected.security);
   assert.deepEqual(deployed.body.data.configuration.messages, corrected.messages);
 
@@ -1722,23 +1728,15 @@ test("Configuration save and deployment refuse another spelling of the codex or 
     await refusedOnSave(context, values, message, { sentinel });
   }
   // Agent save refuses a stored row the same way, before any deployment.
-  await writePastOcc(
-    configurationDriver,
-    agent.configurationId,
+  await refusedAtAgentSave(
+    context,
+    agent,
     withEntries({ codex, CODEX: { config: {} } }),
-  );
-  assertRefused(
-    await request(context.app, "PATCH", agent.agentPath, {
-      body: { configurationId: agent.configurationId },
-    }),
     pluginEntryKeyVariantRefusal("plugins.entries.CODEX", "codex"),
-    { label: "Agent save" },
   );
   // An update that renames the key recovers the stored row: a PATCH replaces all values.
   const exact = withEntries({ codex, acpx: { config: {} } });
-  const renamed = await request(context.app, "PATCH", agent.item, { body: { values: exact } });
-  assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
-  assert.deepEqual(renamed.body.data.values, exact);
+  await updateSaved(context, agent.item, exact);
   // Beside an exact entry, the refusal's step moves the variant's settings into it and removes the
   // variant, in either key order, and that update saves with both entries' settings. Renaming it
   // instead would leave a duplicate key, whose last copy JSON keeps, losing one entry's settings
@@ -1751,24 +1749,20 @@ test("Configuration save and deployment refuse another spelling of the codex or 
     { codex, Codex: { enabled: true } },
     { Codex: { enabled: true }, codex },
   ]) {
-    await writePastOcc(configurationDriver, agent.configurationId, withEntries(entries));
-    assertRefused(
-      await request(context.app, "PATCH", agent.agentPath, {
-        body: { configurationId: agent.configurationId },
-      }),
+    await refusedAtAgentSave(
+      context,
+      agent,
+      withEntries(entries),
       pluginEntryKeyVariantRefusal("plugins.entries.Codex", "codex"),
-      { label: Object.keys(entries).join(" before ") },
+      Object.keys(entries).join(" before "),
     );
     const followed = withEntries(followStep(entries, "Codex", "codex"));
     assert.deepEqual(followed.plugins.entries, { codex: { ...codex, enabled: true } });
-    const saved = await request(context.app, "PATCH", agent.item, { body: { values: followed } });
-    assert.equal(saved.status, 200, JSON.stringify(saved.body));
-    assert.deepEqual(saved.body.data.values, followed);
+    await updateSaved(context, agent.item, followed);
   }
   await writePastOcc(configurationDriver, agent.configurationId, exact);
   // The exact keys deploy, and other plugins' keys in another spelling still save (finding 3072).
-  const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  await deployAccepted(context, agent.agentPath);
   await acceptedOnSave(
     context,
     withEntries({ ...exact.plugins.entries, Google: { enabled: false } }),
@@ -1779,22 +1773,13 @@ test("Configuration save and deployment refuse another spelling of the codex or 
     agent.configurationId,
     withEntries({ "File-Transfer": {} }),
   );
-  const fileTransfer = withEntries({ "file-transfer": {} });
-  const recovered = await request(context.app, "PATCH", agent.item, {
-    body: { values: fileTransfer },
-  });
-  assert.equal(recovered.status, 200, JSON.stringify(recovered.body));
-  assert.deepEqual(recovered.body.data.values, fileTransfer);
+  await updateSaved(context, agent.item, withEntries({ "file-transfer": {} }));
   // A Preset key that waits on a variable saves, as each canSpell rule decides: a launch can still
   // fill it with a key that names no such plugin, such as Codex-helper. The Configuration a launch
   // creates is checked with the filled key, and a filling that spells another key gets the same
   // refusal there. co{{ vars.suffix }}dex can spell only the exact codex key. A launch renders
   // the template the Preset save returned, as the Console does.
   const variables = { suffix: { type: "string" }, a: { type: "string" }, b: { type: "string" } };
-  const launch = (template, inputs) =>
-    request(context.app, "POST", context.collection, {
-      body: { kind: "agent", ...renderPresetTemplate(template, inputs).configuration },
-    });
   for (const [index, [key, refused, accepted]] of [
     [
       "Codex{{ vars.suffix }}",
@@ -1819,11 +1804,13 @@ test("Configuration save and deployment refuse another spelling of the codex or 
     const saved = preset.body.data.template;
     if (refused !== undefined) {
       const [inputs, path, id] = refused;
-      assertRefused(await launch(saved, inputs), pluginEntryKeyVariantRefusal(path, id), {
-        label: key,
-      });
+      assertRefused(
+        await launchPreset(context, saved, inputs),
+        pluginEntryKeyVariantRefusal(path, id),
+        { label: key },
+      );
     }
-    const launched = await launch(saved, accepted);
+    const launched = await launchPreset(context, saved, accepted);
     assert.equal(launched.status, 201, `${key}: ${JSON.stringify(launched.body)}`);
   }
 });
@@ -1869,24 +1856,17 @@ test("Configuration save and deployment refuse a model provider key OpenClaw app
     await refusedOnSave(context, values, message);
   }
   // Agent save refuses a stored row the same way, before any deployment.
-  await writePastOcc(
-    configurationDriver,
-    agent.configurationId,
+  await refusedAtAgentSave(
+    context,
+    agent,
     withProviders({ openai: checked, "openai ": elsewhere }),
-  );
-  assertRefused(
-    await request(context.app, "PATCH", agent.agentPath, {
-      body: { configurationId: agent.configurationId },
-    }),
     providerKeyVariantRefusal('models.providers["openai "]', "openai"),
-    { label: "Agent save" },
   );
   // The exact keys deploy. A custom provider may still use a mixed-case key or a space inside it,
   // which OpenClaw reads as written.
   const exact = withProviders({ openai: checked, anthropic: {} });
   await writePastOcc(configurationDriver, agent.configurationId, exact);
-  const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  await deployAccepted(context, agent.agentPath);
   await acceptedOnSave(
     context,
     withProviders({
@@ -1925,25 +1905,15 @@ test("Configuration save and deployment refuse OpenClaw's $include directive", a
     await refusedOnSave(context, values, message);
   }
   // Agent save refuses a stored row the same way, before any deployment.
-  await writePastOcc(configurationDriver, agent.configurationId, {
-    ...runtimeSelected,
-    tools: { $include: "./tools.json" },
-  });
-  assertRefused(
-    await request(context.app, "PATCH", agent.agentPath, {
-      body: { configurationId: agent.configurationId },
-    }),
+  await refusedAtAgentSave(
+    context,
+    agent,
+    { ...runtimeSelected, tools: { $include: "./tools.json" } },
     configIncludeRefusal("tools.$include"),
-    { label: "Agent save" },
   );
   // An update that removes the directive recovers the stored row, and the same Agent deploys.
-  const removed = await request(context.app, "PATCH", agent.item, {
-    body: { values: runtimeSelected },
-  });
-  assert.equal(removed.status, 200, JSON.stringify(removed.body));
-  assert.deepEqual(removed.body.data.values, runtimeSelected);
-  const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  await updateSaved(context, agent.item, runtimeSelected);
+  await deployAccepted(context, agent.agentPath);
   // A Preset key that waits on a variable saves: a launch can still fill it with another key. The
   // Configuration a launch creates is checked with the filled key, and a filling that spells
   // $include gets the same refusal there. A launch renders the template the Preset save
@@ -1953,10 +1923,6 @@ test("Configuration save and deployment refuse OpenClaw's $include directive", a
     variables,
     configuration: { values: { ...runtimeSelected, tools: { [key]: "x" } } },
   });
-  const launch = (saved, inputs) =>
-    request(context.app, "POST", context.collection, {
-      body: { kind: "agent", ...renderPresetTemplate(saved, inputs).configuration },
-    });
   const saved = [];
   for (const [index, key] of [
     "{{ vars.key }}e",
@@ -1968,8 +1934,11 @@ test("Configuration save and deployment refuse OpenClaw's $include directive", a
     saved.push(preset.body.data.template);
   }
   const [suffixed] = saved;
-  assertRefused(await launch(suffixed, { key: "$includ" }), configIncludeRefusal("tools.$include"));
-  const launched = await launch(suffixed, { key: "custom-rul" });
+  assertRefused(
+    await launchPreset(context, suffixed, { key: "$includ" }),
+    configIncludeRefusal("tools.$include"),
+  );
+  const launched = await launchPreset(context, suffixed, { key: "custom-rul" });
   assert.equal(launched.status, 201, JSON.stringify(launched.body));
 });
 
@@ -2022,14 +1991,7 @@ test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE
     });
   }
   // Agent save refuses a stored row the same way, before any deployment.
-  await writePastOcc(configurationDriver, agent.configurationId, withSandbox({ mode: "all" }));
-  assertRefused(
-    await request(context.app, "PATCH", agent.agentPath, {
-      body: { configurationId: agent.configurationId },
-    }),
-    defaultsMode,
-    { label: "Agent save" },
-  );
+  await refusedAtAgentSave(context, agent, withSandbox({ mode: "all" }), defaultsMode);
   await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
   // Accepted values save, with the sandbox settings beside them.
   await acceptedOnSave(context, {
@@ -2119,9 +2081,7 @@ test("Agent save, deployment and the Console's draft hold name the same first st
   const refusals = async (values) => {
     await writePastOcc(configurationDriver, agent.configurationId, values);
     const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
-    const saved = await request(context.app, "PATCH", agent.agentPath, {
-      body: { configurationId: agent.configurationId },
-    });
+    const saved = await agentSave(context, agent);
     const label = JSON.stringify(values);
     assert.equal(deployed.status, 400, `deploy ${label}: ${JSON.stringify(deployed.body)}`);
     assert.equal(deployed.body.error.code, "INVALID_REQUEST", label);
@@ -2299,12 +2259,7 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
       assert.equal(saved.status, 201, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
     }
     const launch = (values, inputs) =>
-      request(context.app, "POST", context.collection, {
-        body: {
-          kind: "agent",
-          ...renderPresetTemplate(template(values), { count: 1, ...inputs }).configuration,
-        },
-      });
+      launchPreset(context, template(values), { count: 1, ...inputs });
     for (const [values, inputs, message] of [
       [
         accepted[0],
@@ -2636,8 +2591,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
   // A stored unreadable row does not strand its Configuration: save checks only the new values,
   // so an edit to a document without the reference saves.
   await writePastOcc(configurationDriver, agent.configurationId, unreadableValues);
-  const fixed = await request(context.app, "PATCH", item, { body: { values: valid } });
-  assert.equal(fixed.status, 200, JSON.stringify(fixed.body));
+  await updateSaved(context, item, valid);
   // References OpenClaw reads still save: an env SecretRef on the default alias, the same id on a
   // configured env provider whose allowlist lists it, and the `$NAME` shorthand there.
   for (const value of [
@@ -2654,8 +2608,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
         },
       },
     };
-    const saved = await request(context.app, "PATCH", item, { body: { values } });
-    assert.equal(saved.status, 200, `${JSON.stringify(value)}: ${JSON.stringify(saved.body)}`);
+    await updateSaved(context, item, values, JSON.stringify(value));
   }
   assert.equal(
     (await request(context.app, "PATCH", item, { body: { values: valid } })).status,
@@ -2752,8 +2705,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     ],
   ]) {
     const label = JSON.stringify(values);
-    const saved = await request(context.app, "PATCH", item, { body: { values } });
-    assert.equal(saved.status, 200, `${label}: ${JSON.stringify(saved.body)}`);
+    await updateSaved(context, item, values, label);
     const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
     assert.equal(deployed.status, deployStatus, label);
     assert.equal(deployed.body.error.message, deployMessage, label);
@@ -2822,8 +2774,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     name: "Plugin key variant consumer",
     secretName: "plugin-variant-key",
   });
-  const variantDeploy = await request(context.app, "POST", `${variantAgent.agentPath}/deploy`);
-  assert.equal(variantDeploy.status, 202, JSON.stringify(variantDeploy.body));
+  await deployAccepted(context, variantAgent.agentPath);
   // A `GOOGLE` entry written after google's does not turn google off: each revision reaches the
   // Gateway in PostgreSQL's jsonb key order, keys by length and then byte, where `GOOGLE` comes
   // first and startup auto-enable then enables the google entry (finding 3092). Save refuses an
@@ -2882,8 +2833,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     password({ source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" }),
     password("${OPENCLAW_GATEWAY_PASSWORD}"),
   ]) {
-    const saved = await request(context.app, "PATCH", item, { body: { values } });
-    assert.equal(saved.status, 200, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
+    await updateSaved(context, item, values, JSON.stringify(values));
   }
 });
 
@@ -2935,9 +2885,7 @@ test("Configuration save, Agent save and Kubernetes deployment refuse a plugin p
   assert.equal(other.status, 201, JSON.stringify(other.body));
   await writePastOcc(configurationDriver, other.body.data.id, withPlugins(storedPlugins));
   assertRefused(
-    await request(context.app, "PATCH", agent.agentPath, {
-      body: { configurationId: other.body.data.id },
-    }),
+    await agentSave(context, agent, other.body.data.id),
     codexPluginRefusal(...storedRefusal),
   );
   assert.deepEqual(
@@ -2956,10 +2904,8 @@ test("Configuration save, Agent save and Kubernetes deployment refuse a plugin p
     deny: ["slack"],
     entries: { codex: { ...valid.plugins.entries.codex, enabled: false } },
   });
-  const saved = await request(context.app, "PATCH", agent.item, { body: { values: startable } });
-  assert.equal(saved.status, 200, JSON.stringify(saved.body));
-  const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  await updateSaved(context, agent.item, startable);
+  await deployAccepted(context, agent.agentPath);
 });
 
 test("Preset save refuses a Codex approval policy every Gateway refuses, as Configuration save does", async (t) => {
@@ -2999,12 +2945,9 @@ test("Preset save refuses a Codex approval policy every Gateway refuses, as Conf
     assert.equal(saved.status, 201, `${policy}: ${JSON.stringify(saved.body)}`);
   }
   // The filled Preset reaches the same rule on the Configuration its launch creates.
-  const launched = await request(context.app, "POST", context.collection, {
-    body: {
-      kind: "agent",
-      ...renderPresetTemplate(template("{{ vars.policy }}"), { policy: "untrusted", count: 1 })
-        .configuration,
-    },
+  const launched = await launchPreset(context, template("{{ vars.policy }}"), {
+    policy: "untrusted",
+    count: 1,
   });
   assertRefused(launched, policyRetired);
 });
@@ -4046,10 +3989,7 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
       codexApiKeyRefusal("models.providers.codex.apiKey"),
     ],
   ];
-  const launch = (template) =>
-    request(context.app, "POST", context.collection, {
-      body: { kind: "agent", ...renderPresetTemplate(template, inputs).configuration },
-    });
+  const launch = (template) => launchPreset(context, template, inputs);
   for (const [index, [values, message]] of refused.entries()) {
     const label = JSON.stringify(values);
     await t.test(`refuses Preset ${index}: ${message}`, async () => {
@@ -4245,8 +4185,7 @@ test("Configuration and Preset saves refuse an OpenRouter compatibility selector
     },
   ].entries()) {
     const label = JSON.stringify(values);
-    const saved = await request(context.app, "PATCH", item, { body: { values } });
-    assert.equal(saved.status, 200, `${label}: ${JSON.stringify(saved.body)}`);
+    await updateSaved(context, item, values, label);
     const preset = await savePreset(context, { configuration: { values } }, `Accepted-${index}`);
     assert.equal(preset.status, 201, `${label}: ${JSON.stringify(preset.body)}`);
   }
@@ -4373,8 +4312,7 @@ for (const runtimeLogging of [undefined, "driver"]) {
       configurationId,
       "configuration-model-key",
     );
-    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
-    assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+    const deployed = await deployAccepted(context, agentPath);
     assert.equal(deployed.body.data.configurationId, configurationId);
     assert.equal(deployed.body.data.configurationKind, "agent");
     assert.equal(deployed.body.data.configurationGeneration, 1);
@@ -5204,13 +5142,7 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
   );
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   const launch = (url) =>
-    request(context.app, "POST", context.collection, {
-      body: {
-        kind: "agent",
-        ...renderPresetTemplate(saved.body.data.template, { url, host: "", scheme: "" })
-          .configuration,
-      },
-    });
+    launchPreset(context, saved.body.data.template, { url, host: "", scheme: "" });
   await t.test("refuses a whole Preset variable at launch", async () => {
     const field = "/skills/entries/x/env/PIP_INDEX_URL";
     assertRefused(await launch(index), userinfo(field), { label: field, sentinel });
@@ -6387,13 +6319,7 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
   };
   const saved = await savePreset(context, template(variables, values), "Filled at launch");
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
-  const launch = (inputs) =>
-    request(context.app, "POST", context.collection, {
-      body: {
-        kind: "agent",
-        ...renderPresetTemplate(saved.body.data.template, inputs).configuration,
-      },
-    });
+  const launch = (inputs) => launchPreset(context, saved.body.data.template, inputs);
   assertRefused(await launch({ h: "", n: 1000, u: "https://models.example.test/v1" }), baseUrl());
   const oneSlash = await launch({ h: "models.example.test", n: 1000, u: "https:/v1" });
   assertRefused(oneSlash, slashes("models/0/baseUrl"));
@@ -6491,14 +6417,11 @@ test("A stored Configuration with request credentials an older release accepted 
     assert.deepEqual(revisions.body.data, [], label);
 
     // An edit that removes the credential repairs it.
-    const repaired = await request(context.app, "PATCH", item, { body: { values: valid } });
-    assert.equal(repaired.status, 200, `${label}: ${JSON.stringify(repaired.body)}`);
-    assert.deepEqual(repaired.body.data.values, valid, label);
+    await updateSaved(context, item, valid, label);
     assert.equal((await readFile(path, "utf8")).includes(sentinel), false, label);
   }
   // The repaired Configuration deploys through the Agent's Harness authentication binding.
-  const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  await deployAccepted(context, agentPath);
   assert.equal(JSON.stringify(context.auditSink.events).includes(sentinel), false);
 });
 
@@ -6572,8 +6495,7 @@ test("embedded custom provider deploys through the existing Secret binding workf
   const saved = await request(context.app, "GET", item);
   assert.equal(saved.status, 200);
   assert.deepEqual(saved.body.data.values.models, values.models);
-  const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  await deployAccepted(context, agentPath);
   const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
   assert.equal(revisions.status, 200);
   assert.equal(revisions.body.data.length, 1);
