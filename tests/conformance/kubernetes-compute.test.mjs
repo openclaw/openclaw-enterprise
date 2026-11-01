@@ -89,6 +89,7 @@ import {
   KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT,
   kubernetesGatewayPasswordRequirement,
   dedicatedCodexVariableRefusal,
+  pluginEntryKeyVariantRefusal,
   unboundPluginSecretRefusal,
   unreadablePluginSecretRefusal,
   unboundUnreadablePluginSecretRefusal,
@@ -9443,6 +9444,12 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   const workspaceNode = "the Agent's workspace node requires the file-transfer plugin";
   for (const [plugins, setting, requirement] of [
     [{ deny: ["file-transfer"] }, "plugins.deny", `must not list file-transfer: ${workspaceNode}`],
+    // OpenClaw matches deny entries trimmed and lowercased (finding 3077).
+    [
+      { deny: [1, " File-Transfer"] },
+      "plugins.deny",
+      `must not list file-transfer: ${workspaceNode}`,
+    ],
     [
       { entries: { "file-transfer": { enabled: false } } },
       "plugins.entries.file-transfer.enabled",
@@ -9627,6 +9634,50 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   for (const channels of [{ slack: { enabled: false } }, { defaults: { groupPolicy: "open" } }]) {
     unrouted.validateHarnessAuth(codex, apiKeyAuth, { ...base, channels });
     unrouted.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, channels });
+  }
+});
+
+test("Kubernetes Compute refuses another spelling of a plugin entry key it renders", () => {
+  // Finding 3077. OpenClaw merges plugins.entries keys that match trimmed and lowercased. The
+  // Gateway entrypoint enables and configures file-transfer for a workspace node, and renders the
+  // managed catalog plugin diffs for the Agent's plugin selection, both only at the exact key, so a
+  // later `File-Transfer` entry could turn the workspace node's plugin off and a `Diffs` entry
+  // could replace the managed one. Configuration save, Preset save and deploy admission refuse it;
+  // configuration-controller.test.mjs proves a Preset key that waits on a variable.
+  const driver = new KubernetesComputeDriver(options());
+  const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  const base = { agents: { defaults: { model: "codex/gpt-5" } } };
+  const withEntries = (entries) => ({ ...base, plugins: { entries } });
+  for (const [entries, path, id] of [
+    [
+      { "file-transfer": {}, "File-Transfer": { enabled: false } },
+      "plugins.entries.File-Transfer",
+      "file-transfer",
+    ],
+    [
+      { " file-transfer": { enabled: false } },
+      'plugins.entries[" file-transfer"]',
+      "file-transfer",
+    ],
+    [{ diffs: { enabled: true }, Diffs: { config: {} } }, "plugins.entries.Diffs", "diffs"],
+  ]) {
+    const expected = {
+      name: "ConfigurationHarnessError",
+      message: pluginEntryKeyVariantRefusal(path, id),
+    };
+    assert.throws(() => driver.validateConfiguration(withEntries(entries)), expected);
+    assert.throws(
+      () => driver.validateHarnessAuth(codex, apiKeyAuth, withEntries(entries), {}),
+      expected,
+    );
+  }
+  // The exact keys, and other plugins' keys in another spelling, are accepted.
+  for (const entries of [
+    { "file-transfer": { enabled: true }, diffs: { enabled: true } },
+    { "File-Transfers": {}, Slack: { enabled: false } },
+  ]) {
+    driver.validateConfiguration(withEntries(entries));
+    driver.validateHarnessAuth(codex, apiKeyAuth, withEntries(entries), {});
   }
 });
 

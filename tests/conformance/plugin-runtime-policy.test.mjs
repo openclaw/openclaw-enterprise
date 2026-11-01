@@ -1558,6 +1558,8 @@ test("deployment admission and the Gateway entrypoint agree on the workspace nod
     [{ plugins: { deny: null } }, true],
     [{ plugins: { deny: ["other", "file-transfers"] } }, true],
     [{ plugins: { deny: ["other", "file-transfer"] } }, false],
+    // OpenClaw matches deny entries trimmed and lowercased (finding 3077).
+    [{ plugins: { deny: [1, " File-Transfer"] } }, false],
     // A deny that is not a list stops the entrypoint (OpenClaw requires a list as well).
     [{ plugins: { deny: { "file-transfer": true } } }, false],
     [{ plugins: { deny: 1 } }, false],

@@ -204,6 +204,7 @@ import {
   enabledChannelProviders,
   OPENCLAW_GATEWAY_PASSWORD,
   requireChannelTopology,
+  refuseKubernetesPluginEntryKeyVariants,
   refuseUnreadablePluginSecretInputs,
   requirePluginSecretInputs,
   type KubernetesHarnessTopology,
@@ -4830,9 +4831,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
    * Configuration rules every Kubernetes topology applies, so Configuration save, provisioning
    * and Preset defaults refuse the content where it is written: supported channel providers,
    * model credentials only through the Harness authentication binding, the Gateway tool policy,
-   * model selections and provider apiKeys on the primary model's provider, and plugin secret
-   * inputs OpenClaw cannot read (finding 3069). Deployment admission applies each in its own
-   * order (validateAdmittedHarnessAuth).
+   * model selections and provider apiKeys on the primary model's provider, another spelling of a
+   * plugin entry key it renders (finding 3077), and plugin secret inputs OpenClaw cannot read
+   * (finding 3069). Deployment admission applies each in its own order
+   * (validateAdmittedHarnessAuth).
    */
   validateConfiguration(
     configuration: Readonly<OpenClawConfigurationDocument>,
@@ -4847,16 +4849,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private validateConfigurationContent(
     configuration: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
-    toolPolicy = true,
+    admission = true,
   ): void {
     enabledChannelProviders(configuration, CHANNEL_PROVIDERS, callerSettingError);
     requireHarnessCredentialBinding(configuration, callerSettingError, options);
-    // Every OpenClaw topology applies the tool policy, embedded too (findings 2688, 2689).
-    // Preparation and activation skip it: an active revision saved before this rule keeps its
-    // maintenance and recovery passes until a redeploy, which admission checks (finding 2694).
-    // Dedicated preparation still checks its composed policy (managedGatewayConfiguration).
-    if (toolPolicy) {
+    // Every OpenClaw topology applies the tool policy, embedded too (findings 2688, 2689), and the
+    // plugin entry key rule (finding 3077). Preparation and activation skip them: an active
+    // revision saved before these rules keeps its maintenance and recovery passes until a
+    // redeploy, which admission checks (finding 2694). Dedicated preparation still checks its
+    // composed policy (managedGatewayConfiguration).
+    if (admission) {
       validateGatewayToolPolicy(configuration, callerSettingError, options);
+      refuseKubernetesPluginEntryKeyVariants(configuration);
     }
   }
 

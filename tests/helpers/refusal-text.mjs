@@ -339,10 +339,11 @@ export const EMBEDDED_API_KEY_REQUIRED =
 export const codexApiKeyRefusal = (setting) =>
   `Configuration setting ${setting} must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.`;
 // Configuration save, Agent save and deploy admission refuse a plugins.entries key that spells the
-// codex or acpx plugin another way (finding 3073). `path` is the setting as the message shows it,
-// such as plugins.entries.Codex or plugins.entries[" codex"]; `id` is codex or acpx.
+// codex or acpx plugin another way (finding 3073), and on Kubernetes file-transfer or a managed
+// plugin (finding 3077). `path` is the setting as the message shows it, such as
+// plugins.entries.Codex or plugins.entries[" codex"]; `id` is the plugin.
 export const pluginEntryKeyVariantRefusal = (path, id) =>
-  `Configuration setting ${path} must be named ${id}: OpenClaw applies it to the ${id} plugin, whose settings OCE checks only under plugins.entries.${id}. Rename it to ${id}, or merge it into that entry.`;
+  `Configuration setting ${path} must be named ${id}: OpenClaw merges it into plugins.entries.${id}, the only entry OCE checks for that plugin. Rename it, or merge it into that entry.`;
 // Configuration save, Agent save and deploy admission refuse OpenClaw's $include directive anywhere
 // in the document (finding 3078). `path` is the setting as the message shows it, such as $include
 // or gateway.auth.$include.

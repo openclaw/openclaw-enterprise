@@ -202,30 +202,38 @@ export function refuseRetiredOpenClawSettings(
   }
 }
 
-// The plugins whose plugins.entries entry OCE reads or writes at its exact key: Configuration rules
-// check codex and acpx settings there (the codex approval policy, proxy URLs, acpx MCP server
-// environments), and Compute renders codex settings there (the Gateway-local tool exclusions, the
-// native hook relay, the OpenShell app-server policy).
+// The plugins whose plugins.entries entry OCC rules read at its exact key on every Compute:
+// Configuration rules check codex and acpx settings there (the codex approval policy, proxy URLs,
+// acpx MCP server environments), and Compute renders codex settings there (the Gateway-local tool
+// exclusions, the native hook relay, the OpenShell app-server policy). Kubernetes Compute adds the
+// plugins only it reads or renders at their exact key (file-transfer and the managed plugins).
 const EXACT_KEY_PLUGINS: readonly string[] = ["codex", "acpx"];
 
 /**
- * Refuses a plugins.entries key that names a plugin of EXACT_KEY_PLUGINS in another spelling, such
- * as `Codex` or ` codex`. The pinned OpenClaw (`normalizePluginEntries` in
+ * Refuses a plugins.entries key that names a plugin of `plugins` (by default EXACT_KEY_PLUGINS) in
+ * another spelling, such as `Codex` or ` codex`. The pinned OpenClaw (`normalizePluginEntries` in
  * `src/plugins/config-normalization-shared.ts`) merges entries whose keys match trimmed and
  * lowercased, and the last one with a `config` replaces the plugin's whole config: a `Codex` entry
  * after `codex` would replace the settings OCE checked and Compute rendered (finding 3073). Its
- * built-in plugin ID aliases name neither plugin. Other plugins' keys stay accepted: OCE reads no
- * settings at their exact key (finding 3072). Configuration save runs it with the other content
- * rules; Agent save and deploy admission run it on the stored Configuration.
+ * built-in plugin ID aliases name none of these plugins, and the aliases plugin manifests declare
+ * apply to providers and channels, not to this merge. Other plugins' keys stay accepted: OCE reads
+ * no settings at their exact key (finding 3072). Configuration save runs it with the other content
+ * rules; Agent save and deploy admission run it on the stored Configuration. On a Preset save, a
+ * key that waits on a variable holds its placeholder and is checked once filled, on the
+ * Configuration a launch creates: a launch can always fill it with text that names no such plugin,
+ * and Preset save refuses only text that no filling makes acceptable, as the canSpell rules do.
  */
-function refusePluginEntryKeyVariants(values: Readonly<OpenClawConfigurationDocument>): void {
+export function refusePluginEntryKeyVariants(
+  values: Readonly<OpenClawConfigurationDocument>,
+  plugins: readonly string[] = EXACT_KEY_PLUGINS,
+): void {
   for (const key of Object.keys(asRecord(asRecord(values.plugins)?.entries) ?? {})) {
     const id = key.trim().toLowerCase();
-    if (key !== id && EXACT_KEY_PLUGINS.includes(id)) {
+    if (key !== id && plugins.includes(id)) {
       throw new ConfigurationHarnessError(
         configurationSettingMessage(
           keyedSettingPath("plugins.entries", key),
-          `must be named ${id}: OpenClaw applies it to the ${id} plugin, whose settings OCE checks only under plugins.entries.${id}. Rename it to ${id}, or merge it into that entry`,
+          `must be named ${id}: OpenClaw merges it into plugins.entries.${id}, the only entry OCE checks for that plugin. Rename it, or merge it into that entry`,
         ),
       );
     }
@@ -243,6 +251,8 @@ const CONFIG_INCLUDE_KEY = "$include";
  * add settings no rule checked; settings must be written in the Configuration instead (finding
  * 3078). Configuration save runs it after the model provider settings, first of the other content
  * rules; Agent save, deploy admission and the upgrade preflight run it on the stored Configuration.
+ * A Preset key that waits on a variable holds its placeholder, so it is checked once filled
+ * (refusePluginEntryKeyVariants).
  */
 function refuseConfigIncludes(values: Readonly<OpenClawConfigurationDocument>): void {
   const pending: [unknown, string][] = [[values, ""]];
