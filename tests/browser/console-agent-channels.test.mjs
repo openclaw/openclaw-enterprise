@@ -458,7 +458,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
   // OpenClaw matches plugins.deny entries by policy ID (trimmed, lowercased), so a padded or
   // mixed-case `Slack` blocks the slack plugin as the exact `slack` does; the card said nothing
   // and offered Configure Slack (finding 3082). Another plugin's deny entry blocks nothing.
-  test("the Slack card names a plugins.deny entry in any spelling of slack", async (t) => {
+  test("The Slack card names a plugins.deny entry in any spelling of slack", async (t) => {
     const { fixture, namespace } = await readyNamespace(t, "Denied Slack plugin");
     const { page } = await newPage(t, fixture, { browser });
     const blocked = page.getByText("Slack is explicitly blocked in native plugin configuration.", {
