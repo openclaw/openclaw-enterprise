@@ -215,7 +215,9 @@ const settingRefusal = (
  * in that order, each giving its refusal or undefined (refuseStoredConfigurationSettings in
  * configuration-settings.ts). A Configuration saved before a rule existed still reads, and gets
  * the message its next save would (findings 2699, 2709, 2767, 3063, 3064, 3073, 3078). Deploy runs
- * the model provider settings first, which stay server-only (finding 3093).
+ * the model provider settings before these and Agent save and deploy the model provider key rule
+ * after them; both stay server-only, since they read OCC modules the Console does not serve
+ * (finding 3093).
  */
 export const STORED_CONFIGURATION_RULES: readonly (readonly [
   StoredConfigurationRule,
