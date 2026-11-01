@@ -2429,7 +2429,8 @@ test("Agent save refuses the Configuration plugin settings the Gateway entrypoin
     controlUi: { allowedOrigins: [origin] },
   };
   const viewer = { security: { allowRemoteViewer: true } };
-  const unreadableItem = /id\.trim is not a function/;
+  // The TypeError the entrypoint's trim of a number, object or null item throws.
+  const unreadableItem = /id\.trim is not a function|reading 'trim'/;
   const cases = [
     [{ enabled: false }, enabled, true],
     [{ deny: [" DIFFS "] }, enabled, true],
