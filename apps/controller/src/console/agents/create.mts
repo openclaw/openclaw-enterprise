@@ -1931,7 +1931,11 @@ function renderAgentForm(
     { tone: "secondary" },
   );
   function offerPresetVariableChange(serverMessage: string | undefined) {
-    const variables = refusedPresetVariables(serverMessage, presetOptions.settingVariables);
+    // The Configuration JSON as Create sent it, against the values the Preset rendered.
+    const variables = refusedPresetVariables(serverMessage, presetOptions.settingVariables, {
+      submitted: parseObject(configuration),
+      rendered: rendered.configuration?.values,
+    });
     refusedVariables =
       serverMessage && variables.length ? { variables, refusal: serverMessage } : undefined;
     if (!refusedVariables) {
