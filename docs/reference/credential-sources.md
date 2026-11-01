@@ -21,6 +21,9 @@ Gateway delivery supports `openai` API keys for dedicated Codex and native
 OpenClaw models, `codex-pat` for dedicated Codex and `bearer-token` for a
 single API endpoint. Selecting a [Credential Refresh Driver](drivers/credential-refresh.md) also enables experimental
 `codex-oauth` device login, `oauth2-client-credentials` and `oauth2-refresh-token`.
+Device starts commit audit with source and session writes; see the
+[device authorization flow](../flows/credential-source-refresh.md#device-authorization-and-configuration).
+
 OpenShell is a development integration. See the
 [OpenShell qualification requirements](drivers/openshell-sandbox.md#qualification-contract),
 [Credential Proxy overview](../design/credential-proxy.md) and

@@ -151,11 +151,14 @@ and OCC request ID if available. Do not share the device code or Secret value.
 
 Using [approved audit access](../topics/audit-log.md#access-and-limitations), look
 for a successful `openclaw.agents.device_authorization.start` for that actor and
-request. OCC records it after saving the session Secret, before sending the reply.
-It confirms that OCC started the session, not that sign-in completed, and does not
-include the session ID. A missing event does not rule out a partial start. OCC can
-register an empty Credential Source before the session exists. Do not guess the
-session from a name or timestamp, or start again while the outcome is unknown.
+request with `details.phase: "session_pending"`. OCC commits this event with the
+session Secret, before sending the reply. It confirms that OCC saved the session,
+not that sign-in completed, and does not include the session ID.
+
+The `source_registering` and `source_ready` phases confirm only source registration;
+they can exist even when provider login fails before OCC saves a session. A missing
+`session_pending` event does not rule out a partial start. Do not guess the session
+from a name or timestamp, or start again while the outcome is unknown.
 
 If the Console says **Cancel this login and sign in again** while checking a known
 session, choose **Cancel login**. Start a new sign-in only after cancellation
