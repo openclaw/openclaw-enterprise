@@ -256,13 +256,9 @@ conflicts with `plugins.enabled:false`, a matching `plugins.deny` entry, or a
 nonempty `plugins.allow` that excludes it. This includes the Codex transport
 plugin required by selected Codex apps. Disabled OpenClaw selections can remain
 denied. Gateway startup rejects these conflicts before OpenClaw package
-installation or starting the gateway. Every dedicated Codex Gateway enables the
-Codex transport plugin, so on Kubernetes, Configuration save, Agent save,
-provisioning and deployment return `400` for a Codex Configuration with
-`plugins.enabled: false`, a `plugins.deny` that lists `codex`, a nonempty
-`plugins.allow` without it, or a list item that is not text. The message names
-the setting. `plugins.entries.codex.enabled: false` is accepted, because startup
-enables that entry again. Native configuration outside managed fields,
+installation or starting the gateway; Kubernetes
+[admission](compute-admission.md#kubernetes-compute) refuses them first for the
+Codex transport plugin. Native configuration outside managed fields,
 including tool denies and profiles, is retained.
 
 ## Preparation and security
