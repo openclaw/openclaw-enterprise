@@ -252,9 +252,7 @@ before package installation: a selected OpenClaw plugin's `plugins.entries`
 entry whose JSON differs from the managed entry, a differing Codex
 `codexPlugins` bridge, or, for an enabled native plugin including the Codex
 transport plugin, `plugins.enabled:false`, a matching `plugins.deny` item, or a
-nonempty `plugins.allow` that excludes it. Kubernetes
-[admission](compute-admission.md#kubernetes-compute) refuses the Codex transport
-plugin's conflicts first. With an OpenClaw Harness, the
+nonempty `plugins.allow` that excludes it. With an OpenClaw Harness, the
 OpenClaw Driver refuses the OpenClaw conflicts at Agent save, provisioning and
 deployment, but accepts exact copies: `{"enabled":false}` if disabled,
 `{"enabled":true}` if enabled. If `gateway.controlUi.allowedOrigins` lists an
