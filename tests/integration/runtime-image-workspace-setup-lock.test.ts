@@ -6,6 +6,7 @@ import type { TestContext } from "node:test";
 
 import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import type { AgentRevision, ComputeRevisionContext } from "../../packages/contracts/src/index.ts";
 import {
   createHarnessConfiguration,
   withStubbedProviderEndpoint,
@@ -167,24 +168,28 @@ test(
       createdAt,
     };
     const agentId = `agent-setup-lock-${randomUUID()}`;
-    const revisionAt = (number: number) => ({
-      id: `rev-setup-lock-${number}-${randomUUID()}`,
-      namespaceId: namespace.id,
-      agentId,
-      revision: number,
-      configurationId: `cfg-setup-lock-${randomUUID()}`,
-      configurationKind: "agent" as const,
-      configurationGeneration: 1,
-      configuration: admitLoggingConfiguration(
-        withStubbedProviderEndpoint(createHarnessConfiguration("openclaw", runtimeImageModel)),
-        "info",
-      ),
-      harness: { id: "openclaw", version: "2026.9.1", mode: "embedded" as const },
-      compute: { id: driver.id, implementation: driver.implementation },
-      executionAdmission: { version: 2 as const, mode: "unprotected" as const },
-      servicePrincipalId: `sp-setup-lock-${randomUUID()}`,
-      createdAt,
-    });
+    // Docker Compute refuses Harness authentication bindings, so its revisions carry none.
+    const revisionAt = (number: number) =>
+      ({
+        id: `rev-setup-lock-${number}-${randomUUID()}`,
+        namespaceId: namespace.id,
+        agentId,
+        revision: number,
+        backendId: null,
+        configurationId: `cfg-setup-lock-${randomUUID()}`,
+        configurationKind: "agent" as const,
+        configurationGeneration: 1,
+        gatewayManagedMode: false,
+        configuration: admitLoggingConfiguration(
+          withStubbedProviderEndpoint(createHarnessConfiguration("openclaw", runtimeImageModel)),
+          "info",
+        ),
+        harness: { id: "openclaw", version: "2026.9.1", mode: "embedded" as const },
+        compute: { id: driver.id, implementation: driver.implementation },
+        executionAdmission: { version: 2 as const, mode: "unprotected" as const },
+        servicePrincipalId: `sp-setup-lock-${randomUUID()}`,
+        createdAt,
+      }) as Omit<AgentRevision, "harnessAuth"> as AgentRevision;
     // Initial workspace files: the setup container runs native setup with OpenClaw's
     // state on the Agent's retained state volume, which every later Gateway opens.
     const setup = {
@@ -199,6 +204,11 @@ test(
         "USER.md": "",
       },
     };
+    const context: ComputeRevisionContext = {
+      workspaceSetup: setup,
+      harnessAuth: { method: "runtime" },
+      secretEnvironment: [],
+    };
     t.after(async () => {
       const result = await driver.deleteNamespace(namespace);
       assert.equal(result.namespaceDeleted, true, "owned containers, volumes and network removed");
@@ -209,7 +219,7 @@ test(
     // Native setup is slow: it holds the state lock past the Driver's wait (finding 3109).
     const started = firstSetupStart(t, agentId);
     const first = assert.rejects(
-      driver.prepareRevision(revisionAt(1), { workspaceSetup: setup }),
+      driver.prepareRevision(revisionAt(1), context),
       /Workspace initialization timed out/,
     );
     const name = await started;
@@ -239,7 +249,7 @@ test(
     assert.equal(await setupState(name), "running", "the Driver left the running setup");
     assert.equal(await lockHeld(name), true, "native setup still holds the state lock");
     await assert.rejects(
-      driver.prepareRevision(revisionAt(2), { workspaceSetup: setup }),
+      driver.prepareRevision(revisionAt(2), context),
       /Workspace initialization is already running/,
     );
 
@@ -260,7 +270,7 @@ test(
     // The next attempt reuses the completed setup, and the Gateway takes over the
     // state that setup released.
     assert.equal(
-      (await driver.prepareRevision(revisionAt(3), { workspaceSetup: setup })).ready,
+      (await driver.prepareRevision(revisionAt(3), context)).ready,
       true,
       "the Gateway must start on the state the finished setup released",
     );
