@@ -48,6 +48,7 @@ import {
   callerDenied,
   DEDICATED_STORAGE_ROUTING_REQUIRED,
   DEPLOYMENT_FAILED,
+  managedPluginSettingRefusal,
   MODEL_CREDENTIAL_REJECTED_RECORDED,
   NAMESPACE_NAME_CONFLICT,
   referenceFormRefusal,
@@ -4394,6 +4395,131 @@ test("the OpenClaw Plugin Driver refuses a selection whose every tool the Config
   assert.equal(await revisions(), 0);
   await store(allowed);
   const deployed = await deploy();
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+});
+
+test("the OpenClaw Plugin Driver refuses Configuration plugin settings the Gateway refuses for a selected plugin, at save and deployment", async () => {
+  const configurationDriver = createTestConfigurationDriver();
+  const controller = await configuredController({ configurationDriver });
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "openclaw-plugin-settings");
+  const pluginDriver = new OCCPluginDriver();
+  controller.fixture.controller.registerDriver(pluginDriver);
+  controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
+  const plugins = { [diffsPluginId]: pluginPolicy() };
+  const disabled = { [diffsPluginId]: { enabled: false } };
+  const step = {
+    enabled: "remove it or deselect the plugin",
+    deny: "remove that item or deselect the plugin",
+    allow: "add it or deselect the plugin",
+    entry: "OCE writes that entry from the selection; remove it or deselect the plugin",
+    origin:
+      "OCE writes that entry from the selection and gateway.publicOrigin; remove it or deselect the plugin",
+  };
+  const origin = "https://agent.example.com";
+  const servedOrigin = { publicOrigin: origin, controlUi: { allowedOrigins: [origin] } };
+  // The Gateway entrypoint writes the selected plugin's entry and exits at every start on each of
+  // these (finding 3091); deployment was admitted and the Gateway never started. A
+  // Configuration save does not know the Agents' plugins, so each one saves.
+  const copy = (enabled) => `must be unset or ${JSON.stringify({ enabled })}`;
+  const refusals = [
+    [{ enabled: false }, plugins, "plugins.enabled", "must not be false", step.enabled],
+    // OpenClaw compares plugin IDs trimmed and lowercased.
+    [{ deny: ["slack", " DIFFS "] }, plugins, "plugins.deny", "must not list diffs", step.deny],
+    // The Standard Codex Presets and channel saves write a non-empty allowlist.
+    [{ allow: ["codex"] }, plugins, "plugins.allow", "must list diffs", step.allow],
+    [{ entries: { diffs: { config: {} } } }, plugins, "plugins.entries.diffs", copy(true)],
+    [{ entries: { diffs: { enabled: false } } }, plugins, "plugins.entries.diffs", copy(true)],
+    // A disabled selection still writes its entry, so another one conflicts there too.
+    [{ entries: { diffs: { enabled: true } } }, disabled, "plugins.entries.diffs", copy(false)],
+    // Where the Gateway can serve a public origin, the entrypoint writes the entry with the Diffs
+    // viewer's config, and PostgreSQL stores a copy of it with its keys reordered: no copy matches.
+    [
+      { entries: { diffs: { enabled: true } } },
+      plugins,
+      "plugins.entries.diffs",
+      "must be unset",
+      step.origin,
+      servedOrigin,
+    ],
+  ];
+  for (const [
+    index,
+    [settings, selection, setting, rule, fix = step.entry, gateway],
+  ] of refusals.entries()) {
+    const configuration = await createConfiguration(controller, namespace.id, {
+      plugins: settings,
+      ...(gateway === undefined ? {} : { gateway }),
+    });
+    const refused = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+      body: {
+        name: `plugin-settings-${index}`,
+        configurationId: configuration.id,
+        plugins: selection,
+      },
+    });
+    assertApiError(refused, 400, "INVALID_REQUEST", `create ${index}`);
+    assert.equal(
+      refused.body.error.message,
+      managedPluginSettingRefusal(setting, rule, diffsPluginId, fix),
+    );
+  }
+  assert.deepEqual(
+    (await controller.request("GET", `/namespaces/${namespace.id}/agents`)).data,
+    [],
+  );
+  // Settings that leave the selected plugin on, and a disabled selection's plugin turned off, save.
+  // So does an exact copy of the entry the entrypoint writes, which the Gateway starts with.
+  const accepted = [
+    [{ enabled: true, allow: ["codex", " Diffs"], deny: ["slack"] }, plugins],
+    [{ allow: [" "], entries: { slack: { enabled: true } } }, plugins],
+    [{ enabled: false, deny: ["diffs"], allow: ["codex"] }, disabled],
+    [{ entries: { diffs: { enabled: true } } }, plugins],
+    [{ entries: { diffs: { enabled: false } } }, disabled, servedOrigin],
+  ];
+  const agents = [];
+  for (const [index, [settings, selection, gateway]] of accepted.entries()) {
+    const configuration = await createConfiguration(controller, namespace.id, {
+      plugins: settings,
+      ...(gateway === undefined ? {} : { gateway }),
+    });
+    const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+      body: {
+        name: `plugin-settings-ok-${index}`,
+        configurationId: configuration.id,
+        plugins: selection,
+      },
+    });
+    assert.equal(created.status, 201, `${index}: ${JSON.stringify(created.body)}`);
+    agents.push(created.data);
+  }
+  // A later Configuration save can add such a setting under a saved Agent, so deployment checks
+  // the pair again and creates no revision; removing the setting deploys.
+  const [agent] = agents;
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  await controller.fixture.controller.handleNamespaceLifecycle(
+    controller.fixture.principal.id,
+    namespace.id,
+    "ready",
+  );
+  await bindHarnessKey(controller.fixture, namespace.id, agent);
+  const stored = configurationDriver.stored({
+    namespaceId: namespace.id,
+    id: agent.configurationId,
+  });
+  await configurationDriver.update({ ...stored, values: { plugins: { allow: ["codex"] } } });
+  const refusedDeploy = await controller.request("POST", `${agentPath}/deploy`);
+  assertApiError(refusedDeploy, 400, "INVALID_REQUEST", "deploy");
+  assert.equal(
+    refusedDeploy.body.error.message,
+    managedPluginSettingRefusal("plugins.allow", "must list diffs", diffsPluginId, step.allow),
+  );
+  assert.deepEqual((await controller.request("GET", `${agentPath}/revisions`)).data, []);
+  await configurationDriver.update({
+    ...stored,
+    values: { plugins: { allow: ["codex", "diffs"] } },
+  });
+  const deployed = await controller.request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
 });
 
