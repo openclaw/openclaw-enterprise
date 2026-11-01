@@ -304,6 +304,7 @@ export const CreatePasswordPresetDraft = {
 };
 export const CreatePresetVariableRefused = story("createPresetVariableRefused");
 export const CreatePresetVariableMarked = story("createPresetVariableMarked");
+export const CreatePresetQuotedSettingRefused = story("createPresetQuotedSettingRefused");
 export const CreatePasswordPresetDenied = {
   ...story("createPasswordPresetDenied"),
   name: "Password Secret creation denied",

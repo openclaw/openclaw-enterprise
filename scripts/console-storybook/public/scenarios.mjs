@@ -132,6 +132,28 @@ const presetVariableRefused = [
   click("Use Preset"),
   click("Create Agent"),
 ];
+// A model policy key a Preset variable filled with a space, which the API quotes in the setting
+// it refuses (finding 3122).
+const presetQuotedSettingRefusal = {
+  standardCodexPreset: true,
+  presetModelKeyVariable: true,
+  rules: [
+    {
+      suffix: "/agents/validate",
+      method: "POST",
+      status: 400,
+      code: "INVALID_REQUEST",
+      message:
+        'Configuration setting agents.defaults.models["openai/gpt 5 mini"] is not on the primary model\'s provider, "codex": remove it, or list a model of that provider.',
+    },
+  ],
+};
+const presetQuotedSettingRefused = [
+  ...passwordPresetForm.slice(0, -1),
+  { selector: "#preset-variable-fallback", value: "openai/gpt 5 mini" },
+  click("Use Preset"),
+  click("Create Agent"),
+];
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
 // A plugin tool-deny refusal as the API words it, naming the selected plugin.
 const pluginToolRefusal =
@@ -4039,6 +4061,17 @@ export const scenarios = {
       "Create Agent's preflight refuses gateway.auth.trustedProxy.allowUsers, which the Preset variable Human filled. The refusal keeps the API's sentence, names the variable and offers Change Human.",
     steps: ["Select Change Human: the Preset step opens with Human marked and focused."],
     gap: "The preflight refusal is simulated; tests/browser/console-agent-presets.test.ts covers it with the real Kubernetes Compute rules.",
+  },
+  createPresetQuotedSettingRefused: {
+    group: "Pages/Create Agent",
+    name: "Refused quoted setting filled by a Preset variable",
+    path: create,
+    ...presetQuotedSettingRefusal,
+    actions: presetQuotedSettingRefused,
+    description:
+      'Create Agent\'s preflight refuses agents.defaults.models["openai/gpt 5 mini"], a key the Preset variable Fallback filled. The API quotes the key; the refusal still names the variable and offers Change Fallback.',
+    steps: ["Select Change Fallback: the Preset step opens with Fallback marked and focused."],
+    gap: "The preflight refusal is simulated; tests/browser/console-agent-presets.test.ts covers it with the real model policy rules.",
   },
   createPresetVariableMarked: {
     group: "Pages/Create Agent",
