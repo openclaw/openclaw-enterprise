@@ -67,6 +67,15 @@ async function docker(args: string[]): Promise<string[]> {
 // Compute containers and networks of each Namespace its log names, and fail if any remain.
 // The log, not the database, selects them: without CI's per-file database, concurrent runs
 // share one, and a run must not remove a network another run's worker is still checking.
+function namespaceReconciled(output: string): boolean {
+  return jsonLines(output).some(
+    (line: { event?: unknown; operation?: unknown; code?: unknown }) =>
+      line.event === "worker.completed" &&
+      line.operation === "namespace.ensure" &&
+      line.code === "NAMESPACE_RECONCILED",
+  );
+}
+
 async function removeDockerComputeNamespaces(output: string): Promise<void> {
   const worked = new Set(
     jsonLines(output)
@@ -151,12 +160,15 @@ test(
     const exited = once(child, "exit");
 
     // Ready means the worker loop ran a pass and wrote the readiness marker, and the metrics
-    // listener answers: every part the shutdown must close is running.
+    // listener answers: every part the shutdown must close is running. The worker must also
+    // have reconciled bootstrap's default Namespace, so the SIGTERM finds it idle: a signal
+    // during that pass interrupts it after Docker may already have created the network, and
+    // the interrupted pass logs no Namespace for the teardown to remove.
     await waitFor(
       () => `the worker to report ready:\n${output}`,
       async () => {
         assert.equal(child.exitCode, null, `worker.mjs exited during startup:\n${output}`);
-        if (!(await exists(readinessPath))) {
+        if (!(await exists(readinessPath)) || !namespaceReconciled(output)) {
           return undefined;
         }
         try {
