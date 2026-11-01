@@ -224,7 +224,10 @@ locations and disabled native bootstrap are rejected.
 A separate setup container runs native initialization and writes the supplied
 files and completion marker before execution starts. Later startup checks the
 marker without replaying the original text. Missing initialized storage blocks
-startup. Stop, container replacement, and redeployment retain both volumes;
+startup. Native setup holds the OpenClaw state lock on the state volume. If
+setup is still running after 120 seconds, the attempt fails but the Driver does
+not stop the container, because a killed setup leaves its lock. Later attempts
+fail while setup runs, then remove the exited container and continue. Stop, container replacement, and redeployment retain both volumes;
 Agent or Namespace deletion removes them after the owned runtimes are removed.
 These Driver-created volumes are separate from Compose's control-plane volumes
 and are not removed by `compose down --volumes`.

@@ -10,7 +10,8 @@
     "tests/integration/runtime-image-model-probe-outcomes.test.mjs",
     "tests/integration/runtime-image-startup-probe.test.mjs",
     "tests/integration/runtime-image-startup-termination.test.mjs",
-    "tests/integration/sandbox-driver-startup.test.mjs"
+    "tests/integration/sandbox-driver-startup.test.mjs",
+    "tests/integration/runtime-image-workspace-setup-lock.test.ts"
   ],
   "files": [
     {
@@ -65,6 +66,12 @@
         "native initializer serializes retries and preserves later edits",
         "configured protected OpenShell Git admits only the selected execution and network policy",
         "stock OpenShell v0.1.5 cannot carry OCE readiness-extension evidence"
+      ]
+    },
+    {
+      "path": "tests/integration/runtime-image-workspace-setup-lock.test.ts",
+      "expectedTests": [
+        "Docker Compute leaves a slow workspace setup its state lock until setup ends"
       ]
     }
   ]
