@@ -212,17 +212,16 @@ Agent save refuse them for other Agents. Deployment also refuses another
 variable that no Configuration Secret binding sets, unless an Installation
 Driver adds launch variables. Bind a Secret to it, or remove or disable the
 plugin entry. OpenClaw reads these inputs only in an entry keyed by the exact
-plugin ID, such as `google`, not `Google`. Configuration, Preset and Agent saves
-and deployment refuse another spelling of a `codex` or `acpx` key in
-`plugins.entries`, such as `Codex`, and on Kubernetes of `file-transfer` or a
-managed plugin's key: OpenClaw merges it into that plugin's entry, which OCE
-checks only at the exact key. On Kubernetes, Configuration save, Agent save and
-deployment also refuse a reference OpenClaw cannot read in any active plugin's
-secret input, including an enabled Beam or IMAP entry: a SecretRef without a
-provider, a provider that `secrets.providers` does not configure (the default
-env alias needs no entry), an env id that does not start with a letter and use
-only `A-Z`, `0-9` and `_` (at most 128 characters), or an id that the env
-provider's `allowlist` omits. The allowlist applies to
+plugin ID, such as `google`, not `Google`. Saves and deployment refuse another
+spelling of a `codex` or `acpx` entry key, such as `Codex`, and on Kubernetes of
+`file-transfer` or a managed plugin's key: OpenClaw merges it into that plugin's
+entry, which OCE checks only at the exact key. On Kubernetes, Configuration save,
+Agent save and deployment also refuse a reference OpenClaw cannot read in any
+active plugin's secret input, including an enabled Beam or IMAP entry: a
+SecretRef without a provider, a provider that `secrets.providers` does not
+configure (the default env alias needs no entry), an env id that does not start
+with a letter and use only `A-Z`, `0-9` and `_` (at most 128 characters), or an
+id that the env provider's `allowlist` omits. The allowlist applies to
 `$NAME` and SecretRef objects. OpenClaw substitutes a set `${NAME}` first, so the
 allowlist applies to it only when the variable is unset. Deployment then refuses an
 unbound `${NAME}` that the allowlist omits at an enabled Beam or IMAP entry.
