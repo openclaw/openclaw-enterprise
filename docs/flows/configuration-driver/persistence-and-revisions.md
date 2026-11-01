@@ -87,12 +87,12 @@ another change that lands between that re-read and the compensation, is not cove
 Each Kubernetes call has its own 10-second limit. A Configuration or Secret create,
 update or delete gives all of its Kubernetes calls 12 seconds from the start of its API
 handler (`apps/controller/src/admission/mutation-deadline.ts:withMutationDeadline`;
-finding 3106). A call gets only the time left. A write is sent only with 2 seconds left,
-and a read is retried only when its pause and 2 seconds fit. Otherwise nothing more is
+finding 3106). A call gets only the time left. A write is sent only with at least 2 seconds
+left, and a read is retried only when its pause and 2 seconds fit. Otherwise nothing more is
 sent: the request fails with `503 DEPENDENCY_UNAVAILABLE`, or with the error a sent read
 already got. The audit append and the commit run after the budget and are not bounded by
-it. Compensations and the Secret create cleanup also run after it, each call with its
-own 10 seconds.
+it. Compensations, and the cleanup of a Secret create that was sent, also run after it,
+each call with its own 10 seconds.
 A referenced Configuration cannot be deleted. Tenant child-data access remains
 limited to namespaced ConfigMap `create`, `get`, `update`, and `delete`;
 Kubernetes cannot restrict `create` by `resourceNames`, so that verb must use

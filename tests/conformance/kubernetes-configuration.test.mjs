@@ -795,7 +795,7 @@ test("Kubernetes Configuration gives up on a request at its deadline and never r
 test("Kubernetes Configuration sends no call past an API mutation's deadline", async (t) => {
   // Finding 3106: a save's chained calls each had 10 s, so a slow API server let the save commit
   // after the ingress answered 504. Under a mutation deadline each call gets only the time left,
-  // a retry pause must fit before it, and nothing is sent once it has passed.
+  // and nothing is sent once it has passed. Read retries under the deadline have their own test.
   let now = Date.parse("2026-11-01T00:00:00.000Z");
   t.mock.method(Date, "now", () => now);
   const delays = [];
@@ -866,13 +866,6 @@ test("Kubernetes Configuration sends no call past an API mutation's deadline", a
   before = sent(client);
   await assert.rejects(updateBy(driver, now), notSent("namespace verification"));
   assert.deepEqual(sent(client), before);
-
-  // A dropped read is not retried when its first pause would end past the deadline.
-  ({ client, driver } = await storedConfiguration());
-  before = sent(client);
-  client.failureCodes.listNamespace.push("dropped");
-  await assert.rejects(updateBy(driver, now + READ_RETRY_PAUSES_MS[0]), { code: "ECONNRESET" });
-  assert.equal(client.calls.listNamespace - before.listNamespace, 1);
 });
 
 test("Kubernetes Configuration sends no write with less than the minimum send budget left", async (t) => {
