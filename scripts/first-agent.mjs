@@ -212,7 +212,9 @@ async function loadLocalInstallation(harness, controlUi) {
     const expectedBrowserHost = `console.${cookieDomain}`;
     const expectedNativeAdminDomain = `agents.${cookieDomain}`;
     if (
-      state.deploymentMode === "k3d" ||
+      (state.deploymentMode === "k3d" &&
+        (!Number.isInteger(state.browserPort) ||
+          Number(browserOrigin.port || 443) !== state.browserPort)) ||
       state.sandboxDriver !== "openshell" ||
       browserOrigin.protocol !== "https:" ||
       browserOrigin.hostname !== expectedBrowserHost ||
@@ -232,7 +234,7 @@ async function loadLocalInstallation(harness, controlUi) {
   }
   if (controlUi && nativeAdmin === undefined) {
     throw new Error(
-      "Local Setup did not enable its durable native admin endpoint. Use the Compose control plane with Kubernetes Compute and the OpenShell Sandbox Driver, then start a new Agent name.",
+      "Local Setup did not enable its durable native admin endpoint. Use a fresh Kubernetes Compute installation with the OpenShell Sandbox Driver and its HTTPS browser endpoint, then start a new Agent name.",
     );
   }
   if (state.deploymentMode !== "k3d") {
@@ -607,7 +609,7 @@ function nativeConfiguration(model, harness, nativeAdminOrigin) {
       agents: {
         defaults: {
           model: selected,
-          skipBootstrap: true,
+          ...(nativeAdminOrigin === undefined ? { skipBootstrap: true } : {}),
           models: { [selected]: { agentRuntime: { id: harness } } },
         },
       },
