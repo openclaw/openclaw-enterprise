@@ -2004,7 +2004,7 @@ export class ControllerWorker {
   ): Promise<void> {
     for (const listed of earlier) {
       const record = this.stoppedPredecessors.get(listed.id);
-      if (record !== undefined && Date.now() - record.stoppedAt < record.restopAfterMs) {
+      if (this.stoppedRecently(listed.id)) {
         continue;
       }
       // By default, decode only a predecessor this pass stops; a recently stopped one is skipped
@@ -2026,17 +2026,28 @@ export class ControllerWorker {
             : error;
         }
       }
-      this.stoppedPredecessors.delete(previous.id);
-      this.stoppedPredecessors.set(previous.id, {
-        stoppedAt: Date.now(),
-        restopAfterMs: record === undefined ? this.leaseDurationMs : record.restopAfterMs * 2,
-      });
-      if (this.stoppedPredecessors.size > MAX_STOPPED_PREDECESSOR_RECORDS) {
-        // Forgetting a record only costs one repeated idempotent stop.
-        const oldest = this.stoppedPredecessors.keys().next().value;
-        if (oldest !== undefined) {
-          this.stoppedPredecessors.delete(oldest);
-        }
+      this.recordStopped(
+        previous.id,
+        record === undefined ? this.leaseDurationMs : record.restopAfterMs * 2,
+      );
+    }
+  }
+
+  /** Whether this process stopped the revision within its record's re-stop interval. */
+  private stoppedRecently(revisionId: string): boolean {
+    const record = this.stoppedPredecessors.get(revisionId);
+    return record !== undefined && Date.now() - record.stoppedAt < record.restopAfterMs;
+  }
+
+  /** Records a stop of the revision, so a sweep within `restopAfterMs` need not repeat it. */
+  private recordStopped(revisionId: string, restopAfterMs: number): void {
+    this.stoppedPredecessors.delete(revisionId);
+    this.stoppedPredecessors.set(revisionId, { stoppedAt: Date.now(), restopAfterMs });
+    if (this.stoppedPredecessors.size > MAX_STOPPED_PREDECESSOR_RECORDS) {
+      // Forgetting a record only costs one repeated idempotent stop.
+      const oldest = this.stoppedPredecessors.keys().next().value;
+      if (oldest !== undefined) {
+        this.stoppedPredecessors.delete(oldest);
       }
     }
   }
@@ -4502,10 +4513,9 @@ export class ControllerWorker {
         // before superseding; a failed stop keeps waiting (finding 1004).
         // The wait need not be the latest evidence: a lost claim or a retry may have followed it.
         // A stop this process made within a lease (the newer revision's sweep) is not repeated.
-        const stopped = this.stoppedPredecessors.get(revision.id);
         const waited =
           claim.idempotencyKey === `agent_revision:${revision.id}:reconcile` &&
-          (stopped === undefined || Date.now() - stopped.stoppedAt >= stopped.restopAfterMs)
+          !this.stoppedRecently(revision.id)
             ? await this.queue.findWorkAttempt(
                 claim.idempotencyKey,
                 "REFUSED_CANDIDATE_STOP_PENDING",
@@ -4522,16 +4532,23 @@ export class ControllerWorker {
           claim,
           this.refusalWait === undefined ? "yield" : "wait",
         );
-        if (heldSuccessor !== undefined && waited === undefined) {
-          // A newer exclusive version stops this one before it prepares; a version without
-          // exclusive replacement never does. The newer version replaced only the Gateway, so
-          // this version's Harness (its Deployment or Sandbox) would keep running with nothing
-          // routing to it until a later activation retired it. Stop it now, after its
-          // predecessors. Kubernetes deletes the Gateway only while this version holds it, so
-          // the stop has no Gateway drain to wait for. A failed stop fails this pass, and the
-          // next pass repeats it. (A stored refusal's wait above already stopped it.)
+        if (
+          agent.activeRevisionId !== revision.id &&
+          this.compute.requiresStoppedPredecessors?.(revision) === true &&
+          !this.stoppedRecently(revision.id)
+        ) {
+          // A newer exclusive version stops this one only if its own pass reaches its sweep; one
+          // refused before then, or a version without exclusive replacement (finding 3068), never
+          // does. This version's Harness (its Deployment or Sandbox) would then keep running
+          // until a later activation retired it (finding 3075). Stop it now, after its
+          // predecessors: the same stop the newer sweep makes, so it repeats idempotently. It
+          // deletes only this version's objects (Kubernetes and Docker delete the Gateway only
+          // while this version holds it). A failed stop fails this pass, and the next pass
+          // repeats it. Skipped when a stored refusal's wait above, or a newer sweep, already
+          // stopped it in this process; the record also spares the newer sweep a second stop.
           await this.closeRevisionCredentials(claim, revision);
           await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
+          this.recordStopped(revision.id, this.leaseDurationMs);
         }
         await this.finalizeRevision(
           claim,
@@ -6430,17 +6447,7 @@ export class ControllerWorker {
       throw new RefusedCandidateStopError(refusal, Date.now() - started, error);
     }
     // Like a swept predecessor, the next deployment need not stop it again within a lease.
-    this.stoppedPredecessors.delete(revision.id);
-    this.stoppedPredecessors.set(revision.id, {
-      stoppedAt: Date.now(),
-      restopAfterMs: this.leaseDurationMs,
-    });
-    if (this.stoppedPredecessors.size > MAX_STOPPED_PREDECESSOR_RECORDS) {
-      const oldest = this.stoppedPredecessors.keys().next().value;
-      if (oldest !== undefined) {
-        this.stoppedPredecessors.delete(oldest);
-      }
-    }
+    this.recordStopped(revision.id, this.leaseDurationMs);
   }
 
   /**

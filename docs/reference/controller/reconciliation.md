@@ -103,12 +103,12 @@ See the
 full placement, runtime, and recovery sequence.
 
 A recovered older operation never replaces a newer selected version: the worker
-marks it superseded without calling Compute. An older candidate also ends
+marks it superseded without preparing it. An older candidate also ends
 superseded once the newest version, on the same Compute and without repository
 credentials, failed with a held runtime failure: the worker keeps that runtime, so
-the older one cannot become ready. An exclusive older candidate first finishes its
-predecessor stops, then stops its own runtime, as the newer version has no
-exclusive replacement. The failure of a version with repository credentials queues
+the older one cannot become ready. A superseded exclusive candidate finishes its
+yielded predecessor stops, then stops its own runtime, which a newer version may
+never stop. The failure of a version with repository credentials queues
 retirement of its runtime, so the older one keeps waiting.
 A stop or deletion owns the versions admitted before it was requested. PostgreSQL
 stamps both times on its own clock, so controller clock skew cannot exempt a
