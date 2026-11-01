@@ -15,6 +15,7 @@ import {
   gatewayPasswordRequirement,
   keyedSettingPath,
   pluginEntryKeyVariantProblem,
+  quotedSettingKey,
   secretProviderDefaultsProblem,
 } from "./environment-references.ts";
 import { retiredOpenClawSettingMessage } from "./retired-openclaw-settings.ts";
@@ -193,6 +194,49 @@ export function openClawSandboxProblem(
   return undefined;
 }
 
+// The providers whose models.providers entry OCE reads at its exact lowercase key, though a
+// Configuration may leave the entry out: the Harness authentication built-ins
+// (harnessModelAuthentication in Kubernetes Compute). The startup model probe, Dedicated
+// OpenClaw's native catalog and Dedicated Codex's model projection read their entry there. Any
+// other key may keep its case: Kubernetes Compute selects only these providers, fallbacks must use
+// the selected one (finding 1298), and the per-entry rules check every key as written.
+const EXACT_KEY_PROVIDERS: readonly string[] = ["openai", "anthropic", "codex"];
+
+/**
+ * The first models.providers key in `values` that OpenClaw applies to another key, as its setting
+ * and why OCE refuses it (finding 3097). The pinned OpenClaw trims provider keys and merges
+ * entries whose trimmed keys are equal, the later entry's fields winning (`normalizeProviders` in
+ * `src/agents/models-config.plan.ts`, `resolveMergedModelProviderEntry` in
+ * `src/config/model-provider-config.ts`), and for a provider with no exactly matching key it uses
+ * an entry whose key matches without case. OCE's rules and the startup model probe read the exact
+ * key, so ` openai` beside `openai` would change the endpoint the Gateway calls with the Agent's
+ * credential after the probe checked another (PostgreSQL's jsonb key order puts the longer key
+ * last, so it wins there whatever the written order), and `OpenAI` alone would set it while the
+ * probe checks the default. So a key with surrounding whitespace, and another spelling of
+ * openai, anthropic or codex, is refused, whatever its entry holds. A Preset key that waits on a
+ * variable is checked as written and again once a launch fills it.
+ */
+export function providerKeyVariantProblem(
+  values: unknown,
+): { readonly setting: string; readonly requirement: string } | undefined {
+  for (const key of Object.keys(asObject(asObject(asObject(values)?.models)?.providers) ?? {})) {
+    const trimmed = key.trim();
+    // OpenClaw drops a blank key's entry, so it reaches no provider.
+    if (trimmed === "") {
+      continue;
+    }
+    const lowercase = trimmed.toLowerCase();
+    const named = EXACT_KEY_PROVIDERS.includes(lowercase) ? lowercase : trimmed;
+    if (key !== named) {
+      return {
+        setting: keyedSettingPath("models.providers", key),
+        requirement: `must be named ${quotedSettingKey(named, 24)}: OpenClaw applies it to that provider's entry, the one OCE checks. Move these settings there if that key exists, else rename this key`,
+      };
+    }
+  }
+  return undefined;
+}
+
 /** A rule of STORED_CONFIGURATION_RULES; the Console names each rule's step. */
 export type StoredConfigurationRule =
   | "include"
@@ -201,7 +245,8 @@ export type StoredConfigurationRule =
   | "workspaceBootstrap"
   | "retiredSetting"
   | "openClawSandbox"
-  | "pluginEntryKey";
+  | "pluginEntryKey"
+  | "providerKey";
 
 const settingRefusal = (
   problem: { readonly setting: string; readonly requirement: string } | undefined,
@@ -214,10 +259,9 @@ const settingRefusal = (
  * The Configuration rules Agent save and deploy admission run again on a stored Configuration,
  * in that order, each giving its refusal or undefined (refuseStoredConfigurationSettings in
  * configuration-settings.ts). A Configuration saved before a rule existed still reads, and gets
- * the message its next save would (findings 2699, 2709, 2767, 3063, 3064, 3073, 3078). Deploy runs
- * the model provider settings before these and Agent save and deploy the model provider key rule
- * after them; both stay server-only, since they read OCC modules the Console does not serve
- * (finding 3093).
+ * the message its next save would (findings 2699, 2709, 2767, 3063, 3064, 3073, 3078, 3097).
+ * Deploy runs the model provider settings before these; that rule stays server-only, since it
+ * reads OCC modules the Console does not serve (finding 3093).
  */
 export const STORED_CONFIGURATION_RULES: readonly (readonly [
   StoredConfigurationRule,
@@ -244,6 +288,7 @@ export const STORED_CONFIGURATION_RULES: readonly (readonly [
   ["retiredSetting", (values) => retiredOpenClawSettingMessage(values) ?? undefined],
   ["openClawSandbox", (values) => openClawSandboxProblem(values)],
   ["pluginEntryKey", (values) => settingRefusal(pluginEntryKeyVariantProblem(values))],
+  ["providerKey", (values) => settingRefusal(providerKeyVariantProblem(values))],
 ];
 
 /** The first of STORED_CONFIGURATION_RULES that refuses `values`, with its refusal, or undefined. */

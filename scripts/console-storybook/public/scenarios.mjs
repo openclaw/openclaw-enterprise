@@ -5208,6 +5208,20 @@ export const scenarios = {
     ],
     gap: "The stored settings are simulated; this story does not call save or deploy admission or start a Gateway.",
   },
+  providerKeyVariantRefused: {
+    group: "Pages/Agent detail",
+    name: "Model provider key in another spelling",
+    path: draft,
+    deployed: true,
+    providerKeyVariant: true,
+    description:
+      "An older release saved a models.providers.OpenAI entry. OpenClaw applies it to openai, and every Compute refuses to save or deploy it, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the model provider key.",
+      'Deploy new version is disabled with Configuration setting models.providers.OpenAI must be named "openai": OpenClaw applies it to that provider\'s entry, the one OCE checks. Move these settings there if that key exists, else rename this key.',
+    ],
+    gap: "The stored key is simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
   kubernetesEntryKeyVariantRefused: {
     group: "Pages/Agent detail",
     name: "Plugin entry key Kubernetes Compute refuses",

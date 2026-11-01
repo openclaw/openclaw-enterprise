@@ -109,6 +109,10 @@ function configurationValues(scenario) {
     // OpenClaw's own sandbox, which an older release saved and the OCE runtime cannot run.
     values.agents.defaults.sandbox = { mode: "all" };
   }
+  if (scenario.providerKeyVariant) {
+    // An OpenAI model provider key an older release saved, which OpenClaw applies to openai.
+    values.models = { providers: { OpenAI: { baseUrl: "https://models.example.test/v1" } } };
+  }
   if (scenario.kubernetesEntryKeyVariant) {
     // A File-Transfer entry saved before Kubernetes Compute refused it, which OpenClaw merges into
     // file-transfer, the entry Kubernetes Compute enables for the workspace node.
