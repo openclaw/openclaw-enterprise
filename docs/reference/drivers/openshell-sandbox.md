@@ -20,8 +20,8 @@ containment facets; see
 [Kubernetes Compute](kubernetes-compute.md) retains baseline isolation, storage,
 routing, and the per-Agent Gateway. Sandbox owns:
 
-- `supportsHarnessExecutionMode` declares OpenClaw support at construction. Embedded
-  is unsupported; Dedicated needs `kubernetes.userNamespaces: false` and at most
+- `supportsHarnessExecutionMode` declares OpenClaw support at construction.
+  Dedicated needs `kubernetes.userNamespaces: false` and at most
   one ServiceAccount in `gateway.operatorWorkspaceResources`. See the
   [mode support contract](sandbox.md#harness-mode-support).
 - `configureAgent` pins the main Agent workspace to the configured Sandbox data
@@ -200,9 +200,10 @@ disposable development cluster; never qualify this topology for production.
 RoleBinding, and NetworkPolicy manifests the workspace chart renders;
 `gateway.networkPolicyResources` takes namespaced provider networking
 manifests. In `operator` mode, `ensureNamespace` server-side applies both with
-the Compute-owned namespace and OCC ownership metadata. Startup rejects Secrets
-and a NetworkPolicy ingress `_from` (write `from`). Keep OpenShell credentials
-and cluster-scoped objects out of both lists.
+the Compute-owned namespace and OCC ownership metadata. Startup rejects Secrets,
+a NetworkPolicy ingress `_from` (write `from`), and fields the Kubernetes
+client would drop or change (a misspelled selector key, LimitRange `default`).
+Keep OpenShell credentials and cluster-scoped objects out of both lists.
 
 `kubernetes.sandboxDataMount` must match exactly one approved dedicated Harness
 workspace mount. It may not mount the PVC root or use `..`, and must mount
@@ -405,7 +406,6 @@ request values.
 - [OpenShell testing](../../testing/openshell.md)
 - [OpenShell Sandbox provisioning flow](../../flows/openshell-sandbox-provisioning.md)
 - [OpenShell Harness providers and exposure](openshell-sandbox/harness-providers.md)
-- [OpenShell Harness observation and restart states](openshell-sandbox/harness-providers.md#harness-observation)
 - [SandboxDriver contract](sandbox.md) and [OpenShell Credential Gateway](openshell-credential-gateway.md)
 - [ComputeDriver contract](compute.md)
 - [Kubernetes ComputeDriver](kubernetes-compute.md)
