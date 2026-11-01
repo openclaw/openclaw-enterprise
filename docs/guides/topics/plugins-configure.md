@@ -99,7 +99,7 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
   refuses an item in either list that is not text, such as `1`. OCE writes the
   `plugins.entries.diffs` entry from the selection. The Configuration can hold
   only an exact copy: `{"enabled": true}` with Diffs enabled, or
-  `{"enabled": false}` with it disabled. With `gateway.publicOrigin` listed in
+  `{"enabled": false}` with it disabled. With an HTTPS `gateway.publicOrigin` listed in
   `gateway.controlUi.allowedOrigins` and Diffs enabled, it must not hold one.
   Agent create, update, provisioning and deployment return `400` naming the
   setting.
