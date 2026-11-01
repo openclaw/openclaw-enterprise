@@ -1939,10 +1939,14 @@ function renderAgentForm(
     }
     const labels = presetVariableLabels(variables);
     setText(changePresetVariables, `Change ${labels}`);
-    feedback.append(
-      ` The Preset ${variables.length > 1 ? "variables" : "variable"} ${labels} filled this setting.`,
-      ...(presetOptions.presetDraft ? [" ", changePresetVariables] : []),
-    );
+    // The variable follows the refusal, before its request ID.
+    const text = feedback.textContent ?? "";
+    const requestId = text.lastIndexOf(" Request ID: ");
+    const at = requestId === -1 ? text.length : requestId;
+    feedback.textContent = `${text.slice(0, at)} The Preset ${variables.length > 1 ? "variables" : "variable"} ${labels} filled this setting.${text.slice(at)}`;
+    if (presetOptions.presetDraft) {
+      feedback.append(" ", changePresetVariables);
+    }
   }
   const retryProvisioning = button("Retry provisioning request", () => {
     if (!provisioningAttempt || pending) {

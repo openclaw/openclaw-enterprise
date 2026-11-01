@@ -2676,7 +2676,7 @@ for (const viewport of consoleViewports) {
     const feedbackText = (await feedback.textContent()) ?? "";
     assert.match(
       feedbackText,
-      /^Configuration setting gateway\.auth\.trustedProxy\.allowUsers .* Request ID: \S+ The Preset variable Human filled this setting\. Change Human$/,
+      /^Configuration setting gateway\.auth\.trustedProxy\.allowUsers .* names\. The Preset variable Human filled this setting\. Request ID: \S+ Change Human$/,
     );
     assert.equal(feedbackText.includes("OCC-Workspace-Files"), false);
     await feedback.getByRole("button", { name: "Change Human", exact: true }).click();
