@@ -999,6 +999,11 @@ test(
       rows.some(({ kind }) => kind === "setup"),
     );
     supervisor.kill("SIGTERM");
+    // While setup holds its lock, the stopped supervisor must not exit. The real
+    // supervisor cannot exit before setup does, so this wait cannot fail it; one
+    // that exits on the stop does so well within the wait.
+    const early = await Promise.race([exited, delay(500).then(() => "running")]);
+    assert.equal(early, "running", output());
     await writeFile(release, "");
     assert.deepEqual(await exited, [0, null], output());
     // The supervisor exited after setup ended: setup was gone when it exited.
