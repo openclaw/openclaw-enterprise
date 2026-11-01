@@ -60,6 +60,19 @@ request GET "$base/agents/$agent/repository-options" |
 Use a dedicated test Agent with no prior repository binding or static Git source. Fetch its current draft first. Keep its Configuration, Codex authentication and plugin selections. The API changes the repository binding when you deploy the updated draft.
 
 ```bash
+# Run in a dedicated Bash shell with the private session.sh loaded.
+# Register cleanup before this Agent can receive repository write access.
+stop_git_test() {
+  local rc=${1:-0}
+  trap - EXIT
+  if ! request POST "$base/agents/$agent/stop" > "$RUN_DIR/git-stop"; then
+    printf 'Stop unconfirmed for %s. Restore session.sh and check the Agent state.\n' "$agent" >&2
+    if (( rc == 0 )); then rc=1; fi
+  fi
+  return "$rc"
+}
+trap 'stop_git_test "$?"; exit $?' EXIT
+
 # PATCH $base/agents/$agent: replace the test Agent's empty binding list.
 request GET "$base/agents/$agent" |
   jq -e --arg ref "$ref" '.data | select((.repositoryBindings // [] | length)==0) |
@@ -169,4 +182,4 @@ Require a second `receive-pack` receipt using the replacement material version, 
 
 ## Withdraw access after the exercise
 
-Stop the test Agent with bodyless `POST $base/agents/$agent/stop` and wait for its active revision to clear. Remove any standing approval through its generation-checked removal API. Clear the draft's repository bindings with `PATCH $base/agents/$agent` and its current `configurationId`. Check retirement through the [Token Service lifecycle](../../reference/repository-credentials.md#token-service-lifecycle). A stopped workload alone does not confirm external revocation. Keep the test branch for inspection unless its owner requests removal.
+Run `stop_git_test` after the final verification. On an earlier shell exit, the trap requests the same stop. If the shell was killed or the request failed, source the saved `session.sh` in a new Bash shell. Read `GET $base/agents/$agent` and inspect the deployment state before retrying an uncertain stop. Use the bodyless `POST $base/agents/$agent/stop` to stop a running Agent. Wait for its active revision to clear. Remove any standing approval through its generation-checked removal API. Clear the draft's repository bindings with `PATCH $base/agents/$agent` and its current `configurationId`. Check retirement through the [Token Service lifecycle](../../reference/repository-credentials.md#token-service-lifecycle). A stopped workload alone does not confirm external revocation. Keep the test branch for inspection unless its owner requests removal.
