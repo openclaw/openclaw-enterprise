@@ -219,7 +219,7 @@ its optional integration is skipped.
 
 ## Changelog
 
-- 2026-11-01 07:20: An API write gives its Kubernetes Configuration and Secret calls 12 seconds in all and sends none after that, so a slow cluster fails the request with `503` instead of saving it after an ingress answered `504`. (fix-3106, finding 3106)
+- 2026-11-01 07:20: Configuration and Secret create, update and delete send no Kubernetes call after 12 seconds; a slow cluster fails them with `503`. (fix-3106, finding 3106)
 - 2026-10-31: Writes, Agent save and deployment refuse a `gateway.auth.password` object OpenClaw cannot read on every Compute (no provider, other keys, a provider or allowlist that cannot serve it); Docker and Kubernetes Compute use the same reader, and a stored row still reads and deletes. (fix-3061, findings 3061-3063)
 - 2026-10-31: Writes, Agent save and deployment also refuse a `secrets.defaults` alias OpenClaw's configuration check refuses, before the password rule; SSH Compute reads the password with the same reader and renders a readable custom-provider reference as written. (fix-3064, findings 3064, 3065)
 - 2026-10-31: With no model selected, the provider catalog refusal names the model setting instead of the row rule. (fix-3023)

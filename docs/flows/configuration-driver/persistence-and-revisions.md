@@ -84,13 +84,15 @@ act only while it is unchanged: a Configuration another request deleted or updat
 in the meantime is left as that request committed it. If that re-read fails, the
 compensation proceeds as before. A write still in flight, or
 another change that lands between that re-read and the compensation, is not covered.
-Each Kubernetes call has its own 10-second limit, and an API write gives all of its
-Configuration and Secret calls 12 seconds
-(`apps/controller/src/admission/mutation-deadline.ts:withMutationDeadline`).
-A call gets only the time left, a read retry runs only when its pause fits, and no call
-is sent after that time: the request fails with `503 DEPENDENCY_UNAVAILABLE` and never
-commits after an ingress's 15-second timeout (finding 3106). Compensations and the
-Secret create cleanup run after the budget, each call with its own 10 seconds.
+Each Kubernetes call has its own 10-second limit. A Configuration or Secret create,
+update or delete gives all of its Kubernetes calls 12 seconds from the start of its API
+handler (`apps/controller/src/admission/mutation-deadline.ts:withMutationDeadline`;
+finding 3106). A call gets only the time left. A write is sent only with 2 seconds left,
+and a read is retried only when its pause and 2 seconds fit. Otherwise nothing more is
+sent: the request fails with `503 DEPENDENCY_UNAVAILABLE`, or with the error a sent read
+already got. The audit append and the commit run after the budget and are not bounded by
+it. Compensations and the Secret create cleanup also run after it, each call with its
+own 10 seconds.
 A referenced Configuration cannot be deleted. Tenant child-data access remains
 limited to namespaced ConfigMap `create`, `get`, `update`, and `delete`;
 Kubernetes cannot restrict `create` by `resourceNames`, so that verb must use
