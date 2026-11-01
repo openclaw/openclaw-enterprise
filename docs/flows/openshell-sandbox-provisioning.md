@@ -1,14 +1,14 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-30
-last_updated_session: authoring-run/010dd6ea-2b4f-455b-bfe5-593e04307743
+updated: 2026-11-01
+last_updated_session: authoring-run/4063742f-8365-4098-b623-c6d59626a0ce
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-Kubernetes Compute provisions dedicated Codex/OpenClaw Harnesses through OpenShell.
+Kubernetes Compute provisions dedicated Codex/OpenClaw through OpenShell.
 [Credential sources](credential-source-lifecycle.md) supply model access.
 
 ## Entry Points
@@ -150,8 +150,12 @@ the result in the Agent revision. Provisioning status reads return stored work.
 
 Compute delegates Namespace journal data and the original Namespace UID.
 OpenShell checks placement and saves creation intent before effects. Unknown
-Kubernetes creates are not repeated; readback with the saved nonce binds their UID.
+Kubernetes creates are not repeated; saved-nonce readback binds their UID.
 Definitive refusals cannot settle earlier uncertainty.
+`OpenShellSandboxDriver.ensureNamespaceWorkspace` converts wire NetworkPolicy
+`from` fields to the SDK alias for create and update. Updates retain the saved
+UID, current `resourceVersion`, and creation nonce; readback restores wire fields
+for operator configuration checks.
 Preinstalled operator-owned resources require full configuration checks and are
 retained. Readiness and health precede Workspace creation.
 
@@ -422,6 +426,6 @@ live provider removal or Kubernetes concurrency; that combined proof remains unr
 
 ## Changelog
 
-- 2026-10-30 21:23: Preserve patched runtime provenance and durable cleanup in the accompanying main merge. (authoring-run/010dd6ea-2b4f-455b-bfe5-593e04307743 - a85796bbb3aa8c167350824697171ca1ca52101d)
+- 2026-11-01 08:39: Preserve NetworkPolicy ingress restrictions through journal creation and updates when integrating main. (authoring-run/4063742f-8365-4098-b623-c6d59626a0ce - 1cae053ef4e6c6772136be0681a11cf72c85f222)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

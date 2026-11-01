@@ -3504,7 +3504,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           await context.lifecycle.read();
           try {
             actual = await api.create(
-              expected,
+              networkPolicyToSdk(expected),
               undefined,
               undefined,
               "openclaw-enterprise-sandbox",
@@ -3542,7 +3542,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         await context.lifecycle.read();
         const identity = resourceIdentity(actual);
         await api.patch(
-          { ...expected, metadata: { ...expected.metadata, ...identity } },
+          networkPolicyToSdk({ ...expected, metadata: { ...expected.metadata, ...identity } }),
           undefined,
           undefined,
           "openclaw-enterprise-sandbox",

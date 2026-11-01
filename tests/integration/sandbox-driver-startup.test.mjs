@@ -7368,27 +7368,65 @@ test("OpenShell verifies operator NetworkPolicy from actual KubernetesObjectApi 
 
 /**
  * A real KubernetesObjectApi for `discovery` ({ apiVersion: [[kind, plural]] }) whose HTTP
- * transport records each request and echoes its body. The SDK's request serialization stays
+ * transport stores and returns API objects. The SDK's request serialization stays
  * real, so `applied` holds exactly what the API server would receive.
  */
-function recordingObjectApi(discovery) {
+function recordingObjectApi(discovery, context) {
   const { createConfiguration, ServerConfiguration } = controllerRequire("@kubernetes/client-node");
   const api = new KubernetesObjectApi(
     createConfiguration({ baseServer: new ServerConfiguration("http://127.0.0.1:9", {}) }),
   );
   api.apiVersionResourceCache = Object.fromEntries(
-    Object.entries(discovery).map(([apiVersion, kinds]) => [
+    Object.entries({
+      ...discovery,
+      v1: [["Namespace", "namespaces"], ...(discovery.v1 ?? [])],
+    }).map(([apiVersion, kinds]) => [
       apiVersion,
-      { resources: kinds.map(([kind, name]) => ({ name, kind, namespaced: true })) },
+      {
+        resources: kinds.map(([kind, name]) => ({ name, kind, namespaced: kind !== "Namespace" })),
+      },
     ]),
   );
   const applied = [];
+  const objects = new Map();
+  objects.set(`/api/v1/namespaces/${context.namespace.name}`, {
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: {
+      name: context.namespace.name,
+      uid: context.kubernetesNamespaceUid,
+      resourceVersion: "1",
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/namespace": context.namespace.id,
+      },
+      annotations: { "openclaw.dev/namespace-id": context.namespace.id },
+    },
+  });
   api.requestPromise = async (request) => {
-    applied.push([request.getHttpMethod(), JSON.parse(request.getBody())]);
+    const method = request.getHttpMethod();
+    const path = new URL(request.getUrl()).pathname;
+    let value = objects.get(path);
+    if (method === "POST" || method === "PATCH") {
+      const body = JSON.parse(request.getBody());
+      applied.push([method, body]);
+      const key = method === "POST" ? `${path}/${body.metadata.name}` : path;
+      const previous = objects.get(key);
+      value = {
+        ...body,
+        metadata: {
+          ...body.metadata,
+          uid: previous?.metadata.uid ?? randomUUID(),
+          resourceVersion: String(Number(previous?.metadata.resourceVersion ?? 0) + 1),
+        },
+      };
+      objects.set(key, value);
+    }
     return api.processResponse({
-      httpStatusCode: 200,
+      httpStatusCode: value === undefined ? 404 : 200,
+      getBodyAsAny: async () => value ?? { message: "Not found" },
       headers: { "content-type": "application/json" },
-      body: { text: async () => request.getBody() },
+      body: { text: async () => JSON.stringify(value ?? { message: "Not found" }) },
     });
   };
   return { api, applied };
@@ -7439,10 +7477,13 @@ test("OpenShell operator mode applies NetworkPolicy ingress sources through the 
   const gatewayClient = workspaceGatewayClient();
   const driver = openShellDriver(gatewayClient, configuration);
   const context = namespaceContext();
-  const { api, applied } = recordingObjectApi({
-    "networking.k8s.io/v1": [["NetworkPolicy", "networkpolicies"]],
-    "crd.antrea.io/v1beta1": [["NetworkPolicy", "networkpolicies"]],
-  });
+  const { api, applied } = recordingObjectApi(
+    {
+      "networking.k8s.io/v1": [["NetworkPolicy", "networkpolicies"]],
+      "crd.antrea.io/v1beta1": [["NetworkPolicy", "networkpolicies"]],
+    },
+    context,
+  );
   context.kubernetes = api;
 
   await driver.ensureNamespace(context);
@@ -7451,11 +7492,33 @@ test("OpenShell operator mode applies NetworkPolicy ingress sources through the 
   assert.deepEqual(
     applied.map(([method, body]) => [method, body.metadata.name, body.spec.ingress]),
     [
+      ["POST", "openshell-workspace-sandbox-ssh", ingress],
+      ["POST", "provider-ingress", ingress],
+      ["POST", "provider-crd-ingress", crdIngress],
+    ],
+  );
+  // A second pass uses the saved UID and resourceVersion; its SDK patch must preserve
+  // the same restriction rather than widening the already-bound object.
+  const created = applied.map(([, body]) => body);
+  const originals = await Promise.all(created.map((body) => api.read(body)));
+  applied.length = 0;
+  await driver.ensureNamespace(context);
+  assert.deepEqual(
+    applied.map(([method, body]) => [method, body.metadata.name, body.spec.ingress]),
+    [
       ["PATCH", "openshell-workspace-sandbox-ssh", ingress],
       ["PATCH", "provider-ingress", ingress],
       ["PATCH", "provider-crd-ingress", crdIngress],
     ],
   );
+  for (const [index, [, body]] of applied.entries()) {
+    assert.equal(body.metadata.uid, originals[index].metadata.uid);
+    assert.equal(body.metadata.resourceVersion, originals[index].metadata.resourceVersion);
+    assert.equal(
+      body.metadata.annotations["openclaw.dev/sandbox-creation-id"],
+      created[index].metadata.annotations["openclaw.dev/sandbox-creation-id"],
+    );
+  }
   assert.equal(callCount(gatewayClient, "createWorkspace"), 1);
   // The operator's configuration stays the wire manifest it supplied.
   assert.deepEqual(configuration.gateway.operatorWorkspaceResources[0].spec.ingress, ingress);
@@ -7601,15 +7664,18 @@ test("OpenShell startup admits and applies the stock workspace chart exactly as 
 
   const driver = openShellDriver(workspaceGatewayClient(), sandboxOf(installation));
   const context = namespaceContext();
-  const { api, applied } = recordingObjectApi({
-    v1: [["ServiceAccount", "serviceaccounts"]],
-    "rbac.authorization.k8s.io/v1": [
-      ["Role", "roles"],
-      ["RoleBinding", "rolebindings"],
-    ],
-    "networking.k8s.io/v1": [["NetworkPolicy", "networkpolicies"]],
-    "crd.antrea.io/v1beta1": [["NetworkPolicy", "networkpolicies"]],
-  });
+  const { api, applied } = recordingObjectApi(
+    {
+      v1: [["ServiceAccount", "serviceaccounts"]],
+      "rbac.authorization.k8s.io/v1": [
+        ["Role", "roles"],
+        ["RoleBinding", "rolebindings"],
+      ],
+      "networking.k8s.io/v1": [["NetworkPolicy", "networkpolicies"]],
+      "crd.antrea.io/v1beta1": [["NetworkPolicy", "networkpolicies"]],
+    },
+    context,
+  );
   context.kubernetes = api;
   await driver.ensureNamespace(context);
   // Each body is the manifest plus only the namespace and ownership metadata the Driver adds.
@@ -7626,9 +7692,15 @@ test("OpenShell startup admits and applies the stock workspace chart exactly as 
       annotations: { "openclaw.dev/namespace-id": context.namespace.id },
     },
   });
+  const withoutNonce = (body) => {
+    const value = structuredClone(body);
+    assert.match(value.metadata.annotations["openclaw.dev/sandbox-creation-id"], /^[0-9a-f-]{36}$/);
+    delete value.metadata.annotations["openclaw.dev/sandbox-creation-id"];
+    return value;
+  };
   assert.deepEqual(
-    applied,
-    [...chart, forms, crd].map((resource) => ["PATCH", owned(resource)]),
+    applied.map(([method, body]) => [method, withoutNonce(body)]),
+    [...chart, forms, crd].map((resource) => ["POST", owned(resource)]),
   );
 });
 
