@@ -30,4 +30,5 @@ export declare function configIncludeProblem(
 ): { readonly setting: string; readonly requirement: string } | undefined;
 export declare function pluginEntryKeyVariantProblem(
   values: unknown,
+  plugins?: readonly string[],
 ): { readonly setting: string; readonly requirement: string } | undefined;

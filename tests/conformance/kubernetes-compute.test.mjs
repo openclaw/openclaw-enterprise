@@ -10187,11 +10187,13 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
     withSearchHeader("${RELAY_TOKEN}", {}, { deny: ["GOOGLE"] }),
     withSearchHeader(unreadableHeader, {}, { deny: [" google "] }),
     withSearchHeader("${RELAY_TOKEN}", {}, { deny: ["google-gemini-cli"] }),
-    // A later entry for the same plugin with enabled: false disables it.
-    withEntries(withSearchHeader("${RELAY_TOKEN}"), { GOOGLE: { enabled: false } }),
+    // A later entry for the same plugin with enabled: false disables it. It must come later in
+    // the order written and in the stored order the Gateway receives (keys by length, then byte;
+    // finding 3092), so it is a longer key here.
+    withEntries(withSearchHeader("${RELAY_TOKEN}"), { "google ": { enabled: false } }),
     // A later value that is not an object replaces the merged entry with {}, which leaves google
     // inactive: auto-enable set `enabled: true` only on the exact entry (finding 3074).
-    withEntries(withSearchHeader("${RELAY_TOKEN}"), { GOOGLE: null }),
+    withEntries(withSearchHeader("${RELAY_TOKEN}"), { "google ": null }),
     withEntries(withSearchHeader("${RELAY_TOKEN}"), { " google": "off" }),
   ]) {
     embeddedAdmission(configuration, {});
@@ -10200,8 +10202,12 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
   // A later `enabled: true` for the same plugin enables a disabled google entry, so the step names
   // that later entry (finding 3074). Startup auto-enable sets `enabled: true` on a google entry
   // that leaves it unset, so an earlier `enabled: false`, or a value that is not an object, for
-  // the same plugin does not disable it.
+  // the same plugin does not disable it. Each revision reaches the Gateway in PostgreSQL's jsonb
+  // key order, where `GOOGLE` comes before `google` whatever order the Configuration wrote, so
+  // `GOOGLE` written after the google entry does not disable it either (finding 3092).
   for (const [configuration, enabledBy] of [
+    [withEntries(withSearchHeader("${RELAY_TOKEN}"), { GOOGLE: { enabled: false } }), undefined],
+    [withEntries(withSearchHeader("${RELAY_TOKEN}"), { GOOGLE: null }), undefined],
     [
       withEntries(withSearchHeader("${RELAY_TOKEN}", { enabled: false }), {
         GOOGLE: { enabled: true },
@@ -10247,9 +10253,12 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
     ...configuration,
     plugins: { ...configuration.plugins, slots },
   });
-  const clearedSearchHeader = withEntries(withSearchHeader("${RELAY_TOKEN}"), { GOOGLE: null });
+  // The cleared entry comes after google in the order written and in the stored order (finding
+  // 3092): a longer key.
+  const clearedSearchHeader = withEntries(withSearchHeader("${RELAY_TOKEN}"), { "google ": null });
+  const clearedByVariant = withEntries(withSearchHeader("${RELAY_TOKEN}"), { GOOGLE: null });
   for (const slots of [{ memory: "google" }, { contextEngine: " google " }]) {
-    refusedUntilBound(embeddedAdmission, withSlots(clearedSearchHeader, slots), [
+    refusedUntilBound(embeddedAdmission, withSlots(clearedByVariant, slots), [
       searchHeader,
       "RELAY_TOKEN",
       "google",

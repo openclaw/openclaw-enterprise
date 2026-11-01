@@ -27,6 +27,7 @@ export const SecretProviderAliasRefused = story("secretProviderAliasRefused");
 export const PluginSecretInputUnreadable = story("pluginSecretInputUnreadable");
 export const ConfigIncludeRefused = story("configIncludeRefused");
 export const PluginEntryKeyVariantRefused = story("pluginEntryKeyVariantRefused");
+export const KubernetesEntryKeyVariantRefused = story("kubernetesEntryKeyVariantRefused");
 export const GatewayPasswordAllowlistOmits = story("gatewayPasswordAllowlistOmits");
 export const GatewayPasswordSaveDenied = story("gatewayPasswordSaveDenied");
 export const GatewayPasswordSaving = story("gatewayPasswordSaving");

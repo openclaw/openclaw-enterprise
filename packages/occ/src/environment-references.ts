@@ -465,6 +465,55 @@ export function pluginPolicyId(name: unknown): string | undefined {
   return Object.hasOwn(PLUGIN_ID_ALIASES, id) ? PLUGIN_ID_ALIASES[id] : id;
 }
 
+// PostgreSQL's jsonb key order: shorter keys first (by UTF-8 bytes), then byte by byte.
+function compareJsonbKeys(left: string, right: string): number {
+  const encoder = new TextEncoder();
+  const a = encoder.encode(left);
+  const b = encoder.encode(right);
+  if (a.length !== b.length) {
+    return a.length - b.length;
+  }
+  const index = a.findIndex((byte, position) => byte !== b[position]);
+  return index === -1 ? 0 : a[index]! - b[index]!;
+}
+
+/**
+ * OpenClaw's merge of the plugins.entries `keys`, in that order, by policy ID: the last boolean
+ * `enabled` wins, and a value that is not an object replaces the merged entry with {}, which
+ * leaves `enabled` unset. Before that, startup auto-enable may set `enabled: true` on the exact
+ * entry of a default-on plugin that leaves it unset, so that entry counts as enabled.
+ * `enabledBy` keeps the key of the entry that set the merged `enabled` or cleared it.
+ */
+function mergedPluginEntries(
+  keys: readonly string[],
+  entries: Readonly<Record<string, unknown>>,
+): {
+  readonly enabled: ReadonlyMap<string | undefined, boolean | undefined>;
+  readonly enabledBy: ReadonlyMap<string | undefined, string>;
+} {
+  const enabled = new Map<string | undefined, boolean | undefined>();
+  const enabledBy = new Map<string | undefined, string>();
+  for (const key of keys) {
+    const id = pluginPolicyId(key);
+    const entry = asObject(entries[key]);
+    if (entry === undefined) {
+      enabled.set(id, undefined);
+      enabledBy.set(id, key);
+    } else if (typeof entry.enabled === "boolean") {
+      enabled.set(id, entry.enabled);
+      enabledBy.set(id, key);
+    } else if (
+      key === id &&
+      Object.hasOwn(PLUGIN_SECRET_INPUTS, id) &&
+      PLUGIN_SECRET_INPUTS[id]?.enabledByDefault === true
+    ) {
+      enabled.set(id, true);
+      enabledBy.set(id, key);
+    }
+  }
+  return { enabled, enabledBy };
+}
+
 /**
  * Each secret input of an active plugin (PLUGIN_SECRET_INPUTS) in the Configuration `values`, in
  * Configuration order: its setting, its value, whether an unset variable there ends startup, and
@@ -492,31 +541,6 @@ export function activePluginSecretInputs(values: unknown): {
     return [];
   }
   const denied = Array.isArray(plugins?.deny) ? plugins.deny.map(pluginPolicyId) : [];
-  // OpenClaw merges the entries whose keys share a policy ID in key order: the last boolean
-  // `enabled` wins, and a value that is not an object replaces the merged entry with {}, which
-  // leaves `enabled` unset. Before that, startup auto-enable may set `enabled: true` on the exact
-  // entry of a default-on plugin that leaves it unset, so that entry counts as enabled.
-  // `enabledBy` keeps the key of the entry that set the merged `enabled` or cleared it.
-  const enabled = new Map<string | undefined, boolean | undefined>();
-  const enabledBy = new Map<string | undefined, string>();
-  for (const [key, value] of Object.entries(entries)) {
-    const id = pluginPolicyId(key);
-    const entry = asObject(value);
-    if (entry === undefined) {
-      enabled.set(id, undefined);
-      enabledBy.set(id, key);
-    } else if (typeof entry.enabled === "boolean") {
-      enabled.set(id, entry.enabled);
-      enabledBy.set(id, key);
-    } else if (
-      key === id &&
-      Object.hasOwn(PLUGIN_SECRET_INPUTS, id) &&
-      PLUGIN_SECRET_INPUTS[id]?.enabledByDefault === true
-    ) {
-      enabled.set(id, true);
-      enabledBy.set(id, key);
-    }
-  }
   // Activation also selects a plugin whose `enabled` is unset when the trimmed
   // `plugins.slots.memory` or `plugins.slots.contextEngine` is its exact ID
   // (resolvePluginActivationStateShared; findings 3074 and 3081). Only `enabled: false` stops that.
@@ -524,21 +548,36 @@ export function activePluginSecretInputs(values: unknown): {
   const slotted = [slots?.memory, slots?.contextEngine].flatMap((slot) =>
     typeof slot === "string" ? [slot.trim()] : [],
   );
+  // The entries in the order written, and in the order the Gateway receives them: PostgreSQL
+  // stores each revision's Configuration as jsonb, which orders object keys by length and then
+  // byte by byte, and Compute renders the Gateway's config from that snapshot, so a `GOOGLE` entry
+  // comes before `google` there (finding 3092). A plugin counts as active when either order
+  // activates it, so no document the written order refused is admitted, and the step names the
+  // entry that order merges last.
+  const written = Object.keys(entries);
+  const merges = [written, [...written].sort(compareJsonbKeys)].map((keys) =>
+    mergedPluginEntries(keys, entries),
+  );
+  const active = (key: string) =>
+    merges.find(
+      ({ enabled }) =>
+        enabled.get(key) === true || (enabled.get(key) === undefined && slotted.includes(key)),
+    );
   return Object.entries(entries).flatMap(([key, value]) => {
     const entry = asObject(value);
     const inputs = Object.hasOwn(PLUGIN_SECRET_INPUTS, key) ? PLUGIN_SECRET_INPUTS[key] : undefined;
+    const merge = active(key);
     if (
       inputs === undefined ||
       entry === undefined ||
-      enabled.get(key) === false ||
-      (enabled.get(key) !== true && !slotted.includes(key)) ||
+      merge === undefined ||
       denied.includes(key)
     ) {
       return [];
     }
     const path = keyedSettingPath("plugins.entries", key);
     // A later entry for the same plugin that enables or clears it is the one to turn off.
-    const by = enabledBy.get(key);
+    const by = merge.enabledBy.get(key);
     const disable =
       by === undefined || by === key
         ? `remove ${path} or set its enabled to false`

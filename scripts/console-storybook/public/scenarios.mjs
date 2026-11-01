@@ -5193,6 +5193,30 @@ export const scenarios = {
     ],
     gap: "The stored key is simulated; this story does not call save or deploy admission or start a Gateway.",
   },
+  kubernetesEntryKeyVariantRefused: {
+    group: "Pages/Agent detail",
+    name: "Plugin entry key Kubernetes Compute refuses",
+    path: draft,
+    deployed: true,
+    kubernetesEntryKeyVariant: true,
+    rules: [
+      {
+        suffix: "/agents/validate",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting plugins.entries.File-Transfer must be named file-transfer: OpenClaw merges it into plugins.entries.file-transfer, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key.",
+      },
+    ],
+    description:
+      "An older release saved a plugins.entries.File-Transfer entry. Only Kubernetes Compute refuses that spelling, so the page asks Create Agent's preflight, which runs the Installation's Compute rules. Here it refuses, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the plugin entry key.",
+      "Deploy new version is disabled with Configuration setting plugins.entries.File-Transfer must be named file-transfer: OpenClaw merges it into plugins.entries.file-transfer, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key.",
+    ],
+    gap: "The stored key and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes and SSH Compute rules.",
+  },
   gatewayPasswordAllowlistOmits: {
     group: "Pages/Agent detail",
     name: "Gateway password reference an allowlist omits",
