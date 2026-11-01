@@ -4781,9 +4781,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (this.hostsWorkspaceNode(harness)) {
       requireWorkspaceNodePlugins(configuration, callerSettingError, stage === "admission");
     }
-    // After the workspace node's rule, so Agent save names that plugin first. Configuration save,
-    // provisioning and deploy run validateConfiguration first, so there the codex message comes
-    // first. Preparation skips it, as validateConfigurationContent does (finding 2694).
+    // After the workspace node's rule, so Agent save and provisioning (which run this admission
+    // check before the save rules) name that plugin first. Configuration save and deploy run
+    // validateConfiguration first, so there the codex message comes first. Preparation skips it,
+    // as validateConfigurationContent does (finding 2694).
     if (codex && stage === "admission") {
       requireCodexPlugin(configuration, callerSettingError);
     }
