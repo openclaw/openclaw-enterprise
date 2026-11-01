@@ -894,15 +894,19 @@ test("kubernetes-secret-driver cleans up a dropped create after the API mutation
   assert.deepEqual(client.deletes, [{ uid: "uid-1", resourceVersion: "1" }]);
 });
 
-test("kubernetes-secret-driver sends no create with less than the minimum send budget left", async (t) => {
+test("kubernetes-secret-driver sends no create and reads nothing back with less than the minimum send budget left", async (t) => {
   // A create sent just before an API mutation's deadline is likely cut off as "outcome unknown"
   // while the API server still stores the value, with no OCC row naming it. With less than
   // MINIMUM_SEND_BUDGET_MS left the create is refused as "not sent", and nothing is stored.
+  // Finding 3108: nothing was sent, so no cleanup read runs past the deadline. A cleanup read
+  // that failed would turn the clean "not sent" into "outcome unknown"; the queued 403 proves
+  // no read happened.
   const now = Date.parse("2026-11-01T00:00:00.000Z");
   t.mock.method(Date, "now", () => now);
   const client = new FakeCoreV1Api();
   const nsId = namespaceId();
   client.addNamespace(nsId);
+  client.readSecretFailureCodes.push(403);
   const driver = driverWithClient(client);
   await assert.rejects(
     withMutationDeadline(now + MINIMUM_SEND_BUDGET_MS - 1, () =>
@@ -913,6 +917,7 @@ test("kubernetes-secret-driver sends no create with less than the minimum send b
       error.message === "The Kubernetes Secret create was not sent: the request ran out of time.",
   );
   assert.equal(client.calls.createNamespacedSecret, 0);
+  assert.equal(client.reads, 0);
   assert.equal(client.secrets.size, 0);
 });
 
