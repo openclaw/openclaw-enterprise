@@ -107,6 +107,8 @@ export function openClawPluginSettingConflict(
         enabled &&
         pluginRuntimeTranslator.openClawManagedEntryConfig(nativeId) !== undefined &&
         listsGatewayPublicOrigin(configuration);
+      // Accepting `{"enabled":true}` is safe only while no plugin failures (pluginWarnings) reach
+      // an openclaw Gateway before its first check, or the entrypoint writes `{"enabled":false}`.
       const copy = JSON.stringify({ enabled });
       if (publicOrigin || JSON.stringify(entries[nativeId]) !== copy) {
         return {

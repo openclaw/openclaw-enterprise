@@ -444,8 +444,8 @@ function settingValues(
 }
 
 // The built-in plugin ID aliases of OpenClaw's normalizePluginId (`src/plugins/config-state.ts`
-// at the pin). Update them, and the merge and auto-enable model in activePluginSecretInputs, when
-// that pin changes.
+// at the pin). Update them, and the merge and auto-enable model in mergedPluginEntries, when that
+// pin changes.
 const PLUGIN_ID_ALIASES: Readonly<Record<string, string>> = {
   "google-gemini-cli": "google",
   "minimax-portal": "minimax",
@@ -465,16 +465,19 @@ export function pluginPolicyId(name: unknown): string | undefined {
   return Object.hasOwn(PLUGIN_ID_ALIASES, id) ? PLUGIN_ID_ALIASES[id] : id;
 }
 
-// PostgreSQL's jsonb key order: shorter keys first (by UTF-8 bytes), then byte by byte.
-function compareJsonbKeys(left: string, right: string): number {
+// `keys` in PostgreSQL's jsonb key order: shorter keys first (by UTF-8 bytes), then byte by byte.
+function jsonbKeyOrder(keys: readonly string[]): string[] {
   const encoder = new TextEncoder();
-  const a = encoder.encode(left);
-  const b = encoder.encode(right);
-  if (a.length !== b.length) {
-    return a.length - b.length;
-  }
-  const index = a.findIndex((byte, position) => byte !== b[position]);
-  return index === -1 ? 0 : a[index]! - b[index]!;
+  return keys
+    .map((key) => ({ key, bytes: encoder.encode(key) }))
+    .sort(({ bytes: a }, { bytes: b }) => {
+      if (a.length !== b.length) {
+        return a.length - b.length;
+      }
+      const index = a.findIndex((byte, position) => byte !== b[position]);
+      return index === -1 ? 0 : a[index]! - b[index]!;
+    })
+    .map(({ key }) => key);
 }
 
 /**
@@ -552,36 +555,37 @@ export function activePluginSecretInputs(values: unknown): {
   // stores each revision's Configuration as jsonb, which orders object keys by length and then
   // byte by byte, and Compute renders the Gateway's config from that snapshot, so a `GOOGLE` entry
   // comes before `google` there (finding 3092). A plugin counts as active when either order
-  // activates it, so no document the written order refused is admitted, and the step names the
-  // entry that order merges last.
+  // activates it, so no document the written order refused is admitted.
   const written = Object.keys(entries);
-  const merges = [written, [...written].sort(compareJsonbKeys)].map((keys) =>
+  const merges = [written, jsonbKeyOrder(written)].map((keys) =>
     mergedPluginEntries(keys, entries),
   );
-  const active = (key: string) =>
-    merges.find(
-      ({ enabled }) =>
-        enabled.get(key) === true || (enabled.get(key) === undefined && slotted.includes(key)),
-    );
   return Object.entries(entries).flatMap(([key, value]) => {
     const entry = asObject(value);
     const inputs = Object.hasOwn(PLUGIN_SECRET_INPUTS, key) ? PLUGIN_SECRET_INPUTS[key] : undefined;
-    const merge = active(key);
+    const active = merges.filter(
+      ({ enabled }) =>
+        enabled.get(key) === true || (enabled.get(key) === undefined && slotted.includes(key)),
+    );
     if (
       inputs === undefined ||
       entry === undefined ||
-      merge === undefined ||
+      active.length === 0 ||
       denied.includes(key)
     ) {
       return [];
     }
     const path = keyedSettingPath("plugins.entries", key);
-    // A later entry for the same plugin that enables or clears it is the one to turn off.
-    const by = merge.enabledBy.get(key);
+    // The step turns off, in each order that activates the plugin, the entry that order merges
+    // last: a later entry for the same plugin that enables or clears it, else this one. When the
+    // two orders end on different entries, it names both, so one step turns the plugin off: with
+    // `GOOGLE: null` written after google and a slot set to google, the order written ends on
+    // `GOOGLE` and jsonb order on google (finding 3095).
+    const by = [...new Set(active.map(({ enabledBy }) => enabledBy.get(key) ?? key))];
     const disable =
-      by === undefined || by === key
+      by.length === 1 && by[0] === key
         ? `remove ${path} or set its enabled to false`
-        : `remove ${path} or set ${keyedSettingPath("plugins.entries", by)}.enabled to false`;
+        : `remove ${path} or set ${by.map((name) => `${keyedSettingPath("plugins.entries", name)}.enabled`).join(" and ")} to false`;
     return inputs.paths
       .flatMap((keys) => settingValues(entry.config, keys, `${path}.config`))
       .map(([setting, input]) => ({ setting, value: input, required: inputs.required, disable }));
