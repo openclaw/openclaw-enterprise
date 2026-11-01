@@ -261,7 +261,7 @@ export function refusePluginEntryKeyVariants(
       throw new ConfigurationHarnessError(
         configurationSettingMessage(
           keyedSettingPath("plugins.entries", key),
-          `must be named ${id}: OpenClaw applies it to the ${id} plugin, whose settings OCE checks only under plugins.entries.${id}. Rename it to ${id}, or merge it into that entry`,
+          `must be named ${id}: OpenClaw merges it into plugins.entries.${id}, the only entry OCE checks for that plugin. Rename it, or merge it into that entry`,
         ),
       );
     }

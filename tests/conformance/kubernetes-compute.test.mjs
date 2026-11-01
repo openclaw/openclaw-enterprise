@@ -10220,10 +10220,10 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
     ],
     [
       withEntries(withSearchHeader("${RELAY_TOKEN}", { enabled: false }), {
-        " Google": { enabled: true },
+        Google: { enabled: true },
         GOOGLE: { config: {} },
       }),
-      '[" Google"]',
+      "Google",
     ],
     [
       {

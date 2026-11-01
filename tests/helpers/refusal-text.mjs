@@ -339,10 +339,11 @@ export const EMBEDDED_API_KEY_REQUIRED =
 export const codexApiKeyRefusal = (setting) =>
   `Configuration setting ${setting} must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.`;
 // Configuration save, Agent save and deploy admission refuse a plugins.entries key that spells the
-// codex or acpx plugin another way (finding 3073). `path` is the setting as the message shows it,
-// such as plugins.entries.Codex or plugins.entries[" codex"]; `id` is codex or acpx.
+// codex or acpx plugin another way (finding 3073), and on Kubernetes file-transfer or a managed
+// plugin (finding 3077). `path` is the setting as the message shows it, such as
+// plugins.entries.Codex or plugins.entries[" codex"]; `id` is the plugin.
 export const pluginEntryKeyVariantRefusal = (path, id) =>
-  `Configuration setting ${path} must be named ${id}: OpenClaw applies it to the ${id} plugin, whose settings OCE checks only under plugins.entries.${id}. Rename it to ${id}, or merge it into that entry.`;
+  `Configuration setting ${path} must be named ${id}: OpenClaw merges it into plugins.entries.${id}, the only entry OCE checks for that plugin. Rename it, or merge it into that entry.`;
 // Configuration save, Agent save and deploy admission refuse OpenClaw's $include directive anywhere
 // in the document (finding 3078). `path` is the setting as the message shows it, such as $include
 // or gateway.auth.$include.
@@ -586,10 +587,10 @@ export const dedicatedCodexVariableRefusal = (
   agent = "an embedded",
 ) =>
   `Configuration setting ${setting} references ${name}, which only a Dedicated Codex Agent receives: on ${agent} Agent, remove plugins.entries.${plugin} or set its enabled to false.`;
-// `enabledBy`: the later entry for the same plugin that enables it, as the setting path after
-// plugins.entries (GOOGLE or [" Google"]); the step names it instead of the entry itself.
+// `enabledBy`: the key of a later entry for the same plugin that enables it, such as GOOGLE; the
+// step names it instead of the entry itself (finding 3074).
 export const unboundPluginSecretRefusal = (setting, name, plugin, enabledBy) =>
-  `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set ${enabledBy === undefined ? "its enabled" : `plugins.entries${enabledBy.startsWith("[") ? "" : "."}${enabledBy}.enabled`} to false.`;
+  `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set ${enabledBy === undefined ? "its enabled" : `plugins.entries.${enabledBy}.enabled`} to false.`;
 // Why OpenClaw cannot read a SecretRef, as [problem, step] (packages/occ/src/environment-
 // references.ts): every refusal names one next step (finding 3067). `alias` is the default alias
 // of the ref's source (secrets.defaults.<source>, else "default"). `substitutedAlias`: that alias
