@@ -455,6 +455,90 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.equal(await edit.getAttribute("aria-describedby"), await reason.getAttribute("id"));
   });
 
+  // OpenClaw matches plugins.deny entries by policy ID (trimmed, lowercased), so a padded or
+  // mixed-case `Slack` blocks the slack plugin as the exact `slack` does; the card said nothing
+  // and offered Configure Slack (finding 3082). Another plugin's deny entry blocks nothing.
+  test("the Slack card names a plugins.deny entry in any spelling of slack", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "Denied Slack plugin");
+    const { page } = await newPage(t, fixture, { browser });
+    const blocked = page.getByText("Slack is explicitly blocked in native plugin configuration.", {
+      exact: true,
+    });
+    for (const [slug, deny, isBlocked] of [
+      ["padded", [" Slack"], true],
+      ["upper", ["SLACK "], true],
+      ["exact", ["slack"], true],
+      ["other", ["discord", 7], false],
+    ]) {
+      const values = nativeValues(slug, { harnessId: "codex" });
+      values.plugins.deny = deny;
+      const agent = await fixture.createAgent(namespace.id, `Deny ${slug} Agent`, values, {
+        executionMode: "dedicated",
+      });
+      await openDraft(page, fixture, agent, `Deny ${slug} Agent`);
+      const configure = page.getByRole("button", { name: "Configure Slack" });
+      await configure.waitFor();
+      if (isBlocked) {
+        await blocked.waitFor();
+        assert.equal(await configure.isDisabled(), true, slug);
+        assert.equal(
+          await configure.getAttribute("aria-describedby"),
+          await blocked.getAttribute("id"),
+        );
+      } else {
+        await waitForEnabled(configure);
+        assert.equal(await blocked.count(), 0, slug);
+      }
+    }
+  });
+
+  // OpenClaw merges the plugins.entries keyed `slack` and ` Slack` in key order, and the last
+  // boolean `enabled` wins. Saving the channel enabled only the exact key, so a later ` Slack`
+  // entry's `enabled: false` kept the plugin off (finding 3082). The save now enables that entry
+  // too, keeps its other settings, and adds no second spelling to plugins.allow.
+  test("Channel drawer enables every spelling of the slack plugin entry it saves", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "Variant Slack entry");
+    const values = nativeValues("variant-slack-entry", {
+      harnessId: "codex",
+      channels: {
+        slack: {
+          enabled: true,
+          mode: "socket",
+          appToken: "${SLACK_APP_TOKEN}",
+          botToken: "${SLACK_BOT_TOKEN}",
+          channels: { COLD123: { requireMention: true, users: ["*"] } },
+        },
+      },
+    });
+    values.plugins.allow = ["codex", " Slack"];
+    values.plugins.entries = {
+      ...values.plugins.entries,
+      slack: { enabled: false },
+      " Slack": { enabled: false, config: { marker: "variant" } },
+    };
+    const agent = await fixture.createAgent(namespace.id, "Variant Slack entry", values, {
+      executionMode: "dedicated",
+      secretBindings: await slackTokenBindings(fixture, namespace, "Variant entry"),
+    });
+    const { page } = await newPage(t, fixture, { browser });
+    await openDraft(page, fixture, agent, "Variant Slack entry");
+    await page.getByRole("button", { name: "Edit Slack" }).click();
+    const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+    const save = dialog.getByRole("button", { name: "Save configuration" });
+    await dialog.getByLabel("Require a mention").uncheck();
+    await waitForEnabled(save);
+    await save.click();
+    await page.getByText(/Configuration .*generation 2/).waitFor();
+    const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+    const stored = (await fixture.request("GET", configurationPath)).data.values.plugins;
+    assert.deepEqual(stored.allow, ["codex", " Slack"]);
+    assert.deepEqual(stored.entries.slack, { enabled: true });
+    assert.deepEqual(stored.entries[" Slack"], { enabled: true, config: { marker: "variant" } });
+    // Other plugins' entries are untouched.
+    assert.deepEqual(stored.entries.knowledge, values.plugins.entries.knowledge);
+    assert.deepEqual(stored.entries.codex, values.plugins.entries.codex);
+  });
+
   // Every deployment needs a model authentication source. An Agent with its API key bound was
   // still told to configure model credentials "before first deploy" (finding 2063).
   test("Channel drawer asks for model credentials only while the Agent has none", async (t) => {

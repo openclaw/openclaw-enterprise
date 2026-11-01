@@ -5,6 +5,7 @@ export {
   environmentReferenceNames,
   gatewayPasswordRequirement,
   generatedGatewayPasswordReference,
+  pluginPolicyId,
   secretInputShorthandName,
   secretProviderDefaultsProblem,
   unreadablePluginSecretInput,

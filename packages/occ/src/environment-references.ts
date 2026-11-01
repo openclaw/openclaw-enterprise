@@ -452,9 +452,12 @@ const PLUGIN_ID_ALIASES: Readonly<Record<string, string>> = {
   "minimax-portal-auth": "minimax",
 };
 
-// The ID OpenClaw's policy lookups (plugins.deny and each entry's `enabled`) compare: trimmed,
-// lowercased, an alias replaced by its plugin.
-function pluginPolicyId(name: unknown): string | undefined {
+/**
+ * The ID OpenClaw's policy lookups (plugins.allow, plugins.deny and each entry's `enabled`)
+ * compare: trimmed, lowercased, an alias replaced by its plugin. Entries whose keys share one are
+ * merged in key order. The Console's channel cards use it too.
+ */
+export function pluginPolicyId(name: unknown): string | undefined {
   if (typeof name !== "string") {
     return undefined;
   }
