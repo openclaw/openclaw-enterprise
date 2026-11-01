@@ -598,12 +598,20 @@ async function runHarness(
       };
       return {
         execFile() {},
-        spawnSync: (command, args, options) => (record(args, options), setup(options)),
         spawn(command, args, options) {
           const child = new EventEmitter();
           child.kill = () => {};
-          if (record(args, options) === "doctor") {
+          const name = record(args, options);
+          if (name === "doctor") {
             setImmediate(() => doctor(child));
+          } else if (name === "setup") {
+            // Setup writes its result and diagnostics while its descriptors are open.
+            const result = setup(options);
+            setImmediate(() =>
+              result.error === undefined
+                ? child.emit("exit", result.status ?? null, result.signal ?? null)
+                : child.emit("error", result.error),
+            );
           }
           return child;
         },
@@ -658,8 +666,12 @@ async function harnessDirectory(t, version) {
 test("Harness starts current and fresh workspace node state without Doctor", async (t) => {
   for (const version of [undefined, STATE_CURRENT]) {
     const outcome = await runHarness(await harnessDirectory(t, version));
-    // Current state adds no await before native setup and the children.
-    assert.deepEqual(outcome.synchronous, ["setup", "codex", "node"]);
+    // Current state adds no await before native setup; the children follow its exit.
+    assert.deepEqual(outcome.synchronous, ["setup"]);
+    assert.deepEqual(
+      outcome.spawned.map(({ name }) => name),
+      ["setup", "codex", "node"],
+    );
     assert.equal(outcome.holds, 0);
   }
 });

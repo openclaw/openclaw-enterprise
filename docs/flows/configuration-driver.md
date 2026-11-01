@@ -219,6 +219,7 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-11-01 07:20: Configuration and Secret writes send no Kubernetes call after 12 seconds; slow clusters fail them with `503` or a read's error. (fix-3106, finding 3106)
 - 2026-10-31: Writes, Agent save and deployment refuse a `gateway.auth.password` object OpenClaw cannot read on every Compute (no provider, other keys, a provider or allowlist that cannot serve it); Docker and Kubernetes Compute use the same reader, and a stored row still reads and deletes. (fix-3061, findings 3061-3063)
 - 2026-10-31: Writes, Agent save and deployment also refuse a `secrets.defaults` alias OpenClaw's configuration check refuses, before the password rule; SSH Compute reads the password with the same reader and renders a readable custom-provider reference as written. (fix-3064, findings 3064, 3065)
 - 2026-10-31: With no model selected, the provider catalog refusal names the model setting instead of the row rule. (fix-3023)

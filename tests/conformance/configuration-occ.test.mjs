@@ -36,11 +36,13 @@ import {
   BOTH_RUNTIMES,
   CODEX_MODEL_ONLY,
   CODEX_NEEDS_DEDICATED,
+  configIncludeRefusal,
   dedicatedOpenClawSandboxRefusal,
   GATEWAY_MANAGED_MODE_DENIED,
   keepRuntime,
   noRunnableRuntime,
   OPENCLAW_ONLY,
+  pluginEntryKeyVariantRefusal,
   runtimeIdRequired,
   runtimeIdRequiredNextStep,
   runtimeOfEntries,
@@ -1331,6 +1333,91 @@ test("Configuration save refuses OpenClaw's sandbox and keeps the values the OCE
     }
   }
   const values = { agents: { defaults: { sandbox: { mode: "off", scope: "session" } } } };
+  assert.deepEqual((await save(values)).values, values);
+});
+
+// The pinned OpenClaw merges plugins.entries keys that match trimmed and lowercased, and the last
+// entry with a `config` replaces the plugin's whole config. OCE checks and renders codex and acpx
+// settings only at their exact key, so another spelling of either is refused (finding 3073).
+// configuration-controller.test.mjs proves that each save path, Agent save and deployment run it.
+test("Configuration save refuses another spelling of the codex or acpx plugin entry key", async () => {
+  const { controller, namespace } = await fixture();
+  const save = (values) =>
+    controller.createConfiguration(administrator, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values,
+    });
+  const codex = { config: { appServer: { approvalPolicy: "on-request" } } };
+  for (const [entries, path, id] of [
+    // A later entry would replace the codex config OCE checked at the exact key.
+    [
+      { codex, Codex: { config: { appServer: { approvalPolicy: "never" } } } },
+      "plugins.entries.Codex",
+      "codex",
+    ],
+    // Alone, too: a later exact entry could still be added beside it.
+    [{ " codex": codex }, 'plugins.entries[" codex"]', "codex"],
+    [{ CODEX: { enabled: true } }, "plugins.entries.CODEX", "codex"],
+    [
+      { acpx: { config: {} }, ACPX: { config: { mcpServers: {} } } },
+      "plugins.entries.ACPX",
+      "acpx",
+    ],
+  ]) {
+    await assert.rejects(save({ plugins: { entries } }), {
+      name: "ConfigurationHarnessError",
+      message: pluginEntryKeyVariantRefusal(path, id),
+    });
+  }
+  // The exact keys, and other spellings of plugins OCE reads no settings for (finding 3072), save.
+  for (const entries of [
+    { codex, acpx: { config: {} } },
+    { Google: { config: { webSearch: {} } }, " slack": { enabled: false }, codexx: {} },
+  ]) {
+    const values = { plugins: { entries } };
+    assert.deepEqual((await save(values)).values, values, JSON.stringify(values));
+  }
+});
+
+// The pinned OpenClaw replaces an object holding $include with the named files' settings, merged
+// under its other keys with arrays concatenated, and re-reads them when they change. Configuration
+// rules and Compute read the document as written, so $include is refused at any depth (finding
+// 3078). configuration-controller.test.mjs proves that each save path, Agent save and deployment
+// run it.
+test("Configuration save refuses OpenClaw's $include directive anywhere in the document", async () => {
+  const { controller, namespace } = await fixture();
+  const save = (values) =>
+    controller.createConfiguration(administrator, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values,
+    });
+  for (const [values, path] of [
+    // At the root, where its settings would sit under every rendered one.
+    [{ $include: "./extra.json", tools: { elevated: { enabled: false } } }, "$include"],
+    // Inside an object a Compute rule reads, where it would add a setting that rule refuses.
+    [{ gateway: { auth: { $include: ["./a.json", "./b.json"] } } }, "gateway.auth.$include"],
+    // Under a submitted key and inside a list.
+    [
+      { plugins: { entries: { "my plugin": { config: { $include: "./p.json" } } } } },
+      'plugins.entries["my plugin"].config.$include',
+    ],
+    [
+      { agents: { list: [{ id: "main" }, { $include: "./agent.json" }] } },
+      "agents.list[1].$include",
+    ],
+  ]) {
+    await assert.rejects(save(values), {
+      name: "ConfigurationHarnessError",
+      message: configIncludeRefusal(path),
+    });
+  }
+  // The text $include as a value, or in a longer key, is not the directive and saves.
+  const values = {
+    agents: { defaults: { skipBootstrap: true } },
+    plugins: { entries: { notes: { config: { note: "$include", $includes: [] } } } },
+  };
   assert.deepEqual((await save(values)).values, values);
 });
 

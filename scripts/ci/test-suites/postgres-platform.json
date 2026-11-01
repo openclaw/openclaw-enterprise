@@ -41,6 +41,7 @@
     "tests/integration/postgres-protected-git-recipient-custody.test.ts",
     "tests/integration/postgres-prepared-standing-removal.test.ts",
     "tests/integration/postgres-prepared-github-git-use.test.mjs",
+    "tests/integration/postgres-prepared-git-route-selection.test.ts",
     "tests/integration/postgres-openshell-online-git-journey.test.ts",
     "tests/integration/postgres-openshell-git-routes.test.ts",
     "tests/integration/postgres-openshell-standing-route.test.ts",
@@ -387,6 +388,7 @@
     {
       "path": "tests/integration/postgres-external-protected-git.test.ts",
       "expectedTests": [
+        "protected Codex artifact admission freezes the acknowledged subset and refuses unsupported or ignored purpose",
         "an installed external Driver fetches private Git across rotation and receives the next fetch after withdrawal",
         "an installed external Driver uses an explicit GitHub installation for private Git fetch, push, REST and GraphQL until withdrawal",
         "an online sender uses the admitted GitHub installation for real Git and API requests until withdrawal",

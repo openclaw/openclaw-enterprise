@@ -101,6 +101,12 @@ its stored object was rewritten deletes it, pinned to the answered UID and
 resourceVersion. There is no value journal or automatic replay; a create still in
 flight can require operator recovery.
 
+Secret create, update and delete share the 12-second Kubernetes budget of
+[Configuration writes](configuration-driver/persistence-and-revisions.md). A Kubernetes
+write is sent only with at least 2 seconds of it left; otherwise the request fails with
+`503` and the write is not sent. A create that was sent and failed is cleaned up after
+the budget; a create that was not sent stored nothing and gets no cleanup read.
+
 ### 3. Bind a source, then admit references
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
@@ -310,6 +316,10 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-01: A Secret create refused as not sent runs no cleanup read and keeps its `503`. (fix-3108, finding 3108)
+
+- 2026-11-01 08:10: Secret create, update and delete send no Kubernetes call after the 12-second write budget. (fix-3106b, finding 3106)
 
 - 2026-10-29 19:38: Keep local first-Agent records owner-readable under restrictive umasks. (authoring-run/d5feb6ab-c39d-4b0f-9af9-d6aec0acfb42 - cadab7afee966df8ff7a13250df443404ae76314)
 

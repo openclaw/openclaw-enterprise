@@ -27,7 +27,7 @@ This checks status transport and restart behavior with controlled producers. It 
 
 ## Native startup metadata reads
 
-After credential authorization under the [contribution policy](../../CONTRIBUTING.md), inject `CODEX_ACCESS_TOKEN` without printing it. Set `OCC_TEST_KUBERNETES_AGENT_IMAGE` to an available immutable image containing Codex `0.163.0-alpha.2`, and start Docker.
+After credential authorization under the [contribution policy](../../CONTRIBUTING.md), inject `CODEX_ACCESS_TOKEN` without printing it. Set `OCC_TEST_KUBERNETES_AGENT_IMAGE` to an available immutable image containing Codex `0.164.0`, and start Docker.
 
 ```sh
 OCC_TEST_CODEX_STARTUP_READS_REAL=1 node --test \
@@ -39,7 +39,7 @@ The test removes its container. It checks the authenticated metadata protocol, n
 
 ### Offline native local plugins
 
-With a qualified image containing stock Codex `0.163.0-alpha.2`, Node, and `ws`, run:
+With a qualified image containing stock Codex `0.164.0`, Node, and `ws`, run:
 
 ```sh
 OCC_TEST_RUNTIME_IMAGE=<qualified-image> node --test \

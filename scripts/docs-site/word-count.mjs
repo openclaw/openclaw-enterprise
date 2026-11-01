@@ -142,7 +142,9 @@ export function checkMarkdownWordCounts({
     const counts = countMarkdownWords(markdown, {
       markdown: md,
       sourceFile: file.absolutePath,
-      root: path.dirname(file.absolutePath),
+      root: file.path.startsWith("docs/")
+        ? path.join(absoluteRoot, "docs")
+        : path.dirname(file.absolutePath),
     });
     // Exceptions belong to the resolved file, not aliases pointing elsewhere.
     let lengthException;

@@ -120,13 +120,16 @@ test(
             beforeIssue,
             driver: protectedGit.owner.ref,
             installationAccess: true,
-            // GitHub issues 80 s tokens by the system clock. The owner's wall clock reads 50 s
-            // behind, inside the 60 s skew allowance, so it still finds its unchanged 60 s minimum
-            // validity after the skew (80 + 50 - 60 = 70 s). PostgreSQL and every Date.now()
-            // check keep real time: each token is usable for 20 s (expiry minus the skew), and the
-            // expired token's retirement below still waits for its real expiry plus the skew.
-            tokenLifetimeMs: 80_000,
-            ownerClock: clockBehind(50_000),
+            // GitHub issues tokens by the system clock: 68 s for the first, 80 s for its successor.
+            // The owner's wall clock reads 58 s behind, inside the 60 s skew allowance, so it still
+            // finds its unchanged 60 s minimum validity after the skew (68 + 58 - 60 = 66 s).
+            // PostgreSQL and every Date.now() check keep real time: the first token is usable for
+            // 8 s (expiry minus the skew), which covers the first transfer, and its retirement below
+            // still waits for its real expiry plus the skew; that wait ends soon after the admission
+            // deadline. The successor is usable for 20 s: the second transfer, API requests and
+            // withdrawal all happen inside it.
+            tokenLifetimeMs: (index) => (index === 1 ? 68_000 : 80_000),
+            ownerClock: clockBehind(58_000),
           })),
           requestedBinding: {
             repositoryRef: "team-installation",
@@ -503,10 +506,16 @@ test(
     const evaluate = (upload: boolean) => evaluateRequest(inspected(upload));
     const known = () => f.state.read((v) => v.repositorySessions.findStandingExecution(key));
     const attempts = () => f.state.read((v) => v.repositorySessions.listRevisionAttempts(key));
+    // Only this Agent's rows: the database may hold an earlier run's.
     const uses = async () =>
       (
         await f.observerPool.query(
-          "select operation,material_version,attempt_id,send_start_by,authorization_reply_by from occ.prepared_repository_git_uses order by exchange_id",
+          `select operation,material_version,attempt_id,send_start_by,authorization_reply_by
+           from occ.prepared_repository_git_uses
+           where admission_id in (select admission_id from occ.repository_session_attempts
+             where namespace_id=$1 and agent_id=$2)
+           order by exchange_id`,
+          [revision.namespaceId, revision.agentId],
         )
       ).rows;
     const absent = () => {
@@ -705,10 +714,15 @@ test(
         "cold observation does not claim a new fence",
       );
       assert.equal(await runtime.lookup(id, signal), undefined);
+      // Only this Agent's attempts: the database may hold an earlier run's.
       const custody = () =>
         f.observerPool
           .query(
-            "SELECT state,custody,sealed IS NULL AS erased FROM occ.prepared_github_attempts ORDER BY provider_expires_at",
+            `SELECT a.state,a.custody,a.sealed IS NULL AS erased
+             FROM occ.prepared_github_attempts a JOIN occ.prepared_github_families f USING (source_id)
+             WHERE f.source#>>'{session,namespaceId}'=$1 AND f.source#>>'{session,agentId}'=$2
+             ORDER BY a.provider_expires_at`,
+            [revision.namespaceId, revision.agentId],
           )
           .then((x) => x.rows);
       // The admission has ended and GitHub's expiry has passed, but a GitHub clock behind

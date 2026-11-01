@@ -81,7 +81,21 @@ admitted snapshot. While the active or next revision runs under protected
 execution (the Installation selects the Credential Proxy), additions are refused
 with `409 SANDBOX_POLICY_PROTECTED_EXECUTION`, as are live application to a
 protected revision and a protected deploy carrying them; protected
-revisions admit no policy snapshot. The policy view reports `protectedExecution`.
+revisions admit no ordinary Agent policy snapshot. Protected, dedicated Codex
+repository admission can carry the Sandbox Driver's explicitly acknowledged
+[artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
+`checkedProtectedCodexArtifactPolicy` verifies its purpose, declared keys, Driver
+identity, version and empty additions before runtime credential provisioning.
+That immutable snapshot remains ineligible for live apply. The policy view reports
+`protectedExecution`.
+
+Protected Codex repository preparation compiles the revision's qualified artifact
+snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
+Both paired compilers validate the complete map. The Sandbox separately compares
+the final workspace enrollment rule with its validated Agent-owned setup binding,
+then returns the full immutable policy in `SandboxResourceRef.proxyWiring`.
+The proxy checks the complete artifact map and bounded auxiliary rule before
+comparing the complete loaded policy.
 For an Agent with repository bindings (or a Git-bound active revision), Driver
 admission gets `repositoryCredentials`: the OpenShell Driver with its Git route
 refuses a grant or default reaching `github.com` or a name under it, or naming an

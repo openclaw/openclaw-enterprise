@@ -76,6 +76,53 @@ function configurationValues(scenario) {
     // An env alias an older release saved in upper case, which OpenClaw's config check refuses.
     values.secrets = { defaults: { env: "BAD" } };
   }
+  if (scenario.pluginSecretInputProviderless) {
+    // A Google web search header an older release saved as a SecretRef without a provider, which
+    // OpenClaw cannot read, so the Gateway exits at startup.
+    values.plugins = {
+      entries: {
+        google: {
+          config: {
+            webSearch: { headers: { "X-Goog-User-Project": { source: "env", id: "GOOG_TOKEN" } } },
+          },
+        },
+      },
+    };
+  }
+  if (scenario.pluginDeny !== undefined) {
+    values.plugins = { ...values.plugins, deny: structuredClone(scenario.pluginDeny) };
+  }
+  if (scenario.configInclude) {
+    // An OpenClaw $include an older release saved, which would merge settings OCE never checked.
+    values.agents.defaults.$include = "./defaults.json";
+  }
+  if (scenario.pluginEntryKeyVariant) {
+    // A Codex entry an older release saved beside codex, which OpenClaw merges into codex.
+    values.plugins = {
+      entries: {
+        codex: { config: { appServer: { approvalPolicy: "on-request" } } },
+        Codex: { enabled: true },
+      },
+    };
+  }
+  if (scenario.openClawSandbox) {
+    // OpenClaw's own sandbox, which an older release saved and the OCE runtime cannot run.
+    values.agents.defaults.sandbox = { mode: "all" };
+  }
+  if (scenario.providerKeyVariant) {
+    // An OpenAI model provider key an older release saved, which OpenClaw applies to openai.
+    values.models = { providers: { OpenAI: { baseUrl: "https://models.example.test/v1" } } };
+  }
+  if (scenario.codexPluginsDisabled) {
+    // plugins.enabled false saved before Kubernetes Compute refused it on Dedicated Codex, whose
+    // Gateway runs the codex plugin.
+    values.plugins = { ...values.plugins, enabled: false };
+  }
+  if (scenario.kubernetesEntryKeyVariant) {
+    // A File-Transfer entry saved before Kubernetes Compute refused it, which OpenClaw merges into
+    // file-transfer, the entry Kubernetes Compute enables for the workspace node.
+    values.plugins = { entries: { "File-Transfer": { enabled: true } } };
+  }
   if (scenario.gatewayPasswordAllowlistOmits) {
     // A default env alias on a configured env provider whose allowlist leaves out the generated
     // password, so OpenClaw cannot read the reference Enable gateway password access would write.
@@ -546,7 +593,8 @@ export function installFixture(scenario, evidence) {
           Date.parse(createdAt) - (scenario.revisionHistory - number) * 86_400_000,
         ).toISOString();
         revisions.set(older.id, older);
-        // An earlier version whose deployment failed before a later one succeeded.
+        // An earlier version whose deployment failed, or that a newer one superseded
+        // (earlierVersionError), before a later one succeeded.
         if (scenario.earlierFailedVersion === number) {
           deployments.set(older.id, {
             deploymentId: older.id,
@@ -555,7 +603,8 @@ export function installFixture(scenario, evidence) {
             status: "failed",
             cleanup: null,
             progress: null,
-            error: candidateDeploymentError(scenario, older.createdAt),
+            error:
+              scenario.earlierVersionError ?? candidateDeploymentError(scenario, older.createdAt),
             warnings: [],
           });
         }

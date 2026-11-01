@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
-import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { delimiter, join } from "node:path";
 import test from "node:test";
@@ -28,11 +27,11 @@ import {
   openShellGatewayNetworkPolicies,
   outageAttemptRead,
 } from "../helpers/openshell-kubernetes-real.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 async function fixture(t, prefix = "ci-openshell-test") {
-  const root = await mkdtemp(join(tmpdir(), `${prefix}-`));
+  const root = await temporaryDirectory(t, `${prefix}-`);
   await chmod(root, 0o700);
-  t.after(() => rm(root, { recursive: true, force: true }));
   return root;
 }
 

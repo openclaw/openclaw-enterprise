@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
@@ -12,11 +13,18 @@ import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor, within } from "../helpers/wait-for.mjs";
 
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const workerEntrypoint = join(repository, "apps/controller/src/worker.mjs");
+const execute = promisify(execFile);
+const dockerBin = process.env.OCC_DOCKER_BIN ?? "docker";
+const namespaceLabel = "org.openclaw.enterprise.namespace-id";
+const dockerComputeLabels = [
+  "org.openclaw.enterprise.managed=true",
+  "org.openclaw.enterprise.compute-driver=docker",
+];
 
 // The `event` names of the structured log lines in a process's output, in order.
 function events(output: string): unknown[] {
@@ -44,6 +52,52 @@ async function localRuntimeImage(): Promise<string> {
   const image = /^\s+image:\s*(\S+)\s*$/m.exec(compose)?.[1];
   assert.ok(image, "compose.postgres.yaml must name the PostgreSQL image");
   return image;
+}
+
+async function docker(args: string[]): Promise<string[]> {
+  const { stdout } = await execute(dockerBin, args, { timeout: 30_000 });
+  return stdout.split("\n").filter(Boolean);
+}
+
+// The worker provisions the Namespaces in its database (bootstrap's default Namespace, at
+// least) on the real Docker Engine, which creates a Namespace network. The Docker Compute
+// Driver removes it only when the Namespace is deleted, which this case never does, so each
+// run left one network behind; enough of them exhaust Docker's address pools and fail other
+// jobs' network creation (finding 3084). After the worker has stopped, remove the Docker
+// Compute containers and networks of each Namespace its log names, and fail if any remain.
+// The log selects them: the worker logs each Namespace it ensures. Bootstrap queues that
+// ensure once, when it creates the Namespace, so the case needs a fresh database, as CI
+// prepares one per file; against a reused database, the readiness wait below times out.
+function namespaceReconciled(output: string): boolean {
+  return jsonLines(output).some(
+    (line: { event?: unknown; operation?: unknown; code?: unknown }) =>
+      line.event === "worker.completed" &&
+      line.operation === "namespace.ensure" &&
+      line.code === "NAMESPACE_RECONCILED",
+  );
+}
+
+async function removeDockerComputeNamespaces(output: string): Promise<void> {
+  const worked = new Set(
+    jsonLines(output)
+      .map((line: { namespaceId?: unknown }) => line.namespaceId)
+      .filter((namespaceId: unknown) => typeof namespaceId === "string"),
+  );
+  const filters = dockerComputeLabels.flatMap((label) => ["--filter", `label=${label}`]);
+  const listed = async () =>
+    (
+      await docker(["network", "ls", ...filters, "--format", `{{.Label "${namespaceLabel}"}}`])
+    ).filter((namespaceId) => worked.has(namespaceId));
+  for (const namespaceId of await listed()) {
+    const namespaceFilter = ["--filter", `label=${namespaceLabel}=${namespaceId}`];
+    const containers = await docker(["ps", "-aq", ...filters, ...namespaceFilter]);
+    if (containers.length > 0) {
+      await docker(["rm", "-f", "-v", ...containers]);
+    }
+    const networks = await docker(["network", "ls", "-q", ...filters, ...namespaceFilter]);
+    await docker(["network", "rm", ...networks]);
+  }
+  assert.deepEqual(await listed(), [], "the worker's Namespace networks outlived the test");
 }
 
 // Finding 2994: worker.mjs hands its started parts to closeWorkerComposition on SIGTERM. The
@@ -95,21 +149,27 @@ test(
       stdio: ["ignore", "pipe", "pipe"],
     });
     // A worker that never exits is killed after the test, so it cannot outlive the file.
+    // node:test runs after hooks in registration order, so the worker has stopped (and
+    // cannot provision again) before its Docker resources are removed.
     t.after(() => stopProcess(child, { graceMs: 1_000 }));
     let output = "";
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => (output += chunk));
     child.stderr.on("data", (chunk: string) => (output += chunk));
+    t.after(() => removeDockerComputeNamespaces(output));
     const exited = once(child, "exit");
 
     // Ready means the worker loop ran a pass and wrote the readiness marker, and the metrics
-    // listener answers: every part the shutdown must close is running.
+    // listener answers: every part the shutdown must close is running. The worker must also
+    // have reconciled bootstrap's default Namespace, so the SIGTERM finds it idle: a signal
+    // during that pass interrupts it after Docker may already have created the network, and
+    // the interrupted pass logs no Namespace for the teardown to remove.
     await waitFor(
       () => `the worker to report ready:\n${output}`,
       async () => {
         assert.equal(child.exitCode, null, `worker.mjs exited during startup:\n${output}`);
-        if (!(await exists(readinessPath))) {
+        if (!(await exists(readinessPath)) || !namespaceReconciled(output)) {
           return undefined;
         }
         try {
@@ -132,16 +192,11 @@ test(
     const signalled = performance.now();
     child.kill("SIGTERM");
     // An idle worker closes in well under a second; the bound only absorbs a loaded runner.
-    const [code, signal] = await Promise.race([
+    const [code, signal] = await within(
       exited,
-      new Promise<never>((_, reject) => {
-        const timer = setTimeout(
-          () => reject(new Error(`worker.mjs did not exit within 20 s of SIGTERM:\n${output}`)),
-          20_000,
-        );
-        timer.unref();
-      }),
-    ]);
+      () => `worker.mjs did not exit after SIGTERM:\n${output}`,
+      20_000,
+    );
 
     const exitMs = performance.now() - signalled;
 

@@ -13,6 +13,7 @@ import {
   PredecessorStopYieldedError,
   STOP_YIELD_LOG_INTERVAL_MS,
   StopYields,
+  SupersededStopYieldedError,
   stopWithDrainYield,
   stopYieldedCode,
   stopYieldRecheckMs,
@@ -31,6 +32,7 @@ import { DEPLOYMENT_FAILED, WORKSPACE_SETUP_RETRYING } from "../helpers/refusal-
 
 const AGENT = "AGENT_STOP_YIELDED";
 const PREDECESSOR = "PREDECESSOR_STOP_YIELDED";
+const SUPERSEDED = "SUPERSEDED_STOP_YIELDED";
 
 function clock(start = 1_000_000) {
   const now = { value: start };
@@ -98,15 +100,18 @@ test("only stops whose latest pass yielded are excluded from a draining stop's d
 
 // Finding 1108: a deployment whose predecessor stop yielded deploys on its next pass once that
 // drain is over, so only a Gateway drain skips it; other optional waits (the D221 binding ack, a
-// refused candidate's stop, pairing) end for it. A stopped Agent's yielded stop only rechecks its
-// drain next, so no wait ends for it.
+// refused candidate's stop, pairing) end for it. A stopped Agent's yielded stop and a superseded
+// version's own yielded stop (finding 3080) only recheck their drain next, so no wait ends for
+// them.
 test("only a Gateway drain skips a yielded redeploy; no wait ends for a stopped Agent's yield", () => {
   const { read } = clock();
   const yields = new StopYields(read);
   yields.yielded("stop-a", AGENT);
   yields.yielded("revision-b", PREDECESSOR);
-  assert.deepEqual(yields.waiting("gateway-drain").sort(), ["revision-b", "stop-a"]);
-  assert.deepEqual(yields.waiting("optional"), ["stop-a"]);
+  yields.yielded("revision-c", SUPERSEDED);
+  assert.deepEqual(yields.waiting("gateway-drain").sort(), ["revision-b", "revision-c", "stop-a"]);
+  assert.deepEqual(yields.waiting("optional").sort(), ["revision-c", "stop-a"]);
+  yields.settled("revision-c");
   // The latest yield decides: a redeploy that later waits on its stopped Agent's drain (the
   // stopped branch finishing its predecessor stop, finding 1109) only rechecks that drain.
   yields.yielded("revision-b", AGENT);
@@ -216,16 +221,21 @@ test("a stop yields only its Gateway drain, only to due Work, and only before th
   assert.deepEqual(harnessOnly, ["agent"]);
 });
 
-test("a yielded predecessor stop defers as PREDECESSOR_STOP_YIELDED", () => {
+test("a yielded predecessor stop and a superseded version's own stop defer with their own codes", () => {
   const yielded = new ComputeStopYieldedError("draining");
   assert.equal(stopYieldedCode(yielded), "AGENT_STOP_YIELDED");
   const predecessor = new PredecessorStopYieldedError(yielded);
   assert.ok(predecessor instanceof ComputeStopYieldedError);
   assert.equal(stopYieldedCode(predecessor), "PREDECESSOR_STOP_YIELDED");
+  // A superseded version's own stop has its own code (finding 3080).
+  const superseded = new SupersededStopYieldedError(yielded);
+  assert.ok(superseded instanceof ComputeStopYieldedError);
+  assert.equal(stopYieldedCode(superseded), "SUPERSEDED_STOP_YIELDED");
   assert.equal(stopYieldedCode(new Error("failed")), undefined);
   // Both codes are yields: the deadline does not expire them, and they are rechecked as yields.
   assert.equal(isStopYieldedCode("AGENT_STOP_YIELDED"), true);
   assert.equal(isStopYieldedCode("PREDECESSOR_STOP_YIELDED"), true);
+  assert.equal(isStopYieldedCode("SUPERSEDED_STOP_YIELDED"), true);
   assert.equal(isStopYieldedCode("REVISION_INCOMPLETE"), false);
   assert.equal(isStopYieldedCode("REFUSED_CANDIDATE_STOP_PENDING"), false);
 });
@@ -278,6 +288,23 @@ test("a deployment waiting for its predecessor's drain says so in its progress",
     },
     nextAttemptAt: availableAt.toISOString(),
   });
+});
+
+test("a superseded version whose own stop's drain yielded says so in its progress", () => {
+  const at = new Date("2026-11-01T10:00:00.000Z");
+  const availableAt = new Date("2026-11-01T10:00:05.000Z");
+  assert.deepEqual(
+    deploymentProgressForWork({ state: "queued", availableAt }, { at, code: SUPERSEDED }),
+    {
+      lastAttempt: {
+        at: at.toISOString(),
+        code: SUPERSEDED,
+        message:
+          "A newer version replaced this one; its gateway is finishing active work before this version stops.",
+      },
+      nextAttemptAt: availableAt.toISOString(),
+    },
+  );
 });
 
 test("a deployment whose stopped Agent's drain yielded says so in its progress", () => {

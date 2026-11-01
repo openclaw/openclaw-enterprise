@@ -338,6 +338,51 @@ export const EMBEDDED_API_KEY_REQUIRED =
   "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.";
 export const codexApiKeyRefusal = (setting) =>
   `Configuration setting ${setting} must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.`;
+// Kubernetes Agent save and deploy admission refuse a plugin setting that turns off file-transfer
+// for an Agent whose Gateway hosts its workspace node (findings 1112, 3083). `setting` is
+// plugins.deny, plugins.enabled or plugins.entries.file-transfer.enabled; `rule` is what it must
+// satisfy, such as "must not be false".
+export const workspaceNodePluginRefusal = (setting, rule) =>
+  `Configuration setting ${setting} ${rule}: the Agent's workspace node requires the file-transfer plugin.`;
+// Kubernetes Configuration save, Agent save, provisioning and deploy admission refuse a plugin
+// setting that turns off the codex plugin every Dedicated Codex Gateway runs (finding 3096).
+// `setting` is plugins.allow, plugins.deny or plugins.enabled; `rule` is what it must satisfy,
+// such as "must list codex"; `step` is the fix, such as "Add it".
+export const codexPluginRefusal = (setting, rule, step) =>
+  `Configuration setting ${setting} ${rule}: Dedicated Codex runs the codex plugin, so its Gateway would not start. ${step}.`;
+// Configuration save, Agent save and deploy admission refuse a plugins.entries key that spells the
+// codex or acpx plugin another way (finding 3073), and on Kubernetes file-transfer or a managed
+// plugin (finding 3077). `path` is the setting as the message shows it, such as
+// plugins.entries.Codex or plugins.entries[" codex"]; `id` is the plugin. Renaming the key beside
+// the exact entry would leave a duplicate key, so the step says what to do in both cases (finding
+// 3087).
+export const pluginEntryKeyVariantRefusal = (path, id) =>
+  `Configuration setting ${path} must be named ${id}: OpenClaw merges it into plugins.entries.${id}, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key.`;
+// Agent save, provisioning and deploy admission refuse a Configuration plugin setting the Gateway
+// entrypoint refuses for an OpenClaw catalog plugin the Agent selects (finding 3091).
+// `setting` is plugins.enabled, plugins.deny, plugins.allow or a plugins.entries key as the
+// message shows it; `rule` is what it must satisfy; `pluginId` is the selection's key; `step` is
+// the fix.
+export const managedPluginSettingRefusal = (setting, rule, pluginId, step) =>
+  `Configuration setting ${setting} ${rule} while the Agent selects plugin ${pluginId}, or the Gateway does not start: ${step}.`;
+// Configuration save, Agent save and deploy admission refuse a models.providers key that OpenClaw
+// applies to another key: one with surrounding whitespace, or another spelling of openai, anthropic
+// or codex (finding 3097). `path` is the setting as the message shows it, such as
+// models.providers.OpenAI or models.providers[" openai"]; `name` is the key OCE checks.
+export const providerKeyVariantRefusal = (path, name) =>
+  `Configuration setting ${path} must be named ${JSON.stringify(name)}: OpenClaw applies it to that provider's entry, the one OCE checks. Move these settings there if that key exists, else rename this key.`;
+// Configuration save, Agent save and deploy admission refuse a plugins.allow or plugins.deny that
+// OpenClaw's config schema refuses, so no Gateway starts with it (finding 3101): `key` is allow or
+// deny; `list` is false for a value that is not a list, true for a list item that is not text.
+export const pluginPolicyListRefusal = (key, list = true) =>
+  list
+    ? `Configuration setting plugins.${key} must list only plugin IDs as text, or the Gateway does not start: remove any other item.`
+    : `Configuration setting plugins.${key} must be a list of plugin IDs as text, or the Gateway does not start: make it a list or remove it.`;
+// Configuration save, Agent save and deploy admission refuse OpenClaw's $include directive anywhere
+// in the document (finding 3078). `path` is the setting as the message shows it, such as $include
+// or gateway.auth.$include.
+export const configIncludeRefusal = (path) =>
+  `Configuration setting ${path} is not supported: OpenClaw would merge settings from another file that OCE does not check. Write those settings in the Configuration instead.`;
 // Kubernetes Compute generates the Gateway password, so gateway.auth.password may only reference it,
 // on the default env provider alias (secrets.defaults.env, else "default").
 export const kubernetesGatewayPasswordRequirement = (alias = "default") =>
@@ -576,8 +621,11 @@ export const dedicatedCodexVariableRefusal = (
   agent = "an embedded",
 ) =>
   `Configuration setting ${setting} references ${name}, which only a Dedicated Codex Agent receives: on ${agent} Agent, remove plugins.entries.${plugin} or set its enabled to false.`;
-export const unboundPluginSecretRefusal = (setting, name, plugin) =>
-  `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
+// `enabledBy`: the key of a later entry for the same plugin that enables it, such as GOOGLE; the
+// step names it instead of the entry itself (finding 3074). `null`: the order written and the
+// stored order end on different entries, so the step offers only removal (finding 3095).
+export const unboundPluginSecretRefusal = (setting, name, plugin, enabledBy) =>
+  `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings, or remove plugins.entries.${plugin}${enabledBy === null ? "" : ` or set ${enabledBy === undefined ? "its enabled" : `plugins.entries.${enabledBy}.enabled`} to false`}.`;
 // Why OpenClaw cannot read a SecretRef, as [problem, step] (packages/occ/src/environment-
 // references.ts): every refusal names one next step (finding 3067). `alias` is the default alias
 // of the ref's source (secrets.defaults.<source>, else "default"). `substitutedAlias`: that alias

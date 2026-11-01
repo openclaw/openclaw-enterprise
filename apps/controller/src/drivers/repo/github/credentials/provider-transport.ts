@@ -1,5 +1,6 @@
 import type { AttemptContext, Clock } from "../../credentials/backend-contracts.ts";
 import { sendProviderRequest } from "./provider-transport/request.ts";
+import type { ProviderObservation } from "./provider-diagnostics.ts";
 import {
   prepareProviderScope,
   type ProviderIssuanceScope,
@@ -22,6 +23,7 @@ export interface ProviderTransport {
     onDispatch: () => void,
     assertMaterialCurrent: () => void,
     observeResponse: (response: ProviderResponse) => void,
+    observe?: (observation: ProviderObservation) => void,
   ): Promise<ProviderResponse>;
   revoke(
     authorization: string,
@@ -40,7 +42,7 @@ export function createProviderTransport(
   const prepared = prepareProviderScope(origin, scope);
   const trustedCa = ca === undefined ? undefined : Buffer.from(ca);
   return Object.freeze<ProviderTransport>({
-    issue(authorization, attempt, onDispatch, assertMaterialCurrent, observeResponse) {
+    issue(authorization, attempt, onDispatch, assertMaterialCurrent, observeResponse, observe) {
       return sendProviderRequest({
         endpoint: prepared,
         ca: trustedCa,
@@ -51,6 +53,7 @@ export function createProviderTransport(
         onDispatch,
         assertMaterialCurrent,
         observeResponse,
+        ...(observe ? { observe } : {}),
       });
     },
     revoke(authorization, attempt, onDispatch) {

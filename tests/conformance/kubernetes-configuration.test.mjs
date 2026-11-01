@@ -15,13 +15,27 @@ import {
   KubernetesConfigurationDriver,
   kubernetesConfigurationName,
 } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
+import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { withMutationDeadline } from "../../apps/controller/src/admission/mutation-deadline.ts";
 import {
-  currentComputeAbortSignal,
-  withComputeAbortSignal,
-} from "../../apps/controller/src/drivers/compute/operation-context.ts";
-import { READ_RETRY_PAUSES_MS, withRetryTimers } from "../helpers/kubernetes-request-retry.mjs";
+  FakeConfigurationCoreV1Api,
+  FlakyConfigurationCoreV1Api,
+} from "../helpers/kubernetes-configuration-core.mjs";
+import {
+  controlledRequestTimeouts,
+  frozenClock,
+  nextTurns,
+  settlement,
+  untilSent,
+} from "../helpers/kubernetes-core-api.mjs";
+import {
+  MINIMUM_SEND_BUDGET_MS,
+  READ_RETRY_PAUSES_MS,
+  withRetryTimers,
+} from "../helpers/kubernetes-request-retry.mjs";
 import { writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { within } from "../helpers/wait-for.mjs";
 
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const configuration = {
@@ -51,92 +65,6 @@ const configuration = {
 
 function createDriver(authentication = { mode: "inCluster" }) {
   return new KubernetesConfigurationDriver({ authentication });
-}
-
-function physicalNamespaceName(id) {
-  return `oce-${createHash("sha256").update(id).digest("hex").slice(0, 15)}`;
-}
-
-class FakeConfigurationCoreV1Api {
-  namespaces = new Map();
-  configMaps = new Map();
-  creates = 0;
-
-  addNamespace(id, layout = "shared") {
-    const name =
-      layout === "split"
-        ? `oce-gateways-${createHash("sha256").update(id).digest("hex").slice(0, 24)}`
-        : layout === "adopted"
-          ? "customer-support"
-          : physicalNamespaceName(id);
-    this.namespaces.set(name, {
-      metadata: {
-        name,
-        labels: {
-          "app.kubernetes.io/managed-by": "openclaw-enterprise",
-          "openclaw.dev/gateway-namespace": id,
-          ...(layout === "split" ? {} : { "openclaw.dev/namespace": id }),
-          ...(layout === "adopted"
-            ? Object.fromEntries(
-                ["enforce", "audit", "warn"].map((mode) => [
-                  `pod-security.kubernetes.io/${mode}`,
-                  "restricted",
-                ]),
-              )
-            : {}),
-        },
-        annotations: {
-          "openclaw.dev/namespace-id": id,
-          ...(layout === "adopted" ? { "openclaw.dev/namespace-lifecycle": "external" } : {}),
-        },
-      },
-      status: { phase: "Active" },
-    });
-    return name;
-  }
-
-  async listNamespace({ labelSelector }) {
-    const [label, id] = labelSelector.split("=");
-    return {
-      items: [...this.namespaces.values()].filter(
-        ({ metadata }) => metadata.labels?.[label] === id,
-      ),
-    };
-  }
-
-  async readNamespace({ name }) {
-    const namespace = this.namespaces.get(name);
-    if (namespace === undefined) {
-      throw Object.assign(new Error("missing Namespace"), { code: 404 });
-    }
-    return structuredClone(namespace);
-  }
-
-  async createNamespacedConfigMap({ namespace, body }) {
-    this.creates += 1;
-    const key = `${namespace}/${body.metadata.name}`;
-    if (this.configMaps.has(key)) {
-      throw Object.assign(new Error("conflict"), { code: 409 });
-    }
-    const stored = {
-      ...structuredClone(body),
-      metadata: {
-        ...body.metadata,
-        uid: `uid-${this.configMaps.size + 1}`,
-        resourceVersion: "1",
-      },
-    };
-    this.configMaps.set(key, stored);
-    return structuredClone(stored);
-  }
-
-  async readNamespacedConfigMap({ namespace, name }) {
-    const stored = this.configMaps.get(`${namespace}/${name}`);
-    if (stored === undefined) {
-      throw Object.assign(new Error("missing ConfigMap"), { code: 404 });
-    }
-    return structuredClone(stored);
-  }
 }
 
 test("Kubernetes configuration implementations expose a closed preconstruction schema", () => {
@@ -670,101 +598,29 @@ test("Kubernetes Configuration cancels an in-flight request when its provisionin
   const pending = withComputeAbortSignal(owner.signal, () => driver.read(configuration));
   await started;
   owner.abort(lost);
-  let timer;
   try {
     await assert.rejects(
-      Promise.race([
-        pending,
-        new Promise((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error("Configuration request ignored claim loss")),
-            1000,
-          );
-        }),
-      ]),
+      within(pending, "Configuration request ignored claim loss", 1_000),
       (error) => error === lost,
     );
   } finally {
-    clearTimeout(timer);
     finishTransport(lost);
     await pending.catch(() => {});
   }
 });
 
-// The fake API with failures queued per method, each thrown before the call takes
-// effect, and a method that can stall until its request is aborted.
-class FlakyConfigurationCoreV1Api extends FakeConfigurationCoreV1Api {
-  failureCodes = {
-    listNamespace: [],
-    readNamespacedConfigMap: [],
-    createNamespacedConfigMap: [],
-    replaceNamespacedConfigMap: [],
-    deleteNamespacedConfigMap: [],
-  };
-  calls = Object.fromEntries(Object.keys(this.failureCodes).map((method) => [method, 0]));
-  stalls = new Set();
-
-  async called(method) {
-    this.calls[method] += 1;
-    const failure = this.failureCodes[method].shift();
-    if (failure === "dropped") {
-      // What the client throws when the API server closes the connection unanswered.
-      throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
-    }
-    if (failure !== undefined) {
-      throw Object.assign(new Error(`${method} failed with ${failure}`), { code: failure });
-    }
-    if (this.stalls.has(method)) {
-      const signal = currentComputeAbortSignal();
-      if (signal === undefined) {
-        throw new Error(`${method} would stall with no deadline`);
-      }
-      await new Promise((_, reject) =>
-        signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
-      );
-    }
-  }
-
-  async listNamespace(request) {
-    await this.called("listNamespace");
-    return super.listNamespace(request);
-  }
-
-  async readNamespacedConfigMap(request) {
-    await this.called("readNamespacedConfigMap");
-    return super.readNamespacedConfigMap(request);
-  }
-
-  async createNamespacedConfigMap(request) {
-    await this.called("createNamespacedConfigMap");
-    return super.createNamespacedConfigMap(request);
-  }
-
-  async replaceNamespacedConfigMap({ namespace, name, body }) {
-    await this.called("replaceNamespacedConfigMap");
-    const stored = {
-      ...structuredClone(body),
-      metadata: { ...body.metadata, resourceVersion: "2" },
-    };
-    this.configMaps.set(`${namespace}/${name}`, stored);
-    return structuredClone(stored);
-  }
-
-  async deleteNamespacedConfigMap({ namespace, name }) {
-    await this.called("deleteNamespacedConfigMap");
-    this.configMaps.delete(`${namespace}/${name}`);
-    return {};
-  }
-}
-
-async function storedConfiguration() {
-  const client = new FlakyConfigurationCoreV1Api();
-  client.addNamespace(namespaceId);
+// A Driver over `client` with `configuration` stored, and the stored ConfigMap.
+async function storedConfiguration(client = new FlakyConfigurationCoreV1Api()) {
+  const namespace = client.addNamespace(namespaceId);
   const driver = createDriver();
   driver.client = Promise.resolve(client);
   await driver.create(configuration);
-  return { client, driver };
+  const key = `${namespace}/${kubernetesConfigurationName(configuration.id)}`;
+  return { client, driver, stored: () => client.configMaps.get(key) };
 }
+
+const storedGeneration = (stored) =>
+  stored().metadata.annotations["openclaw.dev/configuration-generation"];
 
 const nextGeneration = { ...configuration, generation: 2 };
 
@@ -873,25 +729,15 @@ test("Kubernetes Configuration ends a retry pause at once when the owner cancels
   // The mocked clock never moves: only the owner's abort can end the 100 ms pause.
   mock.timers.enable({ apis: ["setTimeout"] });
   try {
-    let settled = false;
     const result = withComputeAbortSignal(owner.signal, () => driver.read(configuration));
-    result.then(
-      () => (settled = true),
-      () => (settled = true),
-    );
-    const turns = async (count) => {
-      for (let turn = 0; turn < count && !settled; turn += 1) {
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-    };
-    // The fake client answers in microtasks, so a few turns reach the pause.
-    await turns(20);
-    assert.equal(settled, false, "the dropped read waits in its retry pause");
+    const state = settlement(result);
+    await nextTurns(20, () => state.settled);
+    assert.equal(state.settled, false, "the dropped read waits in its retry pause");
     assert.equal(client.calls.readNamespacedConfigMap - before, 1);
 
     owner.abort(lost);
-    await turns(20);
-    assert.equal(settled, true, "the owner's abort ends the pause");
+    await nextTurns(20, () => state.settled);
+    assert.equal(state.settled, true, "the owner's abort ends the pause");
     await assert.rejects(result, (error) => error === lost);
     assert.equal(
       client.calls.readNamespacedConfigMap - before,
@@ -907,13 +753,7 @@ test("Kubernetes Configuration ends a retry pause at once when the owner cancels
 
 test("Kubernetes Configuration gives up on a request at its deadline and never resends it", async (t) => {
   // Each request's 10 s deadline is an AbortSignal.timeout; these deadlines fire on demand.
-  const deadlines = [];
-  t.mock.method(AbortSignal, "timeout", (delay) => {
-    assert.equal(delay, 10_000);
-    const deadline = new AbortController();
-    deadlines.push(deadline);
-    return deadline.signal;
-  });
+  const timeouts = controlledRequestTimeouts(t);
   for (const [method, action, operation] of [
     ["readNamespacedConfigMap", "read", (driver) => driver.read(configuration)],
     ["listNamespace", "namespace verification", (driver) => driver.read(configuration)],
@@ -924,11 +764,8 @@ test("Kubernetes Configuration gives up on a request at its deadline and never r
     const before = client.calls[method];
     const result = operation(driver);
     try {
-      for (let turn = 0; client.calls[method] === before; turn += 1) {
-        assert.ok(turn < 100, `${method} was never sent`);
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      deadlines.at(-1).abort(new DOMException("deadline", "TimeoutError"));
+      await untilSent(() => client.calls[method] > before, method);
+      timeouts.fireLatest();
       await assert.rejects(
         result,
         (error) =>
@@ -938,13 +775,156 @@ test("Kubernetes Configuration gives up on a request at its deadline and never r
       );
       assert.equal(client.calls[method] - before, 1, method);
     } finally {
-      // Settles the operation even when an assertion above failed first.
-      for (const deadline of deadlines) {
-        deadline.abort();
-      }
+      timeouts.fireAll();
       await result.catch(() => {});
     }
   }
+  assert.deepEqual(
+    timeouts.delays.filter((delay) => delay !== 10_000),
+    [],
+  );
+});
+
+test("Kubernetes Configuration sends no call past an API mutation's deadline", async (t) => {
+  // Finding 3106: a save's chained calls each had 10 s, so a slow API server let the save commit
+  // after the ingress answered 504. Under a mutation deadline each call gets only the time left,
+  // and nothing is sent once it has passed. Read retries under the deadline have their own test.
+  const clock = frozenClock(t);
+  const timeouts = controlledRequestTimeouts(t);
+  const sent = (client) => ({ ...client.calls });
+  const updateBy = (driver, deadline) =>
+    withMutationDeadline(deadline, () => driver.update(nextGeneration));
+  const notSent = (action) => (error) =>
+    error instanceof ConfigurationBackendUnavailableError &&
+    error.message ===
+      `The Kubernetes ConfigMap ${action} was not sent: the request ran out of time.`;
+
+  // A stalled read is cut when the deadline arrives, not after its own 10 s, and the write that
+  // would follow is never sent.
+  let { client, driver } = await storedConfiguration();
+  let stored;
+  let before = sent(client);
+  timeouts.delays.length = 0;
+  client.stalls.add("readNamespacedConfigMap");
+  const stalled = updateBy(driver, clock.now + 3_000);
+  try {
+    await untilSent(
+      () => client.calls.readNamespacedConfigMap > before.readNamespacedConfigMap,
+      "the read",
+    );
+    assert.deepEqual(timeouts.delays, [3_000, 3_000], "namespace verification, then the read");
+    timeouts.fireLatest();
+    await assert.rejects(
+      stalled,
+      (error) =>
+        error instanceof ConfigurationBackendUnavailableError &&
+        error.message === "The Kubernetes ConfigMap read outcome is unknown after timeout.",
+    );
+  } finally {
+    timeouts.fireAll();
+    await stalled.catch(() => {});
+  }
+  assert.equal(client.calls.replaceNamespacedConfigMap, before.replaceNamespacedConfigMap);
+
+  // A deadline that passes while the read is answered stops the update before its write.
+  ({ client, driver, stored } = await storedConfiguration());
+  before = sent(client);
+  const read = client.readNamespacedConfigMap.bind(client);
+  client.readNamespacedConfigMap = async (request) => {
+    const answer = await read(request);
+    clock.now += 3_000;
+    return answer;
+  };
+  await assert.rejects(updateBy(driver, clock.now + 3_000), notSent("update"));
+  assert.equal(client.calls.replaceNamespacedConfigMap, before.replaceNamespacedConfigMap);
+  assert.equal(storedGeneration(stored), "1");
+
+  // An expired deadline sends nothing at all.
+  ({ client, driver } = await storedConfiguration());
+  before = sent(client);
+  await assert.rejects(updateBy(driver, clock.now), notSent("namespace verification"));
+  assert.deepEqual(sent(client), before);
+});
+
+test("Kubernetes Configuration sends no write with less than the minimum send budget left", async (t) => {
+  // A write sent just before an API mutation's deadline is likely cut off as "outcome unknown"
+  // while the API server still applies it. With less than MINIMUM_SEND_BUDGET_MS left the
+  // update fails cleanly as "not sent" instead, and the stored ConfigMap keeps generation 1.
+  const clock = frozenClock(t);
+  for (const [leftMs, sent] of [
+    [MINIMUM_SEND_BUDGET_MS - 1, false],
+    [MINIMUM_SEND_BUDGET_MS, true],
+  ]) {
+    const { client, driver, stored } = await storedConfiguration();
+    const before = client.calls.replaceNamespacedConfigMap;
+    // The update's read is answered when exactly `leftMs` of the budget remains.
+    const deadline = clock.now + 5_000;
+    const read = client.readNamespacedConfigMap.bind(client);
+    client.readNamespacedConfigMap = async (request) => {
+      const answer = await read(request);
+      clock.now = deadline - leftMs;
+      return answer;
+    };
+    const update = withMutationDeadline(deadline, () => driver.update(nextGeneration));
+    if (sent) {
+      await update;
+      assert.equal(storedGeneration(stored), "2");
+    } else {
+      await assert.rejects(
+        update,
+        (error) =>
+          error instanceof ConfigurationBackendUnavailableError &&
+          error.message ===
+            "The Kubernetes ConfigMap update was not sent: the request ran out of time.",
+      );
+      assert.equal(storedGeneration(stored), "1");
+    }
+    assert.equal(client.calls.replaceNamespacedConfigMap - before, sent ? 1 : 0, `${leftMs} ms`);
+  }
+});
+
+test("Kubernetes Configuration retries a read only with room for the pause and an attempt", async (t) => {
+  const clock = frozenClock(t);
+  const pause = READ_RETRY_PAUSES_MS[0];
+
+  // A dropped namespace verification is not retried when the pause would leave less than
+  // MINIMUM_SEND_BUDGET_MS for the next attempt: the real failure is reported at once.
+  let { client, driver } = await storedConfiguration();
+  let before = client.calls.listNamespace;
+  client.failureCodes.listNamespace.push("dropped");
+  await assert.rejects(
+    withMutationDeadline(clock.now + pause + MINIMUM_SEND_BUDGET_MS - 1, () =>
+      driver.update(nextGeneration),
+    ),
+    { code: "ECONNRESET" },
+  );
+  assert.equal(client.calls.listNamespace - before, 1);
+
+  // With room it is retried. When the pause ends late, past the deadline, the read reports the
+  // failure its sent attempt got, not "was not sent".
+  ({ client, driver } = await storedConfiguration());
+  before = client.calls.listNamespace;
+  client.failureCodes.listNamespace.push("dropped");
+  const realSetTimeout = globalThis.setTimeout;
+  const late = t.mock.method(globalThis, "setTimeout", (callback, delay, ...args) => {
+    if (delay !== pause) {
+      return realSetTimeout(callback, delay, ...args);
+    }
+    // The retry pause's timer fires a moment after the whole budget.
+    clock.now += pause + MINIMUM_SEND_BUDGET_MS + 1;
+    return realSetTimeout(callback, 0, ...args);
+  });
+  await assert.rejects(
+    withMutationDeadline(clock.now + pause + MINIMUM_SEND_BUDGET_MS, () =>
+      driver.update(nextGeneration),
+    ),
+    { code: "ECONNRESET" },
+  );
+  const pauses = late.mock.calls.filter(({ arguments: [, delay] }) => delay === pause).length;
+  late.mock.restore();
+  assert.equal(pauses, 1, "the retry was scheduled");
+  assert.equal(client.calls.listNamespace - before, 1);
+  assert.equal(client.calls.replaceNamespacedConfigMap, 0);
 });
 
 test("Kubernetes Configuration reads a ConfigMap only when every ownership mark is its own", async () => {
@@ -1105,15 +1085,7 @@ class RacedConfigurationCoreV1Api extends FlakyConfigurationCoreV1Api {
 }
 
 test("Kubernetes Configuration changes only the exact ConfigMap it read", async () => {
-  const setup = async () => {
-    const client = new RacedConfigurationCoreV1Api();
-    const namespace = client.addNamespace(namespaceId);
-    const driver = createDriver();
-    driver.client = Promise.resolve(client);
-    await driver.create(configuration);
-    const key = `${namespace}/${kubernetesConfigurationName(configuration.id)}`;
-    return { client, driver, stored: () => client.configMaps.get(key) };
-  };
+  const setup = () => storedConfiguration(new RacedConfigurationCoreV1Api());
 
   // Update moves the generation by exactly one, either way, and keeps the creation time.
   {

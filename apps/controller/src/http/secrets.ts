@@ -1,5 +1,11 @@
 import type { SecretDetail, SecretMetadata } from "@openclaw-enterprise/contracts";
+import {
+  MUTATION_BACKEND_BUDGET_MS,
+  withMutationDeadline,
+} from "../admission/mutation-deadline.ts";
 import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
+
+// Writes bound their Kubernetes calls like Configuration writes (configurations.ts, finding 3106).
 
 function clientSecret(secret: Readonly<SecretMetadata>): Record<string, unknown> {
   return {
@@ -27,12 +33,15 @@ function clientSecretDetail(secret: Readonly<SecretDetail>): Record<string, unkn
 
 export const secretHandlers = {
   async createSecret({ controller, context, request, reply, body, namespaceId, mutationEvent }) {
+    const deadline = Date.now() + MUTATION_BACKEND_BUDGET_MS;
     const secret = await controller.transact(async (unit) => {
-      const created = await controller.createSecret(context.actorId, {
-        namespaceId,
-        name: body?.name as string,
-        value: body?.value as string,
-      });
+      const created = await withMutationDeadline(deadline, () =>
+        controller.createSecret(context.actorId, {
+          namespaceId,
+          name: body?.name as string,
+          value: body?.value as string,
+        }),
+      );
       await unit.audit.append(mutationEvent({ kind: "secret", id: created.id, namespaceId }));
       return clientSecret(created);
     });
@@ -71,23 +80,25 @@ export const secretHandlers = {
     namespaceId,
     mutationEvent,
   }) {
+    const deadline = Date.now() + MUTATION_BACKEND_BUDGET_MS;
     const secret = await controller.transact(async (unit) => {
-      const updated = await controller.updateSecret(context.actorId, {
-        namespaceId,
-        secretId: params.secretId as string,
-        value: body?.value as string,
-      });
+      const updated = await withMutationDeadline(deadline, () =>
+        controller.updateSecret(context.actorId, {
+          namespaceId,
+          secretId: params.secretId as string,
+          value: body?.value as string,
+        }),
+      );
       await unit.audit.append(mutationEvent({ kind: "secret", id: updated.id, namespaceId }));
       return clientSecret(updated);
     });
     reply.send({ data: secret, meta: { requestId: request.id } });
   },
   async deleteSecret({ controller, context, reply, params, namespaceId, mutationEvent }) {
+    const deadline = Date.now() + MUTATION_BACKEND_BUDGET_MS;
     await controller.transact(async (unit) => {
-      const removed = await controller.deleteSecret(
-        context.actorId,
-        namespaceId,
-        params.secretId as string,
+      const removed = await withMutationDeadline(deadline, () =>
+        controller.deleteSecret(context.actorId, namespaceId, params.secretId as string),
       );
       await unit.audit.append(
         mutationEvent(

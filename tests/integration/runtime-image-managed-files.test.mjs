@@ -57,7 +57,9 @@ const entrypoint = process.argv[1];
 const sentinel = "Owner edit that must survive a Harness restart.\n";
 const substitute = [
   'const cp = require("node:child_process");',
-  'cp.spawn = () => {',
+  'const realSpawn = cp.spawn;',
+  'cp.spawn = (command, args, options) => {',
+  'if (args[1] === "setup") return realSpawn(command, args, options);',
   'if (!JSON.parse(process.env.OPENCLAW_WORKSPACE_BOOTSTRAP).skipBootstrap) require("node:assert/strict").ok(require("node:fs").readFileSync("/home/node/workspace/AGENTS.md", "utf8").length > 0);',
   'console.log("WORKSPACE_CHILD_STARTED");',
   'return new (require("node:events").EventEmitter)();',

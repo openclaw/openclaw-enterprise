@@ -8,6 +8,8 @@ This record preserves the dated changes to the Agent workspace files flow. See t
 
 ## Changelog
 
+- 2026-11-01 08:00: A Harness stopped during native setup waits until setup ends, so the node state lock on the workspace claim does not outlive the Pod. (fix-3104, finding 3104)
+
 - 2026-10-27 09:00: Hold a failed Harness native setup as check `workspace-baseline` instead of exiting, and drop OpenClaw's doctor hints from its log. (fix-2686-status, findings 2686, 2699)
 
 - 2026-10-10 12:04: Preserve SDK initializer timestamps. (authoring-run/0e9aadda-36b5-4f99-af17-ffde7a3cd26d - f8a837e33b5c03bc0c92065e979485ee06960150)

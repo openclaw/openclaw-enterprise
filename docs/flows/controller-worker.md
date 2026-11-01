@@ -155,16 +155,17 @@ Version work reloads its Namespace, Agent, saved version, and selected version.
 Agent Principal, a changed Harness descriptor, or a different Compute Driver.
 `authorizeRevision()` rechecks current `deploy` and, for a ServiceAccount
 snapshot, `read` on that exact ServiceAccount. Before Compute effects, the worker
-rechecks each managed credential's frozen Backend binding without a Backend
-client or admin key; the
+rechecks each managed credential's frozen Backend binding; the
 [Backend-managed credential delivery flow](service-account-driver-credential-delivery.md#5-recheck-metadata-and-project-the-account-secret)
 owns these checks.
 
-Revocation and denial fail permanently before the pass prepares a runtime. Older versions
-complete as superseded; selected versions enter finalization or maintenance.
-When Compute requires stopped predecessors, a newer admission supersedes older
-active maintenance before Compute effects, even after candidate failure.
-Recovery uses a new version.
+Revocation and denial fail permanently before Compute. Selected versions enter
+finalization or maintenance. Older versions end superseded, also once the newest,
+without Git, has a held runtime failure. Under
+[exclusive replacement](../reference/drivers/compute.md#production-revision-stages),
+a newer admission supersedes older active maintenance before Compute effects,
+even after candidate failure; a superseded inactive version stops itself, its
+drain yielding as `SUPERSEDED_STOP_YIELDED`. Recovery uses a new version.
 
 Agent-stop work rechecks current exact-Agent `operate`; superseded desired state
 completes without shutdown.
@@ -188,10 +189,10 @@ When Compute's `requiresStoppedPredecessors` capability is set,
 `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` performs
 [exclusive replacement](../reference/drivers/compute.md#production-revision-stages):
 it loads earlier snapshots, including failed candidates, closes their credential
-sessions, and stops them before preparing the candidate; a release failure
-prevents preparation. Their drains yield like a stopped Agent's
-(`PREDECESSOR_STOP_YIELDED`); failing, superseded or stopped work first finishes that stop. The
-dispatch guard keeps maintenance from recreating a predecessor.
+sessions, and stops them first; a release failure prevents preparation. Their
+drains yield like a stopped Agent's (`PREDECESSOR_STOP_YIELDED`); failing,
+superseded or stopped work first finishes that stop. The dispatch guard keeps
+maintenance from recreating a predecessor.
 
 The worker validates Compute's startup plugin warning codes and selection keys
 against the immutable version; the
@@ -207,7 +208,7 @@ later admissions are not added. Partial failure retries idempotent shutdowns,
 keeping the active pointer and retained workspace data. Before the convergence
 deadline, a stopped Agent's Gateway drain, here or in version work, yields to due
 work (`withYieldingGatewayDrain`) as `AGENT_STOP_YIELDED`, refunding the attempt.
-A drain ignores yielded stops; other waits, only stopped Agents'.
+A drain ignores yielded stops; other waits ignore all but predecessors'.
 
 Before shutdown or retirement, including stopped-version recovery, the worker
 binds the server-owned Namespace and Agent after IAM and exact-resource checks.
@@ -299,8 +300,8 @@ Pending convergence refunds the attempt and requeues unready versions on the
 cadence in
 [pending deployment progress](../reference/agents/deployment.md#pending-deployment-progress),
 others with backoff. Compute's `pendingReason` selects the pending code.
-`PostgresWorkQueue.defer` appends `reconcile` evidence only when its outcome and
-code differ from that work item's latest evidence. `retry` outcomes consume attempts; permanent failure, exhaustion, deadline, or `AUTHENTICATION_FAILED`
+`PostgresWorkQueue.defer` appends `reconcile` evidence only when its outcome or
+code changes. `retry` outcomes consume attempts; permanent failure, exhaustion, deadline, or `AUTHENTICATION_FAILED`
 terminates work. See [outcomes](../reference/controller.md) and
 [timing controls](../reference/settings/operations.md#controller-worker-environment).
 

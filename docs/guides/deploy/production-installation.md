@@ -17,11 +17,9 @@ and chart selection. Retain this shell and protected files for
 
 ## Use published images
 
-Use `ghcr.io/openclaw/openclaw-enterprise-controller:latest` and
-`ghcr.io/openclaw/openclaw-enterprise-runtime:latest` through the
-[published-image procedure](published-images.md), which checks the image source commits and sets
-`CONTROLLER_IMAGE` and `RUNTIME_IMAGE` and selects the matching checkout and
-chart. Complete it before generating configuration; then skip the build section.
+Before generating configuration, [select the published image pair](published-images.md)
+(`stable` or `latest`). Verify the source commit, export `CONTROLLER_IMAGE` and
+`RUNTIME_IMAGE`, and use the matching checkout and chart. Skip the build section.
 
 Public GHCR pulls need no pull Secret. For private registry copies, give every node
 that runs control-plane or tenant Pods its own pull access; see

@@ -40,7 +40,7 @@ export interface SelectedRepositories {
 export async function standingGitOrigin(
   t: TestContext,
   namespaceId: string,
-  tokenLifetimeMs = 135_000,
+  tokenLifetimeMs: number | ((index: number) => number) = 135_000,
   beforeIssue?: () => Promise<void>,
   installationAccess = false,
   selection?: SelectedRepositories,
@@ -149,8 +149,8 @@ export async function preparedStandingGitPeer(
     installationAccess?: boolean;
     selection?: SelectedRepositories;
     draftPull?: boolean;
-    /** GitHub's token lifetime, by the system clock. */
-    tokenLifetimeMs?: number;
+    /** GitHub's token lifetime by the system clock, or a function of the 1-based token index. */
+    tokenLifetimeMs?: number | ((index: number) => number);
     /** Only the prepared owner's clock. GitHub, PostgreSQL and the runtime keep real time. */
     ownerClock?: Clock;
   } = {},

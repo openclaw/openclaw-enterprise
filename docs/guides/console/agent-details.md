@@ -53,7 +53,8 @@ Milestones show the saved record:
 
 Work ended by a newer version (`REVISION_SUPERSEDED` or
 `REPOSITORY_REVISION_SUPERSEDED`) or a Stop (`REVISION_STOPPED`) shows as a
-neutral `superseded` or `stopped` result, not a failure; after a Stop, deploy a
+neutral **Superseded** or **Stopped** result, not a failure, also in the version
+picker and that version's notice; after a Stop, deploy a
 new version to run the Agent again. A `failed` result shows the stored error. **Open vN Logs** opens the
 failed version’s [Logs tab](../topics/agent-logs.md), showing output or the
 applicable access or availability message, even from the draft or another version.

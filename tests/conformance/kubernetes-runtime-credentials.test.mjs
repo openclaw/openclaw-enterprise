@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { Linter } from "eslint";
@@ -27,6 +26,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { readJsonLinesSync } from "../helpers/json-lines.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
 const { AGENT_RUNTIME_ENTRYPOINT } = runtimeEntrypoints;
 const namespace = Object.freeze({
@@ -998,8 +998,7 @@ test("Codex startup logs in, probes and starts the app server in each login mode
     },
   };
   for (const [mode, { env, flag, input }] of Object.entries(login)) {
-    const directory = mkdtempSync(join(tmpdir(), "oce-codex-login-mode-"));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const directory = temporaryDirectorySync(t, "oce-codex-login-mode-");
     const codexHome = join(directory, "codex");
     mkdirSync(join(directory, "bin"));
     mkdirSync(codexHome);
@@ -1036,7 +1035,18 @@ test("Codex startup logs in, probes and starts the app server in each login mode
     );
     if (flag !== undefined) {
       assert.deepEqual(calls[0], {
-        args: ["-c", "cli_auth_credentials_store=file", "login", flag],
+        args: [
+          "-c",
+          'otel.exporter="none"',
+          "-c",
+          'otel.metrics_exporter="none"',
+          "-c",
+          "otel.log_user_prompt=false",
+          "-c",
+          "cli_auth_credentials_store=file",
+          "login",
+          flag,
+        ],
         input,
       });
     }

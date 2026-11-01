@@ -96,6 +96,9 @@ import {
   KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT,
   kubernetesGatewayPasswordRequirement,
   dedicatedCodexVariableRefusal,
+  pluginEntryKeyVariantRefusal,
+  workspaceNodePluginRefusal,
+  codexPluginRefusal,
   unboundPluginSecretRefusal,
   unreadablePluginSecretRefusal,
   unboundUnreadablePluginSecretRefusal,
@@ -9569,20 +9572,38 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
     new KubernetesComputeDriver(routedOptions(), { nodeEnrollment: {} }),
   ];
 
-  // f1112: the entrypoint exits at every start without the file-transfer plugin.
-  const workspaceNode = "the Agent's workspace node requires the file-transfer plugin";
-  for (const [plugins, setting, requirement] of [
-    [{ deny: ["file-transfer"] }, "plugins.deny", `must not list file-transfer: ${workspaceNode}`],
+  // f1112: the entrypoint exits at every start without the file-transfer plugin. Without a
+  // workspace node, plugins.enabled false and a deny item that is not text still stop every
+  // Dedicated Codex Gateway (f3096, below); `withoutNode` is that refusal, if any.
+  const codexDisabled = ["plugins.enabled", "must not be false", "Remove it"];
+  const notText = (key) => [key, "must list only plugin IDs as text", "Remove any other item"];
+  for (const [plugins, setting, rule, withoutNodeRefusal] of [
+    [{ deny: ["file-transfer"] }, "plugins.deny", "must not list file-transfer"],
+    // OpenClaw matches deny entries trimmed and lowercased (finding 3077).
+    [
+      { deny: [1, " File-Transfer"] },
+      "plugins.deny",
+      "must not list file-transfer",
+      notText("plugins.deny"),
+    ],
     [
       { entries: { "file-transfer": { enabled: false } } },
       "plugins.entries.file-transfer.enabled",
-      `must not be false: ${workspaceNode}`,
+      "must not be false",
     ],
+    // OpenClaw turns off every plugin, file-transfer included (finding 3083).
+    [{ enabled: false }, "plugins.enabled", "must not be false", codexDisabled],
   ]) {
+    const refused = { message: workspaceNodePluginRefusal(setting, rule) };
     for (const harness of [codex, provisioning]) {
       assert.throws(
         () => routed.validateHarnessAuth(harness, apiKeyAuth, { ...base, plugins }),
-        named(setting, requirement),
+        refused,
+      );
+      // Agent save (no bindings yet) refuses it too, before any deployment.
+      assert.throws(
+        () => routed.validateHarnessAuth(harness, apiKeyAuth, { ...base, plugins }, null),
+        refused,
       );
     }
     assert.throws(
@@ -9592,17 +9613,107 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
           apiKeyAuth,
           { ...createHarnessConfiguration("openclaw", "gpt-4o-mini"), plugins },
         ),
-      named(setting, requirement),
+      refused,
     );
     // A Gateway without a workspace node does not need the plugin.
     for (const driver of withoutNode) {
-      driver.validateHarnessAuth(codex, apiKeyAuth, { ...base, plugins });
+      for (const bindings of [undefined, null]) {
+        const admit = () =>
+          driver.validateHarnessAuth(codex, apiKeyAuth, { ...base, plugins }, bindings);
+        if (withoutNodeRefusal === undefined) {
+          admit();
+        } else {
+          assert.throws(admit, { message: codexPluginRefusal(...withoutNodeRefusal) });
+        }
+      }
     }
     routed.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, plugins });
+    routed.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, plugins }, null);
   }
-  routed.validateHarnessAuth(codex, apiKeyAuth, {
-    ...base,
-    plugins: { deny: ["other"], entries: { "file-transfer": { enabled: true } } },
+  for (const plugins of [
+    { deny: ["other"], entries: { "file-transfer": { enabled: true } } },
+    { enabled: true },
+    // The entrypoint adds file-transfer to a non-empty allowlist (which must list codex, below).
+    { allow: ["other", "codex"] },
+  ]) {
+    routed.validateHarnessAuth(codex, apiKeyAuth, { ...base, plugins });
+  }
+
+  // f3096: every Dedicated Codex Gateway runs the codex plugin, and its entrypoint exits at every
+  // start on a plugin policy that turns it off. Agent save, provisioning, deployment and the save
+  // of a Configuration whose model policy selects Codex refuse it, after the workspace node's
+  // rule (above). The entrypoint parity test is in plugin-runtime-policy.test.mjs.
+  const codexSelected = {
+    agents: {
+      defaults: {
+        model: "codex/gpt-5",
+        models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
+      },
+    },
+  };
+  const codexAllow = ["plugins.allow", "must list codex", "Add it"];
+  for (const [plugins, refusal, workspaceNodeFirst = false] of [
+    [{ enabled: false }, codexDisabled, true],
+    [{ enabled: false, entries: { codex: { enabled: true } } }, codexDisabled, true],
+    // OpenClaw compares plugin IDs trimmed and lowercased.
+    [{ deny: ["slack", " Codex "] }, ["plugins.deny", "must not list codex", "Remove that item"]],
+    [{ allow: ["slack"] }, codexAllow],
+    [{ allow: ["slack", " "] }, codexAllow],
+    // The entrypoint reads both lists first and stops on an item that is not text.
+    [{ allow: ["codex", 1] }, notText("plugins.allow")],
+    [{ deny: [null], enabled: false }, notText("plugins.deny"), true],
+    [{ allow: [{}], deny: [null] }, notText("plugins.allow")],
+  ]) {
+    const configuration = { ...codexSelected, plugins };
+    const refused = { message: codexPluginRefusal(...refusal) };
+    const label = JSON.stringify(plugins);
+    for (const driver of [unrouted, routed]) {
+      const nodeRefused = driver === routed && workspaceNodeFirst;
+      for (const harness of [codex, provisioning]) {
+        for (const bindings of [undefined, null]) {
+          assert.throws(
+            () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration, bindings),
+            nodeRefused
+              ? { message: workspaceNodePluginRefusal("plugins.enabled", "must not be false") }
+              : refused,
+            label,
+          );
+        }
+      }
+      // Configuration save does not know the Agent's workspace node.
+      assert.throws(() => driver.validateConfiguration(configuration), refused, label);
+    }
+  }
+  // An OpenClaw Configuration does not run the codex plugin.
+  for (const plugins of [{ enabled: false }, { deny: ["codex"] }, { allow: ["slack"] }]) {
+    unrouted.validateConfiguration({ ...embeddedBase, plugins });
+    unrouted.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, plugins }, null);
+  }
+  for (const plugins of [
+    { enabled: true, allow: [" CODEX ", "slack"], deny: ["slack", "codex-extra"] },
+    // Blank items are ignored, so this allowlist is empty.
+    { allow: [" ", ""] },
+    // The overlay turns the codex entry back on.
+    { allow: ["codex"], entries: { codex: { enabled: false } } },
+    // The entrypoint does not read a list that is not an array.
+    { allow: "slack", deny: "codex" },
+  ]) {
+    const configuration = { ...codexSelected, plugins };
+    for (const bindings of [undefined, null]) {
+      unrouted.validateHarnessAuth(codex, apiKeyAuth, configuration, bindings);
+    }
+    unrouted.validateConfiguration(configuration);
+  }
+  // Preset defaults: an item that waits on a variable may name codex once filled.
+  const waiting = {
+    ...codexSelected,
+    plugins: { allow: ["{{ vars.plugin }}"], deny: ["{{ vars.denied }}"] },
+  };
+  const unresolved = (path) =>
+    path[0] === "plugins" && typeof path[2] === "number" ? ["", ""] : undefined;
+  unrouted.validateConfiguration(waiting, { unresolved });
+  assert.throws(() => unrouted.validateConfiguration(waiting), {
+    message: codexPluginRefusal(...codexAllow),
   });
 
   // f1113 and f1114: gateway settings preparation refused, now refused by deployment admission
@@ -9760,6 +9871,50 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   }
 });
 
+test("Kubernetes Compute refuses another spelling of a plugin entry key it renders", () => {
+  // Finding 3077. OpenClaw merges plugins.entries keys that match trimmed and lowercased. The
+  // Gateway entrypoint enables and configures file-transfer for a workspace node, and renders the
+  // managed catalog plugin diffs for the Agent's plugin selection, both only at the exact key, so a
+  // later `File-Transfer` entry could turn the workspace node's plugin off and a `Diffs` entry
+  // could replace the managed one. Configuration save, Preset save and deploy admission refuse it;
+  // configuration-controller.test.mjs proves a Preset key that waits on a variable.
+  const driver = new KubernetesComputeDriver(options());
+  const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  const base = { agents: { defaults: { model: "codex/gpt-5" } } };
+  const withEntries = (entries) => ({ ...base, plugins: { entries } });
+  for (const [entries, path, id] of [
+    [
+      { "file-transfer": {}, "File-Transfer": { enabled: false } },
+      "plugins.entries.File-Transfer",
+      "file-transfer",
+    ],
+    [
+      { " file-transfer": { enabled: false } },
+      'plugins.entries[" file-transfer"]',
+      "file-transfer",
+    ],
+    [{ diffs: { enabled: true }, Diffs: { config: {} } }, "plugins.entries.Diffs", "diffs"],
+  ]) {
+    const expected = {
+      name: "ConfigurationHarnessError",
+      message: pluginEntryKeyVariantRefusal(path, id),
+    };
+    assert.throws(() => driver.validateConfiguration(withEntries(entries)), expected);
+    assert.throws(
+      () => driver.validateHarnessAuth(codex, apiKeyAuth, withEntries(entries), {}),
+      expected,
+    );
+  }
+  // The exact keys, and other plugins' keys in another spelling, are accepted.
+  for (const entries of [
+    { "file-transfer": { enabled: true }, diffs: { enabled: true } },
+    { "File-Transfers": {}, Slack: { enabled: false } },
+  ]) {
+    driver.validateConfiguration(withEntries(entries));
+    driver.validateHarnessAuth(codex, apiKeyAuth, withEntries(entries), {});
+  }
+});
+
 test("admission refuses a plugin secret input whose unset variable stops any Gateway", () => {
   // OpenClaw resolves an active plugin's Gateway-required secret inputs (no ownerKind in the
   // manifest: codex appServer.authToken and appServer.headers.*, google webSearch.headers.*) at
@@ -9815,20 +9970,23 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
   // Any other unbound name: deployment refuses it, naming the binding to add or the entry to
   // disable; bound, the variable is set in the Gateway, which starts. Agent save does not know
   // the Configuration's bindings, so it leaves it to deployment.
-  const refusedUntilBound = (admit, configuration, [setting, name, plugin], label) => {
-    const expected = refusal(unboundPluginSecretRefusal(setting, name, plugin));
+  const refusedUntilBound = (admit, configuration, [setting, name, plugin, enabledBy], label) => {
+    const expected = refusal(unboundPluginSecretRefusal(setting, name, plugin, enabledBy));
     for (const bindings of [undefined, {}]) {
       assert.throws(() => admit(configuration, bindings), expected, label);
     }
     admit(configuration, { [name]: { source } });
     admit(configuration, null);
+    // Configuration save knows neither the Agent nor its bindings, so it leaves it to deployment.
+    driver.validateConfiguration(configuration);
   };
   const embeddedAdmission = admission(driver, embedded);
 
   // Every form of an APP_SERVER_ reference, on an embedded Agent.
   for (const [configuration, setting, name] of [
     [withCodex({ enabled: true, config: { appServer } }), authToken, "APP_SERVER_TOKEN"],
-    // An entry without enabled is active, even beside an allowlist that does not list it.
+    // An entry without enabled is active, even beside an allowlist that does not list it: at
+    // startup OpenClaw adds every known plugin entry with config to a non-empty plugins.allow.
     [withCodex({ config: { appServer } }, { allow: ["browser"] }), authToken, "APP_SERVER_TOKEN"],
     [
       withCodex({ config: { appServer: { authToken: "$APP_SERVER_TOKEN" } } }),
@@ -9852,6 +10010,8 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       configuration,
       refusal(dedicatedCodexVariableRefusal(setting, name)),
     );
+    // Configuration save knows no Agent, so the execution mode that refuses it is not known yet.
+    driver.validateConfiguration(configuration);
   }
   // The other forms of an unbound reference, on an embedded Agent.
   for (const [configuration, ...refused] of [
@@ -9864,13 +10024,20 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
     // OpenClaw trims a secret-input value before it reads `${NAME}`, so padding still stops the
     // Gateway (finding 3046).
     [withSearchHeader(" ${RELAY_TOKEN}\n"), searchHeader, "RELAY_TOKEN", "google"],
+    // OpenClaw adds the google entry to a plugins.allow that omits it, so its input is read.
+    [
+      withSearchHeader("${RELAY_TOKEN}", {}, { allow: ["codex"] }),
+      searchHeader,
+      "RELAY_TOKEN",
+      "google",
+    ],
   ]) {
     refusedUntilBound(embeddedAdmission, configuration, refused);
   }
   // References OpenClaw cannot read at all stop the Gateway whatever sets the variable, and its
   // configuration still validates, so the runtime hold does not catch them (finding 3056). That
   // holds for an input with a runtime owner too (beam, active only when enabled), so deployment,
-  // bound or not, and Agent save refuse them on every topology.
+  // bound or not, Agent save and Configuration save (finding 3069) refuse them on every topology.
   const beamToken = "plugins.entries.beam.config.mirror.token";
   const withBeam = (token, entry = { enabled: true }) =>
     withPlugin("beam", { ...entry, config: { mirror: { token } } });
@@ -9921,6 +10088,13 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       withBeam({ ...envRef("RELAY_TOKEN"), provider: "vault" }),
       beamToken,
       "beam",
+      "provider",
+      "vault",
+    ],
+    [
+      withSearchHeader({ ...envRef("RELAY_TOKEN"), provider: "vault" }, {}, { allow: ["codex"] }),
+      searchHeader,
+      "google",
       "provider",
       "vault",
     ],
@@ -9989,6 +10163,7 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
     const expected = refusal(unreadablePluginSecretRefusal(setting, plugin, held, ...shown));
     const label = JSON.stringify(configuration);
     refusedByMode(embeddedAdmission, configuration, expected, label);
+    assert.throws(() => driver.validateConfiguration(configuration), expected, label);
     assert.throws(
       () => embeddedAdmission(configuration, { RELAY_TOKEN: { source } }),
       expected,
@@ -10152,6 +10327,7 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       refusal(appServerUnreadablePluginSecretRefusal(setting, plugin, agent, "allowlist", name)),
       JSON.stringify(configuration),
     );
+    driver.validateConfiguration(configuration);
   }
   for (const [admit, configuration] of [
     [embeddedAdmission, { ...withBeam("${APP_SERVER_TOKEN}"), ...allowlist(["APP_SERVER_TOKEN"]) }],
@@ -10218,6 +10394,157 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
       enabled: true,
       config: { twilio: { authToken: "${RELAY_TOKEN}" } },
     }),
+  ]) {
+    embeddedAdmission(configuration, {});
+  }
+  // OpenClaw reads plugin secret inputs only in the entry keyed by the plugin's exact ID, so a
+  // case or padding variant of `google` has none and its Gateway starts (finding 3072). Its deny
+  // list and each entry's `enabled` match a trimmed, lowercased ID with aliases resolved
+  // (google-gemini-cli is google). Configuration save accepts these too.
+  const unreadableHeader = { ...envRef("RELAY_TOKEN"), provider: "vault" };
+  const variant = (id, value, plugins) => withPlugin(id, searchHeaderEntry(value).google, plugins);
+  for (const configuration of [
+    variant("Google", "${RELAY_TOKEN}"),
+    variant(" google", "${RELAY_TOKEN}"),
+    variant("GOOGLE", "${RELAY_TOKEN}", { allow: ["codex"] }),
+    variant("Google", unreadableHeader),
+    withSearchHeader("${RELAY_TOKEN}", {}, { deny: ["GOOGLE"] }),
+    withSearchHeader(unreadableHeader, {}, { deny: [" google "] }),
+    withSearchHeader("${RELAY_TOKEN}", {}, { deny: ["google-gemini-cli"] }),
+    // A later entry for the same plugin with enabled: false disables it. It must come later in
+    // the order written and in the stored order the Gateway receives (keys by length, then byte;
+    // finding 3092), so it is a longer key here.
+    withEntries(withSearchHeader("${RELAY_TOKEN}"), { "google ": { enabled: false } }),
+    // A later value that is not an object replaces the merged entry with {}, which leaves google
+    // inactive: auto-enable set `enabled: true` only on the exact entry (finding 3074).
+    withEntries(withSearchHeader("${RELAY_TOKEN}"), { "google ": null }),
+    withEntries(withSearchHeader("${RELAY_TOKEN}"), { " google": "off" }),
+  ]) {
+    embeddedAdmission(configuration, {});
+    driver.validateConfiguration(configuration);
+  }
+  // A later `enabled: true` for the same plugin enables a disabled google entry, so the step names
+  // that later entry (finding 3074). Startup auto-enable sets `enabled: true` on a google entry
+  // that leaves it unset, so an earlier `enabled: false`, or a value that is not an object, for
+  // the same plugin does not disable it. Each revision reaches the Gateway in PostgreSQL's jsonb
+  // key order, where `GOOGLE` comes before `google` whatever order the Configuration wrote, so
+  // `GOOGLE` written after the google entry does not disable it either (finding 3092).
+  for (const [configuration, enabledBy] of [
+    [withEntries(withSearchHeader("${RELAY_TOKEN}"), { GOOGLE: { enabled: false } }), undefined],
+    [withEntries(withSearchHeader("${RELAY_TOKEN}"), { GOOGLE: null }), undefined],
+    [
+      withEntries(withSearchHeader("${RELAY_TOKEN}", { enabled: false }), {
+        GOOGLE: { enabled: true },
+      }),
+      "GOOGLE",
+    ],
+    [
+      withEntries(withSearchHeader("${RELAY_TOKEN}", { enabled: false }), {
+        Google: { enabled: true },
+        GOOGLE: { config: {} },
+      }),
+      "Google",
+    ],
+    [
+      {
+        ...embeddedBase,
+        plugins: {
+          entries: { GOOGLE: { enabled: false }, ...searchHeaderEntry("${RELAY_TOKEN}") },
+        },
+      },
+      undefined,
+    ],
+    [
+      {
+        ...embeddedBase,
+        plugins: { entries: { GOOGLE: null, ...searchHeaderEntry("${RELAY_TOKEN}") } },
+      },
+      undefined,
+    ],
+  ]) {
+    refusedUntilBound(embeddedAdmission, configuration, [
+      searchHeader,
+      "RELAY_TOKEN",
+      "google",
+      enabledBy,
+    ]);
+  }
+  // A memory or context engine slot set to the plugin's exact ID, trimmed, activates a plugin whose
+  // merged `enabled` is unset, so a cleared google entry still reads its header and a beam or imap
+  // entry that leaves `enabled` unset reads its secret (findings 3074 and 3081). The step names the
+  // entry that cleared it. Only `enabled: false` stops a slot, and a case variant selects nothing.
+  const withSlots = (configuration, slots) => ({
+    ...configuration,
+    plugins: { ...configuration.plugins, slots },
+  });
+  // The cleared entry comes after google in the order written and in the stored order (finding
+  // 3092): a longer key. A `GOOGLE: null` written after google comes first in the stored order,
+  // where startup auto-enable enables the google entry last, so setting only `GOOGLE`'s enabled to
+  // false would leave google active there: the step offers only removal (finding 3095).
+  const clearedSearchHeader = withEntries(withSearchHeader("${RELAY_TOKEN}"), { "google ": null });
+  const clearedByVariant = withEntries(withSearchHeader("${RELAY_TOKEN}"), { GOOGLE: null });
+  for (const slots of [{ memory: "google" }, { contextEngine: " google " }]) {
+    refusedUntilBound(embeddedAdmission, withSlots(clearedByVariant, slots), [
+      searchHeader,
+      "RELAY_TOKEN",
+      "google",
+      null,
+    ]);
+  }
+  const unsetBeam = { ...withBeam("${RELAY_TOKEN}", {}), ...allowlist(["OTHER"]) };
+  const unsetImap = {
+    ...withPlugin("imap", { config: { accounts: { main: { password: "${RELAY_TOKEN}" } } } }),
+    ...allowlist([]),
+  };
+  for (const [configuration, setting, plugin] of [
+    [withSlots(unsetBeam, { memory: "beam" }), beamToken, "beam"],
+    [withSlots(unsetImap, { contextEngine: " imap" }), imapPassword, "imap"],
+  ]) {
+    const expected = refusal(
+      unboundUnreadablePluginSecretRefusal(
+        setting,
+        plugin,
+        "RELAY_TOKEN",
+        "allowlist",
+        "RELAY_TOKEN",
+      ),
+    );
+    for (const bindings of [undefined, {}]) {
+      assert.throws(() => embeddedAdmission(configuration, bindings), expected, plugin);
+    }
+  }
+  // Configuration save does not know the bindings, so the unset `${NAME}` above waits for
+  // deployment. A reference OpenClaw cannot read at all is refused at save too (finding 3069),
+  // and the slot activates the entry there as well: without the slot, save accepts it.
+  for (const [configuration, slots, setting, plugin] of [
+    [{ ...withBeam("$RELAY_TOKEN", {}), ...allowlist([]) }, { memory: "beam" }, beamToken, "beam"],
+    [
+      {
+        ...withPlugin("imap", { config: { accounts: { main: { password: "$RELAY_TOKEN" } } } }),
+        ...allowlist([]),
+      },
+      { contextEngine: " imap" },
+      imapPassword,
+      "imap",
+    ],
+  ]) {
+    driver.validateConfiguration(configuration);
+    assert.throws(
+      () => driver.validateConfiguration(withSlots(configuration, slots)),
+      refusal(unreadablePluginSecretRefusal(setting, plugin, "allowlist", "RELAY_TOKEN")),
+      plugin,
+    );
+  }
+  for (const configuration of [
+    clearedSearchHeader,
+    unsetBeam,
+    unsetImap,
+    withSlots(clearedSearchHeader, { memory: "Google" }),
+    withSlots(withSearchHeader("${RELAY_TOKEN}", { enabled: false }), { memory: "google" }),
+    withSlots(
+      { ...withBeam("${RELAY_TOKEN}", { enabled: false }), ...allowlist(["OTHER"]) },
+      { contextEngine: "beam" },
+    ),
   ]) {
     embeddedAdmission(configuration, {});
   }
@@ -23593,6 +23920,34 @@ test("Gateway tool policy is checked at Configuration save and at Agent admissio
       assert.doesNotThrow(() => driver.validateConfiguration(withPolicy(gatewayPolicy)), label);
     }
   }
+});
+
+test("an active revision whose workspace node lost file-transfer to plugins.enabled false keeps its maintenance passes", async () => {
+  // Finding 3083. Admission now refuses plugins.enabled false for an Agent whose Gateway hosts its
+  // workspace node. A revision admitted before that rule must keep its maintenance and recovery
+  // passes (preparation and activation of the active revision) until a redeploy, which admission
+  // refuses.
+  const { driver, revision, state, context } = workspaceSetupFixture(false);
+  revision.configuration = {
+    ...structuredClone(revision.configuration),
+    plugins: { enabled: false },
+  };
+  state.ready = true;
+  await prepareUntilReady(driver, revision, context);
+  await driver.activateRevision(revision, context);
+  assert.equal((await driver.prepareRevision(revision, context)).ready, true);
+  await driver.activateRevision(revision, context);
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        revision.harness,
+        revision.harnessAuth,
+        revision.configuration,
+        revision.secretBindings,
+      ),
+    { message: workspaceNodePluginRefusal("plugins.enabled", "must not be false") },
+    "a new deployment",
+  );
 });
 
 test("an active embedded revision whose stored Gateway tool policy predates the rule keeps its maintenance passes", async () => {

@@ -405,13 +405,23 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
 
 // A deployment that a newer version or a Stop ended is listed as failed, the status its record
 // reports, with the code that says it did not fail. A new page load marks earlier failed
-// versions from the list, so it must not mark these (finding 2422): the version reads as a
-// plain historical version, and its own record says Superseded or Stopped.
-for (const [code, outcome] of [
-  ["REVISION_SUPERSEDED", "Superseded"],
-  ["REVISION_STOPPED", "Stopped"],
+// versions from the list, so it must not mark these Failed (finding 2422). Left unmarked, a
+// superseded version read as an ordinary historical one in the Versions list and on its own page
+// (dogfood r77 rows 21-22), so both now name the outcome, at desktop and phone widths. The record
+// never names the newer version or says whether a runtime ran, so the notice claims neither.
+for (const [code, outcome, notice] of [
+  [
+    "REVISION_SUPERSEDED",
+    "Superseded",
+    "Superseded version · read-only admitted snapshot. A newer version took over before its deployment finished.",
+  ],
+  [
+    "REVISION_STOPPED",
+    "Stopped",
+    "Stopped version · read-only admitted snapshot. The Agent was stopped before its deployment finished.",
+  ],
 ]) {
-  test(`The Versions list leaves a version that ended with ${code} unmarked after a load`, async (t) => {
+  test(`The Versions list and the version page name a version that ended with ${code}`, async (t) => {
     const { fixture, namespace, agent, page } = await agentPage(t, `Neutral ${outcome}`, "Neutral");
     const first = await fixture.deployAgent(namespace.id, agent.id);
     await routeFailedRecord(page, fixture, namespace, agent, first, code);
@@ -428,19 +438,31 @@ for (const [code, outcome] of [
       .locator("option")
       .filter({ hasText: /^v2(?: ·|$)/ })
       .waitFor({ state: "attached" });
+    // The list's own outcome marks v1 before v1 or its record is opened.
     const v1 = rail.locator("option").filter({ hasText: /^v1(?: ·|$)/ });
-    assert.equal(await v1.textContent(), "v1");
-    assert.equal(await v1.textContent(), "v1");
+    assert.equal(await v1.textContent(), `v1 · ${outcome}`);
 
     await versionChooser(page).selectOption(first.id);
     await waitForChosenVersion(page);
     await expectVersionRecord(page, outcome);
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-    assert.equal(
-      await page.locator(".version-selection-notice").textContent(),
-      "Historical version · read-only admitted snapshot. Browsing it does not change the current version.",
-    );
-    assert.equal(await v1.textContent(), "v1");
+    const shown = page.locator(".version-selection-notice");
+    for (const viewport of consoleViewports) {
+      await page.setViewportSize(viewport);
+      assert.equal(await shown.textContent(), notice);
+      // The whole sentence shows at each width: the notice wraps inside the page.
+      assert.equal(await shown.isVisible(), true);
+      assert.equal(
+        await shown.evaluate(
+          (node) =>
+            node.scrollWidth <= node.clientWidth &&
+            node.getBoundingClientRect().right <= globalThis.innerWidth,
+        ),
+        true,
+        `${viewport.width}px`,
+      );
+      assert.equal(await v1.textContent(), `v1 · ${outcome}`);
+    }
   });
 }
 

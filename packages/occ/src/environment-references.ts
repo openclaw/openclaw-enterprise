@@ -68,6 +68,41 @@ export const shownSettingKey = (key: string): string =>
   key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
 
 /**
+ * Builds a message that names a Configuration field. The error contract caps messages at
+ * 256 characters; a long provider name shortens the path. The cut counts code points, so it
+ * never leaves half of a surrogate pair.
+ */
+export function configurationFieldMessage(path: string, message: (path: string) => string): string {
+  const budget = 256 - message("").length;
+  const characters = Array.from(path);
+  return message(
+    characters.length <= budget ? path : `${characters.slice(0, budget - 1).join("")}…`,
+  );
+}
+
+/**
+ * "Configuration setting <setting> <requirement>.", with a long setting path shortened to fit
+ * the 256-character cap. Build a path that holds a submitted key with keyedSettingPath.
+ */
+export function configurationSettingMessage(setting: string, requirement: string): string {
+  return configurationFieldMessage(
+    setting,
+    (path) => `Configuration setting ${path} ${requirement}.`,
+  );
+}
+
+/**
+ * The Configuration setting path `<parent>.<key>` for a submitted key: control, format, line
+ * and paragraph separator characters show as ?, and a key that is not a plain ID is quoted.
+ */
+export function keyedSettingPath(parent: string, key: string): string {
+  const shown = shownSettingKey(key);
+  return /^[A-Za-z0-9_-]+$/.test(shown)
+    ? `${parent}.${shown}`
+    : `${parent}[${JSON.stringify(shown)}]`;
+}
+
+/**
  * A submitted key a message names, such as a header name, in double quotes: characters
  * keyedSettingPath hides show as ?, and a key longer than `limit` code points is cut with …,
  * so the message keeps its cap (`limit` is at least 1). Use it only for keys that are not secrets.
@@ -352,6 +387,386 @@ export function secretInputReference(
     return readable(requirement);
   }
   return source === "env" ? { variable: id } : undefined;
+}
+
+/**
+ * The plugin secret inputs of each plugin the runtime image ships with any: the
+ * `configContracts.secretInputs` paths in `extensions/<id>/openclaw.plugin.json` at the commit in
+ * `deploy/runtime/openclaw-source.json` (`*` matches each key). OpenClaw resolves those of an
+ * active plugin at startup, and a reference it cannot read at all ends startup with "required
+ * secrets are unavailable" (`secretInputReference`). `required`: the inputs without an
+ * `ownerKind`, whose unset variable also ends startup; one with an `ownerKind` (beam, imap) then
+ * only makes its owner unavailable. `enabledByDefault: false` (the manifest's
+ * `bundledDefaultEnabled`): the plugin is active only when its entry sets `enabled: true`. The
+ * Gateway skips an entry for a plugin the image does not ship. Update this list when that pin or
+ * the image's plugins change.
+ */
+const PLUGIN_SECRET_INPUTS: Readonly<
+  Record<
+    string,
+    {
+      readonly paths: readonly (readonly string[])[];
+      readonly required: boolean;
+      readonly enabledByDefault: boolean;
+    }
+  >
+> = {
+  beam: { paths: [["mirror", "token"]], required: false, enabledByDefault: false },
+  codex: {
+    paths: [
+      ["appServer", "authToken"],
+      ["appServer", "headers", "*"],
+    ],
+    required: true,
+    enabledByDefault: true,
+  },
+  google: { paths: [["webSearch", "headers", "*"]], required: true, enabledByDefault: true },
+  imap: { paths: [["accounts", "*", "password"]], required: false, enabledByDefault: false },
+};
+
+// Each value at `keys` below `value`, with its setting path; `*` matches every key of an object.
+function settingValues(
+  value: unknown,
+  keys: readonly string[],
+  path: string,
+): (readonly [string, unknown])[] {
+  if (keys.length === 0) {
+    return [[path, value]];
+  }
+  const record = asObject(value);
+  const [key, ...rest] = keys;
+  if (record === undefined || key === undefined) {
+    return [];
+  }
+  return (key === "*" ? Object.keys(record) : [key])
+    .filter((name) => Object.hasOwn(record, name))
+    .flatMap((name) => settingValues(record[name], rest, keyedSettingPath(path, name)));
+}
+
+// The built-in plugin ID aliases of OpenClaw's normalizePluginId (`src/plugins/config-state.ts`
+// at the pin). Update them, and the merge and auto-enable model in mergedPluginEntries, when that
+// pin changes.
+const PLUGIN_ID_ALIASES: Readonly<Record<string, string>> = {
+  "google-gemini-cli": "google",
+  "minimax-portal": "minimax",
+  "minimax-portal-auth": "minimax",
+};
+
+/**
+ * The ID OpenClaw's policy lookups (plugins.allow, plugins.deny and each entry's `enabled`)
+ * compare: trimmed, lowercased, an alias replaced by its plugin. Entries whose keys share one are
+ * merged in key order. The Console's channel cards use it too.
+ */
+export function pluginPolicyId(name: unknown): string | undefined {
+  if (typeof name !== "string") {
+    return undefined;
+  }
+  const id = name.trim().toLowerCase();
+  return Object.hasOwn(PLUGIN_ID_ALIASES, id) ? PLUGIN_ID_ALIASES[id] : id;
+}
+
+/**
+ * `plugins.allow` or `plugins.deny` as the Gateway entrypoint reads both lists before it checks a
+ * plugin the Agent's plugin runtime enables (`assertNoOpenClawPluginConfigConflict` in
+ * runtime-entrypoints.ts): each item's policy ID (pluginPolicyId), blank items dropped, and none
+ * for a value that is not a list. The entrypoint trims an item without asking whether it is text,
+ * so one that is not exits it at every start (findings 3096 and 3099): `problem` then names the
+ * setting and `ids` is empty. `pending(item, index)` marks an item that waits on a variable, such
+ * as in a Preset default: its ID is undefined.
+ */
+export function pluginPolicyList(
+  plugins: Readonly<Record<string, unknown>>,
+  key: "allow" | "deny",
+  pending?: (item: string, index: number) => boolean,
+): {
+  readonly ids: readonly (string | undefined)[];
+  readonly problem: { readonly setting: string; readonly requirement: string } | undefined;
+} {
+  const list = plugins[key];
+  if (!Array.isArray(list)) {
+    return { ids: [], problem: undefined };
+  }
+  if (list.some((item) => typeof item !== "string")) {
+    return {
+      ids: [],
+      problem: { setting: `plugins.${key}`, requirement: "must list only plugin IDs as text" },
+    };
+  }
+  const ids = list
+    .map((item, index) => (pending?.(item, index) === true ? undefined : pluginPolicyId(item)))
+    .filter((id) => id !== "");
+  return { ids, problem: undefined };
+}
+
+/**
+ * The first `plugins` setting on which a Dedicated Codex Gateway would not start, as its setting
+ * and requirement, or undefined, in the order the Gateway entrypoint checks them. Kubernetes Compute
+ * refuses it (requireCodexPlugin, finding 3096), and the Console names it before Deploy (finding
+ * 3105).
+ * `pending(key)` marks a list item that waits on a variable, as for pluginPolicyList.
+ */
+export function codexPluginPolicyProblem(
+  plugins: Readonly<Record<string, unknown>>,
+  pending?: (key: "allow" | "deny") => (item: string, index: number) => boolean,
+): { readonly setting: string; readonly requirement: string } | undefined {
+  const problem = (setting: string, rule: string, step: string) => ({
+    setting,
+    requirement: `${rule}: Dedicated Codex runs the codex plugin, so its Gateway would not start. ${step}`,
+  });
+  const allow = pluginPolicyList(plugins, "allow", pending?.("allow"));
+  const deny = pluginPolicyList(plugins, "deny", pending?.("deny"));
+  const unreadable = allow.problem ?? deny.problem;
+  if (unreadable !== undefined) {
+    return problem(unreadable.setting, unreadable.requirement, "Remove any other item");
+  }
+  if (plugins.enabled === false) {
+    return problem("plugins.enabled", "must not be false", "Remove it");
+  }
+  if (deny.ids.includes("codex")) {
+    return problem("plugins.deny", "must not list codex", "Remove that item");
+  }
+  if (allow.ids.length > 0 && !allow.ids.includes("codex") && !allow.ids.includes(undefined)) {
+    return problem("plugins.allow", "must list codex", "Add it");
+  }
+  return undefined;
+}
+
+// `keys` in PostgreSQL's jsonb key order: shorter keys first (by UTF-8 bytes), then byte by byte.
+function jsonbKeyOrder(keys: readonly string[]): string[] {
+  const encoder = new TextEncoder();
+  return keys
+    .map((key) => ({ key, bytes: encoder.encode(key) }))
+    .sort(({ bytes: a }, { bytes: b }) => {
+      if (a.length !== b.length) {
+        return a.length - b.length;
+      }
+      const index = a.findIndex((byte, position) => byte !== b[position]);
+      return index === -1 ? 0 : a[index]! - b[index]!;
+    })
+    .map(({ key }) => key);
+}
+
+/**
+ * OpenClaw's merge of the plugins.entries `keys`, in that order, by policy ID: the last boolean
+ * `enabled` wins, and a value that is not an object replaces the merged entry with {}, which
+ * leaves `enabled` unset. Before that, startup auto-enable may set `enabled: true` on the exact
+ * entry of a default-on plugin that leaves it unset, so that entry counts as enabled.
+ * `enabledBy` keeps the key of the entry that set the merged `enabled` or cleared it.
+ */
+function mergedPluginEntries(
+  keys: readonly string[],
+  entries: Readonly<Record<string, unknown>>,
+): {
+  readonly enabled: ReadonlyMap<string | undefined, boolean | undefined>;
+  readonly enabledBy: ReadonlyMap<string | undefined, string>;
+} {
+  const enabled = new Map<string | undefined, boolean | undefined>();
+  const enabledBy = new Map<string | undefined, string>();
+  for (const key of keys) {
+    const id = pluginPolicyId(key);
+    const entry = asObject(entries[key]);
+    if (entry === undefined) {
+      enabled.set(id, undefined);
+      enabledBy.set(id, key);
+    } else if (typeof entry.enabled === "boolean") {
+      enabled.set(id, entry.enabled);
+      enabledBy.set(id, key);
+    } else if (
+      key === id &&
+      Object.hasOwn(PLUGIN_SECRET_INPUTS, id) &&
+      PLUGIN_SECRET_INPUTS[id]?.enabledByDefault === true
+    ) {
+      enabled.set(id, true);
+      enabledBy.set(id, key);
+    }
+  }
+  return { enabled, enabledBy };
+}
+
+/**
+ * Each secret input of an active plugin (PLUGIN_SECRET_INPUTS) in the Configuration `values`, in
+ * Configuration order: its setting, its value, whether an unset variable there ends startup, and
+ * the step that disables the entry. OpenClaw reads secret inputs only in the entry keyed by the
+ * plugin's exact ID (`collectPluginConfigAssignments`): a `Google` or ` google` entry has none
+ * (finding 3072). It skips those of a denied plugin, of `plugins.enabled: false` and of a plugin
+ * whose `enabled` is false, both looked up by policy ID (pluginPolicyId). A non-empty
+ * `plugins.allow` skips none here: Gateway startup first adds the exact entry of every known plugin
+ * with config to it (plugin auto-enable), so these stay active (finding 3071). Startup skips an
+ * exact entry with `enabled: false`, so a later entry for the same plugin that enables it leaves
+ * the allowlist without it and the Gateway starts. This still counts that plugin active, an
+ * over-refusal kept on purpose: the slot exceptions to the allowlist, the only ones on this path
+ * (the collector passes no root config, so the channel ones never apply), are not modeled for it
+ * (finding 3074).
+ */
+export function activePluginSecretInputs(values: unknown): {
+  readonly setting: string;
+  readonly value: unknown;
+  readonly required: boolean;
+  readonly disable: string;
+}[] {
+  const plugins = asObject(asObject(values)?.plugins);
+  const entries = asObject(plugins?.entries);
+  if (plugins?.enabled === false || entries === undefined) {
+    return [];
+  }
+  const denied = Array.isArray(plugins?.deny) ? plugins.deny.map(pluginPolicyId) : [];
+  // Activation also selects a plugin whose `enabled` is unset when the trimmed
+  // `plugins.slots.memory` or `plugins.slots.contextEngine` is its exact ID
+  // (resolvePluginActivationStateShared; findings 3074 and 3081). Only `enabled: false` stops that.
+  const slots = asObject(plugins?.slots);
+  const slotted = [slots?.memory, slots?.contextEngine].flatMap((slot) =>
+    typeof slot === "string" ? [slot.trim()] : [],
+  );
+  // The entries in the order written, and in the order the Gateway receives them: PostgreSQL
+  // stores each revision's Configuration as jsonb, which orders object keys by length and then
+  // byte by byte, and Compute renders the Gateway's config from that snapshot, so a `GOOGLE` entry
+  // comes before `google` there (finding 3092). A plugin counts as active when either order
+  // activates it, so no document the written order refused is admitted.
+  const written = Object.keys(entries);
+  const merges = [written, jsonbKeyOrder(written)].map((keys) =>
+    mergedPluginEntries(keys, entries),
+  );
+  return Object.entries(entries).flatMap(([key, value]) => {
+    const entry = asObject(value);
+    const inputs = Object.hasOwn(PLUGIN_SECRET_INPUTS, key) ? PLUGIN_SECRET_INPUTS[key] : undefined;
+    const active = merges.filter(
+      ({ enabled }) =>
+        enabled.get(key) === true || (enabled.get(key) === undefined && slotted.includes(key)),
+    );
+    if (
+      inputs === undefined ||
+      entry === undefined ||
+      active.length === 0 ||
+      denied.includes(key)
+    ) {
+      return [];
+    }
+    const path = keyedSettingPath("plugins.entries", key);
+    // A later entry for the same plugin that enables or clears it is the one to turn off. When
+    // the two orders that activate the plugin end on different entries, setting one entry's
+    // enabled to false leaves it active in the other order, so the step offers only the removal
+    // that turns it off in both: with `GOOGLE: null` written after google and a slot set to
+    // google, the order written ends on `GOOGLE` and jsonb order on google (finding 3095).
+    const by = new Set(active.map(({ enabledBy }) => enabledBy.get(key) ?? key));
+    const [last] = by;
+    const disable =
+      by.size > 1 || last === undefined
+        ? `remove ${path}`
+        : last === key
+          ? `remove ${path} or set its enabled to false`
+          : `remove ${path} or set ${keyedSettingPath("plugins.entries", last)}.enabled to false`;
+    return inputs.paths
+      .flatMap((keys) => settingValues(entry.config, keys, `${path}.config`))
+      .map(([setting, input]) => ({ setting, value: input, required: inputs.required, disable }));
+  });
+}
+
+/**
+ * How OpenClaw reads the plugin secret input `value` (`secretInputReference`, with the
+ * Configuration's `secrets`). For one it cannot read at all, the requirement ends with the step
+ * that fixes it or `disable`, the step that turns its plugin off.
+ */
+export function pluginSecretInputReference(
+  value: unknown,
+  disable: string,
+  secrets: unknown,
+): SecretInputReference | undefined {
+  const reference = secretInputReference(value, secrets);
+  return reference !== undefined && "requirement" in reference
+    ? { ...reference, requirement: `${reference.requirement}, or ${disable}` }
+    : reference;
+}
+
+/**
+ * The first secret input of an active plugin in the Configuration `values` that OpenClaw cannot
+ * read at all, as its setting and why: the Gateway then exits at every start, whatever the
+ * bindings (findings 3056, 3069). Kubernetes Compute refuses it at Configuration save and deploy
+ * with this text, and the Console holds Deploy with it (finding 3076).
+ */
+export function unreadablePluginSecretInput(
+  values: unknown,
+): { readonly setting: string; readonly requirement: string } | undefined {
+  const secrets = asObject(values)?.secrets;
+  for (const { setting, value, disable } of activePluginSecretInputs(values)) {
+    const reference = pluginSecretInputReference(value, disable, secrets);
+    if (reference !== undefined && "requirement" in reference) {
+      return { setting, requirement: reference.requirement };
+    }
+  }
+  return undefined;
+}
+
+// OpenClaw's include directive key (`INCLUDE_KEY` in `src/config/includes.ts` at the pin).
+const CONFIG_INCLUDE_KEY = "$include";
+
+/**
+ * The first OpenClaw `$include` directive in the Configuration `values`, in document order, as
+ * its setting and why OCE refuses it (refuseConfigIncludes in configuration-settings.ts, finding
+ * 3078). The Console holds Deploy with this text (finding 3086).
+ */
+export function configIncludeProblem(
+  values: unknown,
+): { readonly setting: string; readonly requirement: string } | undefined {
+  const pending: [unknown, string][] = [[values, ""]];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const [value, path] = next;
+    if (Array.isArray(value)) {
+      for (let index = value.length - 1; index >= 0; index -= 1) {
+        pending.push([value[index], `${path}[${index}]`]);
+      }
+      continue;
+    }
+    const record = asObject(value);
+    if (record === undefined) {
+      continue;
+    }
+    if (Object.hasOwn(record, CONFIG_INCLUDE_KEY)) {
+      return {
+        setting: path === "" ? CONFIG_INCLUDE_KEY : `${path}.${CONFIG_INCLUDE_KEY}`,
+        requirement:
+          "is not supported: OpenClaw would merge settings from another file that OCE does not check. Write those settings in the Configuration instead",
+      };
+    }
+    // Pushed in reverse, so the stack checks the first key in document order first.
+    for (const [key, child] of Object.entries(record).reverse()) {
+      pending.push([
+        child,
+        path === "" && /^[A-Za-z0-9_-]+$/.test(key) ? key : keyedSettingPath(path, key),
+      ]);
+    }
+  }
+  return undefined;
+}
+
+// The plugins whose plugins.entries entry OCC rules read at its exact key on every Compute:
+// Configuration rules check codex and acpx settings there (the codex approval policy, proxy URLs,
+// acpx MCP server environments), and Compute renders codex settings there (the Gateway-local tool
+// exclusions, the native hook relay, the OpenShell app-server policy). Kubernetes Compute adds the
+// plugins only it reads or renders at their exact key (file-transfer and the managed plugins).
+const EXACT_KEY_PLUGINS: readonly string[] = ["codex", "acpx"];
+
+/**
+ * The first plugins.entries key in the Configuration `values` that names a plugin of `plugins`
+ * (by default codex and acpx) in another spelling, as its setting and why OCE refuses it
+ * (refusePluginEntryKeyVariants in configuration-settings.ts, findings 3073, 3077). Renaming the
+ * key while the exact entry exists would leave a duplicate key, whose last copy JSON keeps, so
+ * the step says to move its settings into that entry then (finding 3087). The Console holds
+ * Deploy with this text for codex and acpx (finding 3086).
+ */
+export function pluginEntryKeyVariantProblem(
+  values: unknown,
+  plugins: readonly string[] = EXACT_KEY_PLUGINS,
+): { readonly setting: string; readonly requirement: string } | undefined {
+  for (const key of Object.keys(asObject(asObject(asObject(values)?.plugins)?.entries) ?? {})) {
+    const id = key.trim().toLowerCase();
+    if (key !== id && plugins.includes(id)) {
+      return {
+        setting: keyedSettingPath("plugins.entries", key),
+        requirement: `must be named ${id}: OpenClaw merges it into plugins.entries.${id}, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key`,
+      };
+    }
+  }
+  return undefined;
 }
 
 /**
