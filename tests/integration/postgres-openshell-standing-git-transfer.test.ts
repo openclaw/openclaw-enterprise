@@ -506,10 +506,16 @@ test(
     const evaluate = (upload: boolean) => evaluateRequest(inspected(upload));
     const known = () => f.state.read((v) => v.repositorySessions.findStandingExecution(key));
     const attempts = () => f.state.read((v) => v.repositorySessions.listRevisionAttempts(key));
+    // Only this Agent's rows: the database may hold an earlier run's.
     const uses = async () =>
       (
         await f.observerPool.query(
-          "select operation,material_version,attempt_id,send_start_by,authorization_reply_by from occ.prepared_repository_git_uses order by exchange_id",
+          `select operation,material_version,attempt_id,send_start_by,authorization_reply_by
+           from occ.prepared_repository_git_uses
+           where admission_id in (select admission_id from occ.repository_session_attempts
+             where namespace_id=$1 and agent_id=$2)
+           order by exchange_id`,
+          [revision.namespaceId, revision.agentId],
         )
       ).rows;
     const absent = () => {
@@ -708,10 +714,15 @@ test(
         "cold observation does not claim a new fence",
       );
       assert.equal(await runtime.lookup(id, signal), undefined);
+      // Only this Agent's attempts: the database may hold an earlier run's.
       const custody = () =>
         f.observerPool
           .query(
-            "SELECT state,custody,sealed IS NULL AS erased FROM occ.prepared_github_attempts ORDER BY provider_expires_at",
+            `SELECT a.state,a.custody,a.sealed IS NULL AS erased
+             FROM occ.prepared_github_attempts a JOIN occ.prepared_github_families f USING (source_id)
+             WHERE f.source#>>'{session,namespaceId}'=$1 AND f.source#>>'{session,agentId}'=$2
+             ORDER BY a.provider_expires_at`,
+            [revision.namespaceId, revision.agentId],
           )
           .then((x) => x.rows);
       // The admission has ended and GitHub's expiry has passed, but a GitHub clock behind
