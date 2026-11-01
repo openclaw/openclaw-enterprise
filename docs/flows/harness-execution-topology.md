@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-26
-last_updated_session: authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba
+updated: 2026-10-31
+last_updated_session: authoring-run/afb5c72a-ef2b-4983-990c-427173225f65
 ---
 
 # Harness Execution Topology Flow
@@ -188,6 +188,16 @@ source endpoint before `runtime.codexModelBaseUrl`.
 `apps/controller/src/drivers/openai-endpoint.ts:normalizeOpenAiBaseUrl` normalizes either.
 `pluginRuntimeConfigMapData` in `apps/controller/src/drivers/compute/plugin-runtime.ts`
 writes the HTTPS Responses endpoint/provider pair to the manifest and `config.toml`.
+When the API-key endpoint comes from Installation configuration,
+`runtime.codexModelSupportsStandaloneWebSearch: true` adds the standalone-search
+declaration to the same provider. A bound credential-source endpoint does not
+inherit this declaration, and `providerTools: none` still disables search.
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:writeCodexConfigToml`
+writes the generated file into `CODEX_HOME` before native startup. The capability
+therefore belongs to Codex's user configuration, not a workspace override.
+Native CLI launch passes explicit log and metrics exporter overrides for login,
+the authentication probe and the app-server.
+[Runtime logging](../reference/harness-execution.md#runtime-logging) defines the export defaults.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:probeCodexAuthentication`
 uses CLI overrides because the probe ignores user configuration. Account login and
 other Harnesses keep their endpoints; only the Harness holds model credentials.
@@ -279,6 +289,21 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 
 ## Debugging and Verification
 
+- `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:observeHeldPreview`
+  reports `worker.openshell-git-continuity-refused` with the failed comparison.
+  Held-startup comparisons expose SHA-256 hashes through `keyHash`.
+  Sandbox comparisons report restart count, Never-policy result and ID-change result.
+- `apps/controller/src/drivers/compute/harness-egress-enrollment.ts:HARNESS_EGRESS_ENROLLMENT_HELPER`
+  logs `runtime.protected_startup` with the same startup hash.
+  `runtime.process_exit` and `runtime.process_error` report fixed component,
+  exit/signal or spawn-error metadata. Collect these while Pods exist; stop can
+  remove their logs. Reporting failures preserve the guard and restart decisions.
+  A changed startup still requires a new supported lifecycle; never replay its release.
+- `codex-plugin-stdio.ts:CODEX_PLUGIN_STDIO_HELPER` reports catalog queue, pipe-write,
+  pending and matched-reply flags, plus bounded message and unmatched-ID-type counts.
+  Pipe-write completion does not establish native acceptance. Counts retain no ID
+  values or payloads; stderr suppression and deadlines remain.
+
 - Check placement, immutable policy, and conflicts:
   `node --test tests/conformance/configuration-occ.test.mjs`.
 - Check guarded activation and recovery:
@@ -318,6 +343,12 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31 03:41: Observe catalog pipe writes and reply counts. (authoring-run/afb5c72a-ef2b-4983-990c-427173225f65 - fbe295286b26132acf6330c87710231324afd5b1)
+
+- 2026-10-31 02:28: Trace continuity comparisons and wrapper exits. (authoring-run/c1b37e4b-0ce0-4d5a-b087-b9833636f11e - 4dc71d4678df0f9dc49bcbeaa654819d76e3ebb0)
+
+- 2026-10-29 18:43: Trace the explicit custom-provider standalone search declaration and protected-tool exclusion. (authoring-run/be4eda1a-8676-415e-9999-ffcfe3f9bd17 - 35569940c)
 
 - 2026-10-26 23:35: Trace the model tool policy in both Gateway administration modes and recovery after a forced stop. (authoring-run/5da38bb7-602c-4a49-a7f2-863af81abcba - fac7d121c3c582afb53ca49c7d4579e04b5e5ea5)
 

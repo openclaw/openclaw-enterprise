@@ -63,6 +63,7 @@ import {
   pluginRuntimeSpecForRevision,
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
+import { PostgresPlatformState, ResourceStateConflictError } from "../../packages/occ/src/index.ts";
 
 const conversationRequired = process.env.OCC_TEST_REQUIRE_EXTERNAL_GIT_CONVERSATION === "1";
 const codex = process.env.OCC_TEST_STANDING_GIT_CODEX;
@@ -83,6 +84,11 @@ const transportOptions = { reconcileIntervalMs: 100 };
 // Production package selection, OCC deployment, worker and custody. The external package,
 // its workload, Kubernetes placement, GitHub and the private Git origin are controlled locally.
 const journeyOptions = { ...requiresPostgres, timeout: 240_000 };
+test(
+  "protected Codex artifact admission freezes the acknowledged subset and refuses unsupported or ignored purpose",
+  journeyOptions,
+  externalGitJourney("repository", true),
+);
 test(
   "an installed external Driver fetches private Git across rotation and receives the next fetch after withdrawal",
   journeyOptions,
@@ -187,7 +193,7 @@ test("production composition separates repository policy from protected and expl
       })),
     })),
   };
-  await writeFile(registryPath, JSON.stringify(registry));
+  await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
   const path = join(directory, "installation.json");
   const configuration = repositoryConfiguration({
     ...origin,
@@ -356,6 +362,7 @@ function externalGitJourney(
     | "online-installation"
     | "reducible-installation"
     | "lost-rotation",
+  artifactAdmissionOnly = false,
 ) {
   return async (t: TestContext) => {
     let prepared: Awaited<ReturnType<typeof startPreparedGitHubGitOwner>> | undefined;
@@ -504,7 +511,8 @@ function externalGitJourney(
       join(entry, "repository-git.mjs")
     )) as typeof import("../fixtures/driver-packages/protected-execution-driver/repository-git.ts");
     const registryPath = join(directory, "registry.json");
-    await writeFile(registryPath, JSON.stringify(registry));
+    // The production loader refuses group-writable registry files, including under umask 0002.
+    await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
     const path = join(directory, "installation.json");
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const { certFile } = tls;
@@ -967,6 +975,93 @@ function externalGitJourney(
       resolveApprovedHarness,
     );
     const deploy = () => controller.deployAgent(who, key, resolveApprovedHarness);
+    if (artifactAdmissionOnly) {
+      // This controlled external Driver proves OCC admission and PostgreSQL freezing.
+      // Native OpenShell artifact enforcement is qualified separately with shipped images.
+      const sandbox = apiOwner.require("sandbox");
+      const original = sandbox.admitProtectedCodexArtifactPolicy!;
+      const defaults = {
+        "codex-artifacts": {
+          name: "codex-artifacts",
+          binaries: [
+            {
+              path: "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+            },
+          ],
+          endpoints: [
+            {
+              host: "assets.example.test",
+              ports: [443],
+              protocol: "rest",
+              enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+              access: "NETWORK_ACCESS_PRESET_READ_ONLY",
+            },
+          ],
+        },
+      };
+      const admission = (version: number) => ({
+        purpose: "protected-codex-artifacts",
+        declaredRuleNames: ["codex-artifacts"],
+        snapshot: { ...original(version).snapshot, defaults },
+      });
+      const fresh = new PostgresPlatformState(pool);
+      const refused: Array<[string, unknown]> = [
+        ["unsupported purpose", undefined],
+        ["ordinary snapshot", (version: number) => admission(version).snapshot],
+        [
+          "ignored purpose",
+          (version: number) => ({ ...admission(version), purpose: "ordinary-network-policy" }),
+        ],
+        [
+          "undeclared extra rule",
+          (version: number) => ({
+            ...admission(version),
+            snapshot: {
+              ...admission(version).snapshot,
+              defaults: { ...defaults, ambient: defaults["codex-artifacts"] },
+            },
+          }),
+        ],
+        [
+          "duplicate declaration",
+          (version: number) => ({
+            ...admission(version),
+            declaredRuleNames: ["codex-artifacts", "codex-artifacts"],
+          }),
+        ],
+      ];
+      try {
+        for (const [name, producer] of refused) {
+          await t.test(name, async () => {
+            Reflect.set(sandbox, "admitProtectedCodexArtifactPolicy", producer);
+            await assert.rejects(deploy, ResourceStateConflictError);
+            assert.deepEqual(
+              await fresh.read((view) => view.revisions.listRevisions(namespaceId, agentId)),
+              [],
+            );
+            assert.equal(
+              gh.issuesOfTokens.length,
+              0,
+              "refused admission cannot reach worker issuance",
+            );
+          });
+        }
+        Reflect.set(sandbox, "admitProtectedCodexArtifactPolicy", admission);
+        const expected = structuredClone(admission(1).snapshot);
+        const admitted = await deploy();
+        // A changed producer/default cannot broaden the previously stored revision.
+        defaults["codex-artifacts"].endpoints[0]!.host = "changed.example.test";
+        const stored = await fresh.read((view) =>
+          view.revisions.findRevision(namespaceId, agentId, admitted.id),
+        );
+        assert.deepEqual(stored?.sandboxPolicy, expected);
+        assert.equal(gh.issuesOfTokens.length, 0);
+        await controller.stopAgent(who, namespaceId, agentId);
+      } finally {
+        Reflect.set(sandbox, "admitProtectedCodexArtifactPolicy", original);
+      }
+      return;
+    }
     if (broad) {
       capability.profile = "repository_git";
       await assert.rejects(deploy, /did not confirm installation-wide repository access/);

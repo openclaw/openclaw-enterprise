@@ -68,6 +68,35 @@ function configurationValues(scenario) {
       password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
     };
   }
+  if (scenario.gatewayPasswordProviderless) {
+    // A reference an older release saved without a provider, which OpenClaw cannot read.
+    values.gateway.auth = { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } };
+  }
+  if (scenario.secretProviderAliasRefused) {
+    // An env alias an older release saved in upper case, which OpenClaw's config check refuses.
+    values.secrets = { defaults: { env: "BAD" } };
+  }
+  if (scenario.pluginSecretInputProviderless) {
+    // A Google web search header an older release saved as a SecretRef without a provider, which
+    // OpenClaw cannot read, so the Gateway exits at startup.
+    values.plugins = {
+      entries: {
+        google: {
+          config: {
+            webSearch: { headers: { "X-Goog-User-Project": { source: "env", id: "GOOG_TOKEN" } } },
+          },
+        },
+      },
+    };
+  }
+  if (scenario.gatewayPasswordAllowlistOmits) {
+    // A default env alias on a configured env provider whose allowlist leaves out the generated
+    // password, so OpenClaw cannot read the reference Enable gateway password access would write.
+    values.secrets = {
+      defaults: { env: "vault" },
+      providers: { vault: { source: "env", allowlist: ["OTHER_SECRET"] } },
+    };
+  }
   if (scenario.messageQueue !== undefined) {
     values.messages = { queue: structuredClone(scenario.messageQueue) };
   }
@@ -77,7 +106,8 @@ function configurationValues(scenario) {
   }
   if (scenario.slack) {
     values.channels.slack = {
-      enabled: true,
+      // `slackOff`: Disable Slack saved the channel off and kept its bindings.
+      enabled: scenario.slackOff !== true,
       mode: scenario.slackMode ?? "socket",
       ...(scenario.slackReplyToMode === undefined
         ? {}
@@ -239,7 +269,8 @@ export function installFixture(scenario, evidence) {
   const nextId = (prefix) =>
     `${prefix}_00000000-0000-4000-8000-${String(serial++).padStart(12, "0")}`;
   const configs = new Map();
-  const configurationReads = new Set();
+  // Reads of each Configuration before another browser's save (configurationChangedElsewhere).
+  const configurationReads = new Map();
   let configurationChangedElsewhere = false;
   const agents = new Map();
   const revisions = new Map();
@@ -410,6 +441,7 @@ export function installFixture(scenario, evidence) {
   let agentReadCount = 0;
   let agentListReadCount = 0;
   let runtimeStatusReads = 0;
+  let runtimeLogReads = 0;
   const agent = {
     id: scenario.agentId ?? "agt_00000000-0000-4000-8000-000000000001",
     namespaceId,
@@ -846,7 +878,7 @@ export function installFixture(scenario, evidence) {
       { status, headers: { "content-type": "application/json" } },
     );
   const error = (status, code, message) => response(null, status, code, {}, message);
-  window.fetch = async (input, options = {}) => {
+  const answer = async (input, options = {}, call = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url, location.origin);
     const path = url.pathname;
     const method = options.method ?? "GET";
@@ -870,6 +902,10 @@ export function installFixture(scenario, evidence) {
         continue;
       }
       rule.used = rule.once === true;
+      if (rule.lostAnswer) {
+        call.lost = true;
+        break;
+      }
       if (rule.delayMs) {
         await new Promise((resolve, reject) => {
           const finish = () => {
@@ -1471,15 +1507,17 @@ export function installFixture(scenario, evidence) {
           return error(404);
         }
         if (method === "GET") {
-          // Another browser saves this Configuration once the page has read it
-          // (configurationChangedElsewhere), so the next save preflight finds a newer generation.
+          // Another browser saves this Configuration once the page has read it `afterReads` times
+          // (configurationChangedElsewhere; 1 by default), so the next save preflight finds a
+          // newer generation.
           if (scenario.configurationChangedElsewhere && !configurationChangedElsewhere) {
-            if (configurationReads.has(saved.id)) {
+            const reads = configurationReads.get(saved.id) ?? 0;
+            if (reads >= (scenario.configurationChangedElsewhere.afterReads ?? 1)) {
               configurationChangedElsewhere = true;
               saved.generation += 1;
               mergeElsewhere(saved.values, scenario.configurationChangedElsewhere.values ?? {});
             }
-            configurationReads.add(saved.id);
+            configurationReads.set(saved.id, reads + 1);
           }
           return response(saved);
         }
@@ -2075,6 +2113,12 @@ export function installFixture(scenario, evidence) {
             if (scenario.deletingOnRefresh && ++agentReadCount > 1) {
               saved.status = "deleting";
             }
+            // Once the open Logs view has read output, another person stops the Agent and the
+            // stop completes: no version is selected for service (stopElsewhereOnReread).
+            if (scenario.stopElsewhereOnReread && runtimeLogReads > 0 && saved.activeRevisionId) {
+              saved.desiredRuntimeState = "stopped";
+              delete saved.activeRevisionId;
+            }
             // By the open Logs view's second runtime status poll, another person has deployed v8,
             // whose startup model check timed out: the Agent runs again with no version selected.
             if (
@@ -2468,6 +2512,7 @@ export function installFixture(scenario, evidence) {
           suffix.endsWith("/runtime/logs") &&
           method === "GET"
         ) {
+          runtimeLogReads += 1;
           const revisionId = suffix.split("/")[2];
           if (url.searchParams.get("download") === "true") {
             // Downloads are a text/plain attachment, not a JSON envelope.
@@ -2800,5 +2845,15 @@ export function installFixture(scenario, evidence) {
     evidence.unhandled.push({ method, path });
     console.error(`Unconfigured story request: ${method} ${path}`);
     return error(501);
+  };
+  // A rule with `lostAnswer` lets the simulated API apply the request, then loses its answer, as
+  // when the connection drops after a write lands.
+  window.fetch = async (input, options = {}) => {
+    const call = {};
+    const reply = await answer(input, options, call);
+    if (call.lost) {
+      throw new TypeError("Failed to fetch");
+    }
+    return reply;
   };
 }

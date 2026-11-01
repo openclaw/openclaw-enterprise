@@ -41,6 +41,12 @@ import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { listen as listenServer } from "../helpers/listen.mjs";
+import {
+  gatewayExitedBeforeServing,
+  invalidGatewayConfiguration,
+  invalidGatewayConfigurationLine,
+  invalidGatewayConfigurationSecret,
+} from "../helpers/openclaw-config-validation.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { waitForResult } from "../helpers/wait-for.mjs";
@@ -380,7 +386,7 @@ async function runCodexRuntimeHelper(runtime, handler, options = {}) {
     Buffer,
     Date: options.Date ?? Date,
     WebSocket: FakeWebSocket,
-    setTimeout,
+    setTimeout: options.setTimeout ?? setTimeout,
     clearTimeout,
     process: {
       env: {
@@ -460,6 +466,24 @@ test("compute renders plugin-free Codex revisions with native default-deny plugi
   );
   assert.match(data[PLUGIN_RUNTIME_CODEX_CONFIG], /^\[apps\._default\]\nenabled = false/m);
   assert.match(data[PLUGIN_RUNTIME_CODEX_CONFIG], /^\[plugins\._default\]\nenabled = false/m);
+});
+
+test("standalone search declarations cannot enable protected provider tools", () => {
+  const runtime = {
+    kind: "codex",
+    selections: {},
+    providerTools: "none",
+    modelEndpoint: {
+      baseUrl: "https://models.example.test/v1",
+      modelProvider: "openai-compatible",
+      supportsStandaloneWebSearch: true,
+    },
+  };
+  const config = pluginRuntimeConfigMapData(runtime)[PLUGIN_RUNTIME_CODEX_CONFIG];
+  assert.match(config, /^web_search = "disabled"$/m);
+  assert.equal(config.includes("supports_standalone_web_search"), false);
+  assert.match(config, /^request_max_retries = 0$/m);
+  assert.match(config, /^stream_max_retries = 0$/m);
 });
 
 test("compute pins the credential source endpoint in dedicated Codex configuration", () => {
@@ -767,6 +791,14 @@ enabled = false
 });
 
 test("Codex runtime helper installs a plugin with skills and applies write action approval without tool inventory", async () => {
+  // Count fixture timer waits against this policy case's 25 ms budget so host
+  // scheduling cannot expire a successful RPC. Expiry cases advance their own clocks.
+  let now = 0;
+  class FixtureDate extends Date {
+    static now() {
+      return now;
+    }
+  }
   const state = codexLinearPluginState({
     toolDefaults: { approval: "write_actions", reviewer: "auto" },
   });
@@ -774,7 +806,7 @@ test("Codex runtime helper installs a plugin with skills and applies write actio
     manifest: pluginRuntimeSpecForRevision(revision({ plugins: state })),
   };
   let readCount = 0;
-  const { requests, sockets } = await runCodexRuntimeHelper(runtime, (method, params) => {
+  const handleRequest = (method, params) => {
     if (method === "initialize") {
       return { serverInfo: { name: "codex", version: "0.149.0" } };
     }
@@ -869,6 +901,15 @@ test("Codex runtime helper installs a plugin with skills and applies write actio
       return { requirements: null };
     }
     throw new Error(`unexpected request ${method}`);
+  };
+  const { requests, sockets } = await runCodexRuntimeHelper(runtime, handleRequest, {
+    Date: FixtureDate,
+    setTimeout(callback, delay, ...args) {
+      return setTimeout(() => {
+        now += delay;
+        callback(...args);
+      }, delay);
+    },
   });
 
   assert.deepEqual(
@@ -1230,6 +1271,14 @@ test("Codex runtime helper rejects incomplete or unbounded tool discovery before
     ],
   ]) {
     await t.test(name, async () => {
+      // Keep startup time deterministic until the intended discovery failure.
+      // Advancing there prevents a retry without racing the fixture's 25 ms budget.
+      let now = 0;
+      class FixtureDate extends Date {
+        static now() {
+          return now;
+        }
+      }
       const state = codexLinearPluginState({
         tools: { [CODEX_LINEAR_APP_ID + "/list_issues"]: { enabled: false } },
       });
@@ -1254,11 +1303,12 @@ test("Codex runtime helper rejects incomplete or unbounded tool discovery before
             return { status: "ok", version: "selected-plugins" };
           }
           if (method === "mcpServerStatus/list") {
+            now = 25;
             return response(page++);
           }
           throw new Error(`unexpected request ${method}`);
         },
-        { captureError: true },
+        { captureError: true, Date: FixtureDate },
       );
       assert.match(result.error?.message ?? "", expected);
       assert.equal(
@@ -1666,34 +1716,44 @@ test("Codex runtime cannot report installation success when its deadline expires
   assert.deepEqual(result.requests, []);
 });
 
-test("Codex selected-plugin search stops paging when the installation budget expires", async () => {
-  let now = 0;
-  class FixtureDate extends Date {
-    static now() {
-      return now;
-    }
-  }
-  let pages = 0;
-  const result = await runCodexRuntimeHelper(
-    { manifest: pluginRuntimeSpecForRevision(revision({ plugins: codexLinearPluginState() })) },
-    (method) => {
-      if (method === "initialize") {
-        return {};
+test("Codex selected-plugin search stops before writes or continuation when its budget expires", async (t) => {
+  for (const matching of [false, true]) {
+    await t.test(matching ? "late exact match" : "late continuation", async () => {
+      let now = 0;
+      class FixtureDate extends Date {
+        static now() {
+          return now;
+        }
       }
-      assert.equal(method, "plugin/search", "expired search must not reach installation or writes");
-      assert.equal(++pages, 1, "the client must not fetch a continuation after expiry");
-      now = 25;
-      // A fuzzy result can omit the selected ID while offering another page.
-      return {
-        ...codexSearchResponse({ nativeId: "other@openai-curated-remote", name: "other" }),
-        nextCursor: "continuation",
-      };
-    },
-    { captureError: true, Date: FixtureDate },
-  );
-  assert.match(result.error?.message ?? "", /search deadline expired/);
-  assert.equal(result.value, undefined);
-  assert.equal(pages, 1);
+      let pages = 0;
+      const result = await runCodexRuntimeHelper(
+        { manifest: pluginRuntimeSpecForRevision(revision({ plugins: codexLinearPluginState() })) },
+        (method) => {
+          if (method === "initialize") {
+            return {};
+          }
+          assert.equal(
+            method,
+            "plugin/search",
+            "expired search must not reach installation or writes",
+          );
+          assert.equal(++pages, 1, "the client must not fetch a continuation after expiry");
+          now = 25;
+          // Neither a late exact match nor another page may outlive the installation budget.
+          return matching
+            ? codexSearchResponse()
+            : {
+                ...codexSearchResponse({ nativeId: "other@openai-curated-remote", name: "other" }),
+                nextCursor: "continuation",
+              };
+        },
+        { captureError: true, Date: FixtureDate },
+      );
+      assert.match(result.error?.message ?? "", /search deadline expired/);
+      assert.equal(result.value, undefined);
+      assert.equal(pages, 1);
+    });
+  }
 });
 
 test("Codex runtime helper keeps pre-install native uncertainty generic", async () => {
@@ -3643,6 +3703,9 @@ async function startCodexGatewaySupervisor(
     peerRequests: 0,
     serving: true,
     readinessProbes: [],
+    // What OpenClaw's config validator reports, and how often the wrapper ran it.
+    validation: { status: 0, stdout: JSON.stringify({ valid: true }) },
+    validations: 0,
     children: [],
     exits: [],
     intervals: [],
@@ -3691,9 +3754,9 @@ async function startCodexGatewaySupervisor(
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(fixture.peerStatus));
   });
-  // The native Gateway's own readiness endpoint, answered only while serving.
+  // The native Gateway's own readiness endpoints, answered only while serving.
   const gatewayPort = await listen((request, response) => {
-    assert.equal(request.url, "/readyz");
+    assert.ok(["/readyz", "/startupz"].includes(request.url), request.url);
     const live = fixture.children.at(-1);
     const status = fixture.serving && live?.exited === undefined ? 200 : 503;
     fixture.readinessProbes.push({ child: fixture.children.length, status });
@@ -3765,6 +3828,8 @@ async function startCodexGatewaySupervisor(
             fixture.statusHandler = handler;
             return { listen() {} };
           },
+          // Readiness reaches the fixture's native Gateway port.
+          get: peerHttp.get,
         };
       }
       if (specifier === "node:fs") {
@@ -3844,7 +3909,8 @@ async function startCodexGatewaySupervisor(
             assert.equal(command, "node");
             assert.deepEqual(plain(args), ["/app/openclaw.mjs", "config", "validate", "--json"]);
             assert.equal(options.env.OPENCLAW_CONFIG_READONLY, "1");
-            return { status: 0, stdout: JSON.stringify({ valid: true }) };
+            fixture.validations++;
+            return fixture.validation;
           },
         };
       }
@@ -4602,6 +4668,101 @@ test("Codex gateway supervisor stops respawning a Gateway whose Harness keeps ch
   assert.deepEqual(gateway.exits, [1]);
   assert.equal(gateway.children.length, 6);
 });
+
+test("Kubernetes Gateway holds a configuration OpenClaw refuses when its first start exits", async (t) => {
+  const gateway = await startCodexGatewaySupervisor(t, {
+    runtimeStatus: true,
+    bindingDeviceId: "a".repeat(64),
+  });
+  gateway.validation = invalidGatewayConfiguration;
+  // The kubelet's readiness probe finds OpenClaw unready; it exits at about 3 s, before
+  // its /readyz ever answers 200.
+  gateway.serving = false;
+  assert.equal((await readReadyStatusFromHandler(gateway.statusHandler)).status, 503);
+  const validationsBefore = gateway.validations;
+  // OpenClaw refuses an invalid configuration with status 78 (EX_CONFIG).
+  gateway.children[0].exit(78, null);
+
+  // The wrapper holds the failure instead of restarting the container into the same refusal.
+  assert.deepEqual(gateway.exits, []);
+  assert.equal(gateway.validations - validationsBefore, 1);
+  const { checkedAt, ...held } = gateway.runtimeStatus().runtimeFailure;
+  assert.ok(!Number.isNaN(Date.parse(checkedAt)));
+  assert.deepEqual(held, { component: "gateway", check: "gateway-config", code: "UNAVAILABLE" });
+  // One log line names up to five settings. Only JSON Schema messages, which carry no
+  // setting value, stay beside their paths: the configuration may hold secrets.
+  assert.ok(
+    gateway.logs.includes(invalidGatewayConfigurationLine(gatewayExitedBeforeServing("exit-78"))),
+    JSON.stringify(gateway.logs),
+  );
+  assert.equal(JSON.stringify(gateway.logs).includes(invalidGatewayConfigurationSecret), false);
+
+  // A held Gateway is not respawned for a changed Harness peer, nor restarted for another
+  // workspace node; a container stop ends it. A respawn would validate again and hold anew,
+  // so the validator count tells a skipped poll from a repeated hold.
+  gateway.peerStatus = { ...gateway.peerStatus, startupId: "agent-startup-2" };
+  await gateway.pollPeer();
+  gateway.files.set(
+    "/home/node/workspace-node-binding/workspace-node.json",
+    JSON.stringify({ revisionId: gateway.revisionId, deviceId: "b".repeat(64) }),
+  );
+  await gateway.intervals.find(({ delay }) => delay === 1_000).callback();
+  assert.equal(gateway.children.length, 1);
+  assert.deepEqual(gateway.exits, []);
+  assert.equal(gateway.validations - validationsBefore, 1);
+  assert.equal(gateway.runtimeStatus().runtimeFailure.check, "gateway-config");
+  gateway.signalHandlers.SIGTERM();
+  assert.deepEqual(gateway.exits, [0]);
+});
+
+// Every other exit restarts the container as before; the hold covers only a Gateway that
+// never served, whose configuration OpenClaw's validator reports invalid.
+for (const {
+  label,
+  runtimeStatus = true,
+  validation,
+  served = false,
+  exitCode = 1,
+  validations,
+} of [
+  { label: "a configuration the validator accepts", validation: undefined, validations: 1 },
+  {
+    label: "a validator that times out",
+    validation: { status: null, error: new Error("spawnSync node ETIMEDOUT"), stdout: "" },
+    validations: 1,
+  },
+  {
+    label: "no Compute status port",
+    runtimeStatus: false,
+    validation: invalidGatewayConfiguration,
+    validations: 0,
+  },
+  {
+    label: "a Gateway that served first",
+    validation: invalidGatewayConfiguration,
+    served: true,
+    validations: 0,
+  },
+  { label: "status 0", validation: invalidGatewayConfiguration, exitCode: 0, validations: 0 },
+]) {
+  test(`Kubernetes Gateway restarts after an exit with ${label}`, async (t) => {
+    const gateway = await startCodexGatewaySupervisor(t, { runtimeStatus });
+    if (validation !== undefined) {
+      gateway.validation = validation;
+    }
+    if (served) {
+      // The kubelet's readiness probe saw OpenClaw serve.
+      assert.equal((await readReadyStatusFromHandler(gateway.statusHandler)).status, 200);
+    }
+    const validationsBefore = gateway.validations;
+    gateway.children[0].exit(exitCode, null);
+    assert.deepEqual(gateway.exits, [exitCode]);
+    assert.equal(gateway.validations - validationsBefore, validations);
+    if (runtimeStatus) {
+      assert.equal(gateway.runtimeStatus().runtimeFailure, undefined);
+    }
+  });
+}
 
 for (const [dedicated, withBroker, proxyEnabled] of [
   [true, true, true],

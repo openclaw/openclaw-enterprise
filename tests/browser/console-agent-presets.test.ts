@@ -85,6 +85,7 @@ import {
   PLUGIN_CREDENTIALS_REJECTED,
 } from "../helpers/refusal-text.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
+import { within } from "../helpers/wait-for.mjs";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createBaseConsoleAppFixture>>;
 type FixtureResponse<Data> = Omit<Awaited<ReturnType<ConsoleFixture["request"]>>, "data"> & {
@@ -1933,6 +1934,13 @@ test("API-key Presets keep their credential provider fixed while allowing model 
   assert.equal(dedicated.agents.defaults.model, "codex/gpt-5.1");
   // Existing dedicated Presets may also use the supported OpenAI model prefix.
   dedicated.agents.defaults.model = "openai/gpt-5.1";
+  // Its Codex runtime policy follows the primary: a policy left on codex/ names another provider,
+  // and a codex catalog row names no selected model, which save refuses as deployment does
+  // (findings 3019 and 3020).
+  dedicated.agents.defaults.models = {
+    "openai/gpt-5.1": dedicated.agents.defaults.models["codex/gpt-5.1"],
+  };
+  delete dedicated.models.providers.codex.models;
   await configuration.fill(JSON.stringify(dedicated));
   const created = await createAgentThroughForm(page, fixture, namespace.id);
   assert.deepEqual(created.harnessAuth, harnessAuth);
@@ -4158,17 +4166,7 @@ test("a delayed restored Preset list cannot read a selection after starting with
   } finally {
     releaseList();
     if (heldRequest) {
-      let timer;
-      try {
-        await Promise.race([
-          listHandled,
-          new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new Error("Held Preset route did not finish")), 10_000);
-          }),
-        ]);
-      } finally {
-        clearTimeout(timer);
-      }
+      await within(listHandled, "held Preset route did not finish", 10_000);
     }
     await page.unroute(listPath);
   }

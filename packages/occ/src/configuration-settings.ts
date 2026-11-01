@@ -5,9 +5,15 @@ import type {
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import {
+  gatewayPasswordRequirement,
+  secretProviderDefaultsProblem,
+} from "./environment-references.ts";
+import {
   agentEntryMessage,
+  configurationSettingMessage,
   ConfigurationHarnessError,
   GatewayPasswordValueError,
+  keyedSettingPath,
 } from "./errors.ts";
 import { validateModelProviderSettings } from "./model-provider-settings.ts";
 import { retiredOpenClawSettingMessage } from "./retired-openclaw-settings.ts";
@@ -196,6 +202,80 @@ export function refuseRetiredOpenClawSettings(
   }
 }
 
+// The plugins whose plugins.entries entry OCE reads or writes at its exact key: Configuration rules
+// check codex and acpx settings there (the codex approval policy, proxy URLs, acpx MCP server
+// environments), and Compute renders codex settings there (the Gateway-local tool exclusions, the
+// native hook relay, the OpenShell app-server policy).
+const EXACT_KEY_PLUGINS: readonly string[] = ["codex", "acpx"];
+
+/**
+ * Refuses a plugins.entries key that names a plugin of EXACT_KEY_PLUGINS in another spelling, such
+ * as `Codex` or ` codex`. The pinned OpenClaw (`normalizePluginEntries` in
+ * `src/plugins/config-normalization-shared.ts`) merges entries whose keys match trimmed and
+ * lowercased, and the last one with a `config` replaces the plugin's whole config: a `Codex` entry
+ * after `codex` would replace the settings OCE checked and Compute rendered (finding 3073). Its
+ * built-in plugin ID aliases name neither plugin. Other plugins' keys stay accepted: OCE reads no
+ * settings at their exact key (finding 3072). Configuration save runs it with the other content
+ * rules; Agent save and deploy admission run it on the stored Configuration.
+ */
+function refusePluginEntryKeyVariants(values: Readonly<OpenClawConfigurationDocument>): void {
+  for (const key of Object.keys(asRecord(asRecord(values.plugins)?.entries) ?? {})) {
+    const id = key.trim().toLowerCase();
+    if (key !== id && EXACT_KEY_PLUGINS.includes(id)) {
+      throw new ConfigurationHarnessError(
+        configurationSettingMessage(
+          keyedSettingPath("plugins.entries", key),
+          `must be named ${id}: OpenClaw applies it to the ${id} plugin, whose settings OCE checks only under plugins.entries.${id}. Rename it to ${id}, or merge it into that entry`,
+        ),
+      );
+    }
+  }
+}
+
+// OpenClaw's include directive key (`INCLUDE_KEY` in `src/config/includes.ts` at the pin).
+const CONFIG_INCLUDE_KEY = "$include";
+
+/**
+ * Refuses OpenClaw's `$include` directive anywhere in the document. The pinned OpenClaw
+ * (`src/config/includes.ts`) resolves it from the Gateway's config directory and replaces the
+ * object holding it with the named files' settings, merged under the object's other keys (arrays
+ * concatenated). Configuration rules and Compute read the document as written, so an include would
+ * add settings no rule checked; settings must be written in the Configuration instead (finding
+ * 3078). Configuration save runs it after the model provider settings, first of the other content
+ * rules; Agent save, deploy admission and the upgrade preflight run it on the stored Configuration.
+ */
+function refuseConfigIncludes(values: Readonly<OpenClawConfigurationDocument>): void {
+  const pending: [unknown, string][] = [[values, ""]];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const [value, path] = next;
+    if (Array.isArray(value)) {
+      for (let index = value.length - 1; index >= 0; index -= 1) {
+        pending.push([value[index], `${path}[${index}]`]);
+      }
+      continue;
+    }
+    const record = asRecord(value);
+    if (record === undefined) {
+      continue;
+    }
+    if (Object.hasOwn(record, CONFIG_INCLUDE_KEY)) {
+      throw new ConfigurationHarnessError(
+        configurationSettingMessage(
+          path === "" ? CONFIG_INCLUDE_KEY : `${path}.${CONFIG_INCLUDE_KEY}`,
+          "is not supported: OpenClaw would merge settings from another file that OCE does not check. Write those settings in the Configuration instead",
+        ),
+      );
+    }
+    // Pushed in reverse, so the stack checks the first key in document order first.
+    for (const [key, child] of Object.entries(record).reverse()) {
+      pending.push([
+        child,
+        path === "" && /^[A-Za-z0-9_-]+$/.test(key) ? key : keyedSettingPath(path, key),
+      ]);
+    }
+  }
+}
+
 const OPENCLAW_SANDBOX_UNSUPPORTED =
   "OCE runs each Agent in its own isolated runtime and does not support OpenClaw's sandbox";
 
@@ -279,17 +359,22 @@ function isCredentialReference(value: unknown): boolean {
  * when a Configuration is created, replaced or provisioned, and when a Preset is saved, with
  * `options` locating its unfilled variables. A stored Configuration that predates a rule still
  * reads; deployment refuses it.
+ * - OpenClaw's $include directive (refuseConfigIncludes).
  * - The Codex session approval policy (codexApprovalPolicy).
  * - A literal gateway.auth.password would be stored in plain text, as a model credential
  *   would; every Compute Driver accepts only an environment reference there.
+ * - A secrets.defaults alias OpenClaw's config check refuses (refuseInvalidSecretProviderDefaults).
+ * - A gateway.auth.password reference OpenClaw cannot read (refuseUnreadableGatewayPassword).
  * - The workspace bootstrap settings (validateWorkspaceBootstrapSettings).
  * - Settings the pinned OpenClaw retired (refuseRetiredOpenClawSettings).
  * - OpenClaw's own sandbox (refuseOpenClawSandbox).
+ * - Another spelling of the codex or acpx plugin entry key (refusePluginEntryKeyVariants).
  */
 export function validateConfigurationSettings(
   values: OpenClawConfigurationDocument,
   options?: ConfigurationValidationOptions,
 ): void {
+  refuseConfigIncludes(values);
   codexApprovalPolicy(
     values,
     (setting, requirement) =>
@@ -297,20 +382,27 @@ export function validateConfigurationSettings(
     options,
   );
   refuseLiteralGatewayPassword(values);
+  refuseInvalidSecretProviderDefaults(values, options);
+  refuseUnreadableGatewayPassword(values, options);
   validateWorkspaceBootstrapSettings(values, options);
   refuseRetiredOpenClawSettings(values);
   refuseOpenClawSandbox(values, options);
+  refusePluginEntryKeyVariants(values);
 }
 
 /**
  * The rules above that Agent save and deploy admission run again on a stored Configuration, so
  * one saved before a rule existed gets the message its next save would (findings 2699, 2709,
- * 2767).
+ * 2767, 3063, 3064, 3073, 3078).
  */
 export function refuseStoredConfigurationSettings(values: OpenClawConfigurationDocument): void {
+  refuseConfigIncludes(values);
+  refuseInvalidSecretProviderDefaults(values);
+  refuseUnreadableGatewayPassword(values);
   validateWorkspaceBootstrapSettings(values);
   refuseRetiredOpenClawSettings(values);
   refuseOpenClawSandbox(values);
+  refusePluginEntryKeyVariants(values);
 }
 
 /**
@@ -337,4 +429,79 @@ export function refuseLiteralGatewayPassword(values: OpenClawConfigurationDocume
   if (password !== undefined && password !== null && !isCredentialReference(password)) {
     throw new GatewayPasswordValueError("/gateway/auth/password");
   }
+}
+
+/**
+ * A secrets.defaults alias OpenClaw's config check refuses (`secretProviderDefaultsProblem`), such
+ * as a padded or upper-case one: the Gateway then stops at every start on every Compute, so saves
+ * refuse it whatever the Compute (finding 3064). It runs before the gateway password rule, which
+ * reads SecretRefs on that alias, so the refusal names the alias. On a Preset save, an alias that
+ * waits on a variable is checked once filled.
+ */
+export function refuseInvalidSecretProviderDefaults(
+  values: OpenClawConfigurationDocument,
+  options?: ConfigurationValidationOptions,
+): void {
+  const defaults = asRecord(values.secrets)?.defaults;
+  if (waitsOnVariable(defaults, ["secrets", "defaults"], options)) {
+    return;
+  }
+  const problem = secretProviderDefaultsProblem(values.secrets);
+  if (problem !== undefined) {
+    throw new ConfigurationHarnessError(
+      configurationSettingMessage(problem.setting, problem.requirement),
+    );
+  }
+}
+
+/**
+ * A gateway.auth.password object OpenClaw cannot read (`gatewayPasswordRequirement`): without a
+ * provider, with other keys or on a provider or allowlist that cannot serve it. The Gateway then
+ * stops at every start on every Compute, so saves refuse it whatever the Compute (findings 3061,
+ * 3062, 3063); a stored one still reads and can be replaced or deleted, and deploy refuses it. On a
+ * Preset save, a password or `secrets` that waits on a variable is checked once filled.
+ */
+export function refuseUnreadableGatewayPassword(
+  values: OpenClawConfigurationDocument,
+  options?: ConfigurationValidationOptions,
+): void {
+  const password = asRecord(asRecord(values.gateway)?.auth)?.password;
+  if (
+    waitsOnVariable(password, ["gateway", "auth", "password"], options) ||
+    waitsOnVariable(values.secrets, ["secrets"], options)
+  ) {
+    return;
+  }
+  const requirement = gatewayPasswordRequirement(password, values.secrets);
+  if (requirement !== undefined) {
+    throw new ConfigurationHarnessError(
+      configurationSettingMessage("gateway.auth.password", requirement),
+    );
+  }
+}
+
+/**
+ * Whether a Preset variable without a value fills any text (a string or an object key) in `value`,
+ * which sits at `path` in the Configuration document.
+ */
+export function waitsOnVariable(
+  value: unknown,
+  path: readonly (string | number)[],
+  options: ConfigurationValidationOptions | undefined,
+): boolean {
+  const unresolved = options?.unresolved;
+  if (unresolved === undefined) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return unresolved(path) !== undefined;
+  }
+  const entries = Array.isArray(value)
+    ? [...value.entries()]
+    : Object.entries(asRecord(value) ?? {});
+  return entries.some(
+    ([key, child]) =>
+      (typeof key === "string" && unresolved([...path, key], true) !== undefined) ||
+      waitsOnVariable(child, [...path, key], options),
+  );
 }

@@ -21,6 +21,8 @@ const codexFixture = String.raw`#!/usr/bin/env node
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const args = process.argv.slice(2);
+const configOverrides = args.filter((_, index) => args[index - 1] === "-c");
+assert.ok(configOverrides.includes('otel.metrics_exporter="none"'));
 const scenario = fs.readFileSync("/fixture/scenario", "utf8");
 fs.appendFileSync("/home/node/calls", JSON.stringify(args) + "\n");
 assert.equal(process.env.CODEX_CHATGPT_WORKSPACE_ID, undefined);
@@ -51,7 +53,8 @@ if (scenario === "external") {
 if (args.includes("login")) {
   assert.equal(Object.hasOwn(process.env, "APP_SERVER_TOKEN"), false);
   const pat = scenario === "pat";
-  assert.deepEqual(args, ["-c", "cli_auth_credentials_store=file", "login", pat ? "--with-access-token" : "--with-api-key"]);
+  assert.ok(configOverrides.includes("cli_auth_credentials_store=file"));
+  assert.deepEqual(args.slice(args.indexOf("login")), ["login", pat ? "--with-access-token" : "--with-api-key"]);
   assert.equal(fs.readFileSync(0, "utf8"), pat ? "at-service-account-fixture" : "credential-canary");
 } else if (args.includes("exec")) {
   assert.equal(process.env.OPENAI_API_KEY, undefined);

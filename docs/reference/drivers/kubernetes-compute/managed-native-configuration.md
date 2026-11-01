@@ -29,3 +29,32 @@ edits remain refused. Pod replacement clears copy/provenance.
 Edits stay outside OCE Configuration and AgentRevisions; see
 the [native admin feature boundary](../../agent-native-admin.md#native-authority-and-drift)
 and [deployment procedure](../../../guides/deploy/native-admin.md).
+
+## Configuration OpenClaw refuses at startup
+
+When an embedded or dedicated Gateway starts, OpenClaw checks every setting. This
+includes the `config` of each plugin entry, even a disabled or denied plugin,
+against that plugin's schema. One failure stops the Gateway. When the Gateway
+exits before it first serves, its wrapper runs `openclaw config validate`. If that
+reports the configuration invalid, the wrapper holds the failed check
+`gateway-config` (code `UNAVAILABLE`) instead of restarting, and the worker fails
+the deployment with `RUNTIME_STARTUP_FAILED` within seconds. The Gateway log
+names up to five setting paths, with OpenClaw's schema message where it gives
+one, and never their values. Fix or remove those settings, then deploy a new
+version. A dedicated Gateway validates its configuration before OpenClaw starts.
+It holds `gateway-config` the same way when no invalid setting belongs to its
+[Gateway tool policy](../../configuration.md#gateway-tool-policy), and
+`gateway-tool-policy` otherwise.
+
+## Custom Codex provider capabilities
+
+`runtime.codexModelSupportsStandaloneWebSearch` defaults to false. Set it to true
+only when the explicit `runtime.codexModelBaseUrl` supports Codex's standalone
+web-search protocol. True without that endpoint or a nonboolean value is rejected.
+
+For dedicated Codex API-key authentication, OCE writes
+`supports_standalone_web_search = true` under the existing custom provider in
+Codex's user configuration. Account logins, other Harnesses, and protected
+credential-source endpoints ignore this declaration. Protected `providerTools: none`
+still disables web search. The option does not grant network access or validate
+endpoint support. Deploy a new Agent revision to apply a changed declaration.

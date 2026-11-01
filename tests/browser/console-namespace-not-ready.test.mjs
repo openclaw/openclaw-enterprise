@@ -5,7 +5,7 @@ import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import { CONSOLE_NAMESPACE_NOT_READY, NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import {
   AGENT_READ,
   expireSessions,
@@ -15,6 +15,8 @@ import {
   apiRequests,
   expectReachableReason,
   fileBrowser,
+  fulfillPatchedJson,
+  hasFocus,
   login,
   nativeValues,
   newPage,
@@ -24,13 +26,18 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
+import { refocus } from "./console-refocus-helpers.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 
 // On a first run the only Namespace is still provisioning. The Agents page and Create Agent never
 // said so, and the first sign was the Secret dialog's refusal; a deleting Namespace could be the
 // default pick (finding 1895). A provisioning Namespace still accepts Agent drafts, so only the
 // statuses the API refuses for every new Agent disable creation.
-const NOT_READY = /This Namespace is not ready yet\. Check its status on the Namespaces page/;
+// The note must show the whole sentence. Absence checks keep a prefix, so a reworded or truncated
+// sentence still counts as present.
+const NOT_READY = new RegExp(RegExp.escape(CONSOLE_NAMESPACE_NOT_READY));
+const NOT_READY_PREFIX =
+  /This Namespace is not ready yet\. Check its status on the Namespaces page/;
 const DRAFTS =
   "Until then, Agents can be saved as drafts that need no new Secret or sign-in, but none can be deployed.";
 const INVITATION = "Create an Agent in this Namespace using an editable Configuration template.";
@@ -65,14 +72,13 @@ async function firstRun(t, names = [], fixtureOptions = {}) {
 async function reportNamespaces(page, patches) {
   await page.route(
     (url) => url.pathname === "/namespaces",
-    async (route) => {
-      const response = await route.fetch();
-      const body = await response.json();
-      body.data = body.data
-        .filter((item) => patches.get(item.id) !== null)
-        .map((item) => (patches.has(item.id) ? { ...item, ...patches.get(item.id) } : item));
-      await route.fulfill({ response, json: body });
-    },
+    (route) =>
+      fulfillPatchedJson(route, (body) => {
+        body.data = body.data
+          .filter((item) => patches.get(item.id) !== null)
+          .map((item) => (patches.has(item.id) ? { ...item, ...patches.get(item.id) } : item));
+        return body;
+      }),
   );
 }
 
@@ -318,7 +324,7 @@ test("a return to the Agents list and Create Agent shows a Namespace that became
   await page.getByRole("list", { name: "Namespaces" }).waitFor();
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await view.getByText(INVITATION).waitFor();
-  assert.equal(await view.getByText(NOT_READY).count(), 0);
+  assert.equal(await view.getByText(NOT_READY_PREFIX).count(), 0);
   await view.getByRole("button", { name: "Create Agent" }).click();
   await view.getByRole("button", { name: "Start without Preset" }).click();
   assert.equal(await view.getByText("Creating Agents is not available").count(), 0);
@@ -327,7 +333,7 @@ test("a return to the Agents list and Create Agent shows a Namespace that became
   await view
     .getByText("Dedicated Agents are provisioned and deployed when created.", { exact: true })
     .waitFor();
-  assert.equal(await view.getByText(NOT_READY).count(), 0);
+  assert.equal(await view.getByText(NOT_READY_PREFIX).count(), 0);
 });
 
 // A reader who stays on the Agents list, with no refocus, return or Refresh, kept seeing the
@@ -385,12 +391,12 @@ test("the Agents list sees its Namespace become ready without a Refresh", async 
     .filter({ hasText: "Namespace status: Ready. Agents created here can be deployed now." });
   await readyNote.waitFor();
   assert.deepEqual(await statusTone(readyNote), { ...WARNING, tone: "success" });
-  assert.equal(await view.getByText(NOT_READY).count(), 0);
+  assert.equal(await view.getByText(NOT_READY_PREFIX).count(), 0);
   const create = view.getByRole("button", { name: "Create Agent" });
   await waitForEnabled(create);
   assert.equal(await create.getAttribute("aria-describedby"), null);
   assert.equal(await search.inputValue(), "Probe");
-  assert.equal(await search.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  assert.equal(await hasFocus(search), true);
   await search.fill("");
   await view.getByText(INVITATION).waitFor();
   // A ready Namespace needs no more checks.
@@ -483,7 +489,7 @@ test("the Agents list names a Namespace that left the list while it waited", asy
   });
   await note.waitFor();
   assert.deepEqual(await statusTone(note), WARNING);
-  assert.equal(await view.getByText(NOT_READY).count(), 0);
+  assert.equal(await view.getByText(NOT_READY_PREFIX).count(), 0);
   assert.equal(await create.isDisabled(), true);
   assert.equal(await create.getAttribute("aria-describedby"), "namespace-not-ready");
   assert.equal(await view.getByRole("heading", { name: /No .*Agents/ }).count(), 0);
@@ -588,13 +594,13 @@ test("Create Agent waiting on a provisioning Namespace", async (t) => {
     async (t) => {
       const { page, view, create, name, release } = await openGatedForm(t, team);
       release();
-      await page.evaluate(() => globalThis.dispatchEvent(new globalThis.Event("focus")));
+      await refocus(page);
       await view.getByText(READY_PLAN, { exact: true }).waitFor();
       // Create Agent also waits for the form's repository discovery.
       await waitForEnabled(create);
       assert.equal(await create.getAttribute("aria-describedby"), null);
       assert.equal(await view.getByText(WAITS).count(), 0);
-      assert.equal(await view.getByText(NOT_READY).count(), 0);
+      assert.equal(await view.getByText(NOT_READY_PREFIX).count(), 0);
       await assertDraftIntact(name);
     },
   );
@@ -619,7 +625,7 @@ test("Create Agent waiting on a provisioning Namespace", async (t) => {
       await poll();
       await view.getByText(READY_PLAN, { exact: true }).waitFor();
       await waitForEnabled(create);
-      assert.equal(await view.getByText(NOT_READY).count(), 0);
+      assert.equal(await view.getByText(NOT_READY_PREFIX).count(), 0);
       await assertDraftIntact(name);
     },
   );
@@ -681,10 +687,7 @@ for (const reader of [false, true]) {
       await page.clock.runFor(10_000);
       await held.requested;
       // The slow read keeps the focused control until IAM supplies its new answer.
-      assert.equal(
-        await focused.evaluate((node) => node === globalThis.document.activeElement),
-        true,
-      );
+      assert.equal(await hasFocus(focused), true);
       if (reader) {
         revokeMemberGrant(fixture, "idle-reader", ["read", "namespace"]);
       } else {
@@ -695,10 +698,7 @@ for (const reader of [false, true]) {
         .getByText(`${NAMESPACE_UNAVAILABLE}. Choose another Namespace.`, { exact: true })
         .waitFor();
       assert.equal(await page.getByRole("link", { name: agent.name, exact: true }).count(), 0);
-      assert.equal(
-        await search.evaluate((node) => node === globalThis.document.activeElement),
-        true,
-      );
+      assert.equal(await hasFocus(search), true);
       assert.equal(await page.getByRole("heading", { name: /No .*Agents/ }).count(), 0);
       await search.fill("");
       assert.equal(await page.getByRole("heading", { name: /No .*Agents/ }).count(), 0);
@@ -804,10 +804,7 @@ for (const kind of ["stop", "delete"]) {
       // text checked below includes hidden elements, so wait until it is gone.
       await page.locator(`dialog.agent-${kind}-dialog`).waitFor({ state: "detached" });
       const search = page.getByRole("searchbox", { name: "Search Agents" });
-      assert.equal(
-        await search.evaluate((node) => node === globalThis.document.activeElement),
-        true,
-      );
+      assert.equal(await hasFocus(search), true);
       // Expire the session after the Namespace poll, before the pending write reaches IAM.
       if (outcome === "expired") {
         expireSessions(fixture);
@@ -849,10 +846,7 @@ for (const kind of ["stop", "delete"]) {
       );
       assert.equal(writes, outcome === "unsubmitted" ? 0 : 1);
       assert.equal(await page.getByRole("link", { name: agent.name, exact: true }).count(), 0);
-      assert.equal(
-        await search.evaluate((node) => node === globalThis.document.activeElement),
-        true,
-      );
+      assert.equal(await hasFocus(search), true);
     });
   }
 }

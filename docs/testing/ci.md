@@ -63,11 +63,19 @@ exactly one custom rule: branch `main`. The advisory `integration-qa-pr` environ
 permits `main` and GitHub's `refs/pull/*/merge` branches. The `full-qa` and `qa-openshell-compose` labels select runs within
 that policy. Full Integration preflight does not govern this environment.
 
-Only `k3d-model`, `openshell`, and credential-free `dev-up-k3d` accept a branch
-dispatch. For the first two, temporarily add the exact reviewed branch to the
-corresponding custom environment policy, preserving `main`; a wildcard alone
-does not authorize it. Remove the exception afterward. `dev-up-k3d`,
-`helper-timeout`, and standalone `logging-collector` need no environment.
+Full Integration rejects tags. Before dispatch, confirm the branch points
+to the reviewed commit; rely on the run only if its `headSha` matches that commit. Four
+lanes accept branches other than `main`.
+For `k3d-model` (`integration-model`) and `openshell` (`integration-openshell`),
+the custom environment policy must allow both `main` and the exact reviewed
+branch. A wildcard alone does not authorize the branch. Remove the temporary
+branch exception afterward.
+
+`dev-up-k3d` and `skipper-prepared-git-installed` accept branches without a
+GitHub environment. The Skipper job uses synthetic, job-local model and Git credentials for the
+[installed private Git fixture](repository-credentials.md#verify-prepared-native-git)
+and a GitHub Actions cache token to build images. `helper-timeout` and standalone
+`logging-collector` also need no environment, but both require `main`.
 
 The table distinguishes secret names from variable names. The common runtime
 image variables are optional `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and
@@ -243,12 +251,24 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 | `calendar`              | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                              |
 | `slack`                 | No          | Codex           | Threaded reply and new root message.                                                                                                    |
 | `openshell-linear-read` | No          | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                           |
+| `codex-search-config`   | No          | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.         |
 
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
 Invalid or wholly inapplicable selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
+
+`codex-search-config` requires an exclusive explicit scenario selection. It changes
+only its disposable Installation, uses dedicated Codex API-key authentication,
+and needs `OCC_TEST_QA_CODEX_MODEL_BASE_URL`. Supply the model key through
+`OCC_TEST_QA_MODEL_API_KEY` in the consuming test process, or the existing private
+`OCC_TEST_QA_OPENAI_KEY_FILE` input. Environment injection is registered for error
+redaction and excluded from launcher children. Existing file inputs still require
+private regular files and reject symlinks. Set `OCC_TEST_QA_CODEX_MODEL` to an
+available model. The scenario proves generated configuration and native startup;
+it does not prove live web-search results. It is excluded from `all` and advisory
+jobs because its explicit endpoint and API-key inputs differ from account-login QA.
 
 All combinations check startup and authenticated console login. Git alone starts
 the broker. Linear reads use the explicit `openshell-linear-read` scenario,

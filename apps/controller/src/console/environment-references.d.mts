@@ -7,3 +7,20 @@ export declare function environmentReferenceNames(
 ): string[];
 export declare function unsubstitutedReference(text: string): string | undefined;
 export declare function secretInputShorthandName(text: string): string | undefined;
+export declare function gatewayPasswordRequirement(
+  password: unknown,
+  secrets: unknown,
+  options?: { readonly step?: boolean },
+): string | undefined;
+export declare function generatedGatewayPasswordReference(secrets: unknown): {
+  readonly source: "env";
+  readonly provider: string;
+  readonly id: "OPENCLAW_GATEWAY_PASSWORD";
+};
+export declare function secretProviderDefaultsProblem(
+  secrets: unknown,
+): { readonly setting: string; readonly requirement: string } | undefined;
+export declare function unreadablePluginSecretInput(
+  values: unknown,
+): { readonly setting: string; readonly requirement: string } | undefined;
+export declare function configurationSettingMessage(setting: string, requirement: string): string;

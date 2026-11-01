@@ -76,6 +76,7 @@ import {
   waitForLiveControls,
 } from "./console-agents-test-support.mjs";
 import {
+  AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
   AGENT_SAVE_DENIED,
   AGENT_SOURCES_DENIED,
@@ -102,6 +103,9 @@ import {
   STOPPED_NO_VERSION,
   WORKSPACE_FILES_UNAVAILABLE,
   credentialCheckedAtDeploy,
+  invalidSecretProviderDefaultsRefusal,
+  unreadableGatewayPasswordRefusal,
+  unreadablePluginSecretRefusal,
   namespaceListDenied,
   notIncluded,
   secretOperateRefused,
@@ -1237,6 +1241,380 @@ test("Gateway password access saves the generated reference without changing adm
   );
 });
 
+// A Configuration an older release saved with a gateway password reference OpenClaw cannot read
+// (here one without a provider, on a Configuration whose default env alias is custom): save and
+// deploy refuse it on every Compute, so the page shows that refusal with Deploy held and keeps
+// the button that writes the generated reference on that alias (finding 3063).
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`An unreadable gateway password reference is not shown as enabled at ${viewport.width}px`, async (t) => {
+    const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
+    const fixture = await createConsoleAppFixture(t, { configurationDriver });
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Unreadable password", { ready: true });
+    const values = {
+      ...nativeAdminValues("unreadable-password", "http://127.0.0.1:18789"),
+      secrets: { defaults: { env: "custom" } },
+    };
+    const agent = await fixture.createAgent(namespace.id, "Unreadable password Agent", values);
+    const providerless = structuredClone(values);
+    providerless.gateway.auth.password = { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" };
+    const reason =
+      "Configuration setting gateway.auth.password is a SecretRef without a provider: add provider custom.";
+    const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+    const refusedSave = await fixture.request("PATCH", configurationPath, {
+      body: { values: providerless },
+    });
+    assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
+    assert.equal(refusedSave.body.error.message, reason);
+    const stored = configurationDriver.stored({
+      namespaceId: namespace.id,
+      id: agent.configurationId,
+    });
+    await configurationDriver.update({ ...stored, values: providerless });
+
+    const { page } = await newPage(t, fixture, { context: { viewport } });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    );
+    await page
+      .getByText(
+        `${reason} Enable gateway password access to replace it, save Configuration, then deploy a new version.`,
+        { exact: true },
+      )
+      .waitFor();
+    assert.equal(
+      await page.getByText("Gateway password access is enabled", { exact: false }).count(),
+      0,
+    );
+    const card = page.locator(".agent-draft-actions");
+    const deploy = card.getByRole("button", { name: "Deploy new version", exact: true });
+    await card.getByText(reason, { exact: true }).waitFor();
+    assert.equal(await deploy.isDisabled(), true);
+    assert.match(
+      await card.getByRole("listitem").first().locator(".checklist-detail").textContent(),
+      /^Fix the gateway password · Configuration /,
+    );
+    // Deploy admission refuses the stored row with the text the page shows.
+    const refusedDeploy = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+    );
+    assert.equal(refusedDeploy.body.error.message, reason, JSON.stringify(refusedDeploy.body));
+
+    // The button writes the generated reference on the custom alias, which saves and deploys.
+    const enable = page.getByRole("button", {
+      name: "Enable gateway password access",
+      exact: true,
+    });
+    await enable.scrollIntoViewIfNeeded();
+    await enable.click();
+    const expected = structuredClone(values);
+    expected.gateway.auth.password = {
+      source: "env",
+      provider: "custom",
+      id: "OPENCLAW_GATEWAY_PASSWORD",
+    };
+    assert.deepEqual(
+      JSON.parse(await page.getByLabel("Configuration JSON").inputValue()),
+      expected,
+    );
+    await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+    await page
+      .getByText(
+        "Gateway password access is enabled in the saved Configuration. Deploy a new version to apply it.",
+      )
+      .waitFor();
+    assert.equal(await enable.count(), 0);
+    await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+    assert.equal(await card.getByText(reason).count(), 0);
+    // The page fits the viewport: no horizontal scroll.
+    assert.equal(
+      await page.evaluate(
+        () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+      ),
+      true,
+    );
+  });
+}
+
+// A Configuration an older release saved with a secrets.defaults alias OpenClaw's configuration
+// check refuses (upper case here): the Gateway exits at every start whatever the password, and save
+// refuses any reference the button could write, so the page names the alias, holds Deploy with
+// OCC's refusal and offers no button until the alias is fixed (finding 3064).
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`A secrets.defaults alias OpenClaw refuses holds gateway password access at ${viewport.width}px`, async (t) => {
+    const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
+    const fixture = await createConsoleAppFixture(t, { configurationDriver });
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Invalid alias", { ready: true });
+    const values = nativeAdminValues("invalid-alias", "http://127.0.0.1:18789");
+    const agent = await fixture.createAgent(namespace.id, "Invalid alias Agent", values);
+    const invalid = { ...structuredClone(values), secrets: { defaults: { env: "BAD" } } };
+    const reason = invalidSecretProviderDefaultsRefusal("alias", "env", "BAD", "bad");
+    const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+    const refusedSave = await fixture.request("PATCH", configurationPath, {
+      body: { values: invalid },
+    });
+    assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
+    assert.equal(refusedSave.body.error.message, reason);
+    const stored = configurationDriver.stored({
+      namespaceId: namespace.id,
+      id: agent.configurationId,
+    });
+    await configurationDriver.update({ ...stored, values: invalid });
+
+    const { page } = await newPage(t, fixture, { context: { viewport } });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    );
+    await page
+      .getByText(
+        `${reason} Edit Configuration to fix it before you enable gateway password access.`,
+        { exact: true },
+      )
+      .waitFor();
+    const enable = page.getByRole("button", {
+      name: "Enable gateway password access",
+      exact: true,
+    });
+    assert.equal(await enable.count(), 0);
+    const card = page.locator(".agent-draft-actions");
+    const deploy = card.getByRole("button", { name: "Deploy new version", exact: true });
+    await card.getByText(reason, { exact: true }).waitFor();
+    assert.equal(await deploy.isDisabled(), true);
+    assert.match(
+      await card.getByRole("listitem").first().locator(".checklist-detail").textContent(),
+      /^Fix the secret provider alias · Configuration /,
+    );
+    // Deploy admission refuses the stored row with the text the page shows.
+    const refusedDeploy = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+    );
+    assert.equal(refusedDeploy.body.error.message, reason, JSON.stringify(refusedDeploy.body));
+
+    // Once the alias is fixed, the button writes the generated reference on it, which saves.
+    const edit = page.getByRole("button", { name: "Edit Configuration", exact: true });
+    await edit.scrollIntoViewIfNeeded();
+    await edit.click();
+    const fixed = { ...structuredClone(values), secrets: { defaults: { env: "custom" } } };
+    await page.getByLabel("Configuration JSON").fill(JSON.stringify(fixed, null, 2));
+    await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+    await page
+      .getByText(
+        "Use generated credentials for direct gateway password access. Enable access, save Configuration, then deploy a new version.",
+        { exact: true },
+      )
+      .waitFor();
+    await enable.scrollIntoViewIfNeeded();
+    await enable.click();
+    const expected = structuredClone(fixed);
+    expected.gateway.auth.password = {
+      source: "env",
+      provider: "custom",
+      id: "OPENCLAW_GATEWAY_PASSWORD",
+    };
+    assert.deepEqual(
+      JSON.parse(await page.getByLabel("Configuration JSON").inputValue()),
+      expected,
+    );
+    await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+    await page
+      .getByText(
+        "Gateway password access is enabled in the saved Configuration. Deploy a new version to apply it.",
+      )
+      .waitFor();
+    await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+    assert.equal(await card.getByText(reason).count(), 0);
+    // The page fits the viewport: no horizontal scroll.
+    assert.equal(
+      await page.evaluate(
+        () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+      ),
+      true,
+    );
+  });
+}
+
+// A Configuration an older release saved with a Google web search header that is a SecretRef
+// without a provider: OpenClaw cannot read it, so the Gateway exits at every start, and Kubernetes
+// Compute refuses to save or deploy it. The draft holds Deploy with that refusal and the
+// Configuration step names it, as for the password and alias cases (finding 3076); once the
+// header names a provider, the draft is ready again.
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`A plugin secret input OpenClaw cannot read holds Deploy at ${viewport.width}px`, async (t) => {
+    const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
+    const fixture = await createConsoleAppFixture(t, { configurationDriver });
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Plugin input", { ready: true });
+    const values = nativeAdminValues("plugin-input", "http://127.0.0.1:18789");
+    const agent = await fixture.createAgent(namespace.id, "Plugin input Agent", values);
+    const header = (reference) => ({
+      ...structuredClone(values),
+      plugins: {
+        entries: {
+          google: { config: { webSearch: { headers: { "X-Goog-User-Project": reference } } } },
+        },
+      },
+    });
+    const providerless = header({ source: "env", id: "GOOG_TOKEN" });
+    const reason = unreadablePluginSecretRefusal(
+      "plugins.entries.google.config.webSearch.headers.X-Goog-User-Project",
+      "google",
+      "providerless",
+    );
+    const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+    const refusedSave = await fixture.request("PATCH", configurationPath, {
+      body: { values: providerless },
+    });
+    assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
+    assert.equal(refusedSave.body.error.message, reason);
+    // The row as a release before the save rule stored it.
+    const stored = configurationDriver.stored({
+      namespaceId: namespace.id,
+      id: agent.configurationId,
+    });
+    await configurationDriver.update({ ...stored, values: providerless });
+
+    const { page } = await newPage(t, fixture, { context: { viewport } });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    );
+    const card = page.locator(".agent-draft-actions");
+    const deploy = card.getByRole("button", { name: "Deploy new version", exact: true });
+    await card.getByText(reason, { exact: true }).waitFor();
+    assert.equal(await deploy.isDisabled(), true);
+    assert.equal(await card.getByText("Ready to deploy.", { exact: true }).count(), 0);
+    assert.match(
+      await card.getByRole("listitem").first().locator(".checklist-detail").textContent(),
+      /^Fix the plugin secret input · Configuration /,
+    );
+    // Deploy admission refuses the stored row with the text the page shows.
+    const refusedDeploy = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+    );
+    assert.equal(refusedDeploy.body.error.message, reason, JSON.stringify(refusedDeploy.body));
+
+    // A header on the default provider is one OpenClaw reads: it saves and the draft is ready.
+    const edit = page.getByRole("button", { name: "Edit Configuration", exact: true });
+    await edit.scrollIntoViewIfNeeded();
+    await edit.click();
+    const fixed = header({ source: "env", provider: "default", id: "GOOG_TOKEN" });
+    await page.getByLabel("Configuration JSON").fill(JSON.stringify(fixed, null, 2));
+    await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+    await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+    assert.equal(await card.getByText(reason).count(), 0);
+    assert.equal(await deploy.isDisabled(), false);
+    assert.match(
+      await card.getByRole("listitem").first().locator(".checklist-detail").textContent(),
+      /^Saved · Configuration /,
+    );
+    // The page fits the viewport: no horizontal scroll.
+    assert.equal(
+      await page.evaluate(
+        () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+      ),
+      true,
+    );
+  });
+}
+
+// The default env alias is a configured env provider whose allowlist leaves out the generated
+// password, so OpenClaw cannot read the reference Enable gateway password access would write and
+// save refuses it: the page states why and offers no button until the allowlist serves it.
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`An allowlist that omits the generated gateway password holds the button at ${viewport.width}px`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Allowlist", { ready: true });
+    const base = nativeAdminValues("allowlist", "http://127.0.0.1:18789");
+    const secrets = (allowlist) => ({
+      defaults: { env: "vault" },
+      providers: { vault: { source: "env", allowlist } },
+    });
+    const values = { ...structuredClone(base), secrets: secrets(["OTHER_SECRET"]) };
+    const agent = await fixture.createAgent(namespace.id, "Allowlist Agent", values);
+    const generated = { source: "env", provider: "vault", id: "OPENCLAW_GATEWAY_PASSWORD" };
+    const requirement =
+      "references OPENCLAW_GATEWAY_PASSWORD, which secrets.providers.vault.allowlist omits: add it to that allowlist";
+    // Save refuses the reference the button would write, with the reason the page shows.
+    const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+    const withPassword = structuredClone(values);
+    withPassword.gateway.auth = { ...withPassword.gateway.auth, password: generated };
+    const refusedSave = await fixture.request("PATCH", configurationPath, {
+      body: { values: withPassword },
+    });
+    assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
+    assert.equal(
+      refusedSave.body.error.message,
+      unreadableGatewayPasswordRefusal("allowlist", "OPENCLAW_GATEWAY_PASSWORD", "vault"),
+    );
+
+    const { page } = await newPage(t, fixture, { context: { viewport } });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    );
+    await page
+      .getByText(
+        `The generated gateway password reference {source: "env", provider: "vault", id: "OPENCLAW_GATEWAY_PASSWORD"} ${requirement}. Edit Configuration to fix it before you enable gateway password access.`,
+        { exact: true },
+      )
+      .waitFor();
+    const enable = page.getByRole("button", {
+      name: "Enable gateway password access",
+      exact: true,
+    });
+    assert.equal(await enable.count(), 0);
+    assert.equal(
+      await page.evaluate(
+        () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+      ),
+      true,
+    );
+
+    // Once the allowlist names the variable, the button returns and writes the reference.
+    const edit = page.getByRole("button", { name: "Edit Configuration", exact: true });
+    await edit.scrollIntoViewIfNeeded();
+    await edit.click();
+    const fixed = { ...structuredClone(base), secrets: secrets(["OPENCLAW_GATEWAY_PASSWORD"]) };
+    await page.getByLabel("Configuration JSON").fill(JSON.stringify(fixed, null, 2));
+    await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+    await page
+      .getByText(
+        "Use generated credentials for direct gateway password access. Enable access, save Configuration, then deploy a new version.",
+        { exact: true },
+      )
+      .waitFor();
+    await enable.scrollIntoViewIfNeeded();
+    await enable.click();
+    assert.deepEqual(
+      JSON.parse(await page.getByLabel("Configuration JSON").inputValue()).gateway.auth.password,
+      generated,
+    );
+  });
+}
+
 test("Agent detail preserves admitted revision history while draft edits change current configuration", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -1268,6 +1646,9 @@ test("Agent detail preserves admitted revision history while draft edits change 
     { secretBindings },
   );
   assert.equal(draft.generation, 3);
+  // The draft is deployable: deployment checks the Agent's grant on every bound Secret, and an
+  // administrator's console reads it, Slack or not (finding 3018).
+  await fixture.grantAgentSecretOperate(agent, secret.ref);
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
@@ -4035,7 +4416,7 @@ test("a read-only principal sees Agent mutation controls disabled or absent befo
   const requests = apiRequests(page, fixture.origin);
 
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`, viewer.credentials);
-  await page.getByText("Your access does not include creating Agents in this Namespace.").waitFor();
+  await page.getByText(AGENT_CREATE_DENIED).waitFor();
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
 
   const current = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
@@ -4332,7 +4713,7 @@ for (const viewport of [
       }).observe(globalThis.document, { subtree: true, childList: true, attributes: true });
     });
     await page.reload();
-    const note = page.getByText("Your access does not include creating Agents in this Namespace.");
+    const note = page.getByText(AGENT_CREATE_DENIED);
     await note.waitFor();
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
     await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
@@ -4356,9 +4737,7 @@ for (const viewport of [
     // Create Agent by URL refuses up front instead of at submit.
     await page.goto(`${fixture.origin}/console/agents/new?namespace=${empty.id}`);
     await page.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
-    await page
-      .getByText(/Your access does not include creating Agents in this Namespace\./)
-      .waitFor();
+    await page.getByText(AGENT_CREATE_DENIED).waitFor();
     assert.equal(await page.getByRole("button", { name: "Start without Preset" }).count(), 0);
     assert.equal(await page.getByRole("link", { name: "← Agents" }).isVisible(), true);
   });

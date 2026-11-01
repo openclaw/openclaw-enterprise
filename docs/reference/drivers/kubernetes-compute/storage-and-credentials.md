@@ -270,6 +270,8 @@ creating initial Secrets.
 
 The Driver projects `gateway-password` as `OPENCLAW_GATEWAY_PASSWORD` only when
 `gateway.auth.password` explicitly uses an environment SecretRef with that ID.
+Deployment refuses a reference OpenClaw cannot read from the environment, as for
+[plugin secret inputs](../../harness-execution.md#native-runtime-selection).
 This supports native local-direct password access alongside
 [trusted-proxy authentication](networking-and-isolation.md#gateway-authentication),
 the only Kubernetes gateway mode; the API never returns the password. Plaintext password Configuration
@@ -316,7 +318,7 @@ Missing or incorrectly scoped credentials fail deployment.
 Use the optional `runtime.codexSeccompProfile` only for a reviewed Codex
 compatibility allowlist in source-backed cases; it does not relax filesystem or
 network policy. [Pod and container hardening](../../security.md#pod-and-container-hardening)
-states when Codex `0.163.0-alpha.2` needs it and which components own those boundaries.
+states when Codex `0.164.0` needs it and which components own those boundaries.
 
 See [service-account credential delivery](../../service-accounts.md#backend-managed-access-tokens)
 for provider-issued credentials and supported execution modes.

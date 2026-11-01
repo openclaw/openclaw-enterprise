@@ -12,6 +12,7 @@ import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
   githubInstallationProfile,
   resolveGitHubRepositoryBinding,
+  resolveSelectedRepositoryGrant,
   resolveGitHubStandingApprovalScope,
   validateGitHubRepositoryRegistry,
   type GitHubRepositoryRegistry,
@@ -138,7 +139,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
       ) {
         throw new Error("invalid-bindings");
       }
-      return Object.freeze({
+      const resolved = Object.freeze({
         bindings: Object.freeze(
           input.bindings.map((entry) =>
             resolveGitHubRepositoryBinding(this.#registry, {
@@ -149,6 +150,15 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
         ),
         sessionDurationSeconds: this.#duration,
       });
+      if (resolved.bindings.some((b) => b.profile === "github-repository")) {
+        resolveSelectedRepositoryGrant(
+          this.#registry,
+          input.namespaceId,
+          "admission",
+          resolved.bindings,
+        );
+      }
+      return resolved;
     } catch {
       throw new ScopeViolationError(
         "The requested repository bindings are not permitted for this Namespace.",

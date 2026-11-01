@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-30
-last_updated_session: authoring-run/3c09c85b-a796-4bb6-ba0c-b1a7b496d3d7
+updated: 2026-10-31
+last_updated_session: authoring-run/0e8d85fa-aa72-48b7-bc35-06b23a663182
 ---
 
 # Credential source refresh Flow
@@ -9,15 +9,15 @@ last_updated_session: authoring-run/3c09c85b-a796-4bb6-ba0c-b1a7b496d3d7
 ## Overview
 
 OCC registers an empty OAuth2 provider. The Refresh Driver requests a token;
-the gateway renews it before expiry.
+the gateway renews it before expiry. See [source lifecycle](credential-source-lifecycle.md) for binding and withdrawal.
 
-In the [Codex device flow](#device-authorization-and-configuration), OpenShell keeps
-the refresh grant. The Harness receives a placeholder and account metadata. An
-operator connection can retrieve an access token for authorized discovery.
-These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
+In [Codex device flow](#device-authorization-and-configuration), OpenShell keeps
+the refresh grant; the Harness gets a placeholder and account metadata.
+Authorized discovery can retrieve an access token. These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
 
+The worker owns [GitHub issuance](#6-issue-and-renew-a-github-installation-token).
 [Git and draft pull requests](../reference/repository-credentials/prepared-native-git.md)
-can use committed tokens but cannot trigger issuance.
+use committed tokens and cannot trigger issuance.
 
 ## Entry Points
 
@@ -27,10 +27,9 @@ can use committed tokens but cannot trigger issuance.
 - Source: `packages/occ/src/index.ts:createCredentialSource`
 - Source: `packages/occ/src/index.ts:rotateCredentialSource`
 - Source: `apps/controller/src/drivers/credential-refresh/openshell.ts:OpenShellCredentialRefreshDriver`
-- Assumptions: the OpenShell Backend declares both `credential_gateway` and
-  `credential_refresh`, and both Drivers are selected; the gateway's
-  `toolBinaries` are configured, so the catalog lists the OAuth2 types; the
-  OpenShell gateway trusts and reaches the issuer's `token_url`.
+- Assumptions: the OpenShell Backend declares `credential_gateway` and
+  `credential_refresh`; the Installation selects both Drivers. Gateway
+  `toolBinaries` expose OAuth2 types; the gateway trusts and reaches `token_url`.
 
 ## Flow
 
@@ -55,13 +54,11 @@ graph TD
 
 `packages/occ/src/index.ts:createCredentialSource`
 
-The API validates the request against the gateway catalog. Device-authorized
-types defer the first mint to the completion path below. A type whose
-`rotation` is `refresh` resolves the selected Credential Refresh Driver inside
-the first transaction, so a missing selection fails before any gateway call.
-The API reads the Secret values, commits the record as `registering`, and calls
-the gateway's `registerSource` with config only: a refresh type's Secret values
-are issuer material, so only the refresh Driver receives them.
+Requests must match the gateway catalog. Device-authorized types defer minting
+until completion. For `rotation: refresh`, the first
+transaction requires the selected Credential Refresh Driver before gateway calls.
+The API reads Secret values, commits `registering`, then sends gateway
+`registerSource` only config. Issuer values go only to the Refresh Driver.
 
 The gateway posts the issuer material to `token_url` from its own network
 position, so `validateOAuth2Config` refuses a `token_url` host that is an IP
@@ -239,6 +236,10 @@ The worker records `issuing`, signs a five-minute JWT with the App key and reche
 ownership before `POST /app/installations/{installation_id}/access_tokens`.
 The Installation selects the HTTPS issuer and trust roots.
 
+The worker logs `PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC` with the first failure
+stage, fixed enums and status/booleans. `requestEndCalled` means possible send,
+not delivery. Reporting cannot change custody or retries.
+
 ```mermaid
 graph TD
   W["<b>Worker</b><br/>Holds App key"] -->|Signed JWT| G["<b>GitHub</b><br/>Issues token"]
@@ -255,7 +256,7 @@ graph TD
   linkStyle default stroke:#89919a
 ```
 
-The worker prepares tokens in the background. PostgreSQL custody requires a
+PostgreSQL custody requires a
 persistent 32-byte encryption key. Cold or expired reads return `not_ready`.
 Native Git uses a [private broker request](../reference/repository-credentials.md#native-git-from-the-agent-to-github).
 
@@ -336,6 +337,10 @@ detached reads. Clearing bytes cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31 21:13: Reconcile diagnostics. (authoring-run/0e8d85fa-aa72-48b7-bc35-06b23a663182 - 9c45357338431ec9334642aca5eac91de862ae95)
+
+- 2026-10-31 01:04: Trace safe issuer diagnostics without changing custody. (authoring-run/c776b2a1-dee6-4ade-a44e-145f1b37f57f - 39399f5bf4bc9a07b33c03a405e44d0614ffe9d5)
 
 - 2026-10-30 13:13: Reconcile recovery. (authoring-run/3c09c85b-a796-4bb6-ba0c-b1a7b496d3d7 - 8d689e31869b067327c13e69c104d29cc3414e4d)
 

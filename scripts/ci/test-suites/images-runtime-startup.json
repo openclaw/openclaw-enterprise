@@ -38,7 +38,7 @@
     {
       "path": "tests/integration/runtime-image-startup.test.mjs",
       "expectedTests": [
-        "runtime image shares Codex 0.163.0-alpha.2 between the plugin and Dedicated command",
+        "runtime image shares Codex 0.164.0 between the plugin and Dedicated command",
         "runtime image gateway ignores inherited OPENCLAW_LOG_LEVEL in favor of native configuration",
         "runtime image starts an embedded OpenClaw gateway with the Docker driver entrypoint",
         "runtime image discovers the bundled Codex plugin from a fresh gateway home",
@@ -59,7 +59,9 @@
       "path": "tests/integration/runtime-image-managed-files.test.mjs",
       "expectedTests": [
         "runtime image initializes the Harness workspace without replacing owner edits",
-        "runtime image starts the Kubernetes Gateway with its externally managed marker and Node options"
+        "runtime image starts the Kubernetes Gateway with its externally managed marker and Node options",
+        "runtime image holds an embedded Kubernetes Gateway whose plugin configuration fails its schema",
+        "runtime image holds a dedicated Codex Kubernetes Gateway whose plugin configuration fails its schema"
       ]
     },
     {

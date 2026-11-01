@@ -199,8 +199,8 @@ try {
       pool,
       registry: drivers.repositoryRegistry,
       ...repositoryGitAuthority(drivers),
-      report: (code, context) =>
-        emitOccLogEvent(logger, { event: "worker.error", code, ...context }),
+      report: (code, context, severity = "error") =>
+        emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
     });
     repositoryGitTransport = await bindRepositoryGitTransport(
       drivers,
@@ -254,7 +254,9 @@ try {
   preparedGitHub = drivers?.preparedGitHub;
   await preparedGitHub?.connect(pool);
   await worker.start();
-  preparedGitHub?.startWorker((code) => emitOccLogEvent(logger, { event: "worker.error", code }));
+  preparedGitHub?.startWorker((code, context, severity = "error") =>
+    emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
+  );
 
   let closing = false;
   async function shutdown() {
@@ -263,10 +265,8 @@ try {
     }
     closing = true;
     try {
-      if (readinessPath !== undefined) {
-        await unlink(readinessPath).catch(() => {});
-      }
       await closeWorkerComposition({
+        readinessPath,
         repositoryGitTransport,
         preparedRepositoryGit,
         receiptServer,

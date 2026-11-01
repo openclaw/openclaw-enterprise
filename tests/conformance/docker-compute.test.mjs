@@ -15,6 +15,7 @@ import {
   ConfigurationHarnessError,
 } from "../../packages/occ/src/index.ts";
 import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
+import { unreadableGatewayPasswordRefusal } from "../helpers/refusal-text.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 
 test("Docker preflight rejects an interrupted response and can retry", async () => {
@@ -436,7 +437,7 @@ test("Docker Compute gateway containers use password auth by default and preserv
   const passwordLaunch = await gatewayContainerLaunch({
     gateway: {
       tls: { enabled: false },
-      auth: { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } },
+      auth: { password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" } },
     },
   });
   assert.match(passwordLaunch.environment.OPENCLAW_GATEWAY_PASSWORD ?? "", /^[0-9a-f]{64}$/);
@@ -449,7 +450,7 @@ test("Docker Compute gateway containers use password auth by default and preserv
   );
   assert.deepEqual(
     JSON.parse(passwordLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.auth.password,
-    { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" },
+    { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
   );
   assert.equal(passwordLaunch.revision.configuration.gateway.auth.mode, undefined);
 
@@ -479,7 +480,7 @@ test("Docker Compute gateway containers use password auth by default and preserv
     gateway: {
       auth: {
         mode: "trusted-proxy",
-        password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" },
+        password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
       },
     },
   });
@@ -494,9 +495,13 @@ test("Docker Compute gateway containers use password auth by default and preserv
   assert.deepEqual(
     JSON.parse(trustedProxyWithPasswordLaunch.environment.OPENCLAW_CONFIG_JSON).gateway.auth
       .password,
-    { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" },
+    { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
   );
 });
+
+const generatedPassword = { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" };
+const passwordAuth = (password, mode = "password") => ({ gateway: { auth: { mode, password } } });
+const exactly = (text) => new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
 
 test("Docker Compute rejects unsupported native gateway settings at admission and before Docker engine access", async () => {
   const driver = new DockerComputeDriver({
@@ -552,6 +557,44 @@ test("Docker Compute rejects unsupported native gateway settings at admission an
       "plugins.entries.codex.config.appServer.approvalPolicy",
       /appServer\.approvalPolicy must not be "untrusted"/,
     ],
+    // OpenClaw resolves the password in both auth modes, with the Configuration's own secrets: its
+    // schema refuses an object without a text provider or with other keys (exit 78), and the
+    // Gateway exits on a provider or allowlist that cannot serve it (finding 3061).
+    ...[
+      [passwordAuth({ source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" }), "providerless"],
+      [
+        passwordAuth({ source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" }, "trusted-proxy"),
+        "providerless",
+      ],
+      [
+        {
+          ...passwordAuth({ source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" }),
+          secrets: { defaults: { env: "custom" } },
+        },
+        "providerless",
+        "env",
+        "custom",
+      ],
+      [
+        passwordAuth({ source: "env", provider: null, id: "OPENCLAW_GATEWAY_PASSWORD" }),
+        "providerless",
+      ],
+      [passwordAuth({ ...generatedPassword, note: "x" }), "keys"],
+      [passwordAuth({ ...generatedPassword, provider: "vault" }), "provider", "vault"],
+      [
+        {
+          ...passwordAuth(generatedPassword),
+          secrets: { providers: { default: { source: "env", allowlist: ["OTHER"] } } },
+        },
+        "allowlist",
+        "OPENCLAW_GATEWAY_PASSWORD",
+      ],
+      [passwordAuth({ source: "vault", provider: "default", id: "X" }), "shape"],
+    ].map(([configuration, ...refused]) => [
+      configuration,
+      "gateway.auth.password",
+      exactly(unreadableGatewayPasswordRefusal(...refused)),
+    ]),
   ]) {
     const revision = dockerGatewayRevision(driver, configuration);
     let networkAccesses = 0;
@@ -591,6 +634,29 @@ test("Docker Compute rejects unsupported native gateway settings at admission an
     { mode: "trusted-proxy" },
   ]) {
     assert.doesNotThrow(() => driver.validateGatewaySettings({ gateway: { auth } }));
+  }
+  // References OpenClaw reads: the alias secrets.defaults.env names, a configured env provider
+  // whose allowlist lists the name, and another variable the Configuration's bindings may set.
+  for (const configuration of [
+    {
+      ...passwordAuth({ ...generatedPassword, provider: "custom" }),
+      secrets: { defaults: { env: "custom" } },
+    },
+    {
+      ...passwordAuth({ ...generatedPassword, provider: "vault" }),
+      secrets: {
+        providers: { vault: { source: "env", allowlist: ["OPENCLAW_GATEWAY_PASSWORD"] } },
+      },
+    },
+    passwordAuth(
+      { source: "env", provider: "default", id: "MY_GATEWAY_PASSWORD" },
+      "trusted-proxy",
+    ),
+  ]) {
+    assert.doesNotThrow(
+      () => driver.validateGatewaySettings(configuration),
+      JSON.stringify(configuration),
+    );
   }
 });
 

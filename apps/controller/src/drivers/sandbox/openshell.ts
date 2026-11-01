@@ -26,6 +26,8 @@ import {
 } from "./openshell-plugin-policy.ts";
 import { managedCredentialBinding, managedGoogleInstall } from "../plugin/managed-catalog.ts";
 import { openShellLogDecisions } from "./openshell-log-decisions.ts";
+import { qualifyOpenShellCodexArtifactRules } from "./openshell-codex-artifacts.ts";
+import { workspaceNodeNetworkPolicy } from "./openshell-workspace-node-policy.ts";
 import {
   AGENT_POLICY_PREFIX,
   openShellAgentNetworkRules,
@@ -34,6 +36,7 @@ import {
 } from "./openshell-policy.ts";
 import type {
   SandboxNetworkGrant,
+  ProtectedCodexArtifactPolicyAdmission,
   SandboxPolicySnapshot,
   SandboxPolicyObservation,
   SandboxPolicyRecommendations,
@@ -205,6 +208,7 @@ export interface OpenShellSandboxDriverOptions {
       readonly runAsGroup: string;
     };
     readonly networkPolicies: readonly OpenShellNetworkPolicyRule[];
+    readonly codexArtifactRuleNames?: readonly string[];
   };
   readonly sandboxNamePrefix?: string;
   readonly startupDelayMs?: number;
@@ -330,7 +334,6 @@ const WORKSPACE_NODE_SETUP_CONFIG = "node_setup_json";
 const WORKSPACE_NODE_CA_ENVIRONMENT = "OPENCLAW_NODE_CA_PEM";
 const WORKSPACE_NODE_CA_PATH_ENVIRONMENT = "OPENCLAW_NODE_CA_PATH";
 const WORKSPACE_NODE_CA_FILE = "node-ca.pem";
-const WORKSPACE_NODE_BINARY = "/usr/local/bin/node";
 const RUNTIME_PROFILE_IDS = {
   codex: "oce-codex-runtime",
   openclaw: "oce-openclaw-runtime",
@@ -2127,34 +2130,6 @@ function networkPolicies(options: OpenShellSandboxDriverOptions) {
   );
 }
 
-function workspaceNodeNetworkPolicy(binding: WorkspaceNodeBinding): Record<string, unknown> {
-  // A wss endpoint stays end to end between the node and the Gateway route, which
-  // pins its own CA. OpenShell then enforces the binary, host, and port; the route
-  // enforces the path.
-  const endpoint = binding.tls
-    ? {
-        host: binding.host,
-        ports: [binding.port],
-        tls: "NETWORK_TLS_MODE_SKIP",
-        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-      }
-    : {
-        host: binding.host,
-        ports: [binding.port],
-        protocol: "rest",
-        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-        access: "NETWORK_ACCESS_PRESET_FULL",
-        path: binding.path,
-      };
-  return {
-    "workspace-node-enrollment": {
-      name: "workspace-node-enrollment",
-      binaries: [{ path: WORKSPACE_NODE_BINARY }],
-      endpoints: [endpoint],
-    },
-  };
-}
-
 function networkPolicyBinaries(policy: OpenShellNetworkPolicyRule) {
   if (!Array.isArray(policy.binaries) || policy.binaries.length === 0) {
     throw new OpenShellSandboxConfigurationFailure(
@@ -2519,6 +2494,10 @@ export const configurationSchema = Object.freeze({
       required: ["process", "networkPolicies"],
       additionalProperties: false,
       properties: {
+        codexArtifactRuleNames: {
+          type: "array",
+          items: { type: "string", minLength: 1 },
+        },
         filesystem: {
           type: "object",
           additionalProperties: false,
@@ -2591,6 +2570,7 @@ export const configurationSchema = Object.freeze({
 function protectedEgressPolicy(
   options: OpenShellSandboxDriverOptions,
   requirements: HarnessWorkloadRequirements,
+  revision: Readonly<AgentRevision>,
 ): Readonly<Record<string, unknown>> {
   const attachment = requirements.proxyWiring;
   const auth = attachment?.plan.harnessCredentialSource;
@@ -2611,7 +2591,7 @@ function protectedEgressPolicy(
       "Protected egress requires its exact paired policy and only the admitted Harness credential attachment.",
     );
   }
-  const expected = openShellEgressConfiguration(attachment.plan, options.egress);
+  const expected = openShellEgressConfiguration(attachment.plan, options.egress, revision);
   if (!isDeepStrictEqual(attachment.configuration, expected)) {
     throw new OpenShellSandboxConfigurationFailure("Protected egress attachment was altered.");
   }
@@ -3216,7 +3196,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "The protected repository execution must retain its admitted Harness credential source.",
       );
     }
-    const egressPolicy = plan && protectedEgressPolicy(this.options, context.requirements);
+    const egressPolicy =
+      plan && protectedEgressPolicy(this.options, context.requirements, context.revision);
     if (plan !== undefined && context.revision.harness.id !== "codex") {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_HARNESS_UNSUPPORTED",
@@ -3368,6 +3349,26 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       ),
       serviceExposures,
     };
+    // Check the final composition against the independently validated setup binding,
+    // including absence; a supplied auxiliary rule cannot establish its own authority.
+    const expectedWorkspacePolicy =
+      runtimeProvider === undefined || runtimeCredentialMaterial.binding === undefined
+        ? {}
+        : workspaceNodeNetworkPolicy(runtimeCredentialMaterial.binding);
+    const composedPolicies = asRecord(create.spec.policy.network_policies);
+    if (
+      !composedPolicies ||
+      Object.hasOwn(composedPolicies, "workspace-node-enrollment") !==
+        Object.hasOwn(expectedWorkspacePolicy, "workspace-node-enrollment") ||
+      !isDeepStrictEqual(
+        composedPolicies["workspace-node-enrollment"],
+        expectedWorkspacePolicy["workspace-node-enrollment"],
+      )
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "Workspace enrollment policy differs from its Agent-owned binding.",
+      );
+    }
     if (git) {
       create.spec.providers.push(git.provider);
       Object.assign(
@@ -3666,9 +3667,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const git = this.openShellGit;
     if (
       !git ||
-      revision.executionAdmission.version !== 6 ||
-      plan?.repositoryGitAuthorization !== "request-hook-observed" ||
-      workspaceName(context.namespace) !== git.configuration.observedHookPreviewWorkspace
+      !(
+        plan?.repositoryGitAuthorization === "online-request" ||
+        (revision.executionAdmission.version === 6 &&
+          plan?.repositoryGitAuthorization === "request-hook-observed" &&
+          workspaceName(context.namespace) === git.configuration.observedHookPreviewWorkspace)
+      )
     ) {
       return;
     }
@@ -3748,7 +3752,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     );
     // A service may still be starting, or may already serve Codex/a held failure.
     // Normal Harness observation decides readiness; none of these answers releases startup.
-    const preview = installation.plan.repositoryGitAuthorization === "request-hook-observed";
+    const preview =
+      installation.plan.repositoryGitAuthorization === "request-hook-observed" ||
+      installation.plan.repositoryGitAuthorization === "online-request";
     if (document.status !== 200) {
       if (
         preview &&
@@ -4251,11 +4257,43 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
   }
 
-  /**
-   * The revision's Sandbox log through a reader narrowed to `GetSandboxLogs`, so this
-   * path cannot create, delete or exec into a Sandbox. The Sandbox name is derived from
-   * the revision exactly as at provisioning.
-   */
+  /** Qualify declared credential-free artifact rules without I/O. */
+  admitProtectedCodexArtifactPolicy(version: number): ProtectedCodexArtifactPolicyAdmission {
+    const names = this.options.policy.codexArtifactRuleNames ?? [];
+    if (
+      !Number.isSafeInteger(version) ||
+      version < 1 ||
+      names.some(
+        (name) =>
+          this.options.policy.networkPolicies.filter((rule) => rule.name === name).length !== 1,
+      )
+    ) {
+      throw new ConfigurationValidationError([
+        {
+          path: "/policy/codexArtifactRuleNames",
+          code: "INVALID_VALUE",
+          message:
+            "Artifact declarations require uniquely named Installation rules and a valid policy version.",
+        },
+      ]);
+    }
+    const defaults = qualifyOpenShellCodexArtifactRules(
+      networkPolicies(this.options) as OpenClawConfigurationDocument,
+      names,
+    );
+    return immutableCopy({
+      purpose: "protected-codex-artifacts",
+      declaredRuleNames: names,
+      snapshot: {
+        driverId: this.id,
+        implementation: this.implementation,
+        version,
+        defaults,
+        additions: [],
+      },
+    });
+  }
+
   admitNetworkPolicy(
     additions: readonly SandboxNetworkGrant[],
     version: number,
@@ -4391,11 +4429,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       readonly operationId: string;
     },
   ): Promise<void> {
-    const { client, request, sandbox } = await this.policyTarget(context);
     if (
       input.snapshot.driverId !== this.id ||
-      input.snapshot.implementation !== this.implementation ||
-      client.updatePolicy === undefined
+      input.snapshot.implementation !== this.implementation
     ) {
       throw new Error("Live policy application is unsupported.");
     }
@@ -4406,6 +4442,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         : this.gitRouteOverlap(input.snapshot.defaults, input.snapshot.additions);
     if (overlap !== undefined) {
       throw new SandboxNetworkPolicyConflictError(gitRouteOverlapMessage(overlap));
+    }
+    if (context.revision.executionAdmission.mode === "protected") {
+      throw new Error("Live policy application is unavailable for protected execution.");
+    }
+    const { client, request, sandbox } = await this.policyTarget(context);
+    if (client.updatePolicy === undefined) {
+      throw new Error("Live policy application is unsupported.");
     }
     const baseline = asRecord(sandbox.spec?.policy);
     if (baseline === undefined) {

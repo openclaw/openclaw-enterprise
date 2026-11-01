@@ -75,6 +75,7 @@ export type {
   PreparedGitHubEgressSource,
   PreparedGitHubUseRequest,
   PreparedGitHubInstallationUseRequest,
+  PreparedGitHubRepositoryUseRequest,
   PreparedGitHubUseResponse,
   PreparedGitHubPullScope,
   PreparedGitHubPullProjection,
@@ -120,6 +121,7 @@ export { SandboxPolicyDecisionSchema, validSandboxPolicyDecision } from "./sandb
 import type { SandboxPolicySnapshot } from "./sandbox-policy.ts";
 
 export type {
+  ProtectedCodexArtifactPolicyAdmission,
   SandboxNetworkGrant,
   SandboxPolicy,
   SandboxPolicySnapshot,
@@ -1446,7 +1448,7 @@ export type {
 
 export type JSONSchema = Readonly<Record<string, unknown>>;
 
-export { normalizeSecretBindings } from "./secret-bindings.ts";
+export { isAllowedSecretBindingDestination, normalizeSecretBindings } from "./secret-bindings.ts";
 
 export * from "./api/common.ts";
 export * from "./api/resources.ts";
@@ -1504,6 +1506,7 @@ export type {
   ProtectedRepositoryGitAuthority,
   RepositoryGitBinding,
   ProtectedRepositoryGitMaterial,
+  ProtectedGitHubRepositoryMaterial,
   ProtectedGitHubInstallationMaterial,
   GitHubInstallationSendDecision,
   GitHubInstallationSendPermit,

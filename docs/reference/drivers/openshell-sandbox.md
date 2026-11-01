@@ -5,7 +5,7 @@ Harnesses, and [Kubernetes Compute](kubernetes-compute.md). OCC owns Agents,
 Agent revisions, Namespaces, routing, credentials, and authorization.
 
 Development supports native OpenClaw and dedicated Codex with
-[`v0.1.5`](https://github.com/NVIDIA/OpenShell/tree/v0.1.5). The pinned
+[`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6). The pinned
 OCE runtime declares native Dedicated support. The paired
 [Credential Gateway](openshell-credential-gateway.md) delivers model credentials;
 each Agent revision's providers supply node enrollment and Codex files. These experimental APIs are
@@ -137,7 +137,7 @@ Do not add a policy for the model endpoint: the credential source's provider
 profile allows `api.openai.com` with TLS inspection, and an uninspected rule for
 that host conflicts.
 
-v0.1.5 requires unique network policy names and nonempty executable
+v0.1.6 requires unique network policy names and nonempty executable
 paths. `workspace-node-enrollment` is reserved. Options include `enforcement: enforce|audit`
 and `access: read_only|read_write|full`. Omit `tls` for automatic TLS inspection;
 `tls: skip` bypasses inspection. The pinned gateway rejects explicit `terminate`
@@ -148,6 +148,26 @@ only `enforcement: audit`. `json-rpc` and `mcp` need rules this setting cannot
 express, so startup refuses them. `gatewayConfigured` is the only ServiceAccount mode; the
 gateway's configured sandbox ServiceAccount applies to every Sandbox and does
 not satisfy the per-Agent production requirement below.
+
+### Protected Codex artifact rules
+
+For protected, dedicated Codex repository execution, select
+[approved artifact rules](../../assets/openshell-quickstart/plugin-network-policy.yaml)
+with `policy.codexArtifactRuleNames`, for example
+`codexArtifactRuleNames: [codex-plugin-artifacts]`. Each name must identify exactly
+one existing `policy.networkPolicies` rule. Omission grants no artifact access.
+
+Selected rules require the bundled Codex executable paths, exact DNS hosts,
+port 443, `protocol: rest`, `enforcement: enforce` and `access: read_only`.
+Omit `tls`: stock OpenShell 0.1.6 verifies and inspects REST TLS by default;
+explicit skip and deprecated termination modes are refused. Wildcards, numeric
+addresses, GitHub repository hosts, reserved names and credential/provider fields are refused.
+
+Admission freezes only that qualified map with empty Agent additions. Preparation
+and replay use the revision, even if Installation defaults change. Select a new
+revision to change artifact authority. Live Agent policy apply remains unavailable.
+
+### Gateway readiness and workspace
 
 Optional readiness observes a Service and Pods in the OCC namespace (a paired
 Gateway normally uses a Backend `endpoint`). It needs a positive `timeoutMs`;

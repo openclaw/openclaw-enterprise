@@ -12,6 +12,7 @@ import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.
 import {
   apiRequests,
   fileBrowser,
+  hasFocus,
   holdRequests,
   login,
   newPage,
@@ -70,7 +71,7 @@ test("Namespace trash action confirms, keeps pending cleanup visible, and repair
     .waitFor();
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
-  assert.equal(await remove.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  assert.equal(await hasFocus(remove), true);
   assert.equal(pathRequests(requests, "DELETE", `/namespaces/${target.id}`).length, 0);
 
   // Hold the real accepted response: Escape and navigation cannot abandon or replay the write.
@@ -106,6 +107,8 @@ test("Namespace trash action confirms, keeps pending cleanup visible, and repair
   await page
     .getByText("Retired team was deleted. Its name remains reserved.", { exact: true })
     .waitFor();
+  // Refresh, disabled while it read, left with its row; the outcome takes focus, not the page.
+  assert.equal(await hasFocus(page.locator(".namespace-deletion-outcome")), true);
   assert.equal(new URL(page.url()).searchParams.get("namespace"), remaining.id);
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page
@@ -124,12 +127,21 @@ test("Namespace deletion blockers name real Agent resources and keep cleanup nav
   const agent = await fixture.createAgent(namespace.id, "Remaining assistant");
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Delete Occupied team", exact: true }).click();
-  await page.getByRole("button", { name: "Delete Namespace", exact: true }).click();
+  const remove = page.getByRole("button", { name: "Delete Occupied team", exact: true });
+  const confirm = page.getByRole("button", { name: "Delete Namespace", exact: true });
   const blocked = page.getByRole("dialog", {
     name: "Namespace still contains resources",
     exact: true,
   });
+  // Closing the blockers, which replaced the confirmation's content, returns focus to the trash
+  // control that opened it.
+  await remove.click();
+  await confirm.click();
+  await blocked.getByRole("button", { name: "Close", exact: true }).click();
+  await blocked.waitFor({ state: "detached" });
+  assert.equal(await hasFocus(remove), true);
+  await remove.click();
+  await confirm.click();
   await blocked.getByText(agent.id, { exact: true }).waitFor();
   await blocked.getByText(agent.configurationId, { exact: true }).waitFor();
   await blocked.getByText("Configuration cleanup commands", { exact: true }).click();
@@ -200,7 +212,7 @@ test("Namespace deletion permission is advisory and a later revocation is enforc
   assert.equal(await remove.isDisabled(), true);
   assert.equal(await remove.getAttribute("aria-disabled"), "true");
   await remove.focus();
-  assert.equal(await remove.evaluate((node) => node === document.activeElement), true);
+  assert.equal(await hasFocus(remove), true);
   // Each is checked on its own: a click on the modal's backdrop would close a dialog Enter opened.
   await page.keyboard.press("Enter");
   assert.equal(await page.locator("dialog[open]").count(), 0);
@@ -215,6 +227,8 @@ test("Namespace deletion permission is advisory and a later revocation is enforc
   await page.waitForFunction(() => !document.querySelector("dialog[open]"));
   assert.equal((await fixture.request("GET", `/namespaces/${namespace.id}`)).data.status, "ready");
   assert.equal(await remove.isDisabled(), true);
+  // The refused trash control, natively disabled while the write ran, takes focus back.
+  assert.equal(await hasFocus(remove), true);
 });
 
 // Finding 2861. A deny Restriction refuses Namespace delete even to an Installation administrator,
@@ -356,6 +370,8 @@ test("a Namespace deletion confirmation opened during a background poll closes w
     .waitFor();
   // Nothing is left to delete, so the confirmation closes instead of offering a dead action.
   await dialog.waitFor({ state: "detached" });
+  // Its opener left with the row, so focus goes to the outcome, not the page.
+  assert.equal(await hasFocus(page.locator(".namespace-deletion-outcome")), true);
 });
 
 test("returning to an unchanged Namespaces page reads each row's delete permission once", async (t) => {

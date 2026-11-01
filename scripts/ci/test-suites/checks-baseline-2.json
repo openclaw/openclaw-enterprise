@@ -43,6 +43,7 @@
     "tests/conformance/bounded-response-reads.test.mjs",
     "tests/conformance/repository-credentials-github.test.mjs",
     "tests/integration/repository-credentials-driver.test.mjs",
+    "tests/integration/repository-credentials-sender-recovery.test.ts",
     "tests/integration/known-device-cookie.test.mjs",
     "tests/conformance/postgres-controller-auth-binding.test.mjs",
     "tests/integration/repository-credentials-package.test.ts",
@@ -488,6 +489,9 @@
     },
     {
       "path": "tests/integration/repository-credentials-driver.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-sender-recovery.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-projected-inputs.test.mjs"

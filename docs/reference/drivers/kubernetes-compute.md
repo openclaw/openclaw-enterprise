@@ -175,6 +175,10 @@ the key. Private Gateway configuration qualifies parent and subagent selections
 (strings or primary/fallback objects), preserving native IDs and admitted values.
 Transport uses the authenticated app server and fail-closed HTTP. See [Harness execution](../harness-execution.md).
 
+`runtime.codexModelSupportsStandaloneWebSearch` declares an explicit endpoint's
+standalone-search capability. See [custom Codex provider capabilities](kubernetes-compute/managed-native-configuration.md#custom-codex-provider-capabilities)
+for defaults, restrictions, and deployment behavior.
+
 ### Authentication
 
 Choose exactly one Kubernetes authentication mode:
@@ -325,6 +329,8 @@ model turn.
   Native plugin startup, authentication, transport, and installation failures
   remain generic workload startup failures unless the Compute-owned runtime
   reports a verified current-startup warning for an admitted selected plugin.
+- **Check `gateway-config` fails:** See
+  [configuration OpenClaw refuses](kubernetes-compute/managed-native-configuration.md#configuration-openclaw-refuses-at-startup).
 - **Gateway storage is pending or rejected:** Check the configured
   `runtime.gatewayStorageClassName`, available `10Gi` capacity, filesystem
   support, worker PVC permissions, and the PVC's exact ownership. Preserve

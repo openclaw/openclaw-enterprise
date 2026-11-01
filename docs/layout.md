@@ -202,7 +202,7 @@ guides and inventories may remain directly under `docs/`; `docs/testing/` owns
 code verification and test setup. The [documentation taxonomy](taxonomy.md) maps page kinds to their templates.
 
 The [documentation map](README.md) has six menus. **Getting Started**, **Topics**,
-**Integrations**, **Operate**, and **Reference** serve product users and operators;
+**Integrations**, **Deploy & Operate**, and **Reference** serve product users and operators;
 **Contribute** serves people changing the platform. A menu opens its sidebar.
 Register every Markdown page once in [docs/docs.json](docs.json) and link it from
 its owning overview. Deep implementation and testing pages can use the owning

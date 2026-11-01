@@ -307,12 +307,21 @@ helm --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
   --namespace "$NAMESPACE" status "$RELEASE"
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   --namespace "$NAMESPACE" get jobs
+selected_controller=$(cat "$UPGRADE_EVIDENCE/selected-controller") || exit 1
 for component in api worker; do
   kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-    --namespace "$NAMESPACE" rollout status "deployment/openclaw-enterprise-$component"
-  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-    --namespace "$NAMESPACE" get "deployment/openclaw-enterprise-$component" \
-    -o "jsonpath={.spec.template.spec.containers[?(@.name=='$component')].image}{'\n'}"
+    --namespace "$NAMESPACE" rollout status "deployment/openclaw-enterprise-$component" || exit 1
+  actual=$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+    --namespace "$NAMESPACE" get "deployment/openclaw-enterprise-$component" -o json |
+    jq -er --arg component "$component" --arg repository "$REPOSITORY_ENABLED" '
+      .spec.template.spec |
+      (.containers[]?, (.initContainers[]? |
+        select($component == "worker" and $repository == "true" and .restartPolicy == "Always"))) |
+      select(.name == $component) | .image') ||
+    { echo "$component: missing or invalid controller image readback" >&2; exit 1; }
+  printf '%s: %s\n' "$component" "$actual"
+  [ "$actual" = "$selected_controller" ] ||
+    { echo "$component: controller image differs from upgrade evidence" >&2; exit 1; }
 done
 occ --output json installation get > /secure/occ/installation-after.json
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \

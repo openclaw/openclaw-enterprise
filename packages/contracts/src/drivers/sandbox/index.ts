@@ -14,6 +14,7 @@ import type {
 import type { RepositoryExecutionIdentity } from "../repo/index.ts";
 import type { SandboxLogChunk, SandboxLogContext, SandboxLogRequest } from "../../runtime-logs.ts";
 import type {
+  ProtectedCodexArtifactPolicyAdmission,
   SandboxNetworkGrant,
   SandboxPolicyObservation,
   SandboxPolicyRecommendations,
@@ -210,6 +211,13 @@ export interface SandboxDriver extends Driver {
     defaults?: SandboxPolicySnapshot["defaults"],
     scope?: { readonly repositoryCredentials?: boolean },
   ): SandboxPolicySnapshot;
+  /**
+   * Side-effect-free admission for protected, dedicated Codex repository execution.
+   * A normal network-policy result cannot acknowledge this purpose. The result names
+   * exactly the qualified defaults map's keys and carries no Agent additions.
+   * Absence refuses this composition; it never imports ordinary defaults.
+   */
+  admitProtectedCodexArtifactPolicy?(version: number): ProtectedCodexArtifactPolicyAdmission;
   observeNetworkPolicy?(
     context: SandboxLogContext,
     snapshot: SandboxPolicySnapshot,
@@ -255,7 +263,8 @@ export interface SandboxDriver extends Driver {
   ): OpenClawConfigurationDocument;
   ensureNamespace?(context: SandboxNamespaceContext): Promise<void>;
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
-  /** The v6 launcher stays held. A denial observed here can select material, never release work. */
+  /** The launcher stays held while the Driver observes its request challenge.
+   * A denial observed here can select material, never release work. */
   observeHeldRepositoryGitPreview?(
     context: SandboxHarnessStatusContext,
   ): Promise<"held" | "installed" | undefined>;

@@ -173,6 +173,7 @@ import {
   ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
   validRuntimeLogFrontierTime,
+  waitsOnVariable,
 } from "@openclaw-enterprise/occ";
 import {
   createKubernetesClientConfiguration,
@@ -203,6 +204,8 @@ import {
   enabledChannelProviders,
   OPENCLAW_GATEWAY_PASSWORD,
   requireChannelTopology,
+  refuseUnreadablePluginSecretInputs,
+  requirePluginSecretInputs,
   type KubernetesHarnessTopology,
   kubernetesHarnessAuthMethods,
   providerWaitsOnVariable,
@@ -525,6 +528,8 @@ export interface KubernetesComputeDriverOptions {
     readonly codexSeccompProfile?: string;
     /** HTTPS OpenAI-compatible Responses endpoint for dedicated Codex API-key auth. */
     readonly codexModelBaseUrl?: string;
+    /** Declare standalone web search support for the explicit Codex model endpoint. */
+    readonly codexModelSupportsStandaloneWebSearch?: boolean;
     readonly channels?: {
       readonly proxyUrl: string;
       readonly managedProxy?: KubernetesWorkloadPeer & {
@@ -2635,7 +2640,11 @@ export async function resolveKubernetesNamespace(
 
 // OCC admission requires every configured Agent entry to share this primary model.
 // The isolated probe sets it explicitly instead of invoking native roster selection.
-function harnessPrimaryModel(configuration: OpenClawConfigurationDocument): string {
+function harnessPrimaryModel(
+  configuration: OpenClawConfigurationDocument,
+  missing: () => Error = () =>
+    new ConfigurationFailure("Harness authentication requires an explicit primary model."),
+): string {
   const agents = asRecord(configuration.agents);
   const defaults = asRecord(agents?.defaults);
   const selection =
@@ -2645,7 +2654,7 @@ function harnessPrimaryModel(configuration: OpenClawConfigurationDocument): stri
       .find((model) => model !== undefined);
   const model = typeof selection === "string" ? selection : asRecord(selection)?.primary;
   if (typeof model !== "string" || model.trim().length === 0) {
-    throw new ConfigurationFailure("Harness authentication requires an explicit primary model.");
+    throw missing();
   }
   return model;
 }
@@ -2858,30 +2867,6 @@ function requireProviderApiKeys(
       );
     }
   }
-}
-
-// Whether a Preset variable without a value fills any text (a string or an object key) in `value`,
-// which sits at `path` in the Configuration document.
-function waitsOnVariable(
-  value: unknown,
-  path: readonly (string | number)[],
-  options: ConfigurationValidationOptions | undefined,
-): boolean {
-  const unresolved = options?.unresolved;
-  if (unresolved === undefined) {
-    return false;
-  }
-  if (typeof value === "string") {
-    return unresolved(path) !== undefined;
-  }
-  const entries = Array.isArray(value)
-    ? [...value.entries()]
-    : Object.entries(asRecord(value) ?? {});
-  return entries.some(
-    ([key, child]) =>
-      (typeof key === "string" && unresolved([...path, key], true) !== undefined) ||
-      waitsOnVariable(child, [...path, key], options),
-  );
 }
 
 // A `${NAME}` or SecretRef-shaped value, as the Configuration Driver admits in a credential field
@@ -3589,6 +3574,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           },
           codexSeccompProfile: { type: "string", minLength: 1 },
           codexModelBaseUrl: { type: "string", minLength: 1 },
+          codexModelSupportsStandaloneWebSearch: { type: "boolean" },
           channels: {
             type: "object",
             required: ["proxyUrl"],
@@ -3986,6 +3972,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 ? "Codex model endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address."
                 : "Codex model endpoint requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment."),
             "/runtime/codexModelBaseUrl",
+          );
+        }
+        if (
+          options.runtime.codexModelSupportsStandaloneWebSearch === true &&
+          options.runtime.codexModelBaseUrl === undefined
+        ) {
+          throw configurationConstraintFailure(
+            "Standalone web search requires an explicit Codex model endpoint.",
+            "/runtime/codexModelSupportsStandaloneWebSearch",
           );
         }
         if (options.runtime.codexSeccompProfile !== undefined) {
@@ -4721,6 +4716,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
       }
     }
+    // Configuration save keeps a draft that selects no model yet, and no topology here runs
+    // without one, so admission names the setting instead of refusing the binding (finding 3022).
+    if (stage === "admission") {
+      harnessPrimaryModel(configuration, () =>
+        callerSettingError(
+          "agents.defaults.model",
+          "is required to deploy on Kubernetes: set it, or each agents.entries model, to a model such as openai/gpt-5.1",
+        ),
+      );
+    }
     const models = nativeOpenAiModelSelections(configuration)?.map(({ reference }) => reference);
     const authentication = harnessModelAuthentication(configuration, embedded);
     // Every model selection (fallbacks, subagents, image, PDF, per-channel, ...) and every Agent
@@ -4782,6 +4787,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       },
       callerSettingError,
     );
+    // Every topology's Gateway would exit at every start on a plugin secret input it cannot
+    // resolve, and the deployment would wait for its convergence deadline. Configuration save
+    // refuses a reference OpenClaw cannot read at all; the Agent's mode decides the APP_SERVER_
+    // case, so Agent save refuses it too; the rest waits for the bindings.
+    this.requirePluginSecretInputs(configuration, topology, secretBindings);
     requireProviderApiKeys(configuration, openclaw, authentication);
     if (!agentSave) {
       this.validateChannelSecretBindings(configuration, secretBindings);
@@ -4820,7 +4830,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
    * Configuration rules every Kubernetes topology applies, so Configuration save, provisioning
    * and Preset defaults refuse the content where it is written: supported channel providers,
    * model credentials only through the Harness authentication binding, the Gateway tool policy,
-   * and model selections and provider apiKeys on the primary model's provider.
+   * model selections and provider apiKeys on the primary model's provider, and plugin secret
+   * inputs OpenClaw cannot read (finding 3069). Deployment admission applies each in its own
+   * order (validateAdmittedHarnessAuth).
    */
   validateConfiguration(
     configuration: Readonly<OpenClawConfigurationDocument>,
@@ -4828,6 +4840,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   ): void {
     this.validateConfigurationContent(configuration, options);
     requireConfiguredModelProviders(configuration, options);
+    refuseUnreadablePluginSecretInputs(configuration, callerSettingError, options);
   }
 
   // validateHarnessAuth runs these first and the model provider rules in its own order.
@@ -13040,6 +13053,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const nativeConfiguration = this.kubernetesGatewayConfigurationDocument(revision.configuration);
     const usesGatewayPasswordEnv = usesGatewayPasswordEnvironment(
       asRecord(asRecord(nativeConfiguration.gateway)?.auth) ?? {},
+      asRecord(nativeConfiguration.secrets),
       (setting, requirement) => new GatewaySettingFailure(setting, requirement),
     );
     return {
@@ -13276,6 +13290,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     usesGatewayPasswordEnvironment(
       auth,
+      asRecord(configuration.secrets),
       (setting, requirement) => new GatewaySettingFailure(setting, requirement),
     );
     if (gateway.trustedProxies !== undefined) {
@@ -14274,6 +14289,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
     openaiBaseUrl?: string,
   ): PluginRuntimeSnapshot | undefined {
+    const standaloneWebSearch =
+      openaiBaseUrl === undefined &&
+      revision.harness.id === "codex" &&
+      revision.harness.mode === "dedicated" &&
+      revision.harnessAuth?.method === "api_key" &&
+      this.options.runtime?.codexModelSupportsStandaloneWebSearch === true;
     if (
       openaiBaseUrl === undefined &&
       revision.harness.id === "codex" &&
@@ -14302,6 +14323,17 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         openaiBaseUrl,
         this.publicGithubReadForRevision(revision),
       );
+      if (
+        standaloneWebSearch &&
+        runtime?.kind === "codex" &&
+        runtime.modelEndpoint !== undefined &&
+        runtime.providerTools !== "none"
+      ) {
+        runtime = {
+          ...runtime,
+          modelEndpoint: { ...runtime.modelEndpoint, supportsStandaloneWebSearch: true },
+        };
+      }
     } catch (error) {
       throw new ConfigurationFailure(
         error instanceof Error
@@ -14692,6 +14724,37 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
     return providers.map(
       (provider) => CHANNEL_REQUIREMENTS[provider as keyof typeof CHANNEL_REQUIREMENTS],
+    );
+  }
+
+  // A Gateway's environment sets a name a Secret binding could set only from a binding or from
+  // what the Installation's Drivers add at launch (beforeWorkloadStart), whose names are unknown
+  // before then; null bindings (Agent save) check only what the Agent's mode decides.
+  private requirePluginSecretInputs(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    topology: KubernetesHarnessTopology,
+    secretBindings: SecretBindings | null | undefined,
+  ): void {
+    let bindings: ReturnType<typeof normalizeSecretBindings> | undefined;
+    requirePluginSecretInputs(
+      configuration,
+      topology,
+      secretBindings === null
+        ? undefined
+        : (name) => {
+            if (this.lifecycle.contributesLaunchEnvironment) {
+              return true;
+            }
+            if (bindings === undefined) {
+              try {
+                bindings = normalizeSecretBindings(secretBindings);
+              } catch {
+                throw new ConfigurationFailure("AgentRevision Secret bindings are invalid.");
+              }
+            }
+            return Object.hasOwn(bindings, name);
+          },
+      callerSettingError,
     );
   }
 

@@ -7,11 +7,13 @@ import type {
   PlatformStateStore,
 } from "../../packages/occ/src/state/platform-state.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { callerDenied } from "../helpers/refusal-text.mjs";
 import {
   AGENT_READ,
   detailUrl,
   denyRevisionRead,
   expireSessions,
+  hasFocus,
   revokeMemberGrant,
   login,
   nativeValues,
@@ -19,6 +21,7 @@ import {
   waitForIdleFetches,
   trackSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { responseTo } from "./console-action-helpers.mjs";
 
 // The real controller admits and authorizes the deployment. The fixture has no
 // worker: change only its exact work lookup/lease, then its revision lookup.
@@ -228,7 +231,7 @@ for (const source of ["selected", "automatic", "overlapping refresh", "regrant"]
       assert.match(await activity.innerText(), /Recorded status: Completed/);
       assert.equal(page.url(), route);
       if (source !== "automatic") {
-        assert.equal(await refresh.evaluate((node) => node === document.activeElement), true);
+        assert.equal(await hasFocus(refresh), true);
       }
       assert.deepEqual(counts, {
         record: source === "overlapping refresh" ? 2 : 1,
@@ -348,10 +351,7 @@ for (const viewport of [
           responses.push(response.status());
         }
       });
-      const next = () =>
-        page.waitForResponse(
-          (response) => response.url() === url && response.request().method() === "GET",
-        );
+      const next = () => responseTo(page, "GET", url);
       let recordedLabel = "Queued";
       type Outcome = "queued" | "running" | "succeeded" | 503 | 404;
       async function received(
@@ -437,16 +437,12 @@ for (const viewport of [
         if ((await isOpen()) === folded) {
           await page.keyboard.press("Enter");
         }
-        for (
-          let i = 0;
-          i < 40 && !(await run.evaluate((node) => node === document.activeElement));
-          i++
-        ) {
+        for (let i = 0; i < 40 && !(await hasFocus(run)); i++) {
           await page.keyboard.press("Tab");
         }
         const focused = await run.elementHandle();
         assert.ok(focused);
-        assert.equal(await focused.evaluate((node) => node === document.activeElement), true);
+        assert.equal(await hasFocus(focused), true);
         return focused;
       }
       // An idle reader has no focused control: layout itself must remain stable.
@@ -609,7 +605,7 @@ for (const viewport of [
           await upstreamReady;
           assert.equal(await refresh.getAttribute("aria-disabled"), "true");
           assert.equal(await fill(), before, "busy must preserve the hovered fill");
-          assert.equal(await refresh.evaluate((node) => node === document.activeElement), true);
+          assert.equal(await hasFocus(refresh), true);
           await page.keyboard.press("Enter");
           assert.equal(requests, 1);
         } finally {
@@ -653,10 +649,7 @@ test("a pending cleanup after a final outcome keeps the reader's fold until it e
   const run = page
     .locator(".version-deployment-record")
     .getByRole("button", { name: "Refresh record", exact: true });
-  const next = () =>
-    page.waitForResponse(
-      (response) => response.url() === url && response.request().method() === "GET",
-    );
+  const next = () => responseTo(page, "GET", url);
   async function received(pending: ReturnType<typeof next>, cleanup: string | null) {
     const response = await pending;
     if (cleanup === null) {
@@ -702,11 +695,7 @@ test("a pending cleanup after a final outcome keeps the reader's fold until it e
   assert.ok(before);
   async function readerStays(stage: string) {
     assert.equal(await isOpen(), false, `${stage}: preserve the fold`);
-    assert.equal(
-      await run.evaluate((node) => node === document.activeElement),
-      true,
-      `${stage}: the record's Refresh keeps focus`,
-    );
+    assert.equal(await hasFocus(run), true, `${stage}: the record's Refresh keeps focus`);
     const after = await run.boundingBox();
     assert.ok(after);
     assert.ok(Math.abs(after.y - before!.y) <= 1, `${stage}: moved ${after.y - before!.y}px`);
@@ -781,8 +770,11 @@ for (const refusal of [403, 404] as const) {
     assert.equal(refusedBody.data, undefined);
     assert.equal(refusedBody.error.code, refusal === 403 ? "FORBIDDEN" : "NOT_FOUND");
     if (refusal === 403) {
-      assert.match(refusedBody.error.message, /^Not authorized: /);
-      assert.match(refusedBody.error.message, /Ask an Installation administrator to grant it\./);
+      // The denial names the read the Restriction blocks and the version ID the URL carried.
+      assert.equal(
+        refusedBody.error.message,
+        callerDenied("AgentRevision read", `AgentRevision ${revisionId}`),
+      );
     }
     // Named denials are shown verbatim; do not restore the old generic refusal copy.
     const notice =
@@ -916,7 +908,7 @@ for (const refusal of [403, 404] as const) {
           /Recorded status:|Waiting for a worker claim/,
         );
         assert.deepEqual(responses, [refusal]);
-        assert.equal(await refresh.evaluate((el) => el === document.activeElement), true);
+        assert.equal(await hasFocus(refresh), true);
         if (refusal === 403) {
           fixture.policy.restrictions.pop();
         }
@@ -1068,7 +1060,7 @@ for (const refusal of [403, 404] as const) {
     assert.deepEqual(replies, [200, refusal]);
     assert.doesNotMatch(await card.innerText(), /Recorded outcome:/);
     assert.doesNotMatch(await activity.innerText(), /Recorded status:/);
-    assert.equal(await refresh.evaluate((node) => node === document.activeElement), true);
+    assert.equal(await hasFocus(refresh), true);
     if (refusal === 403) {
       fixture.policy.restrictions.pop();
     }
@@ -1163,7 +1155,7 @@ for (const delayed of [200, 403] as const) {
     }
     await card.getByText("Recorded outcome: In progress", { exact: true }).waitFor();
     await activity.getByText("Recorded status: In progress", { exact: true }).waitFor();
-    assert.equal(await refresh.evaluate((node) => node === document.activeElement), true);
+    assert.equal(await hasFocus(refresh), true);
   });
 }
 
@@ -1326,16 +1318,13 @@ for (const scenario of ["selected first", "overview first", "newer cleanup"] as 
         assert.match(await activity.innerText(), /Revision cleanup completed for this version\./);
         assert.doesNotMatch(await activity.innerText(), /Revision cleanup pending/);
         assert.equal(await refresh.getAttribute("aria-disabled"), "true");
-        assert.equal(
-          await selectedRefresh.evaluate((node) => node === document.activeElement),
-          true,
-        );
+        assert.equal(await hasFocus(selectedRefresh), true);
       }
       release.resolve();
     }
     await waitForIdleFetches(page);
     assert.equal(page.url(), location);
-    assert.equal(await selectedRefresh.evaluate((node) => node === document.activeElement), true);
+    assert.equal(await hasFocus(selectedRefresh), true);
     assert.equal(await refresh.getAttribute("aria-disabled"), "false");
     if (next) {
       assert.match(await page.locator("main").innerText(), /v2/);

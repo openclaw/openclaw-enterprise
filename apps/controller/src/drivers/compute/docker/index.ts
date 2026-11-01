@@ -25,6 +25,7 @@ import {
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
   configurationSettingMessage,
+  gatewayPasswordRequirement,
   keyedSettingPath,
 } from "@openclaw-enterprise/occ";
 import {
@@ -45,6 +46,7 @@ import {
   AGENT_RUNTIME_ENTRYPOINT,
   PLUGIN_RUNTIME_HELPERS,
 } from "../kubernetes/runtime-entrypoints.ts";
+import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import {
   embeddedGatewayVolumeInstance,
   observeEmbeddedGateway,
@@ -207,6 +209,12 @@ function dockerGatewayConfigurationDocument(
       "is not a supported native gateway authentication field",
     );
   }
+  // OpenClaw resolves the password in both modes Docker Compute admits, with the Configuration's
+  // own secrets; Configuration save refuses the same objects (finding 3061).
+  const passwordRequirement = gatewayPasswordRequirement(auth.password, configuration.secrets);
+  if (passwordRequirement !== undefined) {
+    throw createError("gateway.auth.password", passwordRequirement);
+  }
   const passwordReference =
     auth.password === undefined ? undefined : gatewayPasswordEnvironmentReference(auth.password);
   if (auth.mode === "trusted-proxy") {
@@ -264,6 +272,7 @@ process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
 
 ${PLUGIN_RUNTIME_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
+${OPENCLAW_CONFIG_ISSUE_HELPER}
 ${startupPhaseHelper("gateway")}
 ${openClawStateMigrationHelper("Gateway", "deploy the Agent again")}
 

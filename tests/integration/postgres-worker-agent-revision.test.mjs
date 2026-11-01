@@ -51,6 +51,7 @@ import {
 import {
   DEPLOYMENT_FAILED,
   IMAGE_PULL_FAILING,
+  MODEL_CREDENTIAL_REJECTED_RECORDED,
   POD_QUOTA_FULL,
   WORKSPACE_SETUP_RETRYING,
 } from "../helpers/refusal-text.mjs";
@@ -2348,8 +2349,7 @@ for (const scenario of [
       activeRevisionId: null,
       error: {
         code: "RUNTIME_AUTHENTICATION_FAILED",
-        message:
-          "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.",
+        message: MODEL_CREDENTIAL_REJECTED_RECORDED,
       },
     },
   },

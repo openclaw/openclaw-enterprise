@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-10-29 03:37
-last_updated_session: authoring-run/0befad8f-89c2-473e-bf8d-6b978197921e
+updated: 2026-10-31 05:00
+last_updated_session: fix-3022
 ---
 
 # Compute Driver Lifecycle Hooks Flow
@@ -110,7 +110,8 @@ gateway Deployment and Service, then checks gateway readiness.
 namespace. With `runtime` set, `validateHarnessAuth` refuses a dedicated Harness without that
 selector, gateway routing or node enrollment: at deployment admission, before the replacement stops
 its predecessors, and at Agent save, where it runs with `null` Secret bindings. The Pod-level selector also schedules the Gateway's private-state initializer
-there.
+there. At deployment admission it also refuses a Configuration draft that selects no model,
+naming `agents.defaults.model`; Agent save skips that check until a model is selected.
 Compute owns both targets through the same version lifecycle; teardown selects each resource's
 physical namespace and preserves newer versions and durable Agent claims.
 Dedicated replacement stops earlier Harnesses before preparing the successor.
@@ -179,6 +180,8 @@ after the remaining resources. The worker settles deletion only from the resulti
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31 05:00: Name the missing model of a draft at deployment admission. (fix-3022, finding 3022)
 
 - 2026-10-29 03:37: Preserve enclosing cancellation in nested Compute operations. (authoring-run/0befad8f-89c2-473e-bf8d-6b978197921e - 8e20e2019fb4d067e0876fb10e59231dd70c5761)
 

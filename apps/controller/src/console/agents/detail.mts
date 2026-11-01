@@ -13,9 +13,16 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
-import type { ConsolePageContext } from "../page-context.mjs";
+import type { AgentRecheck, ConsolePageContext } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import { retiredOpenClawSettingMessage } from "../retired-openclaw-settings.mjs";
+import {
+  configurationSettingMessage,
+  gatewayPasswordRequirement,
+  generatedGatewayPasswordReference,
+  secretProviderDefaultsProblem,
+  unreadablePluginSecretInput,
+} from "../environment-references.mjs";
 import {
   button,
   element,
@@ -54,6 +61,7 @@ import {
   DEPLOY_SANDBOX_POLICY_READ_DENIED,
   deployAcceptedVersionUnreadable,
   deployUnreadableSecretsReason,
+  FORMER_CURRENT_VERSION_UNREADABLE,
   MODEL_CREDENTIAL_REJECTED_REPLACED,
   modelCredentialRejectedReadOnly,
   NEW_VERSIONS_READ,
@@ -768,6 +776,11 @@ export async function renderAgentDetail(
   // The Agent as last read; Stop and finished deployments update it in place.
   let currentAgent = agent;
   let currentRuntimeState = agent.desiredRuntimeState;
+  // Counts the Agent states applied to the page, so a reread can tell whether a newer one
+  // landed while it was in flight (finding 2998).
+  let agentUpdates = 0;
+  // When the last Agent state was applied, on the document's performance clock.
+  let agentUpdatedAt = Number.NEGATIVE_INFINITY;
   let visibleRevisions: Revision[] = [];
   // True once the readable version list loaded; until then nothing counts as hidden.
   let visibleRevisionsLoaded = false;
@@ -1162,6 +1175,9 @@ export async function renderAgentDetail(
   }
   const deployedHere = (revisionId: string) =>
     deployedVersions.has(failedVersionKey(path, revisionId));
+  // Versions this page showed as selected for service. Each exists, so a viewed one the reader
+  // cannot read is named in words once a stop or another version takes its place (finding 3000).
+  const formerCurrent = new Set<string>();
   // The newest version this tab deployed for this Agent that the caller cannot read and that is
   // newer than every version listed, whichever entry is viewed: the draft too (finding D751).
   // Being newer than the first page, it cannot sit on an older one, so the list need not be
@@ -2226,7 +2242,12 @@ export async function renderAgentDetail(
       showDeleting();
       return;
     }
+    agentUpdates += 1;
+    agentUpdatedAt = performance.now();
     agentRereadFailed = false;
+    if (currentRevisionId) {
+      formerCurrent.add(currentRevisionId);
+    }
     const revisionChanged = freshAgent.activeRevisionId !== currentRevisionId;
     const workspaceAvailabilityChanged =
       Boolean(freshAgent.activeRevisionId) !== Boolean(currentRevisionId);
@@ -2262,6 +2283,7 @@ export async function renderAgentDetail(
     renderDetailHeading();
     renderVersionNotice();
     versionRecord?.renderDiagnostics();
+    logsServingChange?.(servingChange());
   }
 
   // The Logs view of a version with no running Pod asks which version serves now. A stop and
@@ -2271,9 +2293,20 @@ export async function renderAgentDetail(
   let servingReread: Promise<void> | null = null;
   // When this reread last listed the versions to look for a newer one.
   let newerVersionListedAt = Number.NEGATIVE_INFINITY;
-  async function rereadServing() {
-    const fresh = await readAgent();
-    if (!context.isCurrent() || deleting) {
+  // A refocus recheck passes the Agent it read and when that read started (finding 3000).
+  async function rereadServing(recheck?: AgentRecheck) {
+    // A Stop accepted on this page, or a finished deployment's reread, can land while this read
+    // is in flight. Its answer is then older than the page: applying it showed "Stop Agent" and
+    // "Not running" again over "Stop requested" until the next poll (finding 2998).
+    const updates = agentUpdates;
+    // A recheck's read started before this call: a state applied since it started is newer.
+    const superseded = () =>
+      !context.isCurrent() ||
+      deleting ||
+      agentUpdates !== updates ||
+      (recheck !== undefined && agentUpdatedAt > recheck.readStartedAt);
+    const fresh = recheck ? agentForPage(recheck.agent) : await readAgent();
+    if (superseded()) {
       return;
     }
     const changed =
@@ -2304,7 +2337,7 @@ export async function renderAgentDetail(
       newerVersionListedAt = Date.now();
     }
     const page = unknownVersion ? revisionsForPage(await readRevisionPage(request, path)) : null;
-    if (!context.isCurrent() || deleting) {
+    if (superseded()) {
       return;
     }
     // A list with no new version or outcome changes nothing: the version chooser is not
@@ -2329,6 +2362,16 @@ export async function renderAgentDetail(
       viewedSnapshot,
     );
   }
+  // A refocus recheck read the Agent to check that the page is still readable, and the page
+  // applied nothing it read. Where no Logs poll rereads the Agent, as on a current version the
+  // reader cannot read, a stop and redeploy made elsewhere showed only after a reload (finding
+  // 3000). The recheck's answer now updates the page as a poll's does, under the same guards,
+  // without a second read.
+  context.onRechecked?.((recheck) => {
+    if (context.isCurrent() && !deleting) {
+      void rereadServing(recheck).catch(() => {});
+    }
+  });
   async function runningVersion() {
     servingReread ??= rereadServing()
       .catch(() => {})
@@ -2345,6 +2388,23 @@ export async function renderAgentDetail(
     }
     const label = `v${serving.revision}`;
     return { label, link: versionLink(`Open ${label} Logs`, serving.id, "logs") };
+  }
+
+  // What the open Logs view says in place once a stop, or another version, takes the place of the
+  // viewed version that was selected for service. The view shows it only for a version the reader
+  // cannot read, whose runtime status it does not read: the stop showed only in the summary, off
+  // screen at phone width (finding 3012). It says no more than the summary does.
+  let logsServingChange: ((text: string | null) => void) | null = null;
+  function servingChange() {
+    if (selected !== currentRevisionId && !formerCurrent.has(selected)) {
+      return null;
+    }
+    if (currentRuntimeState === "stopped") {
+      return "Stop requested. This Agent will not start again until a new version is deployed.";
+    }
+    return selected === currentRevisionId
+      ? null
+      : "This version is no longer selected for service.";
   }
 
   // The failed version the recovery block leads with, if any. The viewed version's record does
@@ -2436,7 +2496,9 @@ export async function renderAgentDetail(
             ? deployAcceptedVersionUnreadable(shortId(hidden))
             : hidden === currentRevisionId
               ? `You cannot read the current version, so its progress and outcome are not shown here. ${readAccessHint}`
-              : requestedVersionUnavailable(shortId(hidden)),
+              : formerCurrent.has(hidden)
+                ? FORMER_CURRENT_VERSION_UNREADABLE
+                : requestedVersionUnavailable(shortId(hidden)),
       );
       setLiveServing(false);
       // This viewer reads no deployment, so Stop keeps its row and says it may cancel one or
@@ -2541,7 +2603,9 @@ export async function renderAgentDetail(
           requestedHidden && selected !== acceptedId
             ? deployedHere(selected)
               ? deployAcceptedVersionUnreadable(shortId(selected))
-              : requestedVersionUnavailable(shortId(selected))
+              : formerCurrent.has(selected)
+                ? FORMER_CURRENT_VERSION_UNREADABLE
+                : requestedVersionUnavailable(shortId(selected))
             : null,
           newerHidden && !currentIsAccepted
             ? `The current version is one you cannot read; v${latest.revision} is an older version.`
@@ -3331,14 +3395,46 @@ export async function renderAgentDetail(
         pluginEditorState.reloadRequired ||
         !agent.harnessAuth ||
         revisionResult.status !== "fulfilled" ||
-        retiredSetting() !== null ||
+        configurationRefusal() !== null ||
         (!runtimeAuth && !credentials?.canDeploy())
       );
     }
-    // OCC refuses to deploy a saved Configuration that keeps a setting the pinned OpenClaw
-    // retired, with this message, so the draft says it before Deploy (finding 2810).
-    function retiredSetting() {
-      return retiredOpenClawSettingMessage(values);
+    // OCC refuses to deploy a saved Configuration with a secrets.defaults alias OpenClaw refuses
+    // (finding 3064), a gateway password reference OpenClaw cannot read (finding 3063) or a setting
+    // the pinned OpenClaw retired (finding 2810), then Compute admission one with a plugin secret
+    // input OpenClaw cannot read (finding 3076), in that order and with this message, so the draft
+    // says it before Deploy, with the Configuration step. Only Kubernetes Compute refuses the
+    // plugin input, but the page does not know which Compute the next version runs on, and the
+    // Gateway exits on that input on any Compute that ships the plugin, so it holds Deploy on all.
+    function configurationRefusal(): { readonly message: string; readonly step: string } | null {
+      const defaults = secretProviderDefaultsProblem(values.secrets);
+      if (defaults !== undefined) {
+        return {
+          message: `Configuration setting ${defaults.setting} ${defaults.requirement}.`,
+          step: "Fix the secret provider alias",
+        };
+      }
+      const password = gatewayPasswordRequirement(
+        responseFields(responseFields(values.gateway).auth).password,
+        values.secrets,
+      );
+      if (password !== undefined) {
+        return {
+          message: `Configuration setting gateway.auth.password ${password}.`,
+          step: "Fix the gateway password",
+        };
+      }
+      const retired = retiredOpenClawSettingMessage(values);
+      if (retired !== null) {
+        return { message: retired, step: "Remove the retired setting" };
+      }
+      const plugin = unreadablePluginSecretInput(values);
+      return plugin === undefined
+        ? null
+        : {
+            message: configurationSettingMessage(plugin.setting, plugin.requirement),
+            step: "Fix the plugin secret input",
+          };
     }
     function updateDeployControls() {
       authenticationForm?.toggleAttribute("inert", Boolean(credentials?.mutationPending()));
@@ -3424,8 +3520,8 @@ export async function renderAgentDetail(
           deployStatus.textContent = "Save or discard plugin changes before deploying.";
         } else if (deployFeedback?.textContent) {
           deployStatus.textContent = "";
-        } else if (retiredSetting() !== null) {
-          deployStatus.textContent = retiredSetting();
+        } else if (configurationRefusal() !== null) {
+          deployStatus.textContent = configurationRefusal()?.message ?? "";
         } else if (revisionResult.status !== "fulfilled") {
           deployStatus.textContent =
             "Version history is required before deploying this new version.";
@@ -3543,11 +3639,11 @@ export async function renderAgentDetail(
         Boolean(deployReloadMessage);
       const unsaved =
         draftEditorState.dirty || pluginEditorState.dirty || retainedConfiguration.dirty;
-      const retired = retiredSetting() !== null;
+      const refusal = configurationRefusal();
       setStep(
         checklistSteps[0],
-        !saving && !reload && !unsaved && !retired,
-        `${saving ? "Saving…" : reload ? "Reload this draft" : unsaved ? "Unsaved changes" : retired ? "Remove the retired setting" : "Saved"} · Configuration ${snapshot.id} · generation ${snapshot.generation}`,
+        !saving && !reload && !unsaved && refusal === null,
+        `${saving ? "Saving…" : reload ? "Reload this draft" : unsaved ? "Unsaved changes" : (refusal?.step ?? "Saved")} · Configuration ${snapshot.id} · generation ${snapshot.generation}`,
       );
       const rejected = credentialRejected();
       const authenticationReady =
@@ -4173,9 +4269,14 @@ export async function renderAgentDetail(
       },
       {
         version: selected !== "draft",
-        // The current version, every listed one and one this tab deployed are known to exist.
+        // The current version, every listed one, one this tab deployed and one this page showed
+        // as selected for service are known to exist. A tab built after a stop or redeploy made
+        // elsewhere called a former current version one that may not exist (finding 3004).
         exists:
-          selected === currentRevisionId || listedRevisions.has(selected) || deployedHere(selected),
+          selected === currentRevisionId ||
+          listedRevisions.has(selected) ||
+          deployedHere(selected) ||
+          formerCurrent.has(selected),
       },
     );
   }
@@ -4461,6 +4562,8 @@ export async function renderAgentDetail(
           },
         );
       logsFailure(recoveryLine);
+      logsServingChange = logs.showServingChange;
+      logsServingChange(servingChange());
       content.append(logs.section);
       state.loading = false;
       // The pending view is nearly empty: Stop and Delete sat under it, then the strip and
@@ -5515,7 +5618,12 @@ export async function renderAgentDetail(
       const reloadRequired = saveState === "conflict";
       const locked = saveState !== "idle";
       data.setDraftEditorState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
-      save.disabled = locked || !dirty || !fields?.isSettled() || fields.blocksCreate();
+      save.disabled =
+        locked ||
+        !dirty ||
+        !fields?.isSettled() ||
+        fields.blocksCreate() ||
+        (fields.bindings().length > 0 && !fields.hasValidSelection());
       if (save.getAttribute("aria-busy") !== String(pending)) {
         save.setAttribute("aria-busy", String(pending));
       }
@@ -5781,9 +5889,17 @@ export async function renderAgentDetail(
     const gateway = responseFields(values.gateway);
     const gatewayAuth = responseFields(gateway.auth);
     const password = responseFields(gatewayAuth.password);
+    // A saved reference OpenClaw cannot read (no provider, other keys, a provider or allowlist that
+    // cannot serve it) stops the Gateway; Configuration save and deployment refuse it with this
+    // text, so it does not count as enabled and the button that replaces it stays (finding 3063).
+    // A secrets.defaults alias OpenClaw refuses stops it whatever the password, and save refuses
+    // any reference the button could write, so the hint names the alias and the button goes
+    // (finding 3064).
+    const defaultsProblem = secretProviderDefaultsProblem(values.secrets);
+    const passwordRequirement = gatewayPasswordRequirement(gatewayAuth.password, values.secrets);
     const usesGeneratedGatewayPassword =
-      password?.source === "env" &&
-      (password.provider === undefined || password.provider === "default") &&
+      passwordRequirement === undefined &&
+      password.source === "env" &&
       password.id === "OPENCLAW_GATEWAY_PASSWORD";
     // A version admitted from this exact Configuration generation already carries the reference.
     const gatewayPasswordRevision = visibleRevisions.find(
@@ -5791,6 +5907,27 @@ export async function renderAgentDetail(
         revision.configurationId === snapshot.id &&
         revision.configurationGeneration === snapshot.generation,
     );
+    // The reference the button writes, on the default env alias. An allowlist or another source
+    // on that alias can leave it unreadable, and save refuses it then, so the hint states why and
+    // the button goes.
+    const generatedReference = generatedGatewayPasswordReference(values.secrets);
+    const generatedRequirement = gatewayPasswordRequirement(generatedReference, values.secrets);
+    function gatewayPasswordHint(): string {
+      if (defaultsProblem !== undefined) {
+        return `Configuration setting ${defaultsProblem.setting} ${defaultsProblem.requirement}. Edit Configuration to fix it before you enable gateway password access.`;
+      }
+      if (usesGeneratedGatewayPassword) {
+        return gatewayPasswordRevision
+          ? `Gateway password access is enabled in the saved Configuration and included in v${gatewayPasswordRevision.revision}.`
+          : "Gateway password access is enabled in the saved Configuration. Deploy a new version to apply it.";
+      }
+      if (generatedRequirement !== undefined) {
+        return `The generated gateway password reference {source: "env", provider: "${generatedReference.provider}", id: "OPENCLAW_GATEWAY_PASSWORD"} ${generatedRequirement}. Edit Configuration to fix it before you enable gateway password access.`;
+      }
+      return passwordRequirement === undefined
+        ? "Use generated credentials for direct gateway password access. Enable access, save Configuration, then deploy a new version."
+        : `Configuration setting gateway.auth.password ${passwordRequirement}. Enable gateway password access to replace it, save Configuration, then deploy a new version.`;
+    }
     const enableGatewayPassword = button("Enable gateway password access", () => {
       // Stage the native reference through the same draft and save checks as JSON edits.
       // The Compute Driver delivers the generated value only after deployment.
@@ -5801,7 +5938,7 @@ export async function renderAgentDetail(
             ...gateway,
             auth: {
               ...gatewayAuth,
-              password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
+              password: generatedReference,
             },
           },
         },
@@ -6101,20 +6238,16 @@ export async function renderAgentDetail(
       }
       if (!editing) {
         body.replaceChildren(
-          element(
-            "p",
-            { className: "hint" },
-            usesGeneratedGatewayPassword
-              ? gatewayPasswordRevision
-                ? `Gateway password access is enabled in the saved Configuration and included in v${gatewayPasswordRevision.revision}.`
-                : "Gateway password access is enabled in the saved Configuration. Deploy a new version to apply it."
-              : "Use generated credentials for direct gateway password access. Enable access, save Configuration, then deploy a new version.",
-          ),
+          element("p", { className: "hint" }, gatewayPasswordHint()),
           element(
             "div",
             { className: "form-actions" },
             edit,
-            usesGeneratedGatewayPassword ? null : enableGatewayPassword,
+            usesGeneratedGatewayPassword ||
+              defaultsProblem !== undefined ||
+              generatedRequirement !== undefined
+              ? null
+              : enableGatewayPassword,
           ),
           nativeDocument(values, "View native Configuration"),
           ...(feedback.textContent ? [feedback] : []),

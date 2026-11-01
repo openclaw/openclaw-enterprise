@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import type { BrowserContextOptions, Locator, Page } from "playwright";
 
@@ -20,6 +19,7 @@ import {
   newPage,
   nonAuthWriteRequests,
   selectSecret,
+  shippedPreset,
 } from "./console-agents-browser-helpers.mjs";
 import {
   openAdvancedSettings,
@@ -37,9 +37,7 @@ import {
 
 const browser = fileBrowser();
 
-const defaultCodexPreset = JSON.parse(
-  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
-);
+const defaultCodexPreset = await shippedPreset("default-codex");
 
 // The control's error as a reader meets it: under the control, inside its field, in the danger
 // colour, linked to the control, which has focus.

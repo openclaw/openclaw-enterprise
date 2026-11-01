@@ -26,6 +26,21 @@ const runtimeLogsPage = {
   deployed: true,
   candidateDeploymentStatus: "succeeded",
 };
+// The current version, v8, which the viewer cannot read, opened on its Logs tab.
+const hiddenCurrentLogsPage = {
+  group: "Pages/Agent detail",
+  path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&tab=logs",
+  deployed: true,
+  candidateDeploymentStatus: "succeeded",
+  candidateSuperseded: true,
+  rules: [
+    {
+      suffix: "/revisions/rev_00000000-0000-4000-8000-000000000008",
+      status: 403,
+      code: "FORBIDDEN",
+    },
+  ],
+};
 const refuseLogRead = { suffix: "/runtime/logs", status: 403, code: "FORBIDDEN" };
 const form = [click("Start with default Preset")];
 // The OpenShell Sandbox Driver's refusal of Dedicated OpenClaw on its settings alone.
@@ -4529,7 +4544,7 @@ export const scenarios = {
         status: 409,
         code: "RESOURCE_CONFLICT",
         message:
-          "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
+          "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment. Select a codex/<model> model with agentRuntime.id codex, or ask an Installation administrator for such a SandboxDriver.",
         once: true,
       },
     ],
@@ -5086,6 +5101,62 @@ export const scenarios = {
     gatewayPassword: true,
     description:
       "The saved Configuration uses the generated password; deployment is still required to apply edits.",
+  },
+  gatewayPasswordUnreadable: {
+    group: "Pages/Agent detail",
+    name: "Gateway password reference OpenClaw cannot read",
+    path: draft,
+    deployed: true,
+    gatewayPasswordProviderless: true,
+    description:
+      "An older release saved gateway.auth.password without a provider. OpenClaw cannot read it and OCC refuses to save or deploy it, so the page shows OCC's refusal and keeps Enable gateway password access.",
+    steps: [
+      "On Configuration the hint reads Configuration setting gateway.auth.password is a SecretRef without a provider: add provider default, then says to enable access, save and deploy.",
+      "In Prepare this version, the first step reads Fix the gateway password and Deploy new version is disabled with the same refusal.",
+      "Select Enable gateway password access and Save Configuration: the hint says access is enabled and the status returns to Ready to deploy.",
+    ],
+    gap: "The stored reference is simulated; this story does not call OCC's save or deploy admission or start a Gateway.",
+  },
+  secretProviderAliasRefused: {
+    group: "Pages/Agent detail",
+    name: "Secret provider alias OpenClaw refuses",
+    path: draft,
+    deployed: true,
+    secretProviderAliasRefused: true,
+    description:
+      "An older release saved secrets.defaults.env as BAD. OpenClaw's configuration check refuses an alias outside its grammar and OCC refuses to save or deploy it, so the page names the alias and offers no Enable gateway password access.",
+    steps: [
+      "On Configuration the hint reads Configuration setting secrets.defaults.env is BAD, not a provider alias OpenClaw reads, with the grammar and the fix (use bad, or remove it), then says to edit the Configuration before you enable gateway password access; the button is absent.",
+      "In Prepare this version, the first step reads Fix the secret provider alias and Deploy new version is disabled with the same refusal.",
+    ],
+    gap: "The stored alias is simulated; this story does not call OCC's save or deploy admission or start a Gateway.",
+  },
+  pluginSecretInputUnreadable: {
+    group: "Pages/Agent detail",
+    name: "Plugin secret input OpenClaw cannot read",
+    path: draft,
+    deployed: true,
+    pluginSecretInputProviderless: true,
+    description:
+      "An older release saved a Google web search header as a SecretRef without a provider. OpenClaw cannot read it and Kubernetes Compute refuses to save or deploy it, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the plugin secret input.",
+      "Deploy new version is disabled with Configuration setting plugins.entries.google.config.webSearch.headers.X-Goog-User-Project is a SecretRef without a provider: add provider default, or remove plugins.entries.google or set its enabled to false.",
+    ],
+    gap: "The stored reference is simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
+  gatewayPasswordAllowlistOmits: {
+    group: "Pages/Agent detail",
+    name: "Gateway password reference an allowlist omits",
+    path: draft,
+    deployed: true,
+    gatewayPasswordAllowlistOmits: true,
+    description:
+      "The default env alias is vault, a configured env provider whose allowlist leaves out OPENCLAW_GATEWAY_PASSWORD. OpenClaw cannot read the generated reference on that alias and OCC refuses to save it, so the page states why and offers no Enable gateway password access.",
+    steps: [
+      'On Configuration the hint reads The generated gateway password reference {source: "env", provider: "vault", id: "OPENCLAW_GATEWAY_PASSWORD"} references OPENCLAW_GATEWAY_PASSWORD, which secrets.providers.vault.allowlist omits: add it to that allowlist, then says to edit the Configuration before you enable gateway password access; the button is absent.',
+    ],
+    gap: "The stored secrets are simulated; this story does not call OCC's save or deploy admission or start a Gateway.",
   },
   gatewayPasswordSaveDenied: {
     group: "Pages/Agent detail",
@@ -6570,20 +6641,8 @@ export const scenarios = {
     ],
   },
   agentCurrentVersionHiddenLogs: {
-    group: "Pages/Agent detail",
+    ...hiddenCurrentLogsPage,
     name: "Logs of a current version the viewer cannot read",
-    // The current version, v8, which the viewer cannot read, opened on its Logs tab.
-    path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&tab=logs",
-    deployed: true,
-    candidateDeploymentStatus: "succeeded",
-    candidateSuperseded: true,
-    rules: [
-      {
-        suffix: "/revisions/rev_00000000-0000-4000-8000-000000000008",
-        status: 403,
-        code: "FORBIDDEN",
-      },
-    ],
     description:
       "An operator opens Logs on a current version she cannot read. Runtime status also needs AgentRevision read on it, so the page does not read it and says why in words; log text, which needs no version read, still shows.",
     steps: [
@@ -6591,6 +6650,19 @@ export const scenarios = {
       "The request log shows no /runtime status read and no read of the current version; log output still loads.",
     ],
     gap: "Simulated UI proof: it does not verify the API's refusal of the status read.",
+  },
+  agentCurrentVersionHiddenLogsStopped: {
+    ...hiddenCurrentLogsPage,
+    name: "Logs of a current version the viewer cannot read, stopped elsewhere",
+    stopElsewhereOnReread: true,
+    description:
+      "The operator has Logs open on the current version, which she cannot read. Another person stops the Agent. The Logs view reads no runtime status for this version, so it says in place that a stop was requested (finding 3012), as the summary does.",
+    steps: [
+      "Wait for the next Agent reread (at most 10 seconds). The summary reads Selected for service None.",
+      "Check the Logs view under the runtime status: “Stop requested. This Agent will not start again until a new version is deployed.” It says nothing else about the version. Focus and the Logs view stay where they were, at 1440 and at 390 px wide.",
+      "The request log shows only Agent reads: no /runtime status read and no read of the version.",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live stop or the screen reader announcement.",
   },
   deploymentSucceeded: {
     group: "Pages/Agent detail",
@@ -8693,6 +8765,64 @@ export const scenarios = {
       "Select Retry Secret access. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy.",
     ],
   },
+  credentialsSlackOffGrantMissing: {
+    group: "Components/Credentials",
+    name: "Slack off with a bound Secret without an Agent grant",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackOff: true,
+    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    description:
+      "Disable Slack kept both token bindings, and the app token Secret has no Agent grant. Deploy checks every bound Secret, so with Slack off the tab still lists the bound keys as read by no Slack setting, marks the app token, blocks Deploy, and offers Retry Secret access (finding 3018).",
+    steps: [
+      "SLACK_APP_TOKEN reads Bound · not read by the Slack settings · Agent access not confirmed; Deploy new version names SLACK_APP_TOKEN and says to select Retry Secret access.",
+      "Select Retry Secret access. The section says Secret access granted. This Agent can use its bound Secrets. Deploy the new version to deliver them. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy (finding 3021).",
+    ],
+  },
+  credentialsSlackOffRetryUnconfirmed: {
+    group: "Components/Credentials",
+    name: "Slack off Retry with an unconfirmed grant",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackOff: true,
+    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 503, once: true }],
+    actions: [click("Retry Secret access")],
+    description:
+      "With Slack off, Retry Secret access sends the app token Secret's grant, and the IAM API is unavailable (503), so the grant is not confirmed. A Retry saves no Configuration, so the warning names only the grant and what to do next (finding 3023).",
+    gap: "The unavailable IAM API is simulated.",
+    steps: [
+      "The section says Secret access grants could not be confirmed. Select Retry Secret access again; if it is refused, ask an Installation administrator. It does not say Configuration saved.",
+      "Select Retry Secret access again. The section says Secret access granted and Deploy new version is available; do not deploy.",
+    ],
+  },
+  credentialsSlackOffRetryAnswerLost: {
+    group: "Components/Credentials",
+    name: "Slack off Retry whose answer is lost",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackOff: true,
+    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    rules: [{ suffix: "/iam/access-bindings", method: "POST", lostAnswer: true, once: true }],
+    // Another browser saves the Configuration after the first Retry, so the second one asks for
+    // Reload draft.
+    configurationChangedElsewhere: {
+      afterReads: 2,
+      values: { channels: { slack: { allowFrom: ["UOTHER99"] } } },
+    },
+    actions: [click("Retry Secret access")],
+    description:
+      "With Slack off, Retry Secret access makes the app token Secret's grant, but its answer is lost, so the grant is not confirmed. Reload draft rebuilds the section, and its grant read finds the grant: the section says that access is confirmed and takes focus, instead of disappearing (finding 3030).",
+    gap: "The lost answer and the other browser's save are simulated; the simulated API keeps the grant.",
+    steps: [
+      "The section says Secret access grants could not be confirmed. Select Retry Secret access again; if it is refused, ask an Installation administrator.",
+      "Select Retry Secret access: another browser changed the Configuration, so the section asks for Reload draft.",
+      "Select Reload draft. Once the grant read lands, the section says Secret access confirmed. This Agent can use its bound Secrets. Deploy the new version to deliver them. Focus is on that message, and Deploy new version is available; do not deploy.",
+    ],
+  },
   credentialsSlackGrantReadPending: {
     group: "Components/Credentials",
     name: "Slack grant read in progress",
@@ -10224,6 +10354,71 @@ scenarios.policyDenialsNoSandboxDriver = {
     "The Policy denials tab says once that Agents run without a Sandbox, and offers no policy editor.",
   steps: [
     "Confirm the single status sentence names the missing Sandbox Driver, and that the Policy editing switch and Manage rules are absent.",
+  ],
+};
+
+// Collaborator-only approval exercises the same editor as the legacy default story.
+const collaboratorRepositoryOptions = [
+  {
+    repositoryRef: "application",
+    displayName: "example/application",
+    allowedProfiles: ["github-repository", "github-installation"],
+  },
+  {
+    repositoryRef: "api-only",
+    displayName: "example/api-only",
+    allowedProfiles: ["github-installation"],
+  },
+  {
+    repositoryRef: "handbook",
+    displayName: "example/handbook",
+    allowedProfiles: ["git-read"],
+  },
+];
+scenarios.repositoryCollaborator = {
+  ...scenarios.repositoryEditor,
+  name: "Select repository collaborator from an empty set",
+  repositoryOptions: collaboratorRepositoryOptions,
+  repositoryAccess: { defaultProfile: "git-full", repositories: [] },
+  repositoryBindings: [],
+  description:
+    "An empty selection offers the approved collaborator repository. API-only access is not a Git repository choice; the existing Contributor default stays unchanged.",
+  steps: [
+    "Select example/application. Its access reads Repository collaborator; the Agent default remains Contributor.",
+    "Save repository access. Confirm the saved message, visit Channels, and return to Repositories to inspect the saved selection.",
+    "Confirm example/api-only is absent from repository choices.",
+  ],
+  gap: "Simulated API state only; saving does not prove Controller persistence, authorization, or runtime Git access.",
+};
+scenarios.repositoryCollaboratorSaved = {
+  ...scenarios.repositoryCollaborator,
+  name: "Saved inheritance survives delayed collaborator discovery",
+  repositoryAccess: {
+    defaultProfile: "git-full",
+    repositories: [{ repositoryRef: "application" }],
+  },
+  repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+  rules: [{ suffix: "/repository-options", delayMs: 3000 }],
+  description:
+    "A saved inherited Contributor selection meets a changed collaborator-only approval after a three-second discovery delay. Discovery must not migrate the saved intent or mark it dirty.",
+  steps: [
+    "During discovery, inspect Access awaiting verification. After discovery, inspect Choose approved access; Save stays disabled and Channels stays enabled.",
+    "Expand Access for example/application, clear Use Agent default, and choose Repository collaborator. Save the explicit change and confirm the saved message.",
+  ],
+};
+scenarios.repositoryCollaboratorReadOnly = {
+  ...scenarios.repositoryCollaborator,
+  name: "Explicit Read-only refuses implicit collaborator access",
+  actions: [
+    { selector: "#repository-default-git-read", click: true },
+    { selector: 'input[data-repository-ref="application"]', click: true },
+  ],
+  description:
+    "Choosing Read-only before adding a collaborator-only repository preserves that intent. The editor requires an explicit per-repository choice before saving.",
+  steps: [
+    "Confirm Read-only stays selected, the repository needs approved access, and Save is disabled.",
+    "Expand Access for example/application, clear Use Agent default, and choose Repository collaborator. The Agent default stays Read-only; Save now succeeds.",
+    "Reset, remove example/application, and select example/handbook. Save succeeds with inherited Read-only access.",
   ],
 };
 

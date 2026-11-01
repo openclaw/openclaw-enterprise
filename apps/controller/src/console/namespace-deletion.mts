@@ -16,7 +16,8 @@ import { describeFailure } from "./agents/list.mjs";
 import { NAMESPACE_DELETE_DENIED, namespaceDeleteDenied } from "./agents/access-reasons.mjs";
 
 interface DeletionContext extends NamespacePageContext {
-  onRemoved(namespace: Namespace): void;
+  /** `refocus`: a requested check found it removed while its Refresh held focus. */
+  onRemoved(namespace: Namespace, refocus: boolean): void;
   onResume?(handler: () => void): void;
   statusChanged(status: Namespace["status"]): void;
 }
@@ -188,7 +189,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         removed = true;
         // A confirmation opened while a background poll read has nothing left to delete.
         confirmation?.close();
-        context.onRemoved(namespace);
+        context.onRemoved(namespace, refocus);
         return;
       }
       accessEnded = error.status === 403;
