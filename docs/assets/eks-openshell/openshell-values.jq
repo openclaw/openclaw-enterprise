@@ -54,6 +54,8 @@
     ]
   },
   "server": {
+    "sandboxUid": 10001,
+    "sandboxGid": 10001,
     "disableTls": false,
     "auth": {
       "allowUnauthenticatedUsers": false
