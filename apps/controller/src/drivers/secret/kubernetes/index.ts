@@ -31,6 +31,7 @@ import {
 import { withComputeOperationDeadline } from "../../compute/operation-context.ts";
 import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts";
 import { kubernetesRequest } from "../../kubernetes/request.ts";
+import { withoutMutationDeadline } from "../../../admission/mutation-deadline.ts";
 import {
   createKubernetesAuthenticationOptionsSchema,
   validateKubernetesAuthentication,
@@ -233,7 +234,10 @@ export class KubernetesSecretDriver implements SecretDriver {
         { mutating: true },
       );
     } catch (error) {
-      await this.discardFailedCreate(client, namespace, name, identity);
+      // The cleanup runs even when the request's deadline ended the create.
+      await withoutMutationDeadline(() =>
+        this.discardFailedCreate(client, namespace, name, identity),
+      );
       throw error;
     }
     try {
@@ -245,7 +249,9 @@ export class KubernetesSecretDriver implements SecretDriver {
       }
       return reference;
     } catch (error) {
-      await this.discardRefusedCreate(client, namespace, name, observed);
+      await withoutMutationDeadline(() =>
+        this.discardRefusedCreate(client, namespace, name, observed),
+      );
       throw error;
     }
   }
@@ -614,6 +620,10 @@ export class KubernetesSecretDriver implements SecretDriver {
         cancelled: () =>
           new SecretBackendUnavailableError(`The Kubernetes Secret ${action} was cancelled.`),
         timedOut: () => timeoutFailure(action),
+        deadlineElapsed: () =>
+          new SecretBackendUnavailableError(
+            `The Kubernetes Secret ${action} was not sent: the request ran out of time.`,
+          ),
         failed: (error) => sanitizedFailure(error, action),
       },
       options,
