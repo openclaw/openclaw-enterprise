@@ -9685,8 +9685,8 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
   // Any other unbound name: deployment refuses it, naming the binding to add or the entry to
   // disable; bound, the variable is set in the Gateway, which starts. Agent save does not know
   // the Configuration's bindings, so it leaves it to deployment.
-  const refusedUntilBound = (admit, configuration, [setting, name, plugin], label) => {
-    const expected = refusal(unboundPluginSecretRefusal(setting, name, plugin));
+  const refusedUntilBound = (admit, configuration, [setting, name, plugin, enabledBy], label) => {
+    const expected = refusal(unboundPluginSecretRefusal(setting, name, plugin, enabledBy));
     for (const bindings of [undefined, {}]) {
       assert.throws(() => admit(configuration, bindings), expected, label);
     }
@@ -10128,25 +10128,55 @@ test("admission refuses a plugin secret input whose unset variable stops any Gat
     withSearchHeader("${RELAY_TOKEN}", {}, { deny: ["google-gemini-cli"] }),
     // A later entry for the same plugin with enabled: false disables it.
     withEntries(withSearchHeader("${RELAY_TOKEN}"), { GOOGLE: { enabled: false } }),
+    // A later value that is not an object replaces the merged entry with {}, which leaves google
+    // inactive: auto-enable set `enabled: true` only on the exact entry (finding 3074).
+    withEntries(withSearchHeader("${RELAY_TOKEN}"), { GOOGLE: null }),
+    withEntries(withSearchHeader("${RELAY_TOKEN}"), { " google": "off" }),
   ]) {
     embeddedAdmission(configuration, {});
     driver.validateConfiguration(configuration);
   }
-  // A later `enabled: true` for the same plugin enables a disabled google entry. Startup
-  // auto-enable sets `enabled: true` on a google entry that leaves it unset, so an earlier
-  // `enabled: false` for the same plugin does not disable it.
-  for (const configuration of [
-    withEntries(withSearchHeader("${RELAY_TOKEN}", { enabled: false }), {
-      GOOGLE: { enabled: true },
-    }),
-    {
-      ...embeddedBase,
-      plugins: {
-        entries: { GOOGLE: { enabled: false }, ...searchHeaderEntry("${RELAY_TOKEN}") },
+  // A later `enabled: true` for the same plugin enables a disabled google entry, so the step names
+  // that later entry (finding 3074). Startup auto-enable sets `enabled: true` on a google entry
+  // that leaves it unset, so an earlier `enabled: false`, or a value that is not an object, for
+  // the same plugin does not disable it.
+  for (const [configuration, enabledBy] of [
+    [
+      withEntries(withSearchHeader("${RELAY_TOKEN}", { enabled: false }), {
+        GOOGLE: { enabled: true },
+      }),
+      "GOOGLE",
+    ],
+    [
+      withEntries(withSearchHeader("${RELAY_TOKEN}", { enabled: false }), {
+        Google: { enabled: true },
+        GOOGLE: { config: {} },
+      }),
+      "Google",
+    ],
+    [
+      {
+        ...embeddedBase,
+        plugins: {
+          entries: { GOOGLE: { enabled: false }, ...searchHeaderEntry("${RELAY_TOKEN}") },
+        },
       },
-    },
+      undefined,
+    ],
+    [
+      {
+        ...embeddedBase,
+        plugins: { entries: { GOOGLE: null, ...searchHeaderEntry("${RELAY_TOKEN}") } },
+      },
+      undefined,
+    ],
   ]) {
-    refusedUntilBound(embeddedAdmission, configuration, [searchHeader, "RELAY_TOKEN", "google"]);
+    refusedUntilBound(embeddedAdmission, configuration, [
+      searchHeader,
+      "RELAY_TOKEN",
+      "google",
+      enabledBy,
+    ]);
   }
   // A Driver the Installation selects may add launch variables whose names deployment cannot
   // know, so an unbound name is left to the Gateway; the APP_SERVER_ rule still holds.
