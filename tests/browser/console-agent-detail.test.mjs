@@ -120,6 +120,10 @@ import {
   READ_ONLY_DRAFT_NOTICE,
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import {
+  OPENCLAW_SANDBOX_SETTINGS,
+  openClawSandboxRefusal,
+} from "../helpers/admitted-configuration.mjs";
 
 test("Deployment shows a historical version's snapshot read failure and Retry recovers", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -1539,17 +1543,18 @@ for (const viewport of [
   });
 }
 
-// A Configuration an older release saved with OpenClaw's $include, or with a Codex entry beside
-// codex: every Compute refuses to save or deploy it (findings 3077, 3078), so the draft holds
-// Deploy with that refusal and names it in the Configuration step, as for a plugin secret input
-// (finding 3086). Following the refusal's step saves, and the draft is ready again: the include
+// A Configuration an older release saved with OpenClaw's $include, with a Codex entry beside
+// codex, or with OpenClaw's sandbox as well: every Compute refuses to save or deploy it (findings
+// 2767, 3077, 3078), so the draft holds Deploy with the refusal deploy gives first and names it in
+// the Configuration step, as for a plugin secret input (findings 3086, 3093). Following the refusal's step saves, and the draft is ready again: the include
 // is written out, and the variant's settings move into codex instead of being renamed onto a
 // duplicate key (finding 3087).
 for (const viewport of [
   { width: 1440, height: 900 },
   { width: 390, height: 844 },
 ]) {
-  test(`A stored include or plugin entry key variant holds Deploy at ${viewport.width}px`, async (t) => {
+  test(`A stored include, plugin entry key variant or sandbox holds Deploy at ${viewport.width}px`, async (t) => {
+    const [sandboxMode] = OPENCLAW_SANDBOX_SETTINGS;
     const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
     const fixture = await createConsoleAppFixture(t, { configurationDriver });
     await fixture.bootstrap();
@@ -1580,6 +1585,21 @@ for (const viewport of [
         reason: pluginEntryKeyVariantRefusal("plugins.entries.Codex", "codex"),
         step: "Fix the plugin entry key",
         fixed: withEntries({ codex: { enabled: true, ...codex } }),
+      },
+      // Deploy checks OpenClaw's sandbox before the entry key, so the page names the sandbox
+      // too, not the later entry key problem (finding 3093).
+      {
+        name: "Sandbox",
+        stored: {
+          ...withEntries({ codex, Codex: { enabled: true } }),
+          agents: {
+            ...values.agents,
+            defaults: { ...values.agents.defaults, sandbox: { mode: "all" } },
+          },
+        },
+        reason: openClawSandboxRefusal(sandboxMode, sandboxMode.path),
+        step: "Turn off OpenClaw's sandbox",
+        fixed: values,
       },
     ]) {
       const agent = await fixture.createAgent(namespace.id, `${name} Agent`, values);

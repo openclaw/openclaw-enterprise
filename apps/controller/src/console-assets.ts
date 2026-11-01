@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
+import { posix } from "node:path";
 import { promisify } from "node:util";
 import { brotliCompress, constants as zlib, gzip } from "node:zlib";
 
@@ -133,7 +134,17 @@ const CONSOLE_ASSETS = new Map([
       contentType: "text/javascript; charset=utf-8",
     },
   ],
-  // The Console shows a draft's retired OpenClaw setting with OCC's own deploy refusal.
+  // The Console holds a draft's Deploy with the refusal OCC's stored-row rules give first, in
+  // deploy's order (finding 3093). It imports OCC's environment reference and retired setting
+  // modules, which are served here too.
+  [
+    "/console/stored-configuration-rules.mjs",
+    {
+      path: new URL("../../../packages/occ/src/stored-configuration-rules.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // OCC's retired OpenClaw settings, which the stored-row rules above read.
   [
     "/console/retired-openclaw-settings.mjs",
     {
@@ -181,14 +192,32 @@ export function consoleAssetPaths(): Iterable<string> {
 
 const browserModules = new Map<string, { source: Buffer; javascript: Buffer }>();
 
+// The Console URL of each source file it serves, so an OCC module's import of another can name it.
+const consoleUrls = new Map([...CONSOLE_ASSETS].map(([url, { path }]) => [path.href, url]));
+
 // Node 24 erases types without moving source lines. Reuse that result until the file changes;
 // the Console TypeScript project checks types and rejects syntax that would require a transform.
-function browserJavaScript(pathname: string, source: Buffer): Buffer {
+// An OCC module imports its siblings by their `.ts` source names, which the browser cannot load:
+// each such import is pointed at the Console URL that serves the same file, and a module that
+// imports a file the Console does not serve is refused, so it fails in tests, not in a browser.
+function browserJavaScript(pathname: string, source: Buffer, path: URL): Buffer {
   const previous = browserModules.get(pathname);
   if (previous?.source.equals(source)) {
     return previous.javascript;
   }
-  const javascript = Buffer.from(stripTypeScriptTypes(source.toString("utf8")));
+  const javascript = Buffer.from(
+    stripTypeScriptTypes(source.toString("utf8")).replaceAll(
+      /(?<=\bfrom ")(\.\/[^"]+\.ts)(?=";)/g,
+      (specifier) => {
+        const url = consoleUrls.get(new URL(specifier, path).href);
+        if (url === undefined) {
+          throw new Error(`${pathname} imports ${specifier}, which the Console does not serve.`);
+        }
+        const relative = posix.relative(posix.dirname(pathname), url);
+        return relative.startsWith(".") ? relative : `./${relative}`;
+      },
+    ),
+  );
   browserModules.set(pathname, { source, javascript });
   return javascript;
 }
@@ -243,7 +272,9 @@ export async function readConsoleAsset(
     if (!asset.contentType.startsWith("text/")) {
       return { body: source, contentType: asset.contentType, statusCode: 200 };
     }
-    const body = /\.m?ts$/.test(asset.path.pathname) ? browserJavaScript(pathname, source) : source;
+    const body = /\.m?ts$/.test(asset.path.pathname)
+      ? browserJavaScript(pathname, source, asset.path)
+      : source;
     return encodedAsset(pathname, body, asset.contentType, acceptEncoding);
   }
   const shell = await readFile(CONSOLE_SHELL);

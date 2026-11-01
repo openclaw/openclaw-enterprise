@@ -27,6 +27,7 @@ export const SecretProviderAliasRefused = story("secretProviderAliasRefused");
 export const PluginSecretInputUnreadable = story("pluginSecretInputUnreadable");
 export const ConfigIncludeRefused = story("configIncludeRefused");
 export const PluginEntryKeyVariantRefused = story("pluginEntryKeyVariantRefused");
+export const OpenClawSandboxRefused = story("openClawSandboxRefused");
 export const KubernetesEntryKeyVariantRefused = story("kubernetesEntryKeyVariantRefused");
 export const KubernetesEntryKeyVariantChecking = story("kubernetesEntryKeyVariantChecking");
 export const KubernetesEntryKeyVariantCreateDenied = story("kubernetesEntryKeyVariantCreateDenied");

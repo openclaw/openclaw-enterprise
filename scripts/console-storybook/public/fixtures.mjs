@@ -105,6 +105,10 @@ function configurationValues(scenario) {
       },
     };
   }
+  if (scenario.openClawSandbox) {
+    // OpenClaw's own sandbox, which an older release saved and the OCE runtime cannot run.
+    values.agents.defaults.sandbox = { mode: "all" };
+  }
   if (scenario.kubernetesEntryKeyVariant) {
     // A File-Transfer entry saved before Kubernetes Compute refused it, which OpenClaw merges into
     // file-transfer, the entry Kubernetes Compute enables for the workspace node.

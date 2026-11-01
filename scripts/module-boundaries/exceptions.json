@@ -188,6 +188,18 @@
     {
       "rule": "cross-package-source",
       "from": "apps/controller/src/console-assets.ts",
+      "to": "packages/occ/src/stored-configuration-rules.ts",
+      "specifier": "file:packages/occ/src/stored-configuration-rules.ts",
+      "kind": "path",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "Console asset delivery",
+      "reason": "The Console holds a draft's Deploy with the refusal OCC's stored-row Configuration rules give first, in deploy's order, from OCC's module that imports only other served OCC modules, served type-stripped through an explicit same-origin asset route backed by its authored source.",
+      "removeWhen": "Replace the source asset mapping with a supported packaged browser entrypoint and update its consumers."
+    },
+    {
+      "rule": "cross-package-source",
+      "from": "apps/controller/src/console-assets.ts",
       "to": "packages/occ/src/gateway-security-defaults.ts",
       "specifier": "file:packages/occ/src/gateway-security-defaults.ts",
       "kind": "path",
