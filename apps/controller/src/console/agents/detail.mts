@@ -629,13 +629,16 @@ export async function renderAgentDetail(
     for (const item of page.revisions) {
       // A version that a newer one or a Stop ended is listed as failed too, with the code that
       // says so; it is marked with that outcome, not as failed (finding 2422).
+      if (item.deploymentStatus !== "failed") {
+        continue;
+      }
       const neutral = neutralDeploymentOutcome({
         status: item.deploymentStatus,
         error: item.deploymentErrorCode === null ? null : { code: item.deploymentErrorCode },
       });
       if (neutral) {
         neutralVersions.set(failedVersionKey(path, item.id), neutral);
-      } else if (item.deploymentStatus === "failed") {
+      } else {
         failedVersions.add(failedVersionKey(path, item.id));
       }
     }
