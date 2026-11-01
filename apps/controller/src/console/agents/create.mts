@@ -54,7 +54,12 @@ import {
 } from "./secret-picker.mjs";
 import { workspaceFileProblem } from "./workspace.mjs";
 import { namespaceNameProblem } from "../namespaces.mjs";
-import { createPresetFields } from "./presets.mjs";
+import {
+  createPresetFields,
+  presetVariableLabels,
+  type PresetReturn,
+  refusedPresetVariables,
+} from "./presets.mjs";
 import { provisioningJob } from "./provisioning-job.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
@@ -665,7 +670,11 @@ async function finishProvisioningAttempt({
   });
 }
 
-export function renderCreateAgent(context: CreateAgentContext, restored?: unknown) {
+export function renderCreateAgent(
+  context: CreateAgentContext,
+  restored?: unknown,
+  returning?: PresetReturn,
+) {
   // This scoped draft is written only by captureDraft below.
   const draft = restored as CreateAgentDraft | undefined;
   context.setTitle("Create Agent");
@@ -719,6 +728,7 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
   const presets = createPresetFields(
     { ...context, secretsOperateDenied: operateAnswer.read },
     startForm,
+    returning,
   );
   context.view.replaceChildren(
     // A provisioning Namespace accepts drafts; its status shows before any start (finding 1895).
@@ -1899,6 +1909,45 @@ function renderAgentForm(
       renderCreateAgent(context);
     }
   });
+  // A refusal of a Configuration setting the Preset's variables filled names those variables, and
+  // this action reopens the Preset with its variables kept and those fields marked (finding 3122).
+  // It shows while Start over is enabled: nothing this form saved would be left behind.
+  let refusedVariables: Pick<PresetReturn, "variables" | "refusal"> | undefined;
+  const changePresetVariables = button(
+    "Change Preset variables",
+    () => {
+      const presetDraft = presetOptions.presetDraft;
+      if (!refusedVariables || !presetDraft || startOver.disabled) {
+        return;
+      }
+      if (
+        !(changedHere || edited) ||
+        window.confirm("Discard the changes on this form and go back to the Preset?")
+      ) {
+        context.drafts.forget("channels");
+        renderCreateAgent(context, undefined, { draft: presetDraft, ...refusedVariables });
+      }
+    },
+    { tone: "secondary" },
+  );
+  function offerPresetVariableChange(serverMessage: string | undefined) {
+    const variables = refusedPresetVariables(serverMessage, presetOptions.settingVariables);
+    refusedVariables =
+      serverMessage && variables.length ? { variables, refusal: serverMessage } : undefined;
+    if (!refusedVariables) {
+      return;
+    }
+    const labels = presetVariableLabels(variables);
+    setText(changePresetVariables, `Change ${labels}`);
+    // The variable follows the refusal, before its request ID.
+    const text = feedback.textContent ?? "";
+    const requestId = text.lastIndexOf(" Request ID: ");
+    const at = requestId === -1 ? text.length : requestId;
+    feedback.textContent = `${text.slice(0, at)} The Preset ${variables.length > 1 ? "variables" : "variable"} ${labels} filled this setting.${text.slice(at)}`;
+    if (presetOptions.presetDraft) {
+      feedback.append(" ", changePresetVariables);
+    }
+  }
   const retryProvisioning = button("Retry provisioning request", () => {
     if (!provisioningAttempt || pending) {
       return;
@@ -2195,8 +2244,11 @@ function renderAgentForm(
   // Whether the reader changed the form or its Preset variables: Cancel then asks first, and a
   // reload or tab close warns. Restoring a draft and the form's own updates fire no trusted event.
   let touched = Boolean(draft.touched);
+  // Whether the reader changed this form itself, not only the Preset variables before it.
+  let changedHere = false;
   const markTouched = (event: Event) => {
     touched ||= event.isTrusted;
+    changedHere ||= event.isTrusted;
   };
   for (const node of [form, channelEditor]) {
     node.addEventListener("input", markTouched);
@@ -2922,6 +2974,8 @@ function renderAgentForm(
       outcomeUnknown ||
       saved ||
       Boolean(savedSecret || savedCredentialSource || credentialRegistration);
+    // Shown only while it can act, so no unavailable action sits in the refusal.
+    changePresetVariables.hidden = startOver.disabled;
     if (useModelChoices) {
       choiceField.hidden = manualModel;
       modelField.hidden = !manualModel;
@@ -3316,6 +3370,9 @@ function renderAgentForm(
         );
       } else {
         feedback.textContent = refusedInConfiguration ? "" : feedbackText;
+        if (!refusedInConfiguration && !terminal && !outcomeUnknown) {
+          offerPresetVariableChange(error.serverMessage);
+        }
       }
       if (
         terminal?.job.revisionId &&
@@ -3604,6 +3661,9 @@ function renderAgentForm(
           feedback.textContent = refusedInConfiguration
             ? ""
             : withRequestId(detail, failure.requestId);
+          if (!refusedInConfiguration && !nameTaken) {
+            offerPresetVariableChange(failure.serverMessage);
+          }
           // While the pressed control is still disabled, as after a save.
           focusFeedbackLine(feedback);
           if (nameTaken) {
@@ -3955,6 +4015,9 @@ function renderAgentForm(
           : (memberGrantRefused ? MEMBER_GRANT_REFUSED : detail) +
             guidance +
             (error.requestId ? ` ${requestIdText(error.requestId)}` : "");
+      if (!refusedInConfiguration && !confirmedSecretConflict && !savedAgent) {
+        offerPresetVariableChange(error.serverMessage);
+      }
       focusFeedbackLine(confirmedSecretConflict ? secretConflictRecovery : feedback);
       // A create that raced another Agent to the name (the preflight checked it).
       if (!savedAgent && error.status === 409 && error.serverMessage === AGENT_NAME_CONFLICT) {

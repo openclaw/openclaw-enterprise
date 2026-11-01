@@ -110,6 +110,28 @@ const existingPresetSecret = [
   { selector: "#preset-variable-modelSecret-secret-source", value: "existing" },
 ];
 const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets";
+// A Preset variable that duplicates the machine identity in the trusted-proxy allowlist, which
+// the Compute preflight refuses by the setting's name (finding 3122).
+const presetVariableRefusal = {
+  standardCodexPreset: true,
+  presetTrustedProxyVariable: true,
+  rules: [
+    {
+      suffix: "/agents/validate",
+      method: "POST",
+      status: 400,
+      code: "INVALID_REQUEST",
+      message:
+        "Configuration setting gateway.auth.trustedProxy.allowUsers must include occ-workspace-files and list distinct (case-insensitive for occ-workspace-files and @ identities), nonblank, trimmed, printable ASCII identities that are not object property names.",
+    },
+  ],
+};
+const presetVariableRefused = [
+  ...passwordPresetForm.slice(0, -1),
+  { selector: "#preset-variable-human", value: "OCC-Workspace-Files" },
+  click("Use Preset"),
+  click("Create Agent"),
+];
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
 // A plugin tool-deny refusal as the API words it, naming the selected plugin.
 const pluginToolRefusal =
@@ -4006,6 +4028,31 @@ export const scenarios = {
     description:
       "Switching the refused password draft to OAuth clears the Secret collision choices and required alternate name. Returning to API key requires fresh credentials without restoring the collision.",
     gap: "Simulated UI proof; native fixtures cover the actual duplicate refusal and keyboard recovery.",
+  },
+  createPresetVariableRefused: {
+    group: "Pages/Create Agent",
+    name: "Refused setting filled by a Preset variable",
+    path: create,
+    ...presetVariableRefusal,
+    actions: presetVariableRefused,
+    description:
+      "Create Agent's preflight refuses gateway.auth.trustedProxy.allowUsers, which the Preset variable Human filled. The refusal keeps the API's sentence, names the variable and offers Change Human.",
+    steps: ["Select Change Human: the Preset step opens with Human marked and focused."],
+    gap: "The preflight refusal is simulated; tests/browser/console-agent-presets.test.ts covers it with the real Kubernetes Compute rules.",
+  },
+  createPresetVariableMarked: {
+    group: "Pages/Create Agent",
+    name: "Preset variable marked after a refusal",
+    path: create,
+    ...presetVariableRefusal,
+    actions: [...presetVariableRefused, click("Change Human")],
+    description:
+      "Change Human reopens the Preset with the entered variables kept, except the model key. Human shows the refusal under it and has focus.",
+    steps: [
+      "Type in Human: the refusal clears.",
+      "Enter the model key again and select Use Preset to return to the form.",
+    ],
+    gap: "The preflight refusal is simulated; tests/browser/console-agent-presets.test.ts covers it with the real Kubernetes Compute rules.",
   },
   createPasswordPresetDenied: {
     group: "Pages/Create Agent",

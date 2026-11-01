@@ -803,6 +803,24 @@ export function installFixture(scenario, evidence) {
   if (scenario.presetVariables) {
     Object.assign(preset.template.variables, structuredClone(scenario.presetVariables));
   }
+  if (scenario.presetTrustedProxyVariable) {
+    // A trusted-proxy allowlist that a Preset variable fills (finding 3122).
+    preset.template.variables.human = {
+      type: "string",
+      description: "Identity of the person who runs this Agent",
+    };
+    const { values } = preset.template.configuration;
+    values.gateway = {
+      ...values.gateway,
+      auth: {
+        mode: "trusted-proxy",
+        trustedProxy: {
+          userHeader: "x-occ-identity",
+          allowUsers: ["occ-workspace-files", "{{ vars.human }}"],
+        },
+      },
+    };
+  }
   const presets = [
     preset,
     ...(scenario.noDefaultPreset

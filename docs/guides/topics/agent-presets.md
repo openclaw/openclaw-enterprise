@@ -129,6 +129,11 @@ Before saving, to choose another Preset or supply different variables, select **
 and confirm that the unsaved draft can be discarded. A supplied
 `configuration.values` replaces the entire native JSON editor.
 
+If Create Agent refuses a Configuration setting that a variable filled, the
+refusal names that variable and offers **Change** with its name. That action
+returns to the Preset with your entries, except passwords. The variable shows
+the refusal and has focus. The action is available only while **Start over** is.
+
 Saving a Preset does not validate every launch setting. Review the draft before
 creating it; an invalid execution mode can fail when opening the form, while
 an invalid plugin policy can fail when saving the Agent.
