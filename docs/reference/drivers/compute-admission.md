@@ -104,9 +104,10 @@ Agent that fails a check still reads; its next update must fix the pair.
 - a `gateway.auth.trustedProxy.allowUsers` without `occ-workspace-files`, or
   with an identity [Gateway authentication](kubernetes-compute/gateway-authentication.md)
   refuses, and a `trustedProxy.deviceAutoApprove` the Gateway's schema refuses.
-  Deployment admission and provisioning apply the same rule
-  (`validateGatewaySettings`), so a dedicated Agent's running revision keeps
-  serving. A Preset save leaves a setting that waits on a variable to the launch.
+  Deployment runs this save rule first (`400`) and `validateGatewaySettings`
+  after it (`409`); provisioning applies the rule through
+  `validateAgentProvisioning` (`409`). Either way a dedicated Agent's running
+  revision keeps serving. A Preset save leaves a setting that waits on a variable to the launch.
 
 This Compute delivers channel credentials only from Configuration Secret
 bindings. OCC, not a Driver member, refuses at Configuration create and update,
