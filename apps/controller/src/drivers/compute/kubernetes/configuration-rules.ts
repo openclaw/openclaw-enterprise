@@ -12,7 +12,7 @@ import {
   isAdmittedHeaderName,
   isCredentialHeaderName,
   keyedSettingPath,
-  pluginPolicyId,
+  pluginPolicyList,
   pluginSecretInputReference,
   PROVIDER_MODELS_LIST,
   quotedSettingKey,
@@ -138,8 +138,8 @@ export function requireWorkspaceNodePlugins(
  * in runtime-entrypoints.ts) then exits at every start, in this order, on a `plugins.allow` or
  * `plugins.deny` list item that is not text, `plugins.enabled: false`, a `plugins.deny` that
  * names codex, or a non-empty `plugins.allow` without it (finding 3096); a parity test pins the
- * two. It compares trimmed, lowercased IDs (pluginPolicyId; no built-in alias names codex) and
- * ignores blank items and a list that is not an array. `plugins.entries.codex.enabled: false`
+ * two. It reads both lists as the OpenClaw Plugin Driver's catalog rule does (pluginPolicyList:
+ * trimmed, lowercased IDs, and no built-in alias names codex). `plugins.entries.codex.enabled: false`
  * starts: the overlay turns it back on. On Preset defaults (`options.unresolved`), an item that
  * waits on a variable may name codex, so it is checked once filled.
  */
@@ -157,30 +157,21 @@ export function requireCodexPlugin(
       setting,
       `${rule}: Dedicated Codex runs the codex plugin, so its Gateway would not start. ${step}`,
     );
-  // Each item's policy ID, or undefined for one that waits on a variable; blank items dropped.
-  const policyIds = (key: "allow" | "deny"): (string | undefined)[] => {
-    const list = plugins[key];
-    if (!Array.isArray(list)) {
-      return [];
-    }
-    if (list.some((id) => typeof id !== "string")) {
-      throw refusal(`plugins.${key}`, "must list only plugin IDs as text", "Remove any other item");
-    }
-    return list
-      .map((id, index) =>
-        waitsOnVariable(id, ["plugins", key, index], options) ? undefined : pluginPolicyId(id),
-      )
-      .filter((id) => id !== "");
-  };
-  const allow = policyIds("allow");
-  const deny = policyIds("deny");
+  const pending = (key: "allow" | "deny") => (item: string, index: number) =>
+    waitsOnVariable(item, ["plugins", key, index], options);
+  const allow = pluginPolicyList(plugins, "allow", pending("allow"));
+  const deny = pluginPolicyList(plugins, "deny", pending("deny"));
+  const unreadable = allow.problem ?? deny.problem;
+  if (unreadable !== undefined) {
+    throw refusal(unreadable.setting, unreadable.requirement, "Remove any other item");
+  }
   if (plugins.enabled === false) {
     throw refusal("plugins.enabled", "must not be false", "Remove it");
   }
-  if (deny.includes(CODEX_PLUGIN)) {
+  if (deny.ids.includes(CODEX_PLUGIN)) {
     throw refusal("plugins.deny", "must not list codex", "Remove that item");
   }
-  if (allow.length > 0 && !allow.includes(CODEX_PLUGIN) && !allow.includes(undefined)) {
+  if (allow.ids.length > 0 && !allow.ids.includes(CODEX_PLUGIN) && !allow.ids.includes(undefined)) {
     throw refusal("plugins.allow", "must list codex", "Add it");
   }
 }

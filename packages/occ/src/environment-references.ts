@@ -465,6 +465,39 @@ export function pluginPolicyId(name: unknown): string | undefined {
   return Object.hasOwn(PLUGIN_ID_ALIASES, id) ? PLUGIN_ID_ALIASES[id] : id;
 }
 
+/**
+ * `plugins.allow` or `plugins.deny` as the Gateway entrypoint reads both lists before it checks a
+ * plugin the Agent's plugin runtime enables (`assertNoOpenClawPluginConfigConflict` in
+ * runtime-entrypoints.ts): each item's policy ID (pluginPolicyId), blank items dropped, and none
+ * for a value that is not a list. The entrypoint trims an item without asking whether it is text,
+ * so one that is not exits it at every start (findings 3096 and 3099): `problem` then names the
+ * setting and `ids` is empty. `pending(item, index)` marks an item that waits on a variable, such
+ * as in a Preset default: its ID is undefined.
+ */
+export function pluginPolicyList(
+  plugins: Readonly<Record<string, unknown>>,
+  key: "allow" | "deny",
+  pending?: (item: string, index: number) => boolean,
+): {
+  readonly ids: readonly (string | undefined)[];
+  readonly problem: { readonly setting: string; readonly requirement: string } | undefined;
+} {
+  const list = plugins[key];
+  if (!Array.isArray(list)) {
+    return { ids: [], problem: undefined };
+  }
+  if (list.some((item) => typeof item !== "string")) {
+    return {
+      ids: [],
+      problem: { setting: `plugins.${key}`, requirement: "must list only plugin IDs as text" },
+    };
+  }
+  const ids = list
+    .map((item, index) => (pending?.(item, index) === true ? undefined : pluginPolicyId(item)))
+    .filter((id) => id !== "");
+  return { ids, problem: undefined };
+}
+
 // `keys` in PostgreSQL's jsonb key order: shorter keys first (by UTF-8 bytes), then byte by byte.
 function jsonbKeyOrder(keys: readonly string[]): string[] {
   const encoder = new TextEncoder();

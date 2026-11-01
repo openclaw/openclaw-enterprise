@@ -92,7 +92,7 @@ account retains its exact credential reference and Backend ownership. See
 OCC records the admitted Configuration and generation, Harness ID, version and
 mode, Compute identity, and credential binding in the AgentRevision. A Sandbox
 can transform the runtime Configuration before admission. The stored
-Configuration remains the author's input. Later edits take effect on a new deployment.
+Configuration remains the author's input.
 
 ```mermaid
 sequenceDiagram
@@ -192,7 +192,7 @@ Configuration takes effect on the next deployment.
 
 ### Native runtime selection
 
-In the Configuration, select a primary model as `provider/model`. The model ID can contain slashes. An
+Select a Configuration's primary model as `provider/model`; the model ID can contain slashes. An
 explicit `agentRuntime.id` selects `openclaw` or `codex`. Agent entries must
 agree on the primary model and Harness. Fallbacks must use the same provider and
 resolve to the same Harness. Admission preserves their order.
@@ -202,8 +202,8 @@ OpenClaw when there is no model candidate or an unambiguous built-in provider.
 OpenAI, Codex, custom providers, and plugin-routed providers require an explicit
 runtime policy. Catalog entries may use the full model reference or the ID after
 the first slash. Each listed provider model must be a selected primary or fallback.
-When no model is selected at all, that refusal says so and names
-`agents.defaults.model` or an `agents.entries` model as the setting to set.
+With no model selected, that refusal names `agents.defaults.model` or an
+`agents.entries` model to set.
 Codex accepts its native `codex` provider, or `openai` with the
 Codex plugin explicitly enabled for WebSocket app-server transport.
 An embedded or dedicated Gateway cannot start when an active plugin's startup
@@ -217,7 +217,10 @@ plugin entry. OpenClaw reads these inputs only in an entry keyed by the exact
 plugin ID, such as `google`, not `Google`. Saves and deployment refuse another
 spelling of a `codex` or `acpx` key, such as `Codex`, and on Kubernetes of
 `file-transfer` or a managed plugin: OpenClaw merges it into that entry, which
-OCE checks only at the exact key. On Kubernetes, Configuration save,
+OCE checks only at the exact key. For the same reason, saves, Agent save and
+deployment refuse a `models.providers` key with surrounding whitespace, or
+another spelling of `openai`, `anthropic` or `codex`, such as `OpenAI`.
+On Kubernetes, Configuration save,
 Agent save and deployment also refuse a reference OpenClaw cannot read in any
 active plugin's secret input, including an enabled Beam or IMAP entry: a
 SecretRef without a provider, a provider that `secrets.providers` does not
@@ -228,7 +231,7 @@ id that the env provider's `allowlist` omits. The allowlist applies to
 allowlist applies to it only when the variable is unset. Deployment then refuses an
 unbound `${NAME}` that the allowlist omits at an enabled Beam or IMAP entry.
 Deployment and Agent save refuse such a `${APP_SERVER_*}` there for Agents other
-than dedicated Codex, because it is always unset on them. On every Compute,
+than dedicated Codex, where it is always unset. On every Compute,
 Configuration save, Agent save and deployment apply the same provider and
 allowlist rules to a `gateway.auth.password` SecretRef. They also refuse one
 with keys other than `source`, `provider` and `id`, because OpenClaw's
@@ -239,8 +242,8 @@ or that holds an alias outside OpenClaw's alias grammar, such as `" custom "` or
 as `${NAME}` or `${NAME:-fallback}` before that check, so OCE leaves such an alias,
 and any SecretRef rule that depends on it, to OpenClaw.
 
-Configuration writes run these rules in deployment's order. They refuse settings
-that conflict, with deployment's message: an entry primary that differs, selectable
+Configuration writes run these rules in deployment's order and refuse conflicting
+settings with deployment's message: an entry primary that differs, selectable
 models on another provider or runtime, an unselected catalog entry, conflicting
 runtime policies, an unsupported runtime ID, or Codex on another provider. Each
 message names the settings to change and, for a runtime, the allowed values `openclaw`
@@ -253,12 +256,12 @@ it lists the model or sets the primary's runtime, or the model's provider catalo
 provider when the primary's runtime comes from there. A missing or conflicting runtime offers
 only values that deployment accepts: `codex` only where Codex accepts the model, and the
 runtime that the other selected models, the listed models, or another policy already select.
-Deployment and Agent provisioning also check the Agent: if the Agent is dedicated and the
+Deployment and Agent provisioning also check the Agent: for a dedicated Agent where the
 Installation does not list dedicated OpenClaw, the refusal offers only `codex` where Codex
 accepts the model. Deployment of an embedded Agent, where the Installation approves Codex only
-for dedicated execution, offers only `openclaw`. For a `codex/<model>` model, embedded OpenClaw
-cannot run it either, so the refusal tells you to set `codex` on a dedicated Agent or to select
-a model of another provider. For Codex on another provider, the refusal offers only the step that
+for dedicated execution, offers only `openclaw`. Embedded OpenClaw cannot run a
+`codex/<model>` model either, so that refusal says to set `codex` on a dedicated Agent or to
+select another provider's model. For Codex on another provider, the refusal offers only the step that
 the Agent can take: a `codex/<model>` model or `openclaw`. Configuration save can serve any
 Agent, so it offers both values.
 A Preset is checked when a launch creates its Configuration.
