@@ -464,18 +464,26 @@ describe("Agent channels", { concurrency: 3 }, () => {
     const blocked = page.getByText("Slack is explicitly blocked in native plugin configuration.", {
       exact: true,
     });
-    for (const [slug, deny, isBlocked] of [
+    const cases = [
       ["padded", [" Slack"], true],
       ["upper", ["SLACK "], true],
       ["exact", ["slack"], true],
       ["other", ["discord", 7], false],
-    ]) {
+    ];
+    const agents = [];
+    for (const [slug, deny] of cases) {
       const values = nativeValues(slug, { harnessId: "codex" });
       values.plugins.deny = deny;
-      const agent = await fixture.createAgent(namespace.id, `Deny ${slug} Agent`, values, {
-        executionMode: "dedicated",
-      });
-      await openDraft(page, fixture, agent, `Deny ${slug} Agent`);
+      agents.push(
+        await fixture.createAgent(namespace.id, `Deny ${slug} Agent`, values, {
+          executionMode: "dedicated",
+        }),
+      );
+    }
+    await login(page, fixture, detailUrl(fixture, namespace.id, agents[0].id, "draft", "channels"));
+    for (const [index, [slug, , isBlocked]] of cases.entries()) {
+      await page.goto(detailUrl(fixture, namespace.id, agents[index].id, "draft", "channels").href);
+      await page.getByRole("heading", { name: `Deny ${slug} Agent` }).waitFor();
       const configure = page.getByRole("button", { name: "Configure Slack" });
       await configure.waitFor();
       if (isBlocked) {
@@ -531,9 +539,9 @@ describe("Agent channels", { concurrency: 3 }, () => {
     await page.getByText(/Configuration .*generation 2/).waitFor();
     const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
     const stored = (await fixture.request("GET", configurationPath)).data.values.plugins;
-    assert.deepEqual(stored.allow, ["codex", " Slack"]);
     assert.deepEqual(stored.entries.slack, { enabled: true });
     assert.deepEqual(stored.entries[" Slack"], { enabled: true, config: { marker: "variant" } });
+    assert.deepEqual(stored.allow, ["codex", " Slack"]);
     // Other plugins' entries are untouched.
     assert.deepEqual(stored.entries.knowledge, values.plugins.entries.knowledge);
     assert.deepEqual(stored.entries.codex, values.plugins.entries.codex);

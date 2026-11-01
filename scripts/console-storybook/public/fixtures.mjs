@@ -89,6 +89,9 @@ function configurationValues(scenario) {
       },
     };
   }
+  if (scenario.pluginDeny !== undefined) {
+    values.plugins = { ...values.plugins, deny: structuredClone(scenario.pluginDeny) };
+  }
   if (scenario.gatewayPasswordAllowlistOmits) {
     // A default env alias on a configured env provider whose allowlist leaves out the generated
     // password, so OpenClaw cannot read the reference Enable gateway password access would write.

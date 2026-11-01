@@ -7945,6 +7945,17 @@ export const scenarios = {
     description:
       "The Socket Mode editor disables editing for an HTTP-mode configuration and shows native JSON.",
   },
+  slackPluginDenied: {
+    group: "Components/Channels",
+    name: "Slack plugin denied",
+    path: `${draft}&tab=channels`,
+    pluginDeny: [" Slack"],
+    description:
+      'plugins.deny names " Slack". OpenClaw matches deny entries by trimmed, lowercased plugin ID, so the slack plugin is blocked: Configure Slack is disabled and described by the danger note.',
+    steps: [
+      "Tab to Configure Slack. It takes focus and looks unavailable, described by the blocked note; Enter, Space or a click opens nothing.",
+    ],
+  },
   slackMixedUsersUnsupported: {
     group: "Components/Channels",
     name: "Slack mixed sender lists",
