@@ -30,6 +30,10 @@ function readAvailability(value: unknown): Availability {
 
 function unavailableText(status: Availability["status"]) {
   switch (status) {
+    case "denied":
+      return "Your account can no longer administer this Agent. Ask an administrator to restore access, then refresh.";
+    case "disabled":
+      return "Native admin UI access is disabled. Ask an administrator to enable it, then refresh.";
     case "stopped":
       return "Start this Agent before opening its native admin UI.";
     case "unsupported":
@@ -43,16 +47,22 @@ function unavailableText(status: Availability["status"]) {
 
 export function renderNativeAdminAccess(
   context: Omit<AgentAccessContext, "namespaceId"> & {
-    deniedReads?: { has(path: string): boolean; remember(path: string): void };
+    deniedReads?: {
+      has(path: string): boolean;
+      remember(path: string): void;
+      forget?(path: string): void;
+    };
   },
   path: string,
   // The caller's latest advisory Agent administer answer; undefined when it is unknown.
   administerAllowed?: () => Promise<boolean | undefined>,
   options?: {
-    versionLabel(): string;
-    recovery(status: Availability["status"]): HTMLElement | null;
+    showDenied?: boolean;
+    versionLabel?(): string;
+    recovery?(status: Availability["status"]): HTMLElement | null;
   },
 ) {
+  const showDenied = options?.showDenied ?? false;
   const statusPath = `${path}/native-admin`;
   const status = element(
     "p",
@@ -83,7 +93,14 @@ export function renderNativeAdminAccess(
     "Open Agent UI",
     element("span", { "aria-hidden": "true" }, "↗"),
   );
-  const reload = button("Refresh access", () => void load(), { className: "overview-text-button" });
+  const reload = button(
+    "Refresh access",
+    () => {
+      context.deniedReads?.forget?.(statusPath);
+      void load();
+    },
+    { className: "overview-text-button" },
+  );
   const scope = element(
     "p",
     { id: "native-admin-scope" },
@@ -128,7 +145,8 @@ export function renderNativeAdminAccess(
     status.hidden = !launch.hidden;
     section.hidden =
       !failed &&
-      (current === undefined || current.status === "disabled" || current.status === "denied");
+      (current === undefined ||
+        (!showDenied && (current.status === "disabled" || current.status === "denied")));
     unavailable.hidden = section.hidden || !launch.hidden;
     const replacement = focused === launch ? unavailable : launch;
     if (focused?.hidden && !replacement.hidden) {
@@ -136,7 +154,7 @@ export function renderNativeAdminAccess(
     }
     target.hidden = launch.hidden;
     updateTarget();
-    const nextRecovery = current && launch.hidden ? options?.recovery(current.status) : null;
+    const nextRecovery = current && launch.hidden ? options?.recovery?.(current.status) : null;
     // An unchanged recovery link keeps focus if the reader moved there during the access read.
     const shownRecovery = recovery.firstElementChild;
     if (nextRecovery ? !nextRecovery.isEqualNode(shownRecovery) : shownRecovery !== null) {
@@ -147,7 +165,7 @@ export function renderNativeAdminAccess(
     // Deployment polls call this too; an unchanged line is left untouched.
     setText(
       target,
-      `Opens selected version · ${options?.versionLabel() ?? "current version"} in a new tab.`,
+      `Opens selected version · ${options?.versionLabel?.() ?? "current version"} in a new tab.`,
     );
   }
 
@@ -157,9 +175,9 @@ export function renderNativeAdminAccess(
     }
     // Native admin needs Agent administer; a 403 is audited, so this tab asks once per Agent.
     if (context.deniedReads?.has(statusPath)) {
-      current = undefined;
+      current = showDenied ? { status: "denied" } : undefined;
       failed = false;
-      status.textContent = "";
+      status.textContent = showDenied ? unavailableText("denied") : "";
       updateControls();
       return;
     }
@@ -191,7 +209,7 @@ export function renderNativeAdminAccess(
       if (current.status === "available") {
         status.textContent = "Native admin UI is available for this Agent’s current version.";
       } else if (current.status === "disabled" || current.status === "denied") {
-        status.textContent = "";
+        status.textContent = showDenied ? unavailableText(current.status) : "";
       } else {
         status.textContent = unavailableText(current.status);
       }
@@ -208,9 +226,9 @@ export function renderNativeAdminAccess(
         context.deniedReads?.remember(statusPath);
       }
       failed = failureStatus !== 403;
-      current = undefined;
-      status.textContent = "";
-      error.textContent = message(cause);
+      current = showDenied && failureStatus === 403 ? { status: "denied" } : undefined;
+      status.textContent = current?.status === "denied" ? unavailableText("denied") : "";
+      error.textContent = failureStatus === 403 ? "" : message(cause);
     } finally {
       if (context.isCurrent()) {
         pending = false;

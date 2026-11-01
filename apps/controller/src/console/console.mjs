@@ -9,6 +9,7 @@ import {
   renderAgentDetail,
 } from "./agents.mjs";
 import { clearRuntimeDenials, forgetRuntimeDenials } from "./agents/logs.mjs";
+import { renderNativeAdminAccess } from "./agents/native-admin.mjs";
 import {
   ASK_INSTALLATION_ADMINISTRATOR,
   askForGrant,
@@ -80,6 +81,10 @@ const oidcLabelStorageKey = "occ.console.oidcLabel";
 const loginIntentStorageKey = "occ.console.loginIntent";
 const loginIntentLifetimeMs = 10 * 60 * 1000;
 let pendingIntent = null;
+// A native return may authorize exact-Agent administration without granting either Namespace or
+// Agent read. Keep that admitted destination for this session so its launch control can render
+// before ordinary page-read gating.
+let nativeRecovery = null;
 // Google gradient G: https://commons.wikimedia.org/wiki/File_talk:Google_Favicon_2025.svg
 // GitHub mark: https://github.com/primer/octicons/blob/main/icons/mark-github-24.svg
 // A retained view revalidates each read it made. A paged read keeps its cursor, so it compares
@@ -1273,6 +1278,7 @@ function renderPendingNamespaceShell(feature) {
 
 function clearPrivate() {
   session = null;
+  nativeRecovery = null;
   backendsDenied = false;
   namespaces = [];
   namespaceId = null;
@@ -1291,11 +1297,31 @@ function clearDrafts() {
   draftUserId = null;
 }
 
-function showExpiredLogin() {
-  const current = route();
+function matchesNativeRecovery(current, owner, selectedNamespace) {
+  return (
+    nativeRecovery?.owner === owner &&
+    current.feature === "agents" &&
+    current.agentId === nativeRecovery.agentId &&
+    selectedNamespace === nativeRecovery.namespaceId
+  );
+}
+
+function retryableAdmissionFailure(error) {
+  return error.status === undefined || error.status === 429 || error.status >= 500;
+}
+
+function expiredDestination(current) {
   // Keep only a validated read destination; reset private views and drafts in showLogin.
-  const destination = pendingIntent ?? loginDestination(current);
-  showLogin("Your session has expired.", destination);
+  const nativeDestination =
+    nativeRecovery?.required === true &&
+    matchesNativeRecovery(current, nativeRecovery.owner, current.namespace)
+      ? { kind: "native", key: nativeRecovery.key }
+      : null;
+  return pendingIntent ?? nativeDestination ?? loginDestination(current);
+}
+
+function showExpiredLogin() {
+  showLogin("Your session has expired.", expiredDestination(route()));
 }
 
 function showLogin(message = "", destination = null) {
@@ -1871,9 +1897,7 @@ async function loadPage({
     session = resolvedSession;
     if (session === null) {
       const destination =
-        providerError !== null || current.feature === "login"
-          ? null
-          : (pendingIntent ?? loginDestination(current));
+        providerError !== null || current.feature === "login" ? null : expiredDestination(current);
       showLogin(
         providerError !== null
           ? (reasonFailure ?? providerFailure(providerError.label))
@@ -1925,8 +1949,22 @@ async function loadPage({
           revision: null,
           tab: null,
         };
+        const targetUrl = intentUrl(target);
+        if (targetUrl === null) {
+          throw new Error("Invalid native administration return");
+        }
+        deniedReadsFor(owner).forget(
+          `/namespaces/${encodeURIComponent(resolved.namespaceId)}/agents/${encodeURIComponent(resolved.agentId)}/native-admin`,
+        );
+        nativeRecovery = {
+          owner,
+          key: destination.key,
+          namespaceId: resolved?.namespaceId,
+          agentId: resolved?.agentId,
+          required: true,
+        };
         pendingIntent = null;
-        replaceUrl(intentUrl(target) ?? "/console/agents");
+        replaceUrl(targetUrl);
       } catch (error) {
         if (!lifetime.isCurrent(active)) {
           return;
@@ -1985,10 +2023,18 @@ async function loadPage({
         namespaces[0]
       )?.id ??
       null;
+    const nativeRecoveryTarget = matchesNativeRecovery(current, owner, namespaceId);
+    if (nativeRecovery !== null && !nativeRecoveryTarget) {
+      nativeRecovery = null;
+    }
     replaceUrl(pageUrl(current.target));
     const scopedNamespaceUnavailable =
       ["agents", "secrets"].includes(current.feature) &&
       !namespaces.some((item) => item.id === namespaceId);
+    let recoveringNativeAdmin = nativeRecoveryTarget && scopedNamespaceUnavailable;
+    if (recoveringNativeAdmin) {
+      nativeRecovery.required = true;
+    }
     if (current.namespace !== null && (!held || shownFeature === current.feature)) {
       // Namespace admission is done, so the header selector, when the shown page has one, is
       // usable while the destination's first read runs. A switch resets the lifetime, discarding
@@ -2019,9 +2065,21 @@ async function loadPage({
     let firstPermissions = null;
     if (!scopedNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
       if (current.agentId) {
-        firstAgent = await request(
-          `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
-        );
+        try {
+          firstAgent = await request(
+            `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
+          );
+          if (nativeRecoveryTarget) {
+            nativeRecovery.required = false;
+          }
+        } catch (error) {
+          if (nativeRecoveryTarget && error.status === 403) {
+            nativeRecovery.required = true;
+            recoveringNativeAdmin = true;
+          } else {
+            throw error;
+          }
+        }
       } else {
         if (current.feature === "backends") {
           // Backends need Installation administration, like the probe. A caller this load knows
@@ -2179,7 +2237,8 @@ async function loadPage({
     // so nothing is focused twice (finding 1528). A fresh load whose reads beat the loading
     // delay has no shell yet: its startup status stands in, until the overview reveals or the
     // delay passes and the loading page takes its place (finding 1537).
-    const agentEntry = current.agentId && !current.creating && !scopedNamespaceUnavailable;
+    const agentEntry =
+      current.agentId && !current.creating && !scopedNamespaceUnavailable && !recoveringNativeAdmin;
     const startupStandIn =
       agentEntry && !shell && loadingTimer !== null ? app.querySelector(":scope > .startup") : null;
     const standIn =
@@ -2209,7 +2268,7 @@ async function loadPage({
       shell = renderShell(
         current.feature,
         false,
-        scopedNamespaceUnavailable ? { page: null } : undefined,
+        scopedNamespaceUnavailable || recoveringNativeAdmin ? { page: null } : undefined,
       );
     }
     const viewState = {
@@ -2313,6 +2372,34 @@ async function loadPage({
       }
 
       markMountedRoute(current);
+      return;
+    }
+    if (recoveringNativeAdmin) {
+      clearRetainedViewsForNamespace(namespaceId);
+      panel(
+        shell.view,
+        "Native admin UI",
+        "Your account cannot view this Agent's details in OCE. Native admin access is checked separately.",
+      );
+      const path = `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`;
+      const nativeAdmin = renderNativeAdminAccess(
+        {
+          request: viewRequest,
+          isCurrent: () => lifetime.isCurrent(viewState.active),
+          onExpired: () => {
+            if (lifetime.isCurrent(viewState.active)) {
+              showExpiredLogin();
+            }
+          },
+          deniedReads: deniedReadsFor(owner),
+        },
+        path,
+        undefined,
+        { showDenied: true },
+      );
+      nativeAdmin.section.prepend(nativeAdmin.launch, nativeAdmin.unavailable);
+      shell.view.append(nativeAdmin.section);
+      await nativeAdmin.ready;
       return;
     }
     if (scopedNamespaceUnavailable) {
@@ -2682,8 +2769,14 @@ async function loadPage({
       // Uncertain shared admission invalidates every preview, not just this route. Drafts stay:
       // a later read clears them only if it proves their Namespace or account gone (finding 1935).
       const account = session;
+      const retainedNativeRecovery =
+        retryableAdmissionFailure(error) &&
+        matchesNativeRecovery(current, sessionOwnerKey(account), current.namespace)
+          ? nativeRecovery
+          : null;
       resetReads();
       clearPrivate();
+      nativeRecovery = retainedNativeRecovery;
       shell = null;
       showAdmissionUnavailable(sessionResolved, error, account);
       return;
@@ -2984,6 +3077,11 @@ async function revalidateMountedAgent(current) {
     session = resolvedSession;
     setNamespaces(readable);
     if (!namespaces.some((item) => item.id === selectedNamespace)) {
+      if (matchesNativeRecovery(current, owner, selectedNamespace)) {
+        nativeRecovery.required = true;
+        await loadPage();
+        return;
+      }
       clearRetainedViewsForNamespace(selectedNamespace);
       resetReads();
       namespaceUnavailablePanel(renderShell(current.feature, false, { page: null }).view);
@@ -3056,11 +3154,21 @@ async function revalidateMountedAgent(current) {
       return;
     }
     if (checking !== "detail") {
+      const retainedNativeRecovery =
+        retryableAdmissionFailure(error) && matchesNativeRecovery(current, owner, selectedNamespace)
+          ? nativeRecovery
+          : null;
       resetReads();
       // Drafts survive an unavailable check, as in loadPage (finding 1935).
       const account = session;
       clearPrivate();
+      nativeRecovery = retainedNativeRecovery;
       showAdmissionUnavailable(checking !== "session", error, account);
+      return;
+    }
+    if (error.status === 403 && matchesNativeRecovery(current, owner, selectedNamespace)) {
+      nativeRecovery.required = true;
+      await loadPage();
       return;
     }
     showAgentReadFailure(current, selectedNamespace, error);
