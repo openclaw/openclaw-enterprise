@@ -4,7 +4,7 @@ Give an existing dedicated Codex Agent access to one GitHub repository. The OCE 
 
 This walkthrough makes two empty commits on one new test branch. Use the same Agent revision for both pushes and verify that the second push used newly minted material. GitHub branch rules still apply.
 
-**Token renewal testing is pending.** The same-Agent, same-revision two-push test below has not completed. Earlier successful Git pushes used a manually supplied static token and do not verify this managed repository-binding procedure.
+A k3d run with Codex 0.164.0 verified both pushes on one Agent revision. GitHub recorded the [first empty commit](https://github.com/openclaw/openclaw-enterprise/commit/bbf856d5bae163f6c85cf4aa1f1b70e9cafd7dde) and its [empty child](https://github.com/openclaw/openclaw-enterprise/commit/19140f8f068d020595d3b61d23a65a28bd36fc5a). The Credential Proxy recorded a different material version for the second push after normal worker renewal.
 
 ## Before you start
 
@@ -94,20 +94,24 @@ Set `repo` to the exact repository in the registry and `BOT_NAME` and `BOT_EMAIL
 ```bash
 repo=openclaw/openclaw-enterprise
 branch="codex/oce-git-renew-$(date -u +%Y%m%dT%H%M%SZ)-$(openssl rand -hex 5)"
-base_sha=$(gh api "repos/$repo/commits/HEAD" --jq .sha)
+default_branch=$(gh api "repos/$repo" --jq .default_branch)
+base_sha=$(gh api "repos/$repo/git/ref/heads/$default_branch" --jq .object.sha)
 push_turn() {
   local phase=$1 parent=$2
   {
     printf 'Use native execution in the same assigned workspace. Run the following in non-login Bash. Stop on any error or approval. Do not print credentials, change Git or TLS policy, touch other refs or repeat an uncertain push.\n'
-    printf 'repo=%q\nbranch=%q\nparent=%q\nphase=%q\nbot=%q\nemail=%q\n' \
-      "$repo" "$branch" "$parent" "$phase" "${BOT_NAME:?}" "${BOT_EMAIL:?}"
+    printf 'repo=%q\nbranch=%q\nparent=%q\ndefault_branch=%q\nphase=%q\nbot=%q\nemail=%q\n' \
+      "$repo" "$branch" "$parent" "$default_branch" "$phase" "${BOT_NAME:?}" "${BOT_EMAIL:?}"
     cat <<'SCRIPT'
 set -euo pipefail
 url="https://github.com/$repo.git"
 mkdir "${branch##*/}-$phase"
 cd "${branch##*/}-$phase"
 git init
-git fetch --no-tags --depth=1 "$url" "$parent"
+git remote add origin "$url"
+source_branch=$default_branch
+if [[ $phase == second ]]; then source_branch=$branch; fi
+git fetch --no-tags --depth=1 origin "refs/heads/$source_branch:refs/remotes/origin/$source_branch"
 test "$(git rev-parse FETCH_HEAD)" = "$parent"
 git checkout --detach FETCH_HEAD
 git -c user.name="$bot" -c user.email="$email" commit --allow-empty -m "OpenShell Git renewal $phase"
@@ -116,7 +120,9 @@ if [[ $phase == first ]]; then
 else
   test "$(git ls-remote --exit-code --heads "$url" "refs/heads/$branch" | cut -f1)" = "$parent"
 fi
-git push --porcelain "$url" "HEAD:refs/heads/$branch"
+# The remote must still advertise the parent before the empty commit is sent.
+test "$(git ls-remote --exit-code origin "refs/heads/$source_branch" | cut -f1)" = "$parent"
+git -c push.negotiate=true push --thin --porcelain origin "HEAD:refs/heads/$branch"
 local_sha=$(git rev-parse HEAD)
 remote_sha=$(git ls-remote --exit-code --heads "$url" "refs/heads/$branch" | cut -f1)
 test "$remote_sha" = "$local_sha"
@@ -177,6 +183,8 @@ second_sha=$(verify_push second "$first_sha")
 test "$(request GET "$base/agents/$agent" | jq -er .data.activeRevisionId)" = "$revision"
 printf 'Second commit: https://github.com/%s/commit/%s\n' "$repo" "$second_sha"
 ```
+
+A proxy receipt records authorization. Verify that GitHub accepted the commit using the remote ref, parent and tree.
 
 Require a second `receive-pack` receipt using the replacement material version, plus both verified GitHub commits. Two pushes with one token do not prove renewal. If Linear is enabled, [repeat the Linear read](../integrations/codex-plugins.md#verify-a-linear-read-through-openclaw) on this revision. If the second push has an uncertain outcome, inspect the remote ref before any retry.
 

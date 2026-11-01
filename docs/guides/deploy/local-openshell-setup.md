@@ -2,7 +2,7 @@
 
 Install OpenClaw Enterprise (OCE) in a private k3d cluster. Then create a dedicated Codex Agent through the OCE API and send it a message through OpenClaw. Start here once before [adding Git support](../repository-credentials/openshell-git-push.md) or [adding Codex plugins](../integrations/codex-plugins.md). For managed Git, check the [repository-binding release prerequisites](../repository-credentials/openshell-git-push.md#before-you-start) before choosing images. Keep Credential Gateway for the Codex service account and its authorized Linear connection.
 
-The [managed Git token renewal test is pending](../repository-credentials/openshell-git-push.md). Treat the repository-binding instructions as awaiting end-to-end verification.
+To verify a repository binding, follow [Push a Git branch from an OpenShell Agent](../repository-credentials/openshell-git-push.md). It checks two remote commits and their credential versions across normal renewal.
 
 ## Before you start
 
@@ -144,7 +144,15 @@ base="$api/namespaces/$namespace"
 printf 'Namespace API: %s\n' "$base"
 ```
 
-Keep the token with the Credential Gateway. First store the PAT in a Namespace Secret. Then register a `codex-pat` source using the Secret reference.
+Use one model source for this Agent. If the connected service account already has a ready Credential Gateway source, select it by its registered name and continue to step 5:
+
+```bash
+name="openshell-codex-$(date +%s)"
+modelSource=$(request GET "$base/credential-sources" |
+  jq -er --arg n "${MODEL_SOURCE_NAME:?Set the registered source name}" '[.data[]|select(.name==$n and .type=="codex-pat" and .state=="ready" and .ownerCapability=="credential_gateway")]|select(length==1)|first.id')
+```
+
+For a new source, store the PAT in a Namespace Secret and register its reference before enabling the repository Credential Proxy.
 
 ```bash
 # POST $base/secrets: stream the raw PAT from its private file.
@@ -210,7 +218,10 @@ deploy_and_wait() {
     status=$(jq -er .data.status <<<"$result")
     case "$status" in
       succeeded) break ;;
-      failed|cancelled) jq .data.error <<<"$result"; return 1 ;;
+      failed|cancelled)
+        printf '%s' "$result" > "$RUN_DIR/failed-deployment.json"
+        jq -c '.data|{status,code:(.error.code // "unavailable")}' <<<"$result"
+        return 1 ;;
     esac
     sleep 6
   done
@@ -230,7 +241,7 @@ The operator client from step 1 opens `wss://<private-gateway-host>/namespaces/$
 ```bash
 # Send one chat.send request, wait for its run ID, then read chat.history.
 turn() {
-  kubectl --context "$context" -n "$ns" exec -i deployment/openclaw-enterprise-api -c api -- \
+  kubectl --kubeconfig "$state/kubeconfig" --context "$context" -n "$ns" exec -i deployment/openclaw-enterprise-api -c api -- \
     env OCE_TEST_NAMESPACE_ID="$namespace" OCE_TEST_AGENT_ID="$agent" OCE_TEST_PROMPT="$(cat "$1")" \
     node --input-type=module < "$RUN_DIR/chat.mjs"
 }
@@ -246,7 +257,7 @@ Save the operator session for the add-on guides. This file contains resource IDs
 ```bash
 {
   printf '%s\n' 'set -euo pipefail' 'umask 077'
-  declare -p RUN_DIR OCC_DEVELOPMENT_STATE_DIRECTORY KUBECONFIG context ns namespace base name agent principal role
+  declare -p RUN_DIR OCC_DEVELOPMENT_STATE_DIRECTORY KUBECONFIG state context ns namespace base name agent principal role modelSource
   declare -f request deploy_and_wait turn
 } > "$RUN_DIR/session.sh"
 printf 'Operator session: %s/session.sh\n' "$RUN_DIR"
