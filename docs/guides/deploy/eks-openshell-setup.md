@@ -64,10 +64,11 @@ helm upgrade --install openshell-gateway "${OPENSHELL_CHART:?}" \
 os_ip=$(kubectl -n "$PLATFORM_NS" get svc openshell-gateway -o jsonpath='{.spec.clusterIP}')
 route_host=occ-gateway-362888b35fce.envoy-gateway-system.svc.cluster.local
 
-# Supply JSON arrays of approved CIDRs. Include the API Service and endpoint /32s.
+# Bootstrap has no Agents. Replace the loopback placeholder with the exact Envoy peers before deployment.
+# API_CIDRS includes the API Service and endpoint /32s.
 jq -n --arg cluster "$EKS_CLUSTER" --arg runtime "${RUNTIME_IMAGE:?}" \
   --arg hostname "$route_host" --arg openshellIP "$os_ip" \
-  --argjson proxyCidrs "${TRUSTED_PROXY_CIDRS:?}" -f "$assets/installation.jq" \
+  --argjson proxyCidrs '["127.0.0.1/32"]' -f "$assets/installation.jq" \
   > "$RUN_DIR/installation.json"
 jq -n --arg cluster "$EKS_CLUSTER" --arg controller "${CONTROLLER_IMAGE:?}" --arg email "${ADMIN_EMAIL:?}" \
   --arg hostname "$route_host" --argjson databaseCidrs "${DATABASE_CIDRS:?}" \
@@ -160,7 +161,16 @@ request() {
 }
 namespace=$(request GET /namespaces | jq -er '.data[]|select(.name=="default")|.id')
 base="/namespaces/$namespace"
-jq '.worker.replicaCount=1' "$RUN_DIR/values.json" > "$RUN_DIR/worker.json"
+export ENVOY_IMAGE
+bash "$assets/trusted-envoy-peers.sh" > "$RUN_DIR/trusted-peers.json"
+jq --slurpfile peers "$RUN_DIR/trusted-peers.json" \
+  '.drivers.compute.configuration.network.gatewayTrustedProxyCidrs=$peers[0]' \
+  "$RUN_DIR/installation.json" > "$RUN_DIR/installation-with-peers.json"
+peer_secret="occ-installation-peers-$(date +%s)"
+kubectl -n "$PLATFORM_NS" create secret generic "$peer_secret" \
+  --from-file="installation.yaml=$RUN_DIR/installation-with-peers.json"
+jq --arg secret "$peer_secret" '.installation.secretName=$secret | .worker.replicaCount=1' \
+  "$RUN_DIR/values.json" > "$RUN_DIR/worker.json"
 helm upgrade oce "$OCE_CHART" -n "$PLATFORM_NS" -f "$RUN_DIR/worker.json" --wait
 ```
 
@@ -190,7 +200,16 @@ kubectl -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-worker \
 
 Keep the EKS `request` function, `base` and `RUN_DIR` from step 3. Use the model Secret and CredentialSource registration commands in [local OpenShell setup](local-openshell-setup.md#4-connect-to-the-api-and-register-the-model-credential). Supply a private PAT file for a service account with an authorized Linear connection. Verify the source is `ready`, type `codex-pat`, and owned by `credential_gateway` before enabling the repository Credential Proxy.
 
+Use `installation-with-peers.json` as the base for the protected Installation. Keep the verified Envoy Pod /32s when merging the repository fragment. Re-read the peer set after a data-plane rollout. If it changes, update the versioned Installation and reconcile it before another Agent deployment.
+
 Enroll one repository and Namespace under `github-repository`. Prepare [two immutable registry ConfigMaps](../repository-credentials/openshell-git-push.md#1-enroll-one-repository-in-the-installation) for this same repository ID and Namespace. Mount the Contents read/Metadata read map first. Reserve Contents write/Metadata read for the single push. Set `READ_REGISTRY` and `WRITE_REGISTRY` to the two ConfigMap names. Mount the App signing key and a dedicated persistent 32-byte custody key only in the worker. Add the GitHub Backend owner, its `repo` Driver, `repository.preparedGitHub` and `repository.openShell` to the Installation. Select the Sandbox Driver ID in **both** `drivers.credential_proxy` and the OpenShell Backend’s `drivers.credential_proxy`. A missing owner fails the chart’s installation check. [Registry, Installation and deployment inputs](../repository-credentials/openshell-enrollment.md)
+
+Obtain the current GitHub.com worker API IPv4 inventory from the official Meta endpoint. If anonymous access is rate-limited, use the operator’s authenticated GitHub CLI. Save the CIDRs without response or authentication headers. Review them before setting the protected worker’s `repositoryCredentials.upstreamCidrs`.
+
+```bash
+gh api --hostname github.com /meta --jq '[.api[]|select(contains(":")|not)] | unique' > "$RUN_DIR/github-api-cidrs.json"
+jq -e 'type=="array" and length>0 and all(.[];test("^[0-9]+(\\.[0-9]+){3}/[0-9]+$"))' "$RUN_DIR/github-api-cidrs.json"
+```
 
 Issue a serving certificate for `openclaw-enterprise-openshell-git.oce-system.svc`. Supply the worker with the Gateway’s public JWT key and key ID. Upgrade OCE first with the versioned Installation Secret, protected listener on 8445 and reviewed GitHub API egress ranges. Check that the Service has a ready worker endpoint. Verify the Envoy image pin after Helm upgrades. Review and apply the service peers before enabling the hook:
 
@@ -204,7 +223,7 @@ Mount the listener’s public CA on the stock OpenShell Gateway. Register the ma
 
 ## 5. Deploy and open the owner’s Agent
 
-Create a dedicated Gateway-managed Agent using the [Codex configuration](local-openshell-setup.md#5-create-the-configuration-and-agent) and [exact model-source grant](local-openshell-setup.md#6-grant-model-access-and-deploy). Native process and file tools have full access inside OpenShell with approval set to `on-request` and reviewer `user`. Provision transport once. Discover the managed Linear plugin and add it and the approved repository binding to the same draft. [Linear selection](../integrations/codex-plugins.md) · [Git binding](../repository-credentials/openshell-git-push.md#2-bind-the-agent-and-deploy-once)
+Owners working in the Console can [create a dedicated Agent or deploy its saved draft](eks-openshell-owner-session.md#choose-a-console-deployment-action). For the scripted workflow, create a dedicated Gateway-managed Agent using the [Codex configuration](local-openshell-setup.md#5-create-the-configuration-and-agent) and [exact model-source grant](local-openshell-setup.md#6-grant-model-access-and-deploy). Native process and file tools have full access inside OpenShell with approval set to `on-request` and reviewer `user`. Provision transport once. Discover the managed Linear plugin and add it and the approved repository binding to the same draft. [Linear selection](../integrations/codex-plugins.md) · [Git binding](../repository-credentials/openshell-git-push.md#2-bind-the-agent-and-deploy-once)
 
 Bind the exact Agent hostname before deployment. Use the shared host derivation and configuration patch from the [browser onboarding guide](local-openshell-browser.md#bind-the-origin-before-deployment) with the following EKS inputs. Run only that guide’s origin and Configuration commands. Keep the EKS REST helper and use its exact `GET /installation`.
 
@@ -220,7 +239,9 @@ The patch checks `expectedGeneration`, preserves the Gateway password SecretRef,
 
 ```bash
 deploy_owner_revision() {
-  local revision result phase i
+  local revision result phase i peers
+  peers=$(bash "$assets/trusted-envoy-peers.sh") || return 1
+  jq -e --argjson actual "$peers" '.==$actual' "$RUN_DIR/trusted-peers.json" >/dev/null || return 1
   revision=$(request POST "$base/agents/$agent/deploy" | jq -er .data.id) || return 1
   printf '%s\n' "$revision" > "$RUN_DIR/requested-revision"
   # The Agent Service can be recreated with a new VIP. Re-read its selectors and ports.

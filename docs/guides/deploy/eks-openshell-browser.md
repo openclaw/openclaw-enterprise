@@ -97,4 +97,4 @@ curl --fail --silent --show-error --noproxy '*' --cacert "$tls_dir/ca.crt" \
 printf 'Owner Console: %s/console/\n' "$console_origin"
 ```
 
-Return to the [EKS setup](eks-openshell-setup.md#3-authenticate-and-prepare-the-namespace) to create the Agent before opening its native UI.
+Return to the [EKS setup](eks-openshell-setup.md#3-authenticate-and-prepare-the-namespace) to finish provisioning. Then [choose the Console action for a new Agent or saved draft](eks-openshell-owner-session.md#choose-a-console-deployment-action).
