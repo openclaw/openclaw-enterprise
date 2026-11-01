@@ -58,6 +58,10 @@ import {
   selectableModelOffProvider,
   unsupportedChannelRefusal,
 } from "../helpers/refusal-text.mjs";
+import {
+  INVALID_ALLOW_USERS_SAMPLE,
+  INVALID_DEVICE_AUTO_APPROVE_SAMPLE,
+} from "../helpers/trusted-proxy-shapes.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
 import {
@@ -2699,30 +2703,16 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     ...valid,
     gateway: { auth: { trustedProxy: { allowUsers: ["occ-workspace-files"], ...fields } } },
   });
+  // The first shape leaves out the machine identity; the Preset save below uses it.
   const trustedProxyRefusals = [
-    // The machine identity left out, a case-duplicate e-mail identity, and an empty list, which
-    // admits every proxy user upstream.
-    [trustedProxy({ allowUsers: ["oidc:member-01"] }), KUBERNETES_ALLOW_USERS_REFUSAL],
-    [
-      trustedProxy({
-        allowUsers: ["occ-workspace-files", "member@example.com", "Member@Example.com"],
-      }),
+    ...INVALID_ALLOW_USERS_SAMPLE.map((allowUsers) => [
+      trustedProxy({ allowUsers }),
       KUBERNETES_ALLOW_USERS_REFUSAL,
-    ],
-    [trustedProxy({ allowUsers: [] }), KUBERNETES_ALLOW_USERS_REFUSAL],
-    // Shapes the Gateway's strict schema refuses at startup.
-    [
-      trustedProxy({ deviceAutoApprove: { enabled: true, scopes: "operator.read" } }),
+    ]),
+    ...INVALID_DEVICE_AUTO_APPROVE_SAMPLE.map((deviceAutoApprove) => [
+      trustedProxy({ deviceAutoApprove }),
       KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL,
-    ],
-    [
-      trustedProxy({ deviceAutoApprove: { enabled: "true" } }),
-      KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL,
-    ],
-    [
-      trustedProxy({ deviceAutoApprove: { enabled: true, approvers: ["oidc:member-01"] } }),
-      KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL,
-    ],
+    ]),
   ];
   for (const [values, message] of trustedProxyRefusals) {
     await refusedAtSaveAndDeploy(context, agent, values, message);

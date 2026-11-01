@@ -64,6 +64,7 @@ import {
   unsubstitutedReferenceRefusal,
   unsupportedChannelRefusal,
 } from "../helpers/refusal-text.mjs";
+import { INVALID_ALLOW_USERS_SAMPLE } from "../helpers/trusted-proxy-shapes.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
@@ -7942,8 +7943,9 @@ test("deploy reports Configuration content a Compute Driver names as unsupported
   // An allowlist without the machine identity failed only in preparation, after a dedicated
   // deployment stopped its predecessor (finding 3032). Admission names the setting and its
   // requirement, never the submitted identity, before any revision.
+  const [allowUsers] = INVALID_ALLOW_USERS_SAMPLE;
   const allowUsersAgent = await createAgent(controller, namespace.id, "gateway-allow-users-agent", {
-    gateway: { auth: { mode: "trusted-proxy", trustedProxy: { allowUsers: ["someone"] } } },
+    gateway: { auth: { mode: "trusted-proxy", trustedProxy: { allowUsers } } },
   });
   await bindHarnessKey(fixture, namespace.id, allowUsersAgent);
   const refusedAllowUsers = await controller.request(
@@ -7955,7 +7957,7 @@ test("deploy reports Configuration content a Compute Driver names as unsupported
     { code: refusedAllowUsers.body.error.code, message: refusedAllowUsers.body.error.message },
     { code: "RESOURCE_CONFLICT", message: KUBERNETES_ALLOW_USERS_REFUSAL },
   );
-  assert.doesNotMatch(JSON.stringify(refusedAllowUsers.body), /someone/);
+  assert.doesNotMatch(JSON.stringify(refusedAllowUsers.body), new RegExp(allowUsers[0]));
   const allowUsersRevisions = await controller.request(
     "GET",
     `/namespaces/${namespace.id}/agents/${allowUsersAgent.id}/revisions`,
