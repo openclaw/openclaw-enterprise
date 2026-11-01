@@ -2617,14 +2617,15 @@ function configureNativeWorkerProfile() {
 }
 
 // Admission applies the same rule (configuration-rules.ts); a parity test pins the two.
-// OpenClaw matches a deny entry trimmed and lowercased.
+// OpenClaw matches a deny entry trimmed and lowercased, and plugins.enabled false
+// turns off every plugin.
 function requireWorkspaceNodePlugins(config) {
   const plugins = isPlainObject(config.plugins) ? config.plugins : {};
   const deny = plugins.deny;
   const denied = Array.isArray(deny)
     ? deny.some((id) => typeof id === "string" && id.trim().toLowerCase() === "file-transfer")
     : deny?.includes("file-transfer");
-  if (denied || plugins.entries?.["file-transfer"]?.enabled === false) {
+  if (denied || plugins.enabled === false || plugins.entries?.["file-transfer"]?.enabled === false) {
     throw new Error("The workspace node requires the file-transfer plugin.");
   }
 }

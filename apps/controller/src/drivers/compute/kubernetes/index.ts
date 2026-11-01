@@ -4776,7 +4776,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // Preparation and the Gateway entrypoint would refuse these only after a dedicated
     // deployment stopped its predecessors. The caller owns them, so admission names the setting.
     if (this.hostsWorkspaceNode(harness)) {
-      requireWorkspaceNodePlugins(configuration, callerSettingError);
+      requireWorkspaceNodePlugins(configuration, callerSettingError, stage === "admission");
     }
     // Not a Configuration save rule: it depends on the Agent's execution mode and on the
     // Installation's channel runtime (runtime.channels), which an operator may add later.

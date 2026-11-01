@@ -1511,6 +1511,7 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
   for (const plugins of [
     { deny: ["file-transfer"] },
     { entries: { "file-transfer": { enabled: false } } },
+    { enabled: false },
   ]) {
     await assert.rejects(
       () =>
@@ -1573,6 +1574,12 @@ test("deployment admission and the Gateway entrypoint agree on the workspace nod
     [{ plugins: { entries: { "file-transfer": {} } } }, true],
     [{ plugins: { entries: { other: { enabled: false } } } }, true],
     [{ plugins: { entries: [] } }, true],
+    // OpenClaw turns off every plugin, file-transfer included (finding 3083).
+    [{ plugins: { enabled: false } }, false],
+    [{ plugins: { enabled: false, entries: { "file-transfer": { enabled: true } } } }, false],
+    [{ plugins: { enabled: true } }, true],
+    // The entrypoint adds file-transfer to a non-empty allowlist.
+    [{ plugins: { allow: ["other"] } }, true],
   ]) {
     const label = JSON.stringify(config);
     assert.equal(await entrypointStarts(structuredClone(config)), starts, label);

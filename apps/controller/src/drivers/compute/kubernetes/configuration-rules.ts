@@ -96,11 +96,18 @@ export function refuseKubernetesPluginEntryKeyVariants(
  * runtime-entrypoints.ts) and exits on it at every start; a parity test pins the two. A
  * `plugins.deny` that is not a list also stops that copy (or the Gateway's own schema). OpenClaw
  * matches deny entries trimmed and lowercased (its policy ID; no built-in alias names
- * file-transfer), so ` File-Transfer` denies it too.
+ * file-transfer), so ` File-Transfer` denies it too. `plugins.enabled: false` turns off every
+ * plugin, file-transfer included (finding 3083). A non-empty `plugins.allow` does not: the
+ * entrypoint adds file-transfer to it.
+ *
+ * Preparation and activation pass `admission: false` and skip the `plugins.enabled` rule: an active
+ * revision saved before it keeps its maintenance and recovery passes until a redeploy, which
+ * admission checks.
  */
 export function requireWorkspaceNodePlugins(
   configuration: Readonly<OpenClawConfigurationDocument>,
   createError: SettingError,
+  admission = true,
 ): void {
   const plugins = asRecord(configuration.plugins);
   const deny = plugins?.deny;
@@ -108,6 +115,9 @@ export function requireWorkspaceNodePlugins(
     throw createError("plugins.deny", "must be a list");
   }
   const requirement = "the Agent's workspace node requires the file-transfer plugin";
+  if (admission && plugins?.enabled === false) {
+    throw createError("plugins.enabled", `must not be false: ${requirement}`);
+  }
   if (
     Array.isArray(deny) &&
     deny.some((id) => typeof id === "string" && id.trim().toLowerCase() === FILE_TRANSFER_PLUGIN)

@@ -338,6 +338,12 @@ export const EMBEDDED_API_KEY_REQUIRED =
   "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.";
 export const codexApiKeyRefusal = (setting) =>
   `Configuration setting ${setting} must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.`;
+// Kubernetes Agent save and deploy admission refuse a plugin setting that turns off file-transfer
+// for an Agent whose Gateway hosts its workspace node (findings 1112, 3083). `setting` is
+// plugins.deny, plugins.enabled or plugins.entries.file-transfer.enabled; `rule` is what it must
+// satisfy, such as "must not be false".
+export const workspaceNodePluginRefusal = (setting, rule) =>
+  `Configuration setting ${setting} ${rule}: the Agent's workspace node requires the file-transfer plugin.`;
 // Configuration save, Agent save and deploy admission refuse a plugins.entries key that spells the
 // codex or acpx plugin another way (finding 3073), and on Kubernetes file-transfer or a managed
 // plugin (finding 3077). `path` is the setting as the message shows it, such as
