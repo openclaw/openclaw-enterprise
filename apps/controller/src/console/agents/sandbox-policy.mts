@@ -2117,7 +2117,11 @@ export function renderAgentSandboxPolicy(
                   ? `Admitted for running revision ${view.defaultsRevisionId}. Generated transport access is managed separately.`
                   : "Defaults from the selected Sandbox Driver. Generated transport access is managed separately.",
               ),
-              element("pre", {}, visibleText(JSON.stringify(view.defaults, null, 2))),
+              element(
+                "pre",
+                { className: "driver-configuration-json" },
+                JSON.stringify(view.defaults, null, 2),
+              ),
             ),
             policy.application
               ? element(

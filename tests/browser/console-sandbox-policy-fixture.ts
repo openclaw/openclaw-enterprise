@@ -6,7 +6,11 @@ import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.t
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
-export async function createPolicyConsole(t: TestContext, ceiling: SandboxNetworkGrant[] = []) {
+export async function createPolicyConsole(
+  t: TestContext,
+  ceiling: SandboxNetworkGrant[] = [],
+  defaultBinary = "/usr/bin/python3.11",
+) {
   const sandboxDriver = new OpenShellSandboxDriver(
     {
       gateway: { workspaceMode: "operator" },
@@ -24,7 +28,7 @@ export async function createPolicyConsole(t: TestContext, ceiling: SandboxNetwor
         networkPolicies: [
           {
             name: "python-default",
-            binaries: [{ path: "/usr/bin/python3.11" }],
+            binaries: [{ path: defaultBinary }],
             endpoints: [{ host: "example.com", ports: [443], tls: "skip" }],
           },
         ],

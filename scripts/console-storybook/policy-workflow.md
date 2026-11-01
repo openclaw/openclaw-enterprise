@@ -3,6 +3,10 @@
 Use **Pages/Agent detail → Policy Denials Many** for 200 simulated denials and
 **Policy Rules Populated** for ten applied network rules.
 
+In **Policy Unicode Executable**, expand **Policy details**, then
+**Read-only Installation defaults**. Check the indentation of the nested
+binaries and endpoints. On a phone, the long path wraps inside the code block.
+
 1. Confirm the Network policy card and suggestion appear above the denial log.
    The initial page shows five of 200 denials, on page one of 40. Search the loaded
    window, clear the filter, and expand a denial to inspect its sanitized log.
