@@ -46,6 +46,7 @@ import {
   keepRuntime,
   OPENCLAW_ONLY,
   pluginEntryKeyVariantRefusal,
+  providerKeyVariantRefusal,
   runtimeIdRequired,
   runtimeIdUnsupported,
   runtimePoliciesConflict,
@@ -1822,6 +1823,75 @@ test("Configuration save and deployment refuse another spelling of the codex or 
     const launched = await launch(saved, accepted);
     assert.equal(launched.status, 201, `${key}: ${JSON.stringify(launched.body)}`);
   }
+});
+
+test("Configuration save and deployment refuse a model provider key OpenClaw applies to another key", async () => {
+  // Finding 3097. The pinned OpenClaw trims models.providers keys and merges entries whose trimmed
+  // keys are equal, the later entry's fields winning, and for a provider with no exactly matching
+  // key it uses an entry whose key matches without case. OCE's rules and the startup model probe
+  // read the exact key, so ` openai` beside `openai` would move the Gateway's model calls, with
+  // the Agent's credential, to an endpoint the probe never checked (PostgreSQL's jsonb key order
+  // puts the longer key last, so it wins there), and `OpenAI` alone would do the same while the
+  // probe checks the default endpoint. Every save path, Agent save and deployment refuse such a
+  // key, whatever its entry holds.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-provider-key-integration", ...configurationRules),
+  });
+  const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+    name: "Model provider key consumer",
+    secretName: "provider-key",
+  });
+  const checked = { baseUrl: "https://api.openai.com/v1" };
+  const elsewhere = { baseUrl: "https://models.example/v1" };
+  const withProviders = (providers) => ({ ...runtimeSelected, models: { providers } });
+  for (const [providers, path, name] of [
+    [{ openai: checked, " openai": elsewhere }, 'models.providers[" openai"]', "openai"],
+    [{ "openai ": elsewhere, openai: checked }, 'models.providers["openai "]', "openai"],
+    // Alone, too: OpenClaw uses it for openai models, while the probe checks the default endpoint.
+    [{ OpenAI: elsewhere }, "models.providers.OpenAI", "openai"],
+    [{ openai: checked, " Anthropic ": {} }, 'models.providers[" Anthropic "]', "anthropic"],
+    [{ Codex: elsewhere }, "models.providers.Codex", "codex"],
+    // A custom provider's padded key merges into its entry as well.
+    [
+      { local: { ...elsewhere, models: [] }, "local\t": { baseUrl: "https://other.example/v1" } },
+      'models.providers["local?"]',
+      "local",
+    ],
+  ]) {
+    const values = withProviders(providers);
+    const message = providerKeyVariantRefusal(path, name);
+    await refusedAtSaveAndDeploy(context, agent, values, message);
+    await refusedOnSave(context, values, message);
+  }
+  // Agent save refuses a stored row the same way, before any deployment.
+  await writePastOcc(
+    configurationDriver,
+    agent.configurationId,
+    withProviders({ openai: checked, "openai ": elsewhere }),
+  );
+  assertRefused(
+    await request(context.app, "PATCH", agent.agentPath, {
+      body: { configurationId: agent.configurationId },
+    }),
+    providerKeyVariantRefusal('models.providers["openai "]', "openai"),
+    { label: "Agent save" },
+  );
+  // The exact keys deploy. A custom provider may still use a mixed-case key or a space inside it,
+  // which OpenClaw reads as written.
+  const exact = withProviders({ openai: checked, anthropic: {} });
+  await writePastOcc(configurationDriver, agent.configurationId, exact);
+  const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  await acceptedOnSave(
+    context,
+    withProviders({
+      ...exact.models.providers,
+      MyGateway: { ...elsewhere, models: [] },
+      "my gateway": { ...elsewhere, models: [] },
+    }),
+  );
 });
 
 test("Configuration save and deployment refuse OpenClaw's $include directive", async () => {

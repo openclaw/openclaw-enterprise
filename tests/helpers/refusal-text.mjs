@@ -359,6 +359,12 @@ export const pluginEntryKeyVariantRefusal = (path, id) =>
 // the fix.
 export const managedPluginSettingRefusal = (setting, rule, pluginId, step) =>
   `Configuration setting ${setting} ${rule} while the Agent selects plugin ${pluginId}, or the Gateway does not start: ${step}.`;
+// Configuration save, Agent save and deploy admission refuse a models.providers key that OpenClaw
+// applies to another key: one with surrounding whitespace, or another spelling of openai, anthropic
+// or codex (finding 3097). `path` is the setting as the message shows it, such as
+// models.providers.OpenAI or models.providers[" openai"]; `name` is the key OCE checks.
+export const providerKeyVariantRefusal = (path, name) =>
+  `Configuration setting ${path} must be named ${JSON.stringify(name)}: OpenClaw applies it to that provider's entry, the one OCE checks. Move these settings there if that key exists, else rename this key.`;
 // Configuration save, Agent save and deploy admission refuse OpenClaw's $include directive anywhere
 // in the document (finding 3078). `path` is the setting as the message shows it, such as $include
 // or gateway.auth.$include.

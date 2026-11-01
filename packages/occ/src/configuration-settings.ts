@@ -16,7 +16,10 @@ import {
   ConfigurationHarnessError,
   GatewayPasswordValueError,
 } from "./errors.ts";
-import { validateModelProviderSettings } from "./model-provider-settings.ts";
+import {
+  refuseProviderKeyVariants,
+  validateModelProviderSettings,
+} from "./model-provider-settings.ts";
 import { retiredOpenClawSettingMessage } from "./retired-openclaw-settings.ts";
 
 export { RETIRED_OPENCLAW_SETTINGS } from "./retired-openclaw-settings.ts";
@@ -343,6 +346,7 @@ function isCredentialReference(value: unknown): boolean {
  * - Settings the pinned OpenClaw retired (refuseRetiredOpenClawSettings).
  * - OpenClaw's own sandbox (refuseOpenClawSandbox).
  * - Another spelling of the codex or acpx plugin entry key (refusePluginEntryKeyVariants).
+ * - A model provider key OpenClaw applies to another key (refuseProviderKeyVariants).
  */
 export function validateConfigurationSettings(
   values: OpenClawConfigurationDocument,
@@ -362,12 +366,13 @@ export function validateConfigurationSettings(
   refuseRetiredOpenClawSettings(values);
   refuseOpenClawSandbox(values, options);
   refusePluginEntryKeyVariants(values);
+  refuseProviderKeyVariants(values);
 }
 
 /**
  * The rules above that Agent save and deploy admission run again on a stored Configuration, so
  * one saved before a rule existed gets the message its next save would (findings 2699, 2709,
- * 2767, 3063, 3064, 3073, 3078).
+ * 2767, 3063, 3064, 3073, 3078, 3097).
  */
 export function refuseStoredConfigurationSettings(values: OpenClawConfigurationDocument): void {
   refuseConfigIncludes(values);
@@ -377,6 +382,7 @@ export function refuseStoredConfigurationSettings(values: OpenClawConfigurationD
   refuseRetiredOpenClawSettings(values);
   refuseOpenClawSandbox(values);
   refusePluginEntryKeyVariants(values);
+  refuseProviderKeyVariants(values);
 }
 
 /**
