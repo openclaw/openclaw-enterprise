@@ -15,7 +15,7 @@ import {
   currentComputeAbortSignal,
   withComputeAbortSignal,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
-import { withKubernetesMutationDeadline } from "../../apps/controller/src/drivers/kubernetes/request.ts";
+import { withMutationDeadline } from "../../apps/controller/src/admission/mutation-deadline.ts";
 import { READ_RETRY_PAUSES_MS, withRetryTimers } from "../helpers/kubernetes-request-retry.mjs";
 
 import { assertProtectedStaticSecretRead } from "../helpers/protected-static-secret-read.ts";
@@ -879,7 +879,7 @@ test("kubernetes-secret-driver cleans up a create the API mutation's deadline cu
   client.createAppliedFailureCodes.push("dropped");
   const driver = driverWithClient(client);
   await assert.rejects(
-    withKubernetesMutationDeadline(now + 3_000, () =>
+    withMutationDeadline(now + 3_000, () =>
       driver.create({ id: secretId(), namespaceId: nsId, name: "model-key" }, "value"),
     ),
     (error) =>

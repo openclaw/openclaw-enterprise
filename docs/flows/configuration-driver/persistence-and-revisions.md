@@ -86,7 +86,7 @@ compensation proceeds as before. A write still in flight, or
 another change that lands between that re-read and the compensation, is not covered.
 Each Kubernetes call has its own 10-second limit, and an API write gives all of its
 Configuration and Secret calls 12 seconds
-(`apps/controller/src/drivers/kubernetes/request.ts:withKubernetesMutationDeadline`).
+(`apps/controller/src/admission/mutation-deadline.ts:withMutationDeadline`).
 A call gets only the time left, a read retry runs only when its pause fits, and no call
 is sent after that time: the request fails with `503 DEPENDENCY_UNAVAILABLE` and never
 commits after an ingress's 15-second timeout (finding 3106). Compensations and the

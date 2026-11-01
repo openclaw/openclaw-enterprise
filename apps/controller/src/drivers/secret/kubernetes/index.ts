@@ -30,7 +30,8 @@ import {
 } from "../../compute/kubernetes/index.ts";
 import { withComputeOperationDeadline } from "../../compute/operation-context.ts";
 import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts";
-import { kubernetesRequest, withoutKubernetesMutationDeadline } from "../../kubernetes/request.ts";
+import { kubernetesRequest } from "../../kubernetes/request.ts";
+import { withoutMutationDeadline } from "../../../admission/mutation-deadline.ts";
 import {
   createKubernetesAuthenticationOptionsSchema,
   validateKubernetesAuthentication,
@@ -234,7 +235,7 @@ export class KubernetesSecretDriver implements SecretDriver {
       );
     } catch (error) {
       // The cleanup runs even when the request's deadline ended the create.
-      await withoutKubernetesMutationDeadline(() =>
+      await withoutMutationDeadline(() =>
         this.discardFailedCreate(client, namespace, name, identity),
       );
       throw error;
@@ -248,7 +249,7 @@ export class KubernetesSecretDriver implements SecretDriver {
       }
       return reference;
     } catch (error) {
-      await withoutKubernetesMutationDeadline(() =>
+      await withoutMutationDeadline(() =>
         this.discardRefusedCreate(client, namespace, name, observed),
       );
       throw error;

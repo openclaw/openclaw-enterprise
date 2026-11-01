@@ -1,13 +1,14 @@
 import type { OpenClawConfigurationDocument, SecretBindings } from "@openclaw-enterprise/contracts";
 import {
-  KUBERNETES_MUTATION_BUDGET_MS,
-  withKubernetesMutationDeadline,
-} from "../drivers/kubernetes/request.ts";
+  MUTATION_BACKEND_BUDGET_MS,
+  withMutationDeadline,
+} from "../admission/mutation-deadline.ts";
 import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
 
-// Each write's Kubernetes calls end within KUBERNETES_MUTATION_BUDGET_MS, so a slow cluster
-// fails the request before an ingress gives up on it, never commits it after (finding 3106).
-// Only the forward path runs under the deadline: the transaction's compensations run after it.
+// Each write's Configuration and Secret backend calls end within MUTATION_BACKEND_BUDGET_MS, so
+// a slow cluster fails the request before an ingress gives up on it, never commits it after
+// (finding 3106). Only the forward path runs under the deadline: the transaction's compensations
+// run after it.
 
 export const configurationHandlers = {
   async createConfiguration({
@@ -19,9 +20,9 @@ export const configurationHandlers = {
     namespaceId,
     mutationEvent,
   }) {
-    const deadline = Date.now() + KUBERNETES_MUTATION_BUDGET_MS;
+    const deadline = Date.now() + MUTATION_BACKEND_BUDGET_MS;
     const configuration = await controller.transact(async (unit) => {
-      const created = await withKubernetesMutationDeadline(deadline, () =>
+      const created = await withMutationDeadline(deadline, () =>
         controller.createConfiguration(context.actorId, {
           namespaceId,
           kind: body?.kind as "agent",
@@ -56,9 +57,9 @@ export const configurationHandlers = {
     namespaceId,
     mutationEvent,
   }) {
-    const deadline = Date.now() + KUBERNETES_MUTATION_BUDGET_MS;
+    const deadline = Date.now() + MUTATION_BACKEND_BUDGET_MS;
     const configuration = await controller.transact(async (unit) => {
-      const updated = await withKubernetesMutationDeadline(deadline, () =>
+      const updated = await withMutationDeadline(deadline, () =>
         controller.updateConfiguration(context.actorId, {
           namespaceId,
           configurationId: params.configurationId as string,
@@ -79,9 +80,9 @@ export const configurationHandlers = {
     reply.send({ data: configuration, meta: { requestId: request.id } });
   },
   async deleteConfiguration({ controller, context, reply, params, namespaceId, mutationEvent }) {
-    const deadline = Date.now() + KUBERNETES_MUTATION_BUDGET_MS;
+    const deadline = Date.now() + MUTATION_BACKEND_BUDGET_MS;
     await controller.transact(async (unit) => {
-      const removed = await withKubernetesMutationDeadline(deadline, () =>
+      const removed = await withMutationDeadline(deadline, () =>
         controller.deleteConfiguration(
           context.actorId,
           namespaceId,

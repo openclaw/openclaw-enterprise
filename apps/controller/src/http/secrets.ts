@@ -1,8 +1,8 @@
 import type { SecretDetail, SecretMetadata } from "@openclaw-enterprise/contracts";
 import {
-  KUBERNETES_MUTATION_BUDGET_MS,
-  withKubernetesMutationDeadline,
-} from "../drivers/kubernetes/request.ts";
+  MUTATION_BACKEND_BUDGET_MS,
+  withMutationDeadline,
+} from "../admission/mutation-deadline.ts";
 import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
 
 // Writes bound their Kubernetes calls like Configuration writes (configurations.ts, finding 3106).
@@ -33,9 +33,9 @@ function clientSecretDetail(secret: Readonly<SecretDetail>): Record<string, unkn
 
 export const secretHandlers = {
   async createSecret({ controller, context, request, reply, body, namespaceId, mutationEvent }) {
-    const deadline = Date.now() + KUBERNETES_MUTATION_BUDGET_MS;
+    const deadline = Date.now() + MUTATION_BACKEND_BUDGET_MS;
     const secret = await controller.transact(async (unit) => {
-      const created = await withKubernetesMutationDeadline(deadline, () =>
+      const created = await withMutationDeadline(deadline, () =>
         controller.createSecret(context.actorId, {
           namespaceId,
           name: body?.name as string,
@@ -80,9 +80,9 @@ export const secretHandlers = {
     namespaceId,
     mutationEvent,
   }) {
-    const deadline = Date.now() + KUBERNETES_MUTATION_BUDGET_MS;
+    const deadline = Date.now() + MUTATION_BACKEND_BUDGET_MS;
     const secret = await controller.transact(async (unit) => {
-      const updated = await withKubernetesMutationDeadline(deadline, () =>
+      const updated = await withMutationDeadline(deadline, () =>
         controller.updateSecret(context.actorId, {
           namespaceId,
           secretId: params.secretId as string,
@@ -95,9 +95,9 @@ export const secretHandlers = {
     reply.send({ data: secret, meta: { requestId: request.id } });
   },
   async deleteSecret({ controller, context, reply, params, namespaceId, mutationEvent }) {
-    const deadline = Date.now() + KUBERNETES_MUTATION_BUDGET_MS;
+    const deadline = Date.now() + MUTATION_BACKEND_BUDGET_MS;
     await controller.transact(async (unit) => {
-      const removed = await withKubernetesMutationDeadline(deadline, () =>
+      const removed = await withMutationDeadline(deadline, () =>
         controller.deleteSecret(context.actorId, namespaceId, params.secretId as string),
       );
       await unit.audit.append(

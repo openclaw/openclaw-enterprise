@@ -16,7 +16,7 @@ import {
   kubernetesConfigurationName,
 } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
-import { withKubernetesMutationDeadline } from "../../apps/controller/src/drivers/kubernetes/request.ts";
+import { withMutationDeadline } from "../../apps/controller/src/admission/mutation-deadline.ts";
 import {
   FakeConfigurationCoreV1Api,
   FlakyConfigurationCoreV1Api,
@@ -804,7 +804,7 @@ test("Kubernetes Configuration sends no call past an API mutation's deadline", a
   });
   const sent = (client) => ({ ...client.calls });
   const updateBy = (driver, deadline) =>
-    withKubernetesMutationDeadline(deadline, () => driver.update(nextGeneration));
+    withMutationDeadline(deadline, () => driver.update(nextGeneration));
   const notSent = (action) => (error) =>
     error instanceof ConfigurationBackendUnavailableError &&
     error.message ===
