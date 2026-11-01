@@ -18,7 +18,9 @@ import {
   gatewayNodeOptionsEnvironment,
   openClawStateMigrationHelper,
   startupPhaseHelper,
+  NATIVE_GATEWAY_COMMAND_TIMEOUT_MS,
 } from "../runtime-startup.ts";
+import { NATIVE_GATEWAY_STATE_RECOVERY_RUNTIME } from "../native-state-recovery-runtime.ts";
 
 // Match the pinned OpenClaw service stop budget: 315s drain, 10s cleanup,
 // and 5s supervisor margin. Idle Gateways exit as soon as their work settles.
@@ -496,6 +498,8 @@ let runtimeStartupFailure;
 // loaded from a config with the node), and the current reason it is not.
 let runtimeWorkspaceNodeId;
 let runtimeWorkspaceNodeFailure;
+let runtimeGatewayState;
+let runtimeStatusObservation;
 
 function publishPluginRuntimeStatus(report) {
   if (pluginRuntimeStatusPort() === undefined) return;
@@ -559,10 +563,12 @@ function runtimeStatusReport() {
   return {
     revisionId: requireNonEmptyString(process.env.OPENCLAW_AGENT_REVISION_ID, "Runtime status revision ID"),
     container: runtimeStatusContainer(),
-    podUid: requireNonEmptyString(process.env.OPENCLAW_POD_UID, "Runtime status Pod UID"),
+    podUid: process.env.OPENCLAW_RUNTIME_STATUS_TOKEN !== undefined && process.env.OPENCLAW_POD_UID === undefined
+      ? undefined : requireNonEmptyString(process.env.OPENCLAW_POD_UID, "Runtime status Pod UID"),
     ...(runtimeStartupFailure === undefined ? {} : { runtimeFailure: runtimeStartupFailure }),
     ...(runtimeWorkspaceNodeId === undefined ? {} : { workspaceNodeId: runtimeWorkspaceNodeId }),
     ...(runtimeWorkspaceNodeFailure === undefined ? {} : { workspaceNodeFailure: runtimeWorkspaceNodeFailure }),
+    ...(runtimeGatewayState === undefined ? {} : { gatewayState: runtimeGatewayState }),
   };
 }
 
@@ -640,7 +646,7 @@ function gatewayRefusedUnknownChannel(gatewayRuntime, error, channel) {
 // Query the running Gateway through OpenClaw's public SDK. Starting a CLI here
 // also starts its launcher/respawn lifecycle; killing that launcher cannot bound
 // a probe whose descendant still owns stdout.
-function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65536) {
+function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65536, localPort) {
   return new Promise((resolve) => {
     const controller = new AbortController();
     let settled = false;
@@ -666,7 +672,14 @@ function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65
     Promise.resolve().then(async () => {
       if (settled) return;
       gatewayRuntime = require("openclaw/plugin-sdk/gateway-runtime");
-      const value = await gatewayRuntime.callGatewayFromCli(method, { json: true, timeout: String(timeoutMs) }, params, {
+      const value = await gatewayRuntime.callGatewayFromCli(method, {
+        json: true,
+        timeout: String(timeoutMs),
+        ...(localPort === undefined ? {} : {
+          port: String(localPort),
+          expectUrl: "ws://127.0.0.1:" + localPort,
+        }),
+      }, params, {
         progress: false,
         // Status probes must not initialize shared state alongside Gateway startup.
         sharedStateMode: "read-only",
@@ -837,6 +850,22 @@ function startPluginRuntimeStatusServer(readiness) {
   const server = pluginCreateServer(async (request, response) => {
     const pathname = runtimeRequestPathname(request, response);
     if (pathname === undefined) return;
+    if (process.env.OPENCLAW_RUNTIME_STATUS_TOKEN !== undefined) {
+      const expected = Buffer.from("Bearer " + requireNonEmptyString(process.env.OPENCLAW_RUNTIME_STATUS_TOKEN, "Runtime status token"));
+      const supplied = Buffer.from(typeof request.headers.authorization === "string" ? request.headers.authorization : "");
+      if (expected.length !== supplied.length || !pluginTimingSafeEqual(expected, supplied)) {
+        response.writeHead(401, { "content-type": "application/json", "cache-control": "no-store" });
+        response.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+      // Docker's fixed healthcheck reads this observation over local loopback.
+      // Kubernetes diagnostics retain their existing Pod-proxy identity contract.
+      if (request.method !== "GET" || pathname !== RUNTIME_STATUS_PATH) {
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "not_found" }));
+        return;
+      }
+    }
     if (request.method === "GET" && pathname === RUNTIME_READINESS_PATH) {
       await answerRuntimeReadiness(response, readiness);
       return;
@@ -888,6 +917,7 @@ function startPluginRuntimeStatusServer(readiness) {
         response.end(JSON.stringify({ error: "not_found" }));
         return;
       }
+      if (runtimeStatusObservation !== undefined) await runtimeStatusObservation();
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify(runtimeStatusReport()));
       return;
@@ -926,7 +956,7 @@ function startPluginRuntimeStatusServer(readiness) {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(pluginStatusReport));
   });
-  server.listen(port, "0.0.0.0");
+  server.listen(port, process.env.OPENCLAW_RUNTIME_STATUS_TOKEN === undefined ? "0.0.0.0" : "127.0.0.1");
 }
 
 function pluginBestEffortEnabled() {
@@ -1307,7 +1337,7 @@ function validateOpenClawPluginApprovers(overlay) {
       env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath },
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: 30_000,
+      timeout: ${NATIVE_GATEWAY_COMMAND_TIMEOUT_MS},
       maxBuffer: 1024 * 1024,
     });
     if (result.error !== undefined || result.status !== 0 || JSON.parse(result.stdout)?.valid !== true) {
@@ -3172,6 +3202,7 @@ function holdInvalidGatewayConfiguration(code, signal) {
 }
 
 function startGatewayProcess() {
+  if (runtimeGatewayState !== undefined) runtimeGatewayState = { ...nativeStateObservationIdentity };
   const spawned = spawn(
     "node",
     ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
@@ -3214,15 +3245,24 @@ function stopContainer() {
 let pluginResult;
 let peerStatus;
 let resetWorkspaceNodeTracking = () => {};
+${NATIVE_GATEWAY_STATE_RECOVERY_RUNTIME}
 (async () => {
 if (codexBridgeRecordProblem !== undefined) {
   holdCodexBridgeRecordFailure();
   return;
 }
+// Native validation and plugin loading may inspect shared state. Clear only
+// proven dead custody first; all normal validation still precedes native spawn.
+if (nativeStateRecoveryEnabled && !(await prepareNativeGatewayStateRecovery())) {
+  setInterval(() => {}, 3600000);
+  return;
+}
+if (nativeStateRecoveryEnabled) await qualifyNativeGatewayStateSources();
 peerStatus = followsPeerStatus
   ? await timeStartupPhase("peer-plugin-status", waitForPeerPluginRuntimeStatus)
   : undefined;
 const started = configureGateway(peerStatus);
+if (nativeStateRecoveryEnabled) await qualifyNativeGatewayStateSources();
 // Doctor reads the configuration the Gateway starts with. Current state adds
 // no await before the spawn.
 // A failure holds the Gateway unready with the step named, rather than

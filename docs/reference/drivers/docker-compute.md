@@ -182,6 +182,37 @@ The Driver then removes the container, so Doctor's output survives only
 through the Docker logging address. A slow migration can also outlast the
 Driver's 120-second readiness budget; deploying again retries it.
 
+## Dedicated state and native-owner recovery
+
+With persistent workspace inputs, a dedicated Codex Gateway keeps its original
+Agent state volume. The Harness gets its own state volume. Both mount the shared
+workspace. Without persistent inputs, each container keeps ephemeral state.
+
+Automatic recovery requires the private constructor input
+`trustedGatewayToolBoundary: "oce-gateway-tools/v1"`, a supported Docker Engine,
+qualified Gateway code and configuration, and private-origin state. The ordinary
+factory disables recovery. Driver JSON cannot enable it. Deployment wiring and
+runtime qualification remain pending. Podman, legacy state, Gateway-native MCP
+servers, custom browser executables, CLI-backed channels, and other unreviewed
+configurations require operator recovery. Codex MCP servers and plugins run in
+the Harness.
+
+The Gateway mounts the Agent-owned recovery metadata volume read-only. The
+Harness has no mount. The Driver updates metadata through the Engine archive
+API on a never-started container. A data-volume label cannot replace missing
+metadata. Embedded or unsafe reuse invalidates trust before exposing the volume.
+
+The Gateway healthcheck collects bounded owner observations through authenticated
+loopback. The Driver reads them through Engine inspection without publishing a
+status port or attaching a management network. Startup and readiness checks
+still control health.
+
+Before removal, the Driver verifies and records that the observed container
+instance stopped. Only the intended replacement wrapper can use that proof.
+It checks the native lock snapshot and live owner. Container absence, elapsed
+time, or retained health logs alone cannot authorize recovery. A refusal holds
+the replacement without retrying. See the [native-owner contract](kubernetes-compute/storage-and-credentials.md#native-owner-recovery).
+
 ## Gateway authentication
 
 The native listener must serve HTTP for readiness and private traffic.
