@@ -74,7 +74,7 @@ for (const action of ["Stop", "Delete"] as const) {
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
       member.credentials,
     );
     const row = page.getByRole("region", { name: `${action} Agent`, exact: true });
@@ -114,7 +114,7 @@ for (const action of ["Stop", "Delete"] as const) {
     );
     await page.getByRole("tab", { name: "Logs", exact: true }).click();
     await failed;
-    await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await nextFrames(page);
     assert.equal(await control.getAttribute("aria-disabled"), "true");
     assert.equal(await accessibleDescription(control), refusal);
@@ -125,6 +125,7 @@ for (const action of ["Stop", "Delete"] as const) {
     const answered = responseTo(page, "GET", permissionsUrl, { status: 200 });
     await page.getByRole("tab", { name: "Logs", exact: true }).click();
     await answered;
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await alert.waitFor({ state: "detached" });
     await waitForEnabled(control);
     assert.deepEqual(
@@ -157,7 +158,7 @@ for (const action of ["Stop", "Delete"] as const) {
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
       member.credentials,
     );
     const row = page.getByRole("region", { name: `${action} Agent`, exact: true });
@@ -198,7 +199,7 @@ for (const action of ["Stop", "Delete"] as const) {
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
       member.credentials,
     );
     const row = page.getByRole("region", { name: `${action} Agent`, exact: true });
@@ -251,7 +252,7 @@ test("a refocus reads no permission answer for an Agent page being deleted", asy
   await login(
     page,
     fixture,
-    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
   );
   const control = page.getByRole("button", { name: "Delete Agent", exact: true });
   await waitForEnabled(control);
@@ -280,7 +281,7 @@ test("a Stop that finds its Agent being deleted moves focus to the deletion row"
   await login(
     page,
     fixture,
-    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
   );
   const stop = page
     .getByRole("region", { name: "Stop Agent", exact: true })
@@ -320,7 +321,7 @@ for (const action of ["Stop", "Delete"] as const) {
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
       member.credentials,
     );
     const row = page.getByRole("region", { name: `${action} Agent`, exact: true });

@@ -5000,6 +5000,7 @@ export const scenarios = {
     ],
     actions: [
       ...shareExistingPerson,
+      click("Configuration"),
       click("Delete Agent"),
       { selector: ".agent-delete-dialog button.danger", click: true },
       { selector: "a.page-back", click: true },
@@ -7174,9 +7175,9 @@ export const scenarios = {
     candidateDeploymentStatus: "succeeded",
     rules: [{ suffix: "/runtime", delayMs: 1200, once: true }],
     description:
-      "The first runtime status takes 1.2 s after the Logs tab is selected. Stop Agent and Delete Agent stay hidden under the reserved area until the strip and output appear, so nothing below moves.",
+      "The first runtime status takes 1.2 s after the Logs tab is selected. The Logs panel reserves space for the strip and output.",
     steps: [
-      "Scroll to the version tabs and select Logs. The area keeps its height and Stop and Delete are hidden; after 1.2 s the strip, output and both cards appear in place and the panel scrolls into view.",
+      "Scroll to the version tabs and select Logs. The area keeps its height. After 1.2 s the strip and output appear and the panel scrolls into view.",
     ],
   },
   runtimeLogsStartupWarnings: {
@@ -9643,8 +9644,9 @@ export const scenarios = {
       click("Logs"),
       { text: "Runtime status requires Agent operate" },
       click("Workspace files"),
-      { selector: "#agent-stop-title" },
       click("Configuration"),
+      { selector: "#agent-stop-title" },
+      click("Deployment"),
       { selector: ".version-diagnostics .deployment-heading button:not(:disabled)" },
       click("Workspace files"),
       {
@@ -9659,9 +9661,9 @@ export const scenarios = {
     description:
       "Workspace files stay parked while Logs reads a newer Agent operate answer. A grant makes them editable on return, shows the Stop row and enables Run diagnostics. A revocation makes them read-only again, keeps unsaved text, hides Stop and disables Run diagnostics.",
     steps: [
-      "Workspace files open read-only, with the note that saving needs Agent operate. The Danger zone has no Stop row.",
+      "Workspace files open read-only, with the note that saving needs Agent operate. Open Configuration to check that the Danger zone has no Stop row.",
       "Logs records the runtime-status refusal. Returning to Workspace files keeps that note.",
-      "The next Logs visit reads an operate grant. Returning hides the note, AGENTS.md is editable, the Stop row appears, and Configuration offers Run diagnostics.",
+      "The next Logs visit reads an operate grant. Returning hides the note, AGENTS.md is editable, Configuration offers Stop, and Deployment offers Run diagnostics.",
       "After the edit, the following Logs visit reads a revocation. Returning keeps the unsaved text and makes AGENTS.md read-only; Stop hides and Run diagnostics is disabled with its reason.",
     ],
     gap: "The permission changes and runtime refusal are simulated. The preview checks Stop and Run diagnostics after the grant only; the browser test also checks them after the revocation, changing the controller's real IAM policy across the same tab visits. A failed permission read is not shown; the page keeps the previous answer. The controller still authorizes every write.",
@@ -10261,6 +10263,20 @@ export const scenarios = {
       "Cancel or press Escape. The page explains why Stop is unavailable, without sending a stop request; Stop Agent stays in the Tab order, described by that note.",
     ],
   },
+  dangerZoneTabs: {
+    group: "Pages/Agent detail",
+    name: "Danger zone on Configuration",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    stopped: true,
+    description:
+      "Compare the Workspace files and Configuration tabs for an Agent with a stop request.",
+    steps: [
+      "Workspace files opens directly. Scroll to the end of the tab.",
+      "Select Configuration and scroll to Danger zone. Check the stop status, Request Stop again, Refresh stop status and Delete Agent.",
+      "Return to Workspace files. The lifecycle controls disappear.",
+    ],
+  },
   dangerZoneReader: {
     group: "Pages/Agent detail",
     name: "Danger zone, viewer cannot stop or delete",
@@ -10280,7 +10296,7 @@ export const scenarios = {
     description: "Confirm stopping the Agent or cancel without changing its requested state.",
     steps: [
       "Confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the version detail does not reload.",
-      "For the revision clearing while Workspace is open, use Flows / Stop an Agent.",
+      "For the revision clearing after Stop, use Flows / Stop an Agent.",
     ],
   },
   stopPending: {
@@ -10422,10 +10438,10 @@ export const scenarios = {
     description:
       "Open the Stop Agent confirmation and request the stopped desired state while preserving draft, revisions, credentials, and workspace data.",
     steps: [
-      "Open Stop Agent and review the confirmation copy.",
-      "With Workspace files open, confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the current version still has file editors.",
-      "Refresh stop status. The fixture now clears the current version; Workspace shows why files are unavailable, without reloading the page.",
-      "Open Configuration, then Workspace files again. The unavailable notice remains; the old editors do not return.",
+      "Select Configuration and open Stop Agent. Review the confirmation.",
+      "Confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the current version still has file editors.",
+      "Select Refresh stop status. The fixture clears the current version.",
+      "Open Workspace files. It explains why the files are unavailable. Return to Configuration.",
       "Focus Request Stop again, press Enter, then Cancel or Escape. Focus returns to Request Stop again without submitting. Reopen and confirm if recovery is needed; refresh an uncertain outcome before retrying.",
       "Return to Open draft and Deploy new version to request running again.",
     ],
