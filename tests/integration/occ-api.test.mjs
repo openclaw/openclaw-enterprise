@@ -48,6 +48,7 @@ import {
   callerDenied,
   DEDICATED_STORAGE_ROUTING_REQUIRED,
   DEPLOYMENT_FAILED,
+  KUBERNETES_ALLOW_USERS_REFUSAL,
   managedPluginSettingRefusal,
   MODEL_CREDENTIAL_REJECTED_RECORDED,
   NAMESPACE_NAME_CONFLICT,
@@ -7938,22 +7939,28 @@ test("deploy reports Configuration content a Compute Driver names as unsupported
     );
     assert.deepEqual(revisions.data, [], JSON.stringify(revisions.body));
   }
-  // A setting Compute leaves to preparation is admitted as before.
+  // An allowlist without the machine identity failed only in preparation, after a dedicated
+  // deployment stopped its predecessor (finding 3032). Admission names the setting and its
+  // requirement, never the submitted identity, before any revision.
   const allowUsersAgent = await createAgent(controller, namespace.id, "gateway-allow-users-agent", {
     gateway: { auth: { mode: "trusted-proxy", trustedProxy: { allowUsers: ["someone"] } } },
   });
   await bindHarnessKey(fixture, namespace.id, allowUsersAgent);
-  const admitted = await controller.request(
+  const refusedAllowUsers = await controller.request(
     "POST",
     `/namespaces/${namespace.id}/agents/${allowUsersAgent.id}/deploy`,
   );
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-  // The driver hook names only settings every preparation attempt refuses.
-  assert.doesNotThrow(() =>
-    kubernetes.validateGatewaySettings({
-      gateway: { auth: { mode: "trusted-proxy", trustedProxy: { allowUsers: ["someone"] } } },
-    }),
+  assert.equal(refusedAllowUsers.status, 409, JSON.stringify(refusedAllowUsers.body));
+  assert.deepEqual(
+    { code: refusedAllowUsers.body.error.code, message: refusedAllowUsers.body.error.message },
+    { code: "RESOURCE_CONFLICT", message: KUBERNETES_ALLOW_USERS_REFUSAL },
   );
+  assert.doesNotMatch(JSON.stringify(refusedAllowUsers.body), /someone/);
+  const allowUsersRevisions = await controller.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${allowUsersAgent.id}/revisions`,
+  );
+  assert.deepEqual(allowUsersRevisions.data, [], JSON.stringify(allowUsersRevisions.body));
 
   // Deploy authorization comes first: a caller who cannot deploy learns nothing of the setting.
   const deniedAgent = await createAgent(controller, namespace.id, "gateway-denied-agent", {

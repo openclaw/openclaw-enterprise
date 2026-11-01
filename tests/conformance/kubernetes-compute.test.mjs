@@ -85,6 +85,8 @@ import {
   EMBEDDED_API_KEY_REQUIRED,
   codexApiKeyRefusal,
   unsupportedChannelRefusal,
+  KUBERNETES_ALLOW_USERS_REFUSAL,
+  KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL,
   KUBERNETES_GATEWAY_PASSWORD_REFUSAL,
   KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT,
   kubernetesGatewayPasswordRequirement,
@@ -5975,6 +5977,14 @@ test("Kubernetes preserves explicit human proxy identities alongside workspace a
       ["X-OpenClaw-Scopes", "x-real-ip"],
     );
     assert.deepEqual(renderedRequiredHeaders({ requiredHeaders: [] }), ["x-openclaw-scopes"]);
+    // One admitted human is enough to require the header (finding 3007).
+    assert.deepEqual(
+      renderedRequiredHeaders(
+        { allowUsers: ["occ-workspace-files", "oidc:member-01"] },
+        { "occ-workspace-files": ["operator.admin"], "oidc:member-01": ["operator.read"] },
+      ),
+      ["x-openclaw-scopes"],
+    );
     assert.equal(
       renderedRequiredHeaders(
         { allowUsers: ["occ-workspace-files"] },
@@ -6071,6 +6081,57 @@ test("Kubernetes preserves explicit human proxy identities alongside workspace a
           error instanceof ComputeGatewaySettingError &&
           error.setting === "gateway.auth.trustedProxy.deviceAutoApprove.scopes",
       );
+    }
+    // The Gateway's strict schema refuses these at startup, after a dedicated deployment stopped
+    // its predecessor; scopes that are not a list would also skip the admin check above. Deploy
+    // admission (409) and Configuration save (400) refuse them, with or without humans
+    // (finding 3006).
+    for (const deviceAutoApprove of [
+      "operator.admin",
+      null,
+      ["operator.read"],
+      { enabled: true, scopes: "operator.admin" },
+      { enabled: "true" },
+      { enabled: true, scopes: [""] },
+      { enabled: true, scopes: ["operator.read", 42] },
+      { enabled: true, extra: true },
+    ]) {
+      for (const allowUsers of [auth.trustedProxy.allowUsers, ["occ-workspace-files"]]) {
+        const configuration = {
+          gateway: {
+            auth: {
+              ...auth,
+              trustedProxy: { ...auth.trustedProxy, allowUsers, deviceAutoApprove },
+              identityScopes: { "occ-workspace-files": ["operator.admin"] },
+            },
+          },
+        };
+        const label = JSON.stringify({ allowUsers, deviceAutoApprove });
+        assert.throws(
+          () => driver.validateGatewaySettings(configuration),
+          (error) =>
+            error instanceof ComputeGatewaySettingError &&
+            error.message === KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL,
+          label,
+        );
+        assert.throws(
+          () => driver.validateConfiguration(configuration),
+          (error) =>
+            error instanceof ConfigurationHarnessError &&
+            error.message === KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL,
+          label,
+        );
+      }
+    }
+    // Each optional field alone, and an empty scope list, keep the Gateway's accepted shape.
+    for (const deviceAutoApprove of [{}, { enabled: false }, { scopes: [] }]) {
+      const configuration = {
+        gateway: {
+          auth: { ...auth, trustedProxy: { ...auth.trustedProxy, deviceAutoApprove } },
+        },
+      };
+      driver.validateGatewaySettings(configuration);
+      driver.validateConfiguration(configuration);
     }
     for (const scopes of [
       "operator.read",
@@ -6252,20 +6313,45 @@ test("Kubernetes preserves explicit human proxy identities alongside workspace a
       ["occ-workspace-files", "__proto__"],
     ]) {
       // Machine-only grants keep the identityScopes checks from refusing first.
+      const configuration = {
+        gateway: {
+          auth: {
+            ...auth,
+            trustedProxy: { ...auth.trustedProxy, allowUsers },
+            identityScopes: { "occ-workspace-files": ["operator.admin"] },
+          },
+        },
+      };
+      const label = JSON.stringify(allowUsers);
+      // Preparation renders the same refusal as a setting failure.
       assert.throws(
-        () =>
-          driver.kubernetesGatewayConfigurationDocument({
-            gateway: {
-              auth: {
-                ...auth,
-                trustedProxy: { ...auth.trustedProxy, allowUsers },
-                identityScopes: { "occ-workspace-files": ["operator.admin"] },
-              },
-            },
-          }),
-        /native trustedProxy\.allowUsers must contain/,
+        () => driver.kubernetesGatewayConfigurationDocument(configuration),
+        (error) =>
+          error.setting === "gateway.auth.trustedProxy.allowUsers" &&
+          error.message === KUBERNETES_ALLOW_USERS_REFUSAL,
+        label,
+      );
+      // Deploy admission refuses it with a 409 before any revision, so a dedicated Agent's
+      // predecessor keeps serving, and Configuration save refuses it where it is written
+      // (finding 3032). Neither names a submitted identity.
+      assert.throws(
+        () => driver.validateGatewaySettings(configuration),
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.message === KUBERNETES_ALLOW_USERS_REFUSAL,
+        label,
+      );
+      assert.throws(
+        () => driver.validateConfiguration(configuration),
+        (error) =>
+          error instanceof ConfigurationHarnessError &&
+          error.message === KUBERNETES_ALLOW_USERS_REFUSAL,
+        label,
       );
     }
+    // A custom allowlist the Gateway accepts saves and passes admission.
+    driver.validateConfiguration({ gateway: { auth } });
+    driver.validateGatewaySettings({ gateway: { auth } });
     assert.throws(
       () =>
         driver.kubernetesGatewayConfigurationDocument({

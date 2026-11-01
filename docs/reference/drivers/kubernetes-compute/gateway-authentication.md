@@ -37,10 +37,12 @@ identities containing `@`, so such variants would share one grant.
 Compute renders `gateway.trustedProxies` from `network.gatewayTrustedProxyCidrs`
 and `gateway.allowRealIpFallback: true`; CIDR order may differ.
 Conflicting/unsupported settings return `409 RESOURCE_CONFLICT` with setting/requirement,
-never values. Invalid `allowUsers` instead produces fixed provisioning `409`
-text plus an API-log reason, or deployment-preparation `DEPENDENCY_UNAVAILABLE`
-plus `worker.compute-prepare-failed`. `trustedProxy.allowLoopback` must be omitted
-or false; local verification uses the separate password.
+never values. Configuration save refuses an invalid `allowUsers` or a
+`deviceAutoApprove` that is not an object of an optional boolean `enabled` and
+an optional array of nonblank scope strings `scopes` (`400 INVALID_REQUEST`, setting and requirement only);
+deployment refuses a stored one with the same text before it stops a running revision.
+`trustedProxy.allowLoopback` must be omitted or false; local verification uses the
+separate password.
 
 ```json
 {
