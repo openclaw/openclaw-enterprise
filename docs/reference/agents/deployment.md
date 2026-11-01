@@ -213,11 +213,11 @@ continues, or past its convergence deadline stops the candidate and fails
 newer version supersedes still finishes the stop, even of a lifted refusal,
 then ends superseded.
 
-`AGENT_STOP_YIELDED` means the Agent was stopped and its gateway is
-still draining; `PREDECESSOR_STOP_YIELDED` means a dedicated replacement waits for
-the previous version's gateway to drain; `SUPERSEDED_STOP_YIELDED` means a newer
-version replaced this dedicated one, whose gateway drains before it stops.
-Meanwhile the worker runs other due work, then repeats the stop without spending attempts.
+`AGENT_STOP_YIELDED` (the Agent was stopped), `PREDECESSOR_STOP_YIELDED` (a
+dedicated replacement waits for the previous version) and
+`SUPERSEDED_STOP_YIELDED` (a newer version replaced this dedicated one) mean a
+gateway is still draining. Meanwhile the worker runs other due work, then
+repeats the stop without spending attempts.
 
 ### Model check failure cause
 

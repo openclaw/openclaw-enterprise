@@ -634,7 +634,14 @@ revisionTest(
     );
     const older = await fixture.revision(owner, 1, { workAge: "600 seconds" });
     await waitFor("the older version's unready pass", async () => pendingPass(events, older));
+    // The worker restarts. A pass it was running when it stopped keeps its claim until the lease
+    // ends; expire those claims, as after a crash, so both Agents' work is due again at once.
     await fixture.stop();
+    await fixture.observerPool.query(
+      `UPDATE occ.controller_work SET lease_expires_at = clock_timestamp() - interval '1 second'
+       WHERE namespace_id = $1 AND state = 'claimed'`,
+      [fixture.namespace.id],
+    );
     const refused = await fixture.revision(owner, 2, {
       harness: { ...fixture.productionHarness, mode: "dedicated", version: "0.0.0-unapproved" },
     });

@@ -1108,11 +1108,17 @@ revisionTest(
 );
 
 /** A newer exclusive version whose deployer lacks `deploy`: the worker refuses it before Compute. */
-async function refusedExclusiveVersion(fixture, driver, owner, number) {
+async function refusedExclusiveVersion(
+  fixture,
+  driver,
+  owner,
+  number,
+  shape = olderShapes.exclusive,
+) {
   const requester = `refused-exclusive-requester-${randomUUID()}`;
   await fixture.copyActorGrants(requester, { withoutActions: ["deploy"] });
   const refused = await fixture.revision(owner, number, {
-    ...olderShapes.exclusive,
+    ...shape,
     actorId: requester,
   });
   await assertWorkEnds(fixture, refused, "failed_permanent", "AUTHORIZATION_DENIED");
@@ -1199,17 +1205,26 @@ test(
     const repository = repositoryBoundary();
     const fixture = await setup(context, { repoDriver: repository.driver });
     const driver = sharedGatewayCompute(fixture);
+    // Kubernetes admits repository credentials for a dedicated Codex Harness, which declares
+    // exclusive replacement, as well as for embedded OpenClaw.
+    driver.compute.validateRepositoryCredentials = (harness, sandboxDriverId) => {
+      assert.deepEqual([harness.id, harness.mode], ["codex", "dedicated"]);
+      assert.equal(sandboxDriverId, undefined);
+    };
     const closes = () => repository.calls.filter(({ operation }) => operation === "close").length;
-    const closesAtStop = [];
+    const closesAtStop = new Map();
     const stop = driver.compute.stopRevision;
     driver.compute.stopRevision = (revision) => {
-      closesAtStop.push(closes());
+      closesAtStop.set(revision.id, [...(closesAtStop.get(revision.id) ?? []), closes()]);
       return stop(revision);
     };
     await fixture.start(driver.compute);
-    const owner = await fixture.agent("exclusive-refused-successor-git");
+    const owner = await fixture.agent("exclusive-refused-successor-git", {
+      executionMode: "dedicated",
+    });
+    const codex = { harness: { ...fixture.productionHarness, mode: "dedicated" } };
     const older = await fixture.revision(owner, 1, {
-      ...olderShapes.exclusive,
+      ...codex,
       repositoryCredentials: repository.snapshot,
     });
     await waitFor("the older version's first preparation", async () =>
@@ -1217,10 +1232,10 @@ test(
     );
     assert.ok(repository.calls.some(({ operation }) => operation === "open"));
     assert.equal(closes(), 0);
-    await refusedExclusiveVersion(fixture, driver, owner, 2);
+    await refusedExclusiveVersion(fixture, driver, owner, 2, codex);
     await assertWorkEnds(fixture, older, "succeeded", "REVISION_SUPERSEDED");
     assert.equal(driver.stops(older), 1);
-    assert.deepEqual(closesAtStop, [1]);
+    assert.deepEqual(closesAtStop.get(older.id), [1]);
     assert.deepEqual([...driver.harnesses], []);
   },
 );
