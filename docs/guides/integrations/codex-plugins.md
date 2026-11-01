@@ -8,14 +8,16 @@ Complete [Setup OCE on local k3d](../deploy/local-openshell-setup.md), including
 
 ## 1. Discover Linear in the account catalog
 
-Search the account's catalog for an available Linear plugin. Follow the continuation cursor until you find it. Select the plugin with human approval for write actions.
+Use the ready Credential Gateway source for the connected service account. If you resumed setup in a new shell, set `modelSource` to that Namespace source ID. Search its account catalog for an available Linear plugin. Follow the continuation cursor until you find it. Select the plugin with human approval for write actions.
 
 ```bash
 # POST $base/agents/plugins: use the model Secret reference to search this account.
+request GET "$base/credential-sources/${modelSource:?}" |
+  jq -e --arg ns "$namespace" '.data|select(.type=="codex-pat" and .state=="ready" and .ownerCapability=="credential_gateway")|.secrets.access_token|select(.kind=="secret" and .namespaceId==$ns)' > "$RUN_DIR/catalog-secret-ref"
 cursor=""
 while true; do
-  jq --arg cursor "$cursor" '{secretRef:.data.ref,q:"linear"} +
-    (if $cursor=="" then {} else {cursor:$cursor} end)' "$RUN_DIR/model-secret" |
+  jq --arg cursor "$cursor" '{secretRef:.,q:"linear"} +
+    (if $cursor=="" then {} else {cursor:$cursor} end)' "$RUN_DIR/catalog-secret-ref" |
     request POST "$base/agents/plugins" --data-binary @- > "$RUN_DIR/plugins"
   plugin=$(jq -r 'first(.data.plugins[]|select((.name|ascii_downcase)=="linear" and .available!=false)|.id) // empty' "$RUN_DIR/plugins")
   if [[ -n $plugin ]]; then break; fi
@@ -59,5 +61,7 @@ jq -e '.outcome.status=="ok" and
 jq '.history.messages[]|select(.toolName=="codex_apps.linear.list_teams")|.content' "$RUN_DIR/linear-result"
 jq -r '.outcome.terminalReply.text' "$RUN_DIR/linear-result"
 ```
+
+If display history omits the tool result, use the [native transcript verification procedure](../../testing/openshell.md#linear-tool-use-qualification) for the admitted session and run. Match the tool call to its successful result and compare the returned team ID with a separate `get_team` lookup through the same connected account.
 
 A successful turn includes `codex_apps.linear.list_teams` and a reply matching its result. If plugin installation fails, check the [plugin installation requirements](../../testing/openshell.md#codex-plugin-installation). If Git is also required, continue with [Add Git support](../repository-credentials/openshell-git-push.md).
