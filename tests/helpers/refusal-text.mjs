@@ -389,6 +389,12 @@ export const kubernetesGatewayPasswordRequirement = (alias = "default") =>
   `must be the environment reference {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates`;
 export const KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT = kubernetesGatewayPasswordRequirement();
 export const KUBERNETES_GATEWAY_PASSWORD_REFUSAL = `Configuration setting gateway.auth.password ${KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT}.`;
+// Kubernetes Configuration save, provisioning and deploy admission refuse a trusted-proxy allowlist
+// and a device auto-approval the Gateway would refuse, naming no submitted identity (finding 3032).
+export const KUBERNETES_ALLOW_USERS_REFUSAL =
+  "Configuration setting gateway.auth.trustedProxy.allowUsers must include occ-workspace-files and list distinct, nonblank, trimmed, printable ASCII identities that are not object property names.";
+export const KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL =
+  "Configuration setting gateway.auth.trustedProxy.deviceAutoApprove must be an object with only an optional boolean enabled and an optional array of nonblank scope names.";
 // Deploy and Agent provisioning of dedicated OpenClaw where the Installation selects no
 // provisioning SandboxDriver with all three containment facets (409 RESOURCE_CONFLICT). It names
 // the next step: codex for the selected models when Codex runs them (`codexRuns`), else a Codex
