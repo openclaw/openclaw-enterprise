@@ -540,6 +540,10 @@
                     "label": "Amazon EKS"
                   },
                   {
+                    "page": "guides/deploy/eks-openshell-setup",
+                    "label": "OpenShell on EKS"
+                  },
+                  {
                     "page": "guides/quickstart",
                     "label": "Local Setup Without OpenShell"
                   },
