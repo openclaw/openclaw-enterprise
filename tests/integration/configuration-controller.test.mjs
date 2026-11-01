@@ -735,13 +735,27 @@ test("Configuration HTTP PATCH on a slow Kubernetes API answers 503 within its b
     lag += 4_000;
     return called(method);
   };
+  const before = { ...client.calls };
   const slow = await request(context.app, "PATCH", pathname, {
     body: { values: { model: "edited" } },
   });
   assert.equal(slow.status, 503, JSON.stringify(slow.body));
   assert.equal(slow.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  // The 12 s budget ran out before the replace, so it was never sent; the failure stands.
-  assert.equal(client.calls.replaceNamespacedConfigMap, 0);
+  // The 12 s budget ran out after three calls, before the update's read and replace, which
+  // were never sent. The compensation still ran its own namespace verification and read after
+  // the budget, found the stored generation unchanged, and left it alone.
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.entries(client.calls).map(([method, n]) => [method, n - before[method]]),
+    ),
+    {
+      listNamespace: 3,
+      readNamespacedConfigMap: 2,
+      createNamespacedConfigMap: 0,
+      replaceNamespacedConfigMap: 0,
+      deleteNamespacedConfigMap: 0,
+    },
+  );
   const read = await request(context.app, "GET", pathname);
   assert.equal(read.status, 200, JSON.stringify(read.body));
   assert.equal(read.body.data.generation, 1);
