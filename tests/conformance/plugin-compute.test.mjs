@@ -22,6 +22,7 @@ import {
   gatewayRuntimeEntrypoint,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { startupPhaseHelper } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   PLUGIN_RUNTIME_CODEX_CONFIG,
   PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT,
@@ -2408,6 +2409,103 @@ test("OpenClaw runtime helper rejects foreign OpenClaw plugin config before nati
   assert.match(result.error.message, /configuration conflicts with managed plugin selections/);
   assert.deepEqual(result.calls, []);
   assert.equal(result.files.has("/home/node/.openclaw/openclaw.json"), false);
+});
+
+test("Agent save refuses the Configuration plugin settings the Gateway entrypoint refuses for a selected catalog plugin, apart from two documented rows", () => {
+  // Finding 3091. The entrypoint writes each selected catalog plugin's entry and exits
+  // at every start on a setting that turns an enabled one off or replaces that entry; the OpenClaw
+  // Plugin Driver refuses the same settings at Agent save, provisioning and deploy admission. Each
+  // case runs both; one that passes the entrypoint's check reaches the (failing) package install.
+  const driver = new OCCPluginDriver();
+  const enabled = occSelection();
+  const disabled = { "occ-plugin:diffs": { enabled: false } };
+  const origin = "https://agent.example.com";
+  // The Gateway serves this origin only with trusted-proxy auth, which Kubernetes Compute always
+  // renders; the entrypoint then writes the entry with the Diffs viewer's public-origin config.
+  const publicOrigin = {
+    port: 8080,
+    publicOrigin: origin,
+    auth: { mode: "trusted-proxy" },
+    controlUi: { allowedOrigins: [origin] },
+  };
+  const viewer = { security: { allowRemoteViewer: true } };
+  const cases = [
+    [{ enabled: false }, enabled, true],
+    [{ deny: [" DIFFS "] }, enabled, true],
+    [{ allow: ["codex"] }, enabled, true],
+    [{ entries: { diffs: { config: {} } } }, enabled, true],
+    [{ entries: { diffs: { enabled: true, config: {} } } }, enabled, true],
+    [{ entries: { diffs: { enabled: false } } }, enabled, true],
+    [{ entries: { diffs: { enabled: true } } }, disabled, true],
+    [{ entries: { diffs: null } }, enabled, true],
+    // An exact copy of the entry the entrypoint writes passes.
+    [{ entries: { diffs: { enabled: true } } }, enabled, false],
+    [{ entries: { diffs: { enabled: false } } }, disabled, false],
+    [{ entries: { diffs: { enabled: false } } }, disabled, false, false, publicOrigin],
+    // An origin the Control UI does not allow is not served, so the entry stays {enabled:true}.
+    [
+      { entries: { diffs: { enabled: true } } },
+      enabled,
+      false,
+      false,
+      { ...publicOrigin, controlUi: { allowedOrigins: [] } },
+    ],
+    [{ entries: { diffs: { enabled: true } } }, enabled, true, true, publicOrigin],
+    // PostgreSQL's jsonb stores shorter keys first, so a deployed Gateway reads a public-origin
+    // copy in this order, and the entrypoint's JSON comparison refuses it.
+    [{ entries: { diffs: { config: viewer, enabled: true } } }, enabled, true, true, publicOrigin],
+    // Documented divergence: only a copy kept in the order the entrypoint writes passes, which no
+    // PostgreSQL-backed deployment delivers, so Agent save refuses every public-origin copy.
+    [{ entries: { diffs: { enabled: true, config: viewer } } }, enabled, false, true, publicOrigin],
+    // Documented divergence: with password auth (Docker Compute) the Gateway serves no public
+    // origin and accepts {enabled:true}; Agent save cannot know the Compute, and Kubernetes
+    // Compute renders trusted-proxy auth, where the same document does not start.
+    [
+      { entries: { diffs: { enabled: true } } },
+      enabled,
+      false,
+      true,
+      { ...publicOrigin, auth: { mode: "password" } },
+    ],
+    [{ enabled: true, allow: ["codex", " Diffs"], deny: ["slack"] }, enabled, false],
+    [{ allow: [" "], entries: { slack: { enabled: true } } }, enabled, false],
+    [{ enabled: false, deny: ["diffs"], allow: ["codex"] }, disabled, false],
+  ];
+  for (const [index, row] of cases.entries()) {
+    const [settings, plugins, entrypointRefuses, saveRefuses = entrypointRefuses] = row;
+    const configuration = { gateway: row[4] ?? { port: 8080 }, plugins: settings };
+    const runtime = {
+      manifest: pluginRuntimeSpecForRevision(
+        revision({
+          harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+          plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },
+        }),
+      ),
+    };
+    const result = runOpenClawRuntimeHelper(
+      runtime,
+      [{ status: null, signal: "SIGTERM", stdout: "", stderr: "" }],
+      { captureError: true, baseConfig: configuration },
+    );
+    if (entrypointRefuses) {
+      assert.match(
+        result.error?.message ?? "",
+        /conflicts with managed plugin selection/,
+        `${index}: entrypoint`,
+      );
+    } else {
+      assert.match(result.error?.message ?? "", /OpenClaw plugin install failed/, `${index}`);
+    }
+    if (saveRefuses) {
+      assert.throws(
+        () => driver.validateAgentConfiguration(plugins, configuration),
+        { name: "ConfigurationHarnessError" },
+        `${index}: Agent save`,
+      );
+    } else {
+      driver.validateAgentConfiguration(plugins, configuration);
+    }
+  }
 });
 
 test("OpenClaw runtime helper keeps install signals generic", () => {

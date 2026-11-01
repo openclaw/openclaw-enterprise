@@ -358,6 +358,13 @@ export const codexPluginRefusal = (setting, rule, step) =>
 // 3087).
 export const pluginEntryKeyVariantRefusal = (path, id) =>
   `Configuration setting ${path} must be named ${id}: OpenClaw merges it into plugins.entries.${id}, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key.`;
+// Agent save, provisioning and deploy admission refuse a Configuration plugin setting the Gateway
+// entrypoint refuses for an OpenClaw catalog plugin the Agent selects (finding 3091).
+// `setting` is plugins.enabled, plugins.deny, plugins.allow or a plugins.entries key as the
+// message shows it; `rule` is what it must satisfy; `pluginId` is the selection's key; `step` is
+// the fix.
+export const managedPluginSettingRefusal = (setting, rule, pluginId, step) =>
+  `Configuration setting ${setting} ${rule} while the Agent selects plugin ${pluginId}, or the Gateway does not start: ${step}.`;
 // Configuration save, Agent save and deploy admission refuse OpenClaw's $include directive anywhere
 // in the document (finding 3078). `path` is the setting as the message shows it, such as $include
 // or gateway.auth.$include.
