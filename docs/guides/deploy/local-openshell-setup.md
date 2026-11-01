@@ -29,7 +29,10 @@ set -euo pipefail
 umask 077
 
 # Keep this run's files, credentials and kubeconfig separate from earlier installations.
-RUN_DIR=$(mktemp -d)
+run_root=${XDG_STATE_HOME:-$HOME/.local/state}/oce
+install -d -m 700 "$run_root"
+RUN_DIR=$(mktemp -d "$run_root/openshell.XXXXXXXX")
+printf 'Private session directory: %s\n' "$RUN_DIR"
 
 # Stage the network policy for cluster startup and the editor for the Helm reload.
 install -m 600 docs/assets/openshell-quickstart/plugin-network-policy.yaml "$RUN_DIR/artifacts.yaml"
@@ -54,7 +57,7 @@ For published images, complete [published image selection](published-images.md),
 
 ## 2. Start a new k3d installation
 
-Choose unused local ports for the OCE API and Kubernetes API. The launcher creates `k3d-state` under the new run directory. To repeat the exercise on a host with a previous disposable installation, first [remove only that installation](#remove-a-previous-quickstart).
+Choose unused local ports for the OCE API, HTTPS Console and Kubernetes API. The launcher creates `k3d-state` under the new run directory. To repeat the exercise on a host with a previous disposable installation, first [remove only that installation](#remove-a-previous-quickstart).
 
 The [plugin network policy](../../assets/openshell-quickstart/plugin-network-policy.yaml), copied to `$RUN_DIR/artifacts.yaml`, grants the two pinned Codex binaries read-only HTTPS access to the listed package hosts.
 
@@ -63,7 +66,7 @@ The [plugin network policy](../../assets/openshell-quickstart/plugin-network-pol
 ```bash
 # Select an isolated state directory and the Kubernetes-only OpenShell profile.
 export OCC_DEVELOPMENT_STATE_DIRECTORY="$RUN_DIR/k3d-state"
-export OPENCLAW_DEV_PORT=3012 OCC_DEVELOPMENT_KUBERNETES_API_PORT=6455
+export OPENCLAW_DEV_PORT=3012 OCC_DEVELOPMENT_BROWSER_PORT=8443 OCC_DEVELOPMENT_KUBERNETES_API_PORT=6455
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 export OCC_DEVELOPMENT_PROTECTED_EGRESS=1
@@ -191,6 +194,8 @@ principal=$(jq -er .data.servicePrincipalId "$RUN_DIR/agent")
 printf 'Agent: %s\nPrincipal: %s\n' "$agent" "$principal"
 ```
 
+For browser onboarding, [bind this Agent’s Control UI origin](local-openshell-browser.md#bind-the-origin-before-deployment) before deploying it.
+
 ## 6. Grant model access and deploy
 
 Create one role scoped to credential sources. Bind that role to this Agent's principal for the model source only.
@@ -235,6 +240,8 @@ deploy_and_wait
 Continue when the deployment reports `succeeded` and the Agent's `activeRevisionId` matches the new revision.
 
 ## 7. Verify a turn through OpenClaw
+
+For a new browser workspace, [sign in and complete onboarding](local-openshell-browser.md#open-the-agent-and-continue-a-chat) before sending any verification prompt. Use the saved session below for the Git and plugin add-ons.
 
 The operator client from step 1 opens `wss://<private-gateway-host>/namespaces/$namespace/agents/$agent`. Its HTTP upgrade sends the installation routing key in `x-api-key`. The client runs in the OCE API Pod, which already has the private route, key and trusted CA. The Agent executes the turn.
 

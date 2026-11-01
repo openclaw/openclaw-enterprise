@@ -101,7 +101,9 @@ Helm, and the dependencies in the [testing prerequisites](README.md#requirements
 Build the local CLI first with `pnpm cli:build`.
 
 ```sh
-# Kubernetes control plane
+# Kubernetes control plane, including a real first-Agent deployment and browser access checks.
+# Select an existing authorized Codex service account and its model.
+CODEX_ACCESS_TOKEN_FILE=/secure/oce/codex-token OCC_TEST_OPENAI_MODEL="$MODEL" \
 OCC_TEST_DEV_UP_OPENSHELL_REAL=1 \
   node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
 
@@ -243,7 +245,7 @@ node scripts/first-agent.mjs my-agent --harness codex --control-ui
 
 A successful model turn prints `Model response verified:`. A selected version or
 ready Sandbox alone is not a model proof. For an invalid key, rerun with
-`--replace-key`. The starter disables tools. In this Compose/OpenShell profile, `--control-ui` prints both the OCE console and OpenClaw Control UI URLs. Trust the browser CA printed by startup before opening them. Run `./scripts/dev-down` with the same state
+`--replace-key`. The starter disables tools. With OpenShell and either local control plane, `--control-ui` prints both the OCE console and OpenClaw Control UI URLs. Trust the browser CA printed by startup before opening them. Run `./scripts/dev-down` with the same state
 directory when finished.
 
 ### Guided native OpenClaw redeployment

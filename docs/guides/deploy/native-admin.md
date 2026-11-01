@@ -28,7 +28,7 @@ Agent into native admin access:
    **Native admin UI** on the Agent detail page. For stale drafts or uncertain
    saves, follow the [Configuration editor recovery](../console/configuration-plugins-and-files.md#configuration-tab).
 
-For the Compose control plane with Kubernetes Compute and OpenShell, the
+With Kubernetes Compute and OpenShell on either local control plane, the
 [first-Agent command](../first-agent.md) can perform these per-Agent steps with
 `--control-ui`. Other local profiles still require the console-managed workflow
 above. The helper refuses to reuse its Agent after outside Configuration edits.

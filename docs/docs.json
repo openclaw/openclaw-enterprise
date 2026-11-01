@@ -38,6 +38,10 @@
                     "label": "Setup OCE"
                   },
                   {
+                    "page": "guides/deploy/local-openshell-browser",
+                    "label": "OpenShell Agent in a Browser"
+                  },
+                  {
                     "page": "guides/repository-credentials/openshell-git-push",
                     "label": "Add Git Support"
                   },

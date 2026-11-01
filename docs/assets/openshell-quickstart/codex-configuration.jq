@@ -13,7 +13,6 @@
     agents: {
       defaults: {
         model: ("codex/" + $model),
-        skipBootstrap: true,
         models: {("codex/" + $model): {agentRuntime: {id: "codex"}}}
       }
     },
