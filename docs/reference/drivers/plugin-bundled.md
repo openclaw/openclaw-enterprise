@@ -247,29 +247,18 @@ when best-effort preparation allows authentication warnings, startup disables
 their selections and app/plugin features rather than retrying an unsupported
 login mode.
 
-Gateway startup rejects, rather than overwrites, raw Configuration that
-conflicts with the Driver's managed fields, before OpenClaw package installation:
-for OpenClaw, a selected plugin entry in `values.plugins.entries` whose JSON
-differs from the managed entry; for Codex, a differing
-`values.plugins.entries.codex.config.codexPlugins` bridge selection. An enabled
-native plugin entry also conflicts with `plugins.enabled:false`, a matching
-`plugins.deny` entry, or a nonempty `plugins.allow` that excludes it. This
-includes the Codex transport plugin required by selected Codex apps. Disabled
-OpenClaw selections can remain denied.
-
-When the Configuration selects the OpenClaw Harness, the OpenClaw Driver also
-refuses the OpenClaw conflicts at Agent create and update, provisioning and
-deployment with `400`; for another Harness, the placement refusal applies.
-The Driver accepts an exact copy of the managed entry: `{"enabled":false}` for
-a disabled selection, and `{"enabled":true}` for an enabled one when the
-Gateway serves no public origin. When `gateway.publicOrigin` is an HTTPS origin
-listed in `gateway.controlUi.allowedOrigins`, it refuses any entry at that key.
-Kubernetes Compute then writes the entry with the plugin's public-origin
-`config`, and PostgreSQL stores a copy with its keys in another order, so no
-copy matches. This also refuses `{"enabled":true}` on Docker Compute with
-password authentication, which the Gateway accepts. Save does not check the
-Codex conflicts. Native configuration outside managed fields, including tool
-denies and profiles, is retained.
+Gateway startup rejects, rather than overwrites, conflicting raw Configuration
+before package installation: a selected OpenClaw plugin's `plugins.entries`
+entry whose JSON differs from the managed entry, a differing Codex
+`codexPlugins` bridge, or, for an enabled native plugin including the Codex
+transport plugin, `plugins.enabled:false`, a matching `plugins.deny` item, or a
+nonempty `plugins.allow` that excludes it. With an OpenClaw Harness, the
+OpenClaw Driver refuses the OpenClaw conflicts at Agent save, provisioning and
+deployment, but accepts exact copies: `{"enabled":false}` if disabled,
+`{"enabled":true}` if enabled. If `gateway.controlUi.allowedOrigins` lists an
+HTTPS `gateway.publicOrigin`, it refuses any entry, since the Gateway adds a
+public-origin `config` and PostgreSQL reorders a copy's keys; this over-refuses
+`{"enabled":true}` on Docker Compute with password authentication.
 
 ## Preparation and security
 
