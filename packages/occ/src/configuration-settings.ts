@@ -241,14 +241,13 @@ export function validateConfigurationSettings(
  * The rules above that Agent save and deploy admission run again on a stored Configuration, so
  * one saved before a rule existed gets the message its next save would (findings 2699, 2709,
  * 2767, 3063, 3064, 3073, 3078, 3097): STORED_CONFIGURATION_RULES, which the Console holds Deploy
- * with (finding 3093), then the model provider key rule, which stays server-only.
+ * with (finding 3093).
  */
 export function refuseStoredConfigurationSettings(values: OpenClawConfigurationDocument): void {
   const problem = storedConfigurationProblem(values);
   if (problem !== undefined) {
     throw new ConfigurationHarnessError(problem.message);
   }
-  refuseProviderKeyVariants(values);
 }
 
 /**
