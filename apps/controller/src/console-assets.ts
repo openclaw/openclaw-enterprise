@@ -1,6 +1,5 @@
 import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
-import { posix } from "node:path";
 import { promisify } from "node:util";
 import { brotliCompress, constants as zlib, gzip } from "node:zlib";
 
@@ -197,24 +196,28 @@ const consoleUrls = new Map([...CONSOLE_ASSETS].map(([url, { path }]) => [path.h
 
 // Node 24 erases types without moving source lines. Reuse that result until the file changes;
 // the Console TypeScript project checks types and rejects syntax that would require a transform.
-// An OCC module imports its siblings by their `.ts` source names, which the browser cannot load:
-// each such import is pointed at the Console URL that serves the same file, and a module that
-// imports a file the Console does not serve is refused, so it fails in tests, not in a browser.
-function browserJavaScript(pathname: string, source: Buffer, path: URL): Buffer {
+// An OCC module imports a sibling by its `.ts` source name, which the browser cannot load, so the
+// import is pointed at the Console URL that serves the same file, beside the importing module's.
+// A module that imports a file the Console does not serve there is refused, so it fails in tests,
+// not in a browser. `href` is the module's source file URL.
+function browserJavaScript(pathname: string, source: Buffer, href: string): Buffer {
   const previous = browserModules.get(pathname);
   if (previous?.source.equals(source)) {
     return previous.javascript;
   }
+  const directory = pathname.slice(0, pathname.lastIndexOf("/") + 1);
   const javascript = Buffer.from(
     stripTypeScriptTypes(source.toString("utf8")).replaceAll(
-      /(?<=\bfrom ")(\.\/[^"]+\.ts)(?=";)/g,
+      /(?<=\bfrom ")\.\.?\/[^"]+\.ts(?=";)/g,
       (specifier) => {
-        const url = consoleUrls.get(new URL(specifier, path).href);
-        if (url === undefined) {
+        const name = specifier.slice(2);
+        const url = name.includes("/")
+          ? undefined
+          : consoleUrls.get(`${href.slice(0, href.lastIndexOf("/") + 1)}${name}`);
+        if (url === undefined || url.slice(0, url.lastIndexOf("/") + 1) !== directory) {
           throw new Error(`${pathname} imports ${specifier}, which the Console does not serve.`);
         }
-        const relative = posix.relative(posix.dirname(pathname), url);
-        return relative.startsWith(".") ? relative : `./${relative}`;
+        return `./${url.slice(directory.length)}`;
       },
     ),
   );
@@ -273,7 +276,7 @@ export async function readConsoleAsset(
       return { body: source, contentType: asset.contentType, statusCode: 200 };
     }
     const body = /\.m?ts$/.test(asset.path.pathname)
-      ? browserJavaScript(pathname, source, asset.path)
+      ? browserJavaScript(pathname, source, asset.path.href)
       : source;
     return encodedAsset(pathname, body, asset.contentType, acceptEncoding);
   }
