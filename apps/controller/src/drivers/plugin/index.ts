@@ -32,6 +32,7 @@ import {
   NotImplementedError,
   PluginDiscoveryError,
   PluginPolicyValidationError,
+  resolveConfiguredHarnessId,
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
 import {
@@ -60,6 +61,21 @@ interface PluginDriverSelection {
 type BundledCatalogEntry = PluginCatalogEntry;
 
 export class PluginValidationError extends ScopeViolationError {}
+
+// Whether the Configuration's models select the OpenClaw Harness. A model policy no deployment
+// accepts is the Configuration's own refusal, named by the rules that check it.
+function openClawHarnessConfiguration(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+): boolean {
+  try {
+    return resolveConfiguredHarnessId(configuration) === "openclaw";
+  } catch (error) {
+    if (error instanceof ConfigurationHarnessError) {
+      return false;
+    }
+    throw error;
+  }
+}
 
 const OCC_DRIVER_ID = "occ-plugin";
 const OCC_IMPLEMENTATION = OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION;
@@ -468,13 +484,18 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     selections: PluginDesiredState,
     configuration: Readonly<OpenClawConfigurationDocument>,
   ): void {
-    // The Gateway refuses these settings at every start, before any turn (finding 3091).
-    const conflict = openClawPluginSettingConflict(
-      selections,
-      configuration,
-      openClawManagedPluginIds(),
-      `${OCC_DRIVER_ID}:`,
-    );
+    // The Gateway refuses these settings at every start, before any turn (finding 3091). These
+    // plugins run only in an OpenClaw Harness: for another, placement refuses the selection
+    // (validatePluginPlacement) and is the refusal to name, since a Codex Configuration's
+    // plugins.allow, for example, always leaves them out.
+    const conflict = openClawHarnessConfiguration(configuration)
+      ? openClawPluginSettingConflict(
+          selections,
+          configuration,
+          openClawManagedPluginIds(),
+          `${OCC_DRIVER_ID}:`,
+        )
+      : undefined;
     if (conflict !== undefined) {
       throw new ConfigurationHarnessError(openClawPluginSettingMessage(conflict));
     }
