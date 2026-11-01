@@ -4,6 +4,7 @@ import {
   type OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import {
+  activePluginSecretInputs,
   enabledChannelEntries,
   gatewayPasswordRequirement,
   generatedGatewayPasswordReference,
@@ -11,10 +12,12 @@ import {
   isAdmittedHeaderName,
   isCredentialHeaderName,
   keyedSettingPath,
+  pluginSecretInputReference,
   PROVIDER_MODELS_LIST,
   quotedSettingKey,
-  secretInputReference,
+  type SecretInputReference,
   shownSecretName,
+  unreadablePluginSecretInput,
   waitsOnVariable,
 } from "@openclaw-enterprise/occ";
 import { asRecord, splitModelRef } from "@openclaw-enterprise/utils";
@@ -122,147 +125,16 @@ export function requireChannelTopology(
 // Secret binding cannot target them (a reserved prefix).
 const CODEX_APP_SERVER_VARIABLE = /^APP_SERVER_/i;
 
-/**
- * The plugin secret inputs of each plugin the runtime image ships with any: the
- * `configContracts.secretInputs` paths in `extensions/<id>/openclaw.plugin.json` at the commit in
- * `deploy/runtime/openclaw-source.json` (`*` matches each key). OpenClaw resolves those of an
- * active plugin at startup, and a reference it cannot read at all ends startup with "required
- * secrets are unavailable" (`secretInputReference`). `required`: the inputs without an
- * `ownerKind`, whose unset variable also ends startup; one with an `ownerKind` (beam, imap) then
- * only makes its owner unavailable. `enabledByDefault: false` (the manifest's
- * `bundledDefaultEnabled`): the plugin is active only when its entry sets `enabled: true`. The
- * Gateway skips an entry for a plugin the image does not ship. Update this list when that pin or
- * the image's plugins change.
- */
-const PLUGIN_SECRET_INPUTS: Readonly<
-  Record<
-    string,
-    {
-      readonly paths: readonly (readonly string[])[];
-      readonly required: boolean;
-      readonly enabledByDefault: boolean;
-    }
-  >
-> = {
-  beam: { paths: [["mirror", "token"]], required: false, enabledByDefault: false },
-  codex: {
-    paths: [
-      ["appServer", "authToken"],
-      ["appServer", "headers", "*"],
-    ],
-    required: true,
-    enabledByDefault: true,
-  },
-  google: { paths: [["webSearch", "headers", "*"]], required: true, enabledByDefault: true },
-  imap: { paths: [["accounts", "*", "password"]], required: false, enabledByDefault: false },
-};
-
 // Variables a Gateway may receive without a binding that a Secret binding may also name: the
 // Pod's HOSTNAME, the image's YARN_VERSION, Compute's repository broker GIT_SSL_CAINFO (embedded
 // only) and Kubernetes service links.
 const RUNTIME_VARIABLE =
   /^(?:HOSTNAME|YARN_VERSION|GIT_SSL_CAINFO)$|_SERVICE_(?:HOST|PORT)(?:_|$)|_PORT(?:_|$)/;
 
-// Each value at `keys` below `value`, with its setting path; `*` matches every key of an object.
-function settingValues(
-  value: unknown,
-  keys: readonly string[],
-  path: string,
-): (readonly [string, unknown])[] {
-  if (keys.length === 0) {
-    return [[path, value]];
-  }
-  const record = asRecord(value);
-  const [key, ...rest] = keys;
-  if (record === undefined) {
-    return [];
-  }
-  return (key === "*" ? Object.keys(record) : [key!])
-    .filter((name) => Object.hasOwn(record, name))
-    .flatMap((name) => settingValues(record[name], rest, keyedSettingPath(path, name)));
-}
+type PluginSecretVariable = Extract<SecretInputReference, { readonly variable: string }>;
 
-// The built-in plugin ID aliases of OpenClaw's normalizePluginId (`src/plugins/config-state.ts`).
-const PLUGIN_ID_ALIASES: Readonly<Record<string, string>> = {
-  "google-gemini-cli": "google",
-  "minimax-portal": "minimax",
-  "minimax-portal-auth": "minimax",
-};
-
-// The ID OpenClaw's policy lookups (plugins.deny and each entry's `enabled`) compare: trimmed,
-// lowercased, an alias replaced by its plugin.
-function pluginPolicyId(name: unknown): string | undefined {
-  if (typeof name !== "string") {
-    return undefined;
-  }
-  const id = name.trim().toLowerCase();
-  return Object.hasOwn(PLUGIN_ID_ALIASES, id) ? PLUGIN_ID_ALIASES[id] : id;
-}
-
-// Each secret input of an active plugin (PLUGIN_SECRET_INPUTS), in Configuration order: its
-// setting, its value, whether an unset variable there ends startup, and the step that disables the
-// entry. OpenClaw reads secret inputs only in the entry keyed by the plugin's exact ID
-// (`collectPluginConfigAssignments`): a `Google` or ` google` entry has none (finding 3072). It
-// skips those of a denied plugin, of `plugins.enabled: false` and of a plugin whose `enabled` is
-// false, both looked up by policy ID (pluginPolicyId). `plugins.allow` skips none: Gateway startup
-// first adds every known plugin entry with config to a non-empty allowlist (plugin auto-enable), so
-// these stay active (finding 3071).
-function activePluginSecretInputs(configuration: Readonly<OpenClawConfigurationDocument>): {
-  readonly setting: string;
-  readonly value: unknown;
-  readonly required: boolean;
-  readonly disable: string;
-}[] {
-  const plugins = asRecord(configuration.plugins);
-  const entries = asRecord(plugins?.entries);
-  if (plugins?.enabled === false || entries === undefined) {
-    return [];
-  }
-  const denied = Array.isArray(plugins?.deny) ? plugins.deny.map(pluginPolicyId) : [];
-  // OpenClaw merges the entries whose keys share a policy ID in key order: the last boolean
-  // `enabled` wins and a value that is not an object clears it. Before that, startup auto-enable
-  // may set `enabled: true` on the exact entry of a default-on plugin that leaves it unset, so that
-  // entry counts as enabled.
-  const enabled = new Map<string, boolean | undefined>();
-  for (const [key, value] of Object.entries(entries)) {
-    const id = pluginPolicyId(key)!;
-    const entry = asRecord(value);
-    let merged = enabled.get(id);
-    if (entry === undefined) {
-      merged = undefined;
-    } else if (typeof entry.enabled === "boolean") {
-      merged = entry.enabled;
-    } else if (key === id && Object.hasOwn(PLUGIN_SECRET_INPUTS, id)) {
-      merged = PLUGIN_SECRET_INPUTS[id]!.enabledByDefault || merged;
-    }
-    enabled.set(id, merged);
-  }
-  return Object.entries(entries).flatMap(([id, value]) => {
-    const entry = asRecord(value);
-    const inputs = Object.hasOwn(PLUGIN_SECRET_INPUTS, id) ? PLUGIN_SECRET_INPUTS[id] : undefined;
-    if (
-      inputs === undefined ||
-      entry === undefined ||
-      (inputs.enabledByDefault ? enabled.get(id) === false : enabled.get(id) !== true) ||
-      denied.includes(id)
-    ) {
-      return [];
-    }
-    const path = keyedSettingPath("plugins.entries", id);
-    const disable = `remove ${path} or set its enabled to false`;
-    return inputs.paths
-      .flatMap((keys) => settingValues(entry.config, keys, `${path}.config`))
-      .map(([setting, input]) => ({ setting, value: input, required: inputs.required, disable }));
-  });
-}
-
-type PluginSecretVariable = Extract<
-  NonNullable<ReturnType<typeof secretInputReference>>,
-  { readonly variable: string }
->;
-
-// Refuses a plugin secret input OpenClaw cannot read at all (`secretInputReference`), whatever the
-// topology and bindings, with the step that fixes it; else the variable it reads, if any.
+// Refuses a plugin secret input OpenClaw cannot read at all, whatever the topology and bindings,
+// with the step that fixes it (`pluginSecretInputReference`); else the variable it reads, if any.
 function readablePluginSecretInput(
   setting: string,
   value: unknown,
@@ -270,16 +142,16 @@ function readablePluginSecretInput(
   secrets: unknown,
   createError: SettingError,
 ): PluginSecretVariable | undefined {
-  const reference = secretInputReference(value, secrets);
+  const reference = pluginSecretInputReference(value, disable, secrets);
   if (reference !== undefined && "requirement" in reference) {
-    throw createError(setting, `${reference.requirement}, or ${disable}`);
+    throw createError(setting, reference.requirement);
   }
   return reference;
 }
 
 /**
  * A Gateway starts only if OpenClaw can read every secret input of an active plugin
- * (`PLUGIN_SECRET_INPUTS`) and every required one resolves; otherwise it exits at every start,
+ * (`activePluginSecretInputs`) and every required one resolves; otherwise it exits at every start,
  * its configuration still validates, and the deployment waits for its convergence deadline
  * (findings 3040, 3041, 3042, 3056). Every topology's Gateway keeps the caller's plugin entries.
  * Refuses the first reference OpenClaw cannot read (`secretInputReference`), then the first
@@ -365,9 +237,9 @@ export function refuseUnreadablePluginSecretInputs(
   ) {
     return;
   }
-  const secrets = asRecord(configuration.secrets);
-  for (const { setting, value, disable } of activePluginSecretInputs(configuration)) {
-    readablePluginSecretInput(setting, value, disable, secrets, createError);
+  const unreadable = unreadablePluginSecretInput(configuration);
+  if (unreadable !== undefined) {
+    throw createError(unreadable.setting, unreadable.requirement);
   }
 }
 

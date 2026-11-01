@@ -116,7 +116,7 @@ A focused, disabled **Save Configuration** moves focus to **Checking Configurati
 Success focuses **Edit Configuration** unless the reader moved focus.
 
 **Enable gateway password access** and **Collaboration and safety**
-(`agents/gateway-safety.mts`) stage edits here; **Cancel** discards them. Password access writes an env SecretRef to `OPENCLAW_GATEWAY_PASSWORD`, which Compute supplies, on the default env alias. An unreadable saved reference or a refused alias holds **Deploy** with OCC's refusal. The hint replaces the button when save would refuse its reference.
+(`agents/gateway-safety.mts`) stage edits here; **Cancel** discards them. Password access writes an env SecretRef to the Compute-supplied `OPENCLAW_GATEWAY_PASSWORD` on the default env alias. An unreadable saved password or plugin secret input or a refused alias holds **Deploy** with its refusal. A hint replaces the button when save would refuse its reference.
 
 Saves preserve scroll, focus and admitted snapshots. Rejected edits stay. Unsaved edits block deployment; pending saves block tab and version changes.
 A refused write lists required grants without guessing which; a refused preflight read names read

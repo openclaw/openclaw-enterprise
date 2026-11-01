@@ -20,3 +20,7 @@ export declare function generatedGatewayPasswordReference(secrets: unknown): {
 export declare function secretProviderDefaultsProblem(
   secrets: unknown,
 ): { readonly setting: string; readonly requirement: string } | undefined;
+export declare function unreadablePluginSecretInput(
+  values: unknown,
+): { readonly setting: string; readonly requirement: string } | undefined;
+export declare function configurationSettingMessage(setting: string, requirement: string): string;

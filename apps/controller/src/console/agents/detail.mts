@@ -17,9 +17,11 @@ import type { AgentRecheck, ConsolePageContext } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import { retiredOpenClawSettingMessage } from "../retired-openclaw-settings.mjs";
 import {
+  configurationSettingMessage,
   gatewayPasswordRequirement,
   generatedGatewayPasswordReference,
   secretProviderDefaultsProblem,
+  unreadablePluginSecretInput,
 } from "../environment-references.mjs";
 import {
   button,
@@ -3399,8 +3401,11 @@ export async function renderAgentDetail(
     }
     // OCC refuses to deploy a saved Configuration with a secrets.defaults alias OpenClaw refuses
     // (finding 3064), a gateway password reference OpenClaw cannot read (finding 3063) or a setting
-    // the pinned OpenClaw retired (finding 2810), in that order and with this message, so the
-    // draft says it before Deploy, with the Configuration step.
+    // the pinned OpenClaw retired (finding 2810), then Compute admission one with a plugin secret
+    // input OpenClaw cannot read (finding 3076), in that order and with this message, so the draft
+    // says it before Deploy, with the Configuration step. Only Kubernetes Compute refuses the
+    // plugin input, but the page does not know which Compute the next version runs on, and the
+    // Gateway exits on that input on any Compute that ships the plugin, so it holds Deploy on all.
     function configurationRefusal(): { readonly message: string; readonly step: string } | null {
       const defaults = secretProviderDefaultsProblem(values.secrets);
       if (defaults !== undefined) {
@@ -3420,7 +3425,16 @@ export async function renderAgentDetail(
         };
       }
       const retired = retiredOpenClawSettingMessage(values);
-      return retired === null ? null : { message: retired, step: "Remove the retired setting" };
+      if (retired !== null) {
+        return { message: retired, step: "Remove the retired setting" };
+      }
+      const plugin = unreadablePluginSecretInput(values);
+      return plugin === undefined
+        ? null
+        : {
+            message: configurationSettingMessage(plugin.setting, plugin.requirement),
+            step: "Fix the plugin secret input",
+          };
     }
     function updateDeployControls() {
       authenticationForm?.toggleAttribute("inert", Boolean(credentials?.mutationPending()));
