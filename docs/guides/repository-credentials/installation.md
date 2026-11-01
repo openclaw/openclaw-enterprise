@@ -179,7 +179,11 @@ leading or trailing whitespace and no control characters or line or paragraph
 separators. It must also fit in 200 UTF-16 code units, because repository
 bindings store a GitHub Backend ID under that bound: 100 emoji fit and 101 do
 not. The chart refuses any other spelling, the same checks Installation
-startup applies before it saves the GitHub Backend. Supply current
+startup applies before it saves the GitHub Backend. Supply the same literal ID
+in chart values, service configuration, and the registry. The chart handles
+Kubernetes dollar escaping; do not pre-escape values such as `github-$$` or
+`github-$(BACKEND)`. The origin helper reports the original logical ID.
+Supply current
 operator-approved ranges for GitHub HTTPS destinations. The chart
 adds worker-Pod egress on port 443 and ingress from tenant embedded gateways and
 dedicated Agent Pods on port 8443. Compute grants corresponding egress only to
