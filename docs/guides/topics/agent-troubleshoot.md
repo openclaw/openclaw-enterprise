@@ -86,6 +86,12 @@ A dedicated Gateway does not recover its locks. After an unclean exit it stays
 unready with the failed check `gateway-state-lock`, and its log quotes the
 holder. Use the same procedure.
 
+A dedicated Harness Pod that stops without a clean shutdown during native setup,
+for example on a node failure, can leave the lock in its workspace node state. Each
+later version then fails the check `workspace-baseline`, and its log says `cannot
+verify Gateway ownership`. Use the same procedure on the Agent's workspace claim,
+with `/home/node/.openclaw-node` as the state directory.
+
 1. Record the Agent, state volume and original container ID. On Kubernetes,
    also record the Pod UID and node. Stop the Agent in OCC and verify with the
    compute provider that the exact container exited. A missing Pod or expired
