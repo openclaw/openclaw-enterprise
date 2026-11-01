@@ -447,6 +447,9 @@ const ACCESS_TAB_NEEDS_ADMINISTRATION =
 const READ_ONLY_DRAFT_NOTICE =
   "Version draft · read-only with your access. The next deployment uses it as saved.";
 const CHECKING_CREDENTIAL_ACCESS_STEP = "Checking credential access…";
+const CHECKING_COMPUTE_CONFIGURATION =
+  "Checking the Configuration with this Installation's Compute before deploying.";
+const ENTRY_KEY_STEP = "Fix the plugin entry key";
 const CONFIGURATION_READ_ONLY = CONFIGURATION_UPDATE_DENIED;
 // Saving a Configuration also needs Secret operate on every Secret it binds (finding 2437).
 const CONFIGURATION_SECRETS_READ_ONLY = `Saving this Configuration needs Secret operate on each Secret it binds, which your access does not include. ${askForGrant("Secret operate on each of them")}`;
@@ -3166,6 +3169,10 @@ export async function renderAgentDetail(
     const executionMode = agent.executionMode;
     let deployPending = false;
     let deployReloadMessage = "";
+    // Kubernetes Compute's refusal of a plugin entry key's spelling (checkComputeEntryKeys).
+    let computeEntryKeyRefusal: string | null = null;
+    let computeEntryKeyChecking = false;
+    let computeEntryKeyValues: unknown;
     const managedMode: DraftDetails["managedMode"] = {
       value: document.createTextNode(agent.gatewayManagedMode ? "On" : "Off"),
       action: null,
@@ -3239,6 +3246,7 @@ export async function renderAgentDetail(
             values = configuration.values;
             viewedSnapshot = configuration;
             renderDetailHeading();
+            void checkComputeEntryKeys();
             updateDeployControls();
             // The answer's denied binding names describe the bindings before this save. Read it
             // again, so the panel and the Channels drawer stop asking to replace a binding the
@@ -3431,23 +3439,43 @@ export async function renderAgentDetail(
         !agent.harnessAuth ||
         revisionResult.status !== "fulfilled" ||
         configurationRefusal() !== null ||
+        computeEntryKeyChecking ||
         (!runtimeAuth && !credentials?.canDeploy())
       );
     }
     // OCC refuses to deploy a saved Configuration with OpenClaw's $include (finding 3078), a
     // secrets.defaults alias OpenClaw refuses (finding 3064), a gateway password reference OpenClaw
     // cannot read (finding 3063), a setting the pinned OpenClaw retired (finding 2810) or another
-    // spelling of the codex or acpx plugin entry key (finding 3073), then Compute admission one
-    // with a plugin secret input OpenClaw cannot read (finding 3076), in that order and with this
-    // message, so the draft says it before Deploy, with the Configuration step (findings 3076,
-    // 3086). Only Kubernetes Compute refuses the plugin input, but the page does not know which
-    // Compute the next version runs on, and the Gateway exits on that input on any Compute that
-    // ships the plugin, so it holds Deploy on all. On SSH or Docker Compute that hold is stricter
-    // than OCC, whose deploy admits the input there. Kubernetes Compute also refuses other
-    // spellings of file-transfer and its managed plugin keys (finding 3077); OpenClaw merges them
-    // and runs on other Compute, so without knowing the Compute the page leaves that refusal to
-    // Deploy.
+    // spelling of the codex or acpx plugin entry key (finding 3073), then Compute admission's
+    // refusals: Kubernetes Compute's of another spelling of file-transfer or a managed plugin key
+    // (finding 3077, computeEntryKeyRefusal below) and one of a plugin secret input OpenClaw cannot
+    // read (finding 3076), in that order and with this message, so the draft says it before
+    // Deploy, with the Configuration step (findings 3076, 3086, 3090). Only Kubernetes Compute
+    // refuses the plugin input, but the page does not know which Compute the next version runs
+    // on, and the Gateway exits on that input on any Compute that ships the plugin, so it holds
+    // Deploy on all. On SSH or Docker Compute that hold is stricter than OCC, whose deploy admits
+    // the input there.
     function configurationRefusal(): { readonly message: string; readonly step: string } | null {
+      const settings = configurationSettingsRefusal();
+      if (settings !== null) {
+        return settings;
+      }
+      if (computeEntryKeyRefusal !== null) {
+        return { message: computeEntryKeyRefusal, step: ENTRY_KEY_STEP };
+      }
+      const plugin = unreadablePluginSecretInput(values);
+      return plugin === undefined
+        ? null
+        : {
+            message: configurationSettingMessage(plugin.setting, plugin.requirement),
+            step: "Fix the plugin secret input",
+          };
+    }
+    // The refusals every Compute's deploy gives, before Compute admission.
+    function configurationSettingsRefusal(): {
+      readonly message: string;
+      readonly step: string;
+    } | null {
       const include = configIncludeProblem(values);
       if (include !== undefined) {
         return {
@@ -3477,19 +3505,58 @@ export async function renderAgentDetail(
         return { message: retired, step: "Remove the retired setting" };
       }
       const entryKey = pluginEntryKeyVariantProblem(values);
-      if (entryKey !== undefined) {
-        return {
-          message: configurationSettingMessage(entryKey.setting, entryKey.requirement),
-          step: "Fix the plugin entry key",
-        };
-      }
-      const plugin = unreadablePluginSecretInput(values);
-      return plugin === undefined
+      return entryKey === undefined
         ? null
         : {
-            message: configurationSettingMessage(plugin.setting, plugin.requirement),
-            step: "Fix the plugin secret input",
+            message: configurationSettingMessage(entryKey.setting, entryKey.requirement),
+            step: ENTRY_KEY_STEP,
           };
+    }
+    // Kubernetes Compute alone also refuses another spelling of file-transfer or a managed catalog
+    // plugin key (finding 3077); other Computes merge it and run. The page does not know which
+    // Compute the next version runs on, so for a stored key in another spelling it asks Create
+    // Agent's preflight, which runs the selected Compute's Configuration rules, as Create Agent
+    // does for a Compute's refusal its capabilities do not report (finding 2427). Deploy holds
+    // only when that preflight refuses one of those keys with the text deploy gives, so it never
+    // holds a Configuration the Installation's Compute admits (finding 3090). A preflight that
+    // gives no answer (no Agent create permission, a failed request, another refusal first)
+    // holds nothing, and deploy stays the authority.
+    async function checkComputeEntryKeys() {
+      const checked = values;
+      computeEntryKeyValues = checked;
+      computeEntryKeyRefusal = null;
+      computeEntryKeyChecking = false;
+      const refusals = new Set<string>();
+      const entries = responseFields(responseFields(checked).plugins).entries;
+      for (const key of Object.keys(responseFields(entries))) {
+        const id = key.trim().toLowerCase();
+        const problem = key === id ? undefined : pluginEntryKeyVariantProblem(checked, [id]);
+        if (problem !== undefined) {
+          refusals.add(configurationSettingMessage(problem.setting, problem.requirement));
+        }
+      }
+      if (refusals.size === 0 || configurationSettingsRefusal() !== null) {
+        return;
+      }
+      computeEntryKeyChecking = true;
+      updateDeployControls();
+      let refusal: string | undefined;
+      try {
+        await request(`${namespacePath(namespaceId)}/agents/validate`, {
+          method: "POST",
+          readOnly: true,
+          expectedStatus: 204,
+          body: { configuration: { kind: "agent", values: checked } },
+        });
+      } catch (error) {
+        refusal = requestFailure(error).serverMessage;
+      }
+      if (!context.isCurrent() || computeEntryKeyValues !== checked) {
+        return;
+      }
+      computeEntryKeyChecking = false;
+      computeEntryKeyRefusal = refusal !== undefined && refusals.has(refusal) ? refusal : null;
+      updateDeployControls();
     }
     function updateDeployControls() {
       authenticationForm?.toggleAttribute("inert", Boolean(credentials?.mutationPending()));
@@ -3577,6 +3644,9 @@ export async function renderAgentDetail(
           deployStatus.textContent = "";
         } else if (configurationRefusal() !== null) {
           deployStatus.textContent = configurationRefusal()?.message ?? "";
+        } else if (computeEntryKeyChecking) {
+          // A check that settles within 250 ms never shows this text, as for credential access.
+          setDelayedText(deployStatus, "", CHECKING_COMPUTE_CONFIGURATION);
         } else if (revisionResult.status !== "fulfilled") {
           deployStatus.textContent =
             "Version history is required before deploying this new version.";
@@ -3971,6 +4041,7 @@ export async function renderAgentDetail(
       managedMode.action = action;
       managedMode.control = control;
     }
+    void checkComputeEntryKeys();
     updateDeployControls();
     void readDeploySecretsDenied();
     const draftActions = element(
