@@ -2683,6 +2683,49 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
   });
   const variantDeploy = await request(context.app, "POST", `${variantAgent.agentPath}/deploy`);
   assert.equal(variantDeploy.status, 202, JSON.stringify(variantDeploy.body));
+  // A `GOOGLE` entry written after google's does not turn google off: each revision reaches the
+  // Gateway in PostgreSQL's jsonb key order, keys by length and then byte, where `GOOGLE` comes
+  // first and startup auto-enable then enables the google entry (finding 3092). Save refuses an
+  // unreadable reference there, and deployment an unbound one, as without the `GOOGLE` entry.
+  for (const disabling of [{ enabled: false }, null]) {
+    const unreadableShadowed = withPluginEntries(valid, {
+      ...searchHeader("X-Key", { source: "env", provider: "vault", id: "SEARCH_HEADER" }),
+      GOOGLE: disabling,
+    });
+    assertRefused(
+      await request(context.app, "PATCH", item, { body: { values: unreadableShadowed } }),
+      unreadablePluginSecretRefusal(
+        "plugins.entries.google.config.webSearch.headers.X-Key",
+        "google",
+        "provider",
+        "vault",
+      ),
+      { label: JSON.stringify(disabling) },
+    );
+  }
+  const shadowedAgent = await deployableAgent(context, context.namespace, {
+    values: withPluginEntries(valid, {
+      ...searchHeader("X-Key", "${SEARCH_HEADER}"),
+      GOOGLE: { enabled: false },
+    }),
+    name: "Plugin entry order consumer",
+    secretName: "plugin-order-key",
+  });
+  assertRefused(
+    await request(context.app, "POST", `${shadowedAgent.agentPath}/deploy`),
+    unboundSearchHeader("X-Key"),
+    { label: "GOOGLE after google" },
+  );
+  // A longer key comes after google in both orders, so it still turns google off.
+  const longerKey = await request(context.app, "PATCH", item, {
+    body: {
+      values: withPluginEntries(valid, {
+        ...searchHeader("X-Key", { source: "env", provider: "vault", id: "SEARCH_HEADER" }),
+        "google ": { enabled: false },
+      }),
+    },
+  });
+  assert.equal(longerKey.status, 200, JSON.stringify(longerKey.body));
 
   // Values every Gateway accepts still save.
   for (const values of [
