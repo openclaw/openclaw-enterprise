@@ -3520,7 +3520,9 @@ export async function renderAgentDetail(
     // only when that preflight refuses one of those keys with the text deploy gives, so it never
     // holds a Configuration the Installation's Compute admits (finding 3090). A preflight that
     // gives no answer (no Agent create permission, a failed request, another refusal first)
-    // holds nothing, and deploy stays the authority.
+    // holds nothing, and deploy stays the authority. The preflight needs Agent create, so a caller
+    // the page knows cannot deploy or create Agents here skips it: the API would audit a 403 on
+    // every load and save (finding 3094). An unknown answer still asks.
     async function checkComputeEntryKeys() {
       const checked = values;
       computeEntryKeyValues = checked;
@@ -3540,6 +3542,18 @@ export async function renderAgentDetail(
       }
       computeEntryKeyChecking = true;
       updateDeployControls();
+      const [permissions, agentsCreate] = await Promise.all([
+        latestPermissionsRead,
+        context.agentsCreateAllowed?.().catch(() => undefined),
+      ]);
+      if (!context.isCurrent() || computeEntryKeyValues !== checked) {
+        return;
+      }
+      if (permissions?.deploy === false || agentsCreate === false) {
+        computeEntryKeyChecking = false;
+        updateDeployControls();
+        return;
+      }
       let refusal: string | undefined;
       try {
         await request(`${namespacePath(namespaceId)}/agents/validate`, {

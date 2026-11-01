@@ -15,6 +15,7 @@ import {
   accessBindingPostRequests,
   accessibleDescription,
   AGENT_READ,
+  authorizationDenials,
   apiRequests,
   deniedCreateSecretOption,
   deploymentStatusResponse,
@@ -28,6 +29,7 @@ import {
   holdRequests,
   isMaskedSecretValue,
   login,
+  memberWriteWithout,
   MEMBER_WRITE,
   nativeValues,
   newPage,
@@ -1755,6 +1757,52 @@ for (const viewport of [
     });
   });
 }
+
+// The preflight above needs Agent create. A member who may deploy but not create Agents here
+// sends none, so the API audits no refused preflight on every load and save of such a draft
+// (finding 3094). Nothing is held: Deploy gives Kubernetes Compute's refusal, as before #4353.
+test("A member without Agent create sends no Compute preflight for a plugin entry key", async (t) => {
+  const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
+  const fixture = await createConsoleAppFixture(t, { configurationDriver });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Entry key member", { ready: true });
+  const values = nativeAdminValues("entry-key-member", "http://127.0.0.1:18789");
+  const agent = await fixture.createAgent(namespace.id, "Entry key member", values);
+  // The row as a release before the Kubernetes save rule stored it.
+  await configurationDriver.update({
+    ...configurationDriver.stored({ namespaceId: namespace.id, id: agent.configurationId }),
+    values: {
+      ...structuredClone(values),
+      plugins: {
+        ...values.plugins,
+        entries: { ...values.plugins.entries, "File-Transfer": { enabled: true } },
+      },
+    },
+  });
+  const member = await fixture.createNamespaceMember(
+    "entry-key-member",
+    namespace.id,
+    memberWriteWithout(["create", "agent"]),
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    member.credentials,
+  );
+  const card = page.locator(".agent-draft-actions");
+  await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+  await waitForEnabled(card.getByRole("button", { name: "Deploy new version", exact: true }));
+  const reason = pluginEntryKeyVariantRefusal("plugins.entries.File-Transfer", "file-transfer");
+  assert.equal(await card.getByText(reason, { exact: true }).count(), 0);
+  assert.deepEqual(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/validate`),
+    [],
+  );
+  assert.deepEqual(authorizationDenials(fixture.auditSink, "openclaw.agents.validate"), []);
+});
 
 // The default env alias is a configured env provider whose allowlist leaves out the generated
 // password, so OpenClaw cannot read the reference Enable gateway password access would write and

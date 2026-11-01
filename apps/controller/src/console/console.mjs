@@ -2330,19 +2330,23 @@ async function loadPage({
       }
       return;
     }
-    // Inline Create Secret dialogs follow the Namespace's secrets.create answer (finding 2442).
-    // A page that read the answer up front reuses it; the Agent page reads it once, when a Secret
-    // field first needs it, and only for a Namespace this session can read. A failed read is
+    // Inline Create Secret dialogs follow the Namespace's secrets.create answer (finding 2442),
+    // and the Agent draft's Compute preflight its agents.create answer (finding 3094). A page that
+    // read the answer up front reuses it; the Agent page reads it once, when a Secret field or the
+    // preflight first needs it, and only for a Namespace this session can read. A failed read is
     // unknown and keeps the action.
-    let secretsCreateRead = null;
-    const secretsCreateAllowed = () =>
-      (secretsCreateRead ??= (
+    let namespacePermissionsRead = null;
+    const namespacePermissions = () =>
+      (namespacePermissionsRead ??=
         firstPermissions !== null
           ? Promise.resolve(firstPermissions)
           : namespaces.some((item) => item.id === namespaceId)
             ? request(permissionsPath).catch(() => null)
-            : Promise.resolve(null)
-      ).then((permissions) => permissions?.secrets?.create));
+            : Promise.resolve(null));
+    const secretsCreateAllowed = () =>
+      namespacePermissions().then((permissions) => permissions?.secrets?.create);
+    const agentsCreateAllowed = () =>
+      namespacePermissions().then((permissions) => permissions?.agents?.create);
     const agentContext = {
       operatorId: session.user.id,
       installationAdmin,
@@ -2355,6 +2359,7 @@ async function loadPage({
       // ready (finding 1895).
       namespace: namespaces.find((item) => item.id === namespaceId),
       secretsCreateAllowed,
+      agentsCreateAllowed,
       request: viewRequest,
       mutationVersion: () => viewState.mutations,
       navigate,
