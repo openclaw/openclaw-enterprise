@@ -958,6 +958,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       },
       [201],
     );
+    let stillRunning = false;
     try {
       // Docker's archive endpoint keeps the payload out of container arguments and metadata.
       // A single fixed-name, owner-only ustar entry is sufficient; no host files are staged.
@@ -1010,9 +1011,17 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 100));
       }
+      // Leave a setup that outlives this wait running (finding 3109). Native setup holds
+      // OpenClaw's state lock on the retained state volume, and its PID 1 ignores SIGTERM, so
+      // a stop would SIGKILL it with the lock held. Every later setup and Gateway on that
+      // state, in another PID namespace, would then refuse it. The setup bounds its own
+      // native runs; the next attempt refuses while it runs and removes it once it exits.
+      stillRunning = true;
       throw new Error("Workspace initialization timed out.");
     } finally {
-      await this.removeContainer(name);
+      if (!stillRunning) {
+        await this.removeContainer(name);
+      }
     }
   }
 
