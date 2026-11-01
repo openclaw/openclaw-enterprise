@@ -1100,9 +1100,7 @@ test("Configuration save refuses a provider catalog row that no model selection 
     }),
     withCatalog([{ id: "gpt-4.1" }], { entries: { main: { model: "openai/gpt-4.1" } } }),
   ]) {
-    const saved = await request(context.app, "PATCH", agent.item, { body: { values } });
-    assert.equal(saved.status, 200, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
-    assert.deepEqual(saved.body.data.values, values);
+    await updateSaved(context, agent.item, values, JSON.stringify(values));
   }
 
   // A Preset whose model or catalog row waits on a variable names no model yet: a launch can fill
@@ -1971,20 +1969,15 @@ test("Configuration save and deployment refuse a plugins.allow or plugins.deny O
     await refusedOnSave(context, values, message);
   }
   // Agent save refuses a stored row the same way, before any deployment.
-  await writePastOcc(configurationDriver, agent.configurationId, withPlugins({ deny: [false] }));
-  assertRefused(
-    await request(context.app, "PATCH", agent.agentPath, {
-      body: { configurationId: agent.configurationId },
-    }),
+  await refusedAtAgentSave(
+    context,
+    agent,
+    withPlugins({ deny: [false] }),
     pluginPolicyListRefusal("deny"),
-    { label: "Agent save" },
   );
   // Lists of text start, blank items and empty lists included; such an update recovers the row.
-  const startable = withPlugins({ allow: [], deny: [" ", "Discord"] });
-  const saved = await request(context.app, "PATCH", agent.item, { body: { values: startable } });
-  assert.equal(saved.status, 200, JSON.stringify(saved.body));
-  const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  await updateSaved(context, agent.item, withPlugins({ allow: [], deny: [" ", "Discord"] }));
+  await deployAccepted(context, agent.agentPath);
   // On a Preset, a whole number variable can never fill text, so the Preset save refuses it; a
   // text variable saves, and the launch's Configuration is checked with the filled item.
   const variables = { name: { type: "string" }, count: { type: "number" } };
@@ -1998,11 +1991,9 @@ test("Configuration save and deployment refuse a plugins.allow or plugins.deny O
   );
   const preset = await savePreset(context, template("{{ vars.name }}"), "Plugin-list-waits");
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
-  const launched = await request(context.app, "POST", context.collection, {
-    body: {
-      kind: "agent",
-      ...renderPresetTemplate(preset.body.data.template, { name: "slack", count: 1 }).configuration,
-    },
+  const launched = await launchPreset(context, preset.body.data.template, {
+    name: "slack",
+    count: 1,
   });
   assert.equal(launched.status, 201, JSON.stringify(launched.body));
 });
@@ -2138,7 +2129,7 @@ test("Agent save, deployment and the Console's draft hold name the same first st
     ["retiredSetting", ["security", "preset"], "strict"],
     ["openClawSandbox", ["agents", "defaults", "sandbox", "mode"], "all"],
     ["pluginEntryKey", ["plugins", "entries", "Codex"], { enabled: true }],
-    // Last, after the plugin entry key: another spelling of openai (finding 3097), whose entry
+    // After the plugin entry key: another spelling of openai (finding 3097), whose entry
     // deploy's model provider settings rule, which runs before this list, accepts.
     ["providerKey", ["models", "providers", "OpenAI"], { baseUrl: "https://models.example/v1" }],
     // Last: a plugins.deny item that is not text, which OpenClaw's config schema refuses (3101).
@@ -2677,10 +2668,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     };
     await updateSaved(context, item, values, JSON.stringify(value));
   }
-  assert.equal(
-    (await request(context.app, "PATCH", item, { body: { values: valid } })).status,
-    200,
-  );
+  await updateSaved(context, item, valid);
 
   // Rules that depend on the Compute Driver or the topology save, and deployment refuses them.
   for (const [values, deployStatus, deployMessage] of [
@@ -2817,12 +2805,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     secretName: "codex-allowlist-key",
     executionMode: "dedicated",
   });
-  const allowlistedDeploy = await request(
-    context.app,
-    "POST",
-    `${allowlistedCodex.agentPath}/deploy`,
-  );
-  assert.equal(allowlistedDeploy.status, 202, JSON.stringify(allowlistedDeploy.body));
+  await deployAccepted(context, allowlistedCodex.agentPath);
 
   // OpenClaw reads plugin secret inputs only in the entry keyed by the plugin's exact ID, so it
   // reads no reference in a `Google` entry and its Gateway starts (finding 3072): an unreadable
@@ -2832,10 +2815,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     valid,
     caseVariant({ source: "env", provider: "vault", id: "SEARCH_HEADER" }),
   );
-  const variantSaved = await request(context.app, "PATCH", item, {
-    body: { values: unreadableVariant },
-  });
-  assert.equal(variantSaved.status, 200, JSON.stringify(variantSaved.body));
+  await updateSaved(context, item, unreadableVariant);
   const variantAgent = await deployableAgent(context, context.namespace, {
     values: withPluginEntries(valid, caseVariant("${SEARCH_HEADER}")),
     name: "Plugin key variant consumer",
@@ -2882,15 +2862,14 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
   );
   assert.deepEqual(shadowedRevisions.body.data, []);
   // A longer key comes after google in both orders, so it still turns google off.
-  const longerKey = await request(context.app, "PATCH", item, {
-    body: {
-      values: withPluginEntries(valid, {
-        ...searchHeader("X-Key", { source: "env", provider: "vault", id: "SEARCH_HEADER" }),
-        "google ": { enabled: false },
-      }),
-    },
-  });
-  assert.equal(longerKey.status, 200, JSON.stringify(longerKey.body));
+  await updateSaved(
+    context,
+    item,
+    withPluginEntries(valid, {
+      ...searchHeader("X-Key", { source: "env", provider: "vault", id: "SEARCH_HEADER" }),
+      "google ": { enabled: false },
+    }),
+  );
 
   // Values every Gateway accepts still save.
   for (const values of [
@@ -3179,10 +3158,7 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
       },
     },
   };
-  assert.equal(
-    (await request(context.app, "PATCH", item, { body: { values: slack } })).status,
-    200,
-  );
+  await updateSaved(context, item, slack);
   const embeddedSlack = setting(
     "channels.slack",
     "is enabled, but channels require a dedicated Agent workload",
@@ -3203,12 +3179,7 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
     { ...valid, channels: { discord: { enabled: false } } },
     { ...valid, env: { vars: { HTTP_PROXY: "http://proxy:3128" } } },
   ]) {
-    const accepted = await request(context.app, "PATCH", item, { body: { values } });
-    assert.equal(
-      accepted.status,
-      200,
-      `${JSON.stringify(values)}: ${JSON.stringify(accepted.body)}`,
-    );
+    await updateSaved(context, item, values, JSON.stringify(values));
   }
 });
 
@@ -3290,8 +3261,7 @@ test("Configuration create, update and Agent create's check refuse a channel cre
   assert.equal(bound.status, 200, JSON.stringify(bound.body));
   // An update of values only, as the Console's Configuration JSON editor sends, keeps and checks
   // against the stored bindings.
-  const valuesOnly = await request(context.app, "PATCH", item, { body: { values: slack } });
-  assert.equal(valuesOnly.status, 200, JSON.stringify(valuesOnly.body));
+  const valuesOnly = await updateSaved(context, item, slack);
   assert.deepEqual(valuesOnly.body.data.secretBindings, bothBindings);
   assertRefused(
     await request(context.app, "PATCH", item, {
@@ -3873,8 +3843,7 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
         defaults: { ...codexDefaults, modelPolicy: { allow: ["codex/gpt-5", "codex/*"] } },
       },
     };
-    const saved = await request(context.app, "PATCH", codex, { body: { values: allowed } });
-    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    await updateSaved(context, codex, allowed);
   });
 
   // Oracle: a caller who may update Configurations but not read Agents gets the same answer for
@@ -4398,18 +4367,13 @@ for (const runtimeLogging of [undefined, "driver"]) {
     assert.deepEqual(source.body.data.values, initialValues);
     const expectedHistorical = structuredClone(deployed.body.data.configuration);
 
-    const updated = await request(context.app, "PATCH", `${collection}/${configurationId}`, {
-      body: {
-        values: {
-          models: {
-            providers: {
-              openai: { apiKey: { source: "store", provider: "teamstore", id: "NEXT_API_KEY" } },
-            },
-          },
+    const updated = await updateSaved(context, `${collection}/${configurationId}`, {
+      models: {
+        providers: {
+          openai: { apiKey: { source: "store", provider: "teamstore", id: "NEXT_API_KEY" } },
         },
       },
     });
-    assert.equal(updated.status, 200);
     assert.equal(updated.body.data.generation, 2);
     const historical = await request(
       context.app,
