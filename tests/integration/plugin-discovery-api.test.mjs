@@ -23,31 +23,14 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
 import { listen } from "../helpers/listen.mjs";
-
-const accessToken = "at-plugin-discovery-private-fixture";
-const pluginId = "codex-plugin:knowledge@openai-remote";
-const remoteId = "remote-knowledge";
-const catalogEntry = {
-  id: pluginId,
+import {
+  accessToken,
   remoteId,
-  name: "Knowledge",
-  description: "Search shared knowledge.",
-  available: true,
-  tools: null,
-};
-const pluginDetails = {
-  ...catalogEntry,
-  tools: [
-    {
-      id: "app_knowledge/search",
-      name: "Search",
-      ownerId: "app_knowledge",
-      description: "Search knowledge documents.",
-      available: false,
-      unavailableReason: "Connect an account to use this tool.",
-    },
-  ],
-};
+  catalogEntry,
+  pluginDetails,
+  setUpPluginDiscovery,
+  createSavedAgent,
+} from "../helpers/plugin-discovery.ts";
 
 async function createFixture(
   t,
@@ -62,7 +45,7 @@ async function createFixture(
 ) {
   const auditSink = new InMemoryAuditSink();
   const state = new InMemoryPlatformState({ auditSink });
-  const fixture = await createConsoleAppFixture(t, {
+  const app = await createConsoleAppFixture(t, {
     state,
     auditSink,
     secretDriver,
@@ -71,94 +54,7 @@ async function createFixture(
     credentialGatewayDriver,
     sandboxDriver,
   });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Plugin discovery", { ready: true });
-  const calls = [];
-  let failure;
-  // Only the external Driver boundary is controlled: HTTP, IAM and OCC remain real.
-  const driver = {
-    id: "plugin-discovery-test",
-    capability: "plugin",
-    implementation: "test-plugin-catalog",
-    async listCatalog() {
-      throw new Error("Credential discovery must not use the runtime catalog.");
-    },
-    ...(supported
-      ? {
-          async discoverCatalog(input) {
-            calls.push({ operation: "list", input });
-            if (failure) {
-              throw failure;
-            }
-            return {
-              plugins: input.cursor ? [] : [catalogEntry],
-              nextCursor: input.cursor ? null : "second-page",
-            };
-          },
-          async getCatalogPlugin(input) {
-            calls.push({ operation: "details", input });
-            if (failure) {
-              throw failure;
-            }
-            return pluginDetails;
-          },
-        }
-      : {}),
-  };
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("plugin", driver.id);
-  return {
-    ...fixture,
-    state,
-    namespace,
-    calls,
-    auditSink,
-    secretDriver,
-    path: `/namespaces/${namespace.id}/agents/plugins`,
-    failWith(error) {
-      failure = error;
-    },
-  };
-}
-
-async function createSavedAgent(fixture, method = "codex_pat") {
-  const secret = await fixture.createSecret(
-    fixture.namespace.id,
-    `Plugin discovery credential ${randomUUID()}`,
-    accessToken,
-  );
-  const dedicated = method === "codex_pat";
-  const agent = await fixture.createAgent(
-    fixture.namespace.id,
-    `Stored credential Agent ${randomUUID()}`,
-    createHarnessConfiguration(dedicated ? "codex" : "openclaw", "gpt-5.1"),
-    {
-      executionMode: dedicated ? "dedicated" : "embedded",
-      harnessAuth: { method, source: secret.ref },
-    },
-  );
-  if (method === "codex_pat") {
-    grantAgentSecret(fixture, agent, secret);
-  }
-  return { agent, secret, path: `/namespaces/${fixture.namespace.id}/agents/${agent.id}/plugins` };
-}
-
-// Runtime and discovery both need the Agent's own authority to operate its bound Secret.
-function grantAgentSecret(fixture, agent, secret) {
-  const roleId = `agent-plugin-secret-${randomUUID()}`;
-  fixture.policy.identities.push({
-    id: agent.servicePrincipalId,
-    kind: "service_principal",
-    namespaceId: fixture.namespace.id,
-    agentId: agent.id,
-  });
-  grantRole(fixture.policy, agent.servicePrincipalId, {
-    id: roleId,
-    bindingId: `binding-${roleId}`,
-    namespaceId: fixture.namespace.id,
-    permissions: { secret: ["operate"] },
-    resource: { kind: "secret", id: secret.id },
-  });
+  return { ...(await setUpPluginDiscovery(app, supported)), state, secretDriver };
 }
 
 function trackSecretValueReads(secretDriver) {
