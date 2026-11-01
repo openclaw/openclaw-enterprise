@@ -146,6 +146,13 @@ export function deploymentProgressForWork(
       message =
         "Waiting for the previous version's gateway to finish its active work before this version starts.";
       break;
+    case "SUPERSEDED_STOP_YIELDED":
+      // A newer version superseded this one before it became current: its own stop waits for
+      // its gateway's drain before the deployment ends superseded (finding 3080).
+      code = attempt.code;
+      message =
+        "A newer version replaced this one; its gateway is finishing active work before this version stops.";
+      break;
     case "AGENT_STOP_YIELDED":
       // The Agent stopped during this deployment: its stop waits for a gateway drain, and the
       // deployment then ends stopped (finding 1106).
