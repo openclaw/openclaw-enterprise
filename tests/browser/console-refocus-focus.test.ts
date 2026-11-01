@@ -421,7 +421,10 @@ for (const view of ["Agent page", "Create Agent"] as const) {
     // was counted yet (finding 3119): wait for the read itself, then check it was the only one.
     const sessionReadsReach = async (count: number, message: string) => {
       if (sessionReads < count) {
-        await within(new Promise<void>((resolve) => readWaiters.set(count, resolve)), message);
+        await within(
+          new Promise<void>((resolve) => readWaiters.set(count, resolve)),
+          () => `${message} (session reads so far: ${sessionReads})`,
+        );
       }
       assert.equal(sessionReads, count, message);
     };
@@ -488,6 +491,14 @@ for (const view of ["Agent page", "Create Agent"] as const) {
       releaseSession();
       await page.locator(settledView).waitFor();
     }
+    // Each stage's exact count can absorb a late duplicate read from the stage before it, and
+    // the last stage has no stage after it: once the last recheck has settled, no further
+    // session read has been sent (finding 3120).
+    assert.equal(
+      sessionReads,
+      view === "Agent page" ? 3 : 2,
+      "the last recheck sends no duplicate session read",
+    );
   });
 }
 
