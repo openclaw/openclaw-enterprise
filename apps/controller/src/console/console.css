@@ -7,14 +7,15 @@
   src: url("./fonts/instrument-sans-latin.woff2") format("woff2");
 }
 :root {
-  color-scheme: light;
+  color-scheme: light dark;
   font-family: var(--font-sans);
   font-size: var(--text-base);
   line-height: 1.5;
   font-synthesis: none;
   color: var(--text);
   background: var(--color-canvas);
-  /* Colour roles shared by the Console, its controls and its navigation. */
+  /* Colour roles shared by the Console, its controls and its navigation. The dark set below
+     redefines only these. */
   --color-bg: #f7f5f0;
   /* Themes with a translucent background resolve it over Canvas once, for both root and body. */
   --color-canvas: var(--color-bg);
@@ -133,6 +134,49 @@
   --radius: var(--radius-md);
   /* Keep desktop pages aligned when a classic scrollbar comes and goes (finding 1520). */
   scrollbar-gutter: stable;
+}
+/* Follow the system appearance. Operator theme colours are chosen against the light surfaces, so
+   a theme that sets any colour keeps the light set (the shell marks it with data-theme-colors). */
+:root[data-theme-colors] {
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme-colors]) {
+    --color-bg: #121417;
+    --color-surface: #1a1d21;
+    --color-surface-2: #20242a;
+    --color-surface-hover: #272c33;
+    --color-border: #353b43;
+    --color-border-strong: #7f8a96;
+    --color-text: #d6dbe1;
+    --color-text-strong: #f2f4f6;
+    --color-text-muted: #a1abb6;
+    /* Bright enough to read as text and edges; primary buttons carry dark text on it. */
+    --color-accent: #ff7a63;
+    --color-accent-hover: #ff9a87;
+    --color-accent-subtle: rgba(255, 122, 99, 0.14);
+    --color-on-accent: #1c0d0a;
+    --color-link: #7fb6ec;
+    --color-success: #5ad48a;
+    --color-success-subtle: rgba(90, 212, 138, 0.12);
+    --color-warning: #f2b552;
+    --color-warning-subtle: #30261a;
+    --color-danger: #ff8a80;
+    --color-danger-subtle: rgba(255, 138, 128, 0.13);
+    --color-info: #a9cdf0;
+    --color-info-subtle: #18263a;
+    --color-overlay-mix: #000000 60%;
+    /* The light set derives these from text-strong and surface, which swap places here. */
+    --color-surface-inverse: #0b0d10;
+    --color-on-inverse: var(--color-text-strong);
+    --color-on-inverse-muted: #b3bdc8;
+    --color-inverse-hover: #1c2026;
+    --color-inverse-selected: #1f3247;
+    --color-inverse-marker: var(--color-accent);
+    --color-focus-inverse: var(--color-focus);
+    --shadow-1: 0 8px 24px rgba(0, 0, 0, 0.4);
+    --shadow-2: 0 16px 48px rgba(0, 0, 0, 0.55);
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   :root {

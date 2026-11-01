@@ -107,23 +107,23 @@ graph TD
 ### 1. Compose discovery metadata and serve public assets
 
 `apps/controller/src/api-startup.mjs:startApi` loads an optional
-[theme bundle](../reference/console/theming.md) once. Invalid bundles stop startup;
-ConfigMap links must resolve inside the bundle. `renderConsoleThemeShell` escapes
-branding and links the generated stylesheet. `console/shell.mts:brandContents`
-renders the name as text. `/console/theme/` serves only referenced images and
-generated CSS, returns a plain 404 for missing assets, and uses `no-store` so an
-API restart can replace the theme.
+[theme bundle](../reference/console/theming.md) once; an invalid bundle or a
+ConfigMap link outside it stops startup. `renderConsoleThemeShell` escapes branding
+and links the generated stylesheet; a bundle with colors also gets
+`<html data-theme-colors>`, keeping the light role set. `console/shell.mts:brandContents` renders the name as text.
+`/console/theme/` serves only referenced images and generated CSS, with a plain 404
+for missing assets and `no-store` so a restart can replace the theme.
 
-Startup (see Entry Points) passes safe Backend `{id,type}` summaries to `createFastifyApp`.
+Startup passes safe Backend `{id,type}` summaries to `createFastifyApp`;
 [Backend-managed delivery](service-account-driver-credential-delivery.md) owns
-Driver activation. Requests do not reread configuration or credentials.
+Driver activation. Requests never reread configuration or credentials.
 
 `apps/controller/src/console-assets.ts:readConsoleAsset` serves allowlisted assets
 and the shared HTML shell with MIME types and same-origin CSP. Unknown console
-paths return the shell with `404`; API routes retain JSON errors.
-`encodedAsset` compresses static scripts and styles once (brotli or gzip, per
-`Accept-Encoding`, with `Vary`), unless an explicit `identity` weight beats both
-encodings. The shell, which also answers sign-in, stays identity.
+paths return the shell with `404`; API routes keep JSON errors. `encodedAsset`
+compresses static scripts and styles once with brotli or gzip per `Accept-Encoding`
+(with `Vary`) unless `identity` outweighs both; the shell, also used for sign-in,
+stays uncompressed.
 
 `scripts/build-console-metadata.mjs` bakes the publisher's checked
 `OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mts:renderShell` displays
@@ -376,6 +376,8 @@ gateway startup and file availability.
 - 2026-10-30 11:02: Name denied Secrets. (b03beb3e-57d1-47cf-829f-e31955a47d3c - f5d5dfda697a9e0d41c88a4e570dafcce768ec7b)
 
 - 2026-10-30 09:32: Name authorized bound Secrets in the Configuration save permission hint. (b03beb3e-57d1-47cf-829f-e31955a47d3c - 755ff77baa3377441be0938302030386fa985c75)
+
+- 2026-10-30 03:41: Follow system dark appearance; color themes stay light. (authoring-run/8d7f8ba3-f41e-46d5-ba36-6adca6c837e7 - 4a364ef759354)
 
 - 2026-10-29 22:18: Cancel the unfinished row reads of Agents a search hides. (authoring-run/6f6ebb4a-7c4c-4bd7-a11c-8381c411c816 - 225ce0ebaf1dd14c01c5c50ccf8ac420e13c72a4)
 

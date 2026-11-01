@@ -56,8 +56,8 @@ verify both paths. A browser-only module needs no forwarder.
 Use **Pages/Agents → Populated** to review the shared shell and controls at
 desktop (1440 × 1000), tablet (768 × 1024), and mobile (390 × 844).
 Check keyboard focus, search, navigation, an open dialog, and empty, loading,
-error, permission-denied, and missing-credential stories. The console stays light
-under either system appearance.
+error, permission-denied, and missing-credential stories. Use the **Appearance**
+selector beside **Reset story** to review light and dark. Themed stories stay light.
 
 The Claw palette, type scale, and surface geometry reference
 [OpenClaw `6e8d06876fd166064abbec4928fb3bb109ebe999`](https://github.com/openclaw/openclaw/tree/6e8d06876fd166064abbec4928fb3bb109ebe999/ui),

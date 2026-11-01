@@ -59,6 +59,11 @@ typography, spacing, or layout. A translucent `bg` blends once with the browserâ
 canvas color. A modal dims that same background across the page and any empty
 scrollbar gutter.
 
+The Console follows the system light or dark appearance. A bundle that sets any
+color keeps the light appearance, because its colors replace roles chosen for
+light surfaces and a translucent `bg` blends with the light canvas. A bundle with
+only a name or images follows the system appearance.
+
 | Roles                                               | Surfaces                                                    |
 | --------------------------------------------------- | ----------------------------------------------------------- |
 | `bg`, `surface`, `surface2`, `surfaceHover`         | Page, cards, secondary panels, hover backgrounds            |
