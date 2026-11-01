@@ -386,6 +386,9 @@ preparedGitHub:
   # Optional public ca.crt for an explicitly configured private HTTPS issuer.
   issuerCaConfigMapName: ""
 
-# Closed OpenShell canary only: operator-owned Namespace, no initialization Job.
+# Single-cluster OpenShell: operator-owned Namespace, no initialization Job.
+# An upgrade may enable GitHub Console login with nonempty allowedTeams, empty
+# allowedOrgs, recovery-only passwords and agentNativeAdmin.enabled: false.
+# Verify the existing recovery identity and keep the tenant binding unchanged.
 # Bind the existing OCE Namespace ID and independently observed Kubernetes UID.
 preprovisionedNamespace: {}
