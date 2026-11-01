@@ -6422,7 +6422,7 @@ test("OpenShell verifies operator NetworkPolicy from actual KubernetesObjectApi 
 });
 
 // Finding 3110: KubernetesObjectApi serializes ingress sources only from its `_from` alias, so the
-// wire `from` of a workspace-chart policy was dropped and the applied rule admitted every source.
+// wire `from` of a workspace-chart policy was dropped and the rule lost its source restriction.
 test("OpenShell operator mode applies NetworkPolicy ingress sources through the SDK serializer", async () => {
   const configuration = sandboxInstallation().drivers.sandbox.configuration;
   // The stock OpenShell workspace chart's SSH policy as occ dev renders it, in wire form.
@@ -6476,7 +6476,7 @@ test("OpenShell operator mode applies NetworkPolicy ingress sources through the 
   context.kubernetes = api;
 
   await driver.ensureNamespace(context);
-  // Both lists reach the API server with their sources; a rule without them admits any Pod.
+  // Both lists reach the API server with their source restriction intact.
   assert.deepEqual(
     applied.map(([method, body]) => [method, body.metadata.name, body.spec.ingress]),
     [
