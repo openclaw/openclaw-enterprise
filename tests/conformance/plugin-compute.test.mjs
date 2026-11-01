@@ -385,12 +385,27 @@ async function runCodexRuntimeHelper(runtime, handler, options = {}) {
     }
     close() {}
   }
+  // The helper's clock advances only through its own timer waits, so the 25 ms install
+  // budget below counts retry delays, never host scheduling: a loaded runner cannot
+  // expire a successful RPC (finding 3034). Expiry cases pass their own Date.
+  let now = 0;
+  class FixtureDate extends Date {
+    static now() {
+      return now;
+    }
+  }
   const sandbox = {
     JSON,
     Buffer,
-    Date: options.Date ?? Date,
+    Date: options.Date ?? FixtureDate,
     WebSocket: FakeWebSocket,
-    setTimeout: options.setTimeout ?? setTimeout,
+    setTimeout:
+      options.setTimeout ??
+      ((callback, delay, ...args) =>
+        setTimeout(() => {
+          now += delay ?? 0;
+          callback(...args);
+        }, delay)),
     clearTimeout,
     process: {
       env: {
@@ -795,14 +810,6 @@ enabled = false
 });
 
 test("Codex runtime helper installs a plugin with skills and applies write action approval without tool inventory", async () => {
-  // Count fixture timer waits against this policy case's 25 ms budget so host
-  // scheduling cannot expire a successful RPC. Expiry cases advance their own clocks.
-  let now = 0;
-  class FixtureDate extends Date {
-    static now() {
-      return now;
-    }
-  }
   const state = codexLinearPluginState({
     toolDefaults: { approval: "write_actions", reviewer: "auto" },
   });
@@ -906,15 +913,7 @@ test("Codex runtime helper installs a plugin with skills and applies write actio
     }
     throw new Error(`unexpected request ${method}`);
   };
-  const { requests, sockets } = await runCodexRuntimeHelper(runtime, handleRequest, {
-    Date: FixtureDate,
-    setTimeout(callback, delay, ...args) {
-      return setTimeout(() => {
-        now += delay;
-        callback(...args);
-      }, delay);
-    },
-  });
+  const { requests, sockets } = await runCodexRuntimeHelper(runtime, handleRequest);
 
   assert.deepEqual(
     requests.map((request) => request.method),
