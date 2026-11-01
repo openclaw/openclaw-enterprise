@@ -274,7 +274,7 @@ test(
     assert.ok(listed.data.every(({ id }) => id !== namespaceId));
 
     const audits = await pool.query(
-      "SELECT action, outcome FROM occ.audit_events WHERE resource_id = $1",
+      "SELECT action, outcome, actor_id, details FROM occ.audit_events WHERE resource_id = $1",
       [namespaceId],
     );
     assert.deepEqual(
@@ -282,11 +282,30 @@ test(
       [
         "openclaw.namespaces.create",
         "openclaw.namespaces.delete",
+        "openclaw.namespaces.lifecycle.checkpoint",
         "openclaw.namespaces.lifecycle.delete",
         "openclaw.namespaces.lifecycle.ensure",
       ].sort(),
     );
     assert.ok(audits.rows.every(({ outcome }) => outcome === "success"));
+    const binding = await pool.query(
+      "SELECT lifecycle_id, compute_driver_id, compute_implementation FROM occ.namespace_lifecycle WHERE namespace_id = $1",
+      [namespaceId],
+    );
+    assert.equal(binding.rowCount, 1);
+    const checkpoint = audits.rows.find(
+      ({ action }) => action === "openclaw.namespaces.lifecycle.checkpoint",
+    );
+    assert.equal(checkpoint.actor_id, principalId);
+    assert.deepEqual(checkpoint.details, {
+      lifecycleId: binding.rows[0].lifecycle_id,
+      computeDriverId: binding.rows[0].compute_driver_id,
+      computeImplementation: binding.rows[0].compute_implementation,
+      revision: 0,
+      operation: "bind",
+      target: "ready",
+      __occAuditMetadata: { source: "occ", iamDriverId: "native-iam" },
+    });
   },
 );
 
@@ -2459,9 +2478,9 @@ test(
       pollIntervalMs: 20,
       computeDriver: {
         ...developmentCompute,
-        async ensureNamespace(candidate) {
+        async ensureNamespace(candidate, lifecycle) {
           observedComputeEffects.push(candidate.id);
-          return developmentCompute.ensureNamespace(candidate);
+          return developmentCompute.ensureNamespace(candidate, lifecycle);
         },
       },
       emit() {},

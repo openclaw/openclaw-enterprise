@@ -8,6 +8,22 @@ This record preserves the dated changes to the Compose development flow. See the
 
 ## Changelog
 
+- 2026-10-30 16:09: Reconcile patched OpenShell documentation with capability-based repository admission. (authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f - 87d52638bda95e06820328e244ba2ad9960df1c4)
+
+- 2026-10-30 10:12: Select paired OpenShell 0.1.6 and preserve guarded preview admission. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
+
+- 2026-10-30 10:09: Update the linked execution trace for the accompanying durable Engine/network identity journal and conservative unknown-create refusal. (authoring-run/80ea08bc-5b26-4327-bd7b-128cc7aaf0fd - ef2cf007043819118c83fd8339496a92bcab9fb3)
+
+- 2026-10-28 21:21: Select paired OpenShell 0.1.6 inputs without widening credential preview admission. (authoring-run/cc92d8d2-ac00-488a-a581-bba758672967 - aa2cfe543b3bba361679e7e1a3028c3327d2c388)
+
+- 2026-10-15 23:41: Isolate development-wrapper path resolution from CDPATH while preserving the CLI environment. (authoring-run/92de1204-326a-4c11-a868-5b3f1b9de0c1 - 04514330688378316bd0641b8d5560da56aeff85)
+
+- 2026-10-14 18:14: Bound declared and streamed Docker API response bodies before complete buffering. (issue-2406 - 1fc3258afdd73b2888c524092b988a2110449bbb)
+
+- 2026-10-14 17:03: Validate protected development selectors before CLI dispatch and direct Docker script effects. (authoring-run/5607c5fd-a268-466b-a5c9-93e0cc984807 - 3fba9be5bae09aa9c33483a768221f44079edc3b)
+
+- 2026-10-14 16:11: Add the default-off protected OpenShell launch, native mTLS credential ownership, authority-first readiness and disposable database selection. (authoring-run/b0bd473e-3b1d-44cc-a1b1-4a1d411a1829 - 126b6a1b13b48281aee5d3ca4d476ec75da8a24a)
+
 - 2026-10-09 19:04: Import tagged development images through the platform-selected archive path and retain digest verification. (authoring-run/3980117d-b11c-47c0-9f7a-765c1481ee7b - 6d0bb202d97f487cbd5e41d64e0f1f5ab196d083)
 
 - 2026-10-09 03:27: Run the unchanged Codex sandbox preflight before routing for the Kubernetes-only none profile; preserve OpenShell ordering and later readiness checks. (authoring-run/ec403753-6547-4dcb-8624-26628a124b7d - 259702d92a9ebb094c5f9bea0465bd6b09681d08)
@@ -28,9 +44,9 @@ This record preserves the dated changes to the Compose development flow. See the
 
 - 2026-09-17 17:42: Pin Kubernetes development to the supported 1.35 family and emit only runtime settings accepted by the current Kubernetes Compute Driver schema. (authoring-run/b044b43c-e713-4006-93a0-c129cdf5578e - 9310d5b025e84f885e4f7facae2e2906b50d58f8)
 
-- 2026-09-17 16:21: Preserve Podman's host connection during Compose cleanup and verify explicit volume deletion with the real CLI and engine. (authoring-run/566921ff-3342-4dec-aa19-110acc8aa1e4 - 58ead9943ee6b2560eea2c327967b50a30f7644e)
-
 - 2026-09-17 16:47: Merge current main's Podman dedicated recovery proof and checkout-local CLI requirement while preserving the Kubernetes lifecycle trace. (01a0ae15-3bad-7d92-92b7-f8be208cbb49 - b13b2f479f824891ab3c5bf71e6851d704dba458)
+
+- 2026-09-17 16:21: Preserve Podman's host connection during Compose cleanup and verify explicit volume deletion with the real CLI and engine. (authoring-run/566921ff-3342-4dec-aa19-110acc8aa1e4 - 58ead9943ee6b2560eea2c327967b50a30f7644e)
 
 - 2026-09-17 14:32: Resolve the effective macOS Podman machine connection, trust its private gateway only for rootful Compose, and retain bridge-CIDR admission for rootless Compose. (authoring-run/07150374-b371-440a-92f7-9d53dedb9512 - 309c5c38702d026e09df703d7e79c2c9eb2d570c)
 

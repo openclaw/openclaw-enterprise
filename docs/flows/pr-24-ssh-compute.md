@@ -1,7 +1,7 @@
 ---
 created: 2026-09-07
-updated: 2026-10-14
-last_updated_session: authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582
+updated: 2026-10-31
+last_updated_session: authoring-run/514090cf-874e-4562-80f6-058be47d8968
 ---
 
 <a id="pr-24-ssh-compute-flow"></a>
@@ -28,7 +28,7 @@ supported boundaries.
   (`processRevision`), and [ssh/index.ts](../../apps/controller/src/drivers/compute/ssh/index.ts)
   (`SshComputeDriver`).
 - Assumptions: Trusted Installation YAML selects packageless `compute-ssh`;
-  the operator provisions Linux, systemd, flock, Node, OpenClaw, root SSH, and a
+  the operator provisions Linux, systemd, flock, Node, OpenClaw, root SSH, and
   account-management tools. Namespace names map to configured hosts. OCC supplies
   authorized, server-owned resource identities and immutable saved versions.
 
@@ -37,7 +37,12 @@ supported boundaries.
 ```mermaid
 graph TD
   subgraph OCC["OCC worker"]
-    A["Authorize claimed Agent revision and bind Agent"] --> B["Validate embedded Agent revision"]
+    N["Claim Namespace lifecycle and save creation nonce"] --> O["Create once or read original receipt under host lock"]
+    O --> Q{"Original identity matches?"}
+    Q -->|yes| P["Commit identity before readiness and hooks"]
+    Q -->|no| R["Refuse unknown or replaced Namespace"]
+    P --> A["Authorize claimed Agent revision and bind Agent"]
+    A --> B["Validate embedded Agent revision"]
     B --> C["Send prepare operation over SSH"]
   end
   subgraph Stage["Host preparation under shared-root flock"]
@@ -68,8 +73,21 @@ Compute IDs select Kubernetes. Schema and semantic validation reject invalid
 host settings and Sandbox composition. Preflight checks the two local SSH
 files and probes each host's required executables and account-management tools.
 
-Namespace preparation creates or verifies its ownership marker before running
-`afterNamespacePrepared` hooks. After Agent revision authorization and provider
+Namespace preparation receives the worker's claim-checked lifecycle journal.
+`ssh/index.ts:namespaceTarget` evaluates only the selected trusted profile through
+`ssh/executor.ts:resolveNamespaceTarget`. This `ssh -G` evaluation can execute
+`Match exec`; it is not passive profile inspection. Matched user/global public
+keys and `HostKeyAlias` identify trust without retaining authentication material.
+The executor looks up an explicit alias verbatim; without an alias, a nondefault
+port uses `[hostname]:port`.
+Dynamic trust limitations belong to the [SSH reference](../reference/drivers/ssh-compute.md#namespace-and-revision-lifecycle).
+
+`ensureNamespace` saves its nonce and exact selector before dispatch. Under the
+host lock, `remote-helper.cjs:namespaceReceipt` saves that generation outside the
+Namespace tree, creates the tree once, and records its original filesystem identity.
+The Driver commits that identity before readiness and `afterNamespacePrepared`.
+A retry can read the same receipt but cannot create another directory. An attempted
+creation without a receipt stays unconfirmed, and a copied tree is refused. After Agent revision authorization and provider
 validation, the worker calls `bindAgent`; the driver copies the authoritative
 Namespace, Agent, and ServicePrincipal binding into its in-memory maps. Agent revision
 operations require matching bindings and the selected Compute identity.
@@ -106,7 +124,9 @@ more than about a second after the client exits.
 Host mutations take `<root>/.compute-lock` through a child holding kernel flock,
 with a 30-second acquisition timeout. The shared root defines the inventory and
 serialization boundary. Namespace, Agent, Agent revision, and unit markers are checked
-before use; ownership failures are permanent. The lock releases when its
+before use; ownership failures are permanent. `verifyNamespace` checks the original
+receipt and filesystem identity for Agent preparation, activation, stop, retirement,
+and deletion too. Its marker-only helper avoids recursive receipt validation. The lock releases when its
 holder exits. Probe does not take the lock. Deletion of an already-missing
 Namespace still holds it while retrying cleanup of remaining owned accounts.
 
@@ -184,11 +204,24 @@ Relinking permits cleanup after `disable` removed a custom directory's load-path
 
 `ssh/index.ts:deleteNamespace`, `ssh/remote-helper.cjs:removeNamespace`
 
-Deletion runs `beforeNamespaceDelete` hooks, then validates every Agent, Agent revision,
+A revision-zero empty journal completes deletion without host or hook effects.
+Otherwise `deleteNamespace` reloads the saved selector, observes the original host
+receipt, and commits any recovered creation identity before cleanup. The helper
+checks the receipt, marker generation, and original directory device, inode, and
+birth time under the same host lock. Pure comparisons precede filesystem probes.
+`verifyFilesystemBirthtime` creates and removes an owned temporary file per device,
+then uses the same directory `lstat` path to require positive, unchanged birth time
+and changed ctime within two seconds. No named probe remains during waits. A zero or ctime-based fallback fails permanently. A replacement is refused before hooks or
+account removal. Unknown checkpoint results withhold later effects until an
+authorized read resolves the same journal.
+
+Deletion then runs `beforeNamespaceDelete` hooks and validates every Agent, Agent revision,
 and unit in the deletion set before stopping gateways. The helper stops and
 disables owned units through `stopOwnedUnit`, removes their unit files, reloads systemd, and removes the
 Namespace tree, including persistent state, and its owned runtime accounts. The driver clears its in-memory
-bindings only after the host operation succeeds.
+bindings only after the host operation succeeds. If account removal fails after
+the tree disappears, the retained receipt and lifecycle-tagged account markers
+let a restarted Driver retry removal of the exact owned UID/GID.
 
 Agent deletion (`ssh/index.ts:deleteAgentRuntimeCredentials`,
 `remote-helper.cjs:removeAgent`) does the same for one Agent after its Agent revisions
@@ -227,7 +260,15 @@ retire, which frees its gateway port.
 
 ## Changelog
 
+- 2026-10-31 18:01: Preserve Namespace generation binding and password teardown behavior in the accompanying main merge. (authoring-run/514090cf-874e-4562-80f6-058be47d8968 - 1a067ef727e2db04da3bd90c60fd77821319d77c)
+
 - 2026-10-31: Trace authored password rendering, the alias-aware refusal offer and shape-only teardown checks. (fix-3064, findings 3064, 3065)
+
+- 2026-10-30 10:42: Match OpenSSH verbatim alias lookup and retain default-host port selection. (authoring-run/be3c47b9-e273-4252-94cc-50700db0c396 - 922a031ef91f6dc14329034f50964752757ec29b)
+
+- 2026-10-30 09:55: Reject unavailable creation timestamps and probe the selected owned filesystem after identity checks. (authoring-run/be3c47b9-e273-4252-94cc-50700db0c396 - ef2cf007043819118c83fd8339496a92bcab9fb3)
+
+- 2026-10-30 09:34: Trace durable Namespace binding, receipt recovery, and exact account cleanup in accompanying source changes. (authoring-run/be3c47b9-e273-4252-94cc-50700db0c396 - 536e71d95bf39797f2b60048cb3677e879ed046b)
 
 - 2026-10-14 12:23: Document stdout retention and local-client settlement on overflow. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
 

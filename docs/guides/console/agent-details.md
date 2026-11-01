@@ -257,6 +257,11 @@ continues unchanged. Another uncertain request stays blocked until a successful
 status refresh confirms that the Agent is deleting. The browser never repeats
 DELETE automatically. Existing delete permissions and retry ownership apply.
 
+If Kubernetes Namespace loss leaves deletion incomplete, check access to the
+selected Sandbox Backend before retrying. The provider must confirm
+[Sandbox cleanup](../../reference/drivers/sandbox.md#lifecycle); Namespace absence
+does not prove that its provider resources are gone.
+
 An API error may show a request ID for support. **Outcome unknown** does not
 prove failure: refresh before retrying any write. An expired session clears
 private content and requests login. See the [Console reference](../../reference/console.md)

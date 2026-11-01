@@ -75,6 +75,7 @@ import {
   SandboxWorkspaceSetupRefusedError,
   TransientDependencyError,
 } from "@openclaw-enterprise/occ";
+import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type {
@@ -98,6 +99,9 @@ import type {
   SandboxLogContext,
   SandboxLogRequest,
   SandboxNamespaceContext,
+  SandboxNamespaceLifecycleContext,
+  SandboxNamespaceCleanupResult,
+  SandboxNamespaceCleanupResource,
   SandboxResourceRef,
   SandboxHarnessLostCode,
 } from "@openclaw-enterprise/contracts";
@@ -122,7 +126,6 @@ import {
   OpenShellRequestReplayRefusedError,
   OpenShellProviderAlreadyExistsError,
   OpenShellSandboxAlreadyExistsError,
-  OpenShellWorkspaceAlreadyExistsError,
   toProtobufStruct,
 } from "./openshell-gateway-client.ts";
 import { OpenShellServiceTransportError } from "./openshell-service-transport.ts";
@@ -1219,20 +1222,12 @@ function missingResource(error: unknown): boolean {
   );
 }
 
-async function applyResources(
-  context: SandboxNamespaceContext,
-  resources: readonly KubernetesNamespacedResource[] | undefined,
-): Promise<void> {
-  for (const resource of resources ?? []) {
-    await kubernetes(context).patch(
-      networkPolicyToSdk(withNamespace(resource, context)),
-      undefined,
-      undefined,
-      "openclaw-enterprise-sandbox",
-      false,
-      PatchStrategy.ServerSideApply,
-    );
-  }
+function definitiveKubernetesCreateRefusal(error: unknown): boolean {
+  const observed = asRecord(error);
+  const response = asRecord(observed?.response);
+  return [400, 401, 403, 422].some((status) =>
+    [observed?.code, observed?.statusCode, response?.statusCode, response?.status].includes(status),
+  );
 }
 
 async function applyOperatorNamespaceLabels(
@@ -1265,7 +1260,7 @@ async function applyOperatorNamespaceLabels(
     {
       apiVersion: "v1",
       kind: "Namespace",
-      metadata: { name, labels: { ...desired } },
+      metadata: { name, ...resourceIdentity(existing), labels: { ...desired } },
     },
     undefined,
     undefined,
@@ -1273,6 +1268,90 @@ async function applyOperatorNamespaceLabels(
     false,
     PatchStrategy.ServerSideApply,
   );
+}
+
+const NAMESPACE_CREATION_ANNOTATION = "openclaw.dev/sandbox-creation-id";
+
+type NamespaceResourceStage = "neverAttempted" | "attempted" | "createRefused" | "bound" | "absent";
+type NamespaceWorkspaceStage =
+  "neverAttempted" | "attempted" | "createRefused" | "bound" | "deleteAttempted" | "complete";
+interface NamespaceResourceBinding {
+  readonly apiVersion: string;
+  readonly kind: string;
+  readonly name: string;
+  readonly namespace: string;
+  readonly state: NamespaceResourceStage;
+  readonly nonce?: string;
+  readonly uid?: string;
+}
+interface OpenShellNamespaceJournal extends Record<string, unknown> {
+  readonly version: 1;
+  readonly binding: Readonly<Record<string, unknown>>;
+  readonly resources: readonly NamespaceResourceBinding[];
+  readonly workspace: {
+    readonly state: NamespaceWorkspaceStage;
+    readonly id?: string;
+    readonly requestId?: string;
+    readonly confirmation?: "neverAttempted" | "creationRefused" | "providerCompleted";
+  };
+}
+
+function lifecycleRefusal(message: string): never {
+  throw new SandboxNamespaceRefusedError(message);
+}
+
+function resourceIdentity(resource: KubernetesObject): {
+  readonly uid: string;
+  readonly resourceVersion: string;
+} {
+  const uid = resource.metadata?.uid;
+  const resourceVersion = resource.metadata?.resourceVersion;
+  if (!isNonEmptyString(uid) || !isNonEmptyString(resourceVersion)) {
+    return lifecycleRefusal(
+      "OpenShell requires immutable Kubernetes resource identity for Namespace cleanup.",
+    );
+  }
+  return { uid, resourceVersion };
+}
+
+function verifyLifecycleResource(
+  actual: KubernetesObject,
+  resource: NamespaceResourceBinding,
+  context: SandboxNamespaceContext,
+): void {
+  const identity = resourceIdentity(actual);
+  if (
+    actual.apiVersion !== resource.apiVersion ||
+    actual.kind !== resource.kind ||
+    actual.metadata?.name !== resource.name ||
+    actual.metadata?.namespace !== resource.namespace ||
+    actual.metadata.labels?.["app.kubernetes.io/managed-by"] !== "openclaw-enterprise" ||
+    actual.metadata.labels?.["openclaw.dev/namespace"] !== context.namespace.id ||
+    actual.metadata.annotations?.["openclaw.dev/namespace-id"] !== context.namespace.id ||
+    (resource.nonce !== undefined &&
+      actual.metadata.annotations?.[NAMESPACE_CREATION_ANNOTATION] !== resource.nonce) ||
+    (resource.uid !== undefined && identity.uid !== resource.uid)
+  ) {
+    lifecycleRefusal("OpenShell refuses a foreign or replaced Namespace resource.");
+  }
+}
+
+async function readLifecycleResource(
+  context: SandboxNamespaceContext,
+  resource: Pick<NamespaceResourceBinding, "apiVersion" | "kind" | "name" | "namespace">,
+): Promise<KubernetesObject | undefined> {
+  try {
+    return await kubernetes(context).read({
+      apiVersion: resource.apiVersion,
+      kind: resource.kind,
+      metadata: { name: resource.name, namespace: resource.namespace },
+    });
+  } catch (error) {
+    if (!missingResource(error)) {
+      throw error;
+    }
+    return undefined;
+  }
 }
 
 function labelSelector(selector: Readonly<Record<string, string>>): string {
@@ -3114,7 +3193,227 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     );
   }
 
-  async ensureNamespace(context: SandboxNamespaceContext): Promise<void> {
+  private async verifyNamespacePlacement(
+    context: SandboxNamespaceLifecycleContext,
+    allowMissing: boolean,
+  ): Promise<KubernetesObject | undefined> {
+    if (!isNonEmptyString(context.kubernetesNamespaceUid)) {
+      lifecycleRefusal("OpenShell requires the original Kubernetes Namespace identity.");
+    }
+    const selectedExternal = context.namespace.existingNamespace;
+    const external = selectedExternal !== undefined;
+    if (external && selectedExternal !== namespaceName(context.namespace)) {
+      lifecycleRefusal("OpenShell refuses a Namespace without its current OCC ownership.");
+    }
+    let actual: KubernetesObject;
+    try {
+      actual = await kubernetes(context).read({
+        apiVersion: "v1",
+        kind: "Namespace",
+        metadata: { name: namespaceName(context.namespace) },
+      });
+    } catch (error) {
+      if (allowMissing && missingResource(error)) {
+        return undefined;
+      }
+      throw error;
+    }
+    if (
+      actual.metadata?.name !== namespaceName(context.namespace) ||
+      actual.metadata?.uid !== context.kubernetesNamespaceUid
+    ) {
+      lifecycleRefusal("OpenShell refuses a replaced Kubernetes Namespace.");
+    }
+    const claimed =
+      actual.metadata.labels?.["openclaw.dev/namespace"] === context.namespace.id &&
+      actual.metadata.annotations?.["openclaw.dev/namespace-id"] === context.namespace.id;
+    const externalMarker = actual.metadata.annotations?.["openclaw.dev/namespace-lifecycle"];
+    if (external) {
+      if (externalMarker !== "external" || !claimed) {
+        lifecycleRefusal("OpenShell refuses a Namespace without its current OCC ownership.");
+      }
+    } else if (
+      !this.operatorOwnedKubernetesResources &&
+      (externalMarker === "external" ||
+        !claimed ||
+        actual.metadata.labels?.["app.kubernetes.io/managed-by"] !== "openclaw-enterprise")
+    ) {
+      lifecycleRefusal("OpenShell refuses a Namespace without its current OCC ownership.");
+    }
+    return actual;
+  }
+
+  private namespaceBinding(
+    context: SandboxNamespaceLifecycleContext,
+  ): Readonly<Record<string, unknown>> {
+    return {
+      driverId: this.id,
+      implementation: this.implementation,
+      backendId: this.backend.id,
+      namespaceId: context.namespace.id,
+      namespace: namespaceName(context.namespace),
+      namespaceUid: context.kubernetesNamespaceUid,
+      externalNamespace: context.namespace.existingNamespace ?? null,
+      workspace: workspaceName(context.namespace),
+      target: this.backend.client.lifecycleTarget(namespaceName(context.namespace)),
+      operatorOwned: this.operatorOwnedKubernetesResources,
+      resources: this.namespaceResources().map((resource) =>
+        resourceReference(resource, namespaceName(context.namespace)),
+      ),
+    };
+  }
+
+  private namespaceResources(): readonly KubernetesNamespacedResource[] {
+    return [
+      ...(this.options.gateway.operatorWorkspaceResources ?? []),
+      ...(this.options.gateway.networkPolicyResources ?? []),
+    ];
+  }
+
+  private parseNamespaceJournal(
+    data: Readonly<Record<string, unknown>>,
+    context: SandboxNamespaceLifecycleContext,
+  ): OpenShellNamespaceJournal {
+    const resources = data.resources;
+    const workspace = asRecord(data.workspace);
+    const expected = this.namespaceBinding(context);
+    if (
+      data.version !== 1 ||
+      !isDeepStrictEqual(data.binding, expected) ||
+      !Array.isArray(resources) ||
+      resources.length !== this.namespaceResources().length ||
+      workspace === undefined ||
+      ![
+        "neverAttempted",
+        "attempted",
+        "createRefused",
+        "bound",
+        "deleteAttempted",
+        "complete",
+      ].includes(String(workspace.state)) ||
+      ((workspace.state === "bound" || workspace.state === "deleteAttempted") &&
+        !isNonEmptyString(workspace.id)) ||
+      ((workspace.state === "attempted" ||
+        workspace.state === "createRefused" ||
+        workspace.state === "deleteAttempted") &&
+        !isNonEmptyString(workspace.requestId)) ||
+      (workspace.state === "complete" &&
+        !(
+          (workspace.confirmation === "neverAttempted" && workspace.id === undefined) ||
+          (workspace.confirmation === "creationRefused" &&
+            workspace.id === undefined &&
+            isNonEmptyString(workspace.requestId)) ||
+          (workspace.confirmation === "providerCompleted" && isNonEmptyString(workspace.id))
+        )) ||
+      resources.some((entry, index) => {
+        const resource = asRecord(entry);
+        const configured = resourceReference(
+          this.namespaceResources()[index]!,
+          namespaceName(context.namespace),
+        );
+        return (
+          resource === undefined ||
+          resource.apiVersion !== configured.apiVersion ||
+          resource.kind !== configured.kind ||
+          resource.name !== configured.metadata.name ||
+          resource.namespace !== configured.metadata.namespace ||
+          !["neverAttempted", "attempted", "createRefused", "bound", "absent"].includes(
+            String(resource.state),
+          ) ||
+          (resource.state === "bound" && !isNonEmptyString(resource.uid)) ||
+          (!this.operatorOwnedKubernetesResources &&
+            resource.state !== "neverAttempted" &&
+            resource.state !== "absent" &&
+            !isNonEmptyString(resource.nonce))
+        );
+      })
+    ) {
+      return lifecycleRefusal(
+        "The OpenShell Namespace lifecycle binding is unsupported or its target changed.",
+      );
+    }
+    return data as OpenShellNamespaceJournal;
+  }
+
+  private async namespaceJournal(
+    context: SandboxNamespaceLifecycleContext,
+  ): Promise<{ revision: number; journal: OpenShellNamespaceJournal }> {
+    const checkpoint = await context.lifecycle.read();
+    if (Object.keys(checkpoint.data).length !== 0) {
+      return {
+        revision: checkpoint.revision,
+        journal: this.parseNamespaceJournal(checkpoint.data, context),
+      };
+    }
+    const journal: OpenShellNamespaceJournal = {
+      version: 1,
+      binding: this.namespaceBinding(context),
+      workspace: { state: "neverAttempted" },
+      resources: this.namespaceResources().map((resource) => {
+        const ref = resourceReference(resource, namespaceName(context.namespace));
+        return {
+          apiVersion: ref.apiVersion,
+          kind: ref.kind,
+          name: ref.metadata.name,
+          namespace: ref.metadata.namespace,
+          state: "neverAttempted",
+        };
+      }),
+    };
+    return this.saveNamespaceJournal(context, checkpoint.revision, journal);
+  }
+
+  private async saveNamespaceJournal(
+    context: SandboxNamespaceLifecycleContext,
+    revision: number,
+    journal: OpenShellNamespaceJournal,
+  ): Promise<{ revision: number; journal: OpenShellNamespaceJournal }> {
+    const saved = await context.lifecycle.checkpoint(revision, journal);
+    return { revision: saved.revision, journal: this.parseNamespaceJournal(saved.data, context) };
+  }
+
+  private verifyOperatorResource(actual: KubernetesObject, expected: KubernetesObject): void {
+    const authorityFields = (value: KubernetesObject) =>
+      Object.fromEntries(
+        Object.entries(value).filter(
+          ([key, field]) => key !== "metadata" && key !== "status" && field !== undefined,
+        ),
+      );
+    const observedFields = authorityFields(actual);
+    if (actual.kind === "NetworkPolicy" && Object.hasOwn(observedFields, "spec")) {
+      observedFields.spec = networkPolicySpecToJson(observedFields.spec as V1NetworkPolicySpec);
+    }
+    if (
+      !isDeepStrictEqual(JSON.parse(JSON.stringify(observedFields)), authorityFields(expected)) ||
+      actual.metadata?.name !== expected.metadata?.name ||
+      actual.metadata?.namespace !== expected.metadata?.namespace
+    ) {
+      lifecycleRefusal("Operator workspace resource does not match the OpenShell configuration.");
+    }
+    for (const key of ["labels", "annotations"] as const) {
+      for (const [name, value] of Object.entries(expected.metadata?.[key] ?? {})) {
+        if (actual.metadata?.[key]?.[name] !== value) {
+          lifecycleRefusal("Operator workspace resource ownership does not match.");
+        }
+      }
+    }
+    if (
+      actual.metadata?.deletionTimestamp ||
+      (actual.kind === "ServiceAccount" &&
+        Object.keys(actual.metadata?.annotations ?? {}).some(
+          (key) =>
+            !Object.hasOwn(expected.metadata?.annotations ?? {}, key) &&
+            key !== "meta.helm.sh/release-name" &&
+            key !== "meta.helm.sh/release-namespace",
+        ))
+    ) {
+      lifecycleRefusal(
+        "Operator workspace resource is terminating or has unexpected credential configuration.",
+      );
+    }
+  }
+
+  async ensureNamespace(context: SandboxNamespaceLifecycleContext): Promise<void> {
     try {
       await this.ensureNamespaceWorkspace(context);
     } catch (error) {
@@ -3122,82 +3421,135 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
   }
 
-  private async ensureNamespaceWorkspace(context: SandboxNamespaceContext): Promise<void> {
+  private async ensureNamespaceWorkspace(context: SandboxNamespaceLifecycleContext): Promise<void> {
     this.requireOperatorWorkspaceMode("ensure a Namespace");
+    if (context.lifecycle.target !== "ready") {
+      lifecycleRefusal("OpenShell Namespace preparation requires its live preparation target.");
+    }
+    let saved = await this.namespaceJournal(context);
+    if (
+      saved.journal.workspace.state === "complete" ||
+      saved.journal.workspace.state === "deleteAttempted"
+    ) {
+      lifecycleRefusal("OpenShell cannot prepare a Namespace whose cleanup has started.");
+    }
     const namespace = namespaceName(context.namespace);
+    const observed = await this.verifyNamespacePlacement(context, false);
     if (this.operatorOwnedKubernetesResources) {
-      const api = kubernetes(context);
-      const observed = await api.read({
-        apiVersion: "v1",
-        kind: "Namespace",
-        metadata: { name: namespace },
-      });
       for (const [key, value] of Object.entries(
         this.options.gateway.operatorNamespaceLabels ?? {},
       )) {
-        if (observed.metadata?.labels?.[key] !== value) {
-          throw new OpenShellSandboxConfigurationFailure(
-            "Operator Namespace labels do not match the OpenShell configuration.",
-          );
-        }
-      }
-      for (const resource of [
-        ...(this.options.gateway.operatorWorkspaceResources ?? []),
-        ...(this.options.gateway.networkPolicyResources ?? []),
-      ]) {
-        const expected = withNamespace(resource, context);
-        const actual = await api.read(resourceReference(resource, namespace));
-        const authorityFields = (value: KubernetesObject) =>
-          Object.fromEntries(
-            Object.entries(value).filter(
-              ([key, field]) => key !== "metadata" && key !== "status" && field !== undefined,
-            ),
-          );
-        const observedFields = authorityFields(actual);
-        if (actual.kind === "NetworkPolicy" && Object.hasOwn(observedFields, "spec")) {
-          observedFields.spec = networkPolicySpecToJson(observedFields.spec as V1NetworkPolicySpec);
-        }
-        if (
-          // SDK models carry prototypes; compare their full JSON content with the wire manifest.
-          !isDeepStrictEqual(
-            JSON.parse(JSON.stringify(observedFields)),
-            authorityFields(expected),
-          ) ||
-          actual.metadata?.name !== expected.metadata?.name ||
-          actual.metadata?.namespace !== namespace
-        ) {
-          throw new OpenShellSandboxConfigurationFailure(
-            "Operator workspace resource does not match the OpenShell configuration.",
-          );
-        }
-        for (const key of ["labels", "annotations"] as const) {
-          for (const [name, value] of Object.entries(expected.metadata?.[key] ?? {})) {
-            if (actual.metadata?.[key]?.[name] !== value) {
-              throw new OpenShellSandboxConfigurationFailure(
-                "Operator workspace resource ownership does not match.",
-              );
-            }
-          }
-        }
-        if (
-          actual.metadata?.deletionTimestamp ||
-          (actual.kind === "ServiceAccount" &&
-            Object.keys(actual.metadata?.annotations ?? {}).some(
-              (key) =>
-                !Object.hasOwn(expected.metadata?.annotations ?? {}, key) &&
-                key !== "meta.helm.sh/release-name" &&
-                key !== "meta.helm.sh/release-namespace",
-            ))
-        ) {
-          throw new OpenShellSandboxConfigurationFailure(
-            "Operator workspace resource is terminating or has unexpected credential configuration.",
-          );
+        if (observed?.metadata?.labels?.[key] !== value) {
+          lifecycleRefusal("Operator Namespace labels do not match the OpenShell configuration.");
         }
       }
     } else {
+      await context.lifecycle.read();
       await applyOperatorNamespaceLabels(context, this.options.gateway.operatorNamespaceLabels);
-      await applyResources(context, this.options.gateway.operatorWorkspaceResources);
-      await applyResources(context, this.options.gateway.networkPolicyResources);
+    }
+    for (let index = 0; index < saved.journal.resources.length; index++) {
+      const api = kubernetes(context);
+      let resource = saved.journal.resources[index]!;
+      if (resource.state === "absent") {
+        lifecycleRefusal("OpenShell cannot prepare a resource after confirmed cleanup.");
+      }
+      let actual = await readLifecycleResource(context, resource);
+      const configured = this.namespaceResources()[index]!;
+      if (this.operatorOwnedKubernetesResources) {
+        if (actual === undefined) {
+          lifecycleRefusal("An operator workspace resource is missing.");
+        }
+        this.verifyOperatorResource(actual, withNamespace(configured, context));
+        if (resource.state === "bound") {
+          verifyLifecycleResource(actual, resource, context);
+        } else {
+          const resources = [...saved.journal.resources];
+          resources[index] = { ...resource, state: "bound", uid: resourceIdentity(actual).uid };
+          saved = await this.saveNamespaceJournal(context, saved.revision, {
+            ...saved.journal,
+            resources,
+          });
+        }
+        continue;
+      }
+      const freshAttempt =
+        resource.state === "neverAttempted" || resource.state === "createRefused";
+      if (freshAttempt) {
+        if (actual !== undefined) {
+          lifecycleRefusal("OpenShell refuses an existing resource without its creation binding.");
+        }
+        const resources = [...saved.journal.resources];
+        resource = { ...resource, state: "attempted", nonce: randomUUID() };
+        resources[index] = resource;
+        saved = await this.saveNamespaceJournal(context, saved.revision, {
+          ...saved.journal,
+          resources,
+        });
+      }
+      const expected = withNamespace(configured, context);
+      expected.metadata = {
+        ...expected.metadata,
+        annotations: {
+          ...expected.metadata?.annotations,
+          [NAMESPACE_CREATION_ANNOTATION]: resource.nonce!,
+        },
+      };
+      if (resource.state === "attempted") {
+        if (actual === undefined) {
+          if (!freshAttempt) {
+            lifecycleRefusal(
+              "OpenShell resource creation remains unconfirmed; repeating its create is refused.",
+            );
+          }
+          await context.lifecycle.read();
+          try {
+            actual = await api.create(
+              networkPolicyToSdk(expected),
+              undefined,
+              undefined,
+              "openclaw-enterprise-sandbox",
+            );
+          } catch (error) {
+            // A later refused request cannot settle an earlier unknown create.
+            // Only a fresh attempt's authoritative rejection proves no object was created.
+            if (freshAttempt && definitiveKubernetesCreateRefusal(error)) {
+              const resources = [...saved.journal.resources];
+              resources[index] = { ...resource, state: "createRefused" };
+              await this.saveNamespaceJournal(context, saved.revision, {
+                ...saved.journal,
+                resources,
+              });
+            }
+            throw error;
+          }
+        }
+        verifyLifecycleResource(actual, resource, context);
+        const resources = [...saved.journal.resources];
+        resource = { ...resource, state: "bound", uid: resourceIdentity(actual).uid };
+        resources[index] = resource;
+        saved = await this.saveNamespaceJournal(context, saved.revision, {
+          ...saved.journal,
+          resources,
+        });
+      } else {
+        if (actual === undefined) {
+          lifecycleRefusal("A bound OpenShell Namespace resource disappeared.");
+        }
+        verifyLifecycleResource(actual, resource, context);
+        if (actual.metadata?.deletionTimestamp) {
+          lifecycleRefusal("A bound OpenShell Namespace resource is terminating.");
+        }
+        await context.lifecycle.read();
+        const identity = resourceIdentity(actual);
+        await api.patch(
+          networkPolicyToSdk({ ...expected, metadata: { ...expected.metadata, ...identity } }),
+          undefined,
+          undefined,
+          "openclaw-enterprise-sandbox",
+          false,
+          PatchStrategy.ServerSideApply,
+        );
+      }
     }
     if (this.options.gateway.readiness !== undefined) {
       await waitForGatewayReadiness(context, this.options.gateway.readiness);
@@ -3205,27 +3557,74 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const client = this.gatewayClientForNamespace(namespace);
     await client.health(context.signal);
     const name = workspaceName(context.namespace);
+    if (saved.journal.workspace.state === "attempted") {
+      lifecycleRefusal(
+        "OpenShell Workspace creation remains unconfirmed; same-name adoption is refused.",
+      );
+    }
     let workspace = await client.getWorkspace(name, context.signal);
-    if (workspace === undefined) {
+    if (
+      this.operatorOwnedKubernetesResources &&
+      saved.journal.workspace.state === "neverAttempted" &&
+      workspace !== undefined
+    ) {
+      // The closed Installation selects existing operator resources under its
+      // original Namespace UID. This is initial read authority, not recovery of
+      // a controller creation whose outcome is unknown.
+      verifyActiveWorkspace(workspace, context.namespace);
+      if (!isNonEmptyString(workspace.id)) {
+        lifecycleRefusal("The operator Workspace did not return its immutable identity.");
+      }
+      saved = await this.saveNamespaceJournal(context, saved.revision, {
+        ...saved.journal,
+        workspace: { state: "bound", id: workspace.id! },
+      });
+    }
+    if (
+      saved.journal.workspace.state === "neverAttempted" ||
+      saved.journal.workspace.state === "createRefused"
+    ) {
+      if (workspace !== undefined) {
+        lifecycleRefusal(
+          "OpenShell refuses an existing Workspace without its immutable creation binding.",
+        );
+      }
+      const requestId = randomUUID();
+      saved = await this.saveNamespaceJournal(context, saved.revision, {
+        ...saved.journal,
+        workspace: { state: "attempted", requestId },
+      });
       try {
         workspace = await client.createWorkspace(
           name,
           workspaceLabels(context.namespace),
           context.signal,
+          requestId,
         );
       } catch (error) {
-        if (!(error instanceof OpenShellWorkspaceAlreadyExistsError)) {
-          throw error;
+        const code = asRecord(error)?.code;
+        if (code === GRPC_PERMISSION_DENIED || code === GRPC_UNAUTHENTICATED) {
+          await this.saveNamespaceJournal(context, saved.revision, {
+            ...saved.journal,
+            workspace: { state: "createRefused", requestId },
+          });
         }
-        workspace = await client.getWorkspace(name, context.signal);
-        if (workspace === undefined) {
-          throw new OpenShellSandboxConfigurationFailure(
-            `OpenShell Workspace ${name} disappeared during creation.`,
-          );
-        }
+        throw error;
       }
+      verifyActiveWorkspace(workspace, context.namespace);
+      if (!isNonEmptyString(workspace.id)) {
+        lifecycleRefusal("OpenShell Workspace creation did not return its immutable identity.");
+      }
+      await this.saveNamespaceJournal(context, saved.revision, {
+        ...saved.journal,
+        workspace: { state: "bound", id: workspace.id! },
+      });
+    } else {
+      if (workspace === undefined || workspace.id !== saved.journal.workspace.id) {
+        lifecycleRefusal("The bound OpenShell Workspace is missing or replaced.");
+      }
+      verifyActiveWorkspace(workspace, context.namespace);
     }
-    verifyActiveWorkspace(workspace, context.namespace);
   }
 
   async provisionHarness(context: SandboxHarnessContext): Promise<SandboxResourceRef> {
@@ -4169,15 +4568,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   }
 
   async cleanup(
-    context: SandboxNamespaceContext & { readonly revision?: Readonly<AgentRevision> },
-  ): Promise<void> {
+    context: Parameters<SandboxDriver["cleanup"]>[0],
+  ): Promise<void | SandboxNamespaceCleanupResult> {
     if (context.revision) {
       this.openShellGit?.withdraw(context.revision.id);
     } else {
       this.openShellGit?.withdrawNamespace(context.namespace.id);
     }
     try {
-      await this.cleanupResources(context);
+      return await this.cleanupResources(context);
     } catch (error) {
       // Revision cleanup keeps its errors: only the Namespace steps classify a refusal.
       throw context.revision === undefined ? namespaceRefusal(error) : error;
@@ -4185,8 +4584,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   }
 
   private async cleanupResources(
-    context: SandboxNamespaceContext & { readonly revision?: Readonly<AgentRevision> },
-  ): Promise<void> {
+    context: Parameters<SandboxDriver["cleanup"]>[0],
+  ): Promise<void | SandboxNamespaceCleanupResult> {
     if (context.revision !== undefined) {
       this.requireOperatorWorkspaceMode("clean up a revision");
       if (
@@ -4234,6 +4633,20 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           read,
         ));
       if (present !== undefined) {
+        const annotations = {
+          "openclaw.dev/namespace-id": context.namespace.id,
+          "openclaw.dev/agent-id": context.revision.agentId,
+          "openclaw.dev/revision-id": context.revision.id,
+        };
+        if (
+          present.name !== sandbox.resourceName ||
+          present.workspace !== workspace ||
+          Object.entries(annotations).some(([key, value]) => present.annotations[key] !== value)
+        ) {
+          throw new OpenShellSandboxConfigurationFailure(
+            `Refusing OpenShell Sandbox ${sandbox.resourceName} without exact AgentRevision ownership.`,
+          );
+        }
         await refused(() => client.deleteSandbox(selector, context.signal));
       }
       const harnessId = context.revision.harness.id;
@@ -4274,47 +4687,268 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
       return;
     }
+    return this.cleanupNamespace(context);
+  }
+
+  private async cleanupNamespace(
+    context: SandboxNamespaceLifecycleContext,
+  ): Promise<SandboxNamespaceCleanupResult> {
     this.requireOperatorWorkspaceMode("clean up a Namespace");
-    const namespace = namespaceName(context.namespace);
-    const client = this.gatewayClientForNamespace(namespace);
-    const workspace = await client.getWorkspace(workspaceName(context.namespace), context.signal);
-    if (workspace !== undefined) {
-      // A prior delete can have reached TERMINATING before its response was lost.
-      // Ownership remains the cleanup boundary, and DeleteWorkspace is idempotent.
-      verifyWorkspaceOwnership(workspace, context.namespace);
-      const providers = await client.listProviders(workspace.name, context.signal);
+    if (context.lifecycle.target !== "deleted") {
+      lifecycleRefusal("OpenShell Namespace cleanup requires its live deletion target.");
+    }
+    let saved = await this.namespaceJournal(context);
+    await this.verifyNamespacePlacement(context, true);
+    // Check the complete inventory before provider deletion. Persist absence so
+    // a lost parent acknowledgment cannot turn a later same-name object into ours.
+    const saveResource = async (index: number, resource: NamespaceResourceBinding) => {
+      const resources = [...saved.journal.resources];
+      resources[index] = resource;
+      saved = await this.saveNamespaceJournal(context, saved.revision, {
+        ...saved.journal,
+        resources,
+      });
+    };
+    for (let index = 0; index < saved.journal.resources.length; index++) {
+      const resource = saved.journal.resources[index]!;
+      const actual = await readLifecycleResource(context, resource);
+      if (resource.state === "absent") {
+        if (actual !== undefined) {
+          lifecycleRefusal("A confirmed absent OpenShell Namespace resource reappeared.");
+        }
+        continue;
+      }
+      if (resource.state === "createRefused") {
+        if (actual !== undefined) {
+          lifecycleRefusal(
+            "A refused OpenShell resource creation has an unexpected current object.",
+          );
+        }
+        await saveResource(index, { ...resource, state: "absent" });
+        continue;
+      }
+      if (resource.state === "neverAttempted") {
+        if (actual === undefined) {
+          await saveResource(index, { ...resource, state: "absent" });
+          continue;
+        }
+        if (!this.operatorOwnedKubernetesResources) {
+          lifecycleRefusal(
+            "OpenShell refuses a never-attempted resource without its original binding.",
+          );
+        }
+        this.verifyOperatorResource(
+          actual,
+          withNamespace(this.namespaceResources()[index]!, context),
+        );
+        verifyLifecycleResource(actual, resource, context);
+        await saveResource(index, {
+          ...resource,
+          state: "bound",
+          uid: resourceIdentity(actual).uid,
+        });
+        continue;
+      }
+      if (this.operatorOwnedKubernetesResources && resource.state !== "bound") {
+        lifecycleRefusal("The original operator-owned OpenShell resource identity is unconfirmed.");
+      }
+      if (actual === undefined) {
+        if (resource.state === "attempted") {
+          lifecycleRefusal("OpenShell resource creation remains unconfirmed.");
+        }
+        if (!this.operatorOwnedKubernetesResources) {
+          await saveResource(index, { ...resource, state: "absent" });
+        }
+        continue;
+      }
+      verifyLifecycleResource(actual, resource, context);
+      if (resource.state === "attempted") {
+        await saveResource(index, {
+          ...resource,
+          state: "bound",
+          uid: resourceIdentity(actual).uid,
+        });
+      }
+    }
+    const workspace = saved.journal.workspace;
+    if (workspace.state === "attempted" || workspace.state === "deleteAttempted") {
+      lifecycleRefusal(
+        "OpenShell Workspace mutation remains unconfirmed; name-only replay is refused.",
+      );
+    }
+    if (workspace.state === "neverAttempted" || workspace.state === "createRefused") {
+      saved = await this.saveNamespaceJournal(context, saved.revision, {
+        ...saved.journal,
+        workspace:
+          workspace.state === "neverAttempted"
+            ? { state: "complete", confirmation: "neverAttempted" }
+            : {
+                state: "complete",
+                confirmation: "creationRefused",
+                requestId: workspace.requestId!,
+              },
+      });
+    } else if (workspace.state === "bound") {
+      const workspaceId = nonempty(workspace.id, "saved Workspace identity");
+      const client = this.gatewayClientForNamespace(namespaceName(context.namespace));
+      const name = workspaceName(context.namespace);
+      await context.lifecycle.read();
+      const observed = await client.getWorkspace(name, context.signal);
+      if (observed === undefined || observed.id !== workspaceId) {
+        lifecycleRefusal(
+          "The bound OpenShell Workspace is missing or replaced; cleanup is unconfirmed.",
+        );
+      }
+      try {
+        verifyWorkspaceOwnership(observed, context.namespace);
+      } catch {
+        lifecycleRefusal("OpenShell refuses a Workspace without its original OCC ownership.");
+      }
+      const providers = await client.listProviders(name, context.signal);
       for (const provider of providers) {
         if (
           Object.values(RUNTIME_PROFILE_IDS).some((id) => provider.type === id) &&
           provider.labels[OPENSHELL_MANAGED_BY_LABEL] === OPENSHELL_MANAGED_BY &&
           provider.labels[OPENSHELL_NAMESPACE_ID_LABEL] === context.namespace.id
         ) {
-          await client.deleteProvider(workspace.name, provider.name, context.signal);
+          await context.lifecycle.read();
+          await client.deleteProvider(name, provider.name, context.signal);
         }
       }
-      // Revisions cleaned up before finding 2206's fix left their Git providers behind.
-      await deleteOpenShellPreparedGitProviders(client, workspace.name, providers, context.signal);
+      await context.lifecycle.read();
+      await deleteOpenShellPreparedGitProviders(client, name, providers, context.signal);
       for (const profileId of Object.values(RUNTIME_PROFILE_IDS)) {
-        await this.deleteRuntimeProfileIfUnused(client, workspace.name, profileId, context.signal);
+        await context.lifecycle.read();
+        await this.deleteRuntimeProfileIfUnused(client, name, profileId, context.signal);
       }
-      await client.deleteWorkspace(workspace.name, context.signal);
+      const requestId = randomUUID();
+      saved = await this.saveNamespaceJournal(context, saved.revision, {
+        ...saved.journal,
+        workspace: { state: "deleteAttempted", id: workspaceId, requestId },
+      });
+      let outcome: Awaited<ReturnType<OpenShellGatewayClient["deleteWorkspace"]>>;
+      try {
+        outcome = await client.deleteWorkspace(name, context.signal, requestId);
+      } catch (error) {
+        // A returned authorization refusal did not dispatch deletion. The pinned
+        // handler can also return FAILED_PRECONDITION after marking this Workspace
+        // terminating; retain retry authority only after reading its original ID.
+        const code = asRecord(error)?.code;
+        let refused = code === GRPC_PERMISSION_DENIED || code === GRPC_UNAUTHENTICATED;
+        if (code === 9 && !(error instanceof OpenShellRequestReplayRefusedError)) {
+          const retained = await client.getWorkspace(name, context.signal);
+          if (retained !== undefined && retained.id === workspaceId) {
+            verifyWorkspaceOwnership(retained, context.namespace);
+            refused = true;
+          }
+        }
+        if (refused) {
+          await this.saveNamespaceJournal(context, saved.revision, {
+            ...saved.journal,
+            workspace: { state: "bound", id: workspaceId },
+          });
+        }
+        throw error;
+      }
+      if (outcome === "pending") {
+        await this.saveNamespaceJournal(context, saved.revision, {
+          ...saved.journal,
+          workspace: { state: "bound", id: workspaceId },
+        });
+        throw new DependencyUnavailableError("OpenShell Workspace deletion is pending.");
+      }
+      if (outcome !== "completed") {
+        lifecycleRefusal("OpenShell did not confirm deletion of the bound Workspace.");
+      }
+      if ((await client.getWorkspace(name, context.signal)) !== undefined) {
+        lifecycleRefusal("OpenShell Workspace deletion returned without confirmed removal.");
+      }
+      // This COMMIT must precede every configured-resource delete: a later pass
+      // may no longer be able to reach a tenant-local OpenShell gateway.
+      saved = await this.saveNamespaceJournal(context, saved.revision, {
+        ...saved.journal,
+        workspace: { state: "complete", id: workspaceId, confirmation: "providerCompleted" },
+      });
     }
     if (this.operatorOwnedKubernetesResources) {
-      return;
+      return this.namespaceCleanupResult(context, saved.journal);
     }
-    const resources = [
-      ...(this.options.gateway.operatorWorkspaceResources ?? []),
-      ...(this.options.gateway.networkPolicyResources ?? []),
-    ];
-    for (const resource of resources.reverse()) {
+    for (let index = saved.journal.resources.length - 1; index >= 0; index--) {
+      const resource = saved.journal.resources[index]!;
+      if (resource.state === "absent") {
+        continue;
+      }
+      const actual = await readLifecycleResource(context, resource);
+      if (actual === undefined) {
+        await saveResource(index, { ...resource, state: "absent" });
+        continue;
+      }
+      verifyLifecycleResource(actual, resource, context);
+      const identity = resourceIdentity(actual);
+      await context.lifecycle.read();
       try {
-        await kubernetes(context).delete(resourceReference(resource, namespace));
+        await kubernetes(context).delete(
+          {
+            apiVersion: resource.apiVersion,
+            kind: resource.kind,
+            metadata: { name: resource.name, namespace: resource.namespace },
+          },
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { preconditions: identity },
+        );
       } catch (error) {
         if (!missingResource(error)) {
           throw error;
         }
       }
+      const remaining = await readLifecycleResource(context, resource);
+      if (remaining !== undefined) {
+        verifyLifecycleResource(remaining, resource, context);
+        throw new DependencyUnavailableError(
+          "OpenShell Namespace resources are still terminating.",
+        );
+      }
+      await saveResource(index, { ...resource, state: "absent" });
     }
+    return this.namespaceCleanupResult(context, saved.journal);
+  }
+
+  private async namespaceCleanupResult(
+    context: SandboxNamespaceLifecycleContext,
+    journal: OpenShellNamespaceJournal,
+  ): Promise<SandboxNamespaceCleanupResult> {
+    const resources: SandboxNamespaceCleanupResource[] = [];
+    for (const resource of journal.resources) {
+      const reference = {
+        apiVersion: resource.apiVersion,
+        kind: resource.kind,
+        namespace: resource.namespace,
+        name: resource.name,
+      };
+      const actual = await readLifecycleResource(context, resource);
+      if (resource.state === "absent") {
+        if (actual !== undefined) {
+          lifecycleRefusal("A confirmed absent OpenShell Namespace resource reappeared.");
+        }
+        resources.push({ ...reference, state: "absent" });
+      } else if (
+        this.operatorOwnedKubernetesResources &&
+        resource.state === "bound" &&
+        isNonEmptyString(resource.uid)
+      ) {
+        if (actual !== undefined) {
+          verifyLifecycleResource(actual, resource, context);
+        }
+        resources.push({ ...reference, state: "retained", uid: resource.uid });
+      } else {
+        lifecycleRefusal("OpenShell Namespace cleanup has no confirmed resource result.");
+      }
+    }
+    return { kubernetesResources: Object.freeze(resources) };
   }
 
   /** Qualify declared credential-free artifact rules without I/O. */

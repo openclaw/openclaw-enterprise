@@ -315,7 +315,11 @@ export class RepositoryMaterialStore {
     return { kind: "ready", spec: { ...spec, bindings: resolved } };
   }
 
-  async cleanup(owner: RepositoryMaterialOwner, keep: ReadonlySet<string>): Promise<boolean> {
+  async cleanup(
+    owner: RepositoryMaterialOwner,
+    keep: ReadonlySet<string>,
+    namespaceCurrent?: () => Promise<boolean>,
+  ): Promise<boolean> {
     let listed;
     try {
       listed = await this.request(() =>
@@ -333,10 +337,18 @@ export class RepositoryMaterialStore {
       );
     }
     const candidates = completeKubernetesList(listed);
+    // Namespace teardown must fence the LIST snapshot before it supplies new
+    // material identities. Later placement changes cannot match these UID/RVs.
+    if (namespaceCurrent !== undefined && !(await namespaceCurrent())) {
+      return false;
+    }
     // Validate every object before deleting one; a partial or foreign response fails closed.
     for (const candidate of candidates) {
       this.verify(candidate, owner);
-      if (!candidate.metadata?.uid) {
+      if (
+        !candidate.metadata?.uid ||
+        (namespaceCurrent !== undefined && !candidate.metadata.resourceVersion)
+      ) {
         return invalid();
       }
     }
@@ -353,7 +365,14 @@ export class RepositoryMaterialStore {
             this.core.deleteNamespacedSecret({
               namespace: this.namespace,
               name: metadata.name,
-              body: { preconditions: { uid: metadata.uid } },
+              body: {
+                preconditions: {
+                  uid: metadata.uid,
+                  ...(namespaceCurrent === undefined
+                    ? {}
+                    : { resourceVersion: metadata.resourceVersion }),
+                },
+              },
             }),
           { mutating: true },
         );

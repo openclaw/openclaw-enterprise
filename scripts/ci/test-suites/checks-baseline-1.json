@@ -196,7 +196,13 @@
       "path": "tests/conformance/iam.test.mjs"
     },
     {
-      "path": "tests/conformance/kubernetes-compute.test.mjs"
+      "path": "tests/conformance/kubernetes-compute.test.mjs",
+      "expectedTests": [
+        "external Namespace teardown removes the Namespace policy created after preparation",
+        "external Namespace cleanup refuses a late policy replacement after a finalizer wait",
+        "external Namespace policy capture refuses a placement replacement during its read",
+        "external Namespace cleanup confirms a late policy removed during its delete"
+      ]
     },
     {
       "path": "tests/conformance/kubernetes-provider-harness.test.mjs"
@@ -654,6 +660,51 @@
         "selected repository issuance sends every selected stable ID and explicit permissions",
         "selected repository response requires exact IDs, names and permissions and refuses broader credentials",
         "ordinary fresh selections resolve one or N repositories without broadening explicit historical grants"
+      ]
+    },
+    {
+      "path": "tests/conformance/kubernetes-namespace-lifecycle.test.ts",
+      "expectedTests": [
+        "Kubernetes cancellation before first ensure does not dispatch provider cleanup",
+        "Kubernetes waits for its original terminating Namespace without tenant RBAC",
+        "Kubernetes retries terminating tenant denial and still requires Sandbox cleanup after absence",
+        "Kubernetes progresses unconfirmed Sandbox cleanup while its Namespace terminates",
+        "Kubernetes retains completed Sandbox evidence while tenant RBAC disappears",
+        "Kubernetes Namespace cleanup refuses a same-name replacement before deleting it",
+        "Kubernetes external claim release survives a lost reply and refuses a later foreign claim",
+        "Kubernetes cleanup after an authoritative preparation refusal needs no nonexistent resource UID",
+        "Kubernetes Namespace cleanup refuses reassigned preparation resources before deletion",
+        "Kubernetes later creation refusal cannot clear an earlier unknown resource attempt",
+        "Kubernetes cleanup rechecks the saved resource UID in its deletion snapshot",
+        "Kubernetes cancellation after a definitive Namespace create refusal does not require an absent UID",
+        "Kubernetes later Namespace create refusal cannot settle an unknown original create",
+        "Kubernetes parent sweep refuses a resource that reappears after Sandbox cleanup",
+        "Kubernetes parent sweep keeps only the intentionally retained original Sandbox resource",
+        "Kubernetes parent sweep refuses replacement of a retained Sandbox resource",
+        "Kubernetes refuses missing Sandbox cleanup ownership before parent teardown",
+        "Kubernetes refuses foreign Namespace Sandbox cleanup ownership before parent teardown",
+        "Kubernetes refuses duplicate Sandbox cleanup ownership before parent teardown",
+        "Kubernetes refuses missing retained UID Sandbox cleanup ownership before parent teardown",
+        "Kubernetes parent teardown waits for the cleanup result checkpoint acknowledgment",
+        "Kubernetes orphan sweep refuses a Namespace replaced during enumeration",
+        "Kubernetes retained Sandbox identity permits authorized absence without inventing deletion",
+        "Kubernetes refuses managed Namespace cascade deletion of a retained Sandbox resource",
+        "Kubernetes cancels a never-claimed external selection rejected by Pod Security",
+        "Kubernetes cancels a never-claimed external selection rejected by NetworkPolicy",
+        "Kubernetes does not mistake an unknown external claim for a never-attempted claim",
+        "Kubernetes deletion recovers an infrastructure UID whose binding checkpoint did not commit",
+        "Kubernetes Namespace cleanup refuses replacement placement after repository material LIST",
+        "Kubernetes Namespace material cleanup deletes the unchanged UID and resourceVersion",
+        "Kubernetes Namespace cleanup discards material snapshots after placement disappearance",
+        "Kubernetes unclaimed cancellation refuses a changed or foreign external Namespace",
+        "Kubernetes attempted infrastructure recovery refuses a missing creation marker",
+        "Kubernetes does not replay unknown tenant Namespace creation and can bind late original readback",
+        "Kubernetes does not replay unknown Gateway Namespace creation and can bind late original readback",
+        "Kubernetes does not replay unknown infrastructure creation and can bind late original readback",
+        "Kubernetes external claim preserves first PATCH refusal evidence during cancellation",
+        "Kubernetes external claim preserves unknown then PATCH refusal evidence during cancellation",
+        "Kubernetes external claim preserves verification GET refusal evidence during cancellation",
+        "Kubernetes never adopts a Namespace appearing after a definitive create refusal"
       ]
     }
   ]

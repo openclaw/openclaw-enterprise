@@ -1371,6 +1371,8 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
       ["occ.record_repository_standing_execution(text,text,text,text,text)", true],
       ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
+      // Only the Namespace insert trigger can reserve a fresh no-effects lifecycle.
+      ["occ.reserve_namespace_lifecycle()", false, "search_path=pg_catalog, occ"],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
       ["occ.retry_failed_namespace_deletion(text,text,text)", true],
       // The Agent trigger keeps the credential-source join table exact; occ_app cannot write it.
@@ -1991,6 +1993,7 @@ test(
       [62, "prePreparedAttemptSettlement"],
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
+      [65, "preNamespaceLifecycle"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2016,6 +2019,19 @@ test(
         await assertUpgradedRevisionReadable(db);
         assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
         await assertUpgradedAuthentication(db);
+        if (history === "preNamespaceLifecycle") {
+          // Existing rows carry no proof that earlier infrastructure was never attempted.
+          // A schema upgrade must not invent initial lifecycle authority for them.
+          assert.equal(
+            (
+              await db.app.query(
+                "SELECT namespace_id FROM occ.namespace_lifecycle WHERE namespace_id=$1",
+                [namespaceId],
+              )
+            ).rowCount,
+            0,
+          );
+        }
         if (history === "preGatewayManagedMode") {
           await db.app.query(
             `INSERT INTO occ.agent_revisions
@@ -2510,6 +2526,9 @@ test(
       const restored = await restoreHistoryArchive(context, fixture, archive);
       const accepted = await logicalRestoreSnapshot(restored);
       const restoredDigest = catalogDigest(accepted.occ);
+      context.diagnostic(
+        `Catalog qualification: native=${catalogDigest(native.occ)} restored=${restoredDigest}`,
+      );
       assert.notEqual(restoredDigest, catalogDigest(native.occ));
       assert.deepEqual(accepted.receipts, native.receipts);
       assert.deepEqual(accepted.drizzle, native.drizzle);
@@ -2537,10 +2556,11 @@ test(
           manifest.entries.map(({ sha256, when }) => [sha256, when]),
         );
         // The upgraded restore has its own completed catalog spelling.
-        assert.deepEqual(await runHistoryCommand(restored, "production", "--check"), {
-          ok: true,
-          history: "completed",
-        });
+        assert.deepEqual(
+          await runHistoryCommand(restored, "production", "--check"),
+          { ok: true, history: "completed" },
+          `Upgraded restore catalog: ${catalogDigest(await migrationCatalog(restored.migrator))}`,
+        );
         assert.deepEqual(await logicalRestoreSnapshot(restored), upgraded);
       } else {
         assert.deepEqual(await logicalRestoreSnapshot(restored), accepted);

@@ -17,7 +17,7 @@ workload identity, baseline isolation, routing, and activation.
 
 <a id="driver-interface"></a>
 
-The [exported interface](../../../packages/contracts/src/drivers/sandbox/index.ts) extends `Driver`.
+The [interface](../../../packages/contracts/src/drivers/sandbox/index.ts) extends `Driver`.
 
 ### Properties
 
@@ -40,10 +40,9 @@ Each `HarnessExecutionModeSupport` value is either `{ supported: true }` or
 Use `Object.freeze` for the support object, its `openclaw` object, and both mode
 entries. Registration checks their shape and read-only state.
 
-Use `reason` for refusals caused by Installation settings. Limit the message to
-setting names and corrective actions. OCC reports it in `openclaw.settingRefusals`
-and uses the same message during admission. OCC supplies a standard refusal
-message when `reason` is absent.
+Use `reason` for Installation-setting refusals, limited to setting names and
+corrective actions. OCC reports it in `openclaw.settingRefusals` and during
+admission, with a standard message when `reason` is absent.
 
 Installation reads combine this declaration with native-worker support and
 provisioning requirements. A selected Sandbox still requires Dedicated execution.
@@ -211,8 +210,8 @@ Reject a change that would discard static, default, or generated policy.
 
 `readPolicyRecommendations(context, limit)` must honor `limit`. OCC currently
 requests at most 32 suggestions. Return each suggestion's ID, grant, status,
-and optional observation count. Reviewing a suggestion does not apply it, and
-its observation count is not a count of denied requests.
+and optional observation count. Review does not apply it; observation counts
+are not denied-request counts.
 
 A Driver that parses network decisions from its logs can return
 `SandboxLogLine.decision`. OCC validates and redacts the result. See
@@ -235,9 +234,9 @@ See [authorization](../authorization.md) and [Harness execution](../harness-exec
 
 ### Admission and lifecycle
 
-Startup validates the selected Sandbox and its declared facets. The shared
-interface has no initializer or destructor; workload and Namespace removal use
-the same cleanup operation with or without an Agent revision.
+Startup validates Sandbox selection and facets. There is no initializer or
+destructor; cleanup receives an Agent revision for workload removal, or no
+revision for Namespace cleanup.
 
 Dedicated native OpenClaw requires a selected Sandbox that implements
 `provisionHarness` and declares networking, filesystem, and process containment.
@@ -282,9 +281,13 @@ sequenceDiagram
 
 The revision stores the selected `sandboxDriverId`. Before routing traffic,
 Compute checks that the workload's revision ID matches the requested revision.
-Namespace setup, provisioning, and cleanup must be safe to repeat.
-Run revision cleanup even when the Pod is already absent. The Sandbox removes
-any workload it owns. Namespace cleanup follows revision cleanup.
+Setup, provisioning, and cleanup must be safe to repeat.
+Namespace-only setup and cleanup receive the [durable child context](compute-namespace-lifecycle.md)
+and original `kubernetesNamespaceUid`; revision cleanup retains its revision context.
+Run revision cleanup even when the Pod or Kubernetes Namespace is already absent.
+The selected Sandbox Driver must confirm removal of its provider resources.
+Namespace cleanup follows revision cleanup and must also run when the Kubernetes
+Namespace is absent. The Sandbox removes any workload it owns.
 
 - If the Driver cannot run this revision, throw
   [`SandboxRevisionUnsupportedError`](../../../packages/occ/src/errors.ts).
@@ -299,8 +302,7 @@ any workload it owns. Namespace cleanup follows revision cleanup.
 
 ## Configuration
 
-Sandbox selection is optional. When selecting one, set these fields under
-`drivers.sandbox` in the Installation startup YAML:
+Select a Sandbox under `drivers.sandbox` in Installation startup YAML:
 
 | Setting         | Type   | Requirement | Value, default, and constraints                                                                                                        |
 | --------------- | ------ | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
@@ -308,9 +310,9 @@ Sandbox selection is optional. When selecting one, set these fields under
 | `configuration` | object | Required    | Settings validated by the selected implementation. No default; use `{}` only if its schema permits it.                                 |
 | `package`       | string | Optional    | Installed Driver package name. Omit for bundled OpenShell; see [package selection](selection.md#package-identity-and-factory-exports). |
 
-The base interface defines no common fields inside `configuration`; see the
-[OpenShell settings](openshell-sandbox.md#configuration) for that implementation.
-Both API and worker load these settings at startup; changes require a restart.
+The interface defines no common `configuration` fields; see
+[OpenShell settings](openshell-sandbox.md#configuration). API and worker load
+settings at startup; changes require restart.
 See [configuration validation and discovery](selection.md#configuration-definitions-and-discovery).
 
 Per-Agent network additions use the `sandbox-network-policy` configuration
@@ -321,8 +323,7 @@ defaults does not rewrite that saved policy. See [network policy operations](#op
 for admission and live-update behavior.
 
 Compute supplies [provisioning inputs](#provisioning-inputs), including workload
-identity and credential references. Operators do not configure those method
-inputs as Sandbox startup fields.
+identity and credential references; these are not Sandbox startup settings.
 
 ## Limits
 
@@ -333,12 +334,12 @@ inputs as Sandbox startup fields.
 
 ## Troubleshooting
 
-| Symptom                                                 | Check and next action                                                                                                                                                                                              |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Startup rejects the Sandbox                             | Confirm that the Installation selects bundled Kubernetes Compute. Check that `facets` contains at least one supported value and no duplicates.                                                                     |
-| Dedicated native OpenClaw deployment is refused         | Check for `provisionHarness` and all three containment facets. The Driver must also support the supplied workload identity, mounts, and credential references.                                                     |
-| Cleanup retries after the Pod disappears                | Look up the provider resource using the revision's [Sandbox resource identity](#sandbox-resource-identity). Confirm removal with a read authorized for that resource. Pod absence alone does not complete cleanup. |
-| The temporary Harness status endpoint cannot be removed | Check whether the controller can still read the resource. Restore access before retrying. See [OpenShell gateway recovery](openshell-sandbox.md#gateway-identity-and-removal).                                     |
+| Symptom                                                 | Check and next action                                                                                                                                                                                                                      |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Startup rejects the Sandbox                             | Confirm that the Installation selects bundled Kubernetes Compute. Check that `facets` contains at least one supported value and no duplicates.                                                                                             |
+| Dedicated native OpenClaw deployment is refused         | Check for `provisionHarness` and all three containment facets. The Driver must also support the supplied workload identity, mounts, and credential references.                                                                             |
+| Cleanup retries after the Pod disappears                | Look up the provider resource using the revision's [Sandbox resource identity](#sandbox-resource-identity). Confirm removal with a read authorized for that resource. Pod or Kubernetes Namespace absence alone does not complete cleanup. |
+| The temporary Harness status endpoint cannot be removed | Check whether the controller can still read the resource. Restore access before retrying. See [OpenShell gateway recovery](openshell-sandbox.md#gateway-identity-and-removal).                                                             |
 
 ## Implementations
 

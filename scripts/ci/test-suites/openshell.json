@@ -18,6 +18,7 @@
   "env": {
     "OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL": "1",
     "OCC_TEST_DEV_UP_OPENSHELL_REAL": "1",
+    "OCC_TEST_DEV_UP_OPENSHELL_LOCAL_ENDPOINT_REAL": "1",
     "OCC_TEST_OPENSHELL_K3D_REAL": "1",
     "OCC_TEST_LOCAL_FIRST_AGENT_REAL": "1"
   },
@@ -47,7 +48,20 @@
       "path": "tests/integration/dev-up-openshell-k3d-real.test.mjs",
       "expectedTests": [
         "dev-up installs the pinned OpenShell profile in its owned k3d cluster",
+        "Namespace loss does not discard the original Workspace cleanup binding",
+        "confirmed Workspace cleanup survives worker restart while deletion is held",
+        "same-name Workspace replacement is refused on deletion and explicit retry",
+        "saved provider cleanup does not authorize a replacement configured ServiceAccount",
+        "external Namespace cleanup retains its physical incarnation and releases its claim",
+        "deletion before first ensure needs no invented provider binding",
+        "ordinary Agent stop and deletion remove real revision providers after Namespace loss without inference",
         "dev-up runs OCC in Compose with OpenShell and Kubernetes Compute in k3d"
+      ]
+    },
+    {
+      "path": "tests/integration/dev-up-openshell-local-endpoint-cleanup-real.test.ts",
+      "expectedTests": [
+        "real worker completes Namespace cleanup after its bare OpenShell service disappears"
       ]
     },
     {

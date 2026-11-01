@@ -30,6 +30,26 @@ const skip = selected
   ? false
   : `Set OCC_TEST_SSH_REAL=1 plus ${requiredNames.join(", ")} to run real SSH host proof; OCC_TEST_SSH_ROOT and OCC_TEST_SSH_UNIT_DIRECTORY are optional.`;
 
+// Direct Driver proof retains the same Namespace-owned journal across preparation and cleanup.
+// PostgreSQL worker claim/CAS behavior is proved by the separate lifecycle integration suite.
+function namespaceLifecycle(namespaceId) {
+  let current = { revision: 0, data: {} };
+  const lifecycleId = randomUUID();
+  return (target) => ({
+    lifecycleId,
+    target,
+    signal: new AbortController().signal,
+    async read() {
+      return structuredClone(current);
+    },
+    async checkpoint(expectedRevision, data) {
+      assert.equal(expectedRevision, current.revision, `Namespace ${namespaceId} journal CAS`);
+      current = { revision: current.revision + 1, data: structuredClone(data) };
+      return structuredClone(current);
+    },
+  });
+}
+
 const INSPECT = String.raw`
 const fs = require("node:fs");
 const { spawnSync } = require("node:child_process");
@@ -292,6 +312,7 @@ test(
       servicePrincipalId: agent.servicePrincipalId,
       createdAt: namespace.createdAt,
     }));
+    const lifecycle = namespaceLifecycle(namespace.id);
     const namespaceDir = `${runtime.root}/namespaces/${sha256Hex(namespace.id, 12)}`;
     const inspect = async (agent) =>
       remote(`
@@ -309,7 +330,10 @@ test(
     await driver.preflight();
     let failed = false;
     try {
-      assert.equal((await driver.ensureNamespace(namespace)).namespaceReady, true);
+      assert.equal(
+        (await driver.ensureNamespace(namespace, lifecycle("ready"))).namespaceReady,
+        true,
+      );
       for (let index = 0; index < agents.length; index++) {
         driver.bindAgent({ namespace, agent: agents[index] });
         assert.equal(
@@ -341,7 +365,10 @@ test(
         namespace: true,
       });
       assert.equal((await inspect(sibling)).readyStatus, 200);
-      assert.equal((await driver.deleteNamespace(namespace)).namespaceDeleted, true);
+      assert.equal(
+        (await driver.deleteNamespace(namespace, lifecycle("deleted"))).namespaceDeleted,
+        true,
+      );
       assert.deepEqual(await inspect(sibling), {
         active: false,
         readyStatus: null,
@@ -354,7 +381,7 @@ test(
       failed = true;
       throw error;
     } finally {
-      const deleted = await driver.deleteNamespace(namespace);
+      const deleted = await driver.deleteNamespace(namespace, lifecycle("deleted"));
       if (!failed) {
         assert.equal(deleted.namespaceDeleted, true);
       }
@@ -496,6 +523,7 @@ test(
       configurationId: `cfg-${randomUUID()}`,
       servicePrincipalId: `sp-${randomUUID()}`,
     };
+    const lifecycle = namespaceLifecycle(namespace.id);
     const namespaceDir = `${runtime.root}/namespaces/${sha256Hex(namespace.id, 12)}`;
     const agentDir = `${namespaceDir}/agents/${sha256Hex(agentId, 12)}`;
     const siblingAgentDir = `${namespaceDir}/agents/${sha256Hex(siblingAgentId, 12)}`;
@@ -552,7 +580,10 @@ test(
     let meterStarted = false;
     let partialWriteSeeded = false;
     try {
-      assert.equal((await driver.ensureNamespace(namespace)).namespaceReady, true);
+      assert.equal(
+        (await driver.ensureNamespace(namespace, lifecycle("ready"))).namespaceReady,
+        true,
+      );
       if (modelProof) {
         // Count real provider traffic without replacing the provider. Both successful
         // and rejected credentials are forwarded to the actual OpenAI endpoint.
@@ -790,7 +821,10 @@ test(
       if (meterStarted) {
         await inspect("stop-meter");
       }
-      assert.equal((await driver.deleteNamespace(namespace)).namespaceDeleted, true);
+      assert.equal(
+        (await driver.deleteNamespace(namespace, lifecycle("deleted"))).namespaceDeleted,
+        true,
+      );
     }
     assert.deepEqual(await inspect("deleted"), {
       directoryExists: false,

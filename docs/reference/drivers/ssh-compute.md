@@ -1,28 +1,26 @@
 # SSH Compute Driver
 
-Use the SSH Compute Driver to run embedded OpenClaw on operator-managed
-Linux hosts. It prepares each Namespace over SSH and runs one systemd gateway
-unit per Agent. OCC still owns Agent resources, authorization, Agent revisions, and
-activation. Trusted Installation YAML can select `compute-ssh` (implementation
-`occ/ssh`) in development or production.
+Select `compute-ssh` (`occ/ssh`) in trusted Installation YAML to run embedded
+OpenClaw on operator-managed Linux hosts in development or production. The Driver
+prepares Namespaces over SSH and runs one systemd gateway per Agent. OCC owns
+Agent resources, authorization, Agent revisions and activation.
 
-Select `harnessAuth: { "method": "runtime" }` and supply model credentials on
-the host. OCC does not deliver or validate those credentials; confirm access
-with a real model response. SSH does not support dedicated Codex, an OCC
-Secret-backed model API key, or a managed ChatGPT account. Use
-[Kubernetes Compute](kubernetes-compute.md) if you need those options.
+Select `harnessAuth: { "method": "runtime" }` and supply host model credentials.
+OCC does not deliver or validate them; verify with a real model response.
+SSH refuses dedicated Codex, OCC Secret-backed model API keys and managed ChatGPT
+accounts; use [Kubernetes Compute](kubernetes-compute.md).
 
 ## Requirements and configuration
 
 Provision Linux with systemd, util-linux `flock`, `getent`, the shadow account
 management tools (`useradd`, `userdel`, `groupadd`, `groupdel`), a root SSH
 account, Node.js 24, and a readable OpenClaw entrypoint. The controller processes
-need the system `ssh` executable and protected identity and known-hosts files.
+need the system `ssh` and `ssh-keygen` executables and protected identity and known-hosts files.
 The Compose `node:24-bookworm` base includes OpenSSH; provide the client
 yourself if you choose another controller image base. The Driver never installs
 or upgrades host software and has no `sudo` fallback.
-API and worker production preflight both verify configured hosts, so both
-processes need these SSH inputs. Hosts receive no controller credentials,
+API and worker production preflight configured hosts; both need these SSH inputs.
+Hosts receive no controller credentials,
 database access, or Installation YAML.
 
 In the existing trusted Installation document at `OCC_CONFIG_PATH`, select:
@@ -55,7 +53,7 @@ drivers:
           end: 18899
 ```
 
-This is the Compute selection only. Keep the required `occ`, Configuration,
+Keep the required `occ`, Configuration,
 IAM, and Secret selections from the
 [Installation contract](selection.md). SSH does not consume the Secret Driver;
 OCC Secret bindings are unsupported. Select Configuration storage appropriate to
@@ -103,6 +101,7 @@ the host.
 SHA-256 of the exact Namespace, Agent, and AgentRevision IDs.
 
 ```text
+<root>/namespace-lifecycles/<lifecycleHash>.json
 <root>/accounts/<runtimeUser>.json
 <root>/namespaces/<nsHash>/namespace.json
 <root>/namespaces/<nsHash>/agents/<agentHash>/agent.json
@@ -130,7 +129,8 @@ is refused. Accounts persist when Agent versions are retired and are removed wit
 the Namespace.
 
 Markers record exact Driver, Namespace, Agent, and ServicePrincipal ownership.
-Agent revision markers also record the Agent revision ID/number, configuration hash, and
+Every Agent host operation verifies the Namespace generation receipt and original
+directory identity before changing host state. Agent revision markers also record the Agent revision ID/number, configuration hash, and
 Harness. Foreign markers, changed snapshots, unexpected symlinks, and units
 without the exact Namespace/Agent ownership header are refused rather than
 adopted. JSON markers and `gateway-password.env` are `0600`; `home/` and `state/` are
@@ -158,17 +158,48 @@ reachability, `systemctl --version`, `flock` and account-management commands on
 `PATH`, executable Node, and readable OpenClaw. Failure names the configured host and stops
 production startup.
 
-`ensureNamespace` creates or verifies the Namespace marker and invokes selected
-`afterNamespacePrepared` hooks. An unmapped name fails permanently. Before
+`ensureNamespace` requires the worker's durable Namespace lifecycle context.
+Before dispatch, it saves a creation nonce and the exact host, root, runtime-account
+prefix, unit directory, and selected public host trust. The helper saves a receipt
+under `namespace-lifecycles/`, then binds the Namespace marker generation and
+original directory device, inode, and birth time under the host lock. OCC commits
+that identity before readiness or `afterNamespacePrepared` hooks. An unmapped name fails permanently.
+
+State filesystems must provide positive creation timestamps stable across metadata
+changes. [Node can substitute ctime or zero when birth time is unavailable](https://nodejs.org/download/release/v24.20.0/docs/api/fs.html#stat-time-values).
+Under the lock, each helper creates and removes an owned temporary file on each
+selected device. The directory's birth time must stay positive and unchanged while
+its ctime changes within two seconds. The same `lstat` call checks both identity
+and timestamp behavior; no named probe remains during waits. Zero, changing, or unconfirmed creation-time evidence fails permanently.
+Existing markers, receipts, and directory identities must match before any probe
+writes. This checks the selected filesystem; it does not certify other Linux mounts.
+
+A lost create reply permits readback of that receipt, never creation of another
+directory. An absent receipt after an attempted creation, a changed selector,
+a copied replacement tree, or a missing lifecycle binding fails permanently.
+The initial revision-zero journal alone proves no host operation was dispatched;
+deletion then completes without SSH or hooks.
+
+Target resolution evaluates the selected trusted OpenSSH profile with `ssh -G`
+and the same connection options. `Match exec` can execute local commands during
+that evaluation. User and global known-hosts files and `HostKeyAlias` remain
+supported. An explicit alias is used verbatim; without one, a nondefault port uses
+`[hostname]:port`. Fingerprints use matched public key bytes; comments, hashed-host salts,
+unrelated entries, limits, and authentication-key rotation do not change placement.
+Fingerprints record public trust policy. OpenSSH verifies each peer; the host
+receipt identifies the remote tree.
+Active `KnownHostsCommand` and `VerifyHostKeyDNS=yes` are unsupported for this
+lifecycle: file fingerprints cannot bind their additional dynamic trust. A target
+without matched file-backed public host trust is refused. Before
 Agent revision operations, the worker calls `bindAgent` with server-owned Namespace,
 Agent, and ServicePrincipal identities; an unbound Agent revision fails closed.
 
 `prepareRevision` accepts only `openclaw`/`embedded` with `runtime` authentication and without OCC Secret bindings.
 It verifies ownership, creates or verifies the Agent's Unix identity, allocates
 or reuses the Agent port, and writes the immutable snapshot. A superseded
-candidate returns not-ready. Preparation does not replace `current`, write the
-systemd unit, or restart the running gateway. An OCC publication failure leaves
-the previous gateway serving its existing version.
+candidate returns not-ready. Preparation changes neither `current` nor the unit
+and does not restart the gateway. OCC publication failure leaves the previous
+version serving.
 
 After OCC records the selected Agent revision, `activateRevision` runs selected
 Configuration and IAM `beforeWorkloadStart` hooks, renders the systemd unit,
@@ -199,10 +230,14 @@ snapshot. `retireRevision` invokes selected
 current, retirement stops/disables the unit and removes the pointer first.
 Home, state, operator credentials, and other versions remain.
 
-`deleteNamespace` invokes `beforeNamespaceDelete`, verifies all owned Agents,
+`deleteNamespace` verifies the saved selector, host receipt, marker generation,
+and original directory identity before `beforeNamespaceDelete` and host cleanup.
+It verifies all owned Agents,
 stops/disables their units, removes the unit files, reloads systemd, and removes
 the Namespace tree including state and its owned runtime accounts. If the Namespace tree is already gone, deletion retries cleanup of any remaining
-owned account markers.
+owned account markers with the same lifecycle generation and recorded UID/GID.
+The receipt remains outside the Namespace tree so retries after restart can prove
+which creation owned those accounts. Keep it with the host state root.
 Agent deletion retires every Agent revision, then `deleteAgentRuntimeCredentials`
 verifies ownership, removes the Agent's unit, directory (home, state, operator
 file, port allocation) and runtime account. Absence is success.
@@ -271,7 +306,7 @@ configuration snapshots. Agents still share host networking; SSH does not
 provide Kubernetes NetworkPolicy isolation or the channel isolation of
 dedicated execution. Operators own host/network trust and credential access.
 
-Dedicated Codex, SandboxDriver composition, OCC Secret delivery, workspace-file
+SandboxDriver composition, workspace-file
 API endpoint resolution, `existingNamespace` adoption, active-runtime
 maintenance, macOS launchd, non-root SSH, and zero-downtime rollout are
 unsupported. Host runtime upgrades are operator changes followed by explicit
