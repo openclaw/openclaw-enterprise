@@ -83,7 +83,9 @@ import {
   READ_UNAVAILABLE,
   namespaceListDenied,
   PLUGIN_CREDENTIALS_REJECTED,
+  KUBERNETES_ALLOW_USERS_REFUSAL,
 } from "../helpers/refusal-text.mjs";
+import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 import { within } from "../helpers/wait-for.mjs";
 
@@ -2616,6 +2618,116 @@ test("Preset marks referenced variables without defaults as required before rend
   await page.getByLabel("Agent name", { exact: true }).waitFor();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Required Agent");
 });
+
+// A Preset variable feeds the trusted-proxy allowlist, which Kubernetes Compute refuses with a
+// case-duplicate of the machine identity. The refusal names only the setting, so Create Agent
+// names the variable that filled it and reopens the Preset with that field marked and focused;
+// a valid value then creates the Agent (finding 3122).
+for (const viewport of consoleViewports) {
+  test(`A refused setting a Preset variable filled marks that variable at ${viewport.width}px`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Preset variable refusal", { ready: true });
+    const artifact = structuredClone(standardCodexPreset) as typeof standardCodexPreset & {
+      template: { configuration: { values: { gateway: Record<string, unknown> } } };
+    };
+    artifact.template.variables.human = {
+      type: "string",
+      description: "Identity of the person who runs this Agent",
+    };
+    const auth = nativeAdminGatewayAuth();
+    auth.trustedProxy.allowUsers = ["occ-workspace-files", "{{ vars.human }}"];
+    const gateway = artifact.template.configuration.values.gateway;
+    gateway.controlUi = { enabled: true, allowedOrigins: ["http://127.0.0.1:18789"] };
+    gateway.auth = auth;
+    const preset: FixtureResponse<Preset> = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/presets`,
+      { body: artifact },
+    );
+    // The allowlist waits on the variable, so the Preset itself saves.
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+    const { page } = await newPage(t, fixture, { context: { viewport } });
+    await routeInstallationWithoutProvisioning(page, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    const human = page.getByLabel("Human", { exact: true });
+    const password = page.getByLabel("Model Secret", { exact: true });
+    await page.getByLabel("Name", { exact: true }).fill("Variable Agent");
+    await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+    await password.fill("synthetic-variable-key");
+    // Identities compare case-insensitively, so this duplicates the machine identity.
+    await human.fill("OCC-Workspace-Files");
+    await page.getByRole("button", { name: "Use Preset" }).click();
+    await page.getByLabel("Agent name", { exact: true }).waitFor();
+
+    const preflight = page.waitForResponse(
+      (response) =>
+        response.url().endsWith(`/namespaces/${namespace.id}/agents/validate`) &&
+        response.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    assert.equal((await preflight).status(), 400);
+    const feedback = page.getByRole("alert").filter({
+      hasText: KUBERNETES_ALLOW_USERS_REFUSAL,
+    });
+    await feedback.waitFor();
+    // The API's sentence, then the variable the person typed into; never the value.
+    assert.match(
+      await feedback.textContent(),
+      /^Configuration setting gateway\.auth\.trustedProxy\.allowUsers .* Request ID: \S+ The Preset variable Human filled this setting\. Change Human$/,
+    );
+    assert.equal((await feedback.textContent())?.includes("OCC-Workspace-Files"), false);
+    await feedback.getByRole("button", { name: "Change Human", exact: true }).click();
+
+    // The Preset step again, with the entered variables kept (never the password): Human holds
+    // the refusal under it and has focus.
+    await page.locator("#preset-variable-human[aria-invalid=true]").waitFor();
+    const error = await human.evaluate((input) => {
+      const doc = globalThis.document;
+      const errorId = input
+        .getAttribute("aria-describedby")
+        ?.split(/\s+/)
+        .find((id) => id.endsWith("-error"));
+      return {
+        focused: doc.activeElement === input,
+        text: errorId ? doc.getElementById(errorId)?.textContent : undefined,
+      };
+    });
+    assert.deepEqual(error, { focused: true, text: KUBERNETES_ALLOW_USERS_REFUSAL });
+    assert.equal(await human.inputValue(), "OCC-Workspace-Files");
+    assert.equal(await page.getByLabel("Name", { exact: true }).inputValue(), "Variable Agent");
+    assert.equal(await password.inputValue(), "");
+    // Editing the variable clears its mark.
+    await human.fill("oidc:member-01");
+    assert.equal(await human.getAttribute("aria-invalid"), null);
+    await password.fill("synthetic-variable-key");
+    await page.getByRole("button", { name: "Use Preset" }).click();
+    await page.getByLabel("Agent name", { exact: true }).waitFor();
+    const created = await createAgentThroughForm(page, fixture, namespace.id);
+    await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+    const configuration: FixtureResponse<ConfigurationWire> = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+    );
+    assert.deepEqual(responseAllowUsers(configuration.data.values), [
+      "occ-workspace-files",
+      "oidc:member-01",
+    ]);
+    assert.equal(
+      await page.evaluate(
+        () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+      ),
+      true,
+    );
+  });
+}
+
+function responseAllowUsers(values: unknown) {
+  const gateway = (values as { gateway?: { auth?: { trustedProxy?: { allowUsers?: unknown } } } })
+    .gateway;
+  return gateway?.auth?.trustedProxy?.allowUsers;
+}
 
 test("Preset with a prebound model Secret grants the created draft access", async (t) => {
   const fixture = await createConsoleAppFixture(t);

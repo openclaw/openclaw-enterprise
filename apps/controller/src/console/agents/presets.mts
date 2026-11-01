@@ -13,6 +13,7 @@ import {
   element,
   button,
   field as formField,
+  setFieldError,
   setUnavailable,
   statusBlock,
   validateFields,
@@ -83,10 +84,97 @@ function saveField(field: VariableField | SecretField): SavedField {
     : { type };
 }
 
-interface PresetDraft {
+export interface PresetDraft {
   id: string;
   touched: boolean;
   fields: Record<string, SavedField> | undefined;
+}
+
+// Each Configuration setting a Preset variable filled, by its dotted path, with the variables that
+// filled it. Create Agent maps a refusal that names a setting back to these (finding 3122).
+export type PresetSettingVariables = { setting: string; variables: string[] }[];
+
+// The Preset step reopened after Create Agent refused a setting its variables filled: the chooser
+// state to restore, and the variables to mark with the refusal.
+export interface PresetReturn {
+  draft: PresetDraft;
+  variables: readonly string[];
+  refusal: string;
+}
+
+const VARIABLE_REFERENCE = /(?<!\\)\{\{\s*vars\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
+
+const referencedVariables = (text: string) =>
+  [...text.matchAll(VARIABLE_REFERENCE)].map((match) => match[1] ?? "");
+
+// A refusal's setting path with array indexes as dotted segments: the API writes both
+// `allow[0].host` and `allow.0.host`.
+const dottedSetting = (setting: string) => setting.replace(/\[(\d+)\]/g, ".$1");
+
+// Where each variable went in configuration.values. A key that holds a variable is named by its
+// rendered text, as the API names it.
+function presetSettingVariables(
+  template: PresetTemplate,
+  inputs: Record<string, string | number | boolean>,
+): PresetSettingVariables {
+  const found: PresetSettingVariables = [];
+  const visit = (value: unknown, setting: string) => {
+    if (typeof value === "string") {
+      const variables = referencedVariables(value);
+      if (variables.length) {
+        found.push({ setting, variables });
+      }
+    } else if (Array.isArray(value)) {
+      value.forEach((child, index) => visit(child, `${setting}.${index}`));
+    } else if (value !== null && typeof value === "object") {
+      for (const [key, child] of Object.entries(value)) {
+        const keyVariables = referencedVariables(key);
+        const rendered = keyVariables.length
+          ? (Object.keys(
+              renderPresetTemplate(
+                { variables: template.variables ?? {}, configuration: { values: { [key]: null } } },
+                inputs,
+              ).configuration?.values ?? {},
+            )[0] ?? key)
+          : key;
+        const path = setting ? `${setting}.${rendered}` : rendered;
+        if (keyVariables.length) {
+          found.push({ setting: path, variables: keyVariables });
+        }
+        visit(child, path);
+      }
+    }
+  };
+  visit(template.configuration?.values, "");
+  return found;
+}
+
+/** The Preset variables that filled the Configuration setting `refusal` names, or none: the setting
+ * itself or a value inside it. Never a value, only the setting's name (finding 3122). */
+export function refusedPresetVariables(
+  refusal: string | undefined,
+  settings: PresetSettingVariables | undefined,
+): string[] {
+  const named = /^Configuration setting (\S+?)[:,]?\s/u.exec(refusal ?? "")?.[1];
+  if (!named || !settings) {
+    return [];
+  }
+  const refused = dottedSetting(named);
+  const variables = new Set<string>();
+  for (const { setting, variables: names } of settings) {
+    if (setting === refused || setting.startsWith(`${refused}.`)) {
+      names.forEach((name) => variables.add(name));
+    }
+  }
+  return [...variables];
+}
+
+/** The variables' field labels as one phrase: "Human", "Human and Team". */
+export function presetVariableLabels(names: readonly string[]) {
+  const labels = names.map(variableLabel);
+  return labels.length > 1
+    ? `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`
+    : (labels[0] ?? "");
 }
 
 type ModelSecret = { kind: "new" } | { kind: "existing"; secret: SecretMetadata };
@@ -157,12 +245,21 @@ export function createPresetFields(
   context: PresetContext,
   apply: (
     settings: PresetLaunchSettings,
-    options: { modelSecret: ModelSecret | undefined; presetName: string },
+    options: {
+      modelSecret: ModelSecret | undefined;
+      presetName: string;
+      presetDraft: PresetDraft;
+      settingVariables: PresetSettingVariables;
+    },
     draft: Pick<PresetDraft, "touched">,
   ) => void,
+  returning?: PresetReturn,
 ) {
-  // This scoped draft is written only by the capture below.
-  let retained = context.drafts.get("preset") as PresetDraft | undefined;
+  // This scoped draft is written only by the capture below, unless Create Agent sent the reader
+  // back to change the variables it refused.
+  let retained = returning?.draft ?? (context.drafts.get("preset") as PresetDraft | undefined);
+  // Marked once, when the returned Preset's fields are built.
+  let refused = returning;
   const selector = element(
     "select",
     { id: "agent-preset", disabled: true },
@@ -402,8 +499,23 @@ export function createPresetFields(
             }
           : template;
       const applied = renderPresetTemplate(settings, values);
-      // The form names the Preset it started from (UX plan A2, flows.md C8).
-      apply(applied, { modelSecret, presetName: selected.name }, { touched });
+      const presetDraft: PresetDraft = {
+        id: selector.value,
+        touched,
+        fields: Object.fromEntries(fields.map((field) => [field.name, saveField(field)])),
+      };
+      // The form names the Preset it started from (UX plan A2, flows.md C8), and keeps where
+      // each variable went, so a refused setting names the field that filled it (finding 3122).
+      apply(
+        applied,
+        {
+          modelSecret,
+          presetName: selected.name,
+          presetDraft,
+          settingVariables: presetSettingVariables(template, values),
+        },
+        { touched },
+      );
       for (const field of fields) {
         if (field.definition.type === "password") {
           field.input.value = "";
@@ -522,6 +634,7 @@ export function createPresetFields(
           }
           input.dataset.supplied = "true";
           feedback.textContent = "";
+          setFieldError(input, "");
         });
         input.addEventListener("change", () => {
           if (definition.type === "string") {
@@ -599,6 +712,17 @@ export function createPresetFields(
         "Fill in the variables, then use this Preset to create an editable draft.";
       applyUnavailable = false;
       describeApply();
+      // Create Agent refused the setting these variables filled: its refusal shows under each,
+      // and focus moves to the first to change (finding 3122).
+      const returned = refused?.draft.id === selectedId ? refused : undefined;
+      refused = undefined;
+      const marked = fields.filter(
+        (field) => returned?.variables.includes(field.name) && !("mode" in field),
+      );
+      for (const field of marked) {
+        setFieldError(field.input, returned?.refusal);
+      }
+      marked[0]?.input.focus();
       if (applyDefault && fields.length === 0) {
         applyButton.click();
       }
