@@ -1,67 +1,14 @@
-import { createHash } from "node:crypto";
-
-import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import {
+  FakeNamespaceCoreV1Api,
+  injectedFailure,
+  stallUntilAborted,
+} from "./kubernetes-core-api.mjs";
 
 // In-memory stand-ins for the CoreV1Api calls the Kubernetes Configuration Driver makes. They
 // are not live SDK or cluster proof: the Driver's transport is covered by its own tests.
-function physicalNamespaceName(id) {
-  return `oce-${createHash("sha256").update(id).digest("hex").slice(0, 15)}`;
-}
-
-export class FakeConfigurationCoreV1Api {
-  namespaces = new Map();
+export class FakeConfigurationCoreV1Api extends FakeNamespaceCoreV1Api {
   configMaps = new Map();
   creates = 0;
-
-  addNamespace(id, layout = "shared") {
-    const name =
-      layout === "split"
-        ? `oce-gateways-${createHash("sha256").update(id).digest("hex").slice(0, 24)}`
-        : layout === "adopted"
-          ? "customer-support"
-          : physicalNamespaceName(id);
-    this.namespaces.set(name, {
-      metadata: {
-        name,
-        labels: {
-          "app.kubernetes.io/managed-by": "openclaw-enterprise",
-          "openclaw.dev/gateway-namespace": id,
-          ...(layout === "split" ? {} : { "openclaw.dev/namespace": id }),
-          ...(layout === "adopted"
-            ? Object.fromEntries(
-                ["enforce", "audit", "warn"].map((mode) => [
-                  `pod-security.kubernetes.io/${mode}`,
-                  "restricted",
-                ]),
-              )
-            : {}),
-        },
-        annotations: {
-          "openclaw.dev/namespace-id": id,
-          ...(layout === "adopted" ? { "openclaw.dev/namespace-lifecycle": "external" } : {}),
-        },
-      },
-      status: { phase: "Active" },
-    });
-    return name;
-  }
-
-  async listNamespace({ labelSelector }) {
-    const [label, id] = labelSelector.split("=");
-    return {
-      items: [...this.namespaces.values()].filter(
-        ({ metadata }) => metadata.labels?.[label] === id,
-      ),
-    };
-  }
-
-  async readNamespace({ name }) {
-    const namespace = this.namespaces.get(name);
-    if (namespace === undefined) {
-      throw Object.assign(new Error("missing Namespace"), { code: 404 });
-    }
-    return structuredClone(namespace);
-  }
 
   async createNamespacedConfigMap({ namespace, body }) {
     this.creates += 1;
@@ -106,21 +53,11 @@ export class FlakyConfigurationCoreV1Api extends FakeConfigurationCoreV1Api {
   async called(method) {
     this.calls[method] += 1;
     const failure = this.failureCodes[method].shift();
-    if (failure === "dropped") {
-      // What the client throws when the API server closes the connection unanswered.
-      throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
-    }
     if (failure !== undefined) {
-      throw Object.assign(new Error(`${method} failed with ${failure}`), { code: failure });
+      throw injectedFailure(failure, method);
     }
     if (this.stalls.has(method)) {
-      const signal = currentComputeAbortSignal();
-      if (signal === undefined) {
-        throw new Error(`${method} would stall with no deadline`);
-      }
-      await new Promise((_, reject) =>
-        signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
-      );
+      await stallUntilAborted(method);
     }
   }
 

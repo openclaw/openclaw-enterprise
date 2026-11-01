@@ -4315,6 +4315,29 @@ test("startup refuses OpenShell settings its schema leaves open", async (t) => {
   await loadInstallationFile(t, accepted);
 });
 
+// A non-object ingress rule cannot be mapped for the client; startup names the field instead of
+// the apply failing later.
+test("startup refuses NetworkPolicy ingress rules that are not objects", async (t) => {
+  for (const list of ["operatorWorkspaceResources", "networkPolicyResources"]) {
+    for (const rule of [null, "allow"]) {
+      await rejectsAtStartup(
+        t,
+        (c) =>
+          (sandboxOf(c).gateway[list] = [
+            {
+              apiVersion: "networking.k8s.io/v1",
+              kind: "NetworkPolicy",
+              metadata: { name: "sandbox-ingress" },
+              spec: { podSelector: {}, ingress: [rule] },
+            },
+          ]),
+        // Both lists are write-only, so the detail names the list, not the item.
+        invalidValue(`/gateway/${list}`, "Write each NetworkPolicy ingress rule as an object."),
+      );
+    }
+  }
+});
+
 test("startup refuses OpenShell Agent resources that are not objects", async (t) => {
   for (const [field, value] of [
     ["requests", "1"],
@@ -6401,22 +6424,117 @@ test("OpenShell verifies operator NetworkPolicy from actual KubernetesObjectApi 
     );
   }
 
-  // Configuration is a wire manifest: an SDK-only alias must not be repaired into a match.
-  wire = { ...structuredClone(policy), metadata };
+  // Configuration is a wire manifest: an SDK-only alias is refused at startup, before any
+  // comparison could repair it into a match.
   const malformed = structuredClone(configuration);
   const rule = malformed.gateway.networkPolicyResources[0].spec.ingress[0];
   rule._from = rule.from;
   delete rule.from;
-  const malformedDriver = new OpenShellSandboxDriver(malformed, {
-    id: "openshell-sandbox",
-    implementation: "openshell",
-    backend: backendFor(gatewayClient),
-    operatorOwnedKubernetesResources: true,
+  let refusal;
+  try {
+    new OpenShellSandboxDriver(malformed, {
+      id: "openshell-sandbox",
+      implementation: "openshell",
+      backend: backendFor(gatewayClient),
+      operatorOwnedKubernetesResources: true,
+    });
+  } catch (error) {
+    refusal = error;
+  }
+  assert.ok(refusal instanceof SharedConfigurationValidationError);
+  // The write-only list is reported at its own path; its items stay out of diagnostics.
+  assert.deepEqual(refusal.error.details, [
+    {
+      path: "/gateway/networkPolicyResources",
+      code: "INVALID_VALUE",
+      message: "Name NetworkPolicy ingress sources with the Kubernetes field from.",
+    },
+  ]);
+});
+
+// Finding 3110: KubernetesObjectApi serializes ingress sources only from its `_from` alias, so the
+// wire `from` of a workspace-chart policy was dropped and the rule lost its source restriction.
+test("OpenShell operator mode applies NetworkPolicy ingress sources through the SDK serializer", async () => {
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  // The stock OpenShell workspace chart's SSH policy as occ dev renders it, in wire form.
+  const ingress = [
+    {
+      from: [
+        {
+          namespaceSelector: {
+            matchLabels: { "kubernetes.io/metadata.name": "openshell-system" },
+          },
+          podSelector: { matchLabels: { "app.kubernetes.io/instance": "openshell-gateway" } },
+        },
+      ],
+      ports: [{ protocol: "TCP", port: 2222 }],
+    },
+  ];
+  const policy = (name) => ({
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: { name },
+    spec: {
+      podSelector: { matchLabels: { "openshell.ai/managed-by": "openshell" } },
+      policyTypes: ["Ingress"],
+      ingress: structuredClone(ingress),
+    },
   });
-  await assert.rejects(
-    malformedDriver.ensureNamespace(context),
-    /Operator workspace resource does not match/,
+  // A provider CRD that is also named NetworkPolicy has no SDK model: the client sends it as
+  // written, so renaming its `from` would make the API server drop the field.
+  const crdIngress = [{ action: "Allow", ...structuredClone(ingress[0]) }];
+  const crdPolicy = {
+    apiVersion: "crd.antrea.io/v1beta1",
+    kind: "NetworkPolicy",
+    metadata: { name: "provider-crd-ingress" },
+    spec: {
+      appliedTo: [{ podSelector: { matchLabels: { "openshell.ai/managed-by": "openshell" } } }],
+      ingress: structuredClone(crdIngress),
+    },
+  };
+  configuration.gateway.operatorWorkspaceResources = [policy("openshell-workspace-sandbox-ssh")];
+  configuration.gateway.networkPolicyResources = [policy("provider-ingress"), crdPolicy];
+  const gatewayClient = workspaceGatewayClient();
+  const driver = openShellDriver(gatewayClient, configuration);
+  const context = namespaceContext();
+  const { createConfiguration, ServerConfiguration } = controllerRequire("@kubernetes/client-node");
+  const api = new KubernetesObjectApi(
+    createConfiguration({ baseServer: new ServerConfiguration("http://127.0.0.1:9", {}) }),
   );
+  api.apiVersionResourceCache = {
+    "networking.k8s.io/v1": {
+      resources: [{ name: "networkpolicies", kind: "NetworkPolicy", namespaced: true }],
+    },
+    "crd.antrea.io/v1beta1": {
+      resources: [{ name: "networkpolicies", kind: "NetworkPolicy", namespaced: true }],
+    },
+  };
+  const applied = [];
+  // Keep the SDK's request serialization real; only replace the HTTP transport.
+  api.requestPromise = async (request) => {
+    applied.push([request.getHttpMethod(), JSON.parse(request.getBody())]);
+    return api.processResponse({
+      httpStatusCode: 200,
+      headers: { "content-type": "application/json" },
+      body: { text: async () => request.getBody() },
+    });
+  };
+  context.kubernetes = api;
+
+  await driver.ensureNamespace(context);
+  // Both lists reach the API server with their source restriction intact; the CRD body keeps
+  // its wire `from` and carries no `_from`.
+  assert.deepEqual(
+    applied.map(([method, body]) => [method, body.metadata.name, body.spec.ingress]),
+    [
+      ["PATCH", "openshell-workspace-sandbox-ssh", ingress],
+      ["PATCH", "provider-ingress", ingress],
+      ["PATCH", "provider-crd-ingress", crdIngress],
+    ],
+  );
+  assert.equal(callCount(gatewayClient, "createWorkspace"), 1);
+  // The operator's configuration stays the wire manifest it supplied.
+  assert.deepEqual(configuration.gateway.operatorWorkspaceResources[0].spec.ingress, ingress);
 });
 
 for (const kind of ["Role", "RoleBinding"]) {

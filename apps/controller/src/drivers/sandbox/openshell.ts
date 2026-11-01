@@ -3,7 +3,11 @@ import {
   type OpenShellGitPolicyOverlap,
   type OpenShellGitRuntime,
 } from "../egress-proxy/openshell-git-runtime.ts";
-import { networkPolicySpecToJson } from "../kubernetes/network-policy.ts";
+import {
+  isCoreNetworkPolicy,
+  networkPolicySpecToJson,
+  networkPolicyToSdk,
+} from "../kubernetes/network-policy.ts";
 import {
   openShellEgressConfiguration,
   type OpenShellProxyOptions,
@@ -435,6 +439,36 @@ function validateKubernetesResource(value: unknown, path: string): void {
     throw new OpenShellSandboxConfigurationFailure(
       `${path} must not contain OpenShell credential-bearing Secrets.`,
     );
+  }
+}
+
+/** Configuration is a wire manifest: the client alias would drop or hide ingress sources. */
+function refuseIngressAlias(value: unknown, pointer: string): void {
+  const resource = asRecord(value);
+  const ingress = asRecord(resource?.spec)?.ingress;
+  if (resource === undefined || !isCoreNetworkPolicy(resource) || !Array.isArray(ingress)) {
+    return;
+  }
+  for (const [index, rule] of ingress.entries()) {
+    const fields = asRecord(rule);
+    if (fields === undefined) {
+      throw new ConfigurationValidationError([
+        {
+          path: `${pointer}/spec/ingress/${index}`,
+          code: "INVALID_VALUE",
+          message: "Write each NetworkPolicy ingress rule as an object.",
+        },
+      ]);
+    }
+    if (Object.hasOwn(fields, "_from")) {
+      throw new ConfigurationValidationError([
+        {
+          path: `${pointer}/spec/ingress/${index}/_from`,
+          code: "INVALID_VALUE",
+          message: "Name NetworkPolicy ingress sources with the Kubernetes field from.",
+        },
+      ]);
+    }
   }
 }
 
@@ -1169,7 +1203,7 @@ async function applyResources(
 ): Promise<void> {
   for (const resource of resources ?? []) {
     await kubernetes(context).patch(
-      withNamespace(resource, context),
+      networkPolicyToSdk(withNamespace(resource, context)),
       undefined,
       undefined,
       "openclaw-enterprise-sandbox",
@@ -2352,12 +2386,14 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
       );
     }
   }
-  options.gateway.networkPolicyResources?.forEach((resource, index) =>
-    validateKubernetesResource(resource, `gateway.networkPolicyResources[${index}]`),
-  );
-  options.gateway.operatorWorkspaceResources?.forEach((resource, index) =>
-    validateOperatorWorkspaceResource(resource, `gateway.operatorWorkspaceResources[${index}]`),
-  );
+  options.gateway.networkPolicyResources?.forEach((resource, index) => {
+    validateKubernetesResource(resource, `gateway.networkPolicyResources[${index}]`);
+    refuseIngressAlias(resource, `/gateway/networkPolicyResources/${index}`);
+  });
+  options.gateway.operatorWorkspaceResources?.forEach((resource, index) => {
+    validateOperatorWorkspaceResource(resource, `gateway.operatorWorkspaceResources[${index}]`);
+    refuseIngressAlias(resource, `/gateway/operatorWorkspaceResources/${index}`);
+  });
   nonempty(options.kubernetes.runtimeClassName, "OpenShell RuntimeClass name");
   if (options.kubernetes.serviceAccount.mode !== "gatewayConfigured") {
     throw new OpenShellSandboxConfigurationFailure(
