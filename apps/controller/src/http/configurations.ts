@@ -5,10 +5,11 @@ import {
 } from "../admission/mutation-deadline.ts";
 import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
 
-// Each write's Configuration and Secret backend calls end within MUTATION_BACKEND_BUDGET_MS, so
-// a slow cluster fails the request before an ingress gives up on it, never commits it after
-// (finding 3106). Only the forward path runs under the deadline: the transaction's compensations
-// run after it.
+// A create, update or delete sends no Configuration or Secret backend call later than
+// MUTATION_BACKEND_BUDGET_MS after the handler starts, so a slow cluster fails the request with
+// 503 instead of committing it long after an ingress answered 504 (finding 3106). The audit
+// append and the commit run after the budget. Only the forward path runs under the deadline:
+// the transaction's compensations run after it.
 
 export const configurationHandlers = {
   async createConfiguration({

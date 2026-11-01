@@ -21,7 +21,11 @@ import {
   FakeConfigurationCoreV1Api,
   FlakyConfigurationCoreV1Api,
 } from "../helpers/kubernetes-configuration-core.mjs";
-import { READ_RETRY_PAUSES_MS, withRetryTimers } from "../helpers/kubernetes-request-retry.mjs";
+import {
+  MINIMUM_SEND_BUDGET_MS,
+  READ_RETRY_PAUSES_MS,
+  withRetryTimers,
+} from "../helpers/kubernetes-request-retry.mjs";
 import { writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { within } from "../helpers/wait-for.mjs";
@@ -869,6 +873,91 @@ test("Kubernetes Configuration sends no call past an API mutation's deadline", a
   client.failureCodes.listNamespace.push("dropped");
   await assert.rejects(updateBy(driver, now + READ_RETRY_PAUSES_MS[0]), { code: "ECONNRESET" });
   assert.equal(client.calls.listNamespace - before.listNamespace, 1);
+});
+
+test("Kubernetes Configuration sends no write with less than the minimum send budget left", async (t) => {
+  // A write sent just before an API mutation's deadline is likely cut off as "outcome unknown"
+  // while the API server still applies it. With less than MINIMUM_SEND_BUDGET_MS left the
+  // update fails cleanly as "not sent" instead, and the stored ConfigMap keeps generation 1.
+  let now = Date.parse("2026-11-01T00:00:00.000Z");
+  t.mock.method(Date, "now", () => now);
+  const generation = (client) =>
+    client.configMaps.values().next().value.metadata.annotations[
+      "openclaw.dev/configuration-generation"
+    ];
+  for (const [leftMs, sent] of [
+    [MINIMUM_SEND_BUDGET_MS - 1, false],
+    [MINIMUM_SEND_BUDGET_MS, true],
+  ]) {
+    const { client, driver } = await storedConfiguration();
+    const before = client.calls.replaceNamespacedConfigMap;
+    // The update's read is answered when exactly `leftMs` of the budget remains.
+    const deadline = now + 5_000;
+    const read = client.readNamespacedConfigMap.bind(client);
+    client.readNamespacedConfigMap = async (request) => {
+      const answer = await read(request);
+      now = deadline - leftMs;
+      return answer;
+    };
+    const update = withMutationDeadline(deadline, () => driver.update(nextGeneration));
+    if (sent) {
+      await update;
+      assert.equal(generation(client), "2");
+    } else {
+      await assert.rejects(
+        update,
+        (error) =>
+          error instanceof ConfigurationBackendUnavailableError &&
+          error.message ===
+            "The Kubernetes ConfigMap update was not sent: the request ran out of time.",
+      );
+      assert.equal(generation(client), "1");
+    }
+    assert.equal(client.calls.replaceNamespacedConfigMap - before, sent ? 1 : 0, `${leftMs} ms`);
+  }
+});
+
+test("Kubernetes Configuration retries a read only with room for the pause and an attempt", async (t) => {
+  let now = Date.parse("2026-11-01T00:00:00.000Z");
+  t.mock.method(Date, "now", () => now);
+  const pause = READ_RETRY_PAUSES_MS[0];
+
+  // A dropped namespace verification is not retried when the pause would leave less than
+  // MINIMUM_SEND_BUDGET_MS for the next attempt: the real failure is reported at once.
+  let { client, driver } = await storedConfiguration();
+  let before = client.calls.listNamespace;
+  client.failureCodes.listNamespace.push("dropped");
+  await assert.rejects(
+    withMutationDeadline(now + pause + MINIMUM_SEND_BUDGET_MS - 1, () =>
+      driver.update(nextGeneration),
+    ),
+    { code: "ECONNRESET" },
+  );
+  assert.equal(client.calls.listNamespace - before, 1);
+
+  // With room it is retried. When the pause ends late, past the deadline, the read reports the
+  // failure its sent attempt got, not "was not sent".
+  ({ client, driver } = await storedConfiguration());
+  before = client.calls.listNamespace;
+  client.failureCodes.listNamespace.push("dropped");
+  const realSetTimeout = globalThis.setTimeout;
+  const late = t.mock.method(globalThis, "setTimeout", (callback, delay, ...args) => {
+    if (delay !== pause) {
+      return realSetTimeout(callback, delay, ...args);
+    }
+    // The retry pause's timer fires a moment after the whole budget.
+    now += pause + MINIMUM_SEND_BUDGET_MS + 1;
+    return realSetTimeout(callback, 0, ...args);
+  });
+  await assert.rejects(
+    withMutationDeadline(now + pause + MINIMUM_SEND_BUDGET_MS, () => driver.update(nextGeneration)),
+    { code: "ECONNRESET" },
+  );
+  const pauses = late.mock.calls.filter(({ arguments: [, delay] }) => delay === pause).length;
+  late.mock.restore();
+  assert.equal(pauses, 1, "the retry was scheduled");
+  assert.equal(client.calls.listNamespace - before, 1);
+  assert.equal(client.calls.replaceNamespacedConfigMap, 0);
 });
 
 test("Kubernetes Configuration reads a ConfigMap only when every ownership mark is its own", async () => {

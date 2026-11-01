@@ -1,10 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 /**
- * How long an API write's Configuration and Secret backend calls may take in all. A Kubernetes
- * save chains up to five calls, each allowed 10 seconds, so without a shared bound it could
- * commit after an ingress already answered 504; Envoy Gateway's default route timeout is 15
- * seconds (finding 3106). The rest of the 15 seconds is for IAM, PostgreSQL and the commit.
+ * How long, from the start of a Configuration or Secret create, update or delete handler, its
+ * Kubernetes calls may take in all; none is sent after it. A Kubernetes save chains up to five
+ * calls, each allowed 10 seconds, so without a shared bound it could commit long after an
+ * ingress answered 504; Envoy Gateway's default route timeout is 15 seconds (finding 3106). The
+ * rest of the 15 seconds is for routing, IAM, the audit append and the commit, which this
+ * budget does not bound.
  */
 export const MUTATION_BACKEND_BUDGET_MS = 12_000;
 
