@@ -482,6 +482,19 @@ const DEPLOYMENT_OUTCOME_TONES: Partial<Record<DeploymentOutcome, string>> = {
 const failedVersions = new Set<string>();
 const failedVersionKey = (agentPath: string, revisionId: string) =>
   JSON.stringify([agentPath, revisionId]);
+// Versions whose deployment a newer version or a Stop ended, keyed like failedVersions. They did
+// not fail, but an unmarked one read as an ordinary historical version (r77 rows 21-22), so the
+// Versions list and the version's notice name the outcome. Such an ending is final too.
+type NeutralOutcome = NonNullable<ReturnType<typeof neutralDeploymentOutcome>>;
+const neutralVersions = new Map<string, NeutralOutcome>();
+// The record never names the newer version or says whether a runtime ran, so neither does the
+// notice.
+const NEUTRAL_VERSION_NOTICES: Record<NeutralOutcome, string> = {
+  superseded:
+    "Superseded version · read-only admitted snapshot. A newer version took over before its deployment finished.",
+  stopped:
+    "Stopped version · read-only admitted snapshot. The Agent was stopped before its deployment finished.",
+};
 // Versions this tab's own Deploy created, keyed like failedVersions, with their version numbers.
 // The API accepted each, so a deployer who cannot read one is told it exists and was accepted,
 // not that a link may name a version that does not exist (finding D751).
@@ -615,14 +628,14 @@ export async function renderAgentDetail(
     }
     for (const item of page.revisions) {
       // A version that a newer one or a Stop ended is listed as failed too, with the code that
-      // says so; it is not marked (finding 2422).
-      if (
-        item.deploymentStatus === "failed" &&
-        !neutralDeploymentOutcome({
-          status: item.deploymentStatus,
-          error: item.deploymentErrorCode === null ? null : { code: item.deploymentErrorCode },
-        })
-      ) {
+      // says so; it is marked with that outcome, not as failed (finding 2422).
+      const neutral = neutralDeploymentOutcome({
+        status: item.deploymentStatus,
+        error: item.deploymentErrorCode === null ? null : { code: item.deploymentErrorCode },
+      });
+      if (neutral) {
+        neutralVersions.set(failedVersionKey(path, item.id), neutral);
+      } else if (item.deploymentStatus === "failed") {
         failedVersions.add(failedVersionKey(path, item.id));
       }
     }
@@ -1939,7 +1952,9 @@ export async function renderAgentDetail(
               // deployment it was the only version and was called "Historical" (finding 2403).
               failedVersions.has(failedVersionKey(path, selected))
               ? "Failed version · read-only admitted snapshot. Its deployment did not complete."
-              : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
+              : neutralVersions.has(failedVersionKey(path, selected))
+                ? NEUTRAL_VERSION_NOTICES[neutralVersions.get(failedVersionKey(path, selected))!]
+                : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
   }
 
   // The newest version while its deployment is queued or running and it is not yet current. Right
@@ -2110,6 +2125,11 @@ export async function renderAgentDetail(
         labels.push(outcomeLabel(latestDeploymentStatus));
       } else if (failedVersions.has(failedVersionKey(path, revision.id))) {
         labels.push("Failed");
+      } else {
+        const neutral = neutralVersions.get(failedVersionKey(path, revision.id));
+        if (neutral) {
+          labels.push(outcomeLabel(neutral));
+        }
       }
       setText(option, labels.join(" · "));
     }
@@ -2854,6 +2874,8 @@ export async function renderAgentDetail(
               latestDeploymentStatus = status;
               if (status === "failed") {
                 failedVersions.add(failedVersionKey(path, mostRecent.id));
+              } else if (status === "superseded" || status === "stopped") {
+                neutralVersions.set(failedVersionKey(path, mostRecent.id), status);
               }
               // A refused or missing record ends the wait, so it no longer labels the version.
               if (record || !transientFailure) {
@@ -3106,8 +3128,16 @@ export async function renderAgentDetail(
           // read "Historical" with no mark beside its own "Failed" record (finding 2407).
           onRecord: (record) => {
             const key = failedVersionKey(path, selected);
-            if (deploymentOutcome(record) === "failed" && !failedVersions.has(key)) {
+            const outcome = deploymentOutcome(record);
+            if (outcome === "failed" && !failedVersions.has(key)) {
               failedVersions.add(key);
+              renderVersionNotice();
+              markVersionOutcomes();
+            } else if (
+              (outcome === "superseded" || outcome === "stopped") &&
+              !neutralVersions.has(key)
+            ) {
+              neutralVersions.set(key, outcome);
               renderVersionNotice();
               markVersionOutcomes();
             }
