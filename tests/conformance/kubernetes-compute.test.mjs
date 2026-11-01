@@ -90,6 +90,7 @@ import {
   kubernetesGatewayPasswordRequirement,
   dedicatedCodexVariableRefusal,
   pluginEntryKeyVariantRefusal,
+  workspaceNodePluginRefusal,
   unboundPluginSecretRefusal,
   unreadablePluginSecretRefusal,
   unboundUnreadablePluginSecretRefusal,
@@ -9441,25 +9442,28 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   ];
 
   // f1112: the entrypoint exits at every start without the file-transfer plugin.
-  const workspaceNode = "the Agent's workspace node requires the file-transfer plugin";
-  for (const [plugins, setting, requirement] of [
-    [{ deny: ["file-transfer"] }, "plugins.deny", `must not list file-transfer: ${workspaceNode}`],
+  for (const [plugins, setting, rule] of [
+    [{ deny: ["file-transfer"] }, "plugins.deny", "must not list file-transfer"],
     // OpenClaw matches deny entries trimmed and lowercased (finding 3077).
-    [
-      { deny: [1, " File-Transfer"] },
-      "plugins.deny",
-      `must not list file-transfer: ${workspaceNode}`,
-    ],
+    [{ deny: [1, " File-Transfer"] }, "plugins.deny", "must not list file-transfer"],
     [
       { entries: { "file-transfer": { enabled: false } } },
       "plugins.entries.file-transfer.enabled",
-      `must not be false: ${workspaceNode}`,
+      "must not be false",
     ],
+    // OpenClaw turns off every plugin, file-transfer included (finding 3083).
+    [{ enabled: false }, "plugins.enabled", "must not be false"],
   ]) {
+    const refused = { message: workspaceNodePluginRefusal(setting, rule) };
     for (const harness of [codex, provisioning]) {
       assert.throws(
         () => routed.validateHarnessAuth(harness, apiKeyAuth, { ...base, plugins }),
-        named(setting, requirement),
+        refused,
+      );
+      // Agent save (no bindings yet) refuses it too, before any deployment.
+      assert.throws(
+        () => routed.validateHarnessAuth(harness, apiKeyAuth, { ...base, plugins }, null),
+        refused,
       );
     }
     assert.throws(
@@ -9469,18 +9473,24 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
           apiKeyAuth,
           { ...createHarnessConfiguration("openclaw", "gpt-4o-mini"), plugins },
         ),
-      named(setting, requirement),
+      refused,
     );
     // A Gateway without a workspace node does not need the plugin.
     for (const driver of withoutNode) {
       driver.validateHarnessAuth(codex, apiKeyAuth, { ...base, plugins });
+      driver.validateHarnessAuth(codex, apiKeyAuth, { ...base, plugins }, null);
     }
     routed.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, plugins });
+    routed.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, plugins }, null);
   }
-  routed.validateHarnessAuth(codex, apiKeyAuth, {
-    ...base,
-    plugins: { deny: ["other"], entries: { "file-transfer": { enabled: true } } },
-  });
+  for (const plugins of [
+    { deny: ["other"], entries: { "file-transfer": { enabled: true } } },
+    { enabled: true },
+    // The entrypoint adds file-transfer to a non-empty allowlist.
+    { allow: ["other"] },
+  ]) {
+    routed.validateHarnessAuth(codex, apiKeyAuth, { ...base, plugins });
+  }
 
   // f1113 and f1114: gateway settings preparation refused, now refused by deployment admission
   // (validateGatewaySettings) and provisioning (validateAgentProvisioning) with the same text.
@@ -23576,6 +23586,34 @@ test("Gateway tool policy is checked at Configuration save and at Agent admissio
       assert.doesNotThrow(() => driver.validateConfiguration(withPolicy(gatewayPolicy)), label);
     }
   }
+});
+
+test("an active revision whose workspace node lost file-transfer to plugins.enabled false keeps its maintenance passes", async () => {
+  // Finding 3083. Admission now refuses plugins.enabled false for an Agent whose Gateway hosts its
+  // workspace node. A revision admitted before that rule must keep its maintenance and recovery
+  // passes (preparation and activation of the active revision) until a redeploy, which admission
+  // refuses.
+  const { driver, revision, state, context } = workspaceSetupFixture(false);
+  revision.configuration = {
+    ...structuredClone(revision.configuration),
+    plugins: { enabled: false },
+  };
+  state.ready = true;
+  await prepareUntilReady(driver, revision, context);
+  await driver.activateRevision(revision, context);
+  assert.equal((await driver.prepareRevision(revision, context)).ready, true);
+  await driver.activateRevision(revision, context);
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        revision.harness,
+        revision.harnessAuth,
+        revision.configuration,
+        revision.secretBindings,
+      ),
+    { message: workspaceNodePluginRefusal("plugins.enabled", "must not be false") },
+    "a new deployment",
+  );
 });
 
 test("an active embedded revision whose stored Gateway tool policy predates the rule keeps its maintenance passes", async () => {
