@@ -15,7 +15,9 @@ references and Kubernetes supplies values only to each selected gateway.
 Harness model authentication uses the
 [shared Agent binding flow](native-service-account-credential-delivery.md).
 The local installer also grants a new Agent access and verifies a model response.
-Credential issuance and provider internals are outside this flow.
+For operator-mapped AWS parameters, the same Secret identity admits transient
+protected credential reads through the Secret Driver. Credential issuance and
+provider internals are outside this flow.
 
 ## Entry Points
 
@@ -66,6 +68,16 @@ graph TD
     I -->|missing material| Y["Gateway cannot become ready"]
     G -->|Agent harnessAuth| W["Harness auth flow delivers to model workload"]
     W -->|local installer| V["Discover tenant Gateway and check model response"]
+  end
+  subgraph Protected["Mapped protected credential read"]
+    S["OCC authorizes exact source and Secret"] --> O["Driver verifies Namespace and backend UID"]
+    O --> A1["Read exact AWS SecureString and version"]
+    A1 --> A2["Validate response and record observation time"]
+    A2 --> A3["Fresh Kubernetes ownership and deadline check"]
+    A3 --> A4["Return transient value to protected caller"]
+    O -->|owner changed| X1["Fail without local fallback"]
+    A1 -->|unavailable or invalid| X1
+    A3 -->|changed or expired| X1
   end
 ```
 
@@ -274,6 +286,33 @@ adopted or recreated. Gateway replacement does not garbage-collect
 Secrets, so immediate revocation requires stopping workloads or revoking the
 credential at its issuer.
 
+### 7. Read an operator-mapped AWS parameter for protected use
+
+`packages/occ/src/index.ts:OpenClawController`;
+`apps/controller/src/drivers/secret/kubernetes/index.ts:KubernetesSecretDriver.readCredentialInput`
+
+Protected source admission authorizes exact Secret `operate` and locks its OCC
+record before calling `readCredentialInput`. The live protected resolver also
+uses that versioned read contract. The driver first verifies Kubernetes Namespace
+placement and exact labels, annotations, driver identity, and backend UID.
+It finds a configured mapping by Namespace and Secret ID, then requires its
+pinned UID. A replacement cannot become an unmapped local-value read.
+
+Within the caller's effective cancellation signal and deadline, the driver reads
+the exact SecureString ARN through `readAwsParameter`, validates the value and
+version, and records the response observation time. It performs a fresh
+Kubernetes ownership read after AWS responds and checks cancellation and deadline
+before returning transient material. AWS failures and ownership changes return
+no credential. Provider validation and send authorization remain with the
+existing protected caller.
+
+Mapped `resolve` and `withValue` calls and local value writes are refused, so
+these paths cannot deliver the old Kubernetes bytes. Delete retains Kubernetes
+UID/resourceVersion preconditions and never calls AWS. Unmapped operations keep
+the existing path. A Gateway that copied credentials during registration still
+requires its own reconfiguration and activation; this read path does not change
+that Gateway's retained project.
+
 ## Debugging and Verification
 
 - Read public Secret metadata without requesting or dumping values. Inspect safe
@@ -312,6 +351,8 @@ credential at its issuer.
 ## Changelog
 
 - 2026-10-29 19:38: Keep local first-Agent records owner-readable under restrictive umasks. (authoring-run/d5feb6ab-c39d-4b0f-9af9-d6aec0acfb42 - cadab7afee966df8ff7a13250df443404ae76314)
+
+- 2026-10-28 23:07: Trace operator-mapped AWS protected reads and exact ownership rechecks. (authoring-run/b8a0e228-1209-4734-a559-4be25ee1adb8 - db056e645c65703cd5330e8bd2967bedf1e88c03)
 
 - 2026-10-16 01:36: Combine the OpenShell workspace guard with credential-independent Codex permissions. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
 

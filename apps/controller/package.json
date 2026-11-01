@@ -17,6 +17,9 @@
     "typecheck": "tsc --build tsconfig.json --pretty false"
   },
   "dependencies": {
+    "@aws-sdk/client-ssm": "3.1155.0",
+    "@aws-sdk/client-sts": "3.1155.0",
+    "@aws-sdk/credential-provider-http": "3.972.78",
     "@better-auth/api-key": "1.7.11",
     "@fastify/ajv-compiler": "4.0.7",
     "@fastify/fast-json-stringify-compiler": "5.1.1",

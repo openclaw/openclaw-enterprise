@@ -111,6 +111,7 @@
     "tests/integration/static-egress.test.mjs",
     "tests/integration/credential-proxy-peer-pin.test.ts",
     "tests/integration/credential-proxy-provider-pin.test.ts",
+    "tests/integration/aws-parameter-credential-input.test.ts",
     "tests/integration/credential-proxy-stream-exchange.test.ts",
     "tests/integration/egress-stock-online-authority.test.mjs",
     "tests/integration/managed-plugin-request-authority.test.ts",
@@ -523,6 +524,13 @@
         "a source update withholds resolved material after its provider or injector changes",
         "live static registration does not require Gateway placement",
         "live static registration losing to DELETE preserves its deleting row without Gateway cleanup"
+      ]
+    },
+    {
+      "path": "tests/integration/aws-parameter-credential-input.test.ts",
+      "expectedTests": [
+        "configured AWS protected input rereads rotation and refuses unsafe reads",
+        "regular OCC protected inference uses fresh AWS input and enforces withdrawn grants"
       ]
     },
     {
