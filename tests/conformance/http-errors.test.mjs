@@ -271,13 +271,23 @@ const cases = [
     },
   ],
   [
-    "a repository profile a Credential Proxy cannot deliver names the supported profiles",
-    new RepositoryGitProfileUnsupportedError(),
+    "several repository bindings a Credential Proxy cannot deliver name the fix for all of them",
+    new RepositoryGitProfileUnsupportedError(2),
     {
       status: 409,
       code: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
       message:
-        "A Credential Proxy delivers repository Git only for one git-write or github-installation binding, so this Agent's repository access cannot start. Keep one such binding, remove them, or use native prepared Git without a Sandbox or Proxy, then deploy again.",
+        "To use more than one repository, set each one to use its approved GitHub App permissions. API callers: set `profile` to `github-repository` for each entry in `repositoryBindings`.",
+    },
+  ],
+  [
+    "one repository binding a Credential Proxy cannot deliver names the supported profiles",
+    new RepositoryGitProfileUnsupportedError(1),
+    {
+      status: 409,
+      code: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
+      message:
+        "A Credential Proxy cannot deliver this repository's Git access level. Use `github-repository` or `git-write` for it, or ask an administrator to use native prepared Git without a Sandbox or Proxy, then deploy again.",
     },
   ],
   [
