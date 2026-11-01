@@ -215,9 +215,9 @@ variable that no Configuration Secret binding sets, unless an Installation
 Driver adds launch variables. Bind a Secret to it, or remove or disable the
 plugin entry. OpenClaw reads these inputs only in an entry keyed by the exact
 plugin ID, such as `google`, not `Google`. Saves and deployment refuse another
-spelling of a `codex` or `acpx` entry key, such as `Codex`, and on Kubernetes of
-`file-transfer` or a managed plugin's key: OpenClaw merges it into that plugin's
-entry, which OCE checks only at the exact key. On Kubernetes, Configuration save,
+spelling of a `codex` or `acpx` key, such as `Codex`, and on Kubernetes of
+`file-transfer` or a managed plugin: OpenClaw merges it into that entry, which
+OCE checks only at the exact key. On Kubernetes, Configuration save,
 Agent save and deployment also refuse a reference OpenClaw cannot read in any
 active plugin's secret input, including an enabled Beam or IMAP entry: a
 SecretRef without a provider, a provider that `secrets.providers` does not
