@@ -183,6 +183,15 @@ later Preset changes cannot alter the form. Before saving, **Start over** confir
 discard and opens a fresh chooser. A successful or uncertain save disables restart
 and uses ordinary creation recovery.
 
+The form keeps the chooser state and the `configuration.values` path each variable
+filled. A Create refusal that starts `Configuration setting <path>` and covers such a
+path names those variables and offers **Change** with their labels, unless the submitted
+value at that path differs from the one the Preset rendered. While restart is
+enabled, that action reopens the chooser from the kept state, marks those fields
+with the server's sentence and focuses the first. The added text names variables, never
+their values. A quoted path segment, such as `models["openai/gpt 5"]`, is one key. If the
+Preset then fails to load, focus moves to the chooser heading.
+
 `apps/controller/src/console/console.mjs:loadPage`
 
 `loadPage` captures JSON, model controls, workspace files, repositories and staged

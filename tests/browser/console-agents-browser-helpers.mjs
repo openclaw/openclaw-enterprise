@@ -1359,3 +1359,75 @@ export async function countInvalidEvents(page) {
   });
   return () => page.evaluate(() => globalThis.invalidEvents);
 }
+
+// A Configuration row as a release before a save rule stored it: save refuses `values` with
+// `reason`, and the row is then written through the Configuration Driver, as an older release
+// left it. `configurationDriver` is the fixture's test Configuration Driver.
+export async function storeRefusedConfiguration(
+  fixture,
+  configurationDriver,
+  agent,
+  values,
+  reason,
+) {
+  const configurationPath = `/namespaces/${agent.namespaceId}/configurations/${agent.configurationId}`;
+  const refusedSave = await fixture.request("PATCH", configurationPath, { body: { values } });
+  assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
+  assert.equal(refusedSave.body.error.message, reason);
+  const stored = configurationDriver.stored({
+    namespaceId: agent.namespaceId,
+    id: agent.configurationId,
+  });
+  assert.ok(stored);
+  await configurationDriver.update({ ...stored, values });
+}
+
+export const draftActions = (page) => page.locator(".agent-draft-actions");
+export const draftDeployButton = (card) =>
+  card.getByRole("button", { name: "Deploy new version", exact: true });
+export const draftFirstStep = (card) =>
+  card.getByRole("listitem").first().locator(".checklist-detail");
+
+// Agent detail holds Deploy for a stored draft deploy admission refuses: the draft card shows
+// deploy's exact refusal, Deploy is disabled, nothing says ready, and the first step opens with
+// `step` (the step text up to and including its " · " separator).
+export async function expectDeployHeld(card, reason, step, message) {
+  await card.getByText(reason, { exact: true }).waitFor();
+  assert.equal(await draftDeployButton(card).isDisabled(), true, message);
+  assert.equal(await card.getByText("Ready to deploy.").count(), 0, message);
+  assert.ok((await draftFirstStep(card).textContent()).startsWith(step), message);
+}
+
+// Deploy admission refuses the stored draft with the exact text the page shows, before any
+// revision.
+export async function expectDeployRefused(fixture, agent, reason) {
+  const refusedDeploy = await fixture.request(
+    "POST",
+    `/namespaces/${agent.namespaceId}/agents/${agent.id}/deploy`,
+  );
+  assert.equal(refusedDeploy.status, 400, JSON.stringify(refusedDeploy.body));
+  assert.equal(refusedDeploy.body.error.message, reason, JSON.stringify(refusedDeploy.body));
+}
+
+// Following the held step in the Configuration editor: saving `values` makes the draft ready,
+// with Deploy enabled and the first step saved.
+export async function saveConfigurationUntilReady(page, card, values) {
+  const edit = page.getByRole("button", { name: "Edit Configuration", exact: true });
+  await edit.scrollIntoViewIfNeeded();
+  await edit.click();
+  await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
+  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+  assert.equal(await draftDeployButton(card).isDisabled(), false);
+  assert.match(await draftFirstStep(card).textContent(), /^Saved · Configuration /);
+}
+
+// The page fits the viewport: no horizontal scroll.
+export async function expectNoHorizontalScroll(page) {
+  assert.equal(
+    await page.evaluate(
+      () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+    ),
+    true,
+  );
+}

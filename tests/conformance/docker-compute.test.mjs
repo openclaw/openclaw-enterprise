@@ -1103,6 +1103,14 @@ for (const mode of ["embedded", "dedicated"]) {
     let initializerExit = 1;
     let setupFinished = false;
     let runtimeStarts = 0;
+    // A lost setup start response (Docker started setup, the Driver sees a request timeout),
+    // then a failed inspect of that setup container.
+    let loseSetupStart = false;
+    let failSetupInspect = false;
+    const requestTimeout = () =>
+      new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    const isSetup = (container) =>
+      container?.Config.Labels["org.openclaw.enterprise.role"] === "workspace-setup";
     driver.request = async (method, path, body) => {
       const url = new URL(path, "http://docker.invalid");
       if (method === "GET" && url.pathname.startsWith("/networks/")) {
@@ -1143,6 +1151,10 @@ for (const mode of ["embedded", "dedicated"]) {
         /^\/containers\/([^/]+)(?:\/(\w+))?$/.exec(url.pathname) ?? [];
       const name = decodeURIComponent(encodedName ?? "");
       if (method === "GET" && action === "json") {
+        if (failSetupInspect && isSetup(containers.get(name))) {
+          failSetupInspect = false;
+          throw requestTimeout();
+        }
         return containers.get(name);
       }
       if (method === "PUT" && action === "archive") {
@@ -1155,8 +1167,14 @@ for (const mode of ["embedded", "dedicated"]) {
       }
       if (method === "POST" && action === "start") {
         const container = containers.get(name);
-        if (container.Config.Labels["org.openclaw.enterprise.role"] === "workspace-setup") {
+        if (isSetup(container)) {
           assert.equal(deliveries.length > 0, true);
+          if (loseSetupStart) {
+            loseSetupStart = false;
+            failSetupInspect = true;
+            container.State = { Running: true };
+            throw requestTimeout();
+          }
           container.State = { Running: false, ExitCode: initializerExit };
           setupFinished = initializerExit === 0;
         } else {
@@ -1211,6 +1229,36 @@ for (const mode of ["embedded", "dedicated"]) {
       assert.equal(runtimeStarts, 0);
       assert.equal(containers.size, 0, "failed initializer and private payload must be removed");
       assert.equal(volumes.size, 2, "retry retains exact-Agent durable storage");
+
+      // The start response is lost after Docker started setup, and the inspect that would
+      // tell a running setup from a stopped one fails too. The attempt fails, but the Driver
+      // must leave the setup: removal would SIGKILL a setup that may hold OpenClaw's state
+      // lock (finding 3115).
+      loseSetupStart = true;
+      await assert.rejects(driver.prepareRevision(revision, { workspaceSetup: setup }), {
+        name: "TimeoutError",
+      });
+      assert.equal(
+        failSetupInspect,
+        false,
+        "the Driver inspected the setup after the failed start",
+      );
+      const leftSetup = [...containers.values()].find(isSetup);
+      assert.equal(
+        leftSetup?.State.Running,
+        true,
+        "a setup that may run is not stopped or removed",
+      );
+      // The next attempt inspects it again: while it runs, the attempt is unready and leaves it.
+      assert.equal(
+        (await driver.prepareRevision(revision, { workspaceSetup: setup })).ready,
+        false,
+      );
+      assert.equal([...containers.values()].find(isSetup), leftSetup);
+      assert.equal(leftSetup.State.Running, true);
+      assert.equal(runtimeStarts, 0, "no runtime starts while setup may run");
+      // The setup ends on its own; the attempt below removes it and proceeds normally.
+      leftSetup.State = { Running: false, ExitCode: 0 };
       initializerExit = 0;
       assert.equal((await driver.prepareRevision(revision, { workspaceSetup: setup })).ready, true);
       assert.deepEqual(

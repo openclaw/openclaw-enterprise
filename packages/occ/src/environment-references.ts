@@ -531,6 +531,79 @@ export function codexPluginPolicyProblem(
   return undefined;
 }
 
+// The identity OCC's own Gateway route sends; every trusted-proxy allowlist must keep it.
+export const TRUSTED_PROXY_IDENTITY = "occ-workspace-files";
+// Gateways decode proxy headers as Latin-1, so only printable ASCII is unambiguous.
+const PRINTABLE_ASCII_IDENTITY = /^[\x20-\x7e]+$/u;
+
+/**
+ * The Gateway resolves identityScopes for "@" identities case-insensitively, so case
+ * variants of one would share a grant; a case variant of the machine identity is a spoof.
+ */
+function proxyIdentityMatchKey(identity: string): string {
+  const folded = identity.toLowerCase();
+  return identity.includes("@") || folded === TRUSTED_PROXY_IDENTITY ? folded : identity;
+}
+
+/**
+ * The first `gateway.auth.trustedProxy` setting every Kubernetes topology refuses, as its setting
+ * and requirement, or undefined: an allowlist without the machine identity (empty admits every
+ * proxy user upstream), with identities a proxy header cannot carry exactly or that share a grant,
+ * and a deviceAutoApprove the pinned Gateway's strict schema refuses at startup. Kubernetes Compute
+ * refuses it (refuseInvalidTrustedProxyIdentities, findings 3006, 3032), and the Console names it
+ * before Deploy (finding 3121). The requirement names no submitted identity.
+ * `pending(key)` marks a setting that waits on a variable, such as in a Preset default.
+ */
+export function trustedProxyIdentitiesProblem(
+  trustedProxy: Readonly<Record<string, unknown>>,
+  pending?: (key: "allowUsers" | "deviceAutoApprove") => boolean,
+): { readonly setting: string; readonly requirement: string } | undefined {
+  const allowUsers = trustedProxy.allowUsers;
+  if (
+    allowUsers !== undefined &&
+    pending?.("allowUsers") !== true &&
+    (!Array.isArray(allowUsers) ||
+      !allowUsers.includes(TRUSTED_PROXY_IDENTITY) ||
+      allowUsers.some(
+        (user) =>
+          typeof user !== "string" ||
+          user.trim() !== user ||
+          !PRINTABLE_ASCII_IDENTITY.test(user) ||
+          // The Gateway looks grants up by plain property access.
+          Object.hasOwn(Object.prototype, user),
+      ) ||
+      new Set(allowUsers.map((user) => proxyIdentityMatchKey(user as string))).size !==
+        allowUsers.length)
+  ) {
+    // The case hint keeps a case duplicate from reading as two distinct identities (finding 3122);
+    // the whole message stays under configurationSettingMessage's 256-character cap.
+    return {
+      setting: "gateway.auth.trustedProxy.allowUsers",
+      requirement: `must include ${TRUSTED_PROXY_IDENTITY} and list distinct (case-insensitive for ${TRUSTED_PROXY_IDENTITY} and @ identities), nonblank, trimmed, printable ASCII identities that are not object property names`,
+    };
+  }
+  const deviceAutoApprove = trustedProxy.deviceAutoApprove;
+  if (deviceAutoApprove === undefined || pending?.("deviceAutoApprove") === true) {
+    return undefined;
+  }
+  const approval = asObject(deviceAutoApprove);
+  if (
+    approval === undefined ||
+    Object.keys(approval).some((key) => key !== "enabled" && key !== "scopes") ||
+    (approval.enabled !== undefined && typeof approval.enabled !== "boolean") ||
+    (approval.scopes !== undefined &&
+      (!Array.isArray(approval.scopes) ||
+        approval.scopes.some((scope) => typeof scope !== "string" || scope.trim() === "")))
+  ) {
+    return {
+      setting: "gateway.auth.trustedProxy.deviceAutoApprove",
+      requirement:
+        "must be an object with only an optional boolean enabled and an optional array of nonblank scope names",
+    };
+  }
+  return undefined;
+}
+
 // `keys` in PostgreSQL's jsonb key order: shorter keys first (by UTF-8 bytes), then byte by byte.
 function jsonbKeyOrder(keys: readonly string[]): string[] {
   const encoder = new TextEncoder();

@@ -35,3 +35,6 @@ export declare function pluginEntryKeyVariantProblem(
   values: unknown,
   plugins?: readonly string[],
 ): { readonly setting: string; readonly requirement: string } | undefined;
+export declare function trustedProxyIdentitiesProblem(
+  trustedProxy: Readonly<Record<string, unknown>>,
+): { readonly setting: string; readonly requirement: string } | undefined;

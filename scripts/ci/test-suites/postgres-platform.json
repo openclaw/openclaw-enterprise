@@ -47,6 +47,7 @@
     "tests/integration/postgres-openshell-standing-route.test.ts",
     "tests/integration/postgres-external-protected-git.test.ts",
     "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
+    "tests/integration/postgres-openshell-standing-repository-set.test.ts",
     "tests/integration/postgres-egress-send-receipts.test.mjs",
     "tests/integration/postgres-protected-credential-free.test.mjs",
     "tests/integration/postgres-standing-approval-api.test.ts",
@@ -400,7 +401,12 @@
     {
       "path": "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
       "expectedTests": [
-        "standing OpenShell installation grant crosses both expiries, serves two Git repositories and the API, then loses only GitHub",
+        "standing OpenShell installation grant crosses both expiries, serves two Git repositories and the API, then loses only GitHub"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-openshell-standing-repository-set.test.ts",
+      "expectedTests": [
         "one deployed OpenShell Agent pushes A and B with one repository-scoped token and cannot push C"
       ]
     },

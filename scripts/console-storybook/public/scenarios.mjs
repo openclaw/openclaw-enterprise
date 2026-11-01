@@ -110,6 +110,51 @@ const existingPresetSecret = [
   { selector: "#preset-variable-modelSecret-secret-source", value: "existing" },
 ];
 const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets";
+// A Preset variable that duplicates the machine identity in the trusted-proxy allowlist, which
+// the Compute preflight refuses by the setting's name (finding 3122).
+const presetVariableRefusal = {
+  standardCodexPreset: true,
+  presetTrustedProxyVariable: true,
+  rules: [
+    {
+      suffix: "/agents/validate",
+      method: "POST",
+      status: 400,
+      code: "INVALID_REQUEST",
+      message:
+        "Configuration setting gateway.auth.trustedProxy.allowUsers must include occ-workspace-files and list distinct (case-insensitive for occ-workspace-files and @ identities), nonblank, trimmed, printable ASCII identities that are not object property names.",
+    },
+  ],
+};
+const presetVariableRefused = [
+  ...passwordPresetForm.slice(0, -1),
+  { selector: "#preset-variable-human", value: "OCC-Workspace-Files" },
+  click("Use Preset"),
+  click("Create Agent"),
+];
+// A model policy key a Preset variable filled with a space, which the API quotes in the setting
+// it refuses (finding 3122). The message is the API's sentence for that model policy rule
+// (packages/occ/src/configured-harness.ts); tests/browser/console-agent-presets.test.ts pins it.
+const presetQuotedSettingRefusal = {
+  standardCodexPreset: true,
+  presetModelKeyVariable: true,
+  rules: [
+    {
+      suffix: "/agents/validate",
+      method: "POST",
+      status: 400,
+      code: "INVALID_REQUEST",
+      message:
+        'Configuration setting agents.defaults.models["openai/gpt 5 mini"] is not on the primary model\'s provider, "codex": remove it, or list a model of that provider.',
+    },
+  ],
+};
+const presetQuotedSettingRefused = [
+  ...passwordPresetForm.slice(0, -1),
+  { selector: "#preset-variable-fallback", value: "openai/gpt 5 mini" },
+  click("Use Preset"),
+  click("Create Agent"),
+];
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
 // A plugin tool-deny refusal as the API words it, naming the selected plugin.
 const pluginToolRefusal =
@@ -4007,6 +4052,42 @@ export const scenarios = {
       "Switching the refused password draft to OAuth clears the Secret collision choices and required alternate name. Returning to API key requires fresh credentials without restoring the collision.",
     gap: "Simulated UI proof; native fixtures cover the actual duplicate refusal and keyboard recovery.",
   },
+  createPresetVariableRefused: {
+    group: "Pages/Create Agent",
+    name: "Refused setting filled by a Preset variable",
+    path: create,
+    ...presetVariableRefusal,
+    actions: presetVariableRefused,
+    description:
+      "Create Agent's preflight refuses gateway.auth.trustedProxy.allowUsers, which the Preset variable Human filled. The refusal keeps the API's sentence, names the variable and offers Change Human.",
+    steps: ["Select Change Human: the Preset step opens with Human marked and focused."],
+    gap: "The preflight refusal is simulated; tests/browser/console-agent-presets.test.ts covers it with the real Kubernetes Compute rules.",
+  },
+  createPresetQuotedSettingRefused: {
+    group: "Pages/Create Agent",
+    name: "Refused quoted setting filled by a Preset variable",
+    path: create,
+    ...presetQuotedSettingRefusal,
+    actions: presetQuotedSettingRefused,
+    description:
+      'Create Agent\'s preflight refuses agents.defaults.models["openai/gpt 5 mini"], a key the Preset variable Fallback filled. The API quotes the key; the refusal still names the variable and offers Change Fallback.',
+    steps: ["Select Change Fallback: the Preset step opens with Fallback marked and focused."],
+    gap: "The preflight refusal is simulated; tests/browser/console-agent-presets.test.ts covers it with the real model policy rules.",
+  },
+  createPresetVariableMarked: {
+    group: "Pages/Create Agent",
+    name: "Preset variable marked after a refusal",
+    path: create,
+    ...presetVariableRefusal,
+    actions: [...presetVariableRefused, click("Change Human")],
+    description:
+      "Change Human reopens the Preset with the entered variables kept, except the model key. Human shows the refusal under it and has focus.",
+    steps: [
+      "Type in Human: the refusal clears.",
+      "Enter the model key again and select Use Preset to return to the form.",
+    ],
+    gap: "The preflight refusal is simulated; tests/browser/console-agent-presets.test.ts covers it with the real Kubernetes Compute rules.",
+  },
   createPasswordPresetDenied: {
     group: "Pages/Create Agent",
     name: "Password Secret creation denied",
@@ -5281,6 +5362,30 @@ export const scenarios = {
     steps: [
       "In Prepare this version, the first step reads Let the codex plugin run.",
       "Deploy new version is disabled with Configuration setting plugins.enabled must not be false: Dedicated Codex runs the codex plugin, so its Gateway would not start. Remove it.",
+    ],
+    gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes Compute rules.",
+  },
+  trustedProxyAllowUsersRefused: {
+    group: "Pages/Agent detail",
+    name: "Trusted-proxy allowlist without the machine identity",
+    path: draft,
+    deployed: true,
+    trustedProxyWithoutMachine: true,
+    rules: [
+      {
+        suffix: "/agents/validate",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting gateway.auth.trustedProxy.allowUsers must include occ-workspace-files and list distinct (case-insensitive for occ-workspace-files and @ identities), nonblank, trimmed, printable ASCII identities that are not object property names.",
+      },
+    ],
+    description:
+      "An older release saved a trusted-proxy allowlist without occ-workspace-files. Only Kubernetes Compute refuses it, so the page asks Create Agent's preflight, which runs the Installation's Compute rules. Here it refuses, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the Gateway authentication.",
+      "Deploy new version is disabled with the allowUsers refusal deploy gives.",
     ],
     gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes Compute rules.",
   },
