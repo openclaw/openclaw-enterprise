@@ -5222,6 +5222,20 @@ export const scenarios = {
     ],
     gap: "The stored key is simulated; this story does not call save or deploy admission or start a Gateway.",
   },
+  pluginPolicyListRefused: {
+    group: "Pages/Agent detail",
+    name: "Plugin deny list item that is not text",
+    path: draft,
+    deployed: true,
+    pluginDeny: ["discord", 7],
+    description:
+      "An older release saved a plugins.deny list with a number in it. OpenClaw's config schema refuses it, so no Gateway starts, and every Compute refuses to save or deploy it: the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the plugin allow or deny list.",
+      "Deploy new version is disabled with Configuration setting plugins.deny must list only plugin IDs as text, or the Gateway does not start: remove any other item.",
+    ],
+    gap: "The stored list is simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
   kubernetesEntryKeyVariantRefused: {
     group: "Pages/Agent detail",
     name: "Plugin entry key Kubernetes Compute refuses",
