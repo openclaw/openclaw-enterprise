@@ -2673,11 +2673,12 @@ for (const viewport of consoleViewports) {
     });
     await feedback.waitFor();
     // The API's sentence, then the variable the person typed into; never the value.
+    const feedbackText = (await feedback.textContent()) ?? "";
     assert.match(
-      await feedback.textContent(),
+      feedbackText,
       /^Configuration setting gateway\.auth\.trustedProxy\.allowUsers .* Request ID: \S+ The Preset variable Human filled this setting\. Change Human$/,
     );
-    assert.equal((await feedback.textContent())?.includes("OCC-Workspace-Files"), false);
+    assert.equal(feedbackText.includes("OCC-Workspace-Files"), false);
     await feedback.getByRole("button", { name: "Change Human", exact: true }).click();
 
     // The Preset step again, with the entered variables kept (never the password): Human holds
