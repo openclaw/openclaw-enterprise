@@ -473,8 +473,9 @@ function pluginPolicyId(name: unknown): string | undefined {
  * with config to it (plugin auto-enable), so these stay active (finding 3071). Startup skips an
  * exact entry with `enabled: false`, so a later entry for the same plugin that enables it leaves
  * the allowlist without it and the Gateway starts. This still counts that plugin active, an
- * over-refusal kept on purpose: activation's slot and channel exceptions to the allowlist are
- * not modeled here (finding 3074).
+ * over-refusal kept on purpose: the slot exceptions to the allowlist, the only ones on this path
+ * (the collector passes no root config, so the channel ones never apply), are not modeled for it
+ * (finding 3074).
  */
 export function activePluginSecretInputs(values: unknown): {
   readonly setting: string;
@@ -490,17 +491,17 @@ export function activePluginSecretInputs(values: unknown): {
   const denied = Array.isArray(plugins?.deny) ? plugins.deny.map(pluginPolicyId) : [];
   // OpenClaw merges the entries whose keys share a policy ID in key order: the last boolean
   // `enabled` wins, and a value that is not an object replaces the merged entry with {}, which
-  // leaves the plugin inactive. Before that, startup auto-enable may set `enabled: true` on the
-  // exact entry of a default-on plugin that leaves it unset, so that entry counts as enabled.
-  // `enabledBy` keeps the key of the entry whose `enabled` is the merged one.
+  // leaves `enabled` unset. Before that, startup auto-enable may set `enabled: true` on the exact
+  // entry of a default-on plugin that leaves it unset, so that entry counts as enabled.
+  // `enabledBy` keeps the key of the entry that set the merged `enabled` or cleared it.
   const enabled = new Map<string | undefined, boolean | undefined>();
   const enabledBy = new Map<string | undefined, string>();
   for (const [key, value] of Object.entries(entries)) {
     const id = pluginPolicyId(key);
     const entry = asObject(value);
     if (entry === undefined) {
-      enabled.set(id, false);
-      enabledBy.delete(id);
+      enabled.set(id, undefined);
+      enabledBy.set(id, key);
     } else if (typeof entry.enabled === "boolean") {
       enabled.set(id, entry.enabled);
       enabledBy.set(id, key);
@@ -513,19 +514,27 @@ export function activePluginSecretInputs(values: unknown): {
       enabledBy.set(id, key);
     }
   }
+  // Activation also selects a plugin whose `enabled` is unset when the trimmed
+  // `plugins.slots.memory` or `plugins.slots.contextEngine` is its exact ID
+  // (resolvePluginActivationStateShared; findings 3074 and 3081). Only `enabled: false` stops that.
+  const slots = asObject(plugins?.slots);
+  const slotted = [slots?.memory, slots?.contextEngine].flatMap((slot) =>
+    typeof slot === "string" ? [slot.trim()] : [],
+  );
   return Object.entries(entries).flatMap(([key, value]) => {
     const entry = asObject(value);
     const inputs = Object.hasOwn(PLUGIN_SECRET_INPUTS, key) ? PLUGIN_SECRET_INPUTS[key] : undefined;
     if (
       inputs === undefined ||
       entry === undefined ||
-      (inputs.enabledByDefault ? enabled.get(key) === false : enabled.get(key) !== true) ||
+      enabled.get(key) === false ||
+      (enabled.get(key) !== true && !slotted.includes(key)) ||
       denied.includes(key)
     ) {
       return [];
     }
     const path = keyedSettingPath("plugins.entries", key);
-    // A later entry for the same plugin that enables it is the one to turn off.
+    // A later entry for the same plugin that enables or clears it is the one to turn off.
     const by = enabledBy.get(key);
     const disable =
       by === undefined || by === key

@@ -100,9 +100,10 @@ Review these consumers with the upstream diff:
 - **Configuration rules that model OpenClaw:** compare the plugin config handling
   with [`environment-references.ts`](../../../../packages/occ/src/environment-references.ts):
   `PLUGIN_SECRET_INPUTS`, `PLUGIN_ID_ALIASES`, and the entry merge and plugin
-  auto-enable model in `activePluginSecretInputs`. Compare the entry merge with
-  `refusePluginEntryKeyVariants` and the `$include` rule in
-  [`configuration-settings.ts`](../../../../packages/occ/src/configuration-settings.ts).
+  auto-enable model and the slot activation in `activePluginSecretInputs`. In
+  [`configuration-settings.ts`](../../../../packages/occ/src/configuration-settings.ts),
+  compare entry key normalization with `refusePluginEntryKeyVariants`, and config
+  includes with `refuseConfigIncludes`.
 
 Update affected current references, guides, and flows when behavior changes.
 Preserve historical specifications and citations. Do not lower version or sandbox
