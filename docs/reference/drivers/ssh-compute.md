@@ -1,4 +1,20 @@
+---
+kind: reference/driver/impl
+---
+
 # SSH Compute Driver
+
+**Contents**
+
+- [Overview](#overview)
+- [Lifecycle](#lifecycle)
+- [Configuration](#configuration)
+- [Limits](#limits)
+- [Troubleshooting](#troubleshooting)
+
+## Overview
+
+This implementation follows the [ComputeDriver contract](compute.md).
 
 Use the SSH Compute Driver to run embedded OpenClaw on operator-managed
 Linux hosts. It prepares each Namespace over SSH and runs one systemd gateway
@@ -12,92 +28,9 @@ with a real model response. SSH does not support dedicated Codex, an OCC
 Secret-backed model API key, or a managed ChatGPT account. Use
 [Kubernetes Compute](kubernetes-compute.md) if you need those options.
 
-## Requirements and configuration
+## Lifecycle
 
-Provision Linux with systemd, util-linux `flock`, `getent`, the shadow account
-management tools (`useradd`, `userdel`, `groupadd`, `groupdel`), a root SSH
-account, Node.js 24, and a readable OpenClaw entrypoint. The controller processes
-need the system `ssh` executable and protected identity and known-hosts files.
-The Compose `node:24-bookworm` base includes OpenSSH; provide the client
-yourself if you choose another controller image base. The Driver never installs
-or upgrades host software and has no `sudo` fallback.
-API and worker production preflight both verify configured hosts, so both
-processes need these SSH inputs. Hosts receive no controller credentials,
-database access, or Installation YAML.
-
-In the existing trusted Installation document at `OCC_CONFIG_PATH`, select:
-
-```yaml
-drivers:
-  compute:
-    id: compute-ssh
-    configuration:
-      ssh:
-        identityFile: /etc/openclaw/ssh/id_ed25519
-        knownHostsFile: /etc/openclaw/ssh/known_hosts
-        connectTimeoutSeconds: 10
-      hosts:
-        stable:
-          address: 203.0.113.10
-          port: 22
-          user: root
-          nodePath: /usr/bin/node
-          openclawPath: /opt/openclaw/current/dist/index.js
-      runtime:
-        nodePath: /usr/bin/node
-        openclawPath: /opt/openclaw/current/dist/index.js
-        user: openclaw
-        root: /var/lib/openclaw-enterprise
-        systemdUnitDirectory: /etc/systemd/system
-      network:
-        gatewayPortRange:
-          start: 18800
-          end: 18899
-```
-
-This is the Compute selection only. Keep the required `occ`, Configuration,
-IAM, and Secret selections from the
-[Installation contract](selection.md). SSH does not consume the Secret Driver;
-OCC Secret bindings are unsupported. Select Configuration storage appropriate to
-the control plane; SSH does not provision Kubernetes namespaces for bundled
-ConfigMap or Secret storage. SSH selection does not add a raw-host control-plane
-installer or alter the existing production API security requirements.
-
-SSH Compute rejects AgentRevisions with a nonempty requested plugin map or an
-Agent default plugin approver policy, including an explicit empty approver list,
-before applying host effects. Agent create/update can still save these policies;
-clear both before deploying through SSH. Use Kubernetes Compute for bundled
-PluginDriver proof paths.
-
-| Setting                                  | Contract                                                                                                                                               |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ssh.identityFile`, `ssh.knownHostsFile` | Required absolute worker-local file paths.                                                                                                             |
-| `ssh.connectTimeoutSeconds`              | Positive integer up to `2147483647` (the OpenSSH limit), default `10`.                                                                                 |
-| `hosts`                                  | Nonempty map keyed by exact platform Namespace **name**, not resource ID.                                                                              |
-| `hosts.<name>.address`, `.user`          | Required hostname/IP and SSH user `root`.                                                                                                              |
-| `hosts.<name>.port`                      | Integer `1`–`65535`, default `22`.                                                                                                                     |
-| `hosts.<name>.nodePath`, `.openclawPath` | Optional absolute host-specific overrides, outside `/tmp` and `/var/tmp`.                                                                              |
-| `runtime.nodePath`, `.openclawPath`      | Required absolute shared host executable/entrypoint paths, outside `/tmp` and `/var/tmp`.                                                              |
-| `runtime.user`                           | Required non-root account-name prefix for Driver-managed per-Agent users and private groups.                                                           |
-| `runtime.root`                           | Required absolute state root, such as `/var/lib/openclaw-enterprise`. Startup refuses `/`, `.` or `..` segments, `/tmp` and `/var/tmp` (`PrivateTmp`). |
-| `runtime.systemdUnitDirectory`           | Absolute path, default `/etc/systemd/system`.                                                                                                          |
-| `network.gatewayPortRange`               | Inclusive integers `1024 <= start <= end <= 65535`.                                                                                                    |
-
-Unknown keys fail startup. Paths cannot contain whitespace, quotes, control
-characters, shell metacharacters, or systemd expansion syntax. Host ports and
-paths are trusted operator settings, never caller-selected placement. The
-worker uses `BatchMode=yes`, `StrictHostKeyChecking=yes`, `IdentitiesOnly=yes`,
-the explicit known-hosts file and identity, the configured connect timeout, and
-`LogLevel=ERROR`. Each invocation sends the controller-owned CommonJS helper on
-stdin with one base64 JSON operation argument. Operations have a 180-second
-timeout and stop on Compute cancellation; readiness polling has a 120-second
-timeout. Closing the SSH session does not signal the remote helper, so
-the helper writes a heartbeat line every second and stops mutating as soon as
-a write to the closed session pipe fails; it also enforces its own deadline
-below the transport timeout. A step already handed to `systemctl` completes on
-the host.
-
-## Host layout and ownership
+### Host layout and ownership
 
 `nsHash`, `agentHash`, and `revHash` are the first 12 hexadecimal characters of
 SHA-256 of the exact Namespace, Agent, and AgentRevision IDs.
@@ -151,7 +84,7 @@ must use the same root and unit directory for that inventory to be shared.
 Reserve the configured range for these gateways; the Driver does not claim ports
 belonging to unrelated host processes.
 
-## Namespace and revision lifecycle
+### Namespace and revision lifecycle
 
 Preflight verifies both local SSH files, then probes every host for SSH
 reachability, `systemctl --version`, `flock` and account-management commands on
@@ -209,7 +142,100 @@ file, port allocation) and runtime account. Absence is success.
 Foreign ownership or configuration failures are permanent; transport, timeouts,
 and unexpected helper failures are retryable.
 
-## Credentials and supported boundaries
+## Configuration
+
+### Requirements and configuration
+
+Provision Linux with systemd, util-linux `flock`, `getent`, the shadow account
+management tools (`useradd`, `userdel`, `groupadd`, `groupdel`), a root SSH
+account, Node.js 24, and a readable OpenClaw entrypoint. The controller processes
+need the system `ssh` executable and protected identity and known-hosts files.
+The Compose `node:24-bookworm` base includes OpenSSH; provide the client
+yourself if you choose another controller image base. The Driver never installs
+or upgrades host software and has no `sudo` fallback.
+API and worker production preflight both verify configured hosts, so both
+processes need these SSH inputs. Hosts receive no controller credentials,
+database access, or Installation YAML.
+
+In the existing trusted Installation document at `OCC_CONFIG_PATH`, select:
+
+```yaml
+drivers:
+  compute:
+    id: compute-ssh
+    configuration:
+      ssh:
+        identityFile: /etc/openclaw/ssh/id_ed25519
+        knownHostsFile: /etc/openclaw/ssh/known_hosts
+        connectTimeoutSeconds: 10
+      hosts:
+        stable:
+          address: 203.0.113.10
+          port: 22
+          user: root
+          nodePath: /usr/bin/node
+          openclawPath: /opt/openclaw/current/dist/index.js
+      runtime:
+        nodePath: /usr/bin/node
+        openclawPath: /opt/openclaw/current/dist/index.js
+        user: openclaw
+        root: /var/lib/openclaw-enterprise
+        systemdUnitDirectory: /etc/systemd/system
+      network:
+        gatewayPortRange:
+          start: 18800
+          end: 18899
+```
+
+This is the Compute selection only. Keep the required `occ`, Configuration,
+IAM, and Secret selections from the
+[Installation contract](selection.md). SSH does not consume the Secret Driver;
+OCC Secret bindings are unsupported. Select Configuration storage appropriate to
+the control plane; SSH does not provision Kubernetes namespaces for bundled
+ConfigMap or Secret storage. SSH selection does not add a raw-host control-plane
+installer or alter the existing production API security requirements.
+
+SSH Compute rejects AgentRevisions with a nonempty requested plugin map or an
+Agent default plugin approver policy, including an explicit empty approver list,
+before applying host effects. Agent create/update can still save these policies;
+clear both before deploying through SSH. Use Kubernetes Compute for bundled
+PluginDriver proof paths.
+
+The [SSH schema](../../../apps/controller/src/drivers/compute/ssh/index.ts)
+validates `drivers.compute.configuration` below. API and worker read the same
+startup file; restart both to load changes. Required settings have no defaults.
+
+| Setting                                              | Type    | Requirement | Value, default, and constraints                                                |
+| ---------------------------------------------------- | ------- | ----------- | ------------------------------------------------------------------------------ |
+| `ssh.identityFile`, `ssh.knownHostsFile`             | string  | Required    | Absolute controller-local file paths, available to both API and worker.        |
+| `hosts`                                              | object  | Required    | Nonempty map keyed by exact platform Namespace name, not resource ID.          |
+| `hosts.<name>.address`, `hosts.<name>.user`          | string  | Required    | Hostname/IP and SSH user `root`.                                               |
+| `runtime.nodePath`, `runtime.openclawPath`           | string  | Required    | Absolute host executable/entrypoint paths outside `/tmp` and `/var/tmp`.       |
+| `runtime.user`                                       | string  | Required    | Non-root account-name prefix for managed per-Agent users and private groups.   |
+| `runtime.root`                                       | string  | Required    | Absolute state root. Refuses `/`, `.` or `..` segments, `/tmp` and `/var/tmp`. |
+| `network.gatewayPortRange`                           | object  | Required    | Inclusive integer `start` and `end`: `1024 <= start <= end <= 65535`.          |
+| `ssh.connectTimeoutSeconds`                          | integer | Optional    | `1`–`2147483647`; defaults to `10` seconds.                                    |
+| `hosts.<name>.port`                                  | integer | Optional    | `1`–`65535`; defaults to `22`.                                                 |
+| `hosts.<name>.nodePath`, `hosts.<name>.openclawPath` | string  | Optional    | Host overrides for shared runtime paths; same path restrictions.               |
+| `runtime.systemdUnitDirectory`                       | string  | Optional    | Absolute path; defaults to `/etc/systemd/system`.                              |
+
+Unknown keys fail startup. Paths cannot contain whitespace, quotes, control
+characters, shell metacharacters, or systemd expansion syntax. Host ports and
+paths are trusted operator settings, never caller-selected placement. The
+worker uses `BatchMode=yes`, `StrictHostKeyChecking=yes`, `IdentitiesOnly=yes`,
+the explicit known-hosts file and identity, the configured connect timeout, and
+`LogLevel=ERROR`. Each invocation sends the controller-owned CommonJS helper on
+stdin with one base64 JSON operation argument. Operations have a 180-second
+timeout and stop on Compute cancellation; readiness polling has a 120-second
+timeout. Closing the SSH session does not signal the remote helper, so
+the helper writes a heartbeat line every second and stops mutating as soon as
+a write to the closed session pipe fails; it also enforces its own deadline
+below the transport timeout. A step already handed to `systemctl` completes on
+the host.
+
+## Limits
+
+### Credentials and supported boundaries
 
 The native listener must serve HTTP for readiness and private traffic.
 `gateway.tls.enabled` must be omitted or false; native TLS enablement is refused
@@ -290,7 +316,7 @@ snapshot and unit; the Driver will not repair them. `<root>/.compute-lock` is an
 empty file whose kernel lock is released when its holder exits; a killed helper
 never leaves it held, so it needs no manual cleanup.
 
-## Related
+### Related
 
 - [ComputeDriver contract](compute.md)
 - [Driver selection](selection.md)

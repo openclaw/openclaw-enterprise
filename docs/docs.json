@@ -335,6 +335,10 @@
                             "label": "Overview"
                           },
                           {
+                            "page": "reference/drivers/kubernetes-compute/configuration",
+                            "label": "Configuration"
+                          },
+                          {
                             "page": "reference/drivers/kubernetes-compute/networking-and-isolation",
                             "label": "Networking and Isolation"
                           },
