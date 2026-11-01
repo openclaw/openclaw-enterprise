@@ -107,3 +107,9 @@ request GET "$base/agents/$agent" |
 ```
 
 4. Reopen **Open Agent UI**, select the original chat, and ask the Agent to read the remote branch. For a public repository, remote visibility alone cannot prove authenticated access. Check the new revision’s proxy receipt for `upload-pack` or `advertise-upload-pack` using the [Git verification queries](../repository-credentials/openshell-git-push.md#5-wait-for-renewal-then-push-again).
+
+### Renew expired read-only access
+
+A finite repository grant has an absolute deadline. Token renewal during that grant does not extend the deadline. After expiry, an authorized owner can deploy a new version with a fresh **read-only** grant. First check the prior revision and any outstanding retirement through the [Token Service lifecycle](../../reference/repository-credentials.md#token-service-lifecycle). Reconcile unknown outcomes before granting access again.
+
+Load the saved operator session, keep the same repository selection and repeat step 3 with the verified read-only ConfigMap. Wait for the new active revision, then use the read check in step 4. This preserves the workspace and chat. A standing approval changes the duration of access and requires its own explicit authorization.

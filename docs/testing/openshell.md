@@ -101,7 +101,9 @@ Helm, and the dependencies in the [testing prerequisites](README.md#requirements
 Build the local CLI first with `pnpm cli:build`.
 
 ```sh
-# Kubernetes control plane
+# Kubernetes control plane, including a real first-Agent deployment and browser access checks.
+# Select an existing authorized Codex service account and its model.
+CODEX_ACCESS_TOKEN_FILE=/secure/oce/codex-token OCC_TEST_OPENAI_MODEL="$MODEL" \
 OCC_TEST_DEV_UP_OPENSHELL_REAL=1 \
   node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
 
