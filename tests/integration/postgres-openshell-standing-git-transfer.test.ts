@@ -120,13 +120,16 @@ test(
             beforeIssue,
             driver: protectedGit.owner.ref,
             installationAccess: true,
-            // GitHub issues 80 s tokens by the system clock. The owner's wall clock reads 50 s
-            // behind, inside the 60 s skew allowance, so it still finds its unchanged 60 s minimum
-            // validity after the skew (80 + 50 - 60 = 70 s). PostgreSQL and every Date.now()
-            // check keep real time: each token is usable for 20 s (expiry minus the skew), and the
-            // expired token's retirement below still waits for its real expiry plus the skew.
-            tokenLifetimeMs: 80_000,
-            ownerClock: clockBehind(50_000),
+            // GitHub issues tokens by the system clock: 68 s for the first, 80 s for its successor.
+            // The owner's wall clock reads 58 s behind, inside the 60 s skew allowance, so it still
+            // finds its unchanged 60 s minimum validity after the skew (68 + 58 - 60 = 66 s).
+            // PostgreSQL and every Date.now() check keep real time: the first token is usable for
+            // 8 s (expiry minus the skew), which covers the first transfer, and its retirement below
+            // still waits for its real expiry plus the skew; that wait ends soon after the admission
+            // deadline. The successor is usable for 20 s: the second transfer, API requests and
+            // withdrawal all happen inside it.
+            tokenLifetimeMs: (index) => (index === 1 ? 68_000 : 80_000),
+            ownerClock: clockBehind(58_000),
           })),
           requestedBinding: {
             repositoryRef: "team-installation",
