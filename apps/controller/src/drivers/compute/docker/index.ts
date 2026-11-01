@@ -974,8 +974,9 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       },
       [201],
     );
-    // Removed afterwards only if it never started or was seen to exit: a failed poll (for
-    // example a Docker inspect timeout) leaves a started setup running (finding 3114).
+    // Removed afterwards only if it was seen to exit, or its start request failed and it is
+    // not running: a failed poll (for example a Docker inspect timeout) leaves a started setup
+    // running (finding 3114).
     let started = false;
     let exited = false;
     try {
@@ -1040,9 +1041,22 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       // native runs; preparation stays unready while it runs and removes it once it exits.
       return false;
     } finally {
-      if (!started || exited) {
+      if (exited || (!started && !(await this.workspaceSetupMayRun(name)))) {
         await this.removeContainer(name);
       }
+    }
+  }
+
+  // Whether a setup whose start request failed may still be running: the request can fail
+  // after Docker started it (for example a lost response), and removal would SIGKILL a setup
+  // that may hold the state lock (finding 3115). When the inspect fails too, it leaves the
+  // container, and the next attempt inspects it again: it reports a running setup pending
+  // and removes a stopped one.
+  private async workspaceSetupMayRun(name: string): Promise<boolean> {
+    try {
+      return (await this.container(name))?.State?.Running === true;
+    } catch {
+      return true;
     }
   }
 
