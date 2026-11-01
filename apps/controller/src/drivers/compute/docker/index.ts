@@ -895,14 +895,6 @@ export class DockerComputeDriver implements ComputeDriver {
     return dockerSetupWorkspace(revision.configuration, preparationSettingError);
   }
 
-  /**
-   * Runs workspace setup; false while a setup container is still running. Native setup holds
-   * OpenClaw's state lock on the retained state volume, and the container's PID 1 ignores
-   * SIGTERM, so a stop would SIGKILL it with the lock held. Every later setup and Gateway on that
-   * state, in another PID namespace, would then refuse it (finding 3109). So a running setup is
-   * never stopped here: preparation stays unready until it exits, then removes it. The setup
-   * bounds its own native runs.
-   */
   private async initializeWorkspace(
     revision: Readonly<AgentRevision>,
     setup: Readonly<WorkspaceSetup>,
@@ -939,6 +931,7 @@ export class DockerComputeDriver implements ComputeDriver {
     if (existing !== undefined) {
       this.verifyOwnership(existing.Config?.Labels, ownership, `container ${name}`);
       if (existing.State?.Running) {
+        // Still running after an earlier attempt (see the end of the wait below).
         return false;
       }
       await this.removeContainer(name);
@@ -1040,6 +1033,11 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 100));
       }
+      // Leave a setup that outlives this wait running (finding 3109). Native setup holds
+      // OpenClaw's state lock on the retained state volume, and its PID 1 ignores SIGTERM, so
+      // a stop would SIGKILL it with the lock held. Every later setup and Gateway on that
+      // state, in another PID namespace, would then refuse it. The setup bounds its own
+      // native runs; preparation stays unready while it runs and removes it once it exits.
       return false;
     } finally {
       if (!started || exited) {
