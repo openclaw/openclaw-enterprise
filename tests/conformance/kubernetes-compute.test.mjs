@@ -9642,7 +9642,8 @@ test("Kubernetes Compute refuses another spelling of a plugin entry key it rende
   // Gateway entrypoint enables and configures file-transfer for a workspace node, and renders the
   // managed catalog plugin diffs for the Agent's plugin selection, both only at the exact key, so a
   // later `File-Transfer` entry could turn the workspace node's plugin off and a `Diffs` entry
-  // could replace the managed one. Configuration save, Preset save and deploy admission refuse it.
+  // could replace the managed one. Configuration save, Preset save and deploy admission refuse it;
+  // configuration-controller.test.mjs proves a Preset key that waits on a variable.
   const driver = new KubernetesComputeDriver(options());
   const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
   const base = { agents: { defaults: { model: "codex/gpt-5" } } };
@@ -9669,27 +9670,6 @@ test("Kubernetes Compute refuses another spelling of a plugin entry key it rende
       () => driver.validateHarnessAuth(codex, apiKeyAuth, withEntries(entries), {}),
       expected,
     );
-  }
-  // On a Preset save, a key whose written text a variable could make such a spelling is refused;
-  // a key that is only a variable, or that no filling makes one, waits for the filled values.
-  const variable = "{{ vars.key }}";
-  const unresolved = (path, key) =>
-    key === true && path.at(-1).includes(variable) ? path.at(-1).split(variable) : undefined;
-  assert.throws(
-    () =>
-      driver.validateConfiguration(withEntries({ [`File-${variable}`]: { enabled: false } }), {
-        unresolved,
-      }),
-    {
-      name: "ConfigurationHarnessError",
-      message: pluginEntryKeyVariantRefusal(`plugins.entries["File-${variable}"]`, "file-transfer"),
-    },
-  );
-  for (const entries of [
-    { [variable]: { enabled: false } },
-    { [`file-transfer-${variable}`]: { enabled: false } },
-  ]) {
-    driver.validateConfiguration(withEntries(entries), { unresolved });
   }
   // The exact keys, and other plugins' keys in another spelling, are accepted.
   for (const entries of [

@@ -1742,31 +1742,62 @@ test("Configuration save and deployment refuse another spelling of the codex or 
     context,
     withEntries({ ...exact.plugins.entries, Google: { enabled: false } }),
   );
-  // A Preset key that waits on a variable is refused when its written text could spell one of
-  // these keys another way; a key that is only a variable, or that no filling makes one, saves.
-  const variables = { key: { type: "string" } };
-  for (const [key, id] of [
-    ["Codex{{ vars.key }}", "codex"],
-    ["{{ vars.key }}ACPX", "acpx"],
-    ["File-{{ vars.key }}", "file-transfer"],
-  ]) {
-    assertRefused(
-      await savePreset(
-        context,
-        { variables, configuration: { values: withEntries({ [key]: { enabled: false } }) } },
-        `Variant-${id}`,
-      ),
-      pluginEntryKeyVariantRefusal(`plugins.entries[${JSON.stringify(key)}]`, id),
-      { label: key },
-    );
-  }
-  for (const key of ["{{ vars.key }}", "codex-{{ vars.key }}"]) {
+  // On Kubernetes, the same update recovers a stored file-transfer variant.
+  await writePastOcc(
+    configurationDriver,
+    agent.configurationId,
+    withEntries({ "File-Transfer": {} }),
+  );
+  const fileTransfer = withEntries({ "file-transfer": {} });
+  const recovered = await request(context.app, "PATCH", agent.item, {
+    body: { values: fileTransfer },
+  });
+  assert.equal(recovered.status, 200, JSON.stringify(recovered.body));
+  assert.deepEqual(recovered.body.data.values, fileTransfer);
+  // A Preset key that waits on a variable saves, as each canSpell rule decides: a launch can still
+  // fill it with a key that names no such plugin, such as Codex-helper. The Configuration a launch
+  // creates is checked with the filled key, and a filling that spells another key gets the same
+  // refusal there. co{{ vars.suffix }}dex can spell only the exact codex key.
+  const variables = { suffix: { type: "string" }, a: { type: "string" }, b: { type: "string" } };
+  const launch = (key, inputs) =>
+    request(context.app, "POST", context.collection, {
+      body: {
+        kind: "agent",
+        ...renderPresetTemplate(
+          { variables, configuration: { values: withEntries({ [key]: {} }) } },
+          inputs,
+        ).configuration,
+      },
+    });
+  for (const [index, [key, refused, accepted]] of [
+    [
+      "Codex{{ vars.suffix }}",
+      [{ suffix: "" }, "plugins.entries.Codex", "codex"],
+      { suffix: "-helper" },
+    ],
+    [
+      "{{ vars.a }}-{{ vars.b }}",
+      [{ a: "File", b: "Transfer" }, "plugins.entries.File-Transfer", "file-transfer"],
+      { a: "my", b: "plugin" },
+    ],
+    ["co{{ vars.suffix }}dex", undefined, { suffix: "" }],
+    ["{{ vars.suffix }}", undefined, { suffix: "slack" }],
+    ["codex-{{ vars.suffix }}", undefined, { suffix: "helper" }],
+  ].entries()) {
     const preset = await savePreset(
       context,
-      { variables, configuration: { values: withEntries({ [key]: { enabled: false } }) } },
-      `Variant-waits-${key.length}`,
+      { variables, configuration: { values: withEntries({ [key]: {} }) } },
+      `Variant-waits-${index}`,
     );
-    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+    assert.equal(preset.status, 201, `${key}: ${JSON.stringify(preset.body)}`);
+    if (refused !== undefined) {
+      const [inputs, path, id] = refused;
+      assertRefused(await launch(key, inputs), pluginEntryKeyVariantRefusal(path, id), {
+        label: key,
+      });
+    }
+    const launched = await launch(key, accepted);
+    assert.equal(launched.status, 201, `${key}: ${JSON.stringify(launched.body)}`);
   }
 });
 
@@ -1817,29 +1848,32 @@ test("Configuration save and deployment refuse OpenClaw's $include directive", a
   assert.deepEqual(removed.body.data.values, runtimeSelected);
   const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
-  // A Preset key that waits on a variable is refused when its written text could spell $include;
-  // a key that is only a variable could spell any key, so it waits for the filled values.
+  // A Preset key that waits on a variable saves: a launch can still fill it with another key. The
+  // Configuration a launch creates is checked with the filled key, and a filling that spells
+  // $include gets the same refusal there.
   const variables = { key: { type: "string" } };
-  const refusedKey = "$inc{{ vars.key }}";
-  assertRefused(
-    await savePreset(
-      context,
-      {
-        variables,
-        configuration: { values: { ...runtimeSelected, tools: { [refusedKey]: "x" } } },
-      },
-      "Include-variable",
-    ),
-    configIncludeRefusal(`tools[${JSON.stringify(refusedKey)}]`),
-  );
-  for (const key of ["{{ vars.key }}", "$includes-{{ vars.key }}"]) {
-    const preset = await savePreset(
-      context,
-      { variables, configuration: { values: { ...runtimeSelected, tools: { [key]: "x" } } } },
-      `Include-waits-${key.length}`,
-    );
-    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const template = (key) => ({
+    variables,
+    configuration: { values: { ...runtimeSelected, tools: { [key]: "x" } } },
+  });
+  const launch = (key, inputs) =>
+    request(context.app, "POST", context.collection, {
+      body: { kind: "agent", ...renderPresetTemplate(template(key), inputs).configuration },
+    });
+  for (const [index, key] of [
+    "{{ vars.key }}e",
+    "$inc{{ vars.key }}",
+    "{{ vars.key }}",
+  ].entries()) {
+    const preset = await savePreset(context, template(key), `Include-waits-${index}`);
+    assert.equal(preset.status, 201, `${key}: ${JSON.stringify(preset.body)}`);
   }
+  assertRefused(
+    await launch("{{ vars.key }}e", { key: "$includ" }),
+    configIncludeRefusal("tools.$include"),
+  );
+  const launched = await launch("{{ vars.key }}e", { key: "custom-rul" });
+  assert.equal(launched.status, 201, JSON.stringify(launched.body));
 });
 
 test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE runtime cannot run", async () => {

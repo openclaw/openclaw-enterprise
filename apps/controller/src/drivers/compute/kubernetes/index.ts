@@ -4860,7 +4860,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // composed policy (managedGatewayConfiguration).
     if (admission) {
       validateGatewayToolPolicy(configuration, callerSettingError, options);
-      refuseKubernetesPluginEntryKeyVariants(configuration, options);
+      refuseKubernetesPluginEntryKeyVariants(configuration);
     }
   }
 

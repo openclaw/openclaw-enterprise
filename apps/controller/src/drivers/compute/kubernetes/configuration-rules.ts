@@ -83,13 +83,11 @@ const FILE_TRANSFER_PLUGIN = "file-transfer";
  */
 export function refuseKubernetesPluginEntryKeyVariants(
   configuration: Readonly<OpenClawConfigurationDocument>,
-  options?: ConfigurationValidationOptions,
 ): void {
-  refusePluginEntryKeyVariants(
-    configuration,
-    [FILE_TRANSFER_PLUGIN, ...openClawManagedPluginIds()],
-    options,
-  );
+  refusePluginEntryKeyVariants(configuration, [
+    FILE_TRANSFER_PLUGIN,
+    ...openClawManagedPluginIds(),
+  ]);
 }
 
 /**
