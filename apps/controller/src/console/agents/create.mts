@@ -1911,7 +1911,7 @@ function renderAgentForm(
   });
   // A refusal of a Configuration setting the Preset's variables filled names those variables, and
   // this action reopens the Preset with its variables kept and those fields marked (finding 3122).
-  // It is offered while Start over is: nothing this form saved would be left behind.
+  // It shows while Start over is enabled: nothing this form saved would be left behind.
   let refusedVariables: Pick<PresetReturn, "variables" | "refusal"> | undefined;
   const changePresetVariables = button(
     "Change Preset variables",
@@ -2974,7 +2974,8 @@ function renderAgentForm(
       outcomeUnknown ||
       saved ||
       Boolean(savedSecret || savedCredentialSource || credentialRegistration);
-    changePresetVariables.disabled = startOver.disabled;
+    // Shown only while it can act, so no unavailable action sits in the refusal.
+    changePresetVariables.hidden = startOver.disabled;
     if (useModelChoices) {
       choiceField.hidden = manualModel;
       modelField.hidden = !manualModel;
