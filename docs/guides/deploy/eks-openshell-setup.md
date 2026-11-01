@@ -31,6 +31,25 @@ Confirm the account and role, then test Kubernetes TLS from the operator host. S
 
 [Build the controller and runtime](production-installation.md#build-and-publish-production-images) from one release or [copy verified images](private-registry-images.md) into a registry the nodes can pull from. Set `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` to the resulting immutable references. The templates target AMD64 nodes, OpenShell 0.1.6 and Codex 0.164.0. Mirror the stock Gateway, supervisor and Sandbox runtime AMD64 manifests into the repository selected below, retaining their digests. Have the matching stock chart archive, the OCE chart and the qualified Envoy proxy image available. Create the system namespace before its policies and chart jobs. Use the source commit and image digests in the build or publication receipt. A documentation branch head alone does not identify the images. Use an OpenShell-compatible kernel, a restricted workload Namespace and a `runc` RuntimeClass named `openshell-sandbox` pinned to the Agent node group. Check Landlock, seccomp and no-new-privileges on that pool before enrolling credentials.
 
+Register the GatewayClass before installing OCC. Installing the Envoy Gateway controller does not create a class named `eg`. On a fresh cluster, create the class only when absent. Stop if an existing class belongs to another controller.
+
+```bash
+class_json=$(kubectl --context "$CONTEXT" get gatewayclass eg --ignore-not-found -o json)
+if [[ -z $class_json ]]; then
+  kubectl --context "$CONTEXT" create -f - <<'YAML'
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eg
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+YAML
+fi
+kubectl --context "$CONTEXT" get gatewayclass eg -o json |
+  jq -e '.spec.controllerName=="gateway.envoyproxy.io/gatewayclass-controller"'
+kubectl --context "$CONTEXT" wait gatewayclass/eg --for=condition=Accepted --timeout=3m
+```
+
 ## 2. Install OpenShell and bootstrap OCC
 
 These templates select the `oce` OCE release, the `openshell-gateway` OpenShell release, the `oce-system` namespace, the `eg` GatewayClass and the `envoy-gateway-system` namespace. They include the stock workspace resources, dedicated Codex settings and binary-scoped plugin artifact rules used for verification. [Manual Installation configuration](production-installation.md#advanced-copy-manual-yaml-examples)
@@ -91,6 +110,15 @@ Expect the target database, the named login and `t` for both connections. Keep t
 Provision the other Secret references in the rendered values. Use distinct OCE authentication and private routing keys, protected RDS connection files and CA, and the OpenShell client TLS Secret. The private routing Secret uses the key `occ`. Create and prepare the bootstrap PVC once with the chart’s expected UID/GID 1000 and directory mode 0700. The stock native runtime uses UID/GID 10001. [System Secrets and bootstrap volume](production-installation.md#provision-system-secrets-and-install)
 
 ```bash
+# Under strict VPC CNI, also allow the initialization hook to reach the DNS Service VIP.
+dns_ip=$(kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}')
+jq -n --arg ns "$PLATFORM_NS" --arg ip "$dns_ip" '{
+  apiVersion:"networking.k8s.io/v1",kind:"NetworkPolicy",
+  metadata:{namespace:$ns,name:"oce-initialization-dns-vip"},
+  spec:{podSelector:{matchLabels:{"app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"initialization"}},
+    policyTypes:["Egress"],egress:[{to:[{ipBlock:{cidr:($ip+"/32")}}],
+      ports:[{protocol:"UDP",port:53},{protocol:"TCP",port:53}]}]}}' |
+  kubectl --context "$CONTEXT" create -f -
 kubectl -n "$PLATFORM_NS" create secret generic occ-installation-startup \
   --from-file="installation.yaml=$RUN_DIR/installation.json"
 helm install oce "${OCE_CHART:?}" -n "$PLATFORM_NS" -f "$RUN_DIR/values.json" --wait --timeout 5m
@@ -98,6 +126,12 @@ kubectl -n "$PLATFORM_NS" rollout status deploy/openclaw-enterprise-api
 # Pin the Envoy data plane through its supported resource field.
 kubectl -n "$PLATFORM_NS" patch envoyproxy oce-agent-gateways --type=merge \
   -p "$(jq -nc --arg image "${ENVOY_IMAGE:?}" '{spec:{provider:{type:"Kubernetes",kubernetes:{envoyDeployment:{container:{image:$image}}}}}}')"
+kubectl -n "$PLATFORM_NS" wait gateway/oce-agent-gateways --for=condition=Programmed --timeout=5m
+kubectl -n envoy-gateway-system wait --for=create service/occ-gateway-362888b35fce --timeout=3m
+kubectl -n envoy-gateway-system get svc occ-gateway-362888b35fce -o json |
+  jq -e '.spec.type=="ClusterIP" and (.spec.clusterIP|test("^[0-9]+(\\.[0-9]+){3}$")) and any(.spec.ports[];.port==443 and .protocol=="TCP") and
+    .metadata.labels["gateway.envoyproxy.io/owning-gateway-name"]=="oce-agent-gateways" and
+    .metadata.labels["gateway.envoyproxy.io/owning-gateway-namespace"]=="oce-system"'
 ```
 
 The worker starts at zero. Helm runs the installation check, migration and bootstrap hooks. [Read the owner password and service key from the protected claim](eks-openshell-browser.md#read-the-protected-initial-owner-files), then [install the private TLS listener and start the laptop forward](eks-openshell-browser.md#install-the-loopback-tls-listener). Keep the same session directory and kubeconfig.

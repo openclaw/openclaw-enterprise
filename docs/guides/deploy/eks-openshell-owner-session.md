@@ -76,6 +76,14 @@ Choose an approved base branch on the intended repository. Record its **advertis
 ```bash
 repo=${GITHUB_REPOSITORY:?Set the enrolled owner/repository}
 ref=application
+# Match the App to the registry checked by the installation preflight. Its bot user has a separate ID.
+app_id=$(kubectl -n "$PLATFORM_NS" get cm "${READ_REGISTRY:?}" -o json |
+  jq -er '.data["registry.json"]|fromjson|.appId|tostring')
+app_bot_login=$(gh api "apps/${APP_SLUG:?Set the verified installation App slug}" |
+  jq -er --arg id "$app_id" 'select((.id|tostring)==$id)|.slug+"[bot]"')
+bot_record=$(gh api "users/$(jq -rn --arg login "$app_bot_login" '$login|@uri')")
+bot_id=$(jq -er --arg login "$app_bot_login" 'select(.type=="Bot" and .login==$login)|.id|numbers' <<<"$bot_record")
+app_bot_email="${bot_id}+${app_bot_login}@users.noreply.github.com"
 repo_id=$(gh api "repos/$repo" --jq '.id|tostring')
 base_branch=${GIT_BASE_BRANCH:?Set the approved remote base branch}
 base_sha=$(git ls-remote --exit-code "https://github.com/$repo.git" "refs/heads/$base_branch" | cut -f1)
@@ -90,14 +98,32 @@ write_revision=$(cat "$RUN_DIR/requested-revision")
 printf '%s\n' "$write_revision" > "$RUN_DIR/write-revision"
 ```
 
-Reopen the original chat through **Open Agent UI**. Ask it to publish one empty commit on `$branch` from `$base_sha`, fetching the named `$base_branch` and preserving the existing Git credential helper. Stop on an unexpected remote ref or an uncertain write. Record the reported new commit. Independently check the ref and commit:
+Reopen the original chat through **Open Agent UI**. Generate this instruction and paste it into that chat. It sets the commit identity only in the disposable checkout. The managed Git helper continues to authenticate the transport.
+
+```bash
+cat > "$RUN_DIR/push-instruction" <<EOF
+Use native Git to publish exactly one empty commit to refs/heads/$branch in $repo.
+In a fresh private checkout, fetch refs/heads/$base_branch from https://github.com/$repo.git.
+Verify its SHA is $base_sha and the destination branch is absent. Before creating the commit, run:
+  git config --local user.name '$app_bot_login'
+  git config --local user.email '$app_bot_email'
+Create the empty commit on the verified parent. Check git show -s --format='%an <%ae>%n%cn <%ce>' HEAD:
+both author and committer must equal $app_bot_login <$app_bot_email>. Keep the credential helper and TLS settings.
+Push only HEAD:refs/heads/$branch, using push.negotiate=true and a thin pack. Stop on any mismatch or uncertain result.
+Return the new commit SHA.
+EOF
+cat "$RUN_DIR/push-instruction"
+```
+
+Record the reported new commit. Independently check the ref and commit:
 
 ```bash
 sha=$(git ls-remote --exit-code "https://github.com/$repo.git" "refs/heads/$branch" | cut -f1)
 parent_tree=$(gh api "repos/$repo/git/commits/$base_sha" --jq .tree.sha)
 gh api "repos/$repo/commits/$sha" | jq -e --arg p "$base_sha" --arg t "$parent_tree" \
-  --arg bot "${APP_BOT_LOGIN:?Expected GitHub App bot login}" \
-  '(.parents|map(.sha))==[$p] and .commit.tree.sha==$t and .files==[] and .author.login==$bot'
+  --arg bot "$app_bot_login" --arg email "$app_bot_email" \
+  '(.parents|map(.sha))==[$p] and .commit.tree.sha==$t and .files==[] and .author.login==$bot and .committer.login==$bot and
+    all(.commit.author,.commit.committer; .name==$bot and .email==$email)'
 git_audit "$write_revision" > "$RUN_DIR/write-uses.json"
 jq -e '[.uses[]|select(.operation=="receive-pack")]|length==1' "$RUN_DIR/write-uses.json"
 ```
