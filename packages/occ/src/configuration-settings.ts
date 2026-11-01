@@ -261,9 +261,9 @@ function isCredentialReference(value: unknown): boolean {
  * - Settings the pinned OpenClaw retired (refuseRetiredOpenClawSettings).
  * - OpenClaw's own sandbox (refuseOpenClawSandbox).
  * - Another spelling of the codex or acpx plugin entry key (refusePluginEntryKeyVariants).
+ * - A model provider key OpenClaw applies to another key (refuseProviderKeyVariants).
  * - A plugins.allow or plugins.deny OpenClaw's config schema refuses
  *   (refuseUnreadablePluginPolicyLists).
- * - A model provider key OpenClaw applies to another key (refuseProviderKeyVariants).
  */
 export function validateConfigurationSettings(
   values: OpenClawConfigurationDocument,
@@ -283,15 +283,15 @@ export function validateConfigurationSettings(
   refuseRetiredOpenClawSettings(values);
   refuseOpenClawSandbox(values, options);
   refusePluginEntryKeyVariants(values);
-  refuseUnreadablePluginPolicyLists(values, options);
   refuseProviderKeyVariants(values);
+  refuseUnreadablePluginPolicyLists(values, options);
 }
 
 /**
  * The rules above that Agent save and deploy admission run again on a stored Configuration, so
  * one saved before a rule existed gets the message its next save would (findings 2699, 2709,
  * 2767, 3063, 3064, 3073, 3078, 3097, 3101): STORED_CONFIGURATION_RULES, which the Console holds
- * Deploy with (finding 3093), then the plugin policy list and model provider key rules, which stay
+ * Deploy with (finding 3093), then the model provider key and plugin policy list rules, which stay
  * server-only.
  */
 export function refuseStoredConfigurationSettings(values: OpenClawConfigurationDocument): void {
@@ -299,8 +299,8 @@ export function refuseStoredConfigurationSettings(values: OpenClawConfigurationD
   if (problem !== undefined) {
     throw new ConfigurationHarnessError(problem.message);
   }
-  refuseUnreadablePluginPolicyLists(values);
   refuseProviderKeyVariants(values);
+  refuseUnreadablePluginPolicyLists(values);
 }
 
 /**
