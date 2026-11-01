@@ -51,6 +51,7 @@ import {
   managedPluginSettingRefusal,
   MODEL_CREDENTIAL_REJECTED_RECORDED,
   NAMESPACE_NAME_CONFLICT,
+  pluginPolicyListRefusal,
   referenceFormRefusal,
   SECRET_NAME_CONFLICT,
   SERVICE_ACCOUNT_CROSS_NAMESPACE,
@@ -4412,7 +4413,6 @@ test("the OpenClaw Plugin Driver refuses Configuration plugin settings the Gatew
     enabled: "remove it or deselect the plugin",
     deny: "remove that item or deselect the plugin",
     allow: "add it or deselect the plugin",
-    text: "remove any other item or deselect the plugin",
     entry: "OCE writes that entry from the selection; remove it or deselect the plugin",
     origin:
       "OCE writes that entry from the selection and gateway.publicOrigin; remove it or deselect the plugin",
@@ -4423,17 +4423,12 @@ test("the OpenClaw Plugin Driver refuses Configuration plugin settings the Gatew
   // these (finding 3091); deployment was admitted and the Gateway never started. A
   // Configuration save does not know the Agents' plugins, so each one saves.
   const copy = (enabled) => `must be unset or ${JSON.stringify({ enabled })}`;
-  const textOnly = "must list only plugin IDs as text";
   const refusals = [
     [{ enabled: false }, plugins, "plugins.enabled", "must not be false", step.enabled],
     // OpenClaw compares plugin IDs trimmed and lowercased.
     [{ deny: ["slack", " DIFFS "] }, plugins, "plugins.deny", "must not list diffs", step.deny],
     // The Standard Codex Presets and channel saves write a non-empty allowlist.
     [{ allow: ["codex"] }, plugins, "plugins.allow", "must list diffs", step.allow],
-    // The entrypoint trims every list item, so one that is not text stops it, even for a disabled
-    // selection (finding 3099).
-    [{ allow: ["diffs", 1] }, plugins, "plugins.allow", textOnly, step.text],
-    [{ deny: [null] }, disabled, "plugins.deny", textOnly, step.text],
     [{ entries: { diffs: { config: {} } } }, plugins, "plugins.entries.diffs", copy(true)],
     [{ entries: { diffs: { enabled: false } } }, plugins, "plugins.entries.diffs", copy(true)],
     // A disabled selection still writes its entry, so another one conflicts there too.
@@ -4469,6 +4464,19 @@ test("the OpenClaw Plugin Driver refuses Configuration plugin settings the Gatew
       refused.body.error.message,
       managedPluginSettingRefusal(setting, rule, diffsPluginId, fix),
     );
+  }
+  // The entrypoint trims every list item, even for a disabled selection, so one that is not text
+  // stops it (finding 3099), as OpenClaw's config schema stops every Gateway on one: Configuration
+  // save refuses it whatever the Agents select (finding 3101).
+  for (const [settings, key] of [
+    [{ allow: ["diffs", 1] }, "allow"],
+    [{ deny: [null] }, "deny"],
+  ]) {
+    const refused = await controller.request("POST", `/namespaces/${namespace.id}/configurations`, {
+      body: { kind: "agent", values: { plugins: settings } },
+    });
+    assertApiError(refused, 400, "INVALID_REQUEST", key);
+    assert.equal(refused.body.error.message, pluginPolicyListRefusal(key));
   }
   assert.deepEqual(
     (await controller.request("GET", `/namespaces/${namespace.id}/agents`)).data,

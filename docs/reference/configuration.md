@@ -191,6 +191,7 @@ fallbacks that are not a list, a non-boolean `agents.defaults.skipBootstrap`,
 optional file list, an `agents.defaults.sandbox.mode` or
 `agents.entries.<id>.sandbox.mode` other than `off`, a `tools.exec.host` or
 `agents.entries.<id>.tools.exec.host` other than `auto`, `gateway` or `node`,
+a `plugins.allow` or `plugins.deny` that is not a list of text items,
 and a `$include` key at any depth, naming the setting. A
 Preset value that waits on a variable
 is checked as far as its written text goes, and in full once filled. A

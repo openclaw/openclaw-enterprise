@@ -371,6 +371,13 @@ export const managedPluginSettingRefusal = (setting, rule, pluginId, step) =>
 // models.providers.OpenAI or models.providers[" openai"]; `name` is the key OCE checks.
 export const providerKeyVariantRefusal = (path, name) =>
   `Configuration setting ${path} must be named ${JSON.stringify(name)}: OpenClaw applies it to that provider's entry, the one OCE checks. Move these settings there if that key exists, else rename this key.`;
+// Configuration save, Agent save and deploy admission refuse a plugins.allow or plugins.deny that
+// OpenClaw's config schema refuses, so no Gateway starts with it (finding 3101): `key` is allow or
+// deny; `list` is false for a value that is not a list, true for a list item that is not text.
+export const pluginPolicyListRefusal = (key, list = true) =>
+  list
+    ? `Configuration setting plugins.${key} must list only plugin IDs as text, or the Gateway does not start: remove any other item.`
+    : `Configuration setting plugins.${key} must be a list of plugin IDs as text, or the Gateway does not start: make it a list or remove it.`;
 // Configuration save, Agent save and deploy admission refuse OpenClaw's $include directive anywhere
 // in the document (finding 3078). `path` is the setting as the message shows it, such as $include
 // or gateway.auth.$include.
