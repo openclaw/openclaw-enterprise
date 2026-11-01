@@ -2857,6 +2857,40 @@ test("Change Preset variables confirms restored form edits and keeps focus when 
   );
 });
 
+// The Preset variable filled a valid allowlist, and the reader then edited that setting in the
+// Configuration JSON. The refusal is of their edit, so it names no Preset variable and offers no
+// Change <variable>, which would discard the edit and render the variable's value again.
+test("A refused setting the reader edited after the Preset names no Preset variable", async (t) => {
+  const { namespace, page } = await boundSecretVariablePreset(
+    t,
+    "Edited Preset setting",
+    (template) => {
+      template.variables.human = {
+        type: "string",
+        description: "Identity of the person who runs this Agent",
+      };
+      const auth = nativeAdminGatewayAuth();
+      auth.trustedProxy.allowUsers = ["occ-workspace-files", "{{ vars.human }}"];
+      const gateway = template.configuration.values.gateway;
+      gateway.controlUi = { enabled: true, allowedOrigins: ["http://127.0.0.1:18789"] };
+      gateway.auth = auth;
+    },
+  );
+  await page.getByLabel("Human", { exact: true }).fill("oidc:member-01");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  await openAdvancedSettings(page);
+  const configuration = page.getByLabel("Configuration JSON", { exact: true });
+  const values = JSON.parse(await configuration.inputValue());
+  assert.deepEqual(responseAllowUsers(values), ["occ-workspace-files", "oidc:member-01"]);
+  // Identities compare case-insensitively, so the added entry duplicates the machine identity.
+  values.gateway.auth.trustedProxy.allowUsers.push("OCC-Workspace-Files");
+  await configuration.fill(JSON.stringify(values, null, 2));
+  const feedback = await refusedPreflight(page, namespace.id, KUBERNETES_ALLOW_USERS_REFUSAL);
+  assert.equal(((await feedback.textContent()) ?? "").includes("Preset variable"), false);
+  assert.equal(await feedback.getByRole("button").count(), 0);
+});
+
 function responseAllowUsers(values: unknown) {
   const gateway = (values as { gateway?: { auth?: { trustedProxy?: { allowUsers?: unknown } } } })
     .gateway;

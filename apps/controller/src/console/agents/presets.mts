@@ -7,6 +7,7 @@ import type {
   SecretMetadata,
 } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
+import { sameValue } from "../carry.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
 import {
@@ -188,15 +189,34 @@ function presetSettingVariables(
   return found;
 }
 
+// The value at `segments` in Configuration values, or undefined.
+function settingValue(values: unknown, segments: readonly string[]): unknown {
+  let value = values;
+  for (const segment of segments) {
+    value =
+      value !== null && typeof value === "object" && Object.hasOwn(value, segment)
+        ? (value as Record<string, unknown>)[segment]
+        : undefined;
+  }
+  return value;
+}
+
 /** The Preset variables that filled the Configuration setting `refusal` names, or none: the setting
- * itself or a value inside it. Never a value, only the setting's name (finding 3122). */
+ * itself or a value inside it. Never a value, only the setting's name (finding 3122). A setting
+ * the submitted values no longer hold as the Preset rendered it names none: the reader changed
+ * it after the Preset (finding 3125). */
 export function refusedPresetVariables(
   refusal: string | undefined,
   settings: PresetSettingVariables | undefined,
+  values: { submitted: unknown; rendered: unknown },
 ): string[] {
   const named = REFUSED_SETTING.exec(refusal ?? "")?.[1];
   const refused = named === undefined ? undefined : settingSegments(named);
-  if (!refused || !settings) {
+  if (
+    !refused ||
+    !settings ||
+    !sameValue(settingValue(values.submitted, refused), settingValue(values.rendered, refused))
+  ) {
     return [];
   }
   const variables = new Set<string>();
