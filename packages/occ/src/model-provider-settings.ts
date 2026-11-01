@@ -383,6 +383,59 @@ function validateSettings(
   }
 }
 
+// The providers whose models.providers entry OCE reads at its exact lowercase key, though a
+// Configuration may leave the entry out: the Harness authentication built-ins
+// (harnessModelAuthentication in Kubernetes Compute). The startup model probe, Dedicated
+// OpenClaw's native catalog and Dedicated Codex's model projection read their entry there. A
+// custom provider's entry is required at its exact key, so another spelling of it alone fails
+// closed.
+const EXACT_KEY_PROVIDERS: readonly string[] = ["openai", "anthropic", "codex"];
+
+/**
+ * The first models.providers key in `values` that OpenClaw applies to another key, as its setting
+ * and why OCE refuses it (finding 3097). The pinned OpenClaw trims provider keys and merges
+ * entries whose trimmed keys are equal, the later entry's fields winning (`normalizeProviders` in
+ * `src/agents/models-config.plan.ts`, `resolveMergedModelProviderEntry` in
+ * `src/config/model-provider-config.ts`), and for a provider with no exactly matching key it uses
+ * an entry whose key matches without case. OCE's rules and the startup model probe read the exact
+ * key, so ` openai` beside `openai` would change the endpoint the Gateway calls with the Agent's
+ * credential after the probe checked another (PostgreSQL's jsonb key order puts the longer key
+ * last, so it wins there whatever the written order), and `OpenAI` alone would set it while the
+ * probe checks the default. So a key with surrounding whitespace, and another spelling of
+ * openai, anthropic or codex, is refused, whatever its entry holds. A Preset key that waits on a
+ * variable is checked as written and again once a launch fills it.
+ */
+function providerKeyVariantProblem(
+  values: unknown,
+): { readonly setting: string; readonly requirement: string } | undefined {
+  for (const key of Object.keys(asRecord(asRecord(asRecord(values)?.models)?.providers) ?? {})) {
+    const trimmed = key.trim();
+    // OpenClaw drops a blank key's entry, so it reaches no provider.
+    if (trimmed === "") {
+      continue;
+    }
+    const lowercase = trimmed.toLowerCase();
+    const named = EXACT_KEY_PROVIDERS.includes(lowercase) ? lowercase : trimmed;
+    if (key !== named) {
+      return {
+        setting: keyedSettingPath("models.providers", key),
+        requirement: `must be named ${quotedSettingKey(named, 24)}: OpenClaw applies it to that provider's entry, the one OCE checks. Move these settings there if that key exists, else rename this key`,
+      };
+    }
+  }
+  return undefined;
+}
+
+/** Refuses a models.providers key that providerKeyVariantProblem names. */
+export function refuseProviderKeyVariants(values: Readonly<OpenClawConfigurationDocument>): void {
+  const problem = providerKeyVariantProblem(values);
+  if (problem !== undefined) {
+    throw new ConfigurationHarnessError(
+      configurationSettingMessage(problem.setting, problem.requirement),
+    );
+  }
+}
+
 /** The requirement in `providerModelsListError`, for rules that build their own error. */
 export const PROVIDER_MODELS_LIST = "must be an array of model entries";
 

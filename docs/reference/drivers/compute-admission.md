@@ -124,6 +124,10 @@ authentication binding. Deployment runs OCC's model provider settings rules
 (`baseUrl`, `api`, the `models` list, header names), then `validateConfiguration`,
 on the stored values before the Configuration Driver validates them, so a stored Configuration that predates a
 rule gets its save message.
+Saves, Agent save and deployment refuse a `models.providers` key with
+surrounding whitespace, or another spelling of `openai`, `anthropic` or
+`codex`, such as `OpenAI`. OpenClaw applies that entry to the provider, but
+OCE rules and the startup model check read only the exact key.
 A credential under a header name the rule does not match, in
 `localService.env`, or as a literal in another `env` name that a reference
 reads, still passes: the binding cannot see what a name means.
