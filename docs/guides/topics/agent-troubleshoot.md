@@ -89,8 +89,15 @@ holder. Use the same procedure.
 A dedicated Harness Pod that stops without a clean shutdown during native setup,
 for example on a node failure, can leave the lock in its workspace node state. Each
 later version then fails the check `workspace-baseline`, and its log says `cannot
-verify Gateway ownership`. Use the same procedure on the Agent's workspace claim,
-with `/home/node/.openclaw-node` as the state directory.
+verify Gateway ownership`. Use the same procedure, with these changes. In step 1,
+before you stop the Agent (stopping deletes the Harness Deployment), find the
+Deployment's volume mount at `/home/node/.openclaw-node` and record its claim and
+`workspace-node-…` subPath. In step 2, start the maintenance container from the
+Harness image as its runtime user. Mount only that subPath, not the claim root,
+at the same path, and set `OPENCLAW_STATE_DIR` to `/home/node/.openclaw-node`.
+The lock file names depend on this path. This applies to the Harness Deployment
+that Kubernetes Compute creates; a Harness run by a SandboxDriver has no such
+Deployment.
 
 1. Record the Agent, state volume and original container ID. On Kubernetes,
    also record the Pod UID and node. Stop the Agent in OCC and verify with the
