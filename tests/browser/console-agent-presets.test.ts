@@ -2807,9 +2807,10 @@ test("A refused quoted setting key names the Preset variable that filled it", as
   assert.equal(await fallback.inputValue(), "openai/gpt 5 mini");
 });
 
-// An Agent form edit survives navigating away and back, so Change <variable> still asks before
-// it discards it. When the Preset then fails to load, the pressed button is gone and focus goes
-// to the chooser heading, not the document (findings 1446, 3122).
+// An Agent form edit survives navigating away and back (the restored draft keeps it as edited),
+// so Change <variable> still asks before it discards it. When the Preset then fails to load, the
+// pressed button is gone and focus goes to the chooser heading, not the document (findings 1446,
+// 3122).
 test("Change Preset variables confirms restored form edits and keeps focus when the Preset fails to load", async (t) => {
   const { namespace, preset, page } = await boundSecretVariablePreset(
     t,

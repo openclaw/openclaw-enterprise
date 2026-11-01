@@ -821,6 +821,15 @@ export function installFixture(scenario, evidence) {
       },
     };
   }
+  if (scenario.presetModelKeyVariable) {
+    // A model policy keyed by a Preset variable; the API quotes a key that is not a plain ID.
+    preset.template.variables.fallback = { type: "string", description: "Another model ref" };
+    const { values } = preset.template.configuration;
+    values.agents.defaults.models = {
+      ...values.agents.defaults.models,
+      "{{ vars.fallback }}": { agentRuntime: { id: "codex" } },
+    };
+  }
   const presets = [
     preset,
     ...(scenario.noDefaultPreset
