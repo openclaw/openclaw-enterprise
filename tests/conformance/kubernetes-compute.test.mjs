@@ -91,6 +91,7 @@ import {
   dedicatedCodexVariableRefusal,
   pluginEntryKeyVariantRefusal,
   workspaceNodePluginRefusal,
+  codexPluginRefusal,
   unboundPluginSecretRefusal,
   unreadablePluginSecretRefusal,
   unboundUnreadablePluginSecretRefusal,
@@ -9441,18 +9442,27 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
     new KubernetesComputeDriver(routedOptions(), { nodeEnrollment: {} }),
   ];
 
-  // f1112: the entrypoint exits at every start without the file-transfer plugin.
-  for (const [plugins, setting, rule] of [
+  // f1112: the entrypoint exits at every start without the file-transfer plugin. Without a
+  // workspace node, plugins.enabled false and a deny item that is not text still stop every
+  // Dedicated Codex Gateway (f3096, below); `withoutNode` is that refusal, if any.
+  const codexDisabled = ["plugins.enabled", "must not be false", "Remove it"];
+  const notText = (key) => [key, "must list only plugin IDs as text", "Remove any other item"];
+  for (const [plugins, setting, rule, withoutNodeRefusal] of [
     [{ deny: ["file-transfer"] }, "plugins.deny", "must not list file-transfer"],
     // OpenClaw matches deny entries trimmed and lowercased (finding 3077).
-    [{ deny: [1, " File-Transfer"] }, "plugins.deny", "must not list file-transfer"],
+    [
+      { deny: [1, " File-Transfer"] },
+      "plugins.deny",
+      "must not list file-transfer",
+      notText("plugins.deny"),
+    ],
     [
       { entries: { "file-transfer": { enabled: false } } },
       "plugins.entries.file-transfer.enabled",
       "must not be false",
     ],
     // OpenClaw turns off every plugin, file-transfer included (finding 3083).
-    [{ enabled: false }, "plugins.enabled", "must not be false"],
+    [{ enabled: false }, "plugins.enabled", "must not be false", codexDisabled],
   ]) {
     const refused = { message: workspaceNodePluginRefusal(setting, rule) };
     for (const harness of [codex, provisioning]) {
@@ -9477,8 +9487,15 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
     );
     // A Gateway without a workspace node does not need the plugin.
     for (const driver of withoutNode) {
-      driver.validateHarnessAuth(codex, apiKeyAuth, { ...base, plugins });
-      driver.validateHarnessAuth(codex, apiKeyAuth, { ...base, plugins }, null);
+      for (const bindings of [undefined, null]) {
+        const admit = () =>
+          driver.validateHarnessAuth(codex, apiKeyAuth, { ...base, plugins }, bindings);
+        if (withoutNodeRefusal === undefined) {
+          admit();
+        } else {
+          assert.throws(admit, { message: codexPluginRefusal(...withoutNodeRefusal) });
+        }
+      }
     }
     routed.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, plugins });
     routed.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, plugins }, null);
@@ -9486,11 +9503,88 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   for (const plugins of [
     { deny: ["other"], entries: { "file-transfer": { enabled: true } } },
     { enabled: true },
-    // The entrypoint adds file-transfer to a non-empty allowlist.
-    { allow: ["other"] },
+    // The entrypoint adds file-transfer to a non-empty allowlist (which must list codex, below).
+    { allow: ["other", "codex"] },
   ]) {
     routed.validateHarnessAuth(codex, apiKeyAuth, { ...base, plugins });
   }
+
+  // f3096: every Dedicated Codex Gateway runs the codex plugin, and its entrypoint exits at every
+  // start on a plugin policy that turns it off. Agent save, provisioning, deployment and the save
+  // of a Configuration whose model policy selects Codex refuse it, after the workspace node's
+  // rule (above). The entrypoint parity test is in plugin-runtime-policy.test.mjs.
+  const codexSelected = {
+    agents: {
+      defaults: {
+        model: "codex/gpt-5",
+        models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
+      },
+    },
+  };
+  const codexAllow = ["plugins.allow", "must list codex", "Add it"];
+  for (const [plugins, refusal, workspaceNodeFirst = false] of [
+    [{ enabled: false }, codexDisabled, true],
+    [{ enabled: false, entries: { codex: { enabled: true } } }, codexDisabled, true],
+    // OpenClaw compares plugin IDs trimmed and lowercased.
+    [{ deny: ["slack", " Codex "] }, ["plugins.deny", "must not list codex", "Remove that item"]],
+    [{ allow: ["slack"] }, codexAllow],
+    [{ allow: ["slack", " "] }, codexAllow],
+    // The entrypoint reads both lists first and stops on an item that is not text.
+    [{ allow: ["codex", 1] }, notText("plugins.allow")],
+    [{ deny: [null], enabled: false }, notText("plugins.deny"), true],
+    [{ allow: [{}], deny: [null] }, notText("plugins.allow")],
+  ]) {
+    const configuration = { ...codexSelected, plugins };
+    const refused = { message: codexPluginRefusal(...refusal) };
+    const label = JSON.stringify(plugins);
+    for (const driver of [unrouted, routed]) {
+      const nodeRefused = driver === routed && workspaceNodeFirst;
+      for (const harness of [codex, provisioning]) {
+        for (const bindings of [undefined, null]) {
+          assert.throws(
+            () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration, bindings),
+            nodeRefused
+              ? { message: workspaceNodePluginRefusal("plugins.enabled", "must not be false") }
+              : refused,
+            label,
+          );
+        }
+      }
+      // Configuration save does not know the Agent's workspace node.
+      assert.throws(() => driver.validateConfiguration(configuration), refused, label);
+    }
+  }
+  // An OpenClaw Configuration does not run the codex plugin.
+  for (const plugins of [{ enabled: false }, { deny: ["codex"] }, { allow: ["slack"] }]) {
+    unrouted.validateConfiguration({ ...embeddedBase, plugins });
+    unrouted.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, plugins }, null);
+  }
+  for (const plugins of [
+    { enabled: true, allow: [" CODEX ", "slack"], deny: ["slack", "codex-extra"] },
+    // Blank items are ignored, so this allowlist is empty.
+    { allow: [" ", ""] },
+    // The overlay turns the codex entry back on.
+    { allow: ["codex"], entries: { codex: { enabled: false } } },
+    // The entrypoint does not read a list that is not an array.
+    { allow: "slack", deny: "codex" },
+  ]) {
+    const configuration = { ...codexSelected, plugins };
+    for (const bindings of [undefined, null]) {
+      unrouted.validateHarnessAuth(codex, apiKeyAuth, configuration, bindings);
+    }
+    unrouted.validateConfiguration(configuration);
+  }
+  // Preset defaults: an item that waits on a variable may name codex once filled.
+  const waiting = {
+    ...codexSelected,
+    plugins: { allow: ["{{ vars.plugin }}"], deny: ["{{ vars.denied }}"] },
+  };
+  const unresolved = (path) =>
+    path[0] === "plugins" && typeof path[2] === "number" ? ["", ""] : undefined;
+  unrouted.validateConfiguration(waiting, { unresolved });
+  assert.throws(() => unrouted.validateConfiguration(waiting), {
+    message: codexPluginRefusal(...codexAllow),
+  });
 
   // f1113 and f1114: gateway settings preparation refused, now refused by deployment admission
   // (validateGatewaySettings) and provisioning (validateAgentProvisioning) with the same text.

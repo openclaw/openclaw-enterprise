@@ -204,6 +204,7 @@ import {
   enabledChannelProviders,
   OPENCLAW_GATEWAY_PASSWORD,
   requireChannelTopology,
+  requireCodexPlugin,
   refuseKubernetesPluginEntryKeyVariants,
   refuseUnreadablePluginSecretInputs,
   requirePluginSecretInputs,
@@ -2975,6 +2976,22 @@ function requireConfiguredModelProviders(
   requireProviderApiKeys(configuration, harnessId === "openclaw", authentication, true, options);
 }
 
+// The Harness the Configuration's model policy selects, resolved as requireConfiguredModelProviders
+// does, or undefined for a draft that selects none yet: deployment refuses that first.
+function configuredHarnessId(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  options?: ConfigurationValidationOptions,
+): string | undefined {
+  try {
+    return resolveConfiguredHarnessId(withoutVariableProviders(configuration, options));
+  } catch (error) {
+    if (error instanceof ConfigurationHarnessError || error instanceof ConfigurationFailure) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
 // The error contract caps the message a ConfigurationHarnessError becomes.
 const HARNESS_MESSAGE_CAP = 256;
 
@@ -4778,6 +4795,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (this.hostsWorkspaceNode(harness)) {
       requireWorkspaceNodePlugins(configuration, callerSettingError, stage === "admission");
     }
+    // After the workspace node's rule, whose message names its plugin first. Preparation skips
+    // it, as validateConfigurationContent does (finding 2694).
+    if (codex && stage === "admission") {
+      requireCodexPlugin(configuration, callerSettingError);
+    }
     // Not a Configuration save rule: it depends on the Agent's execution mode and on the
     // Installation's channel runtime (runtime.channels), which an operator may add later.
     requireChannelTopology(
@@ -4843,6 +4865,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     this.validateConfigurationContent(configuration, options);
     requireConfiguredModelProviders(configuration, options);
     refuseUnreadablePluginSecretInputs(configuration, callerSettingError, options);
+    // A Configuration whose model policy selects Codex runs only as Dedicated Codex.
+    if (configuredHarnessId(configuration, options) === "codex") {
+      requireCodexPlugin(configuration, callerSettingError, options);
+    }
   }
 
   // validateHarnessAuth runs these first and the model provider rules in its own order.
