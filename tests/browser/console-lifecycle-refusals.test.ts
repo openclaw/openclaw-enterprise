@@ -629,6 +629,9 @@ test("an Agents list row refused for another reason shows the API's text and nam
         await expectReachableReason(page, each, kind === action ? refusal : alert);
       }
     };
+    // The confirmation's close event returns focus to the refused icon, a task after the alert
+    // and note render (finding 3112).
+    await waitForFocusedLabel(page, `${action} Other Row`);
     await checkRow({ inView: true });
     // A refocus rebuilds the list (a row write makes it one it does not reuse). The alert and
     // the row's note stay until Refresh, and focus stays on the refused icon.
@@ -711,7 +714,8 @@ test("a refocus that rebuilds a taller refused row keeps its icon and note in vi
   await confirmAgentAction(page, "Delete Row C?", "Delete");
   const note = row.getByText("Not deleted: see above", { exact: true });
   await note.waitFor();
-  assert.equal(await hasFocus(icon), true);
+  // Focus returns to the icon in the confirmation's close event, a task after the note renders.
+  await waitForFocusedLabel(page, "Delete Row C");
   const scrollY = () => page.evaluate(() => globalThis.scrollY);
   // Scrolls the page so the note's bottom sits `gap` pixels above the viewport's bottom (below
   // it when negative).
