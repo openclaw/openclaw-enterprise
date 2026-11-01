@@ -237,13 +237,12 @@ const CONFIG_INCLUDE_KEY = "$include";
 
 /**
  * Refuses OpenClaw's `$include` directive anywhere in the document. The pinned OpenClaw
- * (`src/config/includes.ts`) replaces an object holding it with the named files' settings, merged
- * under the object's other keys (arrays concatenated), and re-reads those files when they change.
- * Configuration rules and Compute read the document as written, so an include would add settings
- * no rule checked, from a file in the Gateway's config directory, which is its writable state
- * directory once its wrapper writes the config there (finding 3078). Configuration save runs it
- * with the other content rules, before those that read settings; Agent save, deploy admission and
- * the upgrade preflight run it on the stored Configuration.
+ * (`src/config/includes.ts`) resolves it from the Gateway's config directory and replaces the
+ * object holding it with the named files' settings, merged under the object's other keys (arrays
+ * concatenated). Configuration rules and Compute read the document as written, so an include would
+ * add settings no rule checked; settings must be written in the Configuration instead (finding
+ * 3078). Configuration save runs it after the model provider settings, first of the other content
+ * rules; Agent save, deploy admission and the upgrade preflight run it on the stored Configuration.
  */
 function refuseConfigIncludes(values: Readonly<OpenClawConfigurationDocument>): void {
   const pending: [unknown, string][] = [[values, ""]];

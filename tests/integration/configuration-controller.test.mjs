@@ -1750,9 +1750,9 @@ test("Configuration save and deployment refuse OpenClaw's $include directive", a
     secretName: "config-include",
   });
   for (const [values, path] of [
-    [{ $include: "./workspace/extra.json", ...runtimeSelected }, "$include"],
+    [{ $include: "./extra.json", ...runtimeSelected }, "$include"],
     [
-      { ...runtimeSelected, gateway: { auth: { $include: "./workspace/auth.json" } } },
+      { ...runtimeSelected, gateway: { auth: { $include: "./auth.json" } } },
       "gateway.auth.$include",
     ],
   ]) {
@@ -1763,7 +1763,7 @@ test("Configuration save and deployment refuse OpenClaw's $include directive", a
   // Agent save refuses a stored row the same way, before any deployment.
   await writePastOcc(configurationDriver, agent.configurationId, {
     ...runtimeSelected,
-    tools: { $include: "./workspace/tools.json" },
+    tools: { $include: "./tools.json" },
   });
   assertRefused(
     await request(context.app, "PATCH", agent.agentPath, {

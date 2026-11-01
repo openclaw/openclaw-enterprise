@@ -1395,7 +1395,7 @@ test("Configuration save refuses OpenClaw's $include directive anywhere in the d
     });
   for (const [values, path] of [
     // At the root, where its settings would sit under every rendered one.
-    [{ $include: "./workspace/extra.json", tools: { elevated: { enabled: false } } }, "$include"],
+    [{ $include: "./extra.json", tools: { elevated: { enabled: false } } }, "$include"],
     // Inside an object a Compute rule reads, where it would add a setting that rule refuses.
     [{ gateway: { auth: { $include: ["./a.json", "./b.json"] } } }, "gateway.auth.$include"],
     // Under a submitted key and inside a list.
