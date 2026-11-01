@@ -599,6 +599,7 @@ export type { StoredConfigurationRule } from "./stored-configuration-rules.ts";
 export type { DeploymentFailureStep } from "./deployment-failure-steps.ts";
 export {
   activePluginSecretInputs,
+  codexPluginPolicyProblem,
   configIncludeProblem,
   environmentReference,
   environmentReferenceNames,

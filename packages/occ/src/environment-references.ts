@@ -498,6 +498,39 @@ export function pluginPolicyList(
   return { ids, problem: undefined };
 }
 
+/**
+ * The first `plugins` setting on which a Dedicated Codex Gateway would not start, as its setting
+ * and requirement, or undefined, in the order the Gateway entrypoint checks them. Kubernetes Compute
+ * refuses it (requireCodexPlugin, finding 3096), and the Console names it before Deploy (finding
+ * 3105).
+ * `pending(key)` marks a list item that waits on a variable, as for pluginPolicyList.
+ */
+export function codexPluginPolicyProblem(
+  plugins: Readonly<Record<string, unknown>>,
+  pending?: (key: "allow" | "deny") => (item: string, index: number) => boolean,
+): { readonly setting: string; readonly requirement: string } | undefined {
+  const problem = (setting: string, rule: string, step: string) => ({
+    setting,
+    requirement: `${rule}: Dedicated Codex runs the codex plugin, so its Gateway would not start. ${step}`,
+  });
+  const allow = pluginPolicyList(plugins, "allow", pending?.("allow"));
+  const deny = pluginPolicyList(plugins, "deny", pending?.("deny"));
+  const unreadable = allow.problem ?? deny.problem;
+  if (unreadable !== undefined) {
+    return problem(unreadable.setting, unreadable.requirement, "Remove any other item");
+  }
+  if (plugins.enabled === false) {
+    return problem("plugins.enabled", "must not be false", "Remove it");
+  }
+  if (deny.ids.includes("codex")) {
+    return problem("plugins.deny", "must not list codex", "Remove that item");
+  }
+  if (allow.ids.length > 0 && !allow.ids.includes("codex") && !allow.ids.includes(undefined)) {
+    return problem("plugins.allow", "must list codex", "Add it");
+  }
+  return undefined;
+}
+
 // `keys` in PostgreSQL's jsonb key order: shorter keys first (by UTF-8 bytes), then byte by byte.
 function jsonbKeyOrder(keys: readonly string[]): string[] {
   const encoder = new TextEncoder();
