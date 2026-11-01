@@ -61,7 +61,9 @@ import {
   admittedConfiguration,
   openClawSandboxRefusal,
   withGatewaySecurityDefaults,
+  withSetting,
 } from "../helpers/admitted-configuration.mjs";
+import { storedConfigurationProblem } from "../../apps/controller/src/console/stored-configuration-rules.mjs";
 
 function createConfigurationBackend() {
   // This deliberately simple substrate exercises the real Fastify, IAM, OCC, and audit paths.
@@ -2083,6 +2085,71 @@ test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE
     "Host-deferred",
   );
   assert.equal(deferredHost.status, 201, JSON.stringify(deferredHost.body));
+});
+
+test("Agent save, deployment and the Console's draft hold name the same first stored-row refusal", async () => {
+  // Finding 3093. A row saved before a rule existed, or written past OCC, can fail several
+  // stored-row rules. Agent save and deploy admission name the first in their order; the Console
+  // holds a draft's Deploy with the module it serves (stored-configuration-rules.mjs), which
+  // checked only some of the rules, so it named a later problem than the 400, or none. For each
+  // pair of rules, the row that fails both gets the earlier rule's refusal from all three.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-stored-order", ...configurationRules),
+  });
+  const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+    name: "Stored order consumer",
+    secretName: "stored-order-key",
+  });
+  // One setting each rule refuses, in deploy's order.
+  const problems = [
+    ["include", ["agents", "defaults", "$include"], "./defaults.json"],
+    ["secretProviderDefaults", ["secrets", "defaults", "env"], "Default"],
+    ["gatewayPassword", ["gateway", "auth", "password"], { source: "env", id: "X" }],
+    ["workspaceBootstrap", ["agents", "defaults", "skipBootstrap"], "yes"],
+    ["retiredSetting", ["security", "preset"], "strict"],
+    ["openClawSandbox", ["agents", "defaults", "sandbox", "mode"], "all"],
+    ["pluginEntryKey", ["plugins", "entries", "Codex"], { enabled: true }],
+  ];
+  // Deploy's and Agent save's refusal of the stored row `values`, each as its 400 message.
+  const refusals = async (values) => {
+    await writePastOcc(configurationDriver, agent.configurationId, values);
+    const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
+    const saved = await request(context.app, "PATCH", agent.agentPath, {
+      body: { configurationId: agent.configurationId },
+    });
+    const label = JSON.stringify(values);
+    assert.equal(deployed.status, 400, `deploy ${label}: ${JSON.stringify(deployed.body)}`);
+    assert.equal(deployed.body.error.code, "INVALID_REQUEST", label);
+    assertRefused(saved, deployed.body.error.message, { label: `Agent save ${label}` });
+    return deployed.body.error.message;
+  };
+  const alone = new Map();
+  for (const [rule, path, value] of problems) {
+    const values = withSetting(runtimeSelected, path, value);
+    const message = await refusals(values);
+    alone.set(rule, message);
+    assert.deepEqual(storedConfigurationProblem(values), { rule, message }, rule);
+  }
+  for (const [index, [first, firstPath, firstValue]] of problems.entries()) {
+    for (const [later, laterPath, laterValue] of problems.slice(index + 1)) {
+      const values = withSetting(
+        withSetting(runtimeSelected, laterPath, laterValue),
+        firstPath,
+        firstValue,
+      );
+      const message = await refusals(values);
+      assert.equal(message, alone.get(first), `${first} before ${later}`);
+      assert.deepEqual(
+        storedConfigurationProblem(values),
+        { rule: first, message },
+        `${first} before ${later}`,
+      );
+    }
+  }
+  await writePastOcc(configurationDriver, agent.configurationId, runtimeSelected);
+  assert.equal(storedConfigurationProblem(runtimeSelected), undefined);
 });
 
 test("SSH and Docker Compute refuse at save and deployment a Gateway tool policy their embedded Gateway refuses", async () => {

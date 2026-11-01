@@ -5193,6 +5193,21 @@ export const scenarios = {
     ],
     gap: "The stored key is simulated; this story does not call save or deploy admission or start a Gateway.",
   },
+  openClawSandboxRefused: {
+    group: "Pages/Agent detail",
+    name: "OpenClaw sandbox before a plugin entry key",
+    path: draft,
+    deployed: true,
+    openClawSandbox: true,
+    pluginEntryKeyVariant: true,
+    description:
+      "An older release saved OpenClaw's sandbox on and a plugins.entries.Codex entry beside codex. Every Compute refuses to save or deploy both, and deploy names the sandbox first, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Turn off OpenClaw's sandbox.",
+      'Deploy new version is disabled with Configuration setting agents.defaults.sandbox.mode must be "off" or unset: OCE runs each Agent in its own isolated runtime and does not support OpenClaw\'s sandbox.',
+    ],
+    gap: "The stored settings are simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
   kubernetesEntryKeyVariantRefused: {
     group: "Pages/Agent detail",
     name: "Plugin entry key Kubernetes Compute refuses",

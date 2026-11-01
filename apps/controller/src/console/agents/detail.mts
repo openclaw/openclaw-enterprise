@@ -15,9 +15,11 @@ import type { Static } from "typebox";
 import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
 import type { AgentRecheck, ConsolePageContext } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
-import { retiredOpenClawSettingMessage } from "../retired-openclaw-settings.mjs";
 import {
-  configIncludeProblem,
+  storedConfigurationProblem,
+  type StoredConfigurationRule,
+} from "../stored-configuration-rules.mjs";
+import {
   configurationSettingMessage,
   gatewayPasswordRequirement,
   generatedGatewayPasswordReference,
@@ -450,6 +452,16 @@ const CHECKING_CREDENTIAL_ACCESS_STEP = "Checking credential access…";
 const CHECKING_COMPUTE_CONFIGURATION =
   "Checking the Configuration with this Installation's Compute before deploying.";
 const ENTRY_KEY_STEP = "Fix the plugin entry key";
+// The Configuration step that names each OCC stored-row rule's refusal (configurationRefusal).
+const STORED_RULE_STEPS: Readonly<Record<StoredConfigurationRule, string>> = {
+  include: "Remove the $include setting",
+  secretProviderDefaults: "Fix the secret provider alias",
+  gatewayPassword: "Fix the gateway password",
+  workspaceBootstrap: "Fix the workspace bootstrap setting",
+  retiredSetting: "Remove the retired setting",
+  openClawSandbox: "Turn off OpenClaw's sandbox",
+  pluginEntryKey: ENTRY_KEY_STEP,
+};
 const CONFIGURATION_READ_ONLY = CONFIGURATION_UPDATE_DENIED;
 // Saving a Configuration also needs Secret operate on every Secret it binds (finding 2437).
 const CONFIGURATION_SECRETS_READ_ONLY = `Saving this Configuration needs Secret operate on each Secret it binds, which your access does not include. ${askForGrant("Secret operate on each of them")}`;
@@ -3443,18 +3455,18 @@ export async function renderAgentDetail(
         (!runtimeAuth && !credentials?.canDeploy())
       );
     }
-    // OCC refuses to deploy a saved Configuration with OpenClaw's $include (finding 3078), a
-    // secrets.defaults alias OpenClaw refuses (finding 3064), a gateway password reference OpenClaw
-    // cannot read (finding 3063), a setting the pinned OpenClaw retired (finding 2810) or another
-    // spelling of the codex or acpx plugin entry key (finding 3073), then Compute admission's
-    // refusals: Kubernetes Compute's of another spelling of file-transfer or a managed plugin key
-    // (finding 3077, computeEntryKeyRefusal below) and one of a plugin secret input OpenClaw cannot
-    // read (finding 3076), in that order and with this message, so the draft says it before
-    // Deploy, with the Configuration step (findings 3076, 3086, 3090). Only Kubernetes Compute
-    // refuses the plugin input, but the page does not know which Compute the next version runs
-    // on, and the Gateway exits on that input on any Compute that ships the plugin, so it holds
-    // Deploy on all. On SSH or Docker Compute that hold is stricter than OCC, whose deploy admits
-    // the input there.
+    // OCC refuses to deploy a saved Configuration that fails one of its stored-row rules
+    // (configurationSettingsRefusal: $include, a secrets.defaults alias, an unreadable gateway
+    // password, workspace bootstrap, a retired setting, OpenClaw's sandbox, another spelling of the
+    // codex or acpx plugin entry key; findings 2699, 2767, 2810, 3063, 3064, 3073, 3078, 3093),
+    // then Compute admission's refusals: Kubernetes Compute's of another spelling of file-transfer
+    // or a managed plugin key (finding 3077, computeEntryKeyRefusal below) and one of a plugin
+    // secret input OpenClaw cannot read (finding 3076), in that order and with this message, so the
+    // draft says it before Deploy, with the Configuration step (findings 3076, 3086, 3090). Only
+    // Kubernetes Compute refuses the plugin input, but the page does not know which Compute the
+    // next version runs on, and the Gateway exits on that input on any Compute that ships the
+    // plugin, so it holds Deploy on all. On SSH or Docker Compute that hold is stricter than OCC,
+    // whose deploy admits the input there.
     function configurationRefusal(): { readonly message: string; readonly step: string } | null {
       const settings = configurationSettingsRefusal();
       if (settings !== null) {
@@ -3471,46 +3483,17 @@ export async function renderAgentDetail(
             step: "Fix the plugin secret input",
           };
     }
-    // The refusals every Compute's deploy gives, before Compute admission.
+    // The refusals every Compute's deploy gives, before Compute admission: OCC's stored-row rules,
+    // in deploy's order, so the page names the problem deploy's 400 names first (finding 3093).
+    // Deploy checks the model provider settings before these; that rule stays server-only.
     function configurationSettingsRefusal(): {
       readonly message: string;
       readonly step: string;
     } | null {
-      const include = configIncludeProblem(values);
-      if (include !== undefined) {
-        return {
-          message: configurationSettingMessage(include.setting, include.requirement),
-          step: "Remove the $include setting",
-        };
-      }
-      const defaults = secretProviderDefaultsProblem(values.secrets);
-      if (defaults !== undefined) {
-        return {
-          message: `Configuration setting ${defaults.setting} ${defaults.requirement}.`,
-          step: "Fix the secret provider alias",
-        };
-      }
-      const password = gatewayPasswordRequirement(
-        responseFields(responseFields(values.gateway).auth).password,
-        values.secrets,
-      );
-      if (password !== undefined) {
-        return {
-          message: `Configuration setting gateway.auth.password ${password}.`,
-          step: "Fix the gateway password",
-        };
-      }
-      const retired = retiredOpenClawSettingMessage(values);
-      if (retired !== null) {
-        return { message: retired, step: "Remove the retired setting" };
-      }
-      const entryKey = pluginEntryKeyVariantProblem(values);
-      return entryKey === undefined
+      const problem = storedConfigurationProblem(values);
+      return problem === undefined
         ? null
-        : {
-            message: configurationSettingMessage(entryKey.setting, entryKey.requirement),
-            step: ENTRY_KEY_STEP,
-          };
+        : { message: problem.message, step: STORED_RULE_STEPS[problem.rule] };
     }
     // Kubernetes Compute alone also refuses another spelling of file-transfer or a managed catalog
     // plugin key (finding 3077); other Computes merge it and run. The page does not know which
