@@ -235,6 +235,7 @@ test("denial selection spans pages, keeps the inspected window, and saves a dedu
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
   const tab = page.locator(".sandbox-policy");
   await tab.getByText("200 in loaded window", { exact: true }).waitFor();
+  assert.equal(await tab.getByText("About this window", { exact: true }).count(), 0);
   assert.equal(await tab.locator(".sandbox-decision").count(), 5);
   // Refresh denials replaces the window, so a selection of the old records must not survive it:
   // Allow selected would otherwise stage denials that are no longer displayed.
@@ -264,10 +265,14 @@ test("denial selection spans pages, keeps the inspected window, and saves a dedu
   await tab.getByRole("button", { name: "Show denial details", exact: true }).first().click();
   const inspected = await tab.locator(".sandbox-decisions").innerText();
   await tab.getByRole("checkbox", { name: "Follow policy denials", exact: true }).check();
-  await tab.getByRole("button", { name: "12 new denials · Show newest", exact: true }).waitFor();
+  const newest = tab.getByRole("button", { name: "12 new denials · Show newest", exact: true });
+  await newest.waitFor();
   assert.equal(await tab.locator(".sandbox-decisions").innerText(), inspected);
   assert.equal(await tab.locator(".sandbox-decision-details:visible").count(), 1);
   await tab.getByRole("checkbox", { name: "Follow policy denials", exact: true }).uncheck();
+  await newest.click();
+  await tab.getByText("212 in loaded window", { exact: true }).waitFor();
+  await tab.getByText("Page 1 of 43", { exact: true }).waitFor();
 
   await tab.getByRole("button", { name: "Allow selected (6)", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Review policy changes", exact: true });

@@ -9,6 +9,8 @@ Use **Pages/Agent detail → Policy Denials Many** for 200 simulated denials and
 2. Select the visible page, go to the next page, and select another denial. Check
    the total and the count outside this page. Enable **Follow**: the new-denial
    button appears while the inspected rows, details, and selection stay in place.
+   Choose **Show newest**. The count increases to 212 and the pager returns to
+   page one. The pager is the last control below the denial rows.
 3. Choose **Allow selected**. Check the selected-record, distinct-request, and
    new-rule counts. Repeated requests produce one rule. Review the changes and
    expand the previously saved rules to check existing access. No save or apply
