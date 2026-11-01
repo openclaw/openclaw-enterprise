@@ -206,6 +206,10 @@ never include Secrets or cluster-scoped objects.
 for provider networking, applied during `ensureNamespace`. Secrets are rejected;
 OpenShell credentials must not appear in startup YAML.
 
+Write both lists as Kubernetes manifests, as `kubectl` accepts them. A
+NetworkPolicy ingress rule names its sources in `from`; startup refuses the
+client-library alias `_from`.
+
 `kubernetes.sandboxDataMount` must match exactly one approved dedicated Harness
 workspace mount. It may not mount the PVC root or use `..`, and must mount
 under `/sandbox/`. For native OpenClaw, the permission preparer creates that subpath
