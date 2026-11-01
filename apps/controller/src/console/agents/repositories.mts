@@ -278,26 +278,28 @@ export function createRepositoryFields(
     cards,
     announcements,
     validation,
-    element(
-      "details",
-      { className: "repository-access-details" },
-      element("summary", {}, "Runtime support and access limits"),
-      element(
-        "p",
-        { className: "hint" },
-        "Embedded OpenClaw and Dedicated Codex on Kubernetes, without a Sandbox Driver. Deployment rechecks runtime compatibility. Model authentication is configured separately.",
-      ),
-      element(
-        "p",
-        { className: "hint" },
-        "GitHub App keys and installation tokens stay outside the Agent. The Agent receives bounded gateway authentication material and client configuration.",
-      ),
-      element(
-        "p",
-        { className: "hint" },
-        "API access is bounded by the selected level and installation token. GraphQL can also return public information allowed by GitHub. Unselected private repositories remain outside the grant.",
-      ),
-    ),
+    initial.agentId
+      ? null
+      : element(
+          "details",
+          { className: "repository-access-details" },
+          element("summary", {}, "Runtime support and access limits"),
+          element(
+            "p",
+            { className: "hint" },
+            "Embedded OpenClaw and Dedicated Codex on Kubernetes, without a Sandbox Driver. Deployment rechecks runtime compatibility. Model authentication is configured separately.",
+          ),
+          element(
+            "p",
+            { className: "hint" },
+            "GitHub App keys and installation tokens stay outside the Agent. The Agent receives bounded gateway authentication material and client configuration.",
+          ),
+          element(
+            "p",
+            { className: "hint" },
+            "API access is bounded by the selected level and installation token. GraphQL can also return public information allowed by GitHub. Unselected private repositories remain outside the grant.",
+          ),
+        ),
   );
   const option = (ref: string) => state.options.find((entry) => entry.repositoryRef === ref);
   // Only new selections may derive the collaborator profile from the Contributor default.
