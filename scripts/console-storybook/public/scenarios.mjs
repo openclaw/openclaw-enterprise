@@ -10529,6 +10529,11 @@ for (const [id, state, name] of [
     description:
       "Observed denial records, aggregated provider suggestions, and governed policy additions remain distinct.",
     steps: [
+      ...(state === "many"
+        ? [
+            "Scroll to Denials. The pager is the last control below the five rows. Go to page 2 and turn on Follow. The page stays in place when 12 new denials arrive. Choose Show newest to see page 1 of 43 with 212 loaded denials.",
+          ]
+        : []),
       "Expand a denial to inspect the sanitized log. Review its exact executable and endpoint before saving an addition.",
       "Select denial rows across pages, then Allow selected. Confirm the validated proposal retains existing rules and combines repeated executable/host/port requests. Back to editing preserves the draft.",
       "Open Manage rules. Search the five-row pages, use a row menu to edit or remove a rule, or Add rule. Compare Save for later with Save and apply to current revision. Apply saved rules is unavailable while a proposal has unsaved edits.",

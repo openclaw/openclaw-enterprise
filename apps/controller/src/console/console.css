@@ -5301,14 +5301,6 @@ html:has(#create-agent-form) {
 .sandbox-page-actions {
   white-space: nowrap;
 }
-.sandbox-window-details {
-  font-size: var(--text-xs);
-  line-height: var(--text-xs--line-height);
-  color: var(--color-text-muted);
-}
-.sandbox-window-details summary {
-  cursor: pointer;
-}
 .sandbox-log-notices:empty {
   display: none;
 }

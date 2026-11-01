@@ -479,7 +479,6 @@ export function renderAgentSandboxPolicy(
   }
   const suggestions = element("section", { className: "agent-card" });
   const logStatus = element("p", { role: "status" }, "Loading policy denials…");
-  const logWindowStatus = element("p", { className: "hint" });
   const logWarnings = element("p", { className: "notice", role: "status", hidden: true });
   let withheldRecords = 0;
   let truncatedWindow = false;
@@ -625,7 +624,6 @@ export function renderAgentSandboxPolicy(
       logWarnings,
       newDenials,
       selection,
-      windowDetails,
     ]) {
       node.hidden = true;
     }
@@ -943,7 +941,6 @@ export function renderAgentSandboxPolicy(
         .filter(Boolean)
         .join(" ");
       logStatus.hidden = true;
-      logWindowStatus.textContent = `Loaded ${records.filter(({ type }) => type === "line").length} records. One action may produce several denial records. Log retention and gaps limit this window.${page.withheld ? ` ${page.withheld} records withheld in the latest read.` : ""}${page.truncated ? " The latest read was truncated." : ""}`;
       if (restart || firstRead) {
         renderLogs();
       }
@@ -2267,17 +2264,6 @@ export function renderAgentSandboxPolicy(
     }
   });
   policyCard.append(policySummary, suggestions);
-  const windowDetails = element(
-    "details",
-    { className: "sandbox-window-details" },
-    element("summary", {}, "About this window"),
-    logWindowStatus,
-    element(
-      "p",
-      { className: "hint" },
-      "Counts are retained records for this version, not unique requests or lifetime denials. One action can produce multiple records. Following keeps this view in place until you choose Show newest.",
-    ),
-  );
   section.append(
     policyCard,
     element("div", { className: "sandbox-denials-heading" }, element("h2", {}, "Denials"), count),
@@ -2289,7 +2275,6 @@ export function renderAgentSandboxPolicy(
     selection,
     logRows,
     logPager,
-    windowDetails,
     dialog,
     limitsDialog,
   );
@@ -2321,7 +2306,6 @@ export function renderAgentSandboxPolicy(
       logWarnings,
       newDenials,
       selection,
-      windowDetails,
     ]) {
       node.hidden = true;
     }
