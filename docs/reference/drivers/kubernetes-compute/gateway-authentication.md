@@ -40,7 +40,8 @@ Conflicting/unsupported settings return `409 RESOURCE_CONFLICT` with setting/req
 never values. Configuration save refuses an invalid `allowUsers` or a
 `deviceAutoApprove` that is not an object of an optional boolean `enabled` and
 an optional array of nonblank scope strings `scopes` (`400 INVALID_REQUEST`, setting and requirement only);
-deployment refuses a stored one with the same text before it stops a running revision.
+deployment refuses a stored one with the same text before it stops a running revision,
+and the Console Agent page holds **Deploy** with that text.
 `trustedProxy.allowLoopback` must be omitted or false; local verification uses the
 separate password.
 

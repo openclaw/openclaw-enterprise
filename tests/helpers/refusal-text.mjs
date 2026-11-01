@@ -391,8 +391,10 @@ export const KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT = kubernetesGatewayPassword
 export const KUBERNETES_GATEWAY_PASSWORD_REFUSAL = `Configuration setting gateway.auth.password ${KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT}.`;
 // Kubernetes Configuration save, provisioning and deploy admission refuse a trusted-proxy allowlist
 // and a device auto-approval the Gateway would refuse, naming no submitted identity (finding 3032).
+// The allowlist text says which identities match case-insensitively, so a case duplicate reads as
+// one (finding 3122).
 export const KUBERNETES_ALLOW_USERS_REFUSAL =
-  "Configuration setting gateway.auth.trustedProxy.allowUsers must include occ-workspace-files and list distinct, nonblank, trimmed, printable ASCII identities that are not object property names.";
+  "Configuration setting gateway.auth.trustedProxy.allowUsers must include occ-workspace-files and list distinct (case-insensitive for occ-workspace-files and @ identities), nonblank, trimmed, printable ASCII identities that are not object property names.";
 export const KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL =
   "Configuration setting gateway.auth.trustedProxy.deviceAutoApprove must be an object with only an optional boolean enabled and an optional array of nonblank scope names.";
 // Deploy and Agent provisioning of dedicated OpenClaw where the Installation selects no

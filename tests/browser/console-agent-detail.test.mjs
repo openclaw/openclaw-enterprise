@@ -104,6 +104,7 @@ import {
   STOP_STATUS_REFRESH_FAILED,
   STOPPED_NO_VERSION,
   WORKSPACE_FILES_UNAVAILABLE,
+  KUBERNETES_ALLOW_USERS_REFUSAL,
   codexPluginRefusal,
   configIncludeRefusal,
   credentialCheckedAtDeploy,
@@ -1952,6 +1953,115 @@ for (const viewport of [
       await card.getByText("Ready to deploy.", { exact: true }).waitFor();
       await waitForEnabled(card.getByRole("button", { name: "Deploy new version", exact: true }));
       assert.equal(await card.getByText(reason, { exact: true }).count(), 0);
+      assert.deepEqual(
+        pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/validate`),
+        [],
+      );
+    });
+  });
+}
+
+// Every Kubernetes topology refuses a trusted-proxy allowlist without the machine identity
+// (finding 3032), and only Kubernetes Compute reads it. A row an older release saved with one
+// holds Deploy with deploy's refusal and the Gateway authentication step, through the same Compute
+// preflight as the plugin entry keys above, and following the step makes the draft ready (finding
+// 3121). A valid allowlist sends no preflight and leaves the draft ready.
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`A stored trusted-proxy allowlist Kubernetes Compute refuses holds Deploy at ${viewport.width}px`, async (t) => {
+    const withAllowUsers = (values, allowUsers) => ({
+      ...structuredClone(values),
+      gateway: {
+        ...values.gateway,
+        auth: {
+          ...values.gateway.auth,
+          trustedProxy: { ...values.gateway.auth.trustedProxy, allowUsers },
+        },
+      },
+    });
+    await t.test("Allowlist without the machine identity", async (t) => {
+      const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
+      const fixture = await createConsoleAppFixture(t, { configurationDriver });
+      await fixture.bootstrap();
+      const namespace = await fixture.createNamespace("Trusted proxy allowlist", { ready: true });
+      const values = nativeAdminValues("trusted-proxy-allowlist", "http://127.0.0.1:18789");
+      const stored = withAllowUsers(values, ["oidc:member-01"]);
+      const agent = await fixture.createAgent(namespace.id, "Trusted proxy allowlist", values);
+      const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+      const refusedSave = await fixture.request("PATCH", configurationPath, {
+        body: { values: stored },
+      });
+      assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
+      assert.equal(refusedSave.body.error.message, KUBERNETES_ALLOW_USERS_REFUSAL);
+      // The row as a release before the save rule stored it.
+      await configurationDriver.update({
+        ...configurationDriver.stored({ namespaceId: namespace.id, id: agent.configurationId }),
+        values: stored,
+      });
+
+      const { page } = await newPage(t, fixture, { context: { viewport } });
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      );
+      const card = page.locator(".agent-draft-actions");
+      const deploy = card.getByRole("button", { name: "Deploy new version", exact: true });
+      const firstStep = card.getByRole("listitem").first().locator(".checklist-detail");
+      await card.getByText(KUBERNETES_ALLOW_USERS_REFUSAL, { exact: true }).waitFor();
+      assert.equal(await deploy.isDisabled(), true);
+      assert.equal(await card.getByText("Ready to deploy.", { exact: true }).count(), 0);
+      assert.ok((await firstStep.textContent()).startsWith("Fix the Gateway authentication · "));
+      // Deploy admission refuses the stored row with the text the page shows.
+      const refusedDeploy = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+      );
+      assert.equal(refusedDeploy.status, 400, JSON.stringify(refusedDeploy.body));
+      assert.equal(refusedDeploy.body.error.message, KUBERNETES_ALLOW_USERS_REFUSAL);
+
+      // The step, followed in the editor, saves and the draft is ready.
+      const edit = page.getByRole("button", { name: "Edit Configuration", exact: true });
+      await edit.scrollIntoViewIfNeeded();
+      await edit.click();
+      await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
+      await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+      await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+      assert.equal(await deploy.isDisabled(), false);
+      assert.match(await firstStep.textContent(), /^Saved · Configuration /);
+      // The page fits the viewport: no horizontal scroll.
+      assert.equal(
+        await page.evaluate(
+          () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+        ),
+        true,
+      );
+    });
+
+    await t.test("Valid allowlist", async (t) => {
+      const fixture = await createConsoleAppFixture(t);
+      await fixture.bootstrap();
+      const namespace = await fixture.createNamespace("Valid proxy allowlist", { ready: true });
+      // The native admin opt-in's allowlist holds only the machine identity.
+      const values = nativeAdminValues("valid-proxy-allowlist", "http://127.0.0.1:18789");
+      const agent = await fixture.createAgent(namespace.id, "Valid proxy allowlist", values);
+
+      const { page } = await newPage(t, fixture, { context: { viewport } });
+      const requests = apiRequests(page, fixture.origin);
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      );
+      const card = page.locator(".agent-draft-actions");
+      await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+      await waitForEnabled(card.getByRole("button", { name: "Deploy new version", exact: true }));
+      assert.equal(
+        await card.getByText(KUBERNETES_ALLOW_USERS_REFUSAL, { exact: true }).count(),
+        0,
+      );
       assert.deepEqual(
         pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/validate`),
         [],

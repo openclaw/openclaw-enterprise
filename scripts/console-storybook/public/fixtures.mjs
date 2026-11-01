@@ -118,6 +118,18 @@ function configurationValues(scenario) {
     // Gateway runs the codex plugin.
     values.plugins = { ...values.plugins, enabled: false };
   }
+  if (scenario.trustedProxyWithoutMachine) {
+    // A trusted-proxy allowlist without occ-workspace-files, saved before Kubernetes Compute
+    // refused it.
+    values.gateway = {
+      ...values.gateway,
+      auth: {
+        ...values.gateway?.auth,
+        mode: "trusted-proxy",
+        trustedProxy: { userHeader: "x-occ-identity", allowUsers: ["oidc:member-01"] },
+      },
+    };
+  }
   if (scenario.kubernetesEntryKeyVariant) {
     // A File-Transfer entry saved before Kubernetes Compute refused it, which OpenClaw merges into
     // file-transfer, the entry Kubernetes Compute enables for the workspace node.
