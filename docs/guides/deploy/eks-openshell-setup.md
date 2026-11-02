@@ -15,6 +15,7 @@ umask 077
 run_root=${XDG_STATE_HOME:-$HOME/.local/state}/oce
 install -d -m 700 "$run_root"
 RUN_DIR=$(mktemp -d "$run_root/eks.XXXXXXXX")
+install -m 600 docs/assets/openshell-quickstart/codex-configuration.jq "$RUN_DIR/codex-configuration.jq"
 printf 'Keep this session directory: %s\n' "$RUN_DIR"
 export KUBECONFIG="$RUN_DIR/kubeconfig"
 export PLATFORM_NS=oce-system
@@ -198,7 +199,7 @@ kubectl -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-worker \
 
 ## 4. Enroll Linear and protected Git
 
-Keep the EKS `request` function, `base` and `RUN_DIR` from step 3. Use the model Secret and CredentialSource registration commands in [local OpenShell setup](local-openshell-setup.md#4-connect-to-the-api-and-register-the-model-credential). Supply a private PAT file for a service account with an authorized Linear connection. Verify the source is `ready`, type `codex-pat`, and owned by `credential_gateway` before enabling the repository Credential Proxy.
+Keep the EKS `request` function, `base` and `RUN_DIR` from step 3. Use the model Secret and CredentialSource registration commands in [local OpenShell setup](local-openshell-setup.md#4-connect-to-the-api-and-register-the-model-credential). Set `MODEL` to the authorized model ID. Supply a private PAT file for a service account with an authorized Linear connection. Keep `name` and `modelSource` from registration for step 5. Verify the source is `ready`, type `codex-pat`, and owned by `credential_gateway` before enabling the repository Credential Proxy.
 
 Use `installation-with-peers.json` as the base for the protected Installation. Keep the verified Envoy Pod /32s when merging the repository fragment. Re-read the peer set after a data-plane rollout. If it changes, update the versioned Installation and reconcile it before another Agent deployment.
 
@@ -253,7 +254,11 @@ deploy_owner_revision() {
     fi
     sleep 3
   done
-  (( i < 120 )) || return 1
+  if (( i == 120 )); then
+    printf 'Could not render Gateway Service policies for Agent %s in Namespace %s after %d attempts (revision %s).\n' \
+      "$agent" "$TENANT_NAMESPACE" "$i" "$revision" >&2
+    return 1
+  fi
   for ((i=0;i<120;i++)); do
     result=$(request GET "$base/agents/$agent/deployments/$revision") || return 1
     phase=$(jq -er .data.status <<<"$result") || return 1

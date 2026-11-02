@@ -34,10 +34,17 @@ Return to [grant model access and deploy](local-openshell-setup.md#6-grant-model
 
 ## Open the Agent and continue a chat
 
-1. Trust the public `browser-ca.crt` from this installation in your browser. On a remote development host, [forward the printed HTTPS port](../operate/troubleshooting.md#open-the-console-from-another-machine) to the same loopback port on your laptop. Keep the CA private key and service key on the development host.
-2. Open the printed HTTPS Console origin at `/console/`. Sign in with the administrator email and password file printed by the launcher. Choose the Agent and its active version, then select **Open Agent UI**. The Agent opens on its own hostname.
-3. Start a chat and complete onboarding. Give the Agent its name and one preference to remember. Ask it to save these in its workspace. Use the OCE **Workspace** tab to read the saved identity and user context.
-4. Close the Agent tab. From the Console, open the same Agent again and select the existing conversation in chat history. Ask a follow-up about your preference. Opening a new conversation gives you a different chat history.
+Trust the public `browser-ca.crt` from this installation in your browser. On a remote development host, [forward the printed HTTPS port](../operate/troubleshooting.md#open-the-console-from-another-machine) to the same loopback port on your laptop. Keep the CA private key and service key on the development host.
+
+Open the printed HTTPS Console origin at `/console/` and sign in with the administrator email and password file printed by the launcher. If you deployed the Agent in the setup guide, go straight to **Open a running Agent** below.
+
+<Snippet file="../../assets/openshell-quickstart/console-deployment-actions.md" />
+
+[Illustrated steps on GitHub](https://github.com/openclaw/openclaw-enterprise/blob/main/docs/assets/openshell-quickstart/console-deployment-actions.md)
+
+Start a chat and complete onboarding. Give the Agent its name and one preference to remember. Ask it to save these in its workspace. Use the OCE **Workspace** tab to read the saved identity and user context.
+
+Close the Agent tab. From the Console, open the same Agent again and select the existing conversation in chat history. Ask a follow-up about your preference.
 
 Keep the cluster, the Agent and its volumes for later sessions. Store the owner-only `session.sh` from the setup guide with the run directory. Use it to operate on the same Namespace and Agent. Use the enrollment guide to retire a temporary write grant and verify revocation before leaving the Agent with read access.
 
