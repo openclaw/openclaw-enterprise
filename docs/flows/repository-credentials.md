@@ -139,6 +139,8 @@ the configured session capacity until callbacks settle and bytes are disposed.
 
 `apps/controller/src/drivers/repo/github/credentials/client/config.ts:writeClientConfiguration`
 stages private files, synchronizes writes and renames the directory into place.
+It sets new directories to `0700` and new files to `0600` on their descriptors,
+so an owner-masking umask cannot leave a successful session unreadable.
 CLI output reports status and location. After a write failure, the CLI attempts
 closure and reports the admitted session ID for operator follow-up.
 
