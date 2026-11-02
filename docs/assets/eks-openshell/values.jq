@@ -3,12 +3,15 @@
     "controller": $controller
   },
   "auth": {
-    "baseUrl": "http://127.0.0.1:18080",
+    "baseUrl": ("https://console." + $cluster + ".oce.localhost:18443"),
+    "passwordSignIn": "all",
     "secretName": "occ-auth",
     "secretKey": "secret"
   },
   "agentNativeAdmin": {
-    "enabled": false
+    "enabled": true,
+    "domain": ("agents." + $cluster + ".oce.localhost"),
+    "sharedCookieDomain": ($cluster + ".oce.localhost")
   },
   "bootstrap": {
     "adminEmail": $email,
@@ -29,6 +32,10 @@
   "api": {
     "modelDiscoveryCidrs": [],
     "clients": [
+      {
+        "namespace": "oce-system",
+        "podLabels": {"app": "oce-owner-browser"}
+      },
       {
         "namespace": "oce-system",
         "podLabels": {

@@ -2,11 +2,14 @@
 let input = "";
 for await (const chunk of process.stdin) input += chunk;
 const { method, path, ip, key, body } = JSON.parse(input);
-if (!/^\/namespaces(?:\/|$)/.test(path) || !/^[0-9.]+$/.test(ip)) {
-  throw new Error("Invalid scoped REST target");
-}
+if (!/^[0-9.]+$/.test(ip)) throw new Error("Invalid API Pod IP");
+const target = new URL(`http://${ip}:8080${path}`);
+const scopedNamespace =
+  /^\/namespaces(?:\/|$)/.test(path) && /^\/namespaces(?:\/|$)/.test(target.pathname);
+const installationRead = method === "GET" && path === "/installation" && body === undefined;
+if (!scopedNamespace && !installationRead) throw new Error("Invalid scoped REST target");
 try {
-  const response = await fetch(`http://${ip}:8080${path}`, {
+  const response = await fetch(target, {
     method,
     headers: {
       "x-api-key": key,
