@@ -88,7 +88,12 @@ function parseArguments(argv) {
   if (!isName(result.name)) {
     throw new Error(`Provide an Agent name of ${NAME_RULE}.`);
   }
-  if (result.prompt !== undefined && (!result.prompt.trim() || result.prompt.length > 4_000)) {
+  // The refusal says characters. String.length counts UTF-16 units, so 4,000
+  // emoji (4,000 characters, 8,000 units) was refused. Count code points, as isName does.
+  if (
+    result.prompt !== undefined &&
+    (!result.prompt.trim() || Array.from(result.prompt).length > 4_000)
+  ) {
     throw new Error("The prompt must contain 1–4,000 characters.");
   }
   if (!["openclaw", "codex"].includes(result.harness)) {
