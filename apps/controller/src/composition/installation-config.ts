@@ -1153,7 +1153,6 @@ export async function loadInstallationConfiguration(options: {
               configuration: { ...repoSelection.configuration, ...nativeRepositorySelection },
             }
           : repoSelection,
-        configuration: repositoryConfiguration,
       });
     } else {
       repositoryRuntime = await loadRepositoryPolicy({

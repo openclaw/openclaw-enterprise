@@ -43,27 +43,7 @@ hosting does not select the Agent model provider.
 
 ### Production prerequisites
 
-- Kubernetes 1.35 or later, an explicit context, enforcing NetworkPolicies,
-  Helm, a version-compatible `kubectl`, Python 3, `yq` v4, and the installed
-  [OCC CLI](cli.md). Use Bash for image selection and model verification, and
-  Node.js 24.22.1 or newer for profile generation or the API transport-credential
-  example. Manual YAML plus console transport provisioning avoids those Node
-  commands. Older Kubernetes servers produce a startup warning and remain
-  outside the supported boundary.
-- Controller and runtime image digests and a chart matched to their source; see
-  [private image delivery](deploy/private-registry-images.md).
-- External PostgreSQL with separate migrator and application roles.
-- A Kubernetes node pool labeled for OCC control-plane Pods. The production example
-  selects nodes with `oce-role: control`; the chart default is `{}`. Set
-  `controlPlane.nodeSelector` to the reviewed labels for your cluster.
-- A Kubernetes node pool labeled for Agent runtime Pods. The production
-  Installation example selects nodes with `oce-role: agents`; set
-  `drivers.compute.configuration.runtime.nodeSelector` to the reviewed labels
-  for gateway and Agent scheduling.
-- Operator-managed HTTPS access for approved clients; the chart does not create
-  TLS or Ingress.
-- Operator-created startup, database, authentication, optional Backend Secrets,
-  fresh bootstrap PVC, gateway storage, and exact `/32` egress destinations.
+<Snippet file="../snippets/kubernetes-prerequisites.md" />
 
 ### Production installation sequence
 

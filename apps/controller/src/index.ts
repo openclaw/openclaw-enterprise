@@ -1112,10 +1112,12 @@ function permissionDescription(
 function clientInstallation(
   installation: Readonly<Installation>,
   computeDriver: Readonly<ComputeDriver> | undefined,
+  nativeAdminEnabled: boolean,
 ): Record<string, unknown> {
   const agentProvisioning = computeDriver?.agentProvisioning;
   const capabilities = {
     ...installation.capabilities,
+    ...(nativeAdminEnabled ? { nativeAdmin: true } : {}),
     ...(agentProvisioning === undefined
       ? {}
       : {
@@ -1791,6 +1793,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ...resourceHandlers,
     ...sandboxPolicyHandlers,
     ...createAgentHandlers({
+      nativeAdmin: options.nativeAdmin,
+      publicOrigin,
+      installationId,
       resolveHarness: options.resolveHarness,
       requireCredentialCsrf: (request) => requireWorkspaceFileCsrf(request, true),
       rejectDeployment: (request, context) =>
@@ -2176,7 +2181,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         await created.applyDefaultUserSettings();
         controller = created;
         reply.status(201).send({
-          data: clientInstallation(created.installation, options.computeDriver),
+          data: clientInstallation(
+            created.installation,
+            options.computeDriver,
+            options.nativeAdmin?.enabled === true,
+          ),
           meta: { requestId: request.id },
         });
         return;
@@ -2202,6 +2211,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         data: clientInstallation(
           await controller.getInstallation(context.actorId),
           options.computeDriver,
+          options.nativeAdmin?.enabled === true,
         ),
         meta: { requestId: request.id },
       });
@@ -2418,6 +2428,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           namespaceId,
           body?.harnessId as string,
           agentId,
+          (source, phase) =>
+            event(
+              operation,
+              request,
+              phase === "session_pending"
+                ? { kind: "agent", id: agentId ?? namespaceId, namespaceId }
+                : source.ref,
+              "mutation",
+              context,
+              undefined,
+              { outcome: "success", details: { phase, sourceId: source.id } },
+            ),
         );
       } else if (operation.operationId.startsWith("poll")) {
         result = await controller.pollAgentDeviceAuthorization(
@@ -2435,7 +2457,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         );
       }
       // Clients poll on the provider interval; audit the transition, not every pending poll.
-      if (result?.status !== "pending" || operation.operationId.startsWith("start")) {
+      if (!operation.operationId.startsWith("start") && result?.status !== "pending") {
         await options.auditSink.append(
           event(
             operation,

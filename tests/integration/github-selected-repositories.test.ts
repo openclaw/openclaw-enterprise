@@ -78,25 +78,31 @@ import {
 } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 
 test("ordinary fresh selections resolve one or N repositories without broadening explicit historical grants", () => {
-  const registry = validateGitHubRepositoryRegistry(
-    {
-      version: 1,
-      backendId: "github",
-      providerInstanceId: "github",
-      appId: "10",
-      githubInstallationId: "20",
-      maximumDurationSeconds: 3600,
-      repositories: ["a", "b"].map((name, index) => ({
-        repositoryRef: name,
-        repositoryId: String(101 + index),
-        repository: "team/" + name,
-        namespaces: [
-          { namespaceId: "team", profiles: ["github-repository"], permissions: grant.permissions },
-        ],
-      })),
-    },
-    "github",
-  );
+  const createRegistry = (bPermissions = grant.permissions) =>
+    validateGitHubRepositoryRegistry(
+      {
+        version: 1,
+        backendId: "github",
+        providerInstanceId: "github",
+        appId: "10",
+        githubInstallationId: "20",
+        maximumDurationSeconds: 3600,
+        repositories: ["a", "b"].map((name, index) => ({
+          repositoryRef: name,
+          repositoryId: String(101 + index),
+          repository: "team/" + name,
+          namespaces: [
+            {
+              namespaceId: "team",
+              profiles: ["github-repository"],
+              permissions: name === "b" ? bPermissions : grant.permissions,
+            },
+          ],
+        })),
+      },
+      "github",
+    );
+  const registry = createRegistry();
   const permissions = registry.repositories[0]!.namespaces[0]!.permissions!;
   assert.notEqual(permissions, grant.permissions);
   assert.equal(Object.isFrozen(permissions), true);
@@ -112,7 +118,7 @@ test("ordinary fresh selections resolve one or N repositories without broadening
   const policy = new GitHubRepositoryPolicy({ driverId: "github", backendId: "github" }, registry, {
     sessionDurationSeconds: 600,
   });
-  for (const refs of [["a"], ["b", "a"]]) {
+  for (const refs of [["a"], ["a", "b"], ["b", "a"]]) {
     const resolved = policy.resolve({
       namespaceId: "team",
       bindings: refs.map((repositoryRef) => ({ repositoryRef })),
@@ -123,6 +129,9 @@ test("ordinary fresh selections resolve one or N repositories without broadening
       scope.repositories.map((r) => r.repositoryId),
       refs.length === 1 ? ["101"] : ["101", "102"],
     );
+    assert.equal(scope.id, resolved.bindings[0]!.grant.grantId);
+    assert.equal(scope.isolationId, "revision");
+    assert.deepEqual(scope.permissions, grant.permissions);
     assert.throws(
       () =>
         resolveSelectedRepositoryGrant(
@@ -138,6 +147,37 @@ test("ordinary fresh selections resolve one or N repositories without broadening
       /repository-binding-not-authorized/,
     );
   }
+  const selection = {
+    namespaceId: "team",
+    bindings: [{ repositoryRef: "a" }, { repositoryRef: "b" }],
+  };
+  const saved = policy.resolve(selection).bindings;
+  // Only B's saved grant ID changes; the registry still permits the homogeneous pair.
+  const substituted = [
+    saved[0]!,
+    { ...saved[1]!, grant: { ...saved[1]!.grant, grantId: saved[0]!.grant.grantId } },
+  ];
+  assert.throws(
+    () => resolveSelectedRepositoryGrant(registry, "team", "revision", substituted),
+    /selected-repository-grant-changed/,
+  );
+  // A remains first and unchanged while only B's contents ceiling narrows.
+  const readPermissions = { ...grant.permissions, contents: "read" };
+  const narrowed = createRegistry(readPermissions);
+  assert.throws(
+    () => resolveSelectedRepositoryGrant(narrowed, "team", "revision", saved),
+    /selected-repository-grant-changed/,
+  );
+  const narrowedPolicy = new GitHubRepositoryPolicy(
+    { driverId: "github", backendId: "github" },
+    narrowed,
+    { sessionDurationSeconds: 600 },
+  );
+  assert.throws(() => narrowedPolicy.resolve(selection), { name: "ScopeViolationError" });
+  const fresh = narrowedPolicy.resolve({ ...selection, bindings: [{ repositoryRef: "b" }] });
+  const scope = resolveSelectedRepositoryGrant(narrowed, "team", "revision", fresh.bindings);
+  assert.deepEqual(scope.repositories, [{ repositoryId: "102", repository: "team/b" }]);
+  assert.deepEqual(scope.permissions, readPermissions);
   assert.throws(
     () =>
       policy.resolve({

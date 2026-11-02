@@ -315,6 +315,7 @@ const CredentialSourceCatalogSchema = Type.Object(
 
 const InstallationCapabilitiesSchema = Type.Object(
   {
+    nativeAdmin: Type.Optional(Type.Literal(true)),
     credentialSources: Type.Optional(
       Type.Object(
         { types: Type.Array(CredentialSourceCatalogSchema) },

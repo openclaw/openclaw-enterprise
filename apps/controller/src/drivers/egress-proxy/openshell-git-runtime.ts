@@ -11,6 +11,7 @@ import type {
   ProtectedRepositoryGitAuthority,
   ProtectedRepositoryGitMaterial,
   ProxyRevisionContext,
+  RepositoryGitInstallationFence,
   SandboxRepositoryAccess,
 } from "@openclaw-enterprise/contracts";
 import type { PostgresPool } from "@openclaw-enterprise/occ";
@@ -90,11 +91,13 @@ export interface OpenShellGitRuntimeConfiguration {
   readonly authority: EgressAuthorityConfiguration;
 }
 type GitOwner = Awaited<ReturnType<typeof startPreparedGitHubGitOwner>>;
-type ReadMaterial = GitOwner["readOpenShellMaterial"];
+type ReadMaterial = ProtectedRepositoryGitAuthority["online"]["readMaterial"];
 type MaterialReader = {
   readOpenShellMaterial(
     ...args: [
-      ...Parameters<ReadMaterial>,
+      revisionId: RepositoryGitInstallationFence["revisionId"],
+      signal: AbortSignal,
+      route?: RepositoryGitInstallationFence | undefined,
       installationScope?: typeof githubInstallationProfile | "github-repository",
     ]
   ): Promise<

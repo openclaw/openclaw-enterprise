@@ -12612,6 +12612,7 @@
                               "required": ["types"],
                               "type": "object"
                             },
+                            "nativeAdmin": { "const": true, "type": "boolean" },
                             "nativeWorkers": {
                               "additionalProperties": false,
                               "description": "Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from.",
@@ -13014,6 +13015,7 @@
                               "required": ["types"],
                               "type": "object"
                             },
+                            "nativeAdmin": { "const": true, "type": "boolean" },
                             "nativeWorkers": {
                               "additionalProperties": false,
                               "description": "Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from.",
@@ -17523,6 +17525,10 @@
                     "minLength": 1,
                     "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
                     "type": "string"
+                  },
+                  "nativeAdmin": {
+                    "description": "Opt in to native admin UI access on this Agent's exact OCE HTTPS origin before its first deployment. Requires native admin access enabled on the Installation. Defaults to false.",
+                    "type": "boolean"
                   },
                   "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                   "plugins": { "$ref": "#/components/schemas/def-6" },
