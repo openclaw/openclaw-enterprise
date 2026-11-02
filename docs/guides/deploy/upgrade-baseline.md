@@ -153,9 +153,22 @@ identity authorized to restore ownership and grants. Set `RESTORE_DATABASE_URL`
 to that database privately. Use a `pg_dump` at least as new as the server.
 
 ```bash
-pg_restore --exit-on-error --single-transaction --dbname "$RESTORE_DATABASE_URL" \
+pg_restore --exit-on-error --single-transaction --dbname "$RESTORE_DATABASE_URL" -- \
   "$BASELINE/openclaw_enterprise.pgdump"
 ```
+
+A failed upgrade gate leaves committed writes in the candidate database.
+Keep writers stopped, reconcile accepted operations and take a fresh full dump
+of the candidate. Retain the original while you restore the fresh archive to
+a separate empty database. Keep passwords in the protected password file
+because the restore URL is a process argument.
+
+A pre-upgrade archive can restore successfully to an empty database while
+omitting later writes. Never add `--clean` or drop schemas to restore over the
+candidate. Compare the restored Agent revisions, active selections, audit
+rows and other required data with the retained candidate before switching
+writers. Verify Gateway and workspace volumes and older-image compatibility
+separately.
 
 Keep normal ownership and ACL restoration; do not use `--no-owner` or
 `--no-acl`. Set `RESTORED_MIGRATION_DATABASE_URL` privately to the dedicated
