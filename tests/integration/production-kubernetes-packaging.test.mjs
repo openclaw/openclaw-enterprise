@@ -2824,7 +2824,7 @@ test(
   },
 );
 
-test("the chart refuses repository backend IDs the controller refuses", tooling, async () => {
+test("the chart validates scalar and literal repository backend IDs", tooling, async () => {
   const message =
     /repositoryCredentials\.backendId must follow the Backend ID rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators/;
   for (const backendId of [
@@ -2851,6 +2851,10 @@ test("the chart refuses repository backend IDs the controller refuses", tooling,
     "101 emoji",
   );
   for (const [backendId, argument] of [
+    [123, "123"],
+    [true, "true"],
+    ["123", "123"],
+    ["true", "true"],
     ["github-primary", "github-primary"],
     ["😀".repeat(100), "😀".repeat(100)],
     ["github-$", "github-$$"],
@@ -2858,11 +2862,15 @@ test("the chart refuses repository backend IDs the controller refuses", tooling,
     ["github-$(BACKEND)", "github-$$(BACKEND)"],
     ["github-$$(BACKEND)", "github-$$$$(BACKEND)"],
   ]) {
+    // Scalars use normal --set typing; strings retain the explicit string override.
     const objects = await resources(
       (
-        await render(repositoryCredentialValues, {
-          strings: { "repositoryCredentials.backendId": backendId },
-        })
+        await render(
+          { ...repositoryCredentialValues, "repositoryCredentials.backendId": backendId },
+          typeof backendId === "string"
+            ? { strings: { "repositoryCredentials.backendId": backendId } }
+            : {},
+        )
       ).stdout,
     );
     const broker = objects
@@ -2871,7 +2879,11 @@ test("the chart refuses repository backend IDs the controller refuses", tooling,
           kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "worker",
       )
       .spec.template.spec.containers.find(({ name }) => name === "repository-credentials");
-    assert.equal(broker.args[broker.args.indexOf("--backend-id") + 1], argument, backendId);
+    assert.equal(
+      broker.args[broker.args.indexOf("--backend-id") + 1],
+      argument,
+      JSON.stringify(backendId),
+    );
   }
 });
 
