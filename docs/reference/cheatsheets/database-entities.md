@@ -26,8 +26,6 @@ Stores the single OCC Installation record.
 ### `namespaces`
 
 Tracks platform Namespaces, their lifecycle status, and any existing Kubernetes namespace they use.
-`created_by` names the [Default users](../authorization/default-users.md) member
-who created and owns the Namespace; the application role cannot update it.
 
 - `id`
 - `name`
@@ -35,7 +33,6 @@ who created and owns the Namespace; the application role cannot update it.
 - `status`
 - `created_at`
 - `deleted_at`
-- `created_by`
 
 ### `agents`
 
@@ -370,8 +367,9 @@ three immutable [built-in Roles](../authorization/default-users.md#built-in-role
 ### `iam_access_bindings`
 
 Grants a native IAM role to an identity or group, optionally for a specific resource.
-A check constraint limits how the built-in Roles can be bound, and a unique index
-allows one Namespace owner binding for each Namespace.
+A check constraint limits each built-in Role to its binding shape, including the
+[Owner bindings](../authorization/default-users.md#creators-own-what-they-create)
+that OCC writes for each creator.
 
 - `id`
 - `namespace_id`

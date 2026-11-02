@@ -47,25 +47,30 @@ original transaction; policy and audit must commit or roll back together.
 OCC rejects a write before invoking a Driver without that declaration. Reads
 remain available when their methods are implemented.
 
-### Group membership and Namespace owner operations
+### Group membership and built-in binding operations
 
 These optional methods support [Default users](../authorization/default-users.md).
 The write methods have the same transaction requirement as Namespace policy
-writes. OCC returns `503 DEPENDENCY_UNAVAILABLE` when a needed method is absent.
+writes. OCC returns `503 DEPENDENCY_UNAVAILABLE` when a membership method is
+absent.
 
-| Method                                        | Contract                                                                                                                                        |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `listGroupMembers(context, groupId)`          | Returns the Principal IDs in one Installation-level Group.                                                                                      |
-| `addGroupMember(context, input)`              | Takes `groupId` and `principalId`. Returns `false` when the Principal is already a member. The repository refuses a non-Installation Principal. |
-| `removeGroupMember(context, input)`           | Takes `groupId` and `principalId`. Returns `false` when the Principal was not a member.                                                         |
-| `createNamespaceOwnerBinding(context, input)` | Takes binding `id`, `namespaceId`, and `principalId`. Binds that identity to the built-in Namespace owner Role, Namespace-wide, and returns it. |
+| Method                                   | Contract                                                                                                                                                                                      |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `listGroupMembers(context, groupId)`     | Returns the Principal IDs in one Installation-level Group.                                                                                                                                    |
+| `addGroupMember(context, input)`         | Takes `groupId` and `principalId`. Returns `false` when the Principal is already a member. The repository refuses a non-Installation Principal.                                               |
+| `removeGroupMember(context, input)`      | Takes `groupId` and `principalId`. Returns `false` when the Principal was not a member.                                                                                                       |
+| `createOwnerBinding(context, input)`     | Takes binding `id`, `namespaceId`, `principalId`, and an optional `resourceKind` and `resourceId`. Binds that identity to the built-in Owner Role: exact, or Namespace-wide with no resource. |
+| `setDefaultUsersBinding(context, input)` | Takes `role` (`agentCreator` with a `namespaceId`, or `namespaceCreator`) and `bound`. Writes or deletes that Default users binding. Returns `false` when nothing changed.                    |
 
-OCC calls the membership methods for the Default users routes and calls
-`createNamespaceOwnerBinding` when a member creates a Namespace. The supplied
-`IAMPolicyRepository` provides `listGroupMembers`, `createGroupMembership`,
-`deleteGroupMembership`, and `createNamespaceWideBinding` for these methods.
-The repository accepts a Namespace-wide binding only for one identity in a
-`provisioning` or `ready` Namespace.
+OCC calls the membership methods for the Default users routes. It calls
+`createOwnerBinding` after each create, and skips Owner bindings when the
+Driver has no such method. It calls `setDefaultUsersBinding` when it creates the
+Namespace named `default` and when it applies `defaultUser.namespaceCreate`. The
+supplied `IAMPolicyRepository` provides `listGroupMembers`,
+`createGroupMembership`, `deleteGroupMembership`, `createBuiltInBinding`, and
+`deleteBuiltInBinding` for these methods. The repository writes only bindings
+to built-in Roles, and only in a `provisioning` or `ready` Namespace or
+Installation-wide.
 
 ## IAM
 

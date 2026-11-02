@@ -77,12 +77,12 @@ export function callerDenialMessage(
   }
   if (action === "create") {
     // A collection create targets its parent: the Installation for a Namespace, otherwise the
-    // Namespace. Only the built-in Roles hold create, and only OCC or an Installation
-    // administrator binds them, so no grant request helps (finding 2581). Namespace create comes
-    // from Default users membership, which an administrator can add.
+    // Namespace. Only built-in Roles hold a create permission, and only OCC binds them, so no
+    // grant request helps: an Installation administrator creates one, as the console's
+    // AGENT_CREATE_DENIED says (finding 2581).
     const kinds = pluralKind(kind);
     if (resource.kind === "namespace") {
-      return `${NAMED_DENIAL_PREFIX} this needs Namespace create. Ask an Installation administrator to create the Namespace or to add you to Default users.`;
+      return `${NAMED_DENIAL_PREFIX} this needs Namespace create. Only an Installation administrator can create ${kinds}: ask one to create it.`;
     }
     const namespaceId = named(resource.namespaceId);
     if (qualifier === "administrator_restricted") {

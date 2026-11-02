@@ -384,8 +384,6 @@ export interface Namespace {
   readonly existingNamespace?: string;
   readonly status: NamespaceStatus;
   readonly createdAt: string;
-  /** The Principal who created it through the built-in Default User Role, and owns it. */
-  readonly createdBy?: string;
 }
 
 export type OpenClawConfigurationValue =
@@ -1242,73 +1240,86 @@ export interface Role extends Scope {
 
 /**
  * The built-in Roles and Group of the Default users design (RFC-0026). They are
- * Installation-level rows that nobody can change or delete. Only OCC or an Installation
- * administrator binds them, and the database enforces each Role's binding shape: the Default
- * User Role is bound only to the Default users Group, Installation-wide; the Namespace Roles
- * only Namespace-wide, to one identity.
+ * Installation-level rows that nobody can change or delete, and only OCC binds them. The
+ * database enforces each Role's binding shape: Agent Creator binds Default users in one
+ * Namespace, Namespace Creator binds Default users Installation-wide, Owner binds one creator
+ * to the resource it created, and Namespace member binds Namespace-wide.
  */
 export const BUILT_IN_ROLE_IDS = Object.freeze({
-  defaultUser: "role_builtin_default_user",
+  agentCreator: "role_builtin_agent_creator",
+  namespaceCreator: "role_builtin_namespace_creator",
+  owner: "role_builtin_owner",
   namespaceMember: "role_builtin_namespace_member",
-  namespaceOwner: "role_builtin_namespace_owner",
 } as const);
 
 export const DEFAULT_USERS_GROUP_ID = "group_builtin_default_users";
 
-const NAMESPACE_MEMBER_PERMISSIONS: readonly Permission[] = Object.freeze(
-  [
-    ...(
-      [
-        "create",
-        "read",
-        "update",
-        "delete",
-        "deploy",
-        "operate",
-        "administer",
-        "read_logs",
-        "manage_policy",
-      ] as const
-    ).map((action) => ({ action, resourceKind: "agent" as const })),
-    ...(["read", "update"] as const).map((action) => ({
-      action,
-      resourceKind: "sandbox_policy" as const,
-    })),
-    ...(["configuration", "preset"] as const).flatMap((resourceKind) =>
-      (["create", "read", "update", "delete"] as const).map((action) => ({
-        action,
-        resourceKind,
-      })),
-    ),
-    ...(["secret", "credential_source"] as const).flatMap((resourceKind) =>
-      (["create", "read", "update", "delete", "operate"] as const).map((action) => ({
-        action,
-        resourceKind,
-      })),
-    ),
-    { action: "read" as const, resourceKind: "agent_revision" as const },
-    { action: "read" as const, resourceKind: "namespace" as const },
-  ].map((permission) => Object.freeze(permission)),
-);
+/** The two Default users bindings; their fixed ids keep each one unique. */
+export const DEFAULT_USERS_BINDING_IDS = Object.freeze({
+  agentCreator: "binding_builtin_default_users_agent_create",
+  namespaceCreator: "binding_builtin_default_users_namespace_create",
+} as const);
+
+function permissions(
+  resourceKind: ResourceKind,
+  actions: readonly PermissionAction[],
+): readonly Permission[] {
+  return actions.map((action) => Object.freeze({ action, resourceKind }));
+}
+
+/** Every action OCC checks on each resource kind inside a Namespace. */
+const NAMESPACE_RESOURCE_PERMISSIONS: readonly Permission[] = Object.freeze([
+  ...permissions("agent", [
+    "create",
+    "read",
+    "update",
+    "delete",
+    "deploy",
+    "operate",
+    "administer",
+    "read_logs",
+    "manage_policy",
+  ]),
+  ...permissions("agent_revision", ["read"]),
+  ...permissions("sandbox_policy", ["read", "update"]),
+  ...permissions("configuration", ["create", "read", "update", "delete"]),
+  ...permissions("preset", ["create", "read", "update", "delete"]),
+  ...permissions("service_account", ["create", "read", "update", "delete"]),
+  ...permissions("secret", ["create", "read", "update", "delete", "operate"]),
+  ...permissions("credential_source", ["create", "read", "update", "delete", "operate"]),
+  ...permissions("namespace", ["read"]),
+]);
 
 export const BUILT_IN_ROLES: readonly Readonly<Role>[] = Object.freeze([
   Object.freeze({
-    id: BUILT_IN_ROLE_IDS.defaultUser,
-    name: "Default User",
-    permissions: Object.freeze([Object.freeze({ action: "create", resourceKind: "namespace" })]),
+    id: BUILT_IN_ROLE_IDS.agentCreator,
+    name: "Agent Creator",
+    permissions: Object.freeze([
+      ...permissions("agent", ["create"]),
+      ...permissions("configuration", ["create"]),
+      ...permissions("secret", ["create"]),
+      ...permissions("credential_source", ["create"]),
+      ...permissions("namespace", ["read"]),
+      ...permissions("preset", ["read"]),
+    ]),
+  }),
+  Object.freeze({
+    id: BUILT_IN_ROLE_IDS.namespaceCreator,
+    name: "Namespace Creator",
+    permissions: Object.freeze(permissions("namespace", ["create"])),
+  }),
+  Object.freeze({
+    id: BUILT_IN_ROLE_IDS.owner,
+    name: "Owner",
+    permissions: Object.freeze([
+      ...NAMESPACE_RESOURCE_PERMISSIONS,
+      ...permissions("namespace", ["delete"]),
+    ]),
   }),
   Object.freeze({
     id: BUILT_IN_ROLE_IDS.namespaceMember,
     name: "Namespace member",
-    permissions: NAMESPACE_MEMBER_PERMISSIONS,
-  }),
-  Object.freeze({
-    id: BUILT_IN_ROLE_IDS.namespaceOwner,
-    name: "Namespace owner",
-    permissions: Object.freeze([
-      ...NAMESPACE_MEMBER_PERMISSIONS,
-      Object.freeze({ action: "delete", resourceKind: "namespace" }),
-    ]),
+    permissions: NAMESPACE_RESOURCE_PERMISSIONS,
   }),
 ]);
 
@@ -1438,7 +1449,8 @@ export type {
   IAMManagedAccessBindingInput,
   IAMManagedServicePrincipalInput,
   IAMGroupMemberInput,
-  IAMNamespaceOwnerBindingInput,
+  IAMOwnerBindingInput,
+  IAMDefaultUsersBindingInput,
 } from "./drivers/iam/index.ts";
 export type { ServiceAccountDriver } from "./drivers/service-account/index.ts";
 export type { SecretDriver } from "./drivers/secret/index.ts";

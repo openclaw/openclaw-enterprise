@@ -80,8 +80,9 @@ test(
         }))
         .sort(byId);
     const expected = await finalizerTargets();
-    // The Secret grant for the ServicePrincipal, plus the three bindings above.
-    assert.equal(expected.length, 4);
+    // The Secret grant for the ServicePrincipal, the creator's Owner binding on the Agent,
+    // plus the three bindings above.
+    assert.equal(expected.length, 5);
     assert.equal(
       expected.some((binding) => binding.id === unrelated.id),
       false,

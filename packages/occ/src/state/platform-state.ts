@@ -1,5 +1,5 @@
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
-import { assertExecutionAdmission, BUILT_IN_ROLE_IDS } from "@openclaw-enterprise/contracts";
+import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { EgressSendReceiptRepository, StoredSendReceipt } from "../egress-send-receipts.ts";
 import { isDeepStrictEqual } from "node:util";
@@ -138,11 +138,6 @@ export interface PersistedNamespace extends Namespace {
 
 export interface NamespaceRepository extends NamespaceReadRepository {
   createNamespace(namespace: Namespace): Promise<Readonly<Namespace>>;
-  /**
-   * Counts the Namespaces this Principal created that are not being deleted. The count holds
-   * a per-creator lock until the unit ends, so concurrent creations cannot exceed a limit.
-   */
-  lockCreatedNamespaceCount(principalId: string): Promise<number>;
   lockNamespace(
     namespaceId: string,
     options?: { readonly includeDeleted?: boolean },
@@ -1699,11 +1694,6 @@ function repositories(
       snapshot.namespaces.set(key, saved);
       return saved;
     },
-    // In-memory units are serialized, so the count needs no separate lock.
-    lockCreatedNamespaceCount: async (principalId) =>
-      Array.from(snapshot.namespaces.values()).filter(
-        (namespace) => namespace.createdBy === principalId && namespace.status !== "deleting",
-      ).length,
     lockNamespace: async (namespaceId, options = {}) => {
       const namespace = snapshot.namespaces.get(namespaceId);
       if (
@@ -3468,31 +3458,13 @@ function repositories(
     deleteGroupMembership: async () => {
       throw new DependencyUnavailableError("The in-memory state does not store Group memberships.");
     },
-    createNamespaceWideBinding: async (binding) => {
-      assertInitialized(snapshot);
-      const namespace = await namespaces.lockNamespace(binding.namespaceId ?? "");
-      if (
-        namespace === undefined ||
-        (namespace.status !== "provisioning" && namespace.status !== "ready") ||
-        binding.subjectKind !== "identity" ||
-        binding.resourceKind !== undefined ||
-        binding.resourceId !== undefined ||
-        (binding.roleId !== BUILT_IN_ROLE_IDS.namespaceMember &&
-          binding.roleId !== BUILT_IN_ROLE_IDS.namespaceOwner)
-      ) {
-        throw new ScopeViolationError(
-          "A Namespace-wide AccessBinding must bind one identity to a built-in Namespace Role.",
-        );
-      }
-      const key = iamPolicyKey(namespace.id, binding.id);
-      if (snapshot.bindings.has(key)) {
-        throw new ResourceConflictError(
-          "The server generated an existing IAM AccessBinding identity.",
-        );
-      }
-      const saved = immutableCopy(binding);
-      snapshot.bindings.set(key, saved);
-      return saved;
+    // In-memory State is no Native IAM Driver's policy source, so OCC writes no built-in
+    // bindings here (OpenClawController.builtInBindingDriver).
+    createBuiltInBinding: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store built-in bindings.");
+    },
+    deleteBuiltInBinding: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store built-in bindings.");
     },
     listServicePrincipals: async (namespaceId) =>
       Object.freeze(

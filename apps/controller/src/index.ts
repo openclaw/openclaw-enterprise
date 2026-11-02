@@ -2173,6 +2173,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             event(operation, request, target, "bootstrap", context, decision.evidence),
           );
         });
+        await created.applyDefaultUserSettings();
         controller = created;
         reply.status(201).send({
           data: clientInstallation(created.installation, options.computeDriver),

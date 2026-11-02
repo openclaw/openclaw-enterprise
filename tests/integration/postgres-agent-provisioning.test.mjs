@@ -496,6 +496,11 @@ async function createFixture(context, options = {}) {
 
   context.after(async () => {
     for (const binding of revokedBindings) {
+      // Restore the Installation bindings; the administrator's Installation grant covers
+      // what its Owner bindings did, and their resources may no longer exist.
+      if (binding.namespace_id !== null) {
+        continue;
+      }
       await pool.query(
         `INSERT INTO occ.iam_access_bindings
          (id, namespace_id, identity_subject_id, group_subject_id, role_id, resource_kind, resource_id)
@@ -639,9 +644,11 @@ async function createFixture(context, options = {}) {
   async function revokeCurrentPrincipal() {
     const principalId = await administratorPrincipalId();
     const result = await pool.query(
+      // The Installation bindings, and the Owner bindings OCC wrote for what the administrator
+      // created (RFC-0026), so no Namespace grant survives the revocation.
       `DELETE FROM occ.iam_access_bindings
        WHERE identity_subject_id = $1
-         AND namespace_id IS NULL
+         AND (namespace_id IS NULL OR role_id = 'role_builtin_owner')
        RETURNING id, namespace_id, identity_subject_id, group_subject_id, role_id,
                  resource_kind, resource_id`,
       [principalId],
@@ -2036,7 +2043,8 @@ for (const harnessAuth of ["api_key", "credential_source"]) {
        (SELECT count(*)::integer FROM occ.agent_revisions WHERE namespace_id = $1) AS revisions,
        (SELECT count(*)::integer FROM occ.secrets WHERE namespace_id = $1) AS secrets,
        (SELECT count(*)::integer FROM occ.iam_access_bindings
-         WHERE namespace_id = $1 AND resource_kind = 'credential_source') AS source_grants`,
+         WHERE namespace_id = $1 AND resource_kind = 'credential_source'
+           AND role_id <> 'role_builtin_owner') AS source_grants`,
         [namespace.id],
       );
       assert.deepEqual(resources.rows[0], {
@@ -2180,7 +2188,8 @@ test(
     // Removing the Agent's exact source permission must still deny the saved read.
     const revoked = await fixture.pool.query(
       `DELETE FROM occ.iam_access_bindings WHERE namespace_id = $1
-       AND resource_kind = 'credential_source' AND resource_id = $2 RETURNING id`,
+       AND resource_kind = 'credential_source' AND resource_id = $2
+       AND role_id <> 'role_builtin_owner' RETURNING id`,
       [namespace.id, source.id],
     );
     assert.equal(revoked.rowCount, 1);

@@ -139,7 +139,7 @@ export interface InstallationStartupConfiguration {
   readonly repository?: SelectedDriverConfiguration;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   /** RFC-0026 Default users; see the configuration reference. */
-  readonly defaultUser?: { readonly namespaceLimit: number };
+  readonly defaultUser?: { readonly namespaceCreate: boolean };
   readonly occ: { readonly cluster: string };
   readonly logging: LoggingConfiguration;
   readonly presets?: { readonly includeDefaults: boolean; readonly files?: readonly string[] };
@@ -198,7 +198,7 @@ export function installationControllerOptions(
   ControllerOptions,
   | "driverConfigurations"
   | "sandboxNetworkPolicyCeiling"
-  | "defaultUserNamespaceLimit"
+  | "defaultUserNamespaceCreate"
   | "nativeWorkerSupport"
   | "credentialProxyCapacity"
 > {
@@ -207,7 +207,7 @@ export function installationControllerOptions(
     sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
     ...(installation?.defaultUser === undefined
       ? {}
-      : { defaultUserNamespaceLimit: installation.defaultUser.namespaceLimit }),
+      : { defaultUserNamespaceCreate: installation.defaultUser.namespaceCreate }),
     ...(installation?.runtime === undefined
       ? {}
       : { nativeWorkerSupport: installation.runtime.nativeWorkerSupport }),
@@ -385,21 +385,19 @@ function credentialProxyCapacityConfiguration(input: unknown): CredentialProxyCa
   return resolved.capacity;
 }
 
-function defaultUserConfiguration(value: unknown): { readonly namespaceLimit: number } | undefined {
+function defaultUserConfiguration(
+  value: unknown,
+): { readonly namespaceCreate: boolean } | undefined {
   if (value === undefined) {
     return undefined;
   }
   const configuration = object(value, "defaultUser");
-  closed(configuration, ["namespaceLimit"], "defaultUser");
-  const namespaceLimit = configuration.namespaceLimit;
-  if (
-    typeof namespaceLimit !== "number" ||
-    !Number.isSafeInteger(namespaceLimit) ||
-    namespaceLimit < 0
-  ) {
-    throw new Error("defaultUser.namespaceLimit must be a nonnegative integer.");
+  closed(configuration, ["namespaceCreate"], "defaultUser");
+  const namespaceCreate = configuration.namespaceCreate;
+  if (typeof namespaceCreate !== "boolean") {
+    throw new Error("defaultUser.namespaceCreate must be a boolean.");
   }
-  return Object.freeze({ namespaceLimit });
+  return Object.freeze({ namespaceCreate });
 }
 
 function runtimeConfiguration(

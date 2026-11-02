@@ -57,15 +57,16 @@ An account created with the Installation administrator `roleId` holds only
 
 ## Built-in Roles
 
-Three Installation-level Roles cannot be changed or deleted. See
-[Default users and built-in Roles](../authorization/default-users.md) for their
-full permissions and binding rules.
+Four Installation-level Roles cannot be changed or deleted, and only OCC binds
+them. See [Default users and built-in Roles](../authorization/default-users.md)
+for their full permissions and binding rules.
 
-| Role ID                         | Grants                                                                                                                                                                                                                           | Bound                                                    |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| `role_builtin_default_user`     | `namespace:create`                                                                                                                                                                                                               | Installation-wide, only to the Default users Group.      |
-| `role_builtin_namespace_member` | Every `agent` action; create, read, update, and delete on `configuration`, `preset`, `secret`, and `credential_source`, plus `operate` on the last two; `sandbox_policy` read and update; `agent_revision` and `namespace` read. | Namespace-wide. No current operation binds it.           |
-| `role_builtin_namespace_owner`  | The member grants plus `namespace:delete`.                                                                                                                                                                                       | Namespace-wide, to the member who created the Namespace. |
+| Role ID                          | Grants                                                                                                       | Bound                                                                                       |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `role_builtin_agent_creator`     | `create` on `agent`, `configuration`, `secret`, and `credential_source`; `read` on `namespace` and `preset`. | Default users, across the `default` Namespace.                                              |
+| `role_builtin_namespace_creator` | `namespace:create`                                                                                           | Default users, Installation-wide, when `defaultUser.namespaceCreate` is on.                 |
+| `role_builtin_owner`             | Every action OCC checks inside a Namespace, plus `namespace:delete`.                                         | The creator of a resource, on that resource; Namespace-wide for the creator of a Namespace. |
+| `role_builtin_namespace_member`  | The Owner grants without `namespace:delete`.                                                                 | Namespace-wide. No current operation binds it.                                              |
 
 ## Denial messages
 
@@ -74,7 +75,7 @@ A `403 FORBIDDEN` for a grant you lack names it and who grants it, for example
 administrator to grant it.` The Namespace policy API cannot grant create, so a
 create denial names its Namespace and says only an Installation administrator
 can create it. The message does not mention [Default users](#built-in-roles)
-or the built-in Namespace Roles, which also grant create. The
+or the built-in Roles, which also grant create. The
 message names a resource ID only when your request sent it in the path or an ID
 field, or you can already read that resource, never a binding, Role or
 Restriction. A Secret or credential source that an Agent, Configuration or
@@ -94,8 +95,8 @@ operation was not authorized.`
   (device login) requires Namespace `agent:create`, or exact `agent:read` and
   `agent:update` for an existing Agent. Start also requires `secret:create` and
   `credential_source:create`, which the Namespace policy API cannot grant, so
-  only an Installation administrator or a Namespace owner or member can start
-  it. Polling and closure require the initiating actor
+  only an Installation administrator, a Default users member in `default`, or
+  a Namespace owner can start it. Polling and closure require the initiating actor
   and exact session `secret:operate`; source use requires exact
   `credential_source:operate`. The session holds only an opaque Gateway handle.
   Saved-Agent discovery also checks the Agent principal's source grant.

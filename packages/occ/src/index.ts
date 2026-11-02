@@ -29,6 +29,7 @@ export {
 export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
 import {
   BUILT_IN_ROLE_IDS,
+  DEFAULT_USERS_BINDING_IDS,
   DEFAULT_USERS_GROUP_ID,
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
@@ -172,6 +173,7 @@ import type {
   CredentialSourceDeviceAuthorization,
   CredentialSourceDeviceAuthorizationResult,
   HarnessExecutionMode,
+  IAMDefaultUsersBindingInput,
   IAMDriver,
   Installation,
   InstallationDeploymentInventory,
@@ -773,18 +775,15 @@ export interface RuntimeLogReadGrant {
  */
 export type RuntimeLogReadAdmission = <T>(read: () => Promise<T>) => Promise<T>;
 
-/** The Namespaces one Default users member may own when no limit is configured. */
-export const DEFAULT_USER_NAMESPACE_LIMIT = 1;
-
 export interface ControllerOptions {
   readonly preparedTokens?: PreparedTokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   /**
-   * How many Namespaces one Default users member may own at a time (Installation configuration
-   * `defaultUser.namespaceLimit`); 0 lets members create none.
+   * Installation configuration `defaultUser.namespaceCreate`: whether Default users may create
+   * Namespaces. `applyDefaultUserSettings` writes or deletes the Namespace Creator binding.
    */
-  readonly defaultUserNamespaceLimit?: number;
+  readonly defaultUserNamespaceCreate?: boolean;
   readonly authorize?: (
     request: AuthorizationRequest,
   ) => AuthorizationDecision | Promise<AuthorizationDecision>;
@@ -1969,7 +1968,7 @@ export class OpenClawController {
   private readonly configurations = new DriverConfigurationRegistry();
 
   private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
-  private readonly defaultUserNamespaceLimit: number;
+  private readonly defaultUserNamespaceCreate: boolean;
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly clock: () => Date;
   private readonly identifier?: ControllerOptions["createId"];
@@ -2016,11 +2015,7 @@ export class OpenClawController {
       "/sandboxNetworkPolicyCeiling",
     );
     this.sandboxNetworkPolicyCeiling = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
-    const namespaceLimit = options.defaultUserNamespaceLimit ?? DEFAULT_USER_NAMESPACE_LIMIT;
-    if (!Number.isSafeInteger(namespaceLimit) || namespaceLimit < 0) {
-      throw new TypeError("The Default user Namespace limit must be a nonnegative integer.");
-    }
-    this.defaultUserNamespaceLimit = namespaceLimit;
+    this.defaultUserNamespaceCreate = options.defaultUserNamespaceCreate === true;
     for (const registration of options.driverConfigurations ?? []) {
       this.configurations.register(registration);
     }
@@ -4797,20 +4792,7 @@ export class OpenClawController {
         kind: "namespace",
         id: this.installation.id,
       };
-      const { decision } = await this.authorize(principalId, "create", target);
-      // Only a caller whose sole grant is the built-in Default User Role owns what it
-      // creates and counts against the limit; an administrator's Namespaces get no owner.
-      const owned =
-        decision.evidence.roleIds.length > 0 &&
-        decision.evidence.roleIds.every((roleId) => roleId === BUILT_IN_ROLE_IDS.defaultUser);
-      if (owned) {
-        const created = await state.namespaces.lockCreatedNamespaceCount(principalId);
-        if (created >= this.defaultUserNamespaceLimit) {
-          throw new ResourceStateConflictError(
-            `You already own ${created} of the ${this.defaultUserNamespaceLimit} Namespaces a Default user may own.`,
-          );
-        }
-      }
+      await this.authorize(principalId, "create", target);
       if (input.existingNamespace !== undefined) {
         await this.authorize(principalId, "administer", {
           kind: "installation",
@@ -4838,11 +4820,19 @@ export class OpenClawController {
           : { existingNamespace: input.existingNamespace }),
         status: "provisioning",
         createdAt: this.timestamp(),
-        ...(owned ? { createdBy: principalId } : {}),
       });
-      if (owned) {
-        // The owner's Namespace-wide grant lets the same unit create the default Presets.
-        await this.bindNamespaceOwner(state, namespace, principalId);
+      // The creator's Namespace-wide Owner grant lets the same unit create the default Presets.
+      await this.bindCreator(state, principalId, {
+        kind: "namespace",
+        id: namespace.id,
+        namespaceId: namespace.id,
+      });
+      if (namespace.name === BOOTSTRAP_DEFAULT_NAMESPACE_NAME) {
+        await this.bindDefaultUsers(state, principalId, {
+          role: "agentCreator",
+          namespaceId: namespace.id,
+          bound: true,
+        });
       }
       await this.ensureNamespaceDefaultPresets(state, principalId, namespace);
       await this.record(state, {
@@ -4857,42 +4847,149 @@ export class OpenClawController {
     });
   }
 
-  private async bindNamespaceOwner(
-    state: PlatformUnitOfWork,
-    namespace: Readonly<Namespace>,
-    principalId: string,
-  ): Promise<void> {
-    const driver = this.iamPolicyDriver("createNamespaceOwnerBinding");
+  /**
+   * The IAM Driver that writes built-in bindings, or undefined when it has no such member or
+   * this controller's State is not where its policy lives: decisions from the `authorize`
+   * option, or a Native IAM Driver that reads another store. Only the Driver's own policy
+   * source can hold bindings it will read.
+   */
+  private builtInBindingDriver(
+    method: "createOwnerBinding" | "setDefaultUsersBinding",
+  ): IAMDriver | undefined {
+    if (this.authorization !== undefined) {
+      return undefined;
+    }
+    const driver = this.selectedDriver("iam");
+    if (
+      driver[method] === undefined ||
+      (driver instanceof NativeIAMDriver &&
+        !NativeIAMDriver.usesStateForAuthorization(driver, driver.authorize, this.state))
+    ) {
+      return undefined;
+    }
     if (driver.namespacePolicyTransaction !== "platform-unit-of-work") {
       throw new DependencyUnavailableError(
-        "Namespace owner bindings require transactional IAM Driver support.",
+        "Built-in IAM bindings require transactional IAM Driver support.",
       );
     }
+    return driver;
+  }
+
+  /**
+   * The creator of a resource gets the built-in Owner Role on it, in the creating unit
+   * (RFC-0026): Namespace-wide for a Namespace, exact for anything else.
+   */
+  private async bindCreator(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    resource: ResourceRef & { readonly namespaceId: string },
+  ): Promise<void> {
+    const driver = this.builtInBindingDriver("createOwnerBinding");
+    if (driver === undefined) {
+      return;
+    }
     const binding = await this.iamPolicyOperation(() =>
-      driver.createNamespaceOwnerBinding!(
+      driver.createOwnerBinding!(
         { policy: state.iamPolicy },
-        { id: `binding_owner_${namespace.id}`, namespaceId: namespace.id, principalId },
+        {
+          id: `binding_owner_${resource.id}`,
+          namespaceId: resource.namespaceId,
+          principalId,
+          ...(resource.kind === "namespace"
+            ? {}
+            : { resourceKind: resource.kind, resourceId: resource.id }),
+        },
       ),
     );
+    await this.auditBinding(state, principalId, binding, resource, { reason: "creator" });
+  }
+
+  /**
+   * Writes or deletes one built-in Default users binding, audited when it changes. The Agent
+   * Creator binding follows the Namespace named `default`; the Namespace Creator binding
+   * follows `defaultUser.namespaceCreate`.
+   */
+  private async bindDefaultUsers(
+    state: PlatformUnitOfWork,
+    actorId: string,
+    input: IAMDefaultUsersBindingInput,
+  ): Promise<void> {
+    const driver = this.builtInBindingDriver("setDefaultUsersBinding");
+    if (driver === undefined) {
+      return;
+    }
+    const changed = await this.iamPolicyOperation(() =>
+      driver.setDefaultUsersBinding!({ policy: state.iamPolicy }, input),
+    );
+    if (!changed) {
+      return;
+    }
+    const binding: AccessBinding = {
+      id: DEFAULT_USERS_BINDING_IDS[input.role],
+      ...(input.role === "agentCreator" ? { namespaceId: input.namespaceId } : {}),
+      subjectKind: "group",
+      subjectId: DEFAULT_USERS_GROUP_ID,
+      roleId: BUILT_IN_ROLE_IDS[input.role],
+    };
+    await this.auditBinding(
+      state,
+      actorId,
+      binding,
+      input.role === "agentCreator"
+        ? { kind: "namespace", id: input.namespaceId, namespaceId: input.namespaceId }
+        : { kind: "installation", id: this.installation.id },
+      input.role === "agentCreator"
+        ? { reason: "default_namespace" }
+        : { reason: "installation_configuration", deleted: !input.bound },
+    );
+  }
+
+  private async auditBinding(
+    state: PlatformUnitOfWork,
+    actorId: string,
+    binding: Readonly<AccessBinding>,
+    resource: ResourceRef,
+    details: { readonly reason: string; readonly deleted?: boolean },
+  ): Promise<void> {
     await state.audit.append({
       id: `aud_${crypto.randomUUID()}`,
       installationId: this.installation.id,
-      namespaceId: namespace.id,
+      ...(resource.namespaceId === undefined ? {} : { namespaceId: resource.namespaceId }),
       occurredAt: this.timestamp(),
       kind: "mutation",
-      actorId: principalId,
+      actorId,
       source: "occ",
-      action: "openclaw.iam.access_bindings.create",
-      resource: { kind: "namespace", id: namespace.id, namespaceId: namespace.id },
+      action:
+        details.deleted === true
+          ? "openclaw.iam.access_bindings.delete"
+          : "openclaw.iam.access_bindings.create",
+      resource,
       outcome: "success",
       details: {
         bindingId: binding.id,
         subjectKind: binding.subjectKind,
         subjectId: binding.subjectId,
         roleId: binding.roleId,
-        reason: "namespace_owner",
+        reason: details.reason,
       },
     });
+  }
+
+  /**
+   * Makes the Namespace Creator binding match `defaultUser.namespaceCreate`. The composition
+   * calls it at startup, and Installation bootstrap calls it once the Installation exists.
+   * Turning the setting off stops new Namespaces; Namespaces that members own stay.
+   */
+  async applyDefaultUserSettings(): Promise<void> {
+    if (this.builtInBindingDriver("setDefaultUsersBinding") === undefined) {
+      return;
+    }
+    await this.mutate((state) =>
+      this.bindDefaultUsers(state, this.installation.id, {
+        role: "namespaceCreator",
+        bound: this.defaultUserNamespaceCreate,
+      }),
+    );
   }
 
   /**
@@ -4996,6 +5093,11 @@ export class OpenClawController {
         name: preset.name,
         template,
         createdAt: this.timestamp(),
+      });
+      await this.bindCreator(state, principalId, {
+        kind: "preset",
+        id: created.id,
+        namespaceId: namespace.id,
       });
       await state.audit.append({
         id: `aud_${crypto.randomUUID()}`,
@@ -5128,13 +5230,19 @@ export class OpenClawController {
         throw new NamespaceNotReadyError();
       }
       const template = await this.admitPresetTemplate(input.template, namespace.id);
-      return state.presets.createPreset({
+      const preset = await state.presets.createPreset({
         id: this.nextIdentifier("preset"),
         namespaceId: namespace.id,
         name: input.name,
         template,
         createdAt: this.timestamp(),
       });
+      await this.bindCreator(state, principalId, {
+        kind: "preset",
+        id: preset.id,
+        namespaceId: namespace.id,
+      });
+      return preset;
     });
   }
 
@@ -5495,6 +5603,11 @@ export class OpenClawController {
       // Compensate only a known failed OCC transaction, never an unknown COMMIT outcome.
       this.registerRollback(() => this.secretOperation(() => driver.delete(secret)));
       await state.secrets.createSecret(secret);
+      await this.bindCreator(state, principalId, {
+        kind: "secret",
+        id: secret.id,
+        namespaceId: namespace.id,
+      });
       return this.secretMetadata(secret);
     });
   }
@@ -6695,6 +6808,11 @@ export class OpenClawController {
           createdAt: this.timestamp(),
         }),
       );
+      await this.bindCreator(state, principalId, {
+        kind: "credential_source",
+        id: registering.id,
+        namespaceId: locked.id,
+      });
       return {
         namespace: locked,
         gateway: selected,
@@ -7397,6 +7515,11 @@ export class OpenClawController {
         ...(Object.keys(secretBindings).length === 0 ? {} : { secretBindings }),
         createdAt: configuration.createdAt,
       });
+      await this.bindCreator(state, principalId, {
+        kind: "configuration",
+        id: metadata.id,
+        namespaceId: namespace.id,
+      });
       // Registered before the write: a create that applied but answered with an error (a
       // timeout, a lost response) would otherwise leave a ConfigMap without metadata (finding
       // 916). The rollback deletes only this exact Configuration (identity, generation, creation
@@ -7446,6 +7569,11 @@ export class OpenClawController {
         id: this.nextIdentifier("service_account"),
         namespaceId: namespace.id,
         name: input.name,
+      });
+      await this.bindCreator(state, principalId, {
+        kind: "service_account",
+        id: account.id,
+        namespaceId: namespace.id,
       });
       const driver = this.serviceAccountDriver();
       if (driver !== undefined) {
@@ -9806,6 +9934,11 @@ export class OpenClawController {
         desiredRuntimeState: "stopped",
         status: "active",
         createdAt: this.timestamp(),
+      });
+      await this.bindCreator(state, principalId, {
+        kind: "agent",
+        id: agent.id,
+        namespaceId: namespace.id,
       });
       if (initialWorkspaceFiles !== undefined) {
         await state.workspaceSetups.create({
@@ -13358,9 +13491,9 @@ export class OpenClawController {
         namespace.id,
         configurationId,
       );
-      const metadata =
-        existingMetadata ??
-        (await state.configurations.createConfiguration({
+      let metadata = existingMetadata;
+      if (metadata === undefined) {
+        metadata = await state.configurations.createConfiguration({
           id: configurationId,
           namespaceId: namespace.id,
           kind: "agent",
@@ -13369,7 +13502,14 @@ export class OpenClawController {
             ? {}
             : { secretBindings: plan.configuration.secretBindings }),
           createdAt: configuration.createdAt,
-        }));
+        });
+        // The person who requested provisioning creates its resources and owns them.
+        await this.bindCreator(state, record.actorId, {
+          kind: "configuration",
+          id: metadata.id,
+          namespaceId: namespace.id,
+        });
+      }
       const agentId = current.agentId ?? this.nextIdentifier("agent");
       let agent = await state.agents.lockAgent(namespace.id, agentId);
       const createdAgent = agent === undefined;
@@ -13396,6 +13536,11 @@ export class OpenClawController {
           desiredRuntimeState: "stopped",
           status: "active",
           createdAt: this.timestamp(),
+        });
+        await this.bindCreator(state, record.actorId, {
+          kind: "agent",
+          id: agent.id,
+          namespaceId: namespace.id,
         });
       }
       if (createdAgent && workspace.initialWorkspaceFiles !== undefined) {
@@ -13660,7 +13805,7 @@ export class OpenClawController {
     agent: Readonly<Agent>,
     secretBindings: SecretBindings,
   ): Promise<void> {
-    if (!grantedByNamespaceRole(deployRoleIds)) {
+    if (!grantedByBuiltInRole(deployRoleIds)) {
       return;
     }
     const referenced = new Map<string, SecretReference | CredentialSourceReference>();
@@ -13681,7 +13826,7 @@ export class OpenClawController {
     const missing: (SecretReference | CredentialSourceReference)[] = [];
     for (const source of referenced.values()) {
       const caller = (await this.authorizationDecision(principalId, "operate", source)).decision;
-      if (!caller.allowed || !grantedByNamespaceRole(caller.evidence.roleIds)) {
+      if (!caller.allowed || !grantedByBuiltInRole(caller.evidence.roleIds)) {
         continue;
       }
       const current = await this.authorizationDecision(agent.servicePrincipalId, "operate", source);
@@ -15622,11 +15767,10 @@ export class OpenClawController {
 export { PostgresMetricsSnapshot } from "./state/postgres-metrics.ts";
 export type { PlatformMetricsSnapshot } from "./state/postgres-metrics.ts";
 
-/** True when a built-in Namespace member or owner Role is among the granting Roles. */
-function grantedByNamespaceRole(roleIds: readonly string[]): boolean {
+/** True when the built-in Owner or Namespace member Role is among the granting Roles. */
+function grantedByBuiltInRole(roleIds: readonly string[]): boolean {
   return roleIds.some(
-    (roleId) =>
-      roleId === BUILT_IN_ROLE_IDS.namespaceMember || roleId === BUILT_IN_ROLE_IDS.namespaceOwner,
+    (roleId) => roleId === BUILT_IN_ROLE_IDS.owner || roleId === BUILT_IN_ROLE_IDS.namespaceMember,
   );
 }
 

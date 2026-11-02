@@ -1219,21 +1219,19 @@ test("invalid loaded IAM state fails closed", async () => {
       ...state,
       memberships: [{ ...memberships[0], namespaceId: "namespace-b" }],
     },
+    // An Installation Group may be bound in a Namespace (RFC-0026 Default users); a Namespace
+    // Group bound in another Namespace still fails closed.
     {
       ...state,
-      groups: [{ id: "group-installation", name: "global" }],
-      memberships: [
-        {
-          groupId: "group-installation",
-          principalId: "principal-group-reader",
-        },
-      ],
       bindings: [
         {
           ...bindings[0],
           subjectKind: "group",
-          subjectId: "group-installation",
-          namespaceId: "namespace-a",
+          subjectId: "group-readers-a",
+          namespaceId: "namespace-b",
+          roleId: "role-reader-b",
+          resourceKind: undefined,
+          resourceId: undefined,
         },
       ],
     },

@@ -1,6 +1,6 @@
 ---
 created: "2026-09-20"
-updated: 2026-10-30
+updated: 2026-11-02
 last_updated_session: "claude/session_01HzmRt1DGB79VEnEWHt7PRy"
 ---
 
@@ -14,8 +14,8 @@ AccessBinding, or to list, create, or read a Namespace ServicePrincipal. OCC aut
 belongs to the requested Namespace, and delegates the policy mutation to the
 selected IAM Driver. The flow stops after the policy and audit event commit
 together in the platform state transaction. Phase 6 covers the other policy
-writes: Default users membership, the owner binding that Namespace creation
-writes, and the Agent grants that a deploy writes.
+writes: Default users membership, the Owner binding that each create writes,
+the built-in Default users bindings, and the Agent grants that a deploy writes.
 
 ## Entry Points
 
@@ -200,9 +200,9 @@ for an original transaction. Its SQL supplier is unregistered, and the
 Namespace routes above do not use it. It does not protect these routes until the
 selected account, session, and policy writers join the same protocol.
 
-### 6. Default users, Namespace owners, and deploy-time grants
+### 6. Default users, owners, and deploy-time grants
 
-`packages/occ/src/index.ts:OpenClawController.createNamespace`
+`packages/occ/src/index.ts:OpenClawController.bindCreator`
 
 [Default users](../reference/authorization/default-users.md) defines the
 behavior; this phase traces the writes.
@@ -216,20 +216,30 @@ behavior; this phase traces the writes.
   `openclaw.iam.default_users.*` event with `changed` in the same unit. Unlike
   the Namespace policy writes above, these routes do not hold the human session
   through COMMIT.
-- **Namespace creation.** `createNamespace` reads the decision evidence for
-  `namespace:create`. When every granting Role is `role_builtin_default_user`,
-  `lockCreatedNamespaceCount` takes a per-creator advisory transaction lock and
-  counts the caller's Namespaces that are not `deleting`. At the
-  `defaultUser.namespaceLimit` value the call raises
-  `ResourceStateConflictError` (`409`). Otherwise OCC stores `createdBy`, and
-  `bindNamespaceOwner` calls `createNamespaceOwnerBinding` and appends the
-  binding event with `reason: "namespace_owner"`. The default Presets follow
-  under that new grant, in the same unit.
+- **Owner bindings.** Each create path calls `bindCreator` after it inserts the
+  resource row, in the same unit: `createNamespace`, `createAgent`,
+  `createConfiguration`, `createSecret`, `createCredentialSource`,
+  `createPreset`, `ensureNamespaceDefaultPresets`, `createServiceAccount`, and
+  `processAgentProvisioningConfiguration` for the provisioning requester.
+  `bindCreator` skips the write when the selected Driver has no
+  `createOwnerBinding` or the controller was built with the `authorize` option.
+  Otherwise the Driver writes `binding_owner_<resource-id>` through
+  `createBuiltInBinding`, Namespace-wide for a Namespace and exact for anything
+  else, and `auditBinding` appends the event with `reason: "creator"`. A
+  Namespace's Owner binding comes before its default Presets, so the creator's
+  own grant creates them.
+- **Built-in Default users bindings.** When `createNamespace` creates the
+  Namespace named `default`, `bindDefaultUsers` calls the Driver's
+  `setDefaultUsersBinding` for Agent Creator there. `applyDefaultUserSettings`,
+  which the production and development compositions call at startup and the
+  bootstrap route calls after bootstrap, writes or deletes the Namespace Creator
+  binding to match `defaultUser.namespaceCreate`. Each change is audited, with
+  the Installation as actor for the setting.
 - **Deployment.** `deployAgentWithAuthorization` calls
   `grantDeployedAgentSources` with the Roles that allowed `agent:deploy`. If
-  `role_builtin_namespace_member` or `role_builtin_namespace_owner` is among
+  `role_builtin_owner` or `role_builtin_namespace_member` is among
   them, OCC collects the Agent's Secret and credential source references. For
-  each reference that a built-in Namespace Role lets the caller `operate`, and
+  each reference that a built-in Role lets the caller `operate`, and
   that the Agent ServicePrincipal cannot `operate`, `ensureAgentOperateGrants`
   writes the exact binding. OCC appends one event for each with
   `reason: "agent_deploy"`. Then the ordinary Agent principal checks run, so a
@@ -241,9 +251,10 @@ behavior; this phase traces the writes.
   API admission behavior for Namespace IAM policy, including refusal of all five
   writes without declared transaction participation.
 - `node --test tests/integration/postgres-default-users.test.ts` checks, with
-  real PostgreSQL and HTTP admission, membership administration, the concurrent
-  limit, the owner binding, deploy-time grants, a custom-Role deploy that writes
-  nothing, and removal that keeps the owned Namespace.
+  real PostgreSQL and HTTP admission, membership administration, Agent creation
+  and Owner bindings in `default`, refusal of a second member, deploy-time
+  grants, a custom-Role deploy that writes nothing, removal that keeps created
+  resources, and the `defaultUser.namespaceCreate` setting on and off.
 - `node --test tests/conformance/occ-api-security.test.mjs` checks that Agent
   responses expose `servicePrincipalId` without accepting caller-supplied values.
 - `node --test tests/integration/postgres-namespace-iam-policy.test.mjs` checks
@@ -279,6 +290,7 @@ behavior; this phase traces the writes.
 
 ## Changelog
 
+- 2026-11-02 10:00: Trace Owner bindings for every create, the default Namespace binding, and the Namespace Creator setting; drop the Namespace limit. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - aba993606)
 - 2026-10-30 09:02: Trace Default users membership, the Namespace owner binding, and deploy-time Agent grants; working tree changes uncommitted. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - a382326dde18057a250e93a222aa8f4000477166)
 - 2026-10-15 13:28: Retain assigning sessions through policy COMMIT, require transactional IAM writes, and preserve caller limits with shared guarded-session holds. (authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851 - a302a3e2061575b64dcc37e212c55075d5c74b9a)
 - 2026-10-14 11:00: Read, validate and index native policy once per State unit of work instead of once per decision. (fix-1322)

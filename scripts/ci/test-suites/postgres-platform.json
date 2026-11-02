@@ -219,7 +219,8 @@
     {
       "path": "tests/integration/postgres-default-users.test.ts",
       "expectedTests": [
-        "a Default user owns the Namespaces it creates up to the limit and its deploys grant the Agent its sources"
+        "Default users create Agents in the default Namespace and own what they create",
+        "defaultUser.namespaceCreate lets Default users create and own Namespaces until it is turned off"
       ]
     },
     {

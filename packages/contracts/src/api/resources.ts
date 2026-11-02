@@ -396,13 +396,6 @@ export const NamespaceSchema = Type.Object(
       Type.Literal("deleting"),
     ]),
     createdAt: Timestamp,
-    createdBy: Type.Optional(
-      Type.String({
-        minLength: 1,
-        maxLength: 200,
-        description: "The Principal who created and owns the Namespace as a Default user.",
-      }),
-    ),
   },
   { additionalProperties: false },
 );

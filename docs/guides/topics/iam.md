@@ -33,7 +33,7 @@ administrators create human accounts through the
 [HTTP API](../../reference/authentication.md#account-provisioning) only, and
 manage Namespace Roles and AccessBindings through the
 [HTTP API or CLI](../../reference/authorization.md#manage-namespace-policy).
-Apart from [Default users](#let-people-create-their-own-namespaces), Groups
+Apart from [Default users](#let-people-create-agents), Groups
 and Restrictions remain managed by the selected IAM authority. See
 [Authorization](../../reference/authorization.md) for available actions, scope,
 and how denials work.
@@ -152,28 +152,26 @@ appointed account holds only `installation:administer` and `installation:read`:
   there to a Role with `namespace:read`, as in step 4 of
   [Add a person](#add-a-person). Namespace IAM writes then work in that
   Namespace; Namespace creation stays refused.
-- It can manage [Default users](#let-people-create-their-own-namespaces),
-  including its own account. As a member, it can create and own Namespaces.
+- It can manage [Default users](#let-people-create-agents),
+  including its own account. As a member, it can create Agents in `default`.
 
 Appoint one only for account and service-key administration. The draft
 [RFC in PR #889](https://github.com/openclaw/openclaw-enterprise/pull/889)
 proposes a change to this behavior.
 
-## Let people create their own Namespaces
+## Let people create Agents
 
-Add a person to the built-in Default users Group to let them create Namespaces
-without grants in each one. The creator owns each Namespace: they can manage
-its Agents, Configurations, Presets, Secrets, and credential sources. People
-without a grant that covers it cannot see it. See
+Add a person to the built-in Default users Group to let them create Agents in
+the shared `default` Namespace without other grants. The person owns each Agent,
+Configuration, Secret, and credential source they create, and deploys their
+Agents themselves. Other members cannot see or change those resources. See
 [Default users and built-in Roles](../../reference/authorization/default-users.md)
-for the owner's permissions and limits.
+for the permissions and limits.
 
 Before you start, create the person's account and keep its `PRINCIPAL_ID`
-(steps 1–3 of [Add a person](#add-a-person)). Each member can own one Namespace
-unless `defaultUser.namespaceLimit` in the
-[Installation startup configuration](../../reference/configuration.md#installation-startup-configuration)
-sets another limit. There is no CLI or console support. As a human
-Installation administrator with your session in `OCC_SESSION_COOKIE_JAR`:
+(steps 1–3 of [Add a person](#add-a-person)). There is no CLI or console
+support. As a human Installation administrator with your session in
+`OCC_SESSION_COOKIE_JAR`:
 
 ```bash
 curl --fail-with-body --silent --show-error -X PUT \
@@ -186,14 +184,19 @@ curl --fail-with-body --silent --show-error \
 
 The `PUT` returns `204`, also when the person is already a member, and the list
 shows their `principalId`. A `400` means the ID is not a human account's
-Principal. The person can now `POST /namespaces`. Past their limit, creation
-returns `409`.
+Principal. The person can now create Agents in `default`.
+
+To also let members create and own Namespaces, set
+`defaultUser.namespaceCreate: true` in the
+[Installation startup configuration](../../reference/configuration.md#installation-startup-configuration)
+and restart the API. The creator of a Namespace holds every permission in it.
+OCC sets no limit on how many Namespaces or Agents a member creates.
 
 To remove the person, send the same request with `-X DELETE`; it also returns
-`204`. They cannot create more Namespaces, but they keep the Namespaces they
-own. To end their access to one, delete it, or delete its owner binding
-`binding_owner_<namespace-id>` with `occ iam access-binding delete` in that
-Namespace.
+`204`. They cannot create anything more. What they created stays, and their
+Agents keep running. To end their access to one resource, delete it, or delete
+its Owner binding `binding_owner_<resource-id>` with
+`occ iam access-binding delete` in that Namespace.
 
 ## Remove a person
 
@@ -295,7 +298,7 @@ enabled.
 
 Besides the person who deploys it, the Agent's own ServicePrincipal needs
 `operate` on each Secret and credential source the Agent binds; without it, OCC
-refuses the deployment. When a Namespace owner deploys, OCC
+refuses the deployment. When the owner of the Agent and its Secrets deploys, OCC
 [writes these grants](../../reference/authorization/default-users.md#grant-an-agent-its-credentials-at-deployment).
 Otherwise, only an Installation administrator can give the Agent this grant:
 bind a Role that holds only Secret `operate` to the Agent's ServicePrincipal,

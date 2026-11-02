@@ -13762,12 +13762,6 @@
                             "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                             "type": "string"
                           },
-                          "createdBy": {
-                            "description": "The Principal who created and owns the Namespace as a Default user.",
-                            "maxLength": 200,
-                            "minLength": 1,
-                            "type": "string"
-                          },
                           "existingNamespace": {
                             "maxLength": 63,
                             "minLength": 1,
@@ -13939,12 +13933,6 @@
                         "createdAt": {
                           "format": "date-time",
                           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
-                          "type": "string"
-                        },
-                        "createdBy": {
-                          "description": "The Principal who created and owns the Namespace as a Default user.",
-                          "maxLength": 200,
-                          "minLength": 1,
                           "type": "string"
                         },
                         "existingNamespace": {
@@ -14143,12 +14131,6 @@
                           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                           "type": "string"
                         },
-                        "createdBy": {
-                          "description": "The Principal who created and owns the Namespace as a Default user.",
-                          "maxLength": 200,
-                          "minLength": 1,
-                          "type": "string"
-                        },
                         "existingNamespace": {
                           "maxLength": 63,
                           "minLength": 1,
@@ -14315,12 +14297,6 @@
                         "createdAt": {
                           "format": "date-time",
                           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
-                          "type": "string"
-                        },
-                        "createdBy": {
-                          "description": "The Principal who created and owns the Namespace as a Default user.",
-                          "maxLength": 200,
-                          "minLength": 1,
                           "type": "string"
                         },
                         "existingNamespace": {

@@ -3,7 +3,7 @@ import { isImmutableSnapshot, isNonEmptyString } from "@openclaw-enterprise/util
 import { randomUUID } from "node:crypto";
 import {
   BUILT_IN_ROLE_IDS,
-  BUILT_IN_ROLES,
+  DEFAULT_USERS_BINDING_IDS,
   DEFAULT_USERS_GROUP_ID,
   PERMISSION_ACTIONS,
   RESOURCE_KINDS,
@@ -17,7 +17,8 @@ import {
   type IAMDriver,
   type IAMGroupMemberInput,
   type IAMManagedAccessBindingInput,
-  type IAMNamespaceOwnerBindingInput,
+  type IAMOwnerBindingInput,
+  type IAMDefaultUsersBindingInput,
   type IAMManagedRoleInput,
   type IAMManagedServicePrincipalInput,
   type IAMPolicyManagementContext,
@@ -108,25 +109,6 @@ export function createBootstrapAdministratorSeed(
         subjectKind: "identity",
         subjectId: servicePrincipal.id,
         roleId: administratorRole.id,
-      },
-    ],
-  };
-}
-
-/**
- * The built-in Roles, the Default users Group, and its binding, as migration 0065 stores them.
- * In-memory fixtures add these rows to their own NativeIAMState.
- */
-export function builtInNativeIAMState(): Pick<NativeIAMState, "roles" | "groups" | "bindings"> {
-  return {
-    roles: BUILT_IN_ROLES.map((role) => ({ ...role, permissions: [...role.permissions] })),
-    groups: [{ id: DEFAULT_USERS_GROUP_ID, name: "Default users" }],
-    bindings: [
-      {
-        id: "binding_builtin_default_users",
-        subjectKind: "group",
-        subjectId: DEFAULT_USERS_GROUP_ID,
-        roleId: BUILT_IN_ROLE_IDS.defaultUser,
       },
     ],
   };
@@ -698,17 +680,12 @@ function validateAndIndexNativeIAMState(state: NativeIAMState): NativeIAMPolicy 
       subject !== undefined,
       `AccessBinding ${binding.id} references an unknown subject`,
     );
-    if (binding.subjectKind === "group") {
-      assertCondition(
-        subject.namespaceId === binding.namespaceId,
-        `AccessBinding ${binding.id} and Group subject have different scopes`,
-      );
-    } else {
-      assertCondition(
-        subject.namespaceId === undefined || subject.namespaceId === binding.namespaceId,
-        `AccessBinding ${binding.id} and subject cross a Namespace`,
-      );
-    }
+    // An Installation identity or Group, such as Default users, can be bound in one Namespace;
+    // a Namespace subject is bound only in its own Namespace.
+    assertCondition(
+      subject.namespaceId === undefined || subject.namespaceId === binding.namespaceId,
+      `AccessBinding ${binding.id} and subject cross a Namespace`,
+    );
   }
 
   for (const restriction of state.restrictions) {
@@ -1368,29 +1345,80 @@ export class NativeIAMDriver implements IAMDriver {
     return repository.deleteGroupMembership(input.groupId, input.principalId);
   }
 
-  async createNamespaceOwnerBinding(
+  async createOwnerBinding(
     context: IAMPolicyManagementContext,
-    input: IAMNamespaceOwnerBindingInput,
+    input: IAMOwnerBindingInput,
   ): Promise<Readonly<AccessBinding>> {
-    const repository = this.policyRepository(context, ["createNamespaceWideBinding"]);
+    const repository = this.policyRepository(context, ["createBuiltInBinding"]);
     assertCondition(
       typeof input === "object" &&
         input !== null &&
-        exactKeys(input, ["id", "namespaceId", "principalId"]),
-      "Namespace owner binding input contains unsupported fields",
+        exactOptionalKeys(
+          input,
+          ["id", "namespaceId", "principalId"],
+          ["resourceKind", "resourceId"],
+        ),
+      "Owner binding input contains unsupported fields",
     );
     this.assertIdentifier(input.id, "AccessBinding");
     this.assertNamespace(input.namespaceId);
     this.assertIdentifier(input.principalId, "Principal");
-    return immutableBinding(
-      await repository.createNamespaceWideBinding({
-        id: input.id,
-        namespaceId: input.namespaceId,
-        subjectKind: "identity",
-        subjectId: input.principalId,
-        roleId: BUILT_IN_ROLE_IDS.namespaceOwner,
-      }),
+    assertCondition(
+      (input.resourceKind === undefined) === (input.resourceId === undefined) &&
+        input.resourceKind !== "namespace" &&
+        input.resourceKind !== "installation" &&
+        (input.resourceKind === undefined || RESOURCE_KINDS.includes(input.resourceKind)),
+      "An owner binding names one resource inside its Namespace, or none for the Namespace",
     );
+    if (input.resourceId !== undefined) {
+      this.assertIdentifier(input.resourceId, "resource");
+    }
+    const binding: AccessBinding = {
+      id: input.id,
+      namespaceId: input.namespaceId,
+      subjectKind: "identity",
+      subjectId: input.principalId,
+      roleId: BUILT_IN_ROLE_IDS.owner,
+      ...(input.resourceKind === undefined
+        ? {}
+        : { resourceKind: input.resourceKind, resourceId: input.resourceId }),
+    };
+    assertCondition(
+      await repository.createBuiltInBinding(binding),
+      "The server generated an existing IAM AccessBinding identity",
+    );
+    return immutableBinding(binding);
+  }
+
+  async setDefaultUsersBinding(
+    context: IAMPolicyManagementContext,
+    input: IAMDefaultUsersBindingInput,
+  ): Promise<boolean> {
+    const repository = this.policyRepository(context, [
+      "createBuiltInBinding",
+      "deleteBuiltInBinding",
+    ]);
+    assertCondition(
+      typeof input === "object" &&
+        input !== null &&
+        typeof input.bound === "boolean" &&
+        ((input.role === "agentCreator" &&
+          exactKeys(input, ["role", "namespaceId", "bound"]) &&
+          isNonEmptyString(input.namespaceId)) ||
+          (input.role === "namespaceCreator" && exactKeys(input, ["role", "bound"]))),
+      "Default users binding input is invalid",
+    );
+    const id = DEFAULT_USERS_BINDING_IDS[input.role];
+    if (!input.bound) {
+      return repository.deleteBuiltInBinding(id);
+    }
+    return repository.createBuiltInBinding({
+      id,
+      ...(input.role === "agentCreator" ? { namespaceId: input.namespaceId } : {}),
+      subjectKind: "group",
+      subjectId: DEFAULT_USERS_GROUP_ID,
+      roleId: BUILT_IN_ROLE_IDS[input.role],
+    });
   }
 
   private assertGroupMember(input: IAMGroupMemberInput): void {

@@ -53,11 +53,12 @@ Creation requires Namespace `create` in the Installation. Reads and deletion
 require the corresponding permission on the exact Namespace. Namespace lists
 authorize each result separately; permission to access one Namespace does not
 reveal another. [Authorization](authorization.md) defines scope and grants.
-A [Default users](authorization/default-users.md#create-a-namespace-as-a-member)
-member can create Namespaces up to a configured limit. OCC binds that member to
-the Namespace as its owner, and the Namespace response returns the member's
-Principal ID as `createdBy`. Namespaces that administrators create have no
-`createdBy`.
+OCC binds the creator of a Namespace to the built-in
+[Owner Role](authorization/default-users.md#creators-own-what-they-create)
+across it. When `defaultUser.namespaceCreate` is on,
+[Default users](authorization/default-users.md#let-default-users-create-namespaces)
+members can create Namespaces. Creating the Namespace named `default` also lets
+Default users create Agents in it.
 
 `POST /namespaces` accepts a name and returns `201` with a Namespace in
 `provisioning` status. `GET /namespaces` lists authorized Namespaces;
@@ -201,9 +202,6 @@ workload is ready.
   operation.
 - `404`: The Namespace does not exist, belongs outside the requested scope, or
   has already been tombstoned.
-- `409 RESOURCE_CONFLICT` on creation by a Default users member: the member
-  already owns the limit of Namespaces that are not `deleting`. Delete one, or
-  ask an administrator to raise `defaultUser.namespaceLimit`.
 - `409 NAMESPACE_NOT_EMPTY`: The message names what remains, with the IDs
   that you can read. Delete the named resources and retry to see any others. Remove the
   Namespace's unreferenced Agents, Configurations, edited or custom Presets,
@@ -243,7 +241,7 @@ workload is ready.
 
 ## Changelog
 
-- 2026-10-30 09:02: Default users members create and own Namespaces up to a limit; responses return `createdBy`. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
+- 2026-11-02 10:00: The creator of a Namespace owns it; Default users members create Namespaces only when `defaultUser.namespaceCreate` is on, with no limit. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-10-18 21:10: The console names a Namespace's status where Agent creation starts and disables creation only where the API refuses new Agents. (ux-a5)
 - 2026-10-06 18:55: The worker log names why a Namespace failed; the API still does not. (fix-d521)
 - 2026-10-06 18:40: Note that a reused existing namespace fails until its old tenant markers are cleared, that `failed` carries no reason, and that `401` covers service API keys. (dogfood-r38)

@@ -58,7 +58,8 @@ administrator rights.
 Administrators manage immutable Namespace Roles and exact-resource identity
 AccessBindings through the [Namespace policy APIs](#manage-namespace-policy),
 which do not manage Groups, memberships, Restrictions, or broad grants.
-[Default users](authorization/default-users.md) can create and own Namespaces.
+[Default users](authorization/default-users.md) can create Agents in the
+`default` Namespace, and the creator of any resource owns it.
 
 ## Principals
 
@@ -280,8 +281,8 @@ placeholders with the returned Role's `id`, the Agent's immutable
 The Role permits `operate` on the **Secret kind**; the binding limits that grant
 to **one Secret ID**. Another Secret needs another binding. For the CLI steps, see
 [Let an Agent use a Secret](../guides/topics/iam.md#let-an-agent-use-a-secret).
-A deploy by a [Namespace owner or member](authorization/default-users.md#grant-an-agent-its-credentials-at-deployment)
-writes these grants itself.
+A deploy by the [owner](authorization/default-users.md#grant-an-agent-its-credentials-at-deployment)
+of the Agent and its Secrets writes these grants itself.
 
 The subject must be an existing human Principal or a ServicePrincipal in the
 path Namespace, by its ID: an email address is refused with a message that says

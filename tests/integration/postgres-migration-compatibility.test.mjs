@@ -1856,7 +1856,6 @@ async function canonicalData(db) {
     ],
     agent_revisions: ["gateway_managed_mode"],
     controller_work: ["work_kind"],
-    namespaces: ["created_by"],
   };
   const hasPresets =
     (await db.app.query("SELECT to_regclass('occ.presets') AS relation")).rows[0].relation !== null;
@@ -1886,31 +1885,51 @@ async function canonicalData(db) {
         `SELECT to_jsonb(t) - $1::pg_catalog.text[] AS value FROM occ."${table}" t ORDER BY to_jsonb(t)::pg_catalog.text`,
         [migrationOwnedColumns[table] ?? []],
       )
-    ).rows.filter(({ value }) => !BUILT_IN_IAM_ROW_IDS.includes(value.id));
+    ).rows.filter(
+      ({ value }) =>
+        !BUILT_IN_IAM_ROW_IDS.includes(value.id) && value.id !== DEFAULT_NAMESPACE_BINDING_ID,
+    );
   }
   return result;
 }
 
-// 0065 seeds these Roles, Group, and binding; canonicalData compares only pre-existing rows.
+// 0066 seeds these Roles and the Group; canonicalData compares only pre-existing rows.
 const BUILT_IN_IAM_ROW_IDS = [
-  "role_builtin_default_user",
+  "role_builtin_agent_creator",
+  "role_builtin_namespace_creator",
   "role_builtin_namespace_member",
-  "role_builtin_namespace_owner",
+  "role_builtin_owner",
   "group_builtin_default_users",
-  "binding_builtin_default_users",
 ];
+const DEFAULT_NAMESPACE_BINDING_ID = "binding_builtin_default_users_agent_create";
 
-async function assertBuiltInIAMSeeded(db) {
+// 0066 also binds Default users to Agent Creator in an existing Namespace named default.
+async function assertBuiltInIAMSeeded(db, defaultNamespaceId) {
   const seeded = await db.app.query(
     `SELECT id FROM occ.iam_roles WHERE id = ANY($1)
      UNION ALL SELECT id FROM occ.iam_groups WHERE id = ANY($1)
-     UNION ALL SELECT id FROM occ.iam_access_bindings WHERE id = ANY($1)
      ORDER BY id`,
     [BUILT_IN_IAM_ROW_IDS],
   );
   assert.deepEqual(
     seeded.rows.map(({ id }) => id),
     [...BUILT_IN_IAM_ROW_IDS].sort(),
+  );
+  const binding = await db.app.query(
+    `SELECT namespace_id, group_subject_id, role_id FROM occ.iam_access_bindings WHERE id = $1`,
+    [DEFAULT_NAMESPACE_BINDING_ID],
+  );
+  assert.deepEqual(
+    binding.rows,
+    defaultNamespaceId === undefined
+      ? []
+      : [
+          {
+            namespace_id: defaultNamespaceId,
+            group_subject_id: "group_builtin_default_users",
+            role_id: "role_builtin_agent_creator",
+          },
+        ],
   );
 }
 
@@ -2029,6 +2048,15 @@ test(
           prefix === 59
             ? await retainGatewaySourcesAcrossProxyAdmission(db.app, db.migrator, namespaceId)
             : undefined;
+        // An Installation bootstrapped before 0066 has the Namespace named default; the upgrade
+        // must let Default users create Agents there.
+        const defaultNamespaceId = prefix === 65 ? `ns_${randomUUID()}` : undefined;
+        if (defaultNamespaceId !== undefined) {
+          await db.app.query(
+            "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'default','ready',now())",
+            [defaultNamespaceId],
+          );
+        }
         const before = await canonicalData(db);
         const receipts = await historyReceipts(db.migrator);
         assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
@@ -2040,7 +2068,7 @@ test(
         await assertCompletedHistory(db, receipts);
         await assertUpgradedRevisionReadable(db);
         assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
-        await assertBuiltInIAMSeeded(db);
+        await assertBuiltInIAMSeeded(db, defaultNamespaceId);
         await assertUpgradedAuthentication(db);
         if (history === "preGatewayManagedMode") {
           await db.app.query(

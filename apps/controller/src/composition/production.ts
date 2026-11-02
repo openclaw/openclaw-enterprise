@@ -342,6 +342,7 @@ export async function composeProduction(
       controller.selectDriver("repo", repositoryPolicy.id);
     }
     await controller.validateBackendConfiguration();
+    await controller.applyDefaultUserSettings();
     if (config.logger !== undefined) {
       for (const shadowed of config.drivers.shadowedDefaultPresets ?? []) {
         emitOccLogEvent(config.logger, { event: "presets.bundled-default-shadowed", ...shadowed });

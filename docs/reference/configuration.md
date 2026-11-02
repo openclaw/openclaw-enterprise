@@ -61,9 +61,10 @@ none. See
 [Sandbox policies](sandbox-policies.md#authority-and-admission) for
 its grant schema and authorization boundaries.
 
-The optional `defaultUser.namespaceLimit` nonnegative integer sets how many
-Namespaces each [Default users](authorization/default-users.md#create-a-namespace-as-a-member)
-member can own at one time. Absent means `1`; `0` lets members create none.
+The optional `defaultUser.namespaceCreate` boolean lets
+[Default users](authorization/default-users.md#let-default-users-create-namespaces)
+members create and own Namespaces. Absent means `false`. OCC applies a change at
+the next API start.
 
 The optional `observability` block sets one external console destination:
 

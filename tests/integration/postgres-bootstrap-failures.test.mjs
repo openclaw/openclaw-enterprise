@@ -18,7 +18,11 @@ import { injectJson } from "../helpers/inject-json.mjs";
 import { jsonEvent, jsonLines } from "../helpers/json-lines.mjs";
 import { withPool } from "../helpers/postgres-database.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { admittedLoggingLevel } from "../../packages/contracts/src/index.ts";
+import {
+  admittedLoggingLevel,
+  BUILT_IN_ROLES,
+  DEFAULT_USERS_GROUP_ID,
+} from "../../packages/contracts/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import {
@@ -115,6 +119,18 @@ async function resetFailureDatabase() {
     await pool.query("DROP TRIGGER IF EXISTS bootstrap_failure_delay ON occ.installation");
     await pool.query("DROP FUNCTION IF EXISTS occ.bootstrap_failure_delay()");
     await pool.query(`TRUNCATE ${RESET_TABLES} RESTART IDENTITY CASCADE`);
+    // TRUNCATE also removes the built-in Roles and Group that migration 0066 seeds, which
+    // bootstrap binds the creator of the default Namespace to. Restore the migrated state.
+    for (const role of BUILT_IN_ROLES) {
+      await pool.query(
+        "INSERT INTO occ.iam_roles (id, namespace_id, name, permissions) VALUES ($1, NULL, $2, $3::jsonb)",
+        [role.id, role.name, JSON.stringify(role.permissions)],
+      );
+    }
+    await pool.query(
+      "INSERT INTO occ.iam_groups (id, namespace_id, name) VALUES ($1, NULL, 'Default users')",
+      [DEFAULT_USERS_GROUP_ID],
+    );
   });
 }
 
@@ -267,7 +283,9 @@ async function bootstrapWithLostCommitAcknowledgement(environment) {
     bootstrap_audits: 1,
     principals: 1,
     service_principals: 1,
-    bindings: 2,
+    // The two Installation bindings, the administrator's Owner binding on default, and
+    // the Default users Agent Creator binding there.
+    bindings: 4,
     service_keys: 1,
     users: 1,
     namespaces: 1,
@@ -354,7 +372,8 @@ function assertSingleDurableBootstrapSeed(counts) {
       bootstrap_audits: 1,
       principals: 1,
       service_principals: 1,
-      bindings: 2,
+      // As above: two Installation bindings and the two bindings on default.
+      bindings: 4,
       namespaces: 1,
       namespace_work: 1,
     },
@@ -890,6 +909,9 @@ test(
 );
 
 const ADMINISTRATOR_PRINCIPAL = "(SELECT id FROM occ.iam_identities WHERE kind = 'principal')";
+// The administrator's Installation binding; bootstrap also binds the administrator to the
+// built-in Owner Role on the default Namespace, which these cases leave alone.
+const ADMINISTRATOR_BINDING = `identity_subject_id = ${ADMINISTRATOR_PRINCIPAL} AND namespace_id IS NULL`;
 
 // Each case breaks one invariant the existing-Installation check verifies. The fast
 // check must not accept any of them; the full check then fails exactly as before.
@@ -912,13 +934,12 @@ const PARTIAL_INSTALLATIONS = [
     `UPDATE occ.iam_roles AS role SET permissions = (
        SELECT jsonb_agg(permission) FROM jsonb_array_elements(role.permissions) AS permission
        WHERE NOT (permission->>'action' = '${action}' AND permission->>'resourceKind' = 'installation'))
-     WHERE id IN (SELECT role_id FROM occ.iam_access_bindings
-       WHERE identity_subject_id = ${ADMINISTRATOR_PRINCIPAL})`,
+     WHERE id IN (SELECT role_id FROM occ.iam_access_bindings WHERE ${ADMINISTRATOR_BINDING})`,
   ]),
   [
     "readable IAM state",
     `UPDATE occ.iam_access_bindings SET resource_kind = 'unknown-kind', resource_id = 'x'
-     WHERE identity_subject_id = ${ADMINISTRATOR_PRINCIPAL}`,
+     WHERE ${ADMINISTRATOR_BINDING}`,
   ],
 ];
 

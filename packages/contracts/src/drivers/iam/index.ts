@@ -86,11 +86,19 @@ export interface IAMDriver extends Driver {
     context: IAMPolicyManagementContext,
     input: IAMGroupMemberInput,
   ): Promise<boolean>;
-  /** Binds a Namespace's creator to the built-in Namespace owner Role, Namespace-wide. */
-  createNamespaceOwnerBinding?(
+  /**
+   * Binds a creator to the built-in Owner Role: Namespace-wide for a Namespace, exact for any
+   * other resource. A Driver without this member grants creators nothing.
+   */
+  createOwnerBinding?(
     context: IAMPolicyManagementContext,
-    input: IAMNamespaceOwnerBindingInput,
+    input: IAMOwnerBindingInput,
   ): Promise<Readonly<AccessBinding>>;
+  /** Writes or deletes one built-in Default users binding. False when nothing changed. */
+  setDefaultUsersBinding?(
+    context: IAMPolicyManagementContext,
+    input: IAMDefaultUsersBindingInput,
+  ): Promise<boolean>;
 }
 
 export interface IAMPolicyReadRepository {
@@ -125,8 +133,10 @@ export interface IAMPolicyRepository extends IAMPolicyReadRepository {
   createRole(role: Role): Promise<Readonly<Role>>;
   createGroupMembership(groupId: string, principalId: string): Promise<boolean>;
   deleteGroupMembership(groupId: string, principalId: string): Promise<boolean>;
-  /** A Namespace-wide identity binding to a built-in Namespace Role; no exact resource. */
-  createNamespaceWideBinding(binding: AccessBinding): Promise<Readonly<AccessBinding>>;
+  /** Writes a binding to a built-in Role; false when its id already exists. */
+  createBuiltInBinding(binding: AccessBinding): Promise<boolean>;
+  /** Deletes a binding to a built-in Role; false when it did not exist. */
+  deleteBuiltInBinding(bindingId: string): Promise<boolean>;
   deleteRole(namespaceId: string, roleId: string): Promise<boolean>;
   createAccessBinding(binding: AccessBinding): Promise<Readonly<AccessBinding>>;
   deleteAccessBinding(namespaceId: string, bindingId: string): Promise<boolean>;
@@ -174,11 +184,29 @@ export interface IAMGroupMemberInput {
   readonly principalId: string;
 }
 
-export interface IAMNamespaceOwnerBindingInput {
+export interface IAMOwnerBindingInput {
   readonly id: string;
   readonly namespaceId: string;
   readonly principalId: string;
+  /** The created resource; a Namespace takes no resource and gets a Namespace-wide binding. */
+  readonly resourceKind?: ResourceKind;
+  readonly resourceId?: string;
 }
+
+/**
+ * Agent Creator binds Default users in one Namespace (`namespaceId` required); Namespace
+ * Creator binds them Installation-wide (no `namespaceId`).
+ */
+export type IAMDefaultUsersBindingInput =
+  | {
+      readonly role: "agentCreator";
+      readonly namespaceId: string;
+      readonly bound: boolean;
+    }
+  | {
+      readonly role: "namespaceCreator";
+      readonly bound: boolean;
+    };
 
 /** A non-Agent automation identity fixed to one Namespace; it carries no grant. */
 export interface IAMManagedServicePrincipalInput {

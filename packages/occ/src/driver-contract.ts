@@ -40,7 +40,8 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
         "listGroupMembers",
         "addGroupMember",
         "removeGroupMember",
-        "createNamespaceOwnerBinding",
+        "createOwnerBinding",
+        "setDefaultUsersBinding",
       ].every(
         (operation) =>
           candidate[operation] === undefined || typeof candidate[operation] === "function",
