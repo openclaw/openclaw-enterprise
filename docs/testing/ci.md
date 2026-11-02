@@ -32,6 +32,62 @@ lanes, including Checks and Conformance 2 to type-check TypeScript tests.
 Other changes run all ordinary lanes. `CI Required` currently blocks
 merge on `main`. These workflows do not gate each Agent/platform deployment.
 
+## Qualify a published release for staging
+
+Run [Staging Release Qualification](../../.github/workflows/staging-qualification.yml)
+with the trusted `main` workflow. Supply `installation`, the full `source_sha`,
+`publication_run_id`, and its exact `publication_attempt`. The publication must be
+a successful manual Enterprise Containers run for that source on `main`.
+Runs for the same installation share a concurrency group and do not cancel an
+active qualification.
+
+Configure the `staging-qualification` environment with `STAGING_INSTALLATION`,
+`GHCR_CONTROLLER_IMAGE`, `GHCR_RUNTIME_IMAGE`, and `CONTAINER_NODE_BASE_IMAGE`.
+The installation input must equal the configured ID. Use an ID of 1–63 lowercase
+letters, digits, or hyphens, starting with a letter. GHCR values are explicit
+`ghcr.io/openclaw/` repositories without tags or digests. The Node base value must
+match the publication receipt, including its digest. Restrict this environment
+to `main`. No provider credentials or cluster configuration are used.
+
+The [workflow command](../../scripts/ci/staging-qualification.ts) checks the
+trusted workflow context, source ancestry, producer workflow ID, successful run
+and attempt, and unique unexpired publication artifact. It repeats these checks
+after download, validates the receipt with the promotion validator, and verifies
+the receipt's exact successful CI run and attempt. Missing or conflicting
+configuration stops qualification.
+
+The command pulls each configured repository at the receipt's digest, verifies
+its digest, Linux amd64 platform and source label, and passes its immutable local
+image ID to the tests. It does not build release images or fall back to a tag.
+Runtime preparation reuses the existing smoke helper to prepare seccomp and an
+Envoy fixture; its local tag refers to the verified image ID. The command selects
+the existing controller and runtime startup files from `images-packaging` and
+`images-runtime-startup` through the regular CI runner. A failed,
+missing, or skipped selected test fails the lane. Cleanup must succeed before
+the command writes `staging-qualification.json`. The uploaded evidence includes
+selected digests, local image IDs, source and workflow SHAs, publication identity,
+and the test runner's result.
+
+This is **container startup qualification on amd64**, not an installation or
+rollout. The installed prepared-Git lane builds a separate repository-service
+image and a runtime with a test CA through
+[first-agent-smoke](../../scripts/ci/first-agent-smoke.mjs); the two-image
+publication receipt cannot supply that installation unchanged. Full Integration
+and QA Advisory retain their existing installation and provider requirements.
+This workflow does not promote to production or prove staging readiness,
+installed Agent journeys, or arm64 behavior.
+
+For local command coverage, run:
+
+```sh
+node --test tests/integration/staging-qualification.test.ts
+node scripts/ci/run-tests.mjs audit
+```
+
+The command tests replace GitHub and Docker transport and the expensive smoke
+boundary with local fixtures. They prove digest handoff and rejection behavior;
+they do not prove a registry pull, container startup, or live installation.
+
 <a id="ci-configuration"></a>
 
 ## Configuration
