@@ -1870,11 +1870,14 @@ test("A refocus does not read again a version the Agent page proved unreadable",
   const versionDenials = () =>
     authorizationDenials(fixture.auditSink, "openclaw.agent_revisions.read").length;
   const accessDenied = page.getByRole("heading", { name: "Access denied", exact: true });
-  // Returns the paths this refocus check sent, once the page is idle again.
+  // Returns the paths this refocus check sent, once the page is idle again. It waits for the
+  // check to send its version list read, not for that read's answer: the list read and the shown
+  // version's read go out together, and when the version's refusal settles first the page shows
+  // it and abandons the list read, which then gets no response (finding 2983).
   async function refocus() {
     const sent = requests.length;
-    const listed = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === `${path}/revisions`,
+    const listed = page.waitForRequest(
+      (request) => new URL(request.url()).pathname === `${path}/revisions`,
     );
     await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
     await listed;

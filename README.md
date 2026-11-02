@@ -6,11 +6,11 @@ OpenClaw Enterprise (OCE) is the open source, vendor neutral platform for managi
 
 OCE includes the [OpenClaw Control Plane (OCC)](docs/guides/concepts.md#control-plane)
 for deploying and managing [Agents](docs/guides/concepts.md#agents-and-revisions).
-Start with [Getting Started](docs/README.md) to use the platform, [Operate](docs/guides/operate/README.md) to administer it, or [Contribute](docs/contributing/README.md) to change its source.
+Start with [Getting Started](docs/README.md) to use the platform, [Deploy & Operate](docs/guides/operate/README.md) to administer it, or [Contribute](docs/contributing/README.md) to change its source.
 
 ## Getting started
 
-Choose [Local Setup](docs/guides/quickstart.md) to run OCC on your machine, or [Kubernetes Setup](docs/guides/kubernetes-setup.md) to install it on a cluster you already operate. For local setup, run from the repository root:
+For k3d with OpenShell, follow [Local Setup OCE](docs/guides/deploy/local-openshell-setup.md), then [add Git support](docs/guides/repository-credentials/openshell-git-push.md) or [Codex plugins](docs/guides/integrations/codex-plugins.md). For a cluster you already operate, use [Kubernetes Setup OCE](docs/guides/kubernetes-setup.md). For the [local quickstart without OpenShell](docs/guides/quickstart.md), run from the repository root:
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
@@ -66,7 +66,7 @@ Use `npm run docs:build` for the full static build. See the
 
 - [Getting Started](docs/README.md) and [Concepts](docs/guides/concepts.md): setup, the first Agent, and the product model.
 - [Topics](docs/guides/topics/README.md) and [Integrations](docs/guides/integrations/README.md): feature behavior and named implementations.
-- [Operate](docs/guides/operate/README.md) and [Reference](docs/reference/README.md): platform operations, the CLI, and the HTTP API.
+- [Deploy & Operate](docs/guides/operate/README.md) and [Reference](docs/reference/README.md): platform operations, the CLI, and the HTTP API.
 - [Contribute](docs/contributing/README.md): development, design, and documentation.
 
 ## Contributors

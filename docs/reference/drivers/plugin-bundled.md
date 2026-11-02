@@ -247,18 +247,19 @@ when best-effort preparation allows authentication warnings, startup disables
 their selections and app/plugin features rather than retrying an unsupported
 login mode.
 
-The Driver rejects, rather than overwrites, raw Configuration that conflicts
-with its managed fields: for OpenClaw, a selected plugin entry in
-`values.plugins.entries` whose JSON differs from the managed entry; for Codex, a
-differing `values.plugins.entries.codex.config.codexPlugins` bridge selection.
-Identical managed entries are accepted. An enabled native plugin entry also
-conflicts with `plugins.enabled:false`, a matching `plugins.deny` entry, or a
-nonempty `plugins.allow` that excludes it. This includes the Codex transport
-plugin required by selected Codex apps. Disabled OpenClaw selections can remain
-denied. Gateway startup rejects these conflicts before OpenClaw package
-installation or starting the gateway; save-time policy checks do not inspect raw
-native Configuration for them. Native configuration outside managed fields,
-including tool denies and profiles, is retained.
+Gateway startup rejects, rather than overwrites, conflicting raw Configuration
+before package installation: a selected OpenClaw plugin's `plugins.entries`
+entry differing from the managed entry, a differing Codex
+`codexPlugins` bridge, or, for an enabled native plugin including the Codex
+transport plugin, `plugins.enabled:false`, a matching `plugins.deny` item, or a
+nonempty `plugins.allow` that excludes it. With an OpenClaw Harness, the
+OpenClaw Driver refuses the OpenClaw conflicts at Agent save, provisioning and
+deployment, but accepts exact copies: `{"enabled":false}` if disabled,
+`{"enabled":true}` if enabled. If `gateway.controlUi.allowedOrigins` lists an
+HTTPS `gateway.publicOrigin`, it refuses an enabled selection's entry, since
+the Gateway adds a public-origin `config` and PostgreSQL reorders a copy's keys;
+this over-refuses `{"enabled":true}` on Docker Compute with password
+authentication.
 
 ## Preparation and security
 

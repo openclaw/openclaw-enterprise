@@ -20,10 +20,12 @@ const matchingAuthorization = `(CASE WHEN p.installation->'plan' ? 'repositoryGi
 const recipient = "p.installation#>'{enforcement,repositoryGitRecipient}'";
 export const releasedGitProfile = `CASE
   WHEN ${recipient}->>'deliveryProfile' = 'github_installation' THEN 'github-installation'
+  WHEN ${recipient}->>'deliveryProfile' = 'github_repository' THEN 'github-repository'
   WHEN NOT (${recipient} ? 'deliveryProfile') THEN 'git-write'
   END`;
 export const registeredGitSelection = `p.installation#>>'{plan,repositoryGit,bindings,0,profile}' = ${releasedGitProfile}
-  AND jsonb_array_length(p.installation#>'{plan,repositoryGit,bindings}')=1 AND ${matchingAuthorization}`;
+  AND (jsonb_array_length(p.installation#>'{plan,repositoryGit,bindings}')=1 OR
+    (${recipient}->>'deliveryProfile'='github_repository' AND NOT EXISTS (SELECT FROM jsonb_array_elements(p.installation#>'{plan,repositoryGit,bindings}') b WHERE b->>'profile'<>'github-repository'))) AND ${matchingAuthorization}`;
 
 // The route stores the observed provider name, id, resource and profile versions. Its owner
 // verifies the complete profile, not just this name. Keep the installed observation schema and
@@ -72,6 +74,7 @@ export const repositoryGitOwnerPredicate = `f.source #> '{session,credentialProx
 
 export const legacyAdoption = "prepared_repository_git";
 export const protectedGitAdoption = "credential_proxy_repository_git";
+export const selectedGitAdoption = "credential_proxy_github_repository";
 export const installationGitAdoption = "credential_proxy_github_installation";
 export const repositoryGitDeliveryTransport = "registered-repository-git/v1";
 
@@ -84,6 +87,40 @@ export const repositoryGitBrokerOwnerPredicate = `EXISTS (
        f.source#>>'{session,sessionId}',f.source#>>'{session,brokerGeneration}')
 )`;
 
+/**
+ * One row for a selected-repository grant, derived from its immutable admission.
+ * Missing/ended members remain in the LEFT JOIN so all_current cannot silently
+ * authorize a subset. The active-binding unique index gives at most one session
+ * per member. Identities fence material across replacement; they are not authority.
+ * The caller owns locks and must re-read this projection after acquiring them.
+ */
+export function selectedRepositoryGrantSql(admissionId: string): string {
+  return `SELECT revision.admitted_spec#>'{repository_credentials,bindings}' AS bindings,
+    jsonb_agg(jsonb_build_object('repositoryRef',member->>'repositoryRef',
+      'admissionId',session.admission_id,'sessionId',session.session_id)
+      ORDER BY member->>'repositoryRef') AS member_sessions,
+    bool_and(session.session_id IS NOT NULL
+      AND clock_timestamp() < to_timestamp(session.deadline_wall_ms / 1000.0)
+      AND (agent.repository_bindings @> jsonb_build_array(jsonb_build_object(
+        'repositoryRef',member->>'repositoryRef','profile',member->>'profile'))) IS TRUE
+    ) AS all_current
+  FROM occ.repository_session_attempts anchor
+  JOIN occ.agent_revisions revision ON (revision.namespace_id,revision.agent_id,revision.id)=
+    (anchor.namespace_id,anchor.agent_id,anchor.revision_id)
+  JOIN occ.agents agent ON (agent.namespace_id,agent.id)=(anchor.namespace_id,anchor.agent_id)
+  CROSS JOIN LATERAL jsonb_array_elements(revision.admitted_spec#>'{repository_credentials,bindings}') member
+  LEFT JOIN occ.repository_session_attempts session ON
+    (session.namespace_id,session.agent_id,session.revision_id,session.live_revision_id)=
+      (anchor.namespace_id,anchor.agent_id,anchor.revision_id,anchor.revision_id)
+    AND session.repository_ref=member->>'repositoryRef'
+    AND session.cleanup_context->'binding'=member
+    AND session.cleanup_context->'driver'=revision.admitted_spec#>'{repository_credentials,driver}'
+    AND session.broker_protocol=2 AND session.phase='open'
+  WHERE anchor.admission_id=${admissionId}
+    AND anchor.cleanup_context#>>'{binding,profile}'='github-repository'
+  GROUP BY revision.admitted_spec`;
+}
+
 /** Absence of a sender's evidence denies use. Only OCC's positive end of this admission retires it. */
 export const repositoryGitAdmissionEnded = `EXISTS (
   SELECT FROM occ.repository_session_attempts s
@@ -91,6 +128,11 @@ export const repositoryGitAdmissionEnded = `EXISTS (
     (f.source#>>'{session,admissionId}',f.source#>>'{session,revisionId}',f.source#>>'{session,sessionId}')
     AND (s.phase IN ('closing','disposed','invalidated') OR s.live_revision_id IS NULL
       OR to_timestamp(s.deadline_wall_ms / 1000.0) <= clock_timestamp()
+      OR (f.source->>'adoption'='${selectedGitAdoption}' AND EXISTS (
+        SELECT FROM (${selectedRepositoryGrantSql("s.admission_id")}) grant_state
+        WHERE grant_state.all_current IS NOT TRUE
+          OR grant_state.bindings IS DISTINCT FROM f.source#>'{session,bindings}'
+          OR grant_state.member_sessions IS DISTINCT FROM f.source#>'{session,memberSessions}'))
       OR EXISTS (SELECT FROM occ.repository_standing_executions e
         WHERE e.revision_id=s.revision_id AND e.closed)
       OR EXISTS (SELECT FROM occ.repository_standing_approvals a
@@ -132,8 +174,9 @@ const openShellObserved = `SELECT FROM ${openShellRoute} WHERE revision_id=$1 AN
  * material. Lost evidence stays unknown; neither strict mode nor another recipient matches. */
 export const openShellPreviewEnded = `EXISTS (
   SELECT FROM ${openShellRoute} r JOIN occ.egress_installations p ON ${protectedRepositoryGitInstallationSql}
-  WHERE r.blocked IS NOT NULL AND ${admittedAuthorization}='request-hook-observed'
-    AND f.source->>'adoption'='${installationGitAdoption}'
+  WHERE r.blocked IS NOT NULL
+    AND ((${admittedAuthorization}='request-hook-observed' AND f.source->>'adoption'='${installationGitAdoption}')
+      OR (${admittedAuthorization}='online-request' AND f.source->>'adoption' IN ('${selectedGitAdoption}','${protectedGitAdoption}')))
     AND (r.namespace_id,r.agent_id,r.revision_id,r.binding_id,p.sandbox_id)=
       (f.source#>>'{session,namespaceId}', f.source#>>'{session,agentId}', f.source#>>'{session,revisionId}',
        f.source#>>'{session,credentialProxyExecution,executionId}', f.source#>>'{session,credentialProxyExecution,sandboxId}')

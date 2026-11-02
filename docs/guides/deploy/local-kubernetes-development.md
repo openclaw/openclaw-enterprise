@@ -5,7 +5,7 @@ Kubernetes-only profile runs PostgreSQL, the OpenClaw Control Plane (OCC), and A
 
 ## Start the profile
 
-Install Node.js 24.22.1+, repository-pinned pnpm, the Go version from `go.mod`, k3d,
+[Install Linux tools](local-kubernetes-tools.md): Node.js 24.22.1+, repository-pinned pnpm, the Go version from `go.mod`, k3d,
 kubectl, Helm, and Docker or Podman. Kubernetes-only mode uses the engine for
 k3d and images, not OCE services.
 
@@ -59,7 +59,7 @@ This profile uses the pinned K3s image, installs PostgreSQL and OCE (not
 OpenShell) in `oce-system`, and writes a generated administrator password and
 service key to the private state directory.
 
-Before bootstrapping, startup checks the Codex `0.163.0-alpha.2` sandbox with
+Before bootstrapping, startup checks the Codex `0.164.0` sandbox with
 its exact imported runtime image. If the node's `RuntimeDefault` blocks it, the
 launcher derives a [reviewed profile](codex-sandbox.md) from the node's actual
 policy and installs it only on the owned k3d node. Only dedicated Codex
@@ -131,7 +131,7 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-The CLI creates one k3d cluster with pinned OpenShell `v0.1.5`, Agent
+The CLI creates one k3d cluster with pinned OpenShell `v0.1.6`, Agent
 Sandbox, cert-manager, and Envoy Gateway assets and digest-resolved images.
 PostgreSQL, the central OpenShell Gateway, and OCE run in `oce-system`; the
 Agent Sandbox controller stays in `agent-sandbox-system`. Tenant Workspaces,
@@ -152,8 +152,8 @@ for console and Agent hosts, and prints the browser CA path.
 `OCC_DEVELOPMENT_BROWSER_PORT` must differ from Compose and k3d API ports.
 Skip manual hybrid routing.
 
-First startup requires network access. To use reviewed local assets instead,
-set
+First startup requires [node registry access](../operate/troubleshooting.md#local-agent-sandbox-controller-image-pull-fails).
+For reviewed local charts and manifests, set
 `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART`,
 `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART`, and
 `OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` to absolute paths.
@@ -184,8 +184,8 @@ For separate stacks, select distinct state directories, cluster names, bridge
 subnets and published ports. Compose also needs a distinct `OCC_POSTGRES_PORT`;
 changing the API port alone leaves PostgreSQL on port 55432. Each Agent Gateway
 requests 2560 MiB with a 4 GiB limit, and each dedicated Codex Harness requests
-768 MiB with a 6 GiB limit, so a dedicated Codex Agent reserves 3.25 GiB; size
-the local engine VM for OCC plus the Agents you run
+768 MiB with a 6 GiB limit, so a dedicated Codex Agent reserves 3.25 GiB, or
+5 GiB with initial workspace files; size the local engine VM for OCC plus the Agents you run
 ([measurements](installation-profiles.md)). Keep each stack's resources under the helper's lifecycle until cleanup.
 
 ## Require both proxies before enabling Slack
@@ -435,6 +435,6 @@ data-plane pools. See [production Namespace preparation](production-agents.md#pr
 for the scoped RoleBindings.
 
 - This is a development environment, not a production deployment recipe.
-- Stock OpenShell `v0.1.5` remains fail-closed for unsupported Secret and
+- Stock OpenShell `v0.1.6` remains fail-closed for unsupported Secret and
   workload-identity projections, so Workspace readiness does not prove that an
   Agent Sandbox can start or complete a model turn.

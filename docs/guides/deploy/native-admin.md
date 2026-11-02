@@ -41,7 +41,7 @@ above. The helper refuses to reuse its Agent after outside Configuration edits.
 - A public wildcard DNS name and HTTPS certificate route traffic to the OCC API Service, not to Envoy. Use a previously unused `agentNativeAdmin.domain` for the first pilot rollout; do not reuse a domain from prior native UI experiments because OCC does not evict already registered browser service workers.
 - The configured Agent domain is separate from the console host and does not include a wildcard, scheme, port, or path.
 - The configured `agentNativeAdmin.sharedCookieDomain` is the shared OCE session cookie parent domain. The console host and Agent domain must both be inside it on DNS-label boundaries, for example `console.oce.example.com`, `agents.oce.example.com`, and cookie domain `oce.example.com`. All matching subdomains that can receive the OCE session cookie must be trusted OCE ingress endpoints.
-- Each pilot Agent uses native trusted-proxy authentication with `occ-workspace-files` granted `operator.admin`, native `controlUi.enabled: true`, the derived Agent origin in `controlUi.allowedOrigins`, and trusted-proxy admin device auto-approval.
+- Each pilot Agent uses native trusted-proxy authentication with `occ-workspace-files` granted `operator.admin`, native `controlUi.enabled: true`, the derived Agent origin in `controlUi.allowedOrigins`, and trusted-proxy device auto-approval.
 - Operators who use the console have exact Agent `administer` permission.
 
 <a id="steps"></a>
@@ -175,7 +175,7 @@ A `200` response with `data.status: "unsupported"` can still include `data.host`
         "allowUsers": ["occ-workspace-files"],
         "deviceAutoApprove": {
           "enabled": true,
-          "scopes": ["operator.admin"]
+          "scopes": ["operator.read", "operator.write"]
         }
       },
       "identityScopes": {

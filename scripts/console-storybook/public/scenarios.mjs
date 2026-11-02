@@ -26,6 +26,21 @@ const runtimeLogsPage = {
   deployed: true,
   candidateDeploymentStatus: "succeeded",
 };
+// The current version, v8, which the viewer cannot read, opened on its Logs tab.
+const hiddenCurrentLogsPage = {
+  group: "Pages/Agent detail",
+  path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&tab=logs",
+  deployed: true,
+  candidateDeploymentStatus: "succeeded",
+  candidateSuperseded: true,
+  rules: [
+    {
+      suffix: "/revisions/rev_00000000-0000-4000-8000-000000000008",
+      status: 403,
+      code: "FORBIDDEN",
+    },
+  ],
+};
 const refuseLogRead = { suffix: "/runtime/logs", status: 403, code: "FORBIDDEN" };
 const form = [click("Start with default Preset")];
 // The OpenShell Sandbox Driver's refusal of Dedicated OpenClaw on its settings alone.
@@ -62,6 +77,19 @@ const modelCredentialSourceTypes = [
     harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
   },
 ];
+// A Credential Gateway that also offers ChatGPT device login. Without that source type Sign in
+// with OAuth is unavailable before the click (finding 2991).
+const deviceLoginSourceTypes = [
+  ...modelCredentialSourceTypes,
+  {
+    type: "codex-oauth",
+    config: [],
+    secrets: [],
+    rotation: "refresh",
+    deviceAuthorization: { harnessId: "codex" },
+    harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" },
+  },
+];
 const dedicatedOpenclawForm = [
   ...readyForm,
   { selector: "#agent-harness", value: "openclaw" },
@@ -82,6 +110,51 @@ const existingPresetSecret = [
   { selector: "#preset-variable-modelSecret-secret-source", value: "existing" },
 ];
 const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets";
+// A Preset variable that duplicates the machine identity in the trusted-proxy allowlist, which
+// the Compute preflight refuses by the setting's name (finding 3122).
+const presetVariableRefusal = {
+  standardCodexPreset: true,
+  presetTrustedProxyVariable: true,
+  rules: [
+    {
+      suffix: "/agents/validate",
+      method: "POST",
+      status: 400,
+      code: "INVALID_REQUEST",
+      message:
+        "Configuration setting gateway.auth.trustedProxy.allowUsers must include occ-workspace-files and list distinct (case-insensitive for occ-workspace-files and @ identities), nonblank, trimmed, printable ASCII identities that are not object property names.",
+    },
+  ],
+};
+const presetVariableRefused = [
+  ...passwordPresetForm.slice(0, -1),
+  { selector: "#preset-variable-human", value: "OCC-Workspace-Files" },
+  click("Use Preset"),
+  click("Create Agent"),
+];
+// A model policy key a Preset variable filled with a space, which the API quotes in the setting
+// it refuses (finding 3122). The message is the API's sentence for that model policy rule
+// (packages/occ/src/configured-harness.ts); tests/browser/console-agent-presets.test.ts pins it.
+const presetQuotedSettingRefusal = {
+  standardCodexPreset: true,
+  presetModelKeyVariable: true,
+  rules: [
+    {
+      suffix: "/agents/validate",
+      method: "POST",
+      status: 400,
+      code: "INVALID_REQUEST",
+      message:
+        'Configuration setting agents.defaults.models["openai/gpt 5 mini"] is not on the primary model\'s provider, "codex": remove it, or list a model of that provider.',
+    },
+  ],
+};
+const presetQuotedSettingRefused = [
+  ...passwordPresetForm.slice(0, -1),
+  { selector: "#preset-variable-fallback", value: "openai/gpt 5 mini" },
+  click("Use Preset"),
+  click("Create Agent"),
+];
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
 // A plugin tool-deny refusal as the API words it, naming the selected plugin.
 const pluginToolRefusal =
@@ -3979,6 +4052,42 @@ export const scenarios = {
       "Switching the refused password draft to OAuth clears the Secret collision choices and required alternate name. Returning to API key requires fresh credentials without restoring the collision.",
     gap: "Simulated UI proof; native fixtures cover the actual duplicate refusal and keyboard recovery.",
   },
+  createPresetVariableRefused: {
+    group: "Pages/Create Agent",
+    name: "Refused setting filled by a Preset variable",
+    path: create,
+    ...presetVariableRefusal,
+    actions: presetVariableRefused,
+    description:
+      "Create Agent's preflight refuses gateway.auth.trustedProxy.allowUsers, which the Preset variable Human filled. The refusal keeps the API's sentence, names the variable and offers Change Human.",
+    steps: ["Select Change Human: the Preset step opens with Human marked and focused."],
+    gap: "The preflight refusal is simulated; tests/browser/console-agent-presets.test.ts covers it with the real Kubernetes Compute rules.",
+  },
+  createPresetQuotedSettingRefused: {
+    group: "Pages/Create Agent",
+    name: "Refused quoted setting filled by a Preset variable",
+    path: create,
+    ...presetQuotedSettingRefusal,
+    actions: presetQuotedSettingRefused,
+    description:
+      'Create Agent\'s preflight refuses agents.defaults.models["openai/gpt 5 mini"], a key the Preset variable Fallback filled. The API quotes the key; the refusal still names the variable and offers Change Fallback.',
+    steps: ["Select Change Fallback: the Preset step opens with Fallback marked and focused."],
+    gap: "The preflight refusal is simulated; tests/browser/console-agent-presets.test.ts covers it with the real model policy rules.",
+  },
+  createPresetVariableMarked: {
+    group: "Pages/Create Agent",
+    name: "Preset variable marked after a refusal",
+    path: create,
+    ...presetVariableRefusal,
+    actions: [...presetVariableRefused, click("Change Human")],
+    description:
+      "Change Human reopens the Preset with the entered variables kept, except the model key. Human shows the refusal under it and has focus.",
+    steps: [
+      "Type in Human: the refusal clears.",
+      "Enter the model key again and select Use Preset to return to the form.",
+    ],
+    gap: "The preflight refusal is simulated; tests/browser/console-agent-presets.test.ts covers it with the real Kubernetes Compute rules.",
+  },
   createPasswordPresetDenied: {
     group: "Pages/Create Agent",
     name: "Password Secret creation denied",
@@ -4186,6 +4295,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT OAuth before sign-in (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     pluginDiscovery,
     pluginCapabilities,
     actions: oauthForm,
@@ -4196,6 +4306,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT device login pending (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     oauthPending: true,
     actions: startOAuthLogin,
     description:
@@ -4205,6 +4316,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT sign-in interrupted by navigation (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
     actions: oauthForm,
     description:
@@ -4214,6 +4326,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login ready for plugin discovery (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     pluginDiscovery,
     pluginCapabilities,
     actions: startOAuthLogin,
@@ -4228,6 +4341,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login permission denied (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/device-authorizations", method: "POST", status: 403 }],
     actions: startOAuthLogin,
     description:
@@ -4237,15 +4351,35 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login unavailable (Experimental)",
     path: create,
-    rules: [{ suffix: "/device-authorizations", method: "POST", status: 501 }],
+    credentialSourceTypes: deviceLoginSourceTypes,
+    rules: [
+      {
+        suffix: "/device-authorizations",
+        method: "POST",
+        status: 501,
+        code: "NOT_IMPLEMENTED",
+        message:
+          "Device login needs a Credential Gateway and a Credential Refresh Driver, and this Installation does not select both. Ask an Installation administrator to select them; see the credential lifecycle guide.",
+      },
+    ],
     actions: startOAuthLogin,
     description:
-      "An Installation whose selected Drivers do not support device login reports it as unavailable. Choose another authentication method; no device code or sign-in link appears.",
+      "The Credential Gateway offers device login, but the Installation selects no Credential Refresh Driver. The refused start names the API's reason, and Sign in with OAuth stays unavailable, described by it. No device code or sign-in link appears.",
+  },
+  createOAuthNotOffered: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT login not offered by the Drivers (Experimental)",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: oauthForm,
+    description:
+      "The Installation's Credential Gateway offers no ChatGPT device login. Sign in with OAuth is unavailable before any request: Tab reaches it, it is described by the reason, and Enter sends nothing.",
   },
   createOAuthStartUnconfirmed: {
     group: "Pages/Create Agent",
     name: "ChatGPT sign-in start unconfirmed (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/device-authorizations", method: "POST", bodyError: true }],
     actions: oauthForm,
     description:
@@ -4255,6 +4389,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login exchange failed (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/poll", method: "POST", status: 503 }],
     actions: startOAuthLogin,
     description:
@@ -4264,6 +4399,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT device login expired (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     oauthExpired: true,
     actions: startOAuthLogin,
     description:
@@ -4288,6 +4424,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "ChatGPT replacement interrupted by navigation (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
@@ -4298,6 +4435,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "ChatGPT sign-in answered on another tab (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     oauthPending: true,
@@ -4309,6 +4447,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "ChatGPT sign-in refused on another tab (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     rules: [
@@ -4321,6 +4460,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "ChatGPT sign-in restarted on another tab (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     oauthPending: true,
@@ -4334,6 +4474,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "Explicit ChatGPT credential replacement (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     credentialSources: [
@@ -4484,7 +4625,7 @@ export const scenarios = {
         status: 409,
         code: "RESOURCE_CONFLICT",
         message:
-          "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
+          "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment. Select a codex/<model> model with agentRuntime.id codex, or ask an Installation administrator for such a SandboxDriver.",
         once: true,
       },
     ],
@@ -4711,6 +4852,26 @@ export const scenarios = {
     steps: [
       'Check Viewing version: v3 includes "Selected for service" and v2 includes "Failed" without opening it; v1 has no outcome label.',
       "Reload the page: v2 keeps its Failed label.",
+    ],
+    gap: "The deployment records are simulated; the API reports each listed version's outcome the same way.",
+  },
+  earlierSupersededVersion: {
+    group: "Pages/Agent detail",
+    name: "Earlier superseded version",
+    path: draft,
+    deployed: true,
+    revisionHistory: 3,
+    earlierFailedVersion: 2,
+    // The API lists a superseded deployment as failed with this code.
+    earlierVersionError: {
+      code: "REVISION_SUPERSEDED",
+      message: "Deployment was superseded by a newer revision.",
+    },
+    description:
+      "v3 took over before v2's deployment finished. The version picker marks v2 Superseded, not Failed, from the list's own outcome, and v2's page says a newer version took over.",
+    steps: [
+      'Check Viewing version: v3 includes "Selected for service" and v2 reads "v2 · Superseded"; v1 has no outcome label.',
+      'Choose v2. The notice reads "Superseded version · read-only admitted snapshot. A newer version took over before its deployment finished." and names neither the newer version nor a runtime stop.',
     ],
     gap: "The deployment records are simulated; the API reports each listed version's outcome the same way.",
   },
@@ -5041,6 +5202,244 @@ export const scenarios = {
     gatewayPassword: true,
     description:
       "The saved Configuration uses the generated password; deployment is still required to apply edits.",
+  },
+  gatewayPasswordUnreadable: {
+    group: "Pages/Agent detail",
+    name: "Gateway password reference OpenClaw cannot read",
+    path: draft,
+    deployed: true,
+    gatewayPasswordProviderless: true,
+    description:
+      "An older release saved gateway.auth.password without a provider. OpenClaw cannot read it and OCC refuses to save or deploy it, so the page shows OCC's refusal and keeps Enable gateway password access.",
+    steps: [
+      "On Configuration the hint reads Configuration setting gateway.auth.password is a SecretRef without a provider: add provider default, then says to enable access, save and deploy.",
+      "In Prepare this version, the first step reads Fix the gateway password and Deploy new version is disabled with the same refusal.",
+      "Select Enable gateway password access and Save Configuration: the hint says access is enabled and the status returns to Ready to deploy.",
+    ],
+    gap: "The stored reference is simulated; this story does not call OCC's save or deploy admission or start a Gateway.",
+  },
+  secretProviderAliasRefused: {
+    group: "Pages/Agent detail",
+    name: "Secret provider alias OpenClaw refuses",
+    path: draft,
+    deployed: true,
+    secretProviderAliasRefused: true,
+    description:
+      "An older release saved secrets.defaults.env as BAD. OpenClaw's configuration check refuses an alias outside its grammar and OCC refuses to save or deploy it, so the page names the alias and offers no Enable gateway password access.",
+    steps: [
+      "On Configuration the hint reads Configuration setting secrets.defaults.env is BAD, not a provider alias OpenClaw reads, with the grammar and the fix (use bad, or remove it), then says to edit the Configuration before you enable gateway password access; the button is absent.",
+      "In Prepare this version, the first step reads Fix the secret provider alias and Deploy new version is disabled with the same refusal.",
+    ],
+    gap: "The stored alias is simulated; this story does not call OCC's save or deploy admission or start a Gateway.",
+  },
+  pluginSecretInputUnreadable: {
+    group: "Pages/Agent detail",
+    name: "Plugin secret input OpenClaw cannot read",
+    path: draft,
+    deployed: true,
+    pluginSecretInputProviderless: true,
+    description:
+      "An older release saved a Google web search header as a SecretRef without a provider. OpenClaw cannot read it and Kubernetes Compute refuses to save or deploy it, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the plugin secret input.",
+      "Deploy new version is disabled with Configuration setting plugins.entries.google.config.webSearch.headers.X-Goog-User-Project is a SecretRef without a provider: add provider default, or remove plugins.entries.google or set its enabled to false.",
+    ],
+    gap: "The stored reference is simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
+  configIncludeRefused: {
+    group: "Pages/Agent detail",
+    name: "Configuration include OCE refuses",
+    path: draft,
+    deployed: true,
+    configInclude: true,
+    description:
+      "An older release saved OpenClaw's $include in agents.defaults. OpenClaw would merge settings from another file that OCE does not check, and every Compute refuses to save or deploy it, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Remove the $include setting.",
+      "Deploy new version is disabled with Configuration setting agents.defaults.$include is not supported: OpenClaw would merge settings from another file that OCE does not check. Write those settings in the Configuration instead.",
+    ],
+    gap: "The stored include is simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
+  pluginEntryKeyVariantRefused: {
+    group: "Pages/Agent detail",
+    name: "Plugin entry key in another spelling",
+    path: draft,
+    deployed: true,
+    pluginEntryKeyVariant: true,
+    description:
+      "An older release saved a plugins.entries.Codex entry beside codex. OpenClaw merges it into codex, and every Compute refuses to save or deploy it, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the plugin entry key.",
+      "Deploy new version is disabled with Configuration setting plugins.entries.Codex must be named codex: OpenClaw merges it into plugins.entries.codex, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key.",
+    ],
+    gap: "The stored key is simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
+  openClawSandboxRefused: {
+    group: "Pages/Agent detail",
+    name: "OpenClaw sandbox before a plugin entry key",
+    path: draft,
+    deployed: true,
+    openClawSandbox: true,
+    pluginEntryKeyVariant: true,
+    description:
+      "An older release saved OpenClaw's sandbox on and a plugins.entries.Codex entry beside codex. Every Compute refuses to save or deploy both, and deploy names the sandbox first, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Turn off OpenClaw's sandbox.",
+      'Deploy new version is disabled with Configuration setting agents.defaults.sandbox.mode must be "off" or unset: OCE runs each Agent in its own isolated runtime and does not support OpenClaw\'s sandbox.',
+    ],
+    gap: "The stored settings are simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
+  providerKeyVariantRefused: {
+    group: "Pages/Agent detail",
+    name: "Model provider key in another spelling",
+    path: draft,
+    deployed: true,
+    providerKeyVariant: true,
+    description:
+      "An older release saved a models.providers.OpenAI entry. OpenClaw applies it to openai, and every Compute refuses to save or deploy it, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the model provider key.",
+      'Deploy new version is disabled with Configuration setting models.providers.OpenAI must be named "openai": OpenClaw applies it to that provider\'s entry, the one OCE checks. Move these settings there if that key exists, else rename this key.',
+    ],
+    gap: "The stored key is simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
+  pluginPolicyListRefused: {
+    group: "Pages/Agent detail",
+    name: "Plugin deny list item that is not text",
+    path: draft,
+    deployed: true,
+    pluginDeny: ["discord", 7],
+    description:
+      "An older release saved a plugins.deny list with a number in it. OpenClaw's config schema refuses it, so no Gateway starts, and every Compute refuses to save or deploy it: the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the plugin allow or deny list.",
+      "Deploy new version is disabled with Configuration setting plugins.deny must list only plugin IDs as text, or the Gateway does not start: remove any other item.",
+    ],
+    gap: "The stored list is simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
+  kubernetesEntryKeyVariantRefused: {
+    group: "Pages/Agent detail",
+    name: "Plugin entry key Kubernetes Compute refuses",
+    path: draft,
+    deployed: true,
+    kubernetesEntryKeyVariant: true,
+    rules: [
+      {
+        suffix: "/agents/validate",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting plugins.entries.File-Transfer must be named file-transfer: OpenClaw merges it into plugins.entries.file-transfer, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key.",
+      },
+    ],
+    description:
+      "An older release saved a plugins.entries.File-Transfer entry. Only Kubernetes Compute refuses that spelling, so the page asks Create Agent's preflight, which runs the Installation's Compute rules. Here it refuses, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the plugin entry key.",
+      "Deploy new version is disabled with Configuration setting plugins.entries.File-Transfer must be named file-transfer: OpenClaw merges it into plugins.entries.file-transfer, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key.",
+    ],
+    gap: "The stored key and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes and SSH Compute rules.",
+  },
+  codexPluginsDisabledRefused: {
+    group: "Pages/Agent detail",
+    name: "Codex plugin turned off on Dedicated Codex",
+    path: draft,
+    deployed: true,
+    codexPluginsDisabled: true,
+    rules: [
+      {
+        suffix: "/agents/validate",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting plugins.enabled must not be false: Dedicated Codex runs the codex plugin, so its Gateway would not start. Remove it.",
+      },
+    ],
+    description:
+      "An older release saved plugins.enabled false on a Dedicated Codex Agent. Only Kubernetes Compute refuses it, so the page asks Create Agent's preflight, which runs the Installation's Compute rules. Here it refuses, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Let the codex plugin run.",
+      "Deploy new version is disabled with Configuration setting plugins.enabled must not be false: Dedicated Codex runs the codex plugin, so its Gateway would not start. Remove it.",
+    ],
+    gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes Compute rules.",
+  },
+  trustedProxyAllowUsersRefused: {
+    group: "Pages/Agent detail",
+    name: "Trusted-proxy allowlist without the machine identity",
+    path: draft,
+    deployed: true,
+    trustedProxyWithoutMachine: true,
+    rules: [
+      {
+        suffix: "/agents/validate",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting gateway.auth.trustedProxy.allowUsers must include occ-workspace-files and list distinct (case-insensitive for occ-workspace-files and @ identities), nonblank, trimmed, printable ASCII identities that are not object property names.",
+      },
+    ],
+    description:
+      "An older release saved a trusted-proxy allowlist without occ-workspace-files. Only Kubernetes Compute refuses it, so the page asks Create Agent's preflight, which runs the Installation's Compute rules. Here it refuses, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the Gateway authentication.",
+      "Deploy new version is disabled with the allowUsers refusal deploy gives.",
+    ],
+    gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes Compute rules.",
+  },
+  kubernetesEntryKeyVariantChecking: {
+    group: "Pages/Agent detail",
+    name: "Plugin entry key, Compute check in flight",
+    path: draft,
+    deployed: true,
+    kubernetesEntryKeyVariant: true,
+    rules: [{ suffix: "/agents/validate", method: "POST", hold: true }],
+    description:
+      "An older release saved a plugins.entries.File-Transfer entry, and Create Agent's preflight has not answered yet. Deploy waits for it, and after 250 ms the draft says it is checking the Configuration with this Installation's Compute.",
+    steps: [
+      "Deploy new version is disabled with Checking the Configuration with this Installation's Compute before deploying.",
+    ],
+    gap: "The preflight is held by the fixture; the API client gives up after 15 seconds, and then the page holds nothing and Deploy is enabled.",
+  },
+  kubernetesEntryKeyVariantCreateDenied: {
+    group: "Pages/Agent detail",
+    name: "Plugin entry key, caller without Agent create",
+    path: draft,
+    deployed: true,
+    kubernetesEntryKeyVariant: true,
+    agentCreateRestricted: true,
+    rules: [
+      {
+        suffix: "/agents/validate",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting plugins.entries.File-Transfer must be named file-transfer: OpenClaw merges it into plugins.entries.file-transfer, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key.",
+      },
+    ],
+    description:
+      "An older release saved a plugins.entries.File-Transfer entry, and the Namespace permission answer says this caller may not create Agents. Create Agent's preflight needs that permission, so the page does not ask it and holds nothing. Deploy stays the authority and gives Kubernetes Compute's refusal, if any.",
+    steps: [
+      "Deploy new version is enabled and the draft reads Ready to deploy.",
+      "The fixture would refuse the preflight, yet no refusal is shown: the page never sent it.",
+    ],
+    gap: "The permission answer is simulated; tests/browser/console-agent-detail.test.mjs covers a member without Agent create against the real API, with no preflight request and no audited denial.",
+  },
+  gatewayPasswordAllowlistOmits: {
+    group: "Pages/Agent detail",
+    name: "Gateway password reference an allowlist omits",
+    path: draft,
+    deployed: true,
+    gatewayPasswordAllowlistOmits: true,
+    description:
+      "The default env alias is vault, a configured env provider whose allowlist leaves out OPENCLAW_GATEWAY_PASSWORD. OpenClaw cannot read the generated reference on that alias and OCC refuses to save it, so the page states why and offers no Enable gateway password access.",
+    steps: [
+      'On Configuration the hint reads The generated gateway password reference {source: "env", provider: "vault", id: "OPENCLAW_GATEWAY_PASSWORD"} references OPENCLAW_GATEWAY_PASSWORD, which secrets.providers.vault.allowlist omits: add it to that allowlist, then says to edit the Configuration before you enable gateway password access; the button is absent.',
+    ],
+    gap: "The stored secrets are simulated; this story does not call OCC's save or deploy admission or start a Gateway.",
   },
   gatewayPasswordSaveDenied: {
     group: "Pages/Agent detail",
@@ -6525,20 +6924,8 @@ export const scenarios = {
     ],
   },
   agentCurrentVersionHiddenLogs: {
-    group: "Pages/Agent detail",
+    ...hiddenCurrentLogsPage,
     name: "Logs of a current version the viewer cannot read",
-    // The current version, v8, which the viewer cannot read, opened on its Logs tab.
-    path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&tab=logs",
-    deployed: true,
-    candidateDeploymentStatus: "succeeded",
-    candidateSuperseded: true,
-    rules: [
-      {
-        suffix: "/revisions/rev_00000000-0000-4000-8000-000000000008",
-        status: 403,
-        code: "FORBIDDEN",
-      },
-    ],
     description:
       "An operator opens Logs on a current version she cannot read. Runtime status also needs AgentRevision read on it, so the page does not read it and says why in words; log text, which needs no version read, still shows.",
     steps: [
@@ -6546,6 +6933,19 @@ export const scenarios = {
       "The request log shows no /runtime status read and no read of the current version; log output still loads.",
     ],
     gap: "Simulated UI proof: it does not verify the API's refusal of the status read.",
+  },
+  agentCurrentVersionHiddenLogsStopped: {
+    ...hiddenCurrentLogsPage,
+    name: "Logs of a current version the viewer cannot read, stopped elsewhere",
+    stopElsewhereOnReread: true,
+    description:
+      "The operator has Logs open on the current version, which she cannot read. Another person stops the Agent. The Logs view reads no runtime status for this version, so it says in place that a stop was requested (finding 3012), as the summary does.",
+    steps: [
+      "Wait for the next Agent reread (at most 10 seconds). The summary reads Selected for service None.",
+      "Check the Logs view under the runtime status: “Stop requested. This Agent will not start again until a new version is deployed.” It says nothing else about the version. Focus and the Logs view stay where they were, at 1440 and at 390 px wide.",
+      "The request log shows only Agent reads: no /runtime status read and no read of the version.",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live stop or the screen reader announcement.",
   },
   deploymentSucceeded: {
     group: "Pages/Agent detail",
@@ -6847,10 +7247,11 @@ export const scenarios = {
     runtimePod: "none",
     failedRedeployOnReread: true,
     description:
-      "v7 was stopped, so no version is selected and its Pods are gone. While its Logs are open, another person deploys v8, and v8's startup model check times out: the Agent runs again with no version selected. The Logs status poll rereads the Agent and, finding it running with no version selected, lists the versions again: the page shows v8's failed deployment (finding 2978).",
+      "v7 was stopped, so no version is selected and its Pods are gone. While its Logs are open, another person deploys v8, and v8's startup model check times out: the Agent runs again with no version selected. The Logs status poll rereads the Agent and, finding it running with no version selected, lists the versions again: the page shows v8's failed deployment (finding 2978), and the Logs view says so in place under its runtime status (finding 2993).",
     steps: [
       "Wait for the Logs view to say “This version has no running Pod for this source.” The summary reads Latest visible deployment v7 · Completed and Selected for service None.",
       "Wait for the next status poll (10 seconds). The summary then reads Latest visible deployment v8 · Failed, and Deployment needs attention leads with v8's timed-out model check.",
+      "Check the Logs view under the runtime status: “v8 failed its startup model check.” with the same next step and no error code, and View v8 deployment. Focus and the scroll position stay where they were; at 390 px wide the line is in view under the Runtime heading.",
       "Open the version picker: v8 is listed above v7.",
     ],
     gap: "Simulated UI state only; this preview does not prove a live stop, redeploy or deployment failure.",
@@ -7827,6 +8228,17 @@ export const scenarios = {
     description:
       "The Socket Mode editor disables editing for an HTTP-mode configuration and shows native JSON.",
   },
+  slackPluginDenied: {
+    group: "Components/Channels",
+    name: "Slack plugin denied",
+    path: `${draft}&tab=channels`,
+    pluginDeny: [" Slack"],
+    description:
+      'plugins.deny names " Slack". OpenClaw matches deny entries by trimmed, lowercased plugin ID, so the slack plugin is blocked: Configure Slack is disabled and described by the danger note.',
+    steps: [
+      "Tab to Configure Slack. It takes focus and looks unavailable, described by the blocked note; Enter, Space or a click opens nothing.",
+    ],
+  },
   slackMixedUsersUnsupported: {
     group: "Components/Channels",
     name: "Slack mixed sender lists",
@@ -8645,6 +9057,64 @@ export const scenarios = {
     steps: [
       "SLACK_APP_TOKEN reads Bound · not read by the Slack settings · Agent access not confirmed; the warning says deploying would be refused.",
       "Select Retry Secret access. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy.",
+    ],
+  },
+  credentialsSlackOffGrantMissing: {
+    group: "Components/Credentials",
+    name: "Slack off with a bound Secret without an Agent grant",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackOff: true,
+    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    description:
+      "Disable Slack kept both token bindings, and the app token Secret has no Agent grant. Deploy checks every bound Secret, so with Slack off the tab still lists the bound keys as read by no Slack setting, marks the app token, blocks Deploy, and offers Retry Secret access (finding 3018).",
+    steps: [
+      "SLACK_APP_TOKEN reads Bound · not read by the Slack settings · Agent access not confirmed; Deploy new version names SLACK_APP_TOKEN and says to select Retry Secret access.",
+      "Select Retry Secret access. The section says Secret access granted. This Agent can use its bound Secrets. Deploy the new version to deliver them. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy (finding 3021).",
+    ],
+  },
+  credentialsSlackOffRetryUnconfirmed: {
+    group: "Components/Credentials",
+    name: "Slack off Retry with an unconfirmed grant",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackOff: true,
+    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 503, once: true }],
+    actions: [click("Retry Secret access")],
+    description:
+      "With Slack off, Retry Secret access sends the app token Secret's grant, and the IAM API is unavailable (503), so the grant is not confirmed. A Retry saves no Configuration, so the warning names only the grant and what to do next (finding 3023).",
+    gap: "The unavailable IAM API is simulated.",
+    steps: [
+      "The section says Secret access grants could not be confirmed. Select Retry Secret access again; if it is refused, ask an Installation administrator. It does not say Configuration saved.",
+      "Select Retry Secret access again. The section says Secret access granted and Deploy new version is available; do not deploy.",
+    ],
+  },
+  credentialsSlackOffRetryAnswerLost: {
+    group: "Components/Credentials",
+    name: "Slack off Retry whose answer is lost",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackOff: true,
+    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    rules: [{ suffix: "/iam/access-bindings", method: "POST", lostAnswer: true, once: true }],
+    // Another browser saves the Configuration after the first Retry, so the second one asks for
+    // Reload draft.
+    configurationChangedElsewhere: {
+      afterReads: 2,
+      values: { channels: { slack: { allowFrom: ["UOTHER99"] } } },
+    },
+    actions: [click("Retry Secret access")],
+    description:
+      "With Slack off, Retry Secret access makes the app token Secret's grant, but its answer is lost, so the grant is not confirmed. Reload draft rebuilds the section, and its grant read finds the grant: the section says that access is confirmed and takes focus, instead of disappearing (finding 3030).",
+    gap: "The lost answer and the other browser's save are simulated; the simulated API keeps the grant.",
+    steps: [
+      "The section says Secret access grants could not be confirmed. Select Retry Secret access again; if it is refused, ask an Installation administrator.",
+      "Select Retry Secret access: another browser changed the Configuration, so the section asks for Reload draft.",
+      "Select Reload draft. Once the grant read lands, the section says Secret access confirmed. This Agent can use its bound Secrets. Deploy the new version to deliver them. Focus is on that message, and Deploy new version is available; do not deploy.",
     ],
   },
   credentialsSlackGrantReadPending: {
@@ -10178,6 +10648,71 @@ scenarios.policyDenialsNoSandboxDriver = {
     "The Policy denials tab says once that Agents run without a Sandbox, and offers no policy editor.",
   steps: [
     "Confirm the single status sentence names the missing Sandbox Driver, and that the Policy editing switch and Manage rules are absent.",
+  ],
+};
+
+// Collaborator-only approval exercises the same editor as the legacy default story.
+const collaboratorRepositoryOptions = [
+  {
+    repositoryRef: "application",
+    displayName: "example/application",
+    allowedProfiles: ["github-repository", "github-installation"],
+  },
+  {
+    repositoryRef: "api-only",
+    displayName: "example/api-only",
+    allowedProfiles: ["github-installation"],
+  },
+  {
+    repositoryRef: "handbook",
+    displayName: "example/handbook",
+    allowedProfiles: ["git-read"],
+  },
+];
+scenarios.repositoryCollaborator = {
+  ...scenarios.repositoryEditor,
+  name: "Select repository collaborator from an empty set",
+  repositoryOptions: collaboratorRepositoryOptions,
+  repositoryAccess: { defaultProfile: "git-full", repositories: [] },
+  repositoryBindings: [],
+  description:
+    "An empty selection offers the approved collaborator repository. API-only access is not a Git repository choice; the existing Contributor default stays unchanged.",
+  steps: [
+    "Select example/application. Its access reads Repository collaborator; the Agent default remains Contributor.",
+    "Save repository access. Confirm the saved message, visit Channels, and return to Repositories to inspect the saved selection.",
+    "Confirm example/api-only is absent from repository choices.",
+  ],
+  gap: "Simulated API state only; saving does not prove Controller persistence, authorization, or runtime Git access.",
+};
+scenarios.repositoryCollaboratorSaved = {
+  ...scenarios.repositoryCollaborator,
+  name: "Saved inheritance survives delayed collaborator discovery",
+  repositoryAccess: {
+    defaultProfile: "git-full",
+    repositories: [{ repositoryRef: "application" }],
+  },
+  repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+  rules: [{ suffix: "/repository-options", delayMs: 3000 }],
+  description:
+    "A saved inherited Contributor selection meets a changed collaborator-only approval after a three-second discovery delay. Discovery must not migrate the saved intent or mark it dirty.",
+  steps: [
+    "During discovery, inspect Access awaiting verification. After discovery, inspect Choose approved access; Save stays disabled and Channels stays enabled.",
+    "Expand Access for example/application, clear Use Agent default, and choose Repository collaborator. Save the explicit change and confirm the saved message.",
+  ],
+};
+scenarios.repositoryCollaboratorReadOnly = {
+  ...scenarios.repositoryCollaborator,
+  name: "Explicit Read-only refuses implicit collaborator access",
+  actions: [
+    { selector: "#repository-default-git-read", click: true },
+    { selector: 'input[data-repository-ref="application"]', click: true },
+  ],
+  description:
+    "Choosing Read-only before adding a collaborator-only repository preserves that intent. The editor requires an explicit per-repository choice before saving.",
+  steps: [
+    "Confirm Read-only stays selected, the repository needs approved access, and Save is disabled.",
+    "Expand Access for example/application, clear Use Agent default, and choose Repository collaborator. The Agent default stays Read-only; Save now succeeds.",
+    "Reset, remove example/application, and select example/handbook. Save succeeds with inherited Read-only access.",
   ],
 };
 

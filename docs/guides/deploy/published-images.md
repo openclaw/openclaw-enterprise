@@ -1,30 +1,35 @@
-# Use the latest published images
+# Use published controller and runtime images
 
-Select the controller and runtime with their `latest` tags, then use the source
+Select the controller and runtime with matching `stable` or `latest` tags, then use the source
 checkout and chart that match those images. This procedure works for
 [local setup](../quickstart.md#optional-use-matching-published-images) and
 [production installation](production-installation.md#use-published-images).
 Run it before generating Installation configuration.
 
-You need Bash, Docker, Git, and an existing repository checkout. The published
+You need Bash, Docker, Git, jq, and an existing repository checkout. The published
 GHCR packages are public. The deployment tools use immutable image references
 internally; the commands below resolve the selected tags so you do not need to
 find or copy a SHA manually.
 
-## Pull the latest pair
+<a id="pull-the-latest-pair"></a>
 
-From a Bash shell in the repository root, select and pull both images
-anonymously. Run the
-whole block; it clears earlier selections and exports them only after both pulls
-and source commit checks succeed:
+## Pull a matching pair
+
+Run the following block in Bash from the repository root. It pulls the `stable`
+controller and runtime by default. To pull the `latest` pair, set
+`export OCE_IMAGE_CHANNEL=latest` first. The block exports the image references
+only after both pulls succeed and the source commits match.
 
 ```bash
 unset CONTROLLER_IMAGE RUNTIME_IMAGE OCE_IMAGE_REVISION
-CONTROLLER_TAG='ghcr.io/openclaw/openclaw-enterprise-controller:latest'
-RUNTIME_TAG='ghcr.io/openclaw/openclaw-enterprise-runtime:latest'
+CHANNEL="${OCE_IMAGE_CHANNEL:-stable}"
+CONTROLLER_TAG="ghcr.io/openclaw/openclaw-enterprise-controller:$CHANNEL"
+RUNTIME_TAG="ghcr.io/openclaw/openclaw-enterprise-runtime:$CHANNEL"
 if docker pull "$CONTROLLER_TAG" && docker pull "$RUNTIME_TAG" &&
-   controller_image="$(docker image inspect "$CONTROLLER_TAG" --format '{{index .RepoDigests 0}}')" &&
-   runtime_image="$(docker image inspect "$RUNTIME_TAG" --format '{{index .RepoDigests 0}}')" &&
+   controller_image="$(docker image inspect "$CONTROLLER_TAG" --format '{{json .RepoDigests}}' |
+     jq -er --arg repo "${CONTROLLER_TAG%:*}@" 'map(select(startswith($repo))) | unique | select(length == 1) | first')" &&
+   runtime_image="$(docker image inspect "$RUNTIME_TAG" --format '{{json .RepoDigests}}' |
+     jq -er --arg repo "${RUNTIME_TAG%:*}@" 'map(select(startswith($repo))) | unique | select(length == 1) | first')" &&
    controller_revision="$(docker image inspect "$controller_image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" &&
    runtime_revision="$(docker image inspect "$runtime_image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" &&
    [[ "$controller_image" =~ @sha256:[a-f0-9]{64}$ ]] &&
@@ -49,8 +54,7 @@ instead, or [start the local stack](../quickstart.md#start-the-local-stack)
 without image selections, which builds this checkout. The two aliases are not
 updated atomically; retry both pulls after publication completes if they refer
 to different source commits.
-`latest` identifies the last publication to that alias, not necessarily the
-newest source commit: custom-tag publications leave it unchanged.
+Each alias identifies the last publication to that channel. The two channels can point to different commits.
 
 ## Check publication and source
 
@@ -65,11 +69,29 @@ Compare the source commit with your checkout:
 
 ```bash
 git rev-parse HEAD
-printf '%s\n' "${OCE_IMAGE_REVISION:?Select the latest images first}"
+printf '%s\n' "${OCE_IMAGE_REVISION:?Select the published images first}"
 ```
 
-If they differ, keep the existing checkout and create a separate release
-worktree. Choose a new path; do not reuse a worktree containing other work:
+If they differ, you can reuse an existing checkout that is clean and available
+for this installation. Before switching, keep the guide open on GitHub at the
+exact PR commit so its relative links continue to open the same version of the
+documentation. From the checkout you intend to reuse, run:
+
+```bash
+changes=$(git status --porcelain=v1 --untracked-files=all) &&
+  test -z "$changes" &&
+  { git cat-file -e "${OCE_IMAGE_REVISION:?}^{commit}" || git fetch origin "$OCE_IMAGE_REVISION"; } &&
+  git switch --detach --no-overwrite-ignore "$OCE_IMAGE_REVISION"
+```
+
+If the status includes changes, leave that checkout in place. To use a
+separate checkout in the Codex app, use the managed worktree action to create
+or select a release checkout at the exact commit in
+`OCE_IMAGE_REVISION`. If the app requests worktree permission, wait for the
+operator to approve that request before continuing. In the shell that holds the
+image selections, change to the path supplied by the app.
+
+For a shell-managed worktree, choose a new path and run:
 
 ```bash
 OCE_RELEASE_CHECKOUT="../oce-release-${OCE_IMAGE_REVISION:?}"
@@ -78,11 +100,17 @@ git fetch origin "$OCE_IMAGE_REVISION" &&
   cd "$OCE_RELEASE_CHECKOUT"
 ```
 
+For each route, confirm the checkout matches before installing:
+
+```bash
+test "$(git rev-parse HEAD)" = "${OCE_IMAGE_REVISION:?}"
+```
+
 Continue in this shell so the image selections remain exported. Use the chart,
 CLI, configuration renderer, and installation instructions from this matching
 checkout. If you need a feature introduced after the published commit,
 [build images from that newer checkout](production-installation.md#build-and-publish-production-images)
-instead of combining its configuration with older `latest` images.
+instead of combining its configuration with images from a different revision.
 
 For production, public GHCR pulls need no pull Secret. See
 [private-registry delivery](private-registry-images.md) only when copying images
@@ -95,4 +123,4 @@ The publication's startup checks do not establish a working Agent on your
 cluster. Finish [local first-Agent verification](../first-agent.md) or
 [production Agent verification](production-agents.md#verify-production-workloads).
 Keep the resolved image references with your deployment record so a later move
-of `latest` does not change which images were selected for this installation.
+of the selected alias does not change which images were selected for this installation.

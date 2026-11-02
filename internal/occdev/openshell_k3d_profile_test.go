@@ -23,7 +23,7 @@ import (
 // controller downloads and network-policy probes, which only a real cluster proves
 // (see dev-up-openshell-k3d-real and local-first-agent-openshell-k3d-real).
 
-const profileTestDigest = "sha256:ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6"
+const profileTestDigest = "sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea"
 
 // fakeProfileCommands puts fake binaries on PATH. Each records its arguments and
 // answers only the listed cases, so a step that issues a new command fails.
@@ -214,8 +214,8 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 		t.Fatalf("unexpected OpenShell startup delay: %d", sandbox.StartupDelayMs)
 	}
 	if !reflect.DeepEqual(installation.Drivers.CredentialGateway.Configuration.Binaries, []string{
-		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
-		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
 		"/usr/local/bin/node",
 	}) {
 		t.Fatalf("unexpected OpenShell credential binary allowlist: %#v", installation.Drivers.CredentialGateway.Configuration.Binaries)
@@ -314,9 +314,9 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 			// Fixed source pins guard the released default; candidate digests deliberately
 			// differ from the containerd manifests returned by the import fixture.
 			sources := []string{
-				"ghcr.io/nvidia/openshell/gateway:0.1.5@sha256:ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6",
-				"ghcr.io/nvidia/openshell/sandbox:0.1.5@sha256:e9adf9ecde328122414ad2ee8c6fc5d5b389e4cf168daf4357c46f5a77d55851",
-				"ghcr.io/nvidia/openshell/supervisor:0.1.5@sha256:fabcd01f656e9d23df4386f82e80b4f48b90f3452d7d5c58889007643a069161",
+				"ghcr.io/nvidia/openshell/gateway:0.1.6@sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea",
+				"ghcr.io/nvidia/openshell/sandbox:0.1.6@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63",
+				"ghcr.io/nvidia/openshell/supervisor:0.1.6@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b",
 			}
 			selection := candidateOpenShellEnvironment()
 			if candidate {

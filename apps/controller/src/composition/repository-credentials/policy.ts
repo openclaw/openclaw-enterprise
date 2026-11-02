@@ -1,7 +1,4 @@
-import type {
-  Backend,
-  GitHubRepositoryCredentialBackendDefinition,
-} from "@openclaw-enterprise/contracts";
+import type { GitHubRepositoryCredentialBackendDefinition } from "@openclaw-enterprise/contracts";
 import {
   githubRepositoryAuthorityIdentity,
   type githubRepositoryConfiguration,
@@ -33,7 +30,17 @@ export async function loadRepositoryPolicy(input: RepositoryPolicyInput) {
     input.backend.configuration.registryPath,
     input.backend.id,
   );
-  return composeRepositoryPolicy(input, registry);
+  const policy = composeRepositoryPolicy(input, registry);
+  return Object.freeze({
+    ...policy,
+    authorityIdentity: githubRepositoryAuthorityIdentity(
+      input.selection,
+      input.backend,
+      registry,
+      input.configuration,
+    ),
+    resolveRepositoryDelivery: createGitHubRepositoryDeliveryResolver(registry),
+  });
 }
 
 /** Native composition calls this only after its registry and public CA have been read. */
@@ -42,28 +49,17 @@ export function composeRepositoryPolicy(
   registry: GitHubRepositoryRegistry,
 ) {
   const { backend: definition, selection } = input;
-  // Copy only identity data: policy must not receive the native transport capability.
-  const backend: Pick<Backend, "id" | "drivers"> = Object.freeze({
-    id: definition.id,
-    drivers: Object.freeze({ repo: selection.id }),
+  const repositoryOwner = Object.freeze({
+    driverId: selection.id,
+    implementation: selection.implementation,
+    backendId: definition.id,
   });
-  const repositoryPolicy = new GitHubRepositoryPolicy(backend, registry, {
+  const repositoryPolicy = new GitHubRepositoryPolicy(repositoryOwner, registry, {
     sessionDurationSeconds: input.policyConfiguration.sessionDurationSeconds,
   });
   return Object.freeze({
-    authorityIdentity: githubRepositoryAuthorityIdentity(
-      selection,
-      definition,
-      registry,
-      input.configuration,
-    ),
     repositoryRegistry: registry,
-    resolveRepositoryDelivery: createGitHubRepositoryDeliveryResolver(registry),
-    repositoryOwner: Object.freeze({
-      driverId: selection.id,
-      implementation: selection.implementation,
-      backendId: definition.id,
-    }),
+    repositoryOwner,
     repositoryPolicy,
   });
 }

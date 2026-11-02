@@ -1062,6 +1062,7 @@ describe("CI preparation", { concurrency }, () => {
     for (const input of [
       ".dockerignore",
       "scripts/ci/prepare.mjs",
+      "scripts/ci/resource-names.ts",
       "scripts/ci/test-suites/images-packaging.json",
       ".github/workflows/ci-image-cache.yml",
     ]) {
@@ -1873,7 +1874,7 @@ for (let index = 0; index < Number(times); index += 1) {
           cluster,
           image: immutableImage,
           // The current runtime must still reject unrelated setup failures before node writes.
-          codexVersion: "0.163.0-alpha.2",
+          codexVersion: "0.164.0",
           execFile: execFileForRuntimeDefaultFailure((command, args) => {
             const commandText = `${command} ${args.join(" ")}`;
             assert.match(commandText, /--namespace/);
@@ -2065,11 +2066,7 @@ for (let index = 0; index < Number(times); index += 1) {
     assert.match(seccomp.profileSha256, /^[a-f0-9]{64}$/);
     assert.equal(
       seccomp.dockerProfilePath,
-      join(
-        clusterDirectory,
-        "docker-seccomp",
-        `codex-0.163.0-alpha.2-${seccomp.profileSha256}.json`,
-      ),
+      join(clusterDirectory, "docker-seccomp", `codex-0.164.0-${seccomp.profileSha256}.json`),
     );
     const profileData = await readFile(seccomp.dockerProfilePath, "utf8");
     assert.deepEqual(JSON.parse(profileData), installedProfile);

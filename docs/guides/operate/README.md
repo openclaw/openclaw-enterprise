@@ -1,4 +1,6 @@
-# Operate OpenClaw Enterprise
+# Deploy and operate OpenClaw Enterprise
+
+<a id="operate-openclaw-enterprise"></a>
 
 Use these guides to install and run OpenClaw Enterprise on Kubernetes. They are
 for operators responsible for the OpenClaw Control Plane (OCC), tenant
@@ -19,6 +21,13 @@ on your own machine, start with [Local Setup](../quickstart.md).
 
 The [installation overview](../deploy.md) lists shared prerequisites and explains
 which resources Helm leaves behind when you uninstall it.
+
+## Upgrade and recover
+
+Start with the [upgrade checklist](../deploy/upgrade-checklist.md), then follow
+[production image upgrades](../deploy/production-upgrade.md) or
+[Installation configuration changes](../deploy/production-installation-changes.md).
+If an upgrade fails, use [upgrade recovery](../deploy/production-upgrade-recovery.md).
 
 ## Run the platform
 

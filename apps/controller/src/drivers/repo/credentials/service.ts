@@ -1,3 +1,4 @@
+import { sameBinding } from "./grant-identity.ts";
 import type {
   RepositoryBackend,
   PreparedRepositoryBackend,
@@ -35,7 +36,6 @@ import {
   snapshotBinding,
   snapshotSessionInput,
   isBoundInput,
-  sameBinding,
 } from "./sessions.ts";
 import type { SessionAdmission } from "./sessions.ts";
 

@@ -458,7 +458,7 @@ test(
                 (error) =>
                   first === 0
                     ? error instanceof Error &&
-                      error.message === "API resource cleanup failed." &&
+                      error.message === "Resource cleanup failed." &&
                       error.cause === first
                     : error === first,
               );

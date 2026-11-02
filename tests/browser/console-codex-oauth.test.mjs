@@ -7,6 +7,7 @@ import {
   DEVICE_ACCOUNT_ID,
 } from "../helpers/device-credential-gateway.mjs";
 import {
+  MEMBER_WRITE,
   apiRequests,
   expectNoText,
   login,
@@ -26,6 +27,7 @@ import {
   AGENT_DEVICE_LOGIN_POLL_DENIED,
   AGENT_DEVICE_LOGIN_START_DENIED,
   DEVICE_LOGIN_START_DENIED,
+  DEVICE_LOGIN_NOT_CONFIGURED,
 } from "../helpers/refusal-text.mjs";
 
 // The fixture's login asks the Console to poll every 5 s, and the API refuses an earlier poll.
@@ -412,29 +414,105 @@ test("saving ChatGPT OAuth before sign-in names the missing step and sends nothi
   assert.equal((await fixture.request("GET", agentPath)).data.harnessAuth.method, "api_key");
 });
 
-test("Codex sign-in can retry a refused start but cannot repeat one with an unreadable confirmation", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth unavailable");
+// The Installation's capabilities list its Credential Gateway's source types. Without a Codex
+// device-login type every start is refused with 501, so Sign in is unavailable before the click,
+// described by why. With the type but no Credential Refresh Driver the real API still answers 501:
+// the Console then shows the API's reason and keeps Sign in unavailable. Before finding 2991, Sign
+// in was offered in both cases, every click was refused again, and the text dropped the reason.
+const DEVICE_LOGIN_NOT_OFFERED =
+  "ChatGPT sign-in needs a Credential Gateway that offers ChatGPT device login and a Credential Refresh Driver, and this Installation's Drivers do not offer it. Choose another authentication method.";
+
+for (const savedAgent of [false, true]) {
+  for (const drivers of ["none", "Credential Gateway only"]) {
+    test(`Codex sign-in on ${savedAgent ? "Agent credentials" : "Create Agent"} with ${drivers === "none" ? "no device-login Drivers" : "a Credential Gateway only"} is unavailable and says why`, async (t) => {
+      const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth unavailable");
+      if (drivers !== "none") {
+        const { gateway } = createDeviceCredentialDrivers();
+        fixture.controller.registerDriver(gateway);
+        fixture.controller.selectDriver(gateway.capability, gateway.id);
+      }
+      const agent = savedAgent
+        ? await fixture.createAgent(
+            namespace.id,
+            "OAuth unavailable",
+            nativeValues("oauth-unavailable", { harnessId: "codex" }),
+            { executionMode: "dedicated" },
+          )
+        : null;
+      const { page } = await newPage(t, fixture);
+      const requests = apiRequests(page, fixture.origin);
+      await login(
+        page,
+        fixture,
+        agent
+          ? `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`
+          : `/console/agents/new?namespace=${namespace.id}`,
+      );
+      if (!agent) {
+        await page.getByRole("button", { name: "Start without Preset" }).click();
+      }
+      await page
+        .getByLabel(agent ? "Authentication source" : "Authentication method")
+        .selectOption("credential_source");
+      const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
+      const beginPath = `/namespaces/${namespace.id}/agents${agent ? `/${agent.id}` : ""}/device-authorizations`;
+      const starts = () =>
+        requests.filter(({ method, path }) => method === "POST" && path === beginPath).length;
+      let reason = DEVICE_LOGIN_NOT_OFFERED;
+      if (drivers === "none") {
+        await page.getByText(reason, { exact: true }).waitFor();
+      } else {
+        await waitForEnabled(start);
+        const refused = page.waitForResponse(
+          (response) => new URL(response.url()).pathname === beginPath,
+        );
+        await start.click();
+        const answer = await refused;
+        assert.equal(answer.status(), 501);
+        assert.equal((await answer.json()).error.message, DEVICE_LOGIN_NOT_CONFIGURED);
+        reason = `ChatGPT sign-in is unavailable for this Installation. ${DEVICE_LOGIN_NOT_CONFIGURED} Choose another authentication method.`;
+        await page.getByText(reason, { exact: true }).waitFor();
+      }
+      assert.equal(await page.getByRole("link", { name: "Open Codex sign-in" }).isVisible(), false);
+      // Sign in stays in the Tab order, described by the reason, and starts nothing.
+      assert.equal(await start.getAttribute("aria-disabled"), "true");
+      await start.focus();
+      assert.equal(
+        await start.evaluate((node) => node === globalThis.document.activeElement),
+        true,
+      );
+      assert.equal(
+        await start.evaluate((node) =>
+          (node.getAttribute("aria-describedby") ?? "")
+            .split(/\s+/)
+            .map((id) => globalThis.document.getElementById(id)?.textContent)
+            .join(" "),
+        ),
+        reason,
+      );
+      await page.keyboard.press("Enter");
+      await start.dispatchEvent("click");
+      await settlePageRequests(page);
+      assert.equal(starts(), drivers === "none" ? 0 : 1);
+    });
+  }
+}
+
+test("Codex sign-in cannot repeat a start with an unreadable confirmation", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth unconfirmed");
+  const { gateway, refresh } = createDeviceCredentialDrivers();
+  for (const driver of [gateway, refresh]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method").selectOption("credential_source");
   const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
-  await start.click();
-  await page
-    .getByText(
-      "ChatGPT sign-in is unavailable for this Installation. Choose another authentication method.",
-      { exact: true },
-    )
-    .waitFor();
-  assert.equal(await page.getByRole("link", { name: "Open Codex sign-in" }).isVisible(), false);
   await waitForEnabled(start);
 
-  const { gateway, refresh } = createDeviceCredentialDrivers();
-  for (const driver of [gateway, refresh]) {
-    fixture.controller.registerDriver(driver);
-    fixture.controller.selectDriver(driver.capability, driver.id);
-  }
   const namespacePath = `/namespaces/${namespace.id}`;
   const beginPath = `${namespacePath}/agents/device-authorizations`;
   const requests = apiRequests(page, fixture.origin);
@@ -452,7 +530,7 @@ test("Codex sign-in can retry a refused start but cannot repeat one with an unre
     await route.fulfill({ response, json: body });
   });
   await start.click();
-  await waitForSettledFetches(page, beginPath, 2);
+  await waitForSettledFetches(page, beginPath, 1);
   assert.equal(await start.isDisabled(), true, "a login may already exist");
   await page
     .getByText(
@@ -640,6 +718,58 @@ async function expectChallenge(page, userCode) {
   await expectNoText(page, /may have started/i);
 }
 
+// Sign in and Cancel login replace each other in place, and each is unavailable while its
+// request runs. A keyboard reader keeps focus through the start, its reply and the cancel: on Sign
+// in while "Checking Codex login…" shows, then on Cancel login, then on Sign in again. Before
+// finding 2992, each press dropped focus to the page body.
+test("Sign in with OAuth and Cancel login keep keyboard focus", async (t) => {
+  const oauth = await openAgentOAuth(t, "OAuth focus");
+  const { page, start } = oauth;
+  const focused = () =>
+    page.evaluate(() =>
+      globalThis.document.activeElement === globalThis.document.body
+        ? "BODY"
+        : globalThis.document.activeElement?.textContent,
+    );
+  const held = await holdNextStart(t, oauth);
+  await waitForIdleFetches(page);
+  await start.focus();
+  await page.keyboard.press("Enter");
+  await held.answered;
+  await page.getByText("Checking Codex login…", { exact: true }).waitFor();
+  assert.equal(await focused(), "Sign in with OAuth");
+  // Enter again while the start runs sends nothing.
+  await page.keyboard.press("Enter");
+  held.release();
+  await page.getByText(WAITING, { exact: true }).waitFor();
+  assert.equal(await focused(), "Cancel login");
+  await page.keyboard.press("Enter");
+  await page.getByText("Sign in to connect your ChatGPT account.", { exact: true }).waitFor();
+  assert.equal(await focused(), "Sign in with OAuth");
+  await waitForEnabled(start);
+  assert.equal(await focused(), "Sign in with OAuth");
+  await settlePageRequests(page);
+  assert.equal(oauth.starts(), 1);
+});
+
+// Focus moves only off the control the reader pressed. A reader who moved on while the start ran
+// keeps focus where they put it when the reply replaces Sign in with Cancel login.
+test("a start's reply leaves focus where the reader moved it", async (t) => {
+  const oauth = await openAgentOAuth(t, "OAuth focus elsewhere");
+  const { page, start } = oauth;
+  const held = await holdNextStart(t, oauth);
+  await waitForIdleFetches(page);
+  await start.focus();
+  await page.keyboard.press("Enter");
+  await held.answered;
+  const source = page.getByLabel("Authentication source");
+  await source.focus();
+  held.release();
+  await page.getByText(WAITING, { exact: true }).waitFor();
+  await settlePageRequests(page);
+  assert.equal(await source.evaluate((node) => node === globalThis.document.activeElement), true);
+});
+
 // A start's reply that lands after the reader switched to another tab of the same Agent page
 // belongs to the Credentials tab, which is kept while the start is pending (finding 2980). Before
 // the fix, the reply was dropped and the return rebuilt the tab from its draft: a usable challenge
@@ -820,6 +950,12 @@ test("an OAuth start answered after a newer Credentials tab was built keeps that
 // below after the administrator's grant is removed from its Role.
 test("a refused device login start on Create Agent names the create grants it checks", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth start refused");
+  // Drivers that offer device login, so Sign in is offered and the grants decide.
+  const { gateway, refresh } = createDeviceCredentialDrivers();
+  for (const driver of [gateway, refresh]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
   revokeAdministratorGrant(fixture, ["create", "secret"]);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -831,6 +967,38 @@ test("a refused device login start on Create Agent names the create grants it ch
       `/namespaces/${namespace.id}/agents/device-authorizations`,
   );
   await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
+  assert.equal((await refused).status(), 403);
+  await page.getByText(DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
+});
+
+// Only an Installation administrator reads the Installation. A member's refused read says nothing
+// about the Drivers, so Sign in stays offered and the API's answer decides (finding 2991): here its
+// 403 names the grants, never the Drivers reason.
+test("a member's refused Installation read leaves Sign in offered on Create Agent", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth member");
+  const { gateway, refresh } = createDeviceCredentialDrivers();
+  for (const driver of [gateway, refresh]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const member = await fixture.createNamespaceMember("oauth-member", namespace.id, MEMBER_WRITE);
+  const { page } = await newPage(t, fixture);
+  const installationRead = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/installation",
+  );
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Authentication method").selectOption("credential_source");
+  assert.equal((await installationRead).status(), 403);
+  await page.getByText("Sign in to connect your ChatGPT account.", { exact: true }).waitFor();
+  const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
+  assert.equal(await start.getAttribute("aria-disabled"), null);
+  const refused = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname ===
+      `/namespaces/${namespace.id}/agents/device-authorizations`,
+  );
+  await start.click();
   assert.equal((await refused).status(), 403);
   await page.getByText(DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
 });

@@ -50,12 +50,19 @@ route set must still enforce deny-all.
 
 ### Delivery profiles
 
-`repositoryGitDeliveryProfile` admits exactly one repository binding:
-`git-write` maps to `repository_git`; installation profiles map to
-`github_installation`. The latter requires positive counterpart confirmation;
-a Driver that ignores the profile argument does not qualify. Deploy refuses any
-other binding (`git-read`, `git-full`, or more than one) before reading the
-counterpart, with `409 REPOSITORY_GIT_PROFILE_UNSUPPORTED`.
+`repositoryGitDeliveryProfile` maps a nonempty set of `github-repository`
+bindings to `github_repository`. All members must have that profile. One
+`git-write` binding maps to `repository_git` and keeps its ref restrictions.
+One installation binding maps to `github_installation` and requires positive
+counterpart confirmation. Mixed profiles, multiple legacy bindings, and standalone
+`git-read` or `git-full` do not qualify for protected delivery. If a resolved
+selection reaches protected admission without a supported profile, deploy returns
+`409 REPOSITORY_GIT_PROFILE_UNSUPPORTED`.
+
+For bundled OpenShell, `github_repository` and `repository_git` require a
+mandatory pre-credentials request binding. Before release, OCE verifies the
+registration and an authenticated denial for the held launcher request.
+Installation-wide access still requires its separate preview opt-in.
 
 `repositoryGitAuthorization` distinguishes exact dispatch, `online-request`,
 `request-hook-observed` and unavailable. Admission versions 4, 5 and 6 preserve
@@ -179,9 +186,9 @@ an already authorized request. Credential retirement remains Token Service work.
 ## Limits
 
 Protected release currently uses bundled Kubernetes Compute. The repository
-`bindRepositoryGit` port is specifically for Git and GitHub installation delivery;
-it is not a general arbitrary-provider installation API. Its `githubInstallation`
-member is optional and scope-specific. `observedHook` is restricted to the
+`bindRepositoryGit` port supports Git, selected GitHub repository sets and the installation preview;
+it is not a general arbitrary-provider installation API. Its `githubRepository` and
+`githubInstallation` members are optional and scope-specific. `observedHook` is restricted to the
 bundled version 6 preview. Do not infer support from interface membership alone.
 
 Online request authorization does not establish exact dispatch or response

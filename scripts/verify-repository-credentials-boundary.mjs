@@ -199,6 +199,7 @@ const reviewedImports = {
     "@openclaw-enterprise/occ": ["ScopeViolationError"],
   },
   "drivers/repo/github/driver.ts": {
+    "@openclaw-enterprise/contracts": ["isInstallationRepositoryProfile"],
     "@openclaw-enterprise/occ": ["DependencyUnavailableError", "ScopeViolationError"],
   },
   // The isolated image probe reports only a synthetic binding and failure kind.
