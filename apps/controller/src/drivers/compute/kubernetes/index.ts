@@ -214,6 +214,7 @@ import {
   OPENCLAW_GATEWAY_PASSWORD,
   requireChannelTopology,
   requireCodexPlugin,
+  refuseInvalidTrustedProxyIdentities,
   refuseKubernetesPluginEntryKeyVariants,
   refuseUnreadablePluginSecretInputs,
   requirePluginSecretInputs,
@@ -223,6 +224,7 @@ import {
   requireHarnessCredentialBinding,
   requireSelectedModelProvider,
   requireWorkspaceNodePlugins,
+  TRUSTED_PROXY_IDENTITY,
   usesGatewayPasswordEnvironment,
 } from "./configuration-rules.ts";
 import { managedGatewayConfiguration, validateGatewayToolPolicy } from "../gateway-tool-policy.ts";
@@ -630,10 +632,6 @@ class ConfigurationFailure extends Error {}
  * provision. It names the setting's path and what is accepted, never the submitted value.
  * Deployment admission and provisioning validation report it to the caller as a
  * ComputeGatewaySettingError; preparation treats it as any other ConfigurationFailure.
- * TODO: raise it for trustedProxy.allowUsers too once open #906, which rewrites that check,
- * lands or closes; until then that refusal keeps the fixed 409 text and a logged reason at
- * provisioning, and fails a deployment only in preparation. Because that check runs before
- * the allowLoopback and identityScopes checks, a refused allowUsers also hides those.
  */
 class GatewaySettingFailure extends ConfigurationFailure {
   readonly setting: string;
@@ -1239,7 +1237,6 @@ const NATIVE_WORKER_COMPILE_CACHE = "/home/node/.openclaw-node/.cache/node-compi
 const AGENT_TRANSPORT_TOKEN_KEY = "app-server-token";
 const APP_TOKEN_SHA = "APP_TOKEN_SHA";
 const GATEWAY_PASSWORD_KEY = "gateway-password";
-const TRUSTED_PROXY_IDENTITY = "occ-workspace-files";
 const TRUSTED_PROXY_HEADER = "x-occ-identity";
 // The proxy header that caps a trusted-proxy request's operator scopes. Native HTTP
 // APIs ignore identityScopes: without it, OpenClaw grants its default operator scopes,
@@ -1265,8 +1262,6 @@ const NATIVE_OPERATOR_SCOPES: ReadonlySet<string> = new Set([
   "operator.talk",
   "operator.talk.secrets",
 ]);
-// Gateways decode proxy headers as Latin-1, so only printable ASCII is unambiguous.
-const PRINTABLE_ASCII_IDENTITY = /^[\x20-\x7e]+$/u;
 const MODEL_API_KEY = "OPENAI_API_KEY";
 const CUSTOM_MODEL_API_KEY = "OCE_MODEL_API_KEY";
 const SERVICE_ACCOUNT_TOKEN_KEY = "token";
@@ -2007,15 +2002,6 @@ function scopedCidr(value: unknown, description: string, index: number, path?: s
     throw configurationConstraintFailure(`${description}s cannot cover every address.`, path);
   }
   return parsed;
-}
-
-/**
- * The Gateway resolves identityScopes for "@" identities case-insensitively, so case
- * variants of one would share a grant; a case variant of the machine identity is a spoof.
- */
-function proxyIdentityMatchKey(identity: string): string {
-  const folded = identity.toLowerCase();
-  return identity.includes("@") || folded === TRUSTED_PROXY_IDENTITY ? folded : identity;
 }
 
 function trustedProxyCidrSet(
@@ -4583,7 +4569,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (error instanceof ComputeGatewaySettingError) {
         throw error;
       }
-      // Invalid proxy allowlists and other preparation-only refusals stay with preparation.
+      // Other preparation-only refusals stay with preparation.
     }
   }
 
@@ -4807,9 +4793,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (this.hostsWorkspaceNode(harness)) {
       requireWorkspaceNodePlugins(configuration, callerSettingError, stage === "admission");
     }
-    // After the workspace node's rule, so Agent save names that plugin first. Configuration save,
-    // provisioning and deploy run validateConfiguration first, so there the codex message comes
-    // first. Preparation skips it, as validateConfigurationContent does (finding 2694).
+    // After the workspace node's rule, so Agent save and provisioning (which run this admission
+    // check before the save rules) name that plugin first. Configuration save and deploy run
+    // validateConfiguration first, so there the codex message comes first. Preparation skips it,
+    // as validateConfigurationContent does (finding 2694).
     if (codex && stage === "admission") {
       requireCodexPlugin(configuration, callerSettingError);
     }
@@ -4867,8 +4854,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
    * and Preset defaults refuse the content where it is written: supported channel providers,
    * model credentials only through the Harness authentication binding, the Gateway tool policy,
    * model selections and provider apiKeys on the primary model's provider, another spelling of a
-   * plugin entry key it renders (finding 3077), and plugin secret inputs OpenClaw cannot read
-   * (finding 3069). Deployment admission applies each in its own order
+   * plugin entry key it renders (finding 3077), plugin secret inputs OpenClaw cannot read
+   * (finding 3069), and the trusted-proxy allowlist and deviceAutoApprove shape (finding 3032).
+   * Deployment admission applies each in its own order
    * (validateAdmittedHarnessAuth).
    */
   validateConfiguration(
@@ -4881,6 +4869,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // A Configuration whose model policy selects Codex runs only as Dedicated Codex.
     if (configuredHarnessId(configuration, options) === "codex") {
       requireCodexPlugin(configuration, callerSettingError, options);
+    }
+    // Deployment admission refuses the rest of the gateway shape in its own order.
+    const trustedProxy = asRecord(asRecord(asRecord(configuration.gateway)?.auth)?.trustedProxy);
+    if (trustedProxy !== undefined) {
+      refuseInvalidTrustedProxyIdentities(trustedProxy, callerSettingError, options);
     }
   }
 
@@ -14152,26 +14145,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         `must be ${TRUSTED_PROXY_HEADER} when set`,
       );
     }
+    refuseInvalidTrustedProxyIdentities(
+      trustedProxy,
+      (setting, requirement) => new GatewaySettingFailure(setting, requirement),
+    );
     const allowUsers = trustedProxy.allowUsers;
-    if (
-      allowUsers !== undefined &&
-      (!Array.isArray(allowUsers) ||
-        !allowUsers.includes(TRUSTED_PROXY_IDENTITY) ||
-        allowUsers.some(
-          (user) =>
-            typeof user !== "string" ||
-            user.trim() !== user ||
-            !PRINTABLE_ASCII_IDENTITY.test(user) ||
-            // The Gateway looks grants up by plain property access.
-            Object.hasOwn(Object.prototype, user),
-        ) ||
-        new Set(allowUsers.map((user) => proxyIdentityMatchKey(user as string))).size !==
-          allowUsers.length)
-    ) {
-      throw new ConfigurationFailure(
-        `Kubernetes native trustedProxy.allowUsers must contain distinct, nonblank, trimmed, printable ASCII identities including ${TRUSTED_PROXY_IDENTITY}.`,
-      );
-    }
     if (trustedProxy.allowLoopback !== undefined && trustedProxy.allowLoopback !== false) {
       throw new GatewaySettingFailure(
         "gateway.auth.trustedProxy.allowLoopback",

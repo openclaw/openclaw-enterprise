@@ -19,6 +19,7 @@ import {
   refusePluginEntryKeyVariants,
   type SecretInputReference,
   shownSecretName,
+  trustedProxyIdentitiesProblem,
   unreadablePluginSecretInput,
   waitsOnVariable,
 } from "@openclaw-enterprise/occ";
@@ -40,6 +41,29 @@ import { openClawManagedPluginIds } from "../../plugin/runtime-translator.ts";
 type SettingError = (setting: string, requirement: string) => Error;
 
 export const OPENCLAW_GATEWAY_PASSWORD = "OPENCLAW_GATEWAY_PASSWORD";
+export { TRUSTED_PROXY_IDENTITY } from "@openclaw-enterprise/occ";
+
+/**
+ * The trusted-proxy allowlist and device auto-approval shape every Kubernetes topology refuses,
+ * whatever the Agent (trustedProxyIdentitiesProblem, in OCC's environment-references.ts, which the
+ * Console also loads: finding 3121). Configuration save (validateConfiguration), deployment
+ * admission and provisioning, and preparation (kubernetesGatewayConfigurationDocument) apply it,
+ * so a dedicated Agent's running revision is not stopped for a typo (findings 3006, 3032). On a
+ * Preset save, a setting that waits on a variable is checked once filled. Errors name the
+ * setting, never the submitted identities.
+ */
+export function refuseInvalidTrustedProxyIdentities(
+  trustedProxy: Readonly<Record<string, unknown>>,
+  createError: SettingError,
+  options?: ConfigurationValidationOptions,
+): void {
+  const problem = trustedProxyIdentitiesProblem(trustedProxy, (key) =>
+    waitsOnVariable(trustedProxy[key], ["gateway", "auth", "trustedProxy", key], options),
+  );
+  if (problem !== undefined) {
+    throw createError(problem.setting, problem.requirement);
+  }
+}
 
 /**
  * Whether `gateway.auth` uses the Gateway password Compute generates. Any other password,

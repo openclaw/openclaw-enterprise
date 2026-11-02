@@ -44,6 +44,15 @@ registry="oce-git-registry-$(date +%s)"
 kubectl --context "$context" -n "$ns" create configmap "$registry" \
   --from-file="registry.json=$RUN_DIR/registry.json" --dry-run=client -o json |
   jq '.immutable=true' | kubectl --context "$context" create -f -
+
+# Keep a separate immutable read-only map for the owner session after the push.
+READ_REGISTRY="$registry-read"
+jq '.repositories[0].namespaces[0].permissions={metadata:"read",contents:"read"}' \
+  "$RUN_DIR/registry.json" > "$RUN_DIR/registry-read.json"
+kubectl --context "$context" -n "$ns" create configmap "$READ_REGISTRY" \
+  --from-file="registry.json=$RUN_DIR/registry-read.json" --dry-run=client -o json |
+  jq '.immutable=true' | kubectl --context "$context" create -f -
+printf '%s\n' "$READ_REGISTRY" > "$RUN_DIR/read-registry-name"
 ```
 
 After the worker and Gateway rollouts succeed, the OCE REST API exposes the authorized registry options for the Agent:
@@ -57,11 +66,13 @@ request GET "$base/agents/$agent/repository-options" |
 
 ## 2. Bind the Agent and deploy once
 
+For a persistent Agent, keep the read-only registry ConfigMap from enrollment. After the authorized push, [retire the write grant and leave the Agent running](../deploy/local-openshell-browser.md#restore-read-only-git-and-keep-the-agent-running). Set `GIT_SESSION_MODE=disposable` only for a test Agent that should stop when the shell exits.
+
 Use a dedicated test Agent with no prior repository binding or static Git source. Fetch its current draft first. Keep its Configuration, Codex authentication and plugin selections. The API changes the repository binding when you deploy the updated draft.
 
 ```bash
 # Run in a dedicated Bash shell with the private session.sh loaded.
-# Register cleanup before this Agent can receive repository write access.
+# The disposable proof stops on exit. The owner workflow restores read access.
 stop_git_test() {
   local rc=${1:-0}
   trap - EXIT
@@ -71,7 +82,9 @@ stop_git_test() {
   fi
   return "$rc"
 }
-trap 'stop_git_test "$?"; exit $?' EXIT
+if [[ ${GIT_SESSION_MODE:-owner} == disposable ]]; then
+  trap 'stop_git_test "$?"; exit $?' EXIT
+fi
 
 # PATCH $base/agents/$agent: replace the test Agent's empty binding list.
 request GET "$base/agents/$agent" |
@@ -190,4 +203,4 @@ Require a second `receive-pack` receipt using the replacement material version, 
 
 ## Withdraw access after the exercise
 
-Run `stop_git_test` after the final verification. On an earlier shell exit, the trap requests the same stop. If the shell was killed or the request failed, source the saved `session.sh` in a new Bash shell. Read `GET $base/agents/$agent` and inspect the deployment state before retrying an uncertain stop. Use the bodyless `POST $base/agents/$agent/stop` to stop a running Agent. Wait for its active revision to clear. Remove any standing approval through its generation-checked removal API. Clear the draft's repository bindings with `PATCH $base/agents/$agent` and its current `configurationId`. Check retirement through the [Token Service lifecycle](../../reference/repository-credentials.md#token-service-lifecycle). A stopped workload alone does not confirm external revocation. Keep the test branch for inspection unless its owner requests removal.
+For the disposable test, run `stop_git_test` after verification. Its exit trap requests the same stop on early shell exit. If the shell was killed or the request failed, source the saved `session.sh` in a new Bash shell. Read `GET $base/agents/$agent` and inspect the deployment state before retrying an uncertain stop. Use the bodyless `POST $base/agents/$agent/stop` to stop a running Agent. Wait for its active revision to clear. Remove any standing approval through its generation-checked removal API. Clear the draft's repository bindings with `PATCH $base/agents/$agent` and its current `configurationId`. Check retirement through the [Token Service lifecycle](../../reference/repository-credentials.md#token-service-lifecycle). A stopped workload alone does not confirm external revocation. Keep the test branch for inspection unless its owner requests removal.

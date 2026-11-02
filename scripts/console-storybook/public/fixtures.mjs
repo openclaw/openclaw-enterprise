@@ -118,6 +118,18 @@ function configurationValues(scenario) {
     // Gateway runs the codex plugin.
     values.plugins = { ...values.plugins, enabled: false };
   }
+  if (scenario.trustedProxyWithoutMachine) {
+    // A trusted-proxy allowlist without occ-workspace-files, saved before Kubernetes Compute
+    // refused it.
+    values.gateway = {
+      ...values.gateway,
+      auth: {
+        ...values.gateway?.auth,
+        mode: "trusted-proxy",
+        trustedProxy: { userHeader: "x-occ-identity", allowUsers: ["oidc:member-01"] },
+      },
+    };
+  }
   if (scenario.kubernetesEntryKeyVariant) {
     // A File-Transfer entry saved before Kubernetes Compute refused it, which OpenClaw merges into
     // file-transfer, the entry Kubernetes Compute enables for the workspace node.
@@ -790,6 +802,33 @@ export function installFixture(scenario, evidence) {
   }
   if (scenario.presetVariables) {
     Object.assign(preset.template.variables, structuredClone(scenario.presetVariables));
+  }
+  if (scenario.presetTrustedProxyVariable) {
+    // A trusted-proxy allowlist that a Preset variable fills (finding 3122).
+    preset.template.variables.human = {
+      type: "string",
+      description: "Identity of the person who runs this Agent",
+    };
+    const { values } = preset.template.configuration;
+    values.gateway = {
+      ...values.gateway,
+      auth: {
+        mode: "trusted-proxy",
+        trustedProxy: {
+          userHeader: "x-occ-identity",
+          allowUsers: ["occ-workspace-files", "{{ vars.human }}"],
+        },
+      },
+    };
+  }
+  if (scenario.presetModelKeyVariable) {
+    // A model policy keyed by a Preset variable; the API quotes a key that is not a plain ID.
+    preset.template.variables.fallback = { type: "string", description: "Another model ref" };
+    const { values } = preset.template.configuration;
+    values.agents.defaults.models = {
+      ...values.agents.defaults.models,
+      "{{ vars.fallback }}": { agentRuntime: { id: "codex" } },
+    };
   }
   const presets = [
     preset,

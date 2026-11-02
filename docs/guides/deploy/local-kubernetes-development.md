@@ -261,11 +261,7 @@ Verify directory search and gateway Socket Mode using the
 
 ## Verify the local boundary
 
-Startup prints API and Kubernetes access paths. Sandbox Driver `none` and
-Compose-backed OpenShell also print the HTTPS Console URL and browser CA; follow
-[Local Setup](../quickstart.md#open-the-platform-console) and its
-[shared session boundary](../../reference/agent-native-admin.md#shared-session-boundary).
-Kubernetes-only OpenShell does not configure that browser endpoint.
+Startup prints the API, kubeconfig, HTTPS Console URL and public browser CA. See [Local Setup](../quickstart.md#open-the-platform-console), the [shared session boundary](../../reference/agent-native-admin.md#shared-session-boundary) and [OpenShell browser access](local-openshell-browser.md).
 
 Use the printed paths with other tools:
 

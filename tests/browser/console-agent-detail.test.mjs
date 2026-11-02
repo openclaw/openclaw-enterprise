@@ -20,6 +20,10 @@ import {
   deniedCreateSecretOption,
   deploymentStatusResponse,
   detailUrl,
+  draftActions,
+  expectDeployHeld,
+  expectDeployRefused,
+  expectNoHorizontalScroll,
   expectNoText,
   expectReachableReason,
   expireSessionsWhenSettled,
@@ -41,6 +45,7 @@ import {
   recordLayoutShifts,
   revealNativeConfiguration,
   revokeMemberGrant,
+  saveConfigurationUntilReady,
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
@@ -48,6 +53,7 @@ import {
   settledView,
   settlePageRequests,
   statusTone,
+  storeRefusedConfiguration,
   takeLayoutShifts,
   trackSettledFetches,
   versionChooser,
@@ -104,6 +110,7 @@ import {
   STOP_STATUS_REFRESH_FAILED,
   STOPPED_NO_VERSION,
   WORKSPACE_FILES_UNAVAILABLE,
+  KUBERNETES_ALLOW_USERS_REFUSAL,
   codexPluginRefusal,
   configIncludeRefusal,
   credentialCheckedAtDeploy,
@@ -804,21 +811,9 @@ test("Agent deployment shows the API's reason when it rejects the saved model", 
   };
   const reason =
     "Configuration setting agents.defaults.model must name each model as <provider>/<model>, such as openai/gpt-5.1 or codex/gpt-5.1.";
-  // Save refuses a bare model name with deployment's text (finding 1828).
-  const saved = await fixture.request(
-    "PATCH",
-    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-    { body: { values: bare } },
-  );
-  assert.equal(saved.status, 400, JSON.stringify(saved.body));
-  assert.equal(saved.body.error.message, reason);
-  // A row an older release saved with it still reads, and deployment refuses it.
-  const stored = configurationDriver.stored({
-    namespaceId: namespace.id,
-    id: agent.configurationId,
-  });
-  assert.ok(stored);
-  await configurationDriver.update({ ...stored, values: bare });
+  // Save refuses a bare model name with deployment's text (finding 1828). A row an older release
+  // saved with it still reads, and deployment refuses it.
+  await storeRefusedConfiguration(fixture, configurationDriver, agent, bare, reason);
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
@@ -852,35 +847,17 @@ test("A draft that keeps a retired OpenClaw setting shows deployment's refusal b
   const retired = { ...values, security: { preset: "corporate" } };
   const reason =
     "Configuration setting security.preset must be removed: the OpenClaw runtime retired it (configure the individual security controls explicitly).";
-  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-  const refusedSave = await fixture.request("PATCH", configurationPath, {
-    body: { values: retired },
-  });
-  assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
-  assert.equal(refusedSave.body.error.message, reason);
-  // A row an older release saved with it still reads; the server refuses to deploy it.
-  const stored = configurationDriver.stored({
-    namespaceId: namespace.id,
-    id: agent.configurationId,
-  });
-  assert.ok(stored);
-  await configurationDriver.update({ ...stored, values: retired });
+  // Save refuses it. A row an older release saved with it still reads; the server refuses to
+  // deploy it.
+  await storeRefusedConfiguration(fixture, configurationDriver, agent, retired, reason);
 
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
-  const card = page.locator(".agent-draft-actions");
-  const deploy = card.getByRole("button", { name: "Deploy new version", exact: true });
-  await card.getByText(reason, { exact: true }).waitFor();
-  assert.equal(await deploy.isDisabled(), true);
-  assert.equal(await card.getByText("Ready to deploy.").count(), 0);
+  const card = draftActions(page);
   // The Configuration step stays open and says what to do.
-  const configurationStep = card.getByRole("listitem").first();
-  assert.notEqual(await configurationStep.getAttribute("data-state"), "done");
-  assert.match(
-    await configurationStep.locator(".checklist-detail").textContent(),
-    /^Remove the retired setting · Configuration /,
-  );
+  await expectDeployHeld(card, reason, "Remove the retired setting · Configuration ");
+  assert.notEqual(await card.getByRole("listitem").first().getAttribute("data-state"), "done");
   // Reading the draft sent no deployment.
   assert.deepEqual(
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`),
@@ -888,18 +865,9 @@ test("A draft that keeps a retired OpenClaw setting shows deployment's refusal b
   );
 
   // Deploy admission gives this exact text for the stored row (the page shows what it would say).
-  const refusedDeploy = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
-  assert.equal(refusedDeploy.status, 400, JSON.stringify(refusedDeploy.body));
-  assert.equal(refusedDeploy.body.error.message, reason);
+  await expectDeployRefused(fixture, agent, reason);
 
-  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
-  await page.getByLabel("Configuration JSON", { exact: true }).fill(JSON.stringify(values));
-  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
-  await card.getByText("Ready to deploy.", { exact: true }).waitFor();
-  await waitForEnabled(deploy);
+  await saveConfigurationUntilReady(page, card, values);
   assert.equal(await card.getByText(reason).count(), 0);
 });
 
@@ -1274,17 +1242,7 @@ for (const viewport of [
     providerless.gateway.auth.password = { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" };
     const reason =
       "Configuration setting gateway.auth.password is a SecretRef without a provider: add provider custom.";
-    const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-    const refusedSave = await fixture.request("PATCH", configurationPath, {
-      body: { values: providerless },
-    });
-    assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
-    assert.equal(refusedSave.body.error.message, reason);
-    const stored = configurationDriver.stored({
-      namespaceId: namespace.id,
-      id: agent.configurationId,
-    });
-    await configurationDriver.update({ ...stored, values: providerless });
+    await storeRefusedConfiguration(fixture, configurationDriver, agent, providerless, reason);
 
     const { page } = await newPage(t, fixture, { context: { viewport } });
     await login(
@@ -1302,20 +1260,10 @@ for (const viewport of [
       await page.getByText("Gateway password access is enabled", { exact: false }).count(),
       0,
     );
-    const card = page.locator(".agent-draft-actions");
-    const deploy = card.getByRole("button", { name: "Deploy new version", exact: true });
-    await card.getByText(reason, { exact: true }).waitFor();
-    assert.equal(await deploy.isDisabled(), true);
-    assert.match(
-      await card.getByRole("listitem").first().locator(".checklist-detail").textContent(),
-      /^Fix the gateway password · Configuration /,
-    );
+    const card = draftActions(page);
+    await expectDeployHeld(card, reason, "Fix the gateway password · Configuration ");
     // Deploy admission refuses the stored row with the text the page shows.
-    const refusedDeploy = await fixture.request(
-      "POST",
-      `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-    );
-    assert.equal(refusedDeploy.body.error.message, reason, JSON.stringify(refusedDeploy.body));
+    await expectDeployRefused(fixture, agent, reason);
 
     // The button writes the generated reference on the custom alias, which saves and deploys.
     const enable = page.getByRole("button", {
@@ -1343,13 +1291,7 @@ for (const viewport of [
     assert.equal(await enable.count(), 0);
     await card.getByText("Ready to deploy.", { exact: true }).waitFor();
     assert.equal(await card.getByText(reason).count(), 0);
-    // The page fits the viewport: no horizontal scroll.
-    assert.equal(
-      await page.evaluate(
-        () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
-      ),
-      true,
-    );
+    await expectNoHorizontalScroll(page);
   });
 }
 
@@ -1370,17 +1312,7 @@ for (const viewport of [
     const agent = await fixture.createAgent(namespace.id, "Invalid alias Agent", values);
     const invalid = { ...structuredClone(values), secrets: { defaults: { env: "BAD" } } };
     const reason = invalidSecretProviderDefaultsRefusal("alias", "env", "BAD", "bad");
-    const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-    const refusedSave = await fixture.request("PATCH", configurationPath, {
-      body: { values: invalid },
-    });
-    assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
-    assert.equal(refusedSave.body.error.message, reason);
-    const stored = configurationDriver.stored({
-      namespaceId: namespace.id,
-      id: agent.configurationId,
-    });
-    await configurationDriver.update({ ...stored, values: invalid });
+    await storeRefusedConfiguration(fixture, configurationDriver, agent, invalid, reason);
 
     const { page } = await newPage(t, fixture, { context: { viewport } });
     await login(
@@ -1399,20 +1331,10 @@ for (const viewport of [
       exact: true,
     });
     assert.equal(await enable.count(), 0);
-    const card = page.locator(".agent-draft-actions");
-    const deploy = card.getByRole("button", { name: "Deploy new version", exact: true });
-    await card.getByText(reason, { exact: true }).waitFor();
-    assert.equal(await deploy.isDisabled(), true);
-    assert.match(
-      await card.getByRole("listitem").first().locator(".checklist-detail").textContent(),
-      /^Fix the secret provider alias · Configuration /,
-    );
+    const card = draftActions(page);
+    await expectDeployHeld(card, reason, "Fix the secret provider alias · Configuration ");
     // Deploy admission refuses the stored row with the text the page shows.
-    const refusedDeploy = await fixture.request(
-      "POST",
-      `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-    );
-    assert.equal(refusedDeploy.body.error.message, reason, JSON.stringify(refusedDeploy.body));
+    await expectDeployRefused(fixture, agent, reason);
 
     // Once the alias is fixed, the button writes the generated reference on it, which saves.
     const edit = page.getByRole("button", { name: "Edit Configuration", exact: true });
@@ -1447,13 +1369,7 @@ for (const viewport of [
       .waitFor();
     await card.getByText("Ready to deploy.", { exact: true }).waitFor();
     assert.equal(await card.getByText(reason).count(), 0);
-    // The page fits the viewport: no horizontal scroll.
-    assert.equal(
-      await page.evaluate(
-        () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
-      ),
-      true,
-    );
+    await expectNoHorizontalScroll(page);
   });
 }
 
@@ -1487,18 +1403,8 @@ for (const viewport of [
       "google",
       "providerless",
     );
-    const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-    const refusedSave = await fixture.request("PATCH", configurationPath, {
-      body: { values: providerless },
-    });
-    assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
-    assert.equal(refusedSave.body.error.message, reason);
     // The row as a release before the save rule stored it.
-    const stored = configurationDriver.stored({
-      namespaceId: namespace.id,
-      id: agent.configurationId,
-    });
-    await configurationDriver.update({ ...stored, values: providerless });
+    await storeRefusedConfiguration(fixture, configurationDriver, agent, providerless, reason);
 
     const { page } = await newPage(t, fixture, { context: { viewport } });
     await login(
@@ -1506,43 +1412,16 @@ for (const viewport of [
       fixture,
       detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
     );
-    const card = page.locator(".agent-draft-actions");
-    const deploy = card.getByRole("button", { name: "Deploy new version", exact: true });
-    await card.getByText(reason, { exact: true }).waitFor();
-    assert.equal(await deploy.isDisabled(), true);
-    assert.equal(await card.getByText("Ready to deploy.", { exact: true }).count(), 0);
-    assert.match(
-      await card.getByRole("listitem").first().locator(".checklist-detail").textContent(),
-      /^Fix the plugin secret input · Configuration /,
-    );
+    const card = draftActions(page);
+    await expectDeployHeld(card, reason, "Fix the plugin secret input · Configuration ");
     // Deploy admission refuses the stored row with the text the page shows.
-    const refusedDeploy = await fixture.request(
-      "POST",
-      `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-    );
-    assert.equal(refusedDeploy.body.error.message, reason, JSON.stringify(refusedDeploy.body));
+    await expectDeployRefused(fixture, agent, reason);
 
     // A header on the default provider is one OpenClaw reads: it saves and the draft is ready.
-    const edit = page.getByRole("button", { name: "Edit Configuration", exact: true });
-    await edit.scrollIntoViewIfNeeded();
-    await edit.click();
     const fixed = header({ source: "env", provider: "default", id: "GOOG_TOKEN" });
-    await page.getByLabel("Configuration JSON").fill(JSON.stringify(fixed, null, 2));
-    await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
-    await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+    await saveConfigurationUntilReady(page, card, fixed);
     assert.equal(await card.getByText(reason).count(), 0);
-    assert.equal(await deploy.isDisabled(), false);
-    assert.match(
-      await card.getByRole("listitem").first().locator(".checklist-detail").textContent(),
-      /^Saved · Configuration /,
-    );
-    // The page fits the viewport: no horizontal scroll.
-    assert.equal(
-      await page.evaluate(
-        () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
-      ),
-      true,
-    );
+    await expectNoHorizontalScroll(page);
   });
 }
 
@@ -1631,17 +1510,8 @@ for (const viewport of [
       },
     ]) {
       const agent = await fixture.createAgent(namespace.id, `${name} Agent`, values);
-      const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-      const refusedSave = await fixture.request("PATCH", configurationPath, {
-        body: { values: stored },
-      });
-      assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
-      assert.equal(refusedSave.body.error.message, reason);
       // The row as a release before the save rule stored it.
-      await configurationDriver.update({
-        ...configurationDriver.stored({ namespaceId: namespace.id, id: agent.configurationId }),
-        values: stored,
-      });
+      await storeRefusedConfiguration(fixture, configurationDriver, agent, stored, reason);
 
       const { page } = await newPage(t, fixture, { context: { viewport } });
       await login(
@@ -1649,37 +1519,14 @@ for (const viewport of [
         fixture,
         detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
       );
-      const card = page.locator(".agent-draft-actions");
-      const deploy = card.getByRole("button", { name: "Deploy new version", exact: true });
-      const firstStep = card.getByRole("listitem").first().locator(".checklist-detail");
-      await card.getByText(reason, { exact: true }).waitFor();
-      assert.equal(await deploy.isDisabled(), true);
-      assert.equal(await card.getByText("Ready to deploy.", { exact: true }).count(), 0);
-      assert.ok((await firstStep.textContent()).startsWith(`${step} · Configuration `), name);
+      const card = draftActions(page);
+      await expectDeployHeld(card, reason, `${step} · Configuration `, name);
       // Deploy admission refuses the stored row with the text the page shows.
-      const refusedDeploy = await fixture.request(
-        "POST",
-        `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-      );
-      assert.equal(refusedDeploy.status, 400, JSON.stringify(refusedDeploy.body));
-      assert.equal(refusedDeploy.body.error.message, reason, JSON.stringify(refusedDeploy.body));
+      await expectDeployRefused(fixture, agent, reason);
 
       // The step, followed in the editor, saves and the draft is ready.
-      const edit = page.getByRole("button", { name: "Edit Configuration", exact: true });
-      await edit.scrollIntoViewIfNeeded();
-      await edit.click();
-      await page.getByLabel("Configuration JSON").fill(JSON.stringify(fixed, null, 2));
-      await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
-      await card.getByText("Ready to deploy.", { exact: true }).waitFor();
-      assert.equal(await deploy.isDisabled(), false);
-      assert.match(await firstStep.textContent(), /^Saved · Configuration /);
-      // The page fits the viewport: no horizontal scroll.
-      assert.equal(
-        await page.evaluate(
-          () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
-        ),
-        true,
-      );
+      await saveConfigurationUntilReady(page, card, fixed);
+      await expectNoHorizontalScroll(page);
     }
   });
 }
@@ -1708,17 +1555,8 @@ for (const viewport of [
         plugins: { ...values.plugins, entries: { ...values.plugins.entries, ...variant } },
       };
       const agent = await fixture.createAgent(namespace.id, "Kubernetes entry key", values);
-      const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-      const refusedSave = await fixture.request("PATCH", configurationPath, {
-        body: { values: stored },
-      });
-      assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
-      assert.equal(refusedSave.body.error.message, reason);
       // The row as a release before the save rule stored it.
-      await configurationDriver.update({
-        ...configurationDriver.stored({ namespaceId: namespace.id, id: agent.configurationId }),
-        values: stored,
-      });
+      await storeRefusedConfiguration(fixture, configurationDriver, agent, stored, reason);
 
       const { page } = await newPage(t, fixture, { context: { viewport } });
       await login(
@@ -1726,37 +1564,14 @@ for (const viewport of [
         fixture,
         detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
       );
-      const card = page.locator(".agent-draft-actions");
-      const deploy = card.getByRole("button", { name: "Deploy new version", exact: true });
-      const firstStep = card.getByRole("listitem").first().locator(".checklist-detail");
-      await card.getByText(reason, { exact: true }).waitFor();
-      assert.equal(await deploy.isDisabled(), true);
-      assert.equal(await card.getByText("Ready to deploy.", { exact: true }).count(), 0);
-      assert.ok((await firstStep.textContent()).startsWith("Fix the plugin entry key · "));
+      const card = draftActions(page);
+      await expectDeployHeld(card, reason, "Fix the plugin entry key · ");
       // Deploy admission refuses the stored row with the text the page shows.
-      const refusedDeploy = await fixture.request(
-        "POST",
-        `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-      );
-      assert.equal(refusedDeploy.status, 400, JSON.stringify(refusedDeploy.body));
-      assert.equal(refusedDeploy.body.error.message, reason);
+      await expectDeployRefused(fixture, agent, reason);
 
       // The step, followed in the editor, saves and the draft is ready.
-      const edit = page.getByRole("button", { name: "Edit Configuration", exact: true });
-      await edit.scrollIntoViewIfNeeded();
-      await edit.click();
-      await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
-      await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
-      await card.getByText("Ready to deploy.", { exact: true }).waitFor();
-      assert.equal(await deploy.isDisabled(), false);
-      assert.match(await firstStep.textContent(), /^Saved · Configuration /);
-      // The page fits the viewport: no horizontal scroll.
-      assert.equal(
-        await page.evaluate(
-          () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
-        ),
-        true,
-      );
+      await saveConfigurationUntilReady(page, card, values);
+      await expectNoHorizontalScroll(page);
     });
 
     await t.test("SSH Compute", async (t) => {
@@ -1876,17 +1691,14 @@ for (const viewport of [
       const agent = await fixture.createAgent(namespace.id, "Codex plugin off", values, {
         executionMode: "dedicated",
       });
-      const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-      const refusedSave = await fixture.request("PATCH", configurationPath, {
-        body: { values: pluginsOff(values) },
-      });
-      assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
-      assert.equal(refusedSave.body.error.message, reason);
       // The row as a release before the save rule stored it.
-      await configurationDriver.update({
-        ...configurationDriver.stored({ namespaceId: namespace.id, id: agent.configurationId }),
-        values: pluginsOff(values),
-      });
+      await storeRefusedConfiguration(
+        fixture,
+        configurationDriver,
+        agent,
+        pluginsOff(values),
+        reason,
+      );
 
       const { page } = await newPage(t, fixture, { context: { viewport } });
       await login(
@@ -1894,37 +1706,14 @@ for (const viewport of [
         fixture,
         detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
       );
-      const card = page.locator(".agent-draft-actions");
-      const deploy = card.getByRole("button", { name: "Deploy new version", exact: true });
-      const firstStep = card.getByRole("listitem").first().locator(".checklist-detail");
-      await card.getByText(reason, { exact: true }).waitFor();
-      assert.equal(await deploy.isDisabled(), true);
-      assert.equal(await card.getByText("Ready to deploy.", { exact: true }).count(), 0);
-      assert.ok((await firstStep.textContent()).startsWith("Let the codex plugin run · "));
+      const card = draftActions(page);
+      await expectDeployHeld(card, reason, "Let the codex plugin run · ");
       // Deploy admission refuses the stored row with the text the page shows.
-      const refusedDeploy = await fixture.request(
-        "POST",
-        `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-      );
-      assert.equal(refusedDeploy.status, 400, JSON.stringify(refusedDeploy.body));
-      assert.equal(refusedDeploy.body.error.message, reason);
+      await expectDeployRefused(fixture, agent, reason);
 
       // The step, followed in the editor, saves and the draft is ready.
-      const edit = page.getByRole("button", { name: "Edit Configuration", exact: true });
-      await edit.scrollIntoViewIfNeeded();
-      await edit.click();
-      await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
-      await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
-      await card.getByText("Ready to deploy.", { exact: true }).waitFor();
-      assert.equal(await deploy.isDisabled(), false);
-      assert.match(await firstStep.textContent(), /^Saved · Configuration /);
-      // The page fits the viewport: no horizontal scroll.
-      assert.equal(
-        await page.evaluate(
-          () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
-        ),
-        true,
-      );
+      await saveConfigurationUntilReady(page, card, values);
+      await expectNoHorizontalScroll(page);
     });
 
     await t.test("OpenClaw Agent", async (t) => {
@@ -1952,6 +1741,93 @@ for (const viewport of [
       await card.getByText("Ready to deploy.", { exact: true }).waitFor();
       await waitForEnabled(card.getByRole("button", { name: "Deploy new version", exact: true }));
       assert.equal(await card.getByText(reason, { exact: true }).count(), 0);
+      assert.deepEqual(
+        pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/validate`),
+        [],
+      );
+    });
+  });
+}
+
+// Every Kubernetes topology refuses a trusted-proxy allowlist without the machine identity
+// (finding 3032), and only Kubernetes Compute reads it. A row an older release saved with one
+// holds Deploy with deploy's refusal and the Gateway authentication step, through the same Compute
+// preflight as the plugin entry keys above, and following the step makes the draft ready (finding
+// 3121). A valid allowlist sends no preflight and leaves the draft ready.
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`A stored trusted-proxy allowlist Kubernetes Compute refuses holds Deploy at ${viewport.width}px`, async (t) => {
+    const withAllowUsers = (values, allowUsers) => ({
+      ...structuredClone(values),
+      gateway: {
+        ...values.gateway,
+        auth: {
+          ...values.gateway.auth,
+          trustedProxy: { ...values.gateway.auth.trustedProxy, allowUsers },
+        },
+      },
+    });
+    await t.test("Allowlist without the machine identity", async (t) => {
+      const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
+      const fixture = await createConsoleAppFixture(t, { configurationDriver });
+      await fixture.bootstrap();
+      const namespace = await fixture.createNamespace("Trusted proxy allowlist", { ready: true });
+      const values = nativeAdminValues("trusted-proxy-allowlist", "http://127.0.0.1:18789");
+      const stored = withAllowUsers(values, ["oidc:member-01"]);
+      const agent = await fixture.createAgent(namespace.id, "Trusted proxy allowlist", values);
+      // The row as a release before the save rule stored it.
+      await storeRefusedConfiguration(
+        fixture,
+        configurationDriver,
+        agent,
+        stored,
+        KUBERNETES_ALLOW_USERS_REFUSAL,
+      );
+
+      const { page } = await newPage(t, fixture, { context: { viewport } });
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      );
+      const card = draftActions(page);
+      await expectDeployHeld(
+        card,
+        KUBERNETES_ALLOW_USERS_REFUSAL,
+        "Fix the Gateway authentication · ",
+      );
+      // Deploy admission refuses the stored row with the text the page shows.
+      await expectDeployRefused(fixture, agent, KUBERNETES_ALLOW_USERS_REFUSAL);
+
+      // The step, followed in the editor, saves and the draft is ready.
+      await saveConfigurationUntilReady(page, card, values);
+      await expectNoHorizontalScroll(page);
+    });
+
+    await t.test("Valid allowlist", async (t) => {
+      const fixture = await createConsoleAppFixture(t);
+      await fixture.bootstrap();
+      const namespace = await fixture.createNamespace("Valid proxy allowlist", { ready: true });
+      // The native admin opt-in's allowlist holds only the machine identity.
+      const values = nativeAdminValues("valid-proxy-allowlist", "http://127.0.0.1:18789");
+      const agent = await fixture.createAgent(namespace.id, "Valid proxy allowlist", values);
+
+      const { page } = await newPage(t, fixture, { context: { viewport } });
+      const requests = apiRequests(page, fixture.origin);
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      );
+      const card = page.locator(".agent-draft-actions");
+      await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+      await waitForEnabled(card.getByRole("button", { name: "Deploy new version", exact: true }));
+      assert.equal(
+        await card.getByText(KUBERNETES_ALLOW_USERS_REFUSAL, { exact: true }).count(),
+        0,
+      );
       assert.deepEqual(
         pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/validate`),
         [],
@@ -2011,12 +1887,7 @@ for (const viewport of [
       exact: true,
     });
     assert.equal(await enable.count(), 0);
-    assert.equal(
-      await page.evaluate(
-        () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
-      ),
-      true,
-    );
+    await expectNoHorizontalScroll(page);
 
     // Once the allowlist names the variable, the button returns and writes the reference.
     const edit = page.getByRole("button", { name: "Edit Configuration", exact: true });

@@ -13,6 +13,7 @@ import { promisify } from "node:util";
 import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { verifyOpenShellOwnerSession } from "../helpers/openshell-owner-session.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
@@ -224,10 +225,14 @@ test(
     const stateDirectory = join(root, "state");
     const suffix = randomUUID().slice(0, 8);
     const cluster = `occ-dev-openshell-${suffix}`;
-    const apiPort = await availablePort();
-    const kubernetesPort = await availablePort();
+    const ports = new Set();
+    while (ports.size < 3) {
+      ports.add(await availablePort());
+    }
+    const [apiPort, kubernetesPort, browserPort] = ports;
     const environment = {
       ...process.env,
+      OCC_DEVELOPMENT_BROWSER_PORT: String(browserPort),
       OPENCLAW_DEV_PORT: String(apiPort),
       OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
       OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
@@ -278,6 +283,7 @@ test(
     assert.equal(state.deploymentMode, "k3d");
     assert.equal(state.platformNamespace, "oce-system");
     assert.equal(existsSync(join(stateDirectory, "compose.yaml")), false);
+    assert.equal(state.browserOrigin, `https://console.${cluster}.oce.localhost:${browserPort}`);
     const kubectl = [
       "--kubeconfig",
       join(stateDirectory, "kubeconfig"),
@@ -666,6 +672,16 @@ test(
       undefined,
     );
     await cli("secret", "delete", secret.id);
+    // Verify the stock session before cleanup scenarios remove tenant/provider authority.
+    await verifyOpenShellOwnerSession({
+      t,
+      cluster,
+      browserPort,
+      stateDirectory,
+      namespaceId: JSON.parse(namespaces.stdout).find(({ name }) => name === "default").id,
+      kubectl,
+      environment,
+    });
 
     const namespaceCli = async (...args) =>
       JSON.parse(

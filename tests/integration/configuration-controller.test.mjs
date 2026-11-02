@@ -44,6 +44,8 @@ import {
   codexPluginRefusal,
   codexRuntimeOffProvider,
   configIncludeRefusal,
+  KUBERNETES_ALLOW_USERS_REFUSAL,
+  KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL,
   KUBERNETES_GATEWAY_PASSWORD_REFUSAL,
   keepRuntime,
   OPENCLAW_ONLY,
@@ -56,6 +58,10 @@ import {
   selectableModelOffProvider,
   unsupportedChannelRefusal,
 } from "../helpers/refusal-text.mjs";
+import {
+  INVALID_ALLOW_USERS_SAMPLE,
+  INVALID_DEVICE_AUTO_APPROVE_SAMPLE,
+} from "../helpers/trusted-proxy-shapes.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
 import {
@@ -2689,6 +2695,79 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
   for (const [values, message] of unreadablePluginInputs) {
     await refusedAtSaveAndDeploy(context, agent, values, message);
   }
+  // A trusted-proxy allowlist or device auto-approval the Gateway refuses failed only in
+  // preparation, after a dedicated deployment stopped its predecessor (findings 3006, 3032). Save
+  // refuses each shape, naming the setting and never an identity; a stored row still reads, and
+  // deployment refuses it with the same text before any revision.
+  const trustedProxy = (fields) => ({
+    ...valid,
+    gateway: { auth: { trustedProxy: { allowUsers: ["occ-workspace-files"], ...fields } } },
+  });
+  // The first shape leaves out the machine identity; the Preset save below uses it.
+  const trustedProxyRefusals = [
+    ...INVALID_ALLOW_USERS_SAMPLE.map((allowUsers) => [
+      trustedProxy({ allowUsers }),
+      KUBERNETES_ALLOW_USERS_REFUSAL,
+    ]),
+    ...INVALID_DEVICE_AUTO_APPROVE_SAMPLE.map((deviceAutoApprove) => [
+      trustedProxy({ deviceAutoApprove }),
+      KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL,
+    ]),
+  ];
+  for (const [values, message] of trustedProxyRefusals) {
+    await refusedAtSaveAndDeploy(context, agent, values, message);
+  }
+  const trustedProxyRevisions = await request(context.app, "GET", `${agentPath}/revisions`);
+  assert.deepEqual(trustedProxyRevisions.body.data, []);
+  // A Preset save refuses it too, unless the setting waits on a variable: the launch checks it.
+  assertRefused(
+    await savePreset(context, { configuration: { values: trustedProxyRefusals[0][0] } }),
+    KUBERNETES_ALLOW_USERS_REFUSAL,
+  );
+  // Each would be refused as written: an allowlist whose machine identity is a variable, and a
+  // boolean variable that turns auto-approval on.
+  for (const [name, variables, fields] of [
+    [
+      "Allowlist-deferred",
+      { identity: { type: "string" } },
+      { allowUsers: ["{{ vars.identity }}", "oidc:member-01"] },
+    ],
+    [
+      "Auto-approval-deferred",
+      { autoApprove: { type: "boolean" } },
+      { deviceAutoApprove: { enabled: "{{ vars.autoApprove }}" } },
+    ],
+  ]) {
+    const waiting = await savePreset(
+      context,
+      { variables, configuration: { values: trustedProxy(fields) } },
+      name,
+    );
+    assert.equal(waiting.status, 201, `${name}: ${JSON.stringify(waiting.body)}`);
+  }
+  // A custom allowlist with one human, its grant and a device policy the Gateway accepts saves and
+  // deploys.
+  const humanAgent = await deployableAgent(context, context.namespace, {
+    values: {
+      ...valid,
+      gateway: {
+        auth: {
+          trustedProxy: {
+            allowUsers: ["occ-workspace-files", "member@example.com"],
+            deviceAutoApprove: { enabled: true, scopes: ["operator.read"] },
+          },
+          identityScopes: {
+            "occ-workspace-files": ["operator.admin"],
+            "member@example.com": ["operator.read"],
+          },
+        },
+      },
+    },
+    name: "Trusted proxy human consumer",
+    secretName: "trusted-proxy-human-key",
+  });
+  await deployAccepted(context, humanAgent.agentPath);
+
   // A Preset save refuses it too, unless the plugins or secrets wait on a variable: then it is
   // checked once filled.
   const [[unreadableValues, unreadableMessage]] = unreadablePluginInputs;

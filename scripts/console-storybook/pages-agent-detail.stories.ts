@@ -32,6 +32,7 @@ export const ProviderKeyVariantRefused = story("providerKeyVariantRefused");
 export const PluginPolicyListRefused = story("pluginPolicyListRefused");
 export const KubernetesEntryKeyVariantRefused = story("kubernetesEntryKeyVariantRefused");
 export const CodexPluginsDisabledRefused = story("codexPluginsDisabledRefused");
+export const TrustedProxyAllowUsersRefused = story("trustedProxyAllowUsersRefused");
 export const KubernetesEntryKeyVariantChecking = story("kubernetesEntryKeyVariantChecking");
 export const KubernetesEntryKeyVariantCreateDenied = story("kubernetesEntryKeyVariantCreateDenied");
 export const GatewayPasswordAllowlistOmits = story("gatewayPasswordAllowlistOmits");

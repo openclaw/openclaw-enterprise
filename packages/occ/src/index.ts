@@ -615,6 +615,8 @@ export {
   secretInputShorthandName,
   secretProviderDefaultsProblem,
   shownSecretName,
+  TRUSTED_PROXY_IDENTITY,
+  trustedProxyIdentitiesProblem,
   unreadablePluginSecretInput,
   unsubstitutedReference,
   wholeEnvironmentReferenceName,
