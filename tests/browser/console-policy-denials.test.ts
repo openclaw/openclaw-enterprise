@@ -14,6 +14,7 @@ import { openShellSandboxRecords } from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
   detailUrl,
+  expectNoHorizontalScroll,
   focusKeptOverClose,
   hasFocus,
   login,
@@ -98,6 +99,22 @@ async function logWindow(
     },
   );
 }
+
+test("read-only Installation defaults display formatted JSON within the policy card", async (t) => {
+  // The literal backslash and quotes in this executable name must survive copying the JSON.
+  const binary = `/opt/${"a".repeat(180)}/tool-"\\u000a"`;
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [], binary);
+  const { defaults } = (await fixture.request("GET", base)).data;
+  const { page } = await newPage(t, fixture);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, undefined, "policy"));
+  const card = page.locator(".sandbox-network-card");
+  await card.getByText("Policy details", { exact: true }).click();
+  await card.getByText("Read-only Installation defaults", { exact: true }).click();
+  const block = card.locator("pre");
+  assert.equal(await block.innerText(), JSON.stringify(defaults, null, 2));
+  await expectNoHorizontalScroll(page);
+});
 
 test("the Policy denials page controls policy editing and disabling preserves saved rules", async (t) => {
   const { fixture, namespace, agent, base } = await createPolicyConsole(t, grants);
