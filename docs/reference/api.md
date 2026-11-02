@@ -1709,8 +1709,8 @@ Example response
 | Operation | Summary |
 | --- | --- |
 | [`GET /iam/default-users`](#get-iamdefaultusers) | List the Principals in the built-in Default users Group |
-| [`DELETE /iam/default-users/{principalId}`](#delete-iamdefaultusersprincipalid) | Remove a Principal from Default users; the Namespaces it owns remain |
-| [`PUT /iam/default-users/{principalId}`](#put-iamdefaultusersprincipalid) | Add an Installation Principal to Default users so it can create Namespaces |
+| [`DELETE /iam/default-users/{principalId}`](#delete-iamdefaultusersprincipalid) | Remove a Principal from Default users; what it created remains |
+| [`PUT /iam/default-users/{principalId}`](#put-iamdefaultusersprincipalid) | Add an Installation Principal to Default users so it can create Agents |
 | [`GET /namespaces/{namespaceId}/iam/access-bindings`](#get-namespacesnamespaceidiamaccessbindings) | List exact Namespace IAM AccessBindings |
 | [`POST /namespaces/{namespaceId}/iam/access-bindings`](#post-namespacesnamespaceidiamaccessbindings) | Create an immutable exact-resource Namespace IAM AccessBinding |
 | [`DELETE /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`](#delete-namespacesnamespaceidiamaccessbindingsbindingid) | Delete one exact Namespace IAM AccessBinding |
@@ -1786,7 +1786,7 @@ Example response
 
 <span id="delete-iamdefaultusersprincipalid"></span>
 
-Remove a Principal from Default users; the Namespaces it owns remain
+Remove a Principal from Default users; what it created remains
 
 **Operation ID:** `removeDefaultUser`
 
@@ -1819,7 +1819,7 @@ Remove a Principal from Default users; the Namespaces it owns remain
 
 <span id="put-iamdefaultusersprincipalid"></span>
 
-Add an Installation Principal to Default users so it can create Namespaces
+Add an Installation Principal to Default users so it can create Agents
 
 **Operation ID:** `addDefaultUser`
 

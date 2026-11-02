@@ -1192,6 +1192,62 @@ async function grantSecretOperate(pool, namespaceId, subjectId, secretId) {
   );
 }
 
+/**
+ * An ordinary account with no grant, created through the accounts API and added to the built-in
+ * Default users Group by the Installation administrator. Default users hold Agent Creator in the
+ * Namespace named default; each create there makes the caller that resource's Owner.
+ */
+async function createDefaultUserRequest({ adminRequest, requestFactory }) {
+  const identifier = randomUUID();
+  const credentials = {
+    email: `default-user-${hash(identifier)}@example.test`,
+    password: `default-user-${identifier}`,
+  };
+  const account = await adminRequest("POST", "/api/auth/accounts", credentials);
+  assert.equal(account.status, 201, JSON.stringify(account.error));
+  const { principalId } = account.data;
+  const added = await adminRequest("PUT", `/iam/default-users/${principalId}`);
+  assert.equal(added.status, 204, JSON.stringify(added.error));
+  return { request: await requestFactory(credentials), principalId };
+}
+
+/**
+ * The caller's deploy, allowed by its Owner binding on the Agent it created, gave the Agent's
+ * ServicePrincipal operate on exactly the Secret the caller created, audited as the caller.
+ */
+async function assertOwnerDeployGrant(pool, { namespaceId, agent, secretId, ownerId }) {
+  const owned = await pool.query(
+    `SELECT resource_kind, resource_id FROM occ.iam_access_bindings
+      WHERE namespace_id = $1 AND identity_subject_id = $2 AND role_id = 'role_builtin_owner'
+        AND resource_id = ANY($3::text[])
+      ORDER BY resource_kind`,
+    [namespaceId, ownerId, [agent.id, secretId]],
+  );
+  assert.deepEqual(owned.rows, [
+    { resource_kind: "agent", resource_id: agent.id },
+    { resource_kind: "secret", resource_id: secretId },
+  ]);
+  const grant = await pool.query(
+    `SELECT identity_subject_id, resource_kind, resource_id FROM occ.iam_access_bindings
+      WHERE id = $1`,
+    [`binding_${agent.id}_${secretId}_operate`],
+  );
+  assert.deepEqual(grant.rows, [
+    {
+      identity_subject_id: agent.servicePrincipalId,
+      resource_kind: "secret",
+      resource_id: secretId,
+    },
+  ]);
+  const audit = await pool.query(
+    `SELECT actor_id, details->>'agentId' AS agent_id FROM occ.audit_events
+      WHERE action = 'openclaw.iam.access_bindings.create' AND resource_id = $1
+        AND details->>'reason' = 'agent_deploy'`,
+    [secretId],
+  );
+  assert.deepEqual(audit.rows, [{ actor_id: ownerId, agent_id: agent.id }]);
+}
+
 async function createSecretAssignmentCallerRequest({
   pool,
   createPostgresControllerAuth,
@@ -1782,6 +1838,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   let request = adminRequest;
   let secretAssignmentPrincipalId;
   let namespaceId;
+  // Default users create Agents only in the Namespace named default. Each case's teardown deletes
+  // its tenant namespace, so only the case that creates the Installation can use default.
+  assert.ok(
+    createdFreshInstallation || options.defaultUser !== true,
+    "the Default user case needs a fresh Installation's default Namespace; run it first on a new database",
+  );
   if (createdFreshInstallation) {
     const namespaces = await adminRequest("GET", "/namespaces");
     assert.equal(namespaces.status, 200, JSON.stringify(namespaces.error));
@@ -1910,14 +1972,17 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
 
   let secretApi;
   {
-    const secretAssignmentCaller = await createSecretAssignmentCallerRequest({
-      pool: observerPool,
-      createPostgresControllerAuth,
-      requestFactory,
-      installation: activeInstallation,
-      namespaceId,
-      baseURL: controllerAuthBaseURL,
-    });
+    const secretAssignmentCaller =
+      options.defaultUser === true
+        ? await createDefaultUserRequest({ adminRequest, requestFactory })
+        : await createSecretAssignmentCallerRequest({
+            pool: observerPool,
+            createPostgresControllerAuth,
+            requestFactory,
+            installation: activeInstallation,
+            namespaceId,
+            baseURL: controllerAuthBaseURL,
+          });
     request = secretAssignmentCaller.request;
     secretAssignmentPrincipalId = secretAssignmentCaller.principalId;
 
@@ -2005,6 +2070,15 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       };
     }
     if (options.bindingNegativeControl !== false) {
+      // The caller owns every Secret it creates, so the refusal needs a Secret it did not create:
+      // one the administrator owns, on which the caller holds no operate grant.
+      const unownedValue = `unowned-model-${randomUUID()}`;
+      const unownedSecret = await createApiSecret(
+        adminRequest,
+        namespaceId,
+        `unowned-model-${randomUUID()}`,
+        unownedValue,
+      );
       const ungranted = await createUndeployedAgent(
         request,
         namespaceId,
@@ -2017,29 +2091,31 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
         `/namespaces/${namespaceId}/agents/${ungranted.agent.id}`,
         {
           configurationId: ungranted.agent.configurationId,
-          harnessAuth: { method: "api_key", source: modelSecret.ref },
+          harnessAuth: { method: "api_key", source: unownedSecret.ref },
         },
-        [process.env.OPENAI_API_KEY],
+        [process.env.OPENAI_API_KEY, unownedValue],
         "Harness auth assignment without exact actor Secret operate",
       );
       assert.equal(actorDenied.status, 403);
     }
-    await Promise.all(
-      [
-        secretApi.model,
-        secretApi.slackApp,
-        secretApi.slackBot,
-        secretApi.probe,
-        secretApi.peerProbe,
-        secretApi.sharedProbe,
-        secretApi.missingBackend,
-        secretApi.unboundDelete,
-      ]
-        .filter(Boolean)
-        .map((secret) =>
-          grantSecretOperate(observerPool, namespaceId, secretAssignmentPrincipalId, secret.id),
-        ),
-    );
+    if (options.defaultUser !== true) {
+      await Promise.all(
+        [
+          secretApi.model,
+          secretApi.slackApp,
+          secretApi.slackBot,
+          secretApi.probe,
+          secretApi.peerProbe,
+          secretApi.sharedProbe,
+          secretApi.missingBackend,
+          secretApi.unboundDelete,
+        ]
+          .filter(Boolean)
+          .map((secret) =>
+            grantSecretOperate(observerPool, namespaceId, secretAssignmentPrincipalId, secret.id),
+          ),
+      );
+    }
   }
 
   const harnessId = options.harnessId ?? (mode === "dedicated" ? "codex" : "openclaw");
@@ -2174,58 +2250,10 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     options.legacyRuntimeCredentials === true
       ? await resource("secret", legacyTransportName, placement)
       : undefined;
-  {
-    const revisionsBefore = await request(
-      "GET",
-      `/namespaces/${namespaceId}/agents/${agent.data.id}/revisions`,
-    );
-    assert.equal(revisionsBefore.status, 200, JSON.stringify(revisionsBefore.error));
-    const deniedDeploy = await expectApiFailureWithoutSecret(
-      request,
-      "POST",
-      `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
-      undefined,
-      secretApiProtectedValues({ secretApi }),
-      "Secret-backed deploy before Agent service principal operate",
-    );
-    assert.equal(
-      deniedDeploy.status,
-      403,
-      `Agent service principal denial returned HTTP ${deniedDeploy.status}`,
-    );
-    const revisionsAfter = await request(
-      "GET",
-      `/namespaces/${namespaceId}/agents/${agent.data.id}/revisions`,
-    );
-    assert.equal(revisionsAfter.status, 200, JSON.stringify(revisionsAfter.error));
-    assert.deepEqual(
-      revisionsAfter.data.map(({ id }) => id),
-      revisionsBefore.data.map(({ id }) => id),
-      "missing Agent service-principal Secret operate must reject deployment before revision admission",
-    );
-    await Promise.all(
-      [
-        secretApi.model,
-        secretApi.slackApp,
-        secretApi.slackBot,
-        secretApi.probe,
-        secretApi.sharedProbe,
-      ]
-        .filter(Boolean)
-        .map((secret) =>
-          grantSecretOperate(
-            observerPool,
-            namespaceId,
-            persistedAgent.servicePrincipalId,
-            secret.id,
-          ),
-        ),
-    );
-    secretApi = {
-      ...secretApi,
-      configuration: configuration.data,
-    };
-  }
+  // The caller created the Agent and its Secrets, so it owns them, and its deploy writes the
+  // Agent ServicePrincipal's operate grants. A deploy that only custom Roles allow writes none
+  // and is refused; tests/integration/postgres-default-users.test.ts covers that refusal.
+  secretApi = { ...secretApi, configuration: configuration.data };
 
   const deployed = await request(
     "POST",
@@ -2260,7 +2288,23 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
         event.outcome === "success",
     );
   });
-  const observedRevision = await request(
+  for (const secret of [
+    secretApi.model,
+    secretApi.slackApp,
+    secretApi.slackBot,
+    secretApi.probe,
+    secretApi.sharedProbe,
+  ].filter(Boolean)) {
+    await assertOwnerDeployGrant(observerPool, {
+      namespaceId,
+      agent: persistedAgent,
+      secretId: secret.ref.id,
+      ownerId: secretAssignmentPrincipalId,
+    });
+  }
+  // TODO(TASK-0050 slice 2): read as the Default user once revision checks use the parent Agent's
+  // bindings; an exact Owner binding on the Agent does not cover agent_revision read yet.
+  const observedRevision = await (options.defaultUser === true ? adminRequest : request)(
     "GET",
     `/namespaces/${namespaceId}/agents/${agent.data.id}/revisions/${deployed.data.id}`,
   );

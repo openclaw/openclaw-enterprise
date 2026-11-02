@@ -184,8 +184,8 @@
 ### IAM
 
 - [`listDefaultUsers`](../api.md#get-iamdefaultusers): List the Principals in the built-in Default users Group.
-- [`addDefaultUser`](../api.md#put-iamdefaultusersprincipalid): Add an Installation Principal to Default users so it can create Namespaces.
-- [`removeDefaultUser`](../api.md#delete-iamdefaultusersprincipalid): Remove a Principal from Default users; the Namespaces it owns remain.
+- [`addDefaultUser`](../api.md#put-iamdefaultusersprincipalid): Add an Installation Principal to Default users so it can create Agents.
+- [`removeDefaultUser`](../api.md#delete-iamdefaultusersprincipalid): Remove a Principal from Default users; what it created remains.
 
 ### Secrets
 

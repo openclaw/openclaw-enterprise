@@ -12384,7 +12384,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Remove a Principal from Default users; the Namespaces it owns remain",
+        "summary": "Remove a Principal from Default users; what it created remains",
         "tags": ["IAM"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -12475,7 +12475,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Add an Installation Principal to Default users so it can create Namespaces",
+        "summary": "Add an Installation Principal to Default users so it can create Agents",
         "tags": ["IAM"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }

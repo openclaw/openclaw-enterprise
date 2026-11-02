@@ -566,7 +566,7 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Add an Installation Principal to Default users so it can create Namespaces",
+    summary: "Add an Installation Principal to Default users so it can create Agents",
     tags: ["IAM"],
     schema: {
       querystring: EmptyQuery,
@@ -582,7 +582,7 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Remove a Principal from Default users; the Namespaces it owns remain",
+    summary: "Remove a Principal from Default users; what it created remains",
     tags: ["IAM"],
     schema: {
       querystring: EmptyQuery,

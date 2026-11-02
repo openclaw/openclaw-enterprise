@@ -182,7 +182,9 @@ These parts of the Default users design are not implemented:
   Administrators still create each account and add each member.
 - Namespace-wide and Group bindings through the Namespace policy API.
 - Revision and sandbox policy checks through the parent Agent's bindings. An
-  Agent owner cannot yet read the Agent's revisions or sandbox policy.
+  Agent owner can deploy the Agent but cannot yet read its revisions, deployment
+  status, or sandbox policy. The Agent's `activeRevisionId` shows when a deploy
+  is active.
 - Shared team Namespaces. Nothing binds the Namespace member Role.
 - Removal of deploy-time grants when an Agent stops using a source.
 - CLI and console support for Default users.

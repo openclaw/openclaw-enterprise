@@ -41,6 +41,32 @@ const topologyTeardown = (testContext) =>
   boundedTeardown(testContext, { label: "production topology teardown" });
 
 test(
+  "production Default user deploys embedded OpenClaw in the default Namespace with owner grants",
+  { ...requiresProductionCluster, timeout: 900_000 },
+  async (testContext) => {
+    const { context } = topologyTeardown(testContext);
+    // First in this file: each case's teardown deletes its tenant namespace, and Default users
+    // create Agents only in default, so this case must be the one that creates the Installation.
+    // The caller is an ordinary account that the administrator only added to Default users. It
+    // creates the model Secret, Configuration, and Agent in default and deploys with no other
+    // grant; arrangeProductionTopology asserts its Owner bindings and the deploy-written grant.
+    const topology = await arrangeProductionTopology(context, "embedded", undefined, {
+      defaultUser: true,
+    });
+    assert.equal(topology.harnessPod, undefined, "embedded execution must not create a Codex Pod");
+    assert.equal(topology.gatewayPod.spec.serviceAccountName, topology.agentServiceName);
+    const environment = await inspectWorkloadEnvironment(
+      topology.gatewayPlacement,
+      topology.gatewayPod.metadata.name,
+    );
+    // The deploy-written grant is what lets the worker project the owner's model Secret.
+    assert.equal(environment.OPENAI_API_KEY, true);
+    await resource("networkpolicy", "default-deny", topology.placement);
+    await assertActualModelTurn(topology);
+  },
+);
+
+test(
   "production dedicated Skill source uploads honor default and denied node-write policy",
   { ...requiresProductionCluster, timeout: 1_200_000 },
   async (testContext) => {
