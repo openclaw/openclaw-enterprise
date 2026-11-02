@@ -50,8 +50,8 @@ stop_and_retire() {
   request POST "$base/agents/$agent/stop" > "$RUN_DIR/stop-$revision.json" || return 1
   for ((i=0;i<100;i++)); do
     git_audit "$revision" > "$RUN_DIR/retirement-$revision.json" || return 1
-    if jq -e 'any(.attempts[];.custody=="revoked") and
-      all(.attempts[];(.custody=="revoked" or .custody=="not_issued") and (.sealed_present|not))' \
+    if jq -e 'any(.attempts[];.custody=="revoked" or .custody=="expired") and
+      all(.attempts[];(.custody=="revoked" or .custody=="expired" or .custody=="not_issued") and (.sealed_present|not))' \
       "$RUN_DIR/retirement-$revision.json" >/dev/null && request GET "$base/agents/$agent" |
       jq -e '.data.desiredRuntimeState=="stopped" and .data.activeRevisionId==null' >/dev/null; then return 0; fi
     sleep 3

@@ -20,7 +20,7 @@ printf '%s\n' "$write_revision" > "$RUN_DIR/last-write-revision"
 request POST "$base/agents/$agent/stop" > "$RUN_DIR/git-stop"
 ```
 
-2. From the retained session, check the stopped state and the write revision’s known attempts. The query uses read-only PostgreSQL on the disposable k3d installation. It checks every attempt for this exact Agent revision, including superseded material. If the result is `f`, repeat only the reads. Investigate unresolved issuance or revocation before re-enabling access.
+2. From the retained session, check the stopped state and the write revision’s known attempts. The query uses read-only PostgreSQL on the disposable k3d installation. It checks every attempt for this exact Agent revision, including superseded material. Recorded expiry also counts as retirement; live or uncertain attempts and retained sealed material do not. If the result is `f`, repeat only the reads. Investigate unresolved issuance or revocation before re-enabling access.
 
 ```bash
 request GET "$base/agents/$agent" |
@@ -30,8 +30,8 @@ retired=$(kubectl --context "$context" -n "$ns" exec -i statefulset/postgres -- 
   env PGOPTIONS='-c default_transaction_read_only=on' psql -XAt -v ON_ERROR_STOP=1 \
   -U postgres -d "$database" -v ns="$namespace" -v agent="$agent" \
   -v revision="$(cat "$RUN_DIR/last-write-revision")" <<'SQL'
-SELECT count(*) FILTER (WHERE a.custody='revoked') > 0
-   AND bool_and(a.custody IN ('revoked','not_issued') AND a.sealed IS NULL)
+SELECT count(*) FILTER (WHERE a.custody IN ('revoked','expired')) > 0
+   AND bool_and(a.custody IN ('revoked','expired','not_issued') AND a.sealed IS NULL)
 FROM occ.prepared_github_attempts a
 JOIN occ.prepared_github_families f ON f.source_id=a.source_id
 WHERE f.source #>> '{session,namespaceId}'=:'ns'
@@ -63,7 +63,22 @@ request GET "$base/agents/$agent" |
   jq -er '.data | select(.desiredRuntimeState=="running") | .activeRevisionId'
 ```
 
-4. Reopen **Open Agent UI**, select the original chat, and ask the Agent to read the remote branch. For a public repository, remote visibility alone cannot prove authenticated access. Check the new revision’s proxy receipt for `upload-pack` or `advertise-upload-pack` using the [Git verification queries](openshell-git-renewal.md).
+4. Reopen **Open Agent UI**, select the original chat, and ask the Agent to read the remote branch. For a public repository, remote visibility alone cannot prove authenticated access. Run this read-only query for the restored revision. Require a read receipt and no push receipts:
+
+```bash
+read_revision=$(request GET "$base/agents/$agent" | jq -er .data.activeRevisionId)
+kubectl --context "$context" -n "$ns" exec -i statefulset/postgres -- \
+  env PGOPTIONS='-c default_transaction_read_only=on' psql -XAt -v ON_ERROR_STOP=1 \
+  -U postgres -d "$database" -v revision="$read_revision" <<'SQL'
+SELECT count(*) FILTER (WHERE u.operation IN ('upload-pack','advertise-upload-pack')) > 0
+   AND count(*) FILTER (WHERE u.operation='receive-pack') = 0
+FROM occ.prepared_repository_git_uses u
+JOIN occ.repository_session_attempts s ON s.admission_id=u.admission_id
+WHERE s.revision_id=:'revision';
+SQL
+```
+
+Expect `t`. A receipt proves authorization; also compare the Agent’s reported branch SHA with an independent GitHub read.
 
 ### Renew expired read-only access
 

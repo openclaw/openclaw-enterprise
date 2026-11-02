@@ -276,16 +276,19 @@ Open the repository in GitHub. Select the generated branch, inspect the commit, 
 
 ```bash
 verify_push() {
-  local phase=$1 parent=$2 sha tree
+  local phase=$1 parent=$2 sha tree remote_sha commit
   # Read the commit ID from successful native tool output, not from an inferred reply.
   sha=$(jq -er 'select(.outcome.status=="ok") | [.history.messages[] |
     select(.role=="toolResult" and .isError==false and (.toolName=="bash" or .toolName=="exec")) |
     .content[]?.text? | strings | capture("LOCAL_SHA=(?<sha>[0-9a-f]{40})").sha] |
-    unique | select(length==1) | first' "$RUN_DIR/$phase-result")
-  test "$(gh api "repos/$repo/git/ref/heads/$branch" --jq .object.sha)" = "$sha"
-  tree=$(gh api "repos/$repo/git/commits/$parent" --jq .tree.sha)
-  gh api "repos/$repo/commits/$sha" | jq -e --arg p "$parent" --arg t "$tree" \
-    '(.parents|length)==1 and .parents[0].sha==$p and .commit.tree.sha==$t and (.files|length)==0' >/dev/null
+    unique | select(length==1) | first' "$RUN_DIR/$phase-result") || return 1
+  remote_sha=$(gh api "repos/$repo/git/ref/heads/$branch" --jq .object.sha) || return 1
+  test "$remote_sha" = "$sha" || return 1
+  tree=$(gh api "repos/$repo/git/commits/$parent" --jq .tree.sha) || return 1
+  commit=$(gh api "repos/$repo/commits/$sha") || return 1
+  jq -e --arg p "$parent" --arg t "$tree" \
+    '(.parents|length)==1 and .parents[0].sha==$p and .commit.tree.sha==$t and (.files|length)==0' \
+    <<<"$commit" >/dev/null || return 1
   printf '%s\n' "$sha"
 }
 first_sha=$(verify_push first "$base_sha")

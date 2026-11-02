@@ -1,6 +1,6 @@
 # Set up OCE locally with OpenShell and Codex
 
-Install OpenClaw Enterprise (OCE) in a private k3d cluster. Then create a dedicated Codex Agent and verify a conversation through OpenClaw. Start here once before [adding Git support](../repository-credentials/openshell-git-push.md) or [adding Codex plugins](../integrations/codex-plugins.md).
+Install OpenClaw Enterprise (OCE) in a private k3d cluster and verify a Codex Agent conversation before [adding Git](../repository-credentials/openshell-git-push.md) or [plugins](../integrations/codex-plugins.md).
 
 ## Before you start
 
@@ -9,7 +9,7 @@ Install OpenClaw Enterprise (OCE) in a private k3d cluster. Then create a dedica
 - Use the generated OCE service key for REST and the [private Gateway routing key and CA](workspace-routing.md) for WebSocket access. Keep credential files outside the checkout with owner-only permissions.
 - The operator needs permission to create Namespace Secrets, CredentialSources, Configurations, Agents, roles and bindings, and to update and operate the Agent.
 
-Set the two inputs in your Bash shell before you start. Replace the example path and model with the ones assigned to this run.
+Set your token file and assigned model in Bash:
 
 ```bash
 # Use the file containing the raw token, not the token itself.
@@ -39,6 +39,7 @@ install -m 600 docs/snippets/openshell-quickstart/configure-installation.mjs "$R
 # Stage the Agent configuration template and the client used to verify a turn.
 install -m 600 docs/snippets/openshell-quickstart/codex-configuration.jq "$RUN_DIR/codex-configuration.jq"
 install -m 600 docs/assets/openshell-quickstart/chat.mjs "$RUN_DIR/chat.mjs"
+install -m 600 docs/snippets/openshell-quickstart/inspect-linear-transcript.mjs "$RUN_DIR/inspect-linear-transcript.mjs"
 ```
 
 For published images, select a matching channel pair:
@@ -276,7 +277,9 @@ deploy_and_wait() {
 
 Open the printed HTTPS Console origin at `/console/` and sign in with the administrator email and password file printed by the launcher. Trust the public `browser-ca.crt`; keep its private key on the development host. If needed, [forward the HTTPS port](../operate/troubleshooting.md#open-the-console-from-another-machine).
 
-Open the Agent created in step 5. Select **Draft · Editable Configuration**, review **Prepare this version**, and select **Deploy new version**. Wait for deployment to succeed. Do not create another Agent.
+Use **Deploy an existing Agent’s saved draft** below for the Agent created in step 5. Do not create another Agent.
+
+<Snippet file="../../snippets/openshell-quickstart/console-deployment-actions.md" />
 
 </Accordion>
 <Accordion title="CLI">
@@ -294,9 +297,9 @@ Continue when the deployment reports `succeeded` and the Agent's `activeRevision
 
 ## 7. Verify a turn through OpenClaw
 
-Define the terminal helper below for later Git and plugin steps, whichever interface you use for this turn.
+Define this helper for later Git and plugin steps:
 
-The operator client from step 1 opens `wss://<private-gateway-host>/namespaces/$namespace/agents/$agent`. Its HTTP upgrade sends the installation routing key in `x-api-key`. The client runs in the OCE API Pod, which already has the private route, key and trusted CA. The Agent executes the turn.
+The client runs in the OCE API Pod using its private route, `x-api-key` routing key and trusted CA. It sends the turn to the Agent over `wss://<private-gateway-host>/namespaces/$namespace/agents/$agent`.
 
 ```bash
 # Send one chat.send request, wait for its run ID, then read chat.history.
@@ -316,7 +319,7 @@ Open the same Agent and select **Open Agent UI**. Complete onboarding: give the 
 </Accordion>
 <Accordion title="CLI">
 
-The helper sends a WebSocket turn and reads its history. If the Agent requests onboarding, use `turn` with a prompt file giving its name and one preference before running this check.
+The helper sends a WebSocket turn and reads its history. Each invocation creates a new conversation, so this check proves a model reply only.
 
 ```bash
 # A successful response must include the requested text.
@@ -325,12 +328,14 @@ turn "$RUN_DIR/setup-prompt" > "$RUN_DIR/setup-result"
 jq -e '.outcome.status=="ok" and (.outcome.terminalReply.text|contains("OCE_READY"))' "$RUN_DIR/setup-result"
 ```
 
+To complete onboarding, open **Open Agent UI** and follow the Console steps above: save the Agent’s name and a preference, then reopen the same conversation and check recall. Repeating `turn` does not verify conversation continuity.
+
 </Accordion>
 </AccordionGroup>
 
 ## Keep the session for the next stage
 
-Save the operator session for the add-on guides. This file contains resource IDs, local paths and helper functions. The REST key stays in the private header file. Keep the directory and its files owner-only.
+Save resource IDs, paths and helpers for the add-on guides. Keep this directory owner-only; the REST key stays in the private header file.
 
 ```bash
 {
