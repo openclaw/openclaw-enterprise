@@ -54,6 +54,10 @@ const appliedPatches = [
     file: "openclaw-plugin-config-startup-report.patch",
     sha256: "47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93",
   },
+  {
+    file: "openclaw-same-node-mcp.patch",
+    sha256: "656340049eb6515388f54e5b3529beec7cb27ba9d1c2dc292bdb811ab307216c",
+  },
 ];
 const [command, sourceRoot, output, sourceManifest] = process.argv.slice(2);
 const root = await realpath(sourceRoot);

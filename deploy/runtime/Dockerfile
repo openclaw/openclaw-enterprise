@@ -201,6 +201,11 @@ COPY deploy/runtime/openclaw-plugin-config-startup-report.patch /tmp/openclaw-pl
 RUN echo '47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93  /tmp/openclaw-plugin-config-startup-report.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-plugin-config-startup-report.patch
 
+# Execute admitted MCP tools on the worker that owns their MCP session.
+COPY deploy/runtime/openclaw-same-node-mcp.patch /tmp/openclaw-same-node-mcp.patch
+RUN echo '656340049eb6515388f54e5b3529beec7cb27ba9d1c2dc292bdb811ab307216c  /tmp/openclaw-same-node-mcp.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-same-node-mcp.patch
+
 # Run the bridge tests alongside the build using the same patched source.
 # Packaging mounts this stage so a failed test still blocks the runtime image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
@@ -213,7 +218,12 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
-    src/infra/private-store-file.test.ts
+    src/infra/private-store-file.test.ts src/worker/worker-local-mcp.test.ts \
+    src/agents/mcp-sdk-compatibility.test.ts src/node-host/connection.test.ts \
+    src/node-host/node-worker-supervisor.idle.test.ts src/node-host/runner.test.ts \
+    src/gateway/node-command-policy.test.ts src/gateway/node-registry.test.ts \
+    src/gateway/worker-environments/node-worker-tunnel.lifecycle.test.ts \
+    src/gateway/worker-environments/worker-turn-execution.test.ts
 # Type-check the two UI test graphs touched by the bridge. The upstream runner
 # generates its database types and compiler cache under .artifacts.
 RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
