@@ -4,9 +4,9 @@ Sign in to the HTTPS Console with the owner account prepared in [OpenShell on EK
 
 ## Choose a Console deployment action
 
-<Snippet file="../../assets/openshell-quickstart/console-deployment-actions.md" />
+<Snippet file="../../snippets/openshell-quickstart/console-deployment-actions.md" />
 
-[Illustrated steps on GitHub](https://github.com/openclaw/openclaw-enterprise/blob/main/docs/assets/openshell-quickstart/console-deployment-actions.md)
+[Illustrated steps on GitHub](https://github.com/openclaw/openclaw-enterprise/blob/main/docs/snippets/openshell-quickstart/console-deployment-actions.md)
 
 For the checks below, use the same Agent, Namespace, Bash shell and private session directory from the installation guide. Record each deployment ID and the original browser chat path. Start with the verified read-only repository map and the exact per-Agent native origin.
 
@@ -50,8 +50,8 @@ stop_and_retire() {
   request POST "$base/agents/$agent/stop" > "$RUN_DIR/stop-$revision.json" || return 1
   for ((i=0;i<100;i++)); do
     git_audit "$revision" > "$RUN_DIR/retirement-$revision.json" || return 1
-    if jq -e 'any(.attempts[];.custody=="revoked") and
-      all(.attempts[];(.custody=="revoked" or .custody=="not_issued") and (.sealed_present|not))' \
+    if jq -e 'any(.attempts[];.custody=="revoked" or .custody=="expired") and
+      all(.attempts[];(.custody=="revoked" or .custody=="expired" or .custody=="not_issued") and (.sealed_present|not))' \
       "$RUN_DIR/retirement-$revision.json" >/dev/null && request GET "$base/agents/$agent" |
       jq -e '.data.desiredRuntimeState=="stopped" and .data.activeRevisionId==null' >/dev/null; then return 0; fi
     sleep 3

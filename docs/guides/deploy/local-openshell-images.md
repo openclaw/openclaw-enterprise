@@ -52,6 +52,11 @@ not select candidate images.
 
 ## Select the protected profile
 
+This optional profile enables static-inference enforcement. Do not select it for
+[local setup](local-setup.md) or protected Git. Kubernetes-only OpenShell installations
+already enable Gateway TLS, mTLS and authentication without it. Static-inference
+removal is tracked in [#4437](https://github.com/openclaw/openclaw-enterprise/issues/4437).
+
 The ordinary installer selects stock OpenShell 0.1.6 for the Gateway, supervisor,
 sandbox runtime and both charts. No OpenShell candidate selectors are required.
 Compute still verifies the current installation before [signing the workload release](../../reference/credential-sources/protected-inference.md#execution-admission-cutoff).
