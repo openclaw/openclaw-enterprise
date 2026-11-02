@@ -77,7 +77,7 @@ In the OCE Helm values set `repositoryCredentials.registryConfigMapName` to that
 ConfigMap, `backendId: repository-backend`, `authority: prepared-git`, and
 `enabled: false`. Set `appKeySecretName` and `preparedCustodySecretName` to the
 operator-managed worker-only Secrets, and `upstreamCidrs` to the
-[approved provider endpoints](../deploy/installation-profiles.md#required-environment-checks).
+[worker GitHub API ranges](#allow-the-worker-to-reach-github).
 Preserve the custody key across restarts. Never put keys in Agent JSON.
 
 Complete [the request-phase service setup](../../reference/repository-credentials/protected-openshell-git.md#prepare-the-request-phase-service):
@@ -87,6 +87,35 @@ key ConfigMap and trusted Gateway/supervisor clients. Match the fragment's port
 with `binding_policy: allowlist` and `bindings: [http_request_pre_credentials]`.
 Missing or response-only bindings are not sufficient. Render the normal Helm
 release and run normal Installation startup validation before admitting Agents.
+
+### Allow the worker to reach GitHub
+
+`repositoryCredentials.upstreamCidrs` is an OCE Helm value: a nonempty list of
+approved IPv4 ranges for the worker's outbound repository-credential requests.
+The chart uses it in a Kubernetes NetworkPolicy with
+`repositoryCredentials.upstreamPort` (default `443`). It does not grant the Agent
+or OpenShell supervisor network access.
+
+For this GitHub.com setup, the worker calls `api.github.com` to check the App
+installation and issue or revoke tokens. Get the current `api` ranges from
+[GitHub's Meta endpoint](https://docs.github.com/en/rest/meta/meta#get-github-meta-information).
+Run this in the operator shell to generate a Helm YAML fragment:
+
+```bash
+gh api --hostname github.com /meta --jq '
+  [.api[] | select(contains(":") | not)] | unique |
+  "repositoryCredentials:\n  upstreamCidrs:\n" +
+  (map("    - " + .) | join("\n"))
+' > "$RUN_DIR/github-api-egress.yaml"
+cat "$RUN_DIR/github-api-egress.yaml"
+```
+
+Review the ranges, then merge this fragment into the existing OCE Helm values
+without replacing the other `repositoryCredentials` settings. Keep the approved
+ranges with the deployment record and refresh them when GitHub changes its
+inventory. Do not substitute a snapshot of DNS answers. If the worker uses a
+private issuer or an outbound proxy, use its approved destination ranges instead.
+The OpenShell supervisor's HTTPS access to the Git origin is configured separately.
 
 ### Allow the Supervisor to reach the authority
 

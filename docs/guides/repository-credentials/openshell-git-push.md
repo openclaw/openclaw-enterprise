@@ -9,18 +9,96 @@ This walkthrough makes one empty commit on a new test branch and verifies it on 
 - **Supervisor trust and network:** Verify approved Supervisor outbound TCP 443 to the Git origin and its public CA trust for that TLS path. Worker GitHub API reachability is a separate prerequisite. A successful model turn does not prove either path. If the network uses a private CA, complete [upstream CA setup](../deploy/local-openshell-images.md#trust-an-upstream-ca-on-local-k3d) before deployment. A failed held request closes that revision; correct trust and deploy a new revision without replaying its challenge.
 - **OCE and OpenShell:** Use a controller, runtime, CLI and Helm chart from the same release supporting the `github-repository` profile, with matching OpenShell 0.1.6 Gateway, supervisor and charts. Select compatible images before starting [Local Setup OCE](../deploy/local-setup.md). If your published channel lacks the feature, [build the matching image pair](../deploy/production-installation.md#build-and-publish-production-images). The [enrollment guide](openshell-enrollment.md) identifies the required release files. Verify the selected source and publication receipt; a channel name alone does not prove support.
 - **GitHub App:** [Install the App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app) on the test repository with **Contents write** and **Metadata read**. Obtain its App ID, installation ID, numeric repository ID and RSA signing key. The worker calls [GitHub's installation token endpoint](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app); the operator does not stage a token file.
-- **Operator:** Use an approved Kubernetes context, access to the Installation's Helm releases, and an authorized GitHub reader (`gh`). For optional renewal verification, arrange read-only access as described in the [renewal guide](openshell-git-renewal.md).
+- **Operator:** Use an approved Kubernetes context, access to the Installation's Helm releases, and an authorized GitHub reader (`gh`).
 - **Agent:** Use the same Bash session as Setup OCE, or source its private `session.sh`. The Agent needs a ready Gateway-owned `codex-pat` source and provisioned runtime credentials. On a fresh installation, register that model source **before** enabling the repository Credential Proxy. Plugins are not required. Preserve any existing plugin selections.
 
 ## 1. Enroll one repository in the Installation
 
 Prepare an isolated installation for this procedure. Changing a shared installation's credential owner can affect existing Agents. Use the [matching installation fragment and registry instructions](openshell-enrollment.md#configure-authorized-repositories) from the **release checkout**. Keep its private Gateway routing and authenticated OpenShell management connection.
 
-1. Set one registry reference (here, `application`), one repository ID, one Namespace ID and `profiles: ["github-repository"]`. Give it `permissions: {"contents":"write","metadata":"read"}`. Choose a session duration long enough for the Git exercise and within the registry maximum. This profile delegates ref restrictions to GitHub.
-2. Mount the immutable registry ConfigMap in the controller and worker. Mount the App signing key and a persistent 32-byte custody key **only in the worker**. Restrict worker egress to the approved GitHub issuer destinations.
-3. Keep the existing Credential Gateway selection for model authentication. Add `repository.preparedGitHub` and `repository.openShell` from the release fragment. Select the same OpenShell Driver ID for the Sandbox and Credential Proxy. Omit `repository.nativeSender` and Compute's broker configuration.
-4. [Configure the request-phase service](../../reference/repository-credentials/protected-openshell-git.md#prepare-the-request-phase-service) with its serving certificate, Gateway JWT public key and exact trusted-client network policies. Set Helm `openshellGit.enabled: true`, `openshellGit.mode: protected`, `repositoryCredentials.authority: prepared-git` and `repositoryCredentials.enabled: false`. Start the worker before restarting the OpenShell Gateway.
-5. [Register the middleware](../../reference/repository-credentials/protected-openshell-git.md#register-the-request-phase-service) under `oce-prepared-git` using TLS, the correct JWT issuer/audience, `binding_policy = "allowlist"` and `bindings = ["http_request_pre_credentials"]`. Remove the generated uninspected `source-control` rule. The repository route must be the sole route to GitHub. Do not bind a separate Git token CredentialSource.
+1. Enroll one repository and one OCE Namespace. Replace the example IDs and repository name with your verified values. The registry structure is shown here as YAML; the commands below write the required `registry.json` file.
+
+   ```yaml
+   version: 1
+   backendId: repository-backend
+   providerInstanceId: github-team
+   appId: "123456"
+   githubInstallationId: "789012"
+   maximumDurationSeconds: 86400
+   repositories:
+     - repositoryRef: application
+       repositoryId: "345678"
+       repository: example/project
+       namespaces:
+         - namespaceId: replace-with-occ-namespace-id
+           profiles:
+             - github-repository
+           permissions:
+             contents: write
+             metadata: read
+   ```
+
+   `profiles` selects the allowed access mode; `permissions` sets its GitHub capabilities. See [registry profiles](../../reference/repository-credentials/access-levels.md#registry-profiles). The `github-repository` profile delegates ref restrictions to GitHub.
+
+2. Mount the immutable registry ConfigMap in the controller and worker. Mount the App signing key and a persistent 32-byte custody key **only in the worker**. Merge this fragment into the OCE Helm values, replacing the ConfigMap and Secret names. Set `upstreamCidrs` to the [worker GitHub API ranges](openshell-enrollment.md#allow-the-worker-to-reach-github).
+
+   ```yaml
+   repositoryCredentials:
+     enabled: false
+     authority: prepared-git
+     backendId: repository-backend
+     registryConfigMapName: replace-with-registry-configmap-name
+     appKeySecretName: replace-with-app-key-secret-name
+     preparedCustodySecretName: replace-with-custody-secret-name
+     upstreamCidrs:
+       - replace-with-approved-issuer-cidr
+   ```
+
+3. Merge the [release Installation fragment](../../../deploy/examples/repository-credentials/openshell.fragment.yaml) into the existing Installation, preserving its Credential Gateway selection for model authentication. The following fields select the session duration and worker key paths:
+
+   ```yaml
+   repository:
+     id: repository-credentials
+     configuration:
+       sessionDurationSeconds: 86400
+     preparedGitHub:
+       custodyKeyPath: /etc/openclaw/prepared-repository/custody.key
+       privateKeyPath: /etc/openclaw/prepared-repository/private-key.pem
+     openShell:
+       registrationName: oce-prepared-git
+       # Keep the authority settings from the release fragment.
+   drivers:
+     credential_proxy:
+       id: openshell-sandbox
+       configuration: {}
+   ```
+
+   Choose a session duration long enough for the Git exercise and no greater than the registry's `maximumDurationSeconds`. Replace `openshell-sandbox` with the existing Sandbox Driver ID, and set the existing OpenShell Backend's `drivers.credential_proxy` to that same ID. Omit `repository.nativeSender` and Compute's broker configuration.
+
+4. [Configure the request-phase service](../../reference/repository-credentials/protected-openshell-git.md#prepare-the-request-phase-service) with its serving certificate, Gateway JWT public key and exact trusted-client network policies. Merge these settings into the OCE Helm values alongside the trusted-client selectors from that procedure. Replace the Secret and ConfigMap names with the resources you created.
+
+   ```yaml
+   openshellGit:
+     enabled: true
+     mode: protected
+     port: 8445
+     tlsSecretName: openshell-git-tls
+     issuerPublicKeyConfigMapName: openshell-gateway-public
+     # Add clients from the request-phase service procedure.
+   ```
+
+   Start the worker before restarting the OpenShell Gateway.
+
+5. [Register the middleware](../../reference/repository-credentials/protected-openshell-git.md#register-the-request-phase-service) with TLS and the correct JWT issuer and audience. The Gateway uses TOML; its middleware entry must include:
+
+   ```toml
+   name = "oce-prepared-git"
+   binding_policy = "allowlist"
+   bindings = ["http_request_pre_credentials"]
+   ```
+
+   Keep the endpoint, CA path, audience and timeout from the registration procedure. Remove the generated uninspected `source-control` rule. The repository route must be the sole route to GitHub. Do not bind a separate Git token CredentialSource.
+
 6. Before deployment can start background issuance, complete the [authenticated worker installation check](openshell-enrollment.md#select-repositories-and-deploy). Require verified TLS, HTTP 200 and matching App and installation IDs. Keep the Agent stopped on failure; a later successful read does not settle an earlier uncertain issuance.
 
 For the single-repository registry in step 1, set `APP_ID` and `INSTALLATION_ID` from the App settings. Use a unique, versioned ConfigMap name and keep the registry with the deployment record. Run these commands in the same operator shell:
@@ -216,9 +294,3 @@ printf 'First commit: https://github.com/%s/commit/%s\n' "$repo" "$first_sha"
 
 </Accordion>
 </AccordionGroup>
-
-## Withdraw access after the exercise
-
-For the normal quickstart, [restore read-only Git access](openshell-read-only.md) and keep this Agent running. Then continue to [Add Plugin](../integrations/codex-plugins.md). Run the optional [renewal proof](openshell-git-renewal.md) before restoring read-only access if needed.
-
-For the disposable test, run `stop_git_test` after verification. Its exit trap requests the same stop on early shell exit. If the shell was killed or the request failed, source the saved `session.sh` in a new Bash shell. Read `GET $base/agents/$agent` and inspect the deployment state before retrying an uncertain stop. Use the bodyless `POST $base/agents/$agent/stop` to stop a running Agent. Wait for its active revision to clear. Remove any standing approval through its generation-checked removal API. Clear the draft's repository bindings with `PATCH $base/agents/$agent` and its current `configurationId`. Check retirement through the [Token Service lifecycle](../../reference/repository-credentials.md#token-service-lifecycle). A stopped workload alone does not confirm external revocation. Keep the test branch for inspection unless its owner requests removal.
