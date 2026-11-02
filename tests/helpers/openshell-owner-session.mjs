@@ -3,13 +3,13 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { request } from "node:https";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin-host.mjs";
-import { cookieHeaderFromSetCookie } from "../../packages/utils/src/index.ts";
+import { chromium } from "playwright";
+import { launchTrustingBrowser } from "./dev-up-keycloak.mjs";
 
 const execute = promisify(execFile);
 
@@ -22,68 +22,85 @@ export async function verifyOpenShellOwnerSession({
   kubectl,
   environment,
 }) {
-  const ca = await readFile(join(stateDirectory, "browser-ca.crt"));
   const consoleHost = `console.${cluster}.oce.localhost`;
+  const consoleOrigin = `https://${consoleHost}:${browserPort}`;
+  const agentDomain = `agents.${cluster}.oce.localhost`;
   const scope = `/namespaces/${namespaceId}`;
-  // The TCP destination and port come from the test, never from the on-disk state.
-  // The Host header and TLS SNI still exercise the two distinct browser origins.
-  function visit(host, path, { method = "GET", cookie, body } = {}) {
-    const authority = `${host}:${browserPort}`;
-    return new Promise((resolve, reject) => {
-      const req = request(
-        {
-          hostname: "127.0.0.1",
-          agent: false,
-          port: browserPort,
-          servername: host,
-          ca,
+  // Install the public CA in the fixture browser's private trust database before
+  // startup. Chromium verifies both hostnames and manages the HttpOnly cookies.
+  const browser = await launchTrustingBrowser(chromium, dirname(stateDirectory), {
+    caFiles: [join(stateDirectory, "browser-ca.crt")],
+    hosts: [
+      { host: consoleHost, address: "127.0.0.1" },
+      { host: "*." + agentDomain, address: "127.0.0.1" },
+      { host: "*", address: "~NOTFOUND" },
+    ],
+  });
+  t.after(() => browser.close());
+  const origins = new Set([consoleOrigin]);
+
+  async function consoleRequest(page, method, path, body) {
+    assert.equal(new URL(page.url()).origin, consoleOrigin);
+    return page.evaluate(
+      async ({ method, path, body }) => {
+        const res = await fetch(path, {
           method,
-          path,
-          signal: AbortSignal.timeout(30_000),
-          headers: {
-            host: authority,
-            origin: `https://${authority}`,
-            ...(cookie && { cookie }),
-            ...(body && { "content-type": "application/json" }),
-          },
-        },
-        (res) => {
-          let text = "";
-          res.setEncoding("utf8");
-          res.on("error", reject);
-          res.on("data", (chunk) => {
-            text += chunk;
-          });
-          res.on("end", () =>
-            resolve({ status: res.statusCode, text, cookies: res.headers["set-cookie"] }),
-          );
-        },
-      );
-      req.on("error", reject);
-      req.end(body === undefined ? undefined : JSON.stringify(body));
-    });
+          mode: "same-origin",
+          credentials: "same-origin",
+          redirect: "error",
+          ...(body === undefined
+            ? {}
+            : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+        });
+        return {
+          status: res.status,
+          data: res.status === 204 ? undefined : (await res.json()).data,
+        };
+      },
+      { method, path, body },
+    );
   }
+
   async function signIn(email, password) {
-    const res = await visit(consoleHost, "/api/auth/sign-in/email", {
-      method: "POST",
-      body: { email, password },
-    });
-    assert.equal(res.status, 200, "real password sign-in");
-    const cookie = cookieHeaderFromSetCookie(res.cookies);
-    assert.ok(cookie, "sign-in returned a session cookie");
-    return cookie;
+    const context = await browser.newContext({ serviceWorkers: "block" });
+    await context.route("**/*", (route) =>
+      origins.has(new URL(route.request().url()).origin) ? route.continue() : route.abort(),
+    );
+    const page = await context.newPage();
+    const loaded = await page.goto(consoleOrigin + "/console/");
+    assert.ok(loaded);
+    assert.equal((await loaded.serverAddr())?.ipAddress, "127.0.0.1");
+    await page.getByLabel("Email", { exact: true }).waitFor();
+    assert.equal(new URL(page.url()).origin, consoleOrigin);
+    const signedOut = await consoleRequest(page, "GET", "/api/auth/session");
+    assert.equal(signedOut.status, 200);
+    assert.equal(signedOut.data, null);
+    await page.getByLabel("Email", { exact: true }).fill(email);
+    // Keep credentials out of Playwright call logs if the form stops accepting input.
+    try {
+      await page.getByLabel("Password", { exact: true }).fill(password);
+    } catch {
+      assert.fail("Could not enter the password on the verified fixture sign-in form");
+    }
+    const response = page.waitForResponse(
+      (res) =>
+        res.url() === consoleOrigin + "/api/auth/sign-in/email" &&
+        res.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    assert.equal((await response).status(), 200, "ordinary Console password form");
+    await page.getByLabel("Password", { exact: true }).waitFor({ state: "hidden" });
+    return page;
   }
-  const signedOut = await visit(consoleHost, "/api/auth/session");
-  assert.equal(signedOut.status, 200);
-  assert.equal(JSON.parse(signedOut.text).data, null);
+
   const owner = await signIn(
     "admin@development.openclaw.invalid",
     (await readFile(join(stateDirectory, "initial-admin-password"), "utf8")).trim(),
   );
   async function api(method, path, body, status = 200) {
-    const res = await visit(consoleHost, path, { method, body, cookie: owner });
-    assert.equal(res.status, status, `${method} ${path}: ${res.status}`);
-    return res.text ? JSON.parse(res.text).data : undefined;
+    const res = await consoleRequest(owner, method, path, body);
+    assert.equal(res.status, status, `${method} ${path}`);
+    return res.data;
   }
 
   // Use the shipped first-Agent entry point, including its own bootstrap settings,
@@ -124,8 +141,9 @@ export async function verifyOpenShellOwnerSession({
   const deployment = await api("GET", agentPath + "/deployments/" + rev.id);
   assert.equal(deployment.status, "succeeded");
   const installation = await api("GET", "/installation");
-  const host = deriveNativeAdminHost(installation.id, agent, `agents.${cluster}.oce.localhost`);
+  const host = deriveNativeAdminHost(installation.id, agent, agentDomain);
   const origin = `https://${host}:${browserPort}`;
+  origins.add(origin);
   async function grant(subjectId, resourceKind, resourceId, actions) {
     const role = await api(
       "POST",
@@ -198,24 +216,152 @@ export async function verifyOpenShellOwnerSession({
   const allowed = "grant-" + randomUUID();
   const revoked = "revoked-" + randomUUID();
   const barrier = "owner-" + randomUUID();
-  const probe = (cookie, id) => visit(host, "/settings/advanced?probe=" + id, { cookie });
-  assert.equal((await visit(consoleHost, agentPath, { cookie: collaborator })).status, 200);
-  assert.equal((await probe(collaborator, denied)).status, 403);
+  const reconnect = "ws-revoked-" + randomUUID();
+  async function navigate(page, marker, status) {
+    const response = await page.goto(origin + "/settings/advanced?probe=" + marker, {
+      waitUntil: "domcontentloaded",
+    });
+    assert.equal(response?.status(), status);
+    assert.equal((await response.serverAddr())?.ipAddress, "127.0.0.1");
+    if (status === 200) {
+      assert.ok(
+        await page.locator("html").getAttribute("data-openclaw-bootstrap-config"),
+        "stock UI bootstrap present",
+      );
+    }
+  }
+  async function connectedTab(person, marker) {
+    const page = await person.context().newPage();
+    // hello-ok is the native Gateway's authenticated response on this exact
+    // socket. A successful HTML request or a bare 101 does not establish it.
+    const hello = page
+      .waitForEvent("websocket", {
+        predicate: (ws) => new URL(ws.url()).origin === origin.replace("https:", "wss:"),
+        timeout: 30_000,
+      })
+      .then(async (ws) => {
+        await ws.waitForEvent("framereceived", {
+          timeout: 30_000,
+          predicate: ({ payload }) => {
+            const frame = JSON.parse(String(payload));
+            return frame.type === "res" && frame.ok === true && frame.payload?.type === "hello-ok";
+          },
+        });
+        return ws;
+      });
+    const [socket] = await Promise.all([hello, navigate(page, marker, 200)]);
+    return { page, socket };
+  }
+  assert.equal((await consoleRequest(collaborator, "GET", agentPath)).status, 200);
+  const deniedPage = await collaborator.context().newPage();
+  await navigate(deniedPage, denied, 403);
   const binding = await grant(account.principalId, "agent", agent.id, ["administer"]);
-  const admitted = await probe(collaborator, allowed);
-  assert.equal(admitted.status, 200);
+  const shared = await connectedTab(collaborator, allowed);
+  const control = await connectedTab(owner, "control-" + randomUUID());
+  assert.ok(!shared.socket.isClosed() && !control.socket.isClosed());
+
+  // Keep the original pages, cookies and Gateway alive while removing just the
+  // collaborator's administer binding. The owner is an unaffected socket control.
+  const started = performance.now();
+  await Promise.all([
+    shared.socket.waitForEvent("close", { timeout: 30_000 }),
+    api("DELETE", scope + "/iam/access-bindings/" + binding.id, undefined, 204),
+  ]);
+  const elapsed = Math.ceil(performance.now() - started);
   assert.ok(
-    admitted.text.includes("data-openclaw-bootstrap-config="),
-    "stock UI HTML contains its Gateway bootstrap configuration",
+    elapsed <= 30_000,
+    "withdrawal closed the established socket within its authorization lease",
   );
-  await api("DELETE", scope + "/iam/access-bindings/" + binding.id, undefined, 204);
-  assert.equal((await probe(collaborator, revoked)).status, 403);
+  assert.ok(!control.socket.isClosed(), "the owner's existing socket stays open");
+
+  // Use the revoked browser's same origin and cookies to attempt a new upgrade.
+  // A refused upgrade must never open or reach the private Envoy route.
+  const opened = await shared.page.evaluate(
+    ({ path, marker }) =>
+      new Promise((resolve, reject) => {
+        const url = new URL(globalThis.location.origin);
+        url.pathname = path;
+        url.protocol = "wss:";
+        url.searchParams.set("probe", marker);
+        const ws = new globalThis.WebSocket(url);
+        const timeout = setTimeout(() => {
+          ws.close();
+          reject(new Error("upgrade did not settle"));
+        }, 10_000);
+        ws.onopen = () => {
+          clearTimeout(timeout);
+          ws.close();
+          resolve(true);
+        };
+        ws.onclose = () => {
+          clearTimeout(timeout);
+          resolve(false);
+        };
+      }),
+    { path: new URL(shared.socket.url()).pathname, marker: reconnect },
+  );
+  assert.equal(opened, false, "the withdrawn session cannot reopen its native stream");
+  await navigate(deniedPage, revoked, 403);
   assert.equal(
-    (await visit(consoleHost, agentPath, { cookie: collaborator })).status,
+    (await consoleRequest(collaborator, "GET", agentPath)).status,
     200,
-    "the same signed-in session retains Agent read",
+    "same signed-in collaborator retains Agent read",
   );
-  assert.equal((await probe(owner, barrier)).status, 200, "owner access continues");
+  const barrierPage = await owner.context().newPage();
+  await navigate(barrierPage, barrier, 200);
+  assert.ok(
+    !control.socket.isClosed(),
+    "authorized control still connected after the denied retry",
+  );
+
+  // Correlate closure to OCC's authorization decision rather than a network
+  // interruption. Return a boolean only, scoped to this human and this Agent.
+  async function withdrawalAudited() {
+    const audit = execute(
+      "kubectl",
+      [
+        ...kubectl,
+        "-n",
+        "oce-system",
+        "exec",
+        "-i",
+        "statefulset/postgres",
+        "--",
+        "env",
+        "PGOPTIONS=-c default_transaction_read_only=on",
+        "psql",
+        "-qXAt",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-U",
+        "postgres",
+        "-d",
+        environment.OCC_DEVELOPMENT_DATABASE_NAME ?? "openclaw_enterprise",
+        "-v",
+        "actor=" + account.principalId,
+        "-v",
+        "agent=" + agent.id,
+        "-f",
+        "-",
+      ],
+      { env: environment },
+    );
+    audit.child.stdin
+      .end(`SELECT EXISTS (SELECT 1 FROM occ.audit_events opened JOIN occ.audit_events closed
+    ON opened.details->'nativeAdmin'->>'connectionId'=closed.details->'nativeAdmin'->>'connectionId'
+    WHERE opened.actor_id=:'actor' AND closed.actor_id=:'actor' AND opened.resource_id=:'agent' AND closed.resource_id=:'agent'
+      AND opened.action='openclaw.agents.native_admin.websocket.connect'
+      AND closed.action='openclaw.agents.native_admin.websocket.close'
+      AND closed.details->'nativeAdmin'->>'closeReason'='authorization_denied');`);
+    return (await audit).stdout.trim() === "t";
+  }
+  const auditDeadline = Date.now() + 10_000;
+  let audited = await withdrawalAudited();
+  while (!audited && Date.now() < auditDeadline) {
+    await delay(250);
+    audited = await withdrawalAudited();
+  }
+  assert.ok(audited, "matched native socket connect and authorization-denied close audit");
   // Require positive controls in the real private Envoy logs before interpreting
   // absence. Both refused request markers must stop at OCC, before the Gateway.
   const observationDeadline = Date.now() + 30_000;
@@ -238,7 +384,7 @@ export async function verifyOpenShellOwnerSession({
     );
     if (logs.includes(allowed) && logs.includes(barrier)) {
       assert.ok(
-        !logs.includes(denied) && !logs.includes(revoked),
+        !logs.includes(denied) && !logs.includes(revoked) && !logs.includes(reconnect),
         "denied requests must not reach private Gateway routing",
       );
       reached = true;
@@ -248,6 +394,6 @@ export async function verifyOpenShellOwnerSession({
   }
   assert.ok(reached, "both authorized requests must be observable at the private Gateway route");
   t.diagnostic(
-    `Agent ${agent.id} revision ${rev.id}: workspace bootstrapped, native UI 200; same reader session 403 -> 200 -> 403, owner 200; Envoy markers denied=0 granted=present revoked=0 owner=present.`,
+    `Agent ${agent.id} revision ${rev.id}: workspace bootstrapped, native UI 200; same reader session 403 -> 200 -> 403, owner 200; Envoy markers denied=0 granted=present revoked=0 owner=present. Authenticated socket closed after ${elapsed} ms (authorization_denied); reconnect refused before Envoy; owner socket stayed connected.`,
   );
 }
