@@ -128,7 +128,7 @@ helm --kube-context "$context" upgrade openclaw-enterprise deploy/helm/openclaw-
   -n "$ns" -f "$state/helm-values.json" --set-string installation.secretName="$secret" --wait
 ```
 
-If your network intercepts HTTPS, [install its approved public CA in the OpenShell supervisor](local-openshell-images.md#trust-an-upstream-ca-on-local-k3d). That section also covers a blocked Agent Sandbox image pull. If system Pods remain Pending, check the node logs and [local startup troubleshooting](../operate/troubleshooting.md#local-startup-stalls-on-cert-manager) before changing any host settings.
+If your network intercepts HTTPS, [install its approved public CA in the OpenShell supervisor](local-openshell-images.md#trust-an-upstream-ca-on-local-k3d).
 
 ## 4. Connect to the API and register the model credential
 

@@ -295,7 +295,8 @@ an ordinary document does not exempt that document.
 
 ## Documentation editing
 
-Human-verified documents must include `human_verified: true` in their YAML frontmatter.
+Human-verified documents must include `human_verified` in their YAML `tags` list,
+for example `tags: [human_verified]`. Preserve any other tags.
 
 Before creating, updating, or reviewing documentation and specifications, read
 and apply [technical-writing](.agents/skills/technical-writing/SKILL.md).
