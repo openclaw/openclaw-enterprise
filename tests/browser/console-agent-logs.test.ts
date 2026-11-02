@@ -1997,7 +1997,6 @@ test("a Logs reread answered after this page's Stop keeps the Stop", async (t) =
   await shows(/Latest visible deployment\s+v2\s+·\s+Queued/);
   const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
   const stop = stopRow.getByRole("button", { name: "Stop Agent", exact: true });
-  await stop.waitFor();
 
   // The next poll's Agent read takes the server's answer now, while the Agent still runs, and
   // is answered only after this page's Stop.
@@ -2021,7 +2020,7 @@ test("a Logs reread answered after this page's Stop keeps the Stop", async (t) =
   await new Promise((resolve) => setTimeout(resolve, 500));
   await page.clock.runFor(10_000);
   await held;
-
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await stop.click();
   await page
     .getByRole("dialog", { name: "Stop this Agent?" })
@@ -2211,8 +2210,8 @@ test("a refocus shows a stop made elsewhere while a version the caller cannot re
 
 // Finding 3012 (dogfood r63, D825): the stop showed only in the page summary, which at 390 px wide
 // sits far above the Logs view, so nothing in view changed. The view now says so in place, as a
-// status announced once, in the summary's words. The summary and the Stop row grow as the stop
-// shows; the view stays where the reader has it. At 1440 the browser's scroll anchor was the
+// status announced once, in the summary's words. The view stays where the reader has it as
+// the summary grows. At 1440 the browser's scroll anchor was the
 // sidebar's account row, which pinned the page to its end and moved the view up by that growth.
 for (const viewport of [
   { width: 1440, height: 900 },

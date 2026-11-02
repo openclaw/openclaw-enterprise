@@ -34,20 +34,20 @@
                 "group": "Quickstart (Local)",
                 "pages": [
                   {
-                    "page": "guides/deploy/local-openshell-setup",
+                    "page": "guides/deploy/local-setup",
                     "label": "Setup OCE"
                   },
                   {
-                    "page": "guides/deploy/local-openshell-browser",
-                    "label": "OpenShell Agent in a Browser"
-                  },
-                  {
                     "page": "guides/repository-credentials/openshell-git-push",
-                    "label": "Add Git Support"
+                    "label": "Add Git"
                   },
                   {
                     "page": "guides/integrations/codex-plugins",
-                    "label": "Add Codex Plugins"
+                    "label": "Add Plugin"
+                  },
+                  {
+                    "page": "guides/deploy/local-cleanup",
+                    "label": "Clean Up"
                   }
                 ]
               },
@@ -70,7 +70,11 @@
                 ]
               }
             ],
-            "hidden": ["guides/README"]
+            "hidden": [
+              "guides/README",
+              "guides/repository-credentials/openshell-read-only",
+              "guides/repository-credentials/openshell-git-renewal"
+            ]
           },
           {
             "tab": "Topics",
@@ -1146,5 +1150,26 @@
         ]
       }
     ]
-  }
+  },
+  "redirects": [
+    {
+      "from": "/guides/deploy/local-openshell-setup/",
+      "to": "/guides/deploy/local-setup/",
+      "anchors": {
+        "3-enable-the-credential-and-plugin-settings": "/guides/deploy/local-setup/#3-configure-credential-gateway",
+        "remove-a-previous-quickstart": "/guides/deploy/local-cleanup/#remove-the-installation",
+        "next-steps": "/guides/deploy/local-cleanup/#next-steps"
+      }
+    },
+    {
+      "from": "/guides/deploy/local-openshell-browser/",
+      "to": "/guides/deploy/local-setup/#6-grant-model-access-and-deploy",
+      "anchors": {
+        "bind-the-origin-before-deployment": "/guides/deploy/local-setup/#bind-the-origin-before-deployment",
+        "open-the-agent-and-continue-a-chat": "/guides/deploy/local-setup/#7-verify-a-turn-through-openclaw",
+        "restore-read-only-git-and-keep-the-agent-running": "/guides/repository-credentials/openshell-read-only/",
+        "renew-expired-read-only-access": "/guides/repository-credentials/openshell-read-only/#renew-expired-read-only-access"
+      }
+    }
+  ]
 }

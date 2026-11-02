@@ -71,3 +71,7 @@ simulated API state; they do not prove persistence or live runtime behavior.
 
 These two previews require an owner build and walkthrough. Fixture permission
 answers are not IAM enforcement; saved feedback is not backend persistence proof.
+
+Open **Pages / Agent detail / Danger zone on Configuration** on desktop and phone.
+Switch from Workspace files to Configuration to see stop status and deletion controls.
+Switch back to verify the entire card disappears.

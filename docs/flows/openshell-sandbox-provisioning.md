@@ -99,7 +99,7 @@ credentials use the selected Credential Gateway.
 The Kubernetes launcher checks port collisions and records engine, cluster, Namespace, ports and key path. Both verify 0.1.6 charts and pin Gateway/supervisor/sandbox images.
 Protected preflight (`internal/occdev/egress_openshell_chart.go:checkProtectedOpenShellChart`)
 requires native TOML pre-credentials bindings and read-only CA mounts.
-Kubernetes-only imports PostgreSQL and serves the [per-Agent HTTPS route](../guides/deploy/local-openshell-browser.md).
+Kubernetes-only imports PostgreSQL and serves the [per-Agent HTTPS route](../guides/deploy/local-setup.md).
 
 Both import OCE images first to prevent k3s garbage collection.
 

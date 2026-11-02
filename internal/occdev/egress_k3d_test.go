@@ -261,7 +261,7 @@ done
 			t.Fatalf("database role or selector diverged for %s", key)
 		}
 	}
-	selectedGateway := readJSONFile(t, filepath.Join(state.directory, "openshell-protected-values.json"))
+	selectedGateway := readJSONFile(t, filepath.Join(state.directory, "openshell-gateway-values.json"))
 	if selectedGateway["server"].(map[string]any)["hostGatewayIP"] != state.OpenShellHostGatewayIP {
 		t.Fatal("selected owned host did not reach the supplier chart input")
 	}
@@ -274,7 +274,7 @@ done
 		"deploy/helm/openclaw-enterprise", "install-values"), 1)
 	if supplierChart != "" {
 		out := renderDevelopmentChart(t, helm, state, openShellGatewayService, supplierChart,
-			"openshell-protected-values.json", "--set", "agentSandbox.preflight.enabled=false", "--set", "fullnameOverride=openshell-gateway")
+			"openshell-gateway-values.json", "--set", "agentSandbox.preflight.enabled=false", "--set", "fullnameOverride=openshell-gateway")
 		if err := verifyProtectedOpenShellChart(out, state); err != nil {
 			t.Fatal(err)
 		}

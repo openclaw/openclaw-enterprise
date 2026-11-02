@@ -819,8 +819,10 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		"resources":      resources,
 		"gatewayRouting": map[string]any{"enabled": routing},
 	}
-	if state.ProtectedEgress {
+	if state.authenticatedOpenShell() {
 		values["backend"] = map[string]any{"openshell": map[string]string{"clientSecretName": "openshell-client-tls"}}
+	}
+	if state.ProtectedEgress {
 		values["egressAuthority"] = developmentEgressChartValues(state)
 	}
 	if routing {

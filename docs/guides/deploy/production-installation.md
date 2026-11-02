@@ -1,7 +1,11 @@
+---
+tags: [nolimit]
+---
+
 # Install the production control plane
 
 Prepare [Kubernetes](kubernetes.md) or [EKS](eks.md), the
-[production prerequisites](../deploy.md#production-prerequisites), and
+[prerequisites below](#before-you-start), and
 [workspace routing](workspace-routing.md#requirements), including a GatewayClass.
 Private routing is enabled by default. The chart does not install Envoy Gateway,
 Gateway API or Envoy CRDs, cert-manager, or the GatewayClass. Prepare those
@@ -18,6 +22,10 @@ Use a clean checkout matching the image source commit. Follow
 [private-registry delivery](private-registry-images.md) for provenance, ECR copies,
 and chart selection. Retain this shell and protected files for
 [Agent deployment](production-agents.md).
+
+## Before you start
+
+<Snippet file="../../snippets/kubernetes-prerequisites.md" />
 
 ## Use published images
 

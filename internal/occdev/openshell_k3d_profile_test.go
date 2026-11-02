@@ -157,7 +157,7 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 	text := string(data)
 	for _, required := range []string{
 		"id: sandbox-openshell-development",
-		"endpoint: http://openshell-gateway.oce-system.svc.cluster.local:8080",
+		"endpoint: https://openshell-gateway.oce-system.svc.cluster.local:8080",
 		"requestTimeoutMs: 30000",
 		"mode: inCluster",
 		"workspaceMode: operator",
@@ -168,6 +168,11 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 		if !strings.Contains(text, required) {
 			t.Fatalf("installation.yaml is missing %q", required)
 		}
+	}
+	// Default Gateway authentication must not opt into static-inference authority.
+	if strings.Contains(text, "credential_proxy:") || strings.Contains(text, "insecureTransport:") ||
+		!strings.Contains(text, "mode: mtls") || !strings.Contains(text, "rootCertificatePath: /etc/openclaw/openshell/ca.crt") {
+		t.Fatal("expected authenticated Gateway without static inference")
 	}
 	// In-cluster Drivers authenticate with their ServiceAccounts, not a host kubeconfig.
 	if strings.Contains(text, "kubeconfigPath") {
@@ -408,6 +413,22 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 			if strings.Contains(install, "service.type=NodePort") ||
 				strings.Contains(install, "supervisor.sandboxRuntime.networkPolicyEnforced=true") {
 				t.Fatalf("unexpected OpenShell gateway install values: %s", install)
+			}
+			// The first install must use native PKI and authentication, not rely on a later repair.
+			gatewayValues := readJSONFile(t, filepath.Join(state.directory, "openshell-gateway-values.json"))
+			if field(t, gatewayValues, "pkiInitJob", "enabled") != true ||
+				field(t, gatewayValues, "server", "disableTls") != false ||
+				field(t, gatewayValues, "server", "tls", "enableMtls") != true ||
+				field(t, gatewayValues, "server", "auth", "allowUnauthenticatedUsers") != false {
+				t.Fatal("default OpenShell must require authenticated TLS")
+			}
+			if len(field(t, gatewayValues, "gatewayConfig", "openshell.supervisor.middleware").([]any)) != 0 ||
+				!strings.Contains(install, "-f "+filepath.Join(state.directory, "openshell-gateway-values.json")) ||
+				!strings.Contains(install, "--wait") {
+				t.Fatal("default Gateway must start without static-inference middleware")
+			}
+			if strings.Contains(strings.Join(commands(), "\n"), "create secret generic openshell-gateway-jwt-keys") {
+				t.Fatal("native PKI must own Gateway signing keys")
 			}
 			// Check every image value: the chart must receive the
 			// exact imported digest for each component, never a source digest or fallback.
@@ -1043,6 +1064,12 @@ func TestKubernetesOnlyControlPlaneUsesItsPublishedConsoleOrigin(t *testing.T) {
 			values := readJSONFile(t, filepath.Join(state.directory, "helm-values.json"))
 			if !reflect.DeepEqual(values["auth"], jsonValue(t, map[string]string{"baseUrl": test.origin})) {
 				t.Fatalf("authentication must use the published Console origin: %#v", values["auth"])
+			}
+			if _, enabled := values["egressAuthority"]; enabled {
+				t.Fatal("default control plane must not enable the static-inference authority")
+			}
+			if test.sandboxDriver == "openshell" && field(t, values, "backend", "openshell", "clientSecretName") != "openshell-client-tls" {
+				t.Fatal("default OpenShell must project its administrative client identity")
 			}
 			gatewayRouting := map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"}
 			if test.sandboxDriver == "openshell" {
