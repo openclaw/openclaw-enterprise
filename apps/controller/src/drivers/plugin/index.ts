@@ -7,9 +7,9 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   managedCredentialBinding,
-  managedGoogleInstall,
   managedInstalls,
   managedPluginCredentials,
+  managedSlackCredentialBinding,
   requireManagedCredentialRuntime,
 } from "./managed-catalog.ts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
@@ -408,20 +408,16 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
       );
     }
     const policy = selections[managed.id]!;
-    const supportsCredentials = managed === managedGoogleInstall;
     if (
       typeof policy.enabled !== "boolean" ||
-      Object.keys(policy).some(
-        (key) => key !== "enabled" && !(supportsCredentials && key === "driverPolicy"),
-      )
+      Object.keys(policy).some((key) => key !== "enabled" && key !== "driverPolicy")
     ) {
       throw new ConfigurationHarnessError(
-        supportsCredentials
-          ? "The Google Workspace package supports enablement and an optional credential slot."
-          : `${managed.entry.name} supports plugin enablement only.`,
+        `The ${managed.entry.name} package supports enablement and an optional credential slot.`,
       );
     }
     managedCredentialBinding(selections);
+    managedSlackCredentialBinding(selections);
     this.validate("openclaw", {}, defaultApprovers);
   }
 

@@ -180,12 +180,13 @@ process.exit(r.error ? 0 : r.status);`;
       const volume = await gatewayStateVolume(t, "/tmp/node", {
         seed: "echo retained > /tmp/node/enrollment-sentinel",
       });
-      const inspect = async (digest, mounts = []) => {
+      const inspect = async (digest, mounts = [], environment = []) => {
         const result = await runManagedWorker(
           "SLACK",
           ["/app/openclaw.mjs", "config", "get", "nodeHost", "--json"],
           digest,
           ["-v", volume + ":/tmp/node", ...mounts],
+          environment,
         );
         return JSON.parse(result.stdout);
       };
@@ -196,6 +197,30 @@ process.exit(r.error ? 0 : r.status);`;
         transport: "streamable-http",
         url: "https://mcp.slack.com/mcp",
       });
+      const tools = 'OPENCLAW_MANAGED_SLACK_TOOL_NAMES=["slack_search_public"]';
+      for (const marker of [
+        "openshell:resolve:env:v7_SLACK_MCP_TOKEN",
+        "openshell:resolve:env:s" + "a".repeat(64) + "_SLACK_MCP_TOKEN",
+      ]) {
+        const connected = await runManagedWorker(
+          "SLACK",
+          [
+            "-e",
+            "console.log(require('node:fs').readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8'))",
+          ],
+          releaseSha256,
+          ["-v", volume + ":/tmp/node"],
+          [tools, "SLACK_MCP_TOKEN=" + marker],
+        );
+        assert.deepEqual(JSON.parse(connected.stdout).nodeHost.mcp.servers.slack, {
+          ...selected.mcp.servers.slack,
+          enabled: true,
+          headers: { Authorization: "Bearer " + marker },
+          toolFilter: { include: ["slack_search_public"] },
+        });
+      }
+      const withdrawn = await inspect(releaseSha256, [], [tools]);
+      assert.deepEqual(withdrawn.mcp.servers.slack, selected.mcp.servers.slack);
       const deselected = await inspect(undefined);
       assert.equal(deselected.mcp?.servers?.slack, undefined);
       const sentinel = await runDocker([

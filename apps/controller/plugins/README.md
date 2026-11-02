@@ -5,9 +5,7 @@ Each package has a [plugin.json](./oce-google-workspace/plugin.json) at its root
 `ai.openclaw.oce` extension points to the release that OCE deploys.
 
 - [Google Workspace](./oce-google-workspace/ai.openclaw.oce/release.json) pins the ClawHub skill and Linux `gog` binaries.
-- [Slack](./oce-slack/mcp.json) declares Slack’s hosted MCP server. The [release](./oce-slack/ai.openclaw.oce/release.json) pins the descriptor. Once connected, OpenClaw discovers the tools Slack publishes through MCP `tools/list`. The worker stages the server with `enabled: false` until OCE supports binding a Slack user connection. See [Slack MCP](https://docs.slack.dev/ai/slack-mcp-server/).
-
-Slack’s release reserves an `account` slot for a future worker binding. Installing the package does not attach a credential or enable the MCP server.
+- [Slack](./oce-slack/mcp.json) declares Slack’s hosted MCP server. The [release](./oce-slack/ai.openclaw.oce/release.json) pins the descriptor and the reviewed tool names. Select a Slack credential already attached to the Agent to enable public search on the dedicated worker. OpenShell limits credentialed requests to the selected tools. See [Slack MCP](https://docs.slack.dev/ai/slack-mcp-server/).
 
 The Plugin Driver registers each package by version. Publish changed release bytes under a new version so existing Agent selections continue to identify the reviewed release.
 

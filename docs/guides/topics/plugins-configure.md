@@ -21,12 +21,6 @@ The picker lists compatible sources attached to the Agent. Other sources can sta
 package digest changes, select the account again. Clearing the slot or removing
 the plugin takes effect on the next deployment. The Agent keeps its separately attached credentials. To stop a running version from using a credential, [withdraw the source](../../reference/credential-sources/withdrawal.md). [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
-To deploy Slack, select **Slack**, add it, save the selection and deploy. Inspect the server on the dedicated worker with the command below. It shows `https://mcp.slack.com/mcp` with `enabled: false`. This release stages the server without an account.
-
-```sh
-OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.slack --json
-```
-
 Dedicated Codex Agents with a supported login can browse their app catalog.
 For other Agents, use **Plugin selections JSON** to enter a known plugin ID.
 The CLI example below uses Diffs.
@@ -58,7 +52,7 @@ check the effective policy and a normal Agent turn; a saved selection alone does
 not prove approval routing. See the [approval policy](../../reference/agent-plugins.md#approval-policy)
 and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
 
-## Prepare a Slack MCP credential
+## Configure Slack search
 
 Register a `bearer-token` credential source that references the saved Slack
 OAuth access token as its `token` Secret. Use
@@ -73,7 +67,17 @@ and grant the operator and Agent service principal `credential_source:operate`
 on it. [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
 · [Bind a source to an Agent](../../reference/credential-sources.md#bind-a-source-to-an-agent)
 
-A standalone Slack source permits MCP `ping`.
+Add **Slack** to the Agent and select its attached Slack account. In the Agent's
+plugin selections JSON, set `driverPolicy.toolNames` to
+`["slack_search_public"]` for an account that has Slack public search. Save the
+selection and deploy. OpenShell checks the selected names for worker and script
+calls. An empty selection leaves the worker server disabled.
+
+Inspect the worker's server and tool filter:
+
+```sh
+OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.slack --json
+```
 
 ## Before you start
 

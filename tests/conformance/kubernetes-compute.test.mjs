@@ -75,6 +75,7 @@ import {
   managedGoogleInstall,
   managedSlackInstall,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedGatewayConfiguration } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
@@ -1726,14 +1727,41 @@ test("standalone Codex search requires an explicit model endpoint and a boolean 
   }
 });
 
-test("dedicated OpenClaw delivers the selected managed release digest without a Sandbox provider file", async () => {
+test("dedicated OpenClaw delivers managed releases and reviewed Slack tools without a Sandbox provider file", async () => {
   await verifyManagedRelease("GOOGLE", managedGoogleInstall);
   await verifyManagedRelease("SLACK", managedSlackInstall);
 });
 
-async function verifyManagedRelease(prefix, { id, releaseSha256 }) {
-  for (const enabled of [true, false]) {
-    const selections = { [id]: { enabled } };
+test("the dedicated Gateway exposes reviewed Slack tools subject to its admitted allowlist", () => {
+  const tool = "slack_slack_search_public";
+  const standard = { tools: { alsoAllow: ["diffs"] } };
+  const { tools } = managedGatewayConfiguration(standard, standard, false, undefined, [tool]);
+  assert.deepEqual(tools.alsoAllow, ["diffs", tool]);
+  assert.ok(tools.gatewayPolicy.allow.includes(tool));
+
+  const restricted = { tools: { gatewayPolicy: { allow: ["exec"] } } };
+  const denied = managedGatewayConfiguration(restricted, restricted, false, undefined, [tool]);
+  assert.deepEqual(denied.tools.gatewayPolicy.allow, ["exec"]);
+  assert.equal(denied.tools.alsoAllow, undefined);
+});
+
+async function verifyManagedRelease(prefix, { id, releaseSha256, toolNames }) {
+  const selectionCases = [{ enabled: true }, { enabled: false }];
+  if (toolNames !== undefined) {
+    for (const selectedNames of [toolNames, [], undefined]) {
+      selectionCases.push({
+        enabled: true,
+        driverPolicy: {
+          releaseSha256,
+          credentials: { account: "cs_slack" },
+          ...(selectedNames === undefined ? {} : { toolNames: selectedNames }),
+        },
+      });
+    }
+  }
+  for (const selection of selectionCases) {
+    const { enabled, driverPolicy } = selection;
+    const selections = { [id]: selection };
     let worker;
     const sandboxDriver = {
       id: "native-sandbox",
@@ -1756,6 +1784,11 @@ async function verifyManagedRelease(prefix, { id, releaseSha256 }) {
     };
     const fixture = dedicatedFirstDeployFixture({
       sandboxDriver,
+      credentialGatewayDriver: {
+        id: "openshell-credentials",
+        implementation: "openshell",
+        capability: "credential_gateway",
+      },
       revision: {
         harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
         sandboxDriverId: sandboxDriver.id,
@@ -1776,6 +1809,10 @@ async function verifyManagedRelease(prefix, { id, releaseSha256 }) {
         ({ name }) => name === `OPENCLAW_MANAGED_${prefix}_RELEASE_SHA256`,
       );
       assert.equal(digest?.value, enabled ? releaseSha256 : undefined);
+      assert.equal(
+        environment.find(({ name }) => name === "OPENCLAW_MANAGED_SLACK_TOOL_NAMES")?.value,
+        driverPolicy?.toolNames?.length ? JSON.stringify(driverPolicy.toolNames) : undefined,
+      );
     }
     if (enabled) {
       // An Agent editor must not be able to substitute either control with a Secret binding.

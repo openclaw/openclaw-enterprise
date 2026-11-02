@@ -274,6 +274,8 @@ const googleAccountEnv: string = JSON.parse(
   ),
 ).credentials.account.delivery.env;
 
+export const MANAGED_SLACK_TOOLS_ENVIRONMENT = "OPENCLAW_MANAGED_SLACK_TOOL_NAMES";
+
 const MANAGED_INSTALL_HELPERS = String.raw`
 function verifiedPluginFile(path, expected) {
   const bytes = require("node:fs").readFileSync(path);
@@ -303,6 +305,18 @@ function managedPluginInstallation() {
     install = { name, id, root, release, skills, skill };
   }
   return install;
+}
+
+function managedSlackToolNames(install) {
+  const selected = process.env[${JSON.stringify(MANAGED_SLACK_TOOLS_ENVIRONMENT)}];
+  if (selected === undefined) return [];
+  const tools = JSON.parse(selected);
+  const reviewed = install?.name === "slack" && install.release?.credentials?.account?.mcp?.tools;
+  if (!Array.isArray(reviewed) || !Array.isArray(tools) ||
+      !tools.every((name) => typeof name === "string" && reviewed.includes(name))) {
+    throw new Error("The selected Slack tools do not match the managed release.");
+  }
+  return tools;
 }
 `;
 
@@ -3085,6 +3099,9 @@ function configureGateway(peerStatus) {
     pluginRuntime === undefined
       ? { successfulPluginIds: [], failures: peerFailures }
       : installGatewayPlugins(pluginRuntime, peerFailures);
+  const managedSlackGatewayTools = process.env[${JSON.stringify(MANAGED_SLACK_TOOLS_ENVIRONMENT)}] === undefined
+    ? []
+    : managedSlackToolNames(managedPluginInstallation()).map((name) => "slack_" + name);
   if (pluginRuntime !== undefined) {
     logStartupPhase("plugin-install", pluginInstallStartedAt);
   }
@@ -3109,7 +3126,11 @@ function configureGateway(peerStatus) {
     // The first pairing records its command grant before a node ID is available.
     // gateway.* changes restart OpenClaw, so this is written only before a spawn.
     const commands = ((config.gateway ??= {}).nodes ??= {}).commands ??= {};
-    commands.allow = [...new Set([...(commands.allow ?? []), "file.fetch", "file.stat", "file.write", "file.create", "dir.list", "workspace.memory", "workspace.skills"])];
+    commands.allow = [...new Set([
+      ...(commands.allow ?? []), "file.fetch", "file.stat", "file.write", "file.create",
+      "dir.list", "workspace.memory", "workspace.skills",
+      ...(managedSlackGatewayTools.length ? ["mcp.tools.call.v1"] : []),
+    ])];
     if (environmentWorkspaceNodeId !== undefined || workspaceNodeBindingPath !== undefined) {
       // Refuse a revision that cannot host its node now, not when the node arrives.
       workspaceNodeId = environmentWorkspaceNodeId ?? readWorkspaceNodeBinding();
@@ -3118,7 +3139,7 @@ function configureGateway(peerStatus) {
     }
     writeOpenClawConfig(config);
   }
-  if (appliesGatewayToolPolicy) configureManagedGatewayTools(gatewayToolPolicyInput);
+  if (appliesGatewayToolPolicy) configureManagedGatewayTools(gatewayToolPolicyInput, managedSlackGatewayTools);
   return { pluginResult, workspaceNodeId };
 }
 
@@ -4930,23 +4951,33 @@ if (pluginBin) {
   verifiedPluginFile(join(pluginBin, release.executable), release.artifacts[architecture]?.binarySha256);
 }
 
-// Node-host MCP eagerly discovers tools on startup. Stage the reviewed server until a user
-// connection can supply its scoped bearer through the worker's egress proxy.
+// OpenShell supplies the placeholder for the selected account. A withdrawn
+// account leaves the definition staged with discovery disabled.
 let nodeMcp;
 if (release?.capabilities.harness.includes("mcp")) {
   const bytes = verifiedPluginFile(join(install.root, "mcp.json"), release.mcpServersSha256);
   const manifest = JSON.parse(bytes);
-  const { server } = release.credentials.account.mcp;
+  const { delivery, mcp: { server } } = release.credentials.account;
   const endpoint = manifest.mcpServers[server];
   if (endpoint?.type !== "streamable-http" || new URL(endpoint.url).protocol !== "https:") {
     throw new Error("The managed MCP server declaration is invalid.");
   }
+  const tools = managedSlackToolNames(install);
+  const placeholder = process.env[delivery.env];
+  // OpenShell can scope its placeholder to a provider revision or a stable credential identity.
+  const matchingPlaceholder = /^openshell:resolve:env:(?:v[0-9]+|s[0-9a-f]{64})_([A-Z][A-Z0-9_]*)$/.exec(placeholder ?? "")?.[1] === delivery.env;
+  const enabled = tools.length > 0 && matchingPlaceholder;
+  if (!matchingPlaceholder) delete process.env[delivery.env];
   nodeMcp = {
     servers: {
       [server]: {
-        enabled: false,
+        enabled,
         transport: endpoint.type,
         url: endpoint.url,
+        ...(enabled && {
+          headers: { Authorization: "Bearer " + placeholder },
+          toolFilter: { include: tools },
+        }),
       },
     },
   };

@@ -244,6 +244,11 @@ export function requireManagedCredentialRuntime(
       "A bound Google account requires the OpenShell Sandbox and Credential Gateway.",
     );
   }
+  if (managedSlackCredentialBinding(selections) && !supported) {
+    throw new ConfigurationHarnessError(
+      "A bound Slack account requires the OpenShell Sandbox and Credential Gateway.",
+    );
+  }
 }
 
 function googleSourceScope(source: CredentialSource) {
@@ -330,7 +335,7 @@ export function managedSlackSlotAcceptsSource(source: CredentialSource): boolean
 
 export const managedPluginCredentials = {
   choices(sources: readonly CredentialSource[]) {
-    return Object.entries(managedGoogleInstall.credentials).map(([id, slot]) => ({
+    const google = Object.entries(managedGoogleInstall.credentials).map(([id, slot]) => ({
       pluginId: managedGoogleInstall.id,
       releaseSha256: managedGoogleInstall.releaseSha256,
       id,
@@ -339,12 +344,33 @@ export const managedPluginCredentials = {
         .filter((source) => managedSlotAcceptsSource(slot, source))
         .map(({ id, name }) => ({ id, name })),
     }));
+    return [
+      ...google,
+      {
+        pluginId: managedSlackInstall.id,
+        releaseSha256: managedSlackInstall.releaseSha256,
+        id: "account",
+        label: managedSlackInstall.credentialLabel,
+        sources: sources
+          .filter(managedSlackSlotAcceptsSource)
+          .map(({ id, name }) => ({ id, name })),
+      },
+    ];
   },
   validate(
     selections: PluginDesiredState,
     sources: readonly CredentialSource[],
     modelSourceId?: string,
   ) {
+    const slack = managedSlackCredentialBinding(selections);
+    if (slack) {
+      const source = sources.find(({ id }) => id === slack.sourceId);
+      if (!source || source.id === modelSourceId || !managedSlackSlotAcceptsSource(source)) {
+        throw new ConfigurationHarnessError(
+          "Select a ready Slack MCP account attached to this Agent that matches the reviewed credential slot.",
+        );
+      }
+    }
     const binding = managedCredentialBinding(selections);
     if (!binding) {
       return;

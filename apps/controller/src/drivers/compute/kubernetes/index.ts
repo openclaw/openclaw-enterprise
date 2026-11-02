@@ -191,7 +191,11 @@ import {
 } from "../workspace-setup-runtime.ts";
 import { requireHarnessAuthMethod } from "../harness-auth-method.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
-import { managedInstalls, requireManagedCredentialRuntime } from "../../plugin/managed-catalog.ts";
+import {
+  managedInstalls,
+  managedSlackCredentialBinding,
+  requireManagedCredentialRuntime,
+} from "../../plugin/managed-catalog.ts";
 import {
   validatePlaintextNativeGateway,
   validateRoutableNativeListener,
@@ -263,6 +267,7 @@ import {
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
+  MANAGED_SLACK_TOOLS_ENVIRONMENT,
   MANAGED_CONFIGURATION_DIRECTORY,
   NATIVE_HOOK_CREDENTIAL_DIRECTORY,
   NATIVE_WORKER_ENTRYPOINT,
@@ -16093,7 +16098,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         });
       }
     }
-    // The native worker consumes only the image release digest. Its Sandbox needs no plugin files.
+    // The managed release is in the image. The two processes receive only its
+    // identity and the reviewed tool selection, never the account's bearer.
     if (dedicated && pluginRuntime?.runtime.kind === "openclaw") {
       for (const install of managedInstalls) {
         const selection = pluginRuntime.runtime.selections[install.id];
@@ -16107,6 +16113,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         if (selection.enabled) {
           variables.push({ name: prefix + "_RELEASE_SHA256", value: install.releaseSha256 });
         }
+      }
+      const slack = managedSlackCredentialBinding(pluginRuntime.runtime.selections);
+      if (slack?.toolNames.length) {
+        variables.push({
+          name: MANAGED_SLACK_TOOLS_ENVIRONMENT,
+          value: JSON.stringify(slack.toolNames),
+        });
       }
     }
     const needsPluginRuntime =
