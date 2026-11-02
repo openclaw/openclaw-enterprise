@@ -191,6 +191,10 @@ qualification, intentional downgrade is indistinguishable. After qualification,
 registration changes break the recipient fingerprint and close the route.
 Repository grants never use this fallback.
 
+Dedicated native OpenClaw does not support this profile. Agent create, update,
+and deployment refuse native repository bindings, including the opt-in preview.
+OCE does not install a native Git credential alias or launcher for installation access.
+
 OCE does not add a ref allowlist to installation scope. GitHub's membership,
 permissions and branch rules set its limit. See
 [operator verification and withdrawal](../../guides/credential-proxy.md#verify-use-loss-and-withdrawal)
