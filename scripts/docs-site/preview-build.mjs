@@ -2,13 +2,19 @@ import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstatSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 // Poll directory entries as well as file metadata so atomic saves, new directories,
 // deletions and renames work without platform-specific recursive watch behavior.
 function sourceSnapshot() {
   const entries = [];
-  function visit(file) {
+  const sourceRoots = new Set([
+    "docs",
+    "scripts/docs-site",
+    "packages/contracts/openapi",
+    "deploy/examples",
+  ]);
+  function visit(file, includeAll = false) {
     let info;
     try {
       info = lstatSync(file, { bigint: true });
@@ -18,23 +24,20 @@ function sourceSnapshot() {
       }
       throw error;
     }
-    entries.push(`${file}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`);
+    includeAll ||= sourceRoots.has(file.split(sep).join("/"));
+    // Other repository Markdown supplies headings for GitHub fragment checks.
+    if (includeAll || (!info.isDirectory() && file.endsWith(".md"))) {
+      entries.push(`${file}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`);
+    }
     if (info.isDirectory()) {
       for (const name of readdirSync(file).sort()) {
         if (!["node_modules", ".git", "dist"].includes(name)) {
-          visit(join(file, name));
+          visit(join(file, name), includeAll);
         }
       }
     }
   }
-  for (const source of [
-    "docs",
-    "scripts/docs-site",
-    "packages/contracts/openapi",
-    "deploy/examples",
-  ]) {
-    visit(source);
-  }
+  visit(".");
   return entries.join("\n");
 }
 

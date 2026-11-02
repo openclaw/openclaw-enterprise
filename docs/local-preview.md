@@ -22,6 +22,8 @@ tab keeps its URL and heading anchor. The preview watches `docs/`, including
 shared snippets, assets, and `docs.json`, plus `scripts/docs-site/`, OpenAPI
 contracts, and deployment examples under `deploy/examples/`. File creation,
 deletion, and renames also trigger a rebuild.
+Markdown files elsewhere in the repository are also watched to keep checks for
+links to their headings current.
 
 The preview combines rapid edits and runs one build at a time. It publishes pages
 and their search index together after both succeed. A failed build shows the
