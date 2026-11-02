@@ -3069,9 +3069,20 @@ async function assertStartupFailureDeploymentStatusDurable(context, topology, op
   });
   assert.deepEqual(
     Object.keys(failed).sort(),
-    ["agentId", "deploymentId", "error", "namespaceId", "progress", "status", "warnings"],
+    [
+      "agentId",
+      "cleanup",
+      "deploymentId",
+      "error",
+      "namespaceId",
+      "progress",
+      "status",
+      "warnings",
+    ],
     "deployment status must use the approved durable status shape",
   );
+  // No earlier revision retired, so no repository cleanup exists for this deployment (#1994).
+  assert.equal(failed.cleanup, null);
   assert.equal(failed.deploymentId, failure.revision.id);
   assert.equal(failed.namespaceId, topology.agent.namespaceId);
   assert.equal(failed.agentId, topology.agent.id);
@@ -3169,15 +3180,29 @@ function sharedVolumeSubPaths(pod) {
     .sort();
 }
 
-function assertPrivateStateInitContainer(pod) {
+function assertPrivateStateInitContainer(pod, { embeddedGatewayOwner = false } = {}) {
   const main = pod.spec.containers[0];
-  const [init] = pod.spec.initContainers ?? [];
+  const [init, owner] = pod.spec.initContainers ?? [];
   const { runAsUser, runAsGroup, fsGroup } = pod.spec.securityContext;
+  // An embedded gateway with no Secret environment also records its owner key (#2633), in a
+  // second init that mounts only its two in-memory volumes and no Agent-controlled state.
   assert.deepEqual(
     pod.spec.initContainers?.map(({ name }) => name),
-    ["prepare-private-state"],
+    ["prepare-private-state", ...(embeddedGatewayOwner ? ["prepare-embedded-gateway-owner"] : [])],
     "runtime gateway and Codex Pods must prepare private /home/node state exactly once",
   );
+  if (embeddedGatewayOwner) {
+    assert.equal(owner.image, main.image);
+    assert.deepEqual(owner.volumeMounts, [
+      { name: "gateway-owner-key", mountPath: "/run/oce-gateway-owner-key" },
+      { name: "gateway-owner-start", mountPath: "/run/oce-gateway-owner-start" },
+    ]);
+    assert.deepEqual(owner.securityContext, {
+      allowPrivilegeEscalation: false,
+      readOnlyRootFilesystem: true,
+      capabilities: { drop: ["ALL"] },
+    });
+  }
   assert.equal(init.image, main.image, "private-state init must use the main workload image");
   assert.deepEqual(
     [
@@ -3257,6 +3282,8 @@ const continuityImage =
   "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKklEQVR4nGPQqLhEU8QwasGoBaMWjFowasGoBaMWjFowasGoBaMWDBULAPHFyEwoyF0pAAAAAElFTkSuQmCC";
 const gatewayPrivatePaths = [
   ["state", "/home/node/.openclaw/state"],
+  // Client migration receipts refer to the retained Gateway database (#3041).
+  ["client", "/home/node/.openclaw/client"],
   ["agent", "/home/node/.openclaw/agents/main/agent"],
   ["media", "/home/node/.openclaw/media"],
   ["worktrees", "/home/node/.openclaw/worktrees"],
