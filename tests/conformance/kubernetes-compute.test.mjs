@@ -71,7 +71,10 @@ import {
   withYieldingGatewayDrain,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { normalizeSecretBindings } from "../../packages/contracts/src/index.ts";
-import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import {
+  managedGoogleInstall,
+  managedSlackInstall,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
@@ -1723,8 +1726,12 @@ test("standalone Codex search requires an explicit model endpoint and a boolean 
   }
 });
 
-test("dedicated OpenClaw delivers the selected Google release digest without a Sandbox provider file", async () => {
-  const { id, releaseSha256 } = managedGoogleInstall;
+test("dedicated OpenClaw delivers the selected managed release digest without a Sandbox provider file", async () => {
+  await verifyManagedRelease("GOOGLE", managedGoogleInstall);
+  await verifyManagedRelease("SLACK", managedSlackInstall);
+});
+
+async function verifyManagedRelease(prefix, { id, releaseSha256 }) {
   for (const enabled of [true, false]) {
     const selections = { [id]: { enabled } };
     let worker;
@@ -1766,7 +1773,7 @@ test("dedicated OpenClaw delivers the selected Google release digest without a S
     const gateway = fixture.read("Deployment", fixture.gatewayName).spec.template.spec;
     for (const environment of [worker.environment, gateway.containers[0].env]) {
       const digest = environment.find(
-        ({ name }) => name === "OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256",
+        ({ name }) => name === `OPENCLAW_MANAGED_${prefix}_RELEASE_SHA256`,
       );
       assert.equal(digest?.value, enabled ? releaseSha256 : undefined);
     }
@@ -1787,7 +1794,7 @@ test("dedicated OpenClaw delivers the selected Google release digest without a S
     const manifest = fixture.read("ConfigMap", volume.configMap.name).data["runtime.json"];
     assert.deepEqual(JSON.parse(manifest).selections, selections);
   }
-});
+}
 
 test("native OpenClaw preparation and activation use only outbound Sandbox enrollment", async () => {
   const provisions = [];
