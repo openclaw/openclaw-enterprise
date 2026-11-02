@@ -299,10 +299,11 @@ to register a key and bind it to an Agent, follow
 The profile also selects the curated Codex Plugin Driver for managed Codex
 plugin selections. See [Agent plugins](../../reference/agent-plugins.md).
 
-The OpenShell Gateway permits unauthenticated users, a development setting safe
-only inside this disposable, loopback-owned cluster. Tenant egress selects only
-OpenShell supervisor Pods for Gateway callbacks. Do not use this profile, or
-carry that setting, into a shared cluster or container network.
+The Kubernetes-only OpenShell Gateway requires TLS, mTLS and authentication.
+Static-inference enforcement is separate and off by default; it is not required
+for model access or protected Git. The Compose-backed profile still permits
+unauthenticated Gateway users inside its disposable, loopback-owned cluster.
+Do not carry that setting into a shared cluster or container network.
 
 Because this cluster is disposable and single-profile, the helper binds the chart's tenant worker, configuration, and Secret ClusterRoles
 to the OCE service accounts cluster-wide. This is not a production RBAC pattern:

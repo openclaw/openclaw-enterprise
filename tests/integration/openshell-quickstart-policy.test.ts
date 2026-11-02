@@ -15,10 +15,10 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const require = createRequire(join(repository, "apps/controller/package.json"));
 const { loadYaml, dumpYaml } = require("@kubernetes/client-node");
-const script = join(repository, "docs/assets/openshell-quickstart/configure-installation.mjs");
+const script = join(repository, "docs/snippets/openshell-quickstart/configure-installation.mjs");
 const example = loadYaml(
   await readFile(
-    join(repository, "docs/assets/openshell-quickstart/plugin-network-policy.yaml"),
+    join(repository, "docs/snippets/openshell-quickstart/plugin-network-policy.yaml"),
     "utf8",
   ),
 ) as { networkPolicies: OpenShellNetworkPolicyRule[] };
@@ -77,7 +77,7 @@ function edit(directory: string) {
   });
 }
 
-test("quickstart editor explicitly selects the supplied artifact rule and the real Sandbox admits only that subset", async (t) => {
+test("quickstart configuration script explicitly selects the supplied artifact rule and the real Sandbox admits only that subset", async (t) => {
   const directory = await temporaryDirectory(t, "oce-quickstart-policy-");
   const file = join(directory, "installation.yaml");
   const input = installation(example.networkPolicies);
@@ -104,7 +104,7 @@ test("quickstart editor explicitly selects the supplied artifact rule and the re
   assert.deepEqual(admitted.snapshot.additions, []);
 });
 
-test("quickstart editor refuses a missing or ambiguous supplied artifact rule without changing the Installation", async (t) => {
+test("quickstart configuration script refuses a missing or ambiguous supplied artifact rule without changing the Installation", async (t) => {
   for (const [name, rules] of [
     ["missing", []],
     ["duplicate", [...example.networkPolicies, ...example.networkPolicies]],

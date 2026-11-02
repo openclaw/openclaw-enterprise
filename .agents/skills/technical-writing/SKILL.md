@@ -99,6 +99,16 @@ Omit empty or irrelevant sections. Split independently useful topics when a page
 mixes too many reader tasks. Keep the root documentation map and affected links
 current, following repository page ownership and length limits.
 
+## Frontmatter and tags
+
+Use YAML frontmatter for page metadata. Read [Frontmatter and tags](./references/frontmatter-and-tags.md)
+for supported fields, values, and their owners before adding or changing metadata.
+Write `tags` as a list of strings. The `nolimit` tag exempts its page from both
+word-count thresholds while retaining count reporting; apply it only with the
+human approval required by `AGENTS.md`. Preserve existing tags and metadata.
+Change generated frontmatter through its generator. Snippet tags do not exempt
+pages that include the snippet.
+
 ## Templates for specific document types
 
 Use the Markdown frontmatter field `kind` to select a template from the

@@ -11,7 +11,7 @@ installing OpenShell does not grant it.
 ### Register the Harness model source first
 
 For a fresh local k3d installation, use the authenticated
-[Gateway-only bootstrap](#prepare-an-authenticated-local-gateway).
+[Gateway setup](#prepare-an-authenticated-local-gateway).
 
 A fresh installation needs a ready, Gateway-owned model source before enabling
 the repository Credential Proxy. If that source already exists, start at step 2.
@@ -26,68 +26,14 @@ the repository Credential Proxy. If that source already exists, start at step 2.
 
 ### Prepare an authenticated local Gateway
 
-Use this procedure only during a new local installation, before creating any
-CredentialSources or Agents. Start with
-`OCC_DEVELOPMENT_PROTECTED_EGRESS=1` to prepare Gateway mTLS and signing keys.
-The generated static inference authority is separate from repository access.
-If startup waits while `oce-authority` reports `Describe` unavailable, remove
-only that unused registration and selection. Keep mTLS and the Credential Gateway.
+Complete [local setup](../deploy/local-setup.md) before adding repository access.
+The Kubernetes-only launcher enables Gateway TLS, mTLS and authentication before
+its first startup. It keeps Credential Gateway selected for model access.
 
-In a second Bash terminal, use the first terminal's private `RUN_DIR`, state
-directory and cluster name. Wait until the OCE Helm release is deployed. The
-[editor](../../../docs/assets/openshell-quickstart/configure-installation.mjs)
-checks the generated selections and preserves the TLS settings. It also removes
-the uninspected GitHub rule and selects the curated Codex plugin catalog.
-
-```bash
-set -euo pipefail
-umask 077
-state=${OCC_DEVELOPMENT_STATE_DIRECTORY:?}
-export KUBECONFIG="$state/kubeconfig"
-cluster=$(jq -er .cluster "$state/state.json")
-context="k3d-$cluster"
-ns=$(jq -er .platformNamespace "$state/state.json")
-test "$(kubectl config current-context)" = "$context"
-helm --kubeconfig "$KUBECONFIG" --kube-context "$context" -n "$ns" \
-  get values openshell-gateway -o json > "$RUN_DIR/gateway-values.json"
-secret="oce-gateway-only-$(date +%s)"
-node "$RUN_DIR/configure-installation.mjs" --gateway-only-bootstrap \
-  "$RUN_DIR/gateway-values.json" "$secret"
-kubectl --context "$context" -n "$ns" create secret generic "$secret" \
-  --from-file="installation.yaml=$state/installation.yaml"
-
-# Complete this upgrade before unblocking the launcher's worker startup.
-helm --kubeconfig "$KUBECONFIG" --kube-context "$context" upgrade \
-  openclaw-enterprise deploy/helm/openclaw-enterprise -n "$ns" \
-  -f "$state/helm-values.json" --set worker.replicaCount=0 --wait
-charts=("$state"/openshell/chart/helm-chart-*.tgz)
-test "${#charts[@]}" -eq 1 && test -f "${charts[0]}"
-helm --kubeconfig "$KUBECONFIG" --kube-context "$context" -n "$ns" \
-  upgrade openshell-gateway "${charts[0]}" -f "$RUN_DIR/gateway-values.json"
-
-# A failed old StatefulSet Pod can block adoption of the corrected template.
-pod=$(kubectl --context "$context" -n "$ns" get pod openshell-gateway-0 -o json)
-desired=$(kubectl --context "$context" -n "$ns" get statefulset openshell-gateway -o json |
-  jq -er '.spec.template.metadata.annotations["checksum/gateway-config"]')
-if jq -e --arg desired "$desired" \
-  '.status.containerStatuses[0].ready==false and
-   .metadata.annotations["checksum/gateway-config"]!=$desired' <<<"$pod" >/dev/null; then
-  kubectl --context "$context" -n "$ns" delete pod openshell-gateway-0
-fi
-kubectl --context "$context" -n "$ns" rollout status statefulset/openshell-gateway
-```
-
-This conditional deletion follows Kubernetes's
-[failed StatefulSet recovery](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#forced-rollback).
-It removes only the unready Pod using the old configuration; the StatefulSet
-recreates it from the corrected template. If Helm already waits on that Pod,
-run the conditional check in another terminal.
-
-The original launcher now starts the worker and completes bootstrap. Require its
-ready message. Skip the later Installation-editor step in the local setup guide;
-these settings are already applied. Then register the Gateway-owned model source
-before adding the repository Proxy below. Do not use this recovery on a shared
-installation or remove an authority used by existing sources.
+Leave `OCC_DEVELOPMENT_PROTECTED_EGRESS` unset or set to `0`. The value `1`
+selects the separate [static-inference profile](../deploy/local-openshell-images.md#select-the-protected-profile),
+which repository access does not require. No Gateway configuration repair or
+Pod deletion is needed for the default profile.
 
 ### Configure authorized repositories
 

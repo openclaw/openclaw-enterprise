@@ -15,7 +15,7 @@ umask 077
 run_root=${XDG_STATE_HOME:-$HOME/.local/state}/oce
 install -d -m 700 "$run_root"
 RUN_DIR=$(mktemp -d "$run_root/eks.XXXXXXXX")
-install -m 600 docs/assets/openshell-quickstart/codex-configuration.jq "$RUN_DIR/codex-configuration.jq"
+install -m 600 docs/snippets/openshell-quickstart/codex-configuration.jq "$RUN_DIR/codex-configuration.jq"
 printf 'Keep this session directory: %s\n' "$RUN_DIR"
 export KUBECONFIG="$RUN_DIR/kubeconfig"
 export PLATFORM_NS=oce-system

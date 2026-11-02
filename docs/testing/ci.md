@@ -1,3 +1,7 @@
+---
+tags: [nolimit]
+---
+
 # CI configuration and testing
 
 ## Overview

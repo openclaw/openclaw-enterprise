@@ -1,6 +1,6 @@
 # Set up OCE locally with OpenShell and Codex
 
-Install OpenClaw Enterprise (OCE) in a private k3d cluster. Then create a dedicated Codex Agent and verify a conversation through OpenClaw. Start here once before [adding Git support](../repository-credentials/openshell-git-push.md) or [adding Codex plugins](../integrations/codex-plugins.md). For managed Git, check the [repository-binding release prerequisites](../repository-credentials/openshell-git-push.md#before-you-start) before choosing images. Keep Credential Gateway for the Codex service account and its authorized Linear connection.
+Install OpenClaw Enterprise (OCE) in a private k3d cluster. Then create a dedicated Codex Agent and verify a conversation through OpenClaw. Start here once before [adding Git support](../repository-credentials/openshell-git-push.md) or [adding Codex plugins](../integrations/codex-plugins.md).
 
 ## Before you start
 
@@ -32,12 +32,12 @@ install -d -m 700 "$run_root"
 RUN_DIR=$(mktemp -d "$run_root/openshell.XXXXXXXX")
 printf 'Private session directory: %s\n' "$RUN_DIR"
 
-# Stage the network policy for cluster startup and the editor for the Helm reload.
-install -m 600 docs/assets/openshell-quickstart/plugin-network-policy.yaml "$RUN_DIR/artifacts.yaml"
-install -m 600 docs/assets/openshell-quickstart/configure-installation.mjs "$RUN_DIR/configure-installation.mjs"
+# Stage the network policy for cluster startup and the configuration script for the Helm reload.
+install -m 600 docs/snippets/openshell-quickstart/plugin-network-policy.yaml "$RUN_DIR/artifacts.yaml"
+install -m 600 docs/snippets/openshell-quickstart/configure-installation.mjs "$RUN_DIR/configure-installation.mjs"
 
 # Stage the Agent configuration template and the client used to verify a turn.
-install -m 600 docs/assets/openshell-quickstart/codex-configuration.jq "$RUN_DIR/codex-configuration.jq"
+install -m 600 docs/snippets/openshell-quickstart/codex-configuration.jq "$RUN_DIR/codex-configuration.jq"
 install -m 600 docs/assets/openshell-quickstart/chat.mjs "$RUN_DIR/chat.mjs"
 ```
 
@@ -57,9 +57,9 @@ For published images, complete [published image selection](published-images.md),
 
 Choose unused local ports for the OCE API, HTTPS Console and Kubernetes API. The launcher creates `k3d-state` under the new run directory. To repeat the exercise on a host with a previous disposable installation, first [remove only that installation](local-cleanup.md).
 
-The [plugin network policy](../../assets/openshell-quickstart/plugin-network-policy.yaml), copied to `$RUN_DIR/artifacts.yaml`, grants the two pinned Codex binaries read-only HTTPS access to the listed package hosts.
+The [plugin network policy](../../snippets/openshell-quickstart/plugin-network-policy.yaml), copied to `$RUN_DIR/artifacts.yaml`, grants the two pinned Codex binaries read-only HTTPS access to the listed package hosts.
 
-<Snippet file="../../assets/openshell-quickstart/plugin-network-policy.yaml" lang="yaml" />
+<Snippet file="../../snippets/openshell-quickstart/plugin-network-policy.yaml" lang="yaml" />
 
 ```bash
 # Select an isolated state directory and the Kubernetes-only OpenShell profile.
@@ -67,7 +67,8 @@ export OCC_DEVELOPMENT_STATE_DIRECTORY="$RUN_DIR/k3d-state"
 export OPENCLAW_DEV_PORT=3012 OCC_DEVELOPMENT_BROWSER_PORT=8443 OCC_DEVELOPMENT_KUBERNETES_API_PORT=6455
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
-export OCC_DEVELOPMENT_PROTECTED_EGRESS=1
+# Static-inference enforcement is a separate, optional profile.
+unset OCC_DEVELOPMENT_PROTECTED_EGRESS
 # Select both published images, or let the launcher build both from source.
 if [[ -n ${CONTROLLER_IMAGE:-} || -n ${RUNTIME_IMAGE:-} ]]; then
   export OCC_DEVELOPMENT_CONTROLLER_IMAGE="${CONTROLLER_IMAGE:?}"
@@ -82,13 +83,13 @@ go build -trimpath -o bin/occ ./cmd/occ
 ./bin/occ dev up --sandbox-network-policy-file "$RUN_DIR/artifacts.yaml"
 ```
 
-While the fresh installation waits, complete [Gateway-only bootstrap](../repository-credentials/openshell-enrollment.md#prepare-an-authenticated-local-gateway) in a second terminal. Then wait for `OpenClaw Enterprise development stack is ready`. Record the printed API URL, Kubernetes context and cleanup command. With the example ports the REST base is `http://127.0.0.1:3012`. Open the printed Console origin at `/console/`; its Agents page is `/console/agents`. For HTTPS, [trust its browser CA and forward its port](../operate/troubleshooting.md#open-the-console-from-another-machine).
+The launcher enables Gateway TLS, mTLS and authentication before startup. Wait for `OpenClaw Enterprise development stack is ready`. Record the printed API URL, Kubernetes context and cleanup command. With the example ports the REST base is `http://127.0.0.1:3012`. Open the printed Console origin at `/console/`; its Agents page is `/console/agents`. For HTTPS, [trust its browser CA and forward its port](../operate/troubleshooting.md#open-the-console-from-another-machine).
 
 ## 3. Configure Credential Gateway
 
-Run this from the matching release checkout. The editor removes the generated `source-control` rule that gives Git uninspected access to `github.com:443`. It keeps the other rules and selects the curated Codex plugin catalog. Git access requires an explicit repository binding and its authorized installation profile.
+Run this from the matching release checkout. The configuration script removes the generated `source-control` rule that gives Git uninspected access to `github.com:443`. It keeps the other rules and selects the curated Codex plugin catalog. Git access requires an explicit repository binding and its authorized installation profile.
 
-If Gateway-only bootstrap already applied these settings, skip the editor and Helm reload below. Still initialize the shell variables before step 4:
+Initialize the shell variables for this installation:
 
 ```bash
 state=$OCC_DEVELOPMENT_STATE_DIRECTORY
@@ -98,11 +99,11 @@ ns=$(jq -er .platformNamespace "$state/state.json")
 test "$(kubectl config current-context)" = "$context"
 ```
 
-The bootstrap selects the plugin catalog and package network policy, but does not enable a plugin on the Agent. Do that in Add Plugin.
+The configuration script selects the plugin catalog and package network policy, but does not enable a plugin on the Agent. Do that in Add Plugin.
 
-The [Installation editor](../../assets/openshell-quickstart/configure-installation.mjs) checks that the generated rule matches the expected settings before changing it.
+The [configuration script](../../snippets/openshell-quickstart/configure-installation.mjs) checks that the generated rule matches the expected settings before changing it.
 
-<Snippet file="../../assets/openshell-quickstart/configure-installation.mjs" lang="javascript" />
+<Snippet file="../../snippets/openshell-quickstart/configure-installation.mjs" lang="javascript" />
 
 ```bash
 # Edit the fresh installation.yaml once, before provisioning Agents.
@@ -182,9 +183,9 @@ modelSource=$(jq -er '.data|select(.state=="ready")|.id' "$RUN_DIR/model-source"
 
 Register the model with a fail-closed loopback URL. The Gateway uses authenticated WebSocket transport to the dedicated Codex Harness, which runs inside OpenShell. Give the Agent's own principal `operate` on its exact model source.
 
-The [Codex configuration template](../../assets/openshell-quickstart/codex-configuration.jq) takes the model ID from `MODEL`. The command below renders the template as JSON and posts it to OCE.
+The [Codex configuration template](../../snippets/openshell-quickstart/codex-configuration.jq) takes the model ID from `MODEL`. The command below renders the template as JSON and posts it to OCE.
 
-<Snippet file="../../assets/openshell-quickstart/codex-configuration.jq" lang="jq" />
+<Snippet file="../../snippets/openshell-quickstart/codex-configuration.jq" lang="jq" />
 
 ```bash
 # POST $base/configurations: save the model, sandbox and Gateway settings.

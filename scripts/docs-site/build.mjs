@@ -318,6 +318,9 @@ fs.mkdirSync(path.join(output, "assets"), { recursive: true });
 if (fs.existsSync(path.join(docs, "assets"))) {
   fs.cpSync(path.join(docs, "assets"), path.join(output, "assets"), { recursive: true });
 }
+if (fs.existsSync(path.join(docs, "snippets"))) {
+  fs.cpSync(path.join(docs, "snippets"), path.join(output, "snippets"), { recursive: true });
+}
 fs.cpSync(path.join(assets, "fonts"), path.join(output, "assets/fonts"), { recursive: true });
 const carapaceCss = [
   "tokens.css",

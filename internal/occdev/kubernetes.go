@@ -489,7 +489,11 @@ func openShellCodexBinaries() []string {
 // openShellBackendConfiguration owns the gateway connection shared by the Sandbox and
 // Credential Gateway Drivers.
 func openShellBackendConfiguration(s *developmentState) map[string]any {
-	if s.ProtectedEgress {
+	if s.authenticatedOpenShell() {
+		drivers := map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID}
+		if s.ProtectedEgress {
+			drivers["credential_proxy"] = developmentEgressDriver
+		}
 		return map[string]any{
 			"id": "openshell", "type": "openshell",
 			"configuration": map[string]any{
@@ -497,7 +501,7 @@ func openShellBackendConfiguration(s *developmentState) map[string]any {
 				"rootCertificatePath": "/etc/openclaw/openshell/ca.crt", "requestTimeoutMs": 30000,
 				"auth": map[string]string{"mode": "mtls", "certificatePath": "/etc/openclaw/openshell/tls.crt", "privateKeyPath": "/etc/openclaw/openshell/tls.key"},
 			},
-			"drivers": map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID, "credential_proxy": developmentEgressDriver},
+			"drivers": drivers,
 		}
 	}
 	endpoint := fmt.Sprintf("http://k3d-%s-server-0:%d", s.Cluster, openShellNodePort)

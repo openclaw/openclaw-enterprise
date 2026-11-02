@@ -4,9 +4,9 @@ Sign in to the HTTPS Console with the owner account prepared in [OpenShell on EK
 
 ## Choose a Console deployment action
 
-<Snippet file="../../assets/openshell-quickstart/console-deployment-actions.md" />
+<Snippet file="../../snippets/openshell-quickstart/console-deployment-actions.md" />
 
-[Illustrated steps on GitHub](https://github.com/openclaw/openclaw-enterprise/blob/main/docs/assets/openshell-quickstart/console-deployment-actions.md)
+[Illustrated steps on GitHub](https://github.com/openclaw/openclaw-enterprise/blob/main/docs/snippets/openshell-quickstart/console-deployment-actions.md)
 
 For the checks below, use the same Agent, Namespace, Bash shell and private session directory from the installation guide. Record each deployment ID and the original browser chat path. Start with the verified read-only repository map and the exact per-Agent native origin.
 

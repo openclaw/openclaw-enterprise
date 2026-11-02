@@ -75,4 +75,4 @@ Expect `Stopped Kubernetes development stack <cluster>`. On failure, use the ret
 
 ## Next steps
 
-<Snippet file="../../assets/openshell-quickstart/next-steps.md" />
+<Snippet file="../../snippets/openshell-quickstart/next-steps.md" />

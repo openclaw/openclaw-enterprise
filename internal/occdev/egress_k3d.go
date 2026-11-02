@@ -110,7 +110,7 @@ func developmentAuthorityEndpoint(state *developmentState) string {
 	return fmt.Sprintf("https://%s:%d", developmentAuthorityHostname(state), developmentEgressPort)
 }
 
-func developmentProtectedOpenShellValues(state *developmentState) map[string]any {
+func developmentAuthenticatedOpenShellValues(state *developmentState) map[string]any {
 	values := map[string]any{
 		"pkiInitJob": map[string]any{"enabled": true},
 		"server": map[string]any{
@@ -118,19 +118,30 @@ func developmentProtectedOpenShellValues(state *developmentState) map[string]any
 			"auth":       map[string]any{"allowUnauthenticatedUsers": false},
 			"tls":        map[string]any{"enableMtls": true},
 		},
-		"gatewayConfig": map[string]any{
-			"openshell.supervisor.middleware": []any{map[string]any{
-				"name":                     developmentEgressMiddleware,
-				"grpc_endpoint":            developmentAuthorityEndpoint(state),
-				"audience":                 developmentEgressAudience,
-				"tls_ca_cert_path":         "/etc/openshell/oce-authority/ca.crt",
-				"allow_insecure_transport": false,
-				"max_payload_bytes":        developmentEgressPayload,
-				"timeout":                  developmentEgressTimeout,
-				"binding_policy":           "allowlist",
-				"bindings":                 []string{"http_request_pre_credentials"},
-			}},
-		},
+		"gatewayConfig": map[string]any{"openshell.supervisor.middleware": []any{}},
+	}
+	if state.OpenShellHostGatewayIP != "" {
+		values["server"].(map[string]any)["hostGatewayIP"] = state.OpenShellHostGatewayIP
+	}
+	return values
+}
+
+// TODO(#4437): Remove this optional static-inference profile and its authority.
+// Gateway authentication is independent and remains enabled without this profile.
+func developmentProtectedOpenShellValues(state *developmentState) map[string]any {
+	values := developmentAuthenticatedOpenShellValues(state)
+	values["gatewayConfig"] = map[string]any{
+		"openshell.supervisor.middleware": []any{map[string]any{
+			"name":                     developmentEgressMiddleware,
+			"grpc_endpoint":            developmentAuthorityEndpoint(state),
+			"audience":                 developmentEgressAudience,
+			"tls_ca_cert_path":         "/etc/openshell/oce-authority/ca.crt",
+			"allow_insecure_transport": false,
+			"max_payload_bytes":        developmentEgressPayload,
+			"timeout":                  developmentEgressTimeout,
+			"binding_policy":           "allowlist",
+			"bindings":                 []string{"http_request_pre_credentials"},
+		}},
 	}
 	server := values["server"].(map[string]any)
 	server["extraVolumes"] = []any{map[string]any{
@@ -140,18 +151,19 @@ func developmentProtectedOpenShellValues(state *developmentState) map[string]any
 	server["extraVolumeMounts"] = []any{map[string]any{
 		"name": "oce-authority-ca", "mountPath": "/etc/openshell/oce-authority", "readOnly": true,
 	}}
-	if state.OpenShellHostGatewayIP != "" {
-		values["server"].(map[string]any)["hostGatewayIP"] = state.OpenShellHostGatewayIP
-	}
 	return values
 }
 
-func (r *runner) writeProtectedOpenShellValues(state *developmentState) (string, error) {
-	data, err := json.Marshal(developmentProtectedOpenShellValues(state))
+func (r *runner) writeOpenShellGatewayValues(state *developmentState) (string, error) {
+	values := developmentAuthenticatedOpenShellValues(state)
+	if state.ProtectedEgress {
+		values = developmentProtectedOpenShellValues(state)
+	}
+	data, err := json.Marshal(values)
 	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(state.directory, "openshell-protected-values.json")
+	path := filepath.Join(state.directory, "openshell-gateway-values.json")
 	return path, exclusiveWrite(path, data, 0600)
 }
 

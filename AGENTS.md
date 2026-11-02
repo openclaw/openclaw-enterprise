@@ -268,7 +268,10 @@ through their generator. Preserve historical decisions, statuses, and Manual Not
 
 Exceeding 2,500 words requires **no logical destination for the excess content**
 and **explicit human approval**. Record the approved scope and reason before
-adding a narrow checker allowance.
+adding `nolimit` to the page's YAML `tags` list. Tagged pages are exempt from
+both length thresholds, but the checker still reports their word counts.
+Use the same tag in the generator for a generated page; do not add path-specific
+exceptions to the checker.
 
 Approved exception: `docs/reference/api.md` may exceed the length thresholds.
 The user approved keeping the complete generated HTTP API reference in one page
@@ -279,6 +282,11 @@ page.
 Approved exception: `docs/testing/ci.md` is exempt from the length thresholds.
 The user approved keeping CI configuration and test coverage in one guide. The
 checker still reports its word count. This exception applies only to that page.
+
+Approved exception: `docs/guides/deploy/production-installation.md` is exempt
+from the length thresholds. The user approved keeping the production installation
+procedure and its embedded prerequisites in one page. The checker still reports
+its word count. This exception applies only to that page.
 
 Files named exactly `AGENTS.md`, including nested instruction documents, are
 also exempt from the length thresholds. The checker still reports their word
