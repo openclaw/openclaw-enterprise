@@ -2234,7 +2234,20 @@ function buildRendered(profile, parsed, diagnostics) {
     "Retrieve the bootstrap service key from the protected bootstrap PVC and verify authenticated OCC access.",
   );
 
-  return { values, installation };
+  // Helm merges these values over the chart default `dns.podLabels` (`k8s-app: kube-dns`), and
+  // the DNS egress rule needs every merged label. A null deletes the default for a selector
+  // without it. `installation` keeps the exact selector, as Compute does not merge.
+  const dnsPodLabels = values.dns.podLabels;
+  return {
+    values: {
+      ...values,
+      dns: {
+        ...values.dns,
+        podLabels: { ...dnsPodLabels, ...("k8s-app" in dnsPodLabels ? {} : { "k8s-app": null }) },
+      },
+    },
+    installation,
+  };
 }
 
 async function resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics) {
