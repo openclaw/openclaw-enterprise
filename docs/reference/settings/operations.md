@@ -1,8 +1,5 @@
 # Worker, Compose, and PostgreSQL settings
 
-This reference owns worker, compose, and postgresql settings. Start with the
-[settings reference](../settings.md) for startup configuration and precedence.
-
 ## PostgreSQL connection authentication
 
 Both PostgreSQL API modes, the worker, shared Installation bootstrap, and
@@ -36,6 +33,12 @@ See [operator setup](../../guides/deploy/production-installation.md#azure-postgr
 for deployment-owned identity inputs and chart limits, and
 [PostgreSQL testing](../../testing/postgresql.md#azure-workload-identity-connections)
 for the available connection proof and its limits.
+
+## PostgreSQL server compatibility
+
+Use [validated PostgreSQL versions](../../guides/deploy/postgresql.md).
+Versions before 17 fail with `MIGRATION_SERVER_UNSUPPORTED` before catalog
+checks or migration. Other database errors remain redacted as `MIGRATION_FAILED`.
 
 ## Migration history
 

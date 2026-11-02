@@ -19,8 +19,9 @@ published: false
   and their matching source checkout and chart. Use immutable controller and
   runtime image digests. Buildx is needed only when building images. Every eligible
   node needs registry pull access; see [private registry delivery](/guides/deploy/private-registry-images/).
-- **Database:** External PostgreSQL with separate application and migration roles
-  and verified TLS. Prepare protected startup, database, authentication, and any
+- **Database:** External PostgreSQL 18.6 with separate application and migration roles
+  and verified TLS. Follow [database preparation and version checks](/guides/deploy/postgresql/).
+  Prepare protected startup, database, authentication, and any
   selected Backend credentials during installation.
 - **Node pools:** A trusted pool for OCC and dedicated Agent gateways, separate
   from the pool for Harness and embedded Agent Pods. Match the reviewed labels

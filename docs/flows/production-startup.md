@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-10-30"
-last_updated_session: "authoring-run/b8400fae-dc1a-49fd-be49-5d07e9dbb899"
+updated: "2026-11-02"
+last_updated_session: "authoring-run/c6926504-08f3-4eb6-ba6c-28b3e113eede"
 ---
 
 # Production Startup Flow
@@ -42,8 +42,10 @@ graph TD
     subgraph Helm["Helm-owned startup"]
         D --> E["Render chart with native values"]
         E --> F["Run initialization Job with migrator and application roles"]
-        F --> O{"Canonical migration history?"}
-        O -->|No| P["Refuse initialization before migration DDL"]
+        F --> V{"PostgreSQL before 17?"}
+        V -->|Yes| P["Refuse initialization before migration DDL"]
+        V -->|No| O{"Canonical migration history?"}
+        O -->|No| P
         O -->|Yes| G["Apply migrations, bootstrap administrators and write protected key output"]
         G --> H["Start private API Deployment"]
         G --> I["Start independent worker Deployment"]
@@ -151,7 +153,12 @@ not `.` or a `..` prefix.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
-Migration verifies the SQL source, dedicated role, receipts and catalog under
+After verifying SQL source, migration checks the server version before locking
+or reading catalogs. PostgreSQL
+before 17 fails with `MIGRATION_SERVER_UNSUPPORTED` and a fixed recovery message;
+the same guard covers first install, upgrade, and `--check`. See
+[server compatibility](../reference/settings/operations.md#postgresql-server-compatibility).
+Migration then verifies the dedicated role, receipts and catalog under
 one advisory lock on Drizzle's transaction connection. For a recognized history, it accepts the native catalog digest or
 the reviewed restore digest bound to it. Unsupported histories fail before
 migration DDL and bootstrap. See [migration history and recovery](../reference/settings/operations.md#migration-history).
@@ -347,6 +354,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-02 15:26: Refuse incompatible PostgreSQL servers before catalog checks and migration. (authoring-run/c6926504-08f3-4eb6-ba6c-28b3e113eede - 9138a0f9617742d9c4997156e7a6cf19f6241c10)
 
 - 2026-10-30 14:36: Attempt every worker resource close in order after a close fails. (authoring-run/b8400fae-dc1a-49fd-be49-5d07e9dbb899 - 2b3b206b63525e31a6170e239991394b7909fc15)
 
