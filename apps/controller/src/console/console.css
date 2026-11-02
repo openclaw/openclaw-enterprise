@@ -2590,13 +2590,16 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   border: 0;
   background: none;
 }
+.agent-card:not(.agent-form) > .repository-selection > .hint {
+  margin-bottom: 0;
+}
 /* An empty status line in a tab card or the picker adds no band; it stays a live region. */
 .agent-card > .hint:empty,
 .repository-selection > .hint:empty {
   margin: 0;
 }
 /* With no repository choices to list (repository access not set up), the empty list adds no
-   band above the access limits (finding 2402). */
+   band below the setup guidance (finding 2402). */
 .repository-options:has(> .repository-discovery > #repository-results:only-child:empty) {
   margin-top: 0;
 }
