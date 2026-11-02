@@ -19,8 +19,9 @@ npm run docs:dev
 Open [the local preview](http://127.0.0.1:4173). The server binds only to loopback.
 Save an edit to rebuild the site and refresh connected tabs automatically. Each
 tab keeps its URL and heading anchor. The preview watches `docs/`, including
-shared snippets, assets, and `docs.json`, plus `scripts/docs-site/` and the OpenAPI
-contracts. File creation, deletion, and renames also trigger a rebuild.
+shared snippets, assets, and `docs.json`, plus `scripts/docs-site/`, OpenAPI
+contracts, and deployment examples under `deploy/examples/`. File creation,
+deletion, and renames also trigger a rebuild.
 
 The preview combines rapid edits and runs one build at a time. It publishes pages
 and their search index together after both succeed. A failed build shows the
@@ -53,6 +54,7 @@ on GitHub. These links require repository access. External URLs are not fetched.
 `docs:check` checks word limits, navigation, and links without writing the site or
 running a test suite.
 The standalone build writes `dist/docs/` without a watcher or live-refresh script.
+To inspect that output without rebuilding, run `node scripts/docs-site/serve.mjs`.
 Do not add or run tests for documentation changes, including docs-site
 presentation; use the build, formatting, link checks, and visual inspection.
 

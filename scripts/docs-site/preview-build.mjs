@@ -27,7 +27,12 @@ function sourceSnapshot() {
       }
     }
   }
-  for (const source of ["docs", "scripts/docs-site", "packages/contracts/openapi"]) {
+  for (const source of [
+    "docs",
+    "scripts/docs-site",
+    "packages/contracts/openapi",
+    "deploy/examples",
+  ]) {
     visit(source);
   }
   return entries.join("\n");

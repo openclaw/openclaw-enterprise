@@ -2,22 +2,25 @@ import { createReadStream } from "node:fs";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { extname, resolve, sep } from "node:path";
+import { parseArgs } from "node:util";
 import { createPreviewBuild } from "./preview-build.mjs";
 
-const args = process.argv.slice(2);
-if (args.length !== 0 && (args.length !== 2 || args[0] !== "--port" || !/^\d+$/.test(args[1]))) {
-  throw new Error("Usage: node scripts/docs-site/serve.mjs [--port <0..65535>]");
-}
-const port = args.length ? Number(args[1]) : 4173;
-if (!Number.isInteger(port) || port < 0 || port > 65535) {
+const { values } = parseArgs({
+  options: { watch: { type: "boolean" }, port: { type: "string", default: "4173" } },
+});
+const port = Number(values.port);
+if (!/^\d+$/.test(values.port) || !Number.isInteger(port) || port < 0 || port > 65535) {
   throw new Error("Invalid preview port");
 }
 const clients = new Set();
-const preview = await createPreviewBuild((state) => {
-  for (const client of clients) {
-    client.write(`data: ${JSON.stringify(state)}\n\n`);
-  }
-});
+const preview = values.watch
+  ? await createPreviewBuild((state) => {
+      for (const client of clients) {
+        client.write(`data: ${JSON.stringify(state)}\n\n`);
+      }
+    })
+  : undefined;
+const staticRoot = preview ? undefined : await realpath(resolve("dist/docs"));
 const refreshScript = (revision) =>
   `<script type="module" src="/__docs_preview/client.mjs" data-docs-preview="${revision}"></script>`;
 const mime = {
@@ -59,7 +62,7 @@ const server = createServer(async (request, response) => {
     response.writeHead(403).end("Loopback preview only");
     return;
   }
-  if (pathname === "/__docs_preview/events") {
+  if (preview && pathname === "/__docs_preview/events") {
     response.writeHead(200, { "Content-Type": "text/event-stream", Connection: "keep-alive" });
     if (request.method === "HEAD") {
       response.end();
@@ -70,7 +73,7 @@ const server = createServer(async (request, response) => {
     response.on("close", () => clients.delete(response));
     return;
   }
-  if (pathname === "/__docs_preview/client.mjs") {
+  if (preview && pathname === "/__docs_preview/client.mjs") {
     try {
       const client = await readFile(new URL("./preview-client.mjs", import.meta.url));
       response.writeHead(200, { "Content-Type": mime[".mjs"] });
@@ -80,8 +83,8 @@ const server = createServer(async (request, response) => {
     }
     return;
   }
-  const generation = preview.acquire();
-  if (!generation) {
+  const generation = preview?.acquire();
+  if (preview && !generation) {
     response.writeHead(503, { "Content-Type": mime[".html"], "Retry-After": "1" });
     response.end(
       request.method === "HEAD"
@@ -90,8 +93,10 @@ const server = createServer(async (request, response) => {
     );
     return;
   }
-  response.once("close", () => generation.release());
-  const root = generation.directory;
+  if (generation) {
+    response.once("close", () => generation.release());
+  }
+  const root = generation?.directory ?? staticRoot;
   try {
     let file = resolve(root, `.${pathname}`);
     if (!file.startsWith(`${root}${sep}`) && file !== root) {
@@ -113,7 +118,7 @@ const server = createServer(async (request, response) => {
     if (!details.isFile()) {
       throw new Error("Not a file");
     }
-    if (extname(file) === ".html") {
+    if (generation && extname(file) === ".html") {
       const html = (await readFile(file, "utf8")).replace(
         "</body>",
         `${refreshScript(generation.revision)}</body>`,
@@ -137,6 +142,10 @@ const server = createServer(async (request, response) => {
         .pipe(response);
     }
   } catch {
+    if (!generation) {
+      response.writeHead(404).end("Page not found");
+      return;
+    }
     response.writeHead(404, { "Content-Type": mime[".html"] });
     response.end(
       request.method === "HEAD"
@@ -148,7 +157,7 @@ const server = createServer(async (request, response) => {
 
 server.on("error", async (error) => {
   console.error(`Docs preview: ${error.message}`);
-  await preview.close();
+  await preview?.close();
   process.exitCode = 1;
 });
 server.listen(port, "127.0.0.1", () => {
@@ -166,6 +175,6 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     }
     server.close();
     server.closeAllConnections();
-    await preview.close();
+    await preview?.close();
   });
 }

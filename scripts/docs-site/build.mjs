@@ -20,6 +20,19 @@ const checkOnly = values.check;
 const root = process.cwd();
 const docs = path.join(root, "docs");
 const output = path.resolve(root, values.output ?? "dist/docs");
+if (values.output !== undefined) {
+  const previewPath = path.relative(path.join(root, "dist"), output).split(path.sep).join("/");
+  if (!/^\.docs-preview-[a-zA-Z0-9]{6}\/[1-9]\d*$/.test(previewPath)) {
+    throw new Error("Preview output must be a new build directory under dist/.docs-preview-*/");
+  }
+  const parent = path.dirname(output);
+  if (
+    fs.realpathSync(parent) !==
+    path.join(fs.realpathSync(path.join(root, "dist")), path.basename(parent))
+  ) {
+    throw new Error("Preview output cannot use a linked directory");
+  }
+}
 const assets = path.dirname(fileURLToPath(import.meta.url));
 const repository = "https://github.com/openclaw/openclaw-enterprise";
 const themeBootstrap =
@@ -314,7 +327,12 @@ if (checkOnly) {
   process.exit(0);
 }
 
-fs.rmSync(output, { recursive: true, force: true });
+if (values.output === undefined) {
+  fs.rmSync(output, { recursive: true, force: true });
+} else {
+  // Preview builds only create a fresh directory; never delete a caller's path.
+  fs.mkdirSync(output);
+}
 fs.mkdirSync(path.join(output, "assets"), { recursive: true });
 if (fs.existsSync(path.join(docs, "assets"))) {
   fs.cpSync(path.join(docs, "assets"), path.join(output, "assets"), { recursive: true });
