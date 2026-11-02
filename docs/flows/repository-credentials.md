@@ -138,11 +138,9 @@ All handles are sealed before awaiting callbacks. Unpublished custody occupies
 the configured session capacity until callbacks settle and bytes are disposed.
 
 `apps/controller/src/drivers/repo/github/credentials/client/config.ts:writeClientConfiguration`
-stages private files, synchronizes writes and renames the directory into place.
-It sets new directories to `0700` and new files to `0600` on their descriptors,
-so an owner-masking umask cannot leave a successful session unreadable.
-CLI output reports status and location. After a write failure, the CLI attempts
-closure and reports the admitted session ID for operator follow-up.
+stages private files at `0600` in a `0700` directory, synchronizes and renames,
+so umask cannot drop owner read. CLI output reports status and location. A write
+failure closes and reports the admitted session ID.
 
 ### 3. Authenticate the selected client
 
