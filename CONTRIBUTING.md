@@ -31,8 +31,10 @@ production database, cluster, or credential for tests without explicit approval.
 ## Set up a development checkout
 
 Use Node.js 24.22.1 or newer (26.x requires 26.12.1 or newer), the exact pnpm version in [`package.json`](package.json),
-and the Go version selected by [`go.mod`](go.mod). In a trusted checkout,
-explicitly prepare dependencies with:
+and the Go version selected by [`go.mod`](go.mod).
+For `pnpm format:fix`, use the Bun version in [`.bun-version`](.bun-version).
+`pnpm format:check` still uses Prettier, including the CI content cache.
+In a trusted checkout, explicitly prepare dependencies with:
 
 ```sh
 pnpm install --frozen-lockfile
