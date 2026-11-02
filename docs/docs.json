@@ -576,10 +576,6 @@
                     "label": "EKS Browser Access"
                   },
                   {
-                    "page": "guides/deploy/eks-openshell-owner-session",
-                    "label": "EKS Owner Session"
-                  },
-                  {
                     "page": "guides/quickstart",
                     "label": "Local Setup Without OpenShell"
                   },
@@ -1189,6 +1185,16 @@
         "open-the-agent-and-continue-a-chat": "/guides/deploy/local-setup/#7-verify-a-turn-through-openclaw",
         "restore-read-only-git-and-keep-the-agent-running": "/guides/repository-credentials/openshell-read-only/",
         "renew-expired-read-only-access": "/guides/repository-credentials/openshell-read-only/#renew-expired-read-only-access"
+      }
+    },
+    {
+      "from": "/guides/deploy/eks-openshell-owner-session/",
+      "to": "/guides/deploy/quickstart-session/",
+      "anchors": {
+        "choose-a-console-deployment-action": "/guides/deploy/eks-openshell-setup/#6-grant-model-access-and-deploy",
+        "complete-onboarding-in-the-browser": "/guides/deploy/eks-openshell-setup/#7-complete-onboarding-in-the-control-ui",
+        "temporarily-grant-one-push": "/guides/repository-credentials/openshell-git-push/",
+        "restore-read-only-access": "/guides/repository-credentials/openshell-read-only/"
       }
     }
   ]
