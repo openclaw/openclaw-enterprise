@@ -1,4 +1,7 @@
-import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import {
+  managedGoogleInstall,
+  managedSlackInstall,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspace-chart.mjs";
 import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
@@ -1286,6 +1289,171 @@ test("a selected Google account uses its exact provider and a signed, fail-close
   assert.equal(created.spec.environment.OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV, undefined);
   assert.equal(created.spec.policy.network_middlewares?.[registration], undefined);
   assert.equal(created.spec.policy.network_policies["oce-google-requests"], undefined);
+});
+
+test("OpenShell limits a Slack connection to the revision's exact MCP tools and recovers after detach", async () => {
+  const client = workspaceGatewayClient();
+  const driver = openShellDriver(client);
+  const { context, revision, requirements } = runtimeSandboxFixture(driver, {
+    harnessId: "openclaw",
+  });
+  const sourceId = "cs_00000000-0000-4000-8000-000000000091";
+  const ref = openShellProviderName(sourceId);
+  const providerName = "_provider_" + ref.replaceAll("-", "_");
+  const routeName = "oce-slack-mcp";
+  const broadGrant = {
+    id: "slack-bypass",
+    host: "*.slack.com",
+    ports: [{ from: 443, to: 443 }],
+    binary: "/usr/bin/curl",
+  };
+  const selection = {
+    enabled: true,
+    driverPolicy: {
+      releaseSha256: managedSlackInstall.releaseSha256,
+      credentials: { account: sourceId },
+      toolNames: ["slack_search_public"],
+    },
+  };
+  revision.plugins = {
+    driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+    plugins: { [managedSlackInstall.id]: selection },
+  };
+  requirements.credentialAttachments = [
+    {
+      sourceId,
+      ref,
+      requestScope: {
+        host: "mcp.slack.com",
+        port: 443,
+        path: "/mcp",
+        scopes: ["search:read.public"],
+      },
+    },
+  ];
+  requirements.environment.push({ name: "SLACK_MCP_TOKEN", value: "arbitrary-unbound-value" });
+  let created;
+  let broadenEffective = false;
+  let updateCount = 0;
+  client.createSandbox = async ({ name, workspace, labels, annotations, spec }) => {
+    created = {
+      name,
+      workspace,
+      labels,
+      annotations,
+      spec: structuredClone(spec),
+      serviceUrls: {},
+      resourceVersion: "1",
+    };
+    return created;
+  };
+  client.getSandbox = async () => created;
+  client.updatePolicy = async () => {
+    updateCount++;
+  };
+  client.getSandboxConfig = async (workspace) => {
+    const policy = structuredClone(created.spec.policy);
+    const route = policy.network_policies[routeName];
+    route.endpoints[0].provider_credentialed = true;
+    route.endpoints[0].mcp._strict_tool_names = "strict_tool_names";
+    policy.network_policies[providerName] = {
+      name: providerName,
+      binaries: [{ path: "/usr/local/bin/node" }],
+      endpoints: [
+        {
+          host: "mcp.slack.com",
+          port: 443,
+          path: "/mcp",
+          protocol: "mcp",
+          enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+          mcp: { strict_tool_names: true, versions: [...managedSlackInstall.mcpVersions] },
+          rules: [{ allow: { method: "ping" } }],
+          provider_credentialed: true,
+        },
+      ],
+    };
+    if (broadenEffective) {
+      policy.network_policies.unexpected = { endpoints: [{ host: "mcp.slack.com", port: 443 }] };
+    }
+    return {
+      workspace,
+      policy_source: 1,
+      configuration_admitted: true,
+      policy_validation_failure_mode: "fail_closed",
+      policy,
+    };
+  };
+  const provision = () => driver.provisionHarness({ ...context, revision, requirements });
+  await driver.ensureNamespace(context);
+  revision.sandboxPolicy = { defaults: {}, additions: [broadGrant] };
+  await assert.rejects(provision, /overlaps the credentialed Slack MCP endpoint/);
+  assert.equal(created, undefined);
+  revision.sandboxPolicy = { defaults: {}, additions: [] };
+  const plugins = revision.plugins;
+  delete revision.plugins;
+  await provision();
+  assert.deepEqual(created.spec.policy.network_policies[routeName].endpoints[0].rules, [
+    { allow: { method: "ping" } },
+  ]);
+  assert.ok(created.spec.providers.includes(ref));
+  created = undefined;
+  revision.plugins = plugins;
+  await provision();
+  const route = created.spec.policy.network_policies[routeName];
+  assert.equal(route.endpoints[0].protocol, "mcp");
+  assert.deepEqual(route.endpoints[0].ports, [443]);
+  assert.deepEqual(route.endpoints[0].rules, [
+    { allow: { method: "ping" } },
+    { allow: { method: "initialize" } },
+    { allow: { method: "notifications/initialized" } },
+    { allow: { method: "tools/list" } },
+    { allow: { method: "tools/call", params: { name: { glob: "slack_search_public" } } } },
+  ]);
+  assert.equal(created.spec.environment.SLACK_MCP_TOKEN, undefined);
+  assert.equal(created.spec.policy.network_middlewares, undefined);
+
+  const snapshot = {
+    driverId: driver.id,
+    implementation: driver.implementation,
+    defaults: {},
+    additions: [broadGrant],
+  };
+  revision.executionAdmission = { mode: "standard" };
+  await assert.rejects(
+    driver.applyNetworkPolicy(
+      { ...context, revision },
+      {
+        snapshot,
+        expectedProviderVersion: "1",
+        operationId: "slack-policy-update",
+      },
+    ),
+    /overlaps the credentialed Slack MCP endpoint/,
+  );
+  assert.equal(updateCount, 0);
+  await driver.applyNetworkPolicy(
+    { ...context, revision },
+    {
+      snapshot: { ...snapshot, additions: [{ ...broadGrant, host: "docs.example.test" }] },
+      expectedProviderVersion: "1",
+      operationId: "unrelated-policy-update",
+    },
+  );
+  assert.equal(updateCount, 1);
+  broadenEffective = true;
+  await assert.rejects(provision, /overlaps the credentialed Slack MCP endpoint/);
+  broadenEffective = false;
+
+  revision.credentialSources = [{ sourceId }];
+  requirements.credentialAttachments = [];
+  await assert.rejects(provision, /exact AgentRevision ownership and content/);
+  created.spec.providers = created.spec.providers.filter((name) => name !== ref);
+  route.endpoints[0].mcp._strict_tool_names = "strict_tool_names";
+  await provision();
+  created = undefined;
+  await provision();
+  assert.equal(created.spec.policy.network_policies[routeName], undefined);
+  assert.ok(!created.spec.providers.includes(ref));
 });
 
 test("OpenShell provisions native OpenClaw without exposing an inbound Harness service", async () => {
@@ -4579,7 +4747,11 @@ function credentialGatewayOverProviders({
             credential_gateway: "credential-gateway-openshell",
             ...(refresh && { credential_refresh: "credential-refresh-openshell" }),
           },
-          client: { clientForNamespace: () => client, placement: () => undefined },
+          client: {
+            clientForNamespace: () => client,
+            credentialClientForNamespace: () => client,
+            placement: () => undefined,
+          },
         },
       },
     );
@@ -5042,6 +5214,60 @@ test("Google requires an OAuth source whose effective binary list is exactly the
       ["import"],
     );
   }
+});
+
+test("a Slack MCP source stays independent and cannot acquire a broad REST credential route", async () => {
+  const f = credentialGatewayOverProviders({
+    toolBinaries: ["/usr/bin/curl", "/usr/local/bin/node"],
+  });
+  const sourceId = "cs_00000000-0000-4000-8000-000000000092";
+  const context = f.context(sourceId);
+  const config = {
+    protocol: "mcp",
+    host: "mcp.slack.com",
+    path: "/mcp",
+    env_var: "SLACK_MCP_TOKEN",
+  };
+  const source = { ...context.source, type: "bearer-token", config };
+  const sourceContext = { ...context, source };
+  const register = (config) =>
+    f.driver.registerSource(sourceContext, {
+      type: source.type,
+      config,
+      secrets: { token: "synthetic-slack-bearer" },
+    });
+  await assert.rejects(register({ ...config, path: "/**" }), /reviewed settings/);
+  await assert.rejects(register({ ...config, protocol: "rest" }), /reviewed settings/);
+  assert.deepEqual(f.profileWrites, []);
+  await register(config);
+  const ref = openShellProviderName(sourceId);
+  const profile = f.profiles.get(ref);
+  assert.deepEqual(profile.binaries, ["/usr/local/bin/node"]);
+  assert.equal(profile.endpoints[0].protocol, "mcp");
+  assert.equal(profile.endpoints[0].access, undefined);
+  assert.deepEqual(profile.endpoints[0].rules, [{ allow: { method: "ping" } }]);
+  assert.deepEqual(await f.driver.attachForRevision(f.revisionContext([source])), [
+    {
+      sourceId,
+      ref,
+      requestScope: {
+        host: "mcp.slack.com",
+        port: 443,
+        path: "/mcp",
+        scopes: [],
+      },
+    },
+  ]);
+  const legacy = {
+    ...source,
+    id: "cs_00000000-0000-4000-8000-000000000093",
+    config: { ...config, env_var: "LEGACY_SLACK_TOKEN" },
+  };
+  delete legacy.config.protocol;
+  await assert.rejects(
+    f.driver.attachForRevision(f.revisionContext([source, legacy])),
+    /conflicts with another credential for its host/,
+  );
 });
 
 test("the OpenShell bearer-token type exists only with toolBinaries and validates its endpoint", async () => {

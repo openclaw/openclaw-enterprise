@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-31
-last_updated_session: authoring-run/86b48c89-0c80-493f-b48a-6999988d4766
+updated: 2026-11-02
+last_updated_session: authoring-run/84451153-a081-4e74-aa29-e1a4acecddad
 ---
 
 # Agent Plugin Deployment Flow
@@ -138,11 +138,15 @@ Installation uses `GET /installation`; Agent editors use
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC revalidates Configuration and selections, snapshots Driver and policies, and queues the revision. Startup resolves native metadata.
+OCC revalidates selections and queues a revision with the Driver and policies. Startup resolves native metadata.
 
-For Google Workspace, the Gateway loads the skill. The Sandbox Driver binds the selected Agent credential’s host, path and scopes to the pinned release. OpenShell injects a bearer after the cluster’s shared guard checks each `gog` request against the binding and release operation map. Withdrawal detaches the credential. Worker recovery preserves other attachments. [Deployment and inspection](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+The Gateway loads the Google skill. OpenShell injects the bearer after the shared
+guard checks the `gog` operation and the account’s host, path, and scopes.
+Other attachments survive withdrawal. [Deployment and inspection](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
-For Slack, the worker verifies the pinned MCP descriptor and stages the server with `enabled: false`.
+OCE stores Slack’s access token through the Secret Driver. The worker stages the
+MCP server. An independently attached source permits MCP `ping`. The Sandbox
+Driver rejects overlapping routes and removes injection after withdrawal.
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -370,6 +374,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-02 22:29: Trace Slack credential policy. (authoring-run/84451153-a081-4e74-aa29-e1a4acecddad - 5c0623f136d881356cec3c104b8657c761c14782)
 
 - 2026-10-31 05:52: Classify native install failures. (authoring-run/86b48c89-0c80-493f-b48a-6999988d4766 - 6d941c15081e95ef36b4ba1ffbbbc0b117972c0a)
 - 2026-10-31 03:36: Restore experimental plugin search with the upstream Codex version. (authoring-run/dc99918c-2f5c-4141-bffd-b216830017d0 - 25364fcfdc905e95b5a813a6cd7b2de47b66ca71)

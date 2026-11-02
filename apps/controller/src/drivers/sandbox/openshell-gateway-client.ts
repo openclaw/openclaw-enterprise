@@ -148,8 +148,9 @@ export interface OpenShellProviderProfileEndpoint {
   readonly protocol: string;
   readonly path?: string;
   readonly access?: "NETWORK_ACCESS_PRESET_FULL" | "NETWORK_ACCESS_PRESET_READ_WRITE";
+  readonly mcp?: { readonly strict_tool_names: boolean; readonly versions: readonly string[] };
   readonly rules?: readonly {
-    readonly allow: { readonly method: string; readonly path: string };
+    readonly allow: { readonly method: string; readonly path?: string };
   }[];
 }
 

@@ -29,7 +29,19 @@ import {
   verifyPluginRequestGuard,
   verifyManagedPluginRegistration,
 } from "./openshell-plugin-policy.ts";
-import { managedCredentialBinding, managedGoogleInstall } from "../plugin/managed-catalog.ts";
+import {
+  assertNoSlackMcpRouteOverlap,
+  openShellSlackMcpPolicy,
+  slackMcpNetwork,
+  slackMcpNetworkName,
+  verifySlackMcpPolicy,
+} from "./openshell-slack-mcp-policy.ts";
+import {
+  managedCredentialBinding,
+  managedGoogleInstall,
+  managedSlackCredentialBinding,
+  managedSlackInstall,
+} from "../plugin/managed-catalog.ts";
 import { openShellLogDecisions } from "./openshell-log-decisions.ts";
 import { qualifyOpenShellCodexArtifactRules } from "./openshell-codex-artifacts.ts";
 import { workspaceNodeNetworkPolicy } from "./openshell-workspace-node-policy.ts";
@@ -2227,6 +2239,7 @@ function sandboxSpec(
   workspaceNodeBinding?: WorkspaceNodeBinding,
   egressPolicy?: Readonly<Record<string, unknown>>,
   plugin?: ReturnType<typeof openShellPluginPolicy>,
+  slack?: ReturnType<typeof openShellSlackMcpPolicy>,
 ) {
   const defaults = revision.sandboxPolicy?.defaults ?? networkPolicies(options);
   const additions = openShellAgentNetworkRules(revision.sandboxPolicy?.additions ?? []);
@@ -2238,6 +2251,10 @@ function sandboxSpec(
         "The Google plugin network rule name is reserved.",
       );
     }
+  }
+  if (slack) {
+    assertNoSlackMcpRouteOverlap(defaults);
+    assertNoSlackMcpRouteOverlap(additions);
   }
   const dataMount = sandboxDataMount(options, requirements);
   const workspace = workspaceVolumeMounts(requirements, dataMount, revision.id);
@@ -2306,6 +2323,7 @@ function sandboxSpec(
         ...(egressPolicy ? asRecord(egressPolicy.network_policies) : defaults),
         ...(egressPolicy ? {} : additions),
         ...plugin?.networks,
+        ...(slack && { [slack.network.name]: slack.network }),
         ...(runtimeProvider === undefined || workspaceNodeBinding === undefined
           ? {}
           : workspaceNodeNetworkPolicy(workspaceNodeBinding)),
@@ -2742,7 +2760,7 @@ function canonicalProtobufValues(value: unknown): unknown {
   }
   const discriminator = record.kind;
   return Object.fromEntries(
-    Object.entries(record)
+    Object.entries(withoutSyntheticOneofs(record))
       .filter(
         ([key]) =>
           key !== "kind" ||
@@ -3301,6 +3319,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (plugin) {
       await verifyManagedPluginRegistration(client, context.signal);
     }
+    const slack = openShellSlackMcpPolicy(
+      context.revision,
+      context.requirements,
+      this.options.providers ?? [],
+    );
     // Backstop for the admission check (finding 2144): the revision's own policy is immutable,
     // so a retry cannot clear an overlap.
     const gitOverlap =
@@ -3336,13 +3359,16 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell Git cannot share the protected execution proxy profile.",
       );
     }
-    const checkGuard = async () => {
+    const checkEffectivePolicy = async () => {
+      const config =
+        plugin || slack
+          ? await client.getSandboxConfig?.(workspace, sandbox.resourceName, context.signal)
+          : undefined;
       if (plugin) {
-        verifyPluginRequestGuard(
-          await client.getSandboxConfig?.(workspace, sandbox.resourceName, context.signal),
-          plugin,
-          workspace,
-        );
+        verifyPluginRequestGuard(config, plugin, workspace);
+      }
+      if (slack) {
+        verifySlackMcpPolicy(config, slack, workspace);
       }
     };
     const exposed = exposesHarnessPort(context.requirements, codex);
@@ -3394,6 +3420,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           WORKSPACE_NODE_SETUP_ENVIRONMENT,
           WORKSPACE_NODE_CA_ENVIRONMENT,
           managedGoogleCredentialEnvironment,
+          ...(!codex ? [managedSlackInstall.credentialEnvironment] : []),
           ...(!codex
             ? Object.values(managedGoogleInstall.credentials).map((slot) => slot.delivery.env)
             : []),
@@ -3406,6 +3433,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         runtimeCredentialMaterial.binding,
         egressPolicy,
         plugin,
+        slack,
       ),
       serviceExposures,
     };
@@ -3416,6 +3444,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         ? {}
         : workspaceNodeNetworkPolicy(runtimeCredentialMaterial.binding);
     const composedPolicies = asRecord(create.spec.policy.network_policies);
+    if (slack) {
+      assertNoSlackMcpRouteOverlap(composedPolicies, [slack.network.name]);
+    }
     if (
       !composedPolicies ||
       Object.hasOwn(composedPolicies, "workspace-node-enrollment") !==
@@ -3554,7 +3585,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           // delay when OpenShell reports that an exposed Sandbox service is ready.
           await delay(this.options.startupDelayMs, undefined, { signal: context.signal });
         }
-        await checkGuard();
+        await checkEffectivePolicy();
         await this.initializeWorkspace(context, sandbox, client);
         return result;
       }
@@ -3581,6 +3612,22 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             ...expectedSpec.policy,
             network_middlewares: previous.middlewares,
             network_policies: { ...expectedSpec.policy.network_policies, ...previous.networks },
+          },
+        };
+      }
+    }
+    const previousSlackRules = asRecord(asRecord(existing.spec?.policy)?.network_policies);
+    if (!slack && Object.hasOwn(previousSlackRules ?? {}, slackMcpNetworkName)) {
+      // Native detach removes the provider but preserves the original launch policy.
+      // Reconstruct that policy from the revision, without trusting the observed rule.
+      const binding = managedSlackCredentialBinding(context.revision.plugins?.plugins);
+      const network = slackMcpNetwork(binding?.toolNames ?? []);
+      if (sameOpenShellPolicy(previousSlackRules?.[network.name], network)) {
+        expectedSpec = {
+          ...expectedSpec,
+          policy: {
+            ...expectedSpec.policy,
+            network_policies: { ...expectedSpec.policy.network_policies, [network.name]: network },
           },
         };
       }
@@ -3617,7 +3664,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
       validateHarnessServiceUrl(service.url);
     }
-    await checkGuard();
+    await checkEffectivePolicy();
     await this.initializeWorkspace(context, sandbox, client);
     return result;
   }
@@ -4529,6 +4576,20 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           "The attached Google account requires its admitted request guard.",
         );
       }
+    }
+    const slackBinding = managedSlackCredentialBinding(context.revision.plugins?.plugins);
+    const expected = slackMcpNetwork(slackBinding?.toolNames ?? []);
+    const baselineRules = asRecord(baseline.network_policies);
+    if (sameOpenShellPolicy(baselineRules?.[expected.name], expected)) {
+      assertNoSlackMcpRouteOverlap(candidate.network_policies, [expected.name]);
+    } else if (
+      slackBinding &&
+      Array.isArray(sandbox.spec?.providers) &&
+      sandbox.spec.providers.includes(openShellProviderName(slackBinding.sourceId))
+    ) {
+      throw new SandboxNetworkPolicyConflictError(
+        "The Slack MCP route differs from the admitted revision.",
+      );
     }
     await client.updatePolicy(
       {
