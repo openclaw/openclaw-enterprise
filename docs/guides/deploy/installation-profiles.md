@@ -8,10 +8,8 @@ OpenClaw or Codex defaults without editing the production examples by hand.
 Profiles only render configuration for an already prepared environment. They do
 not create clusters, Secrets, databases, DNS, certificates, hosted plugin
 credentials, ChatGPT service accounts, repository registries, or Slack consumers.
-Before installation, prepare the [routing controllers and CRDs](workspace-routing.md#requirements),
-an accepted GatewayClass, and the service-key Secret. Profiles enable private
-routing and generate matching Helm and Installation settings; rendering does
-not verify that these cluster prerequisites exist.
+Prepare [routing prerequisites](workspace-routing.md#requirements) before installation;
+rendering does not verify cluster readiness.
 
 ## Choose a profile
 

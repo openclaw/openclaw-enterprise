@@ -9,11 +9,10 @@ and Kubernetes context. EKS also needs
 OCC API/worker Pods must share the private Envoy Service's cluster; OCC in
 Compose needs [hybrid routing](local-compose-kubernetes.md). Enabling a Helm
 value alone does not connect a Compose API to the private Service.
-The chart defaults to `gatewayRouting.enabled: true`, as do production examples.
-Install routing controllers, create the service-key Secret, and configure Helm,
-Installation settings and [proxy trust](#configure-native-gateway-authentication)
-before deploying. Helm requires the GatewayClass and Secret names but does not
-install the controllers or verify their readiness. Console starters omit
+The chart defaults to `gatewayRouting.enabled: true`. Prepare the
+[requirements](#requirements), service-key Secret, matching Helm and Installation
+settings, and [proxy trust](#configure-native-gateway-authentication) before deploying.
+Helm validates required names, not controller readiness. Console starters omit
 Driver-owned authentication.
 
 ## Runtime prerequisite for separate storage
@@ -59,18 +58,14 @@ hostname, which the certificate and Compute routes share
 
 ### Explicit opt-out
 
-For embedded Harnesses with configured direct gateway access, manual Helm values
-can set `gatewayRouting.enabled: false`. Also disable `agentNativeAdmin.enabled`
-and `gatewayRouting.sandbox.enabled`. Omit the Installation Compute
-`gatewayRouting` settings and configure its direct `network.gatewayClients` peers
-instead. See the [Compute network settings](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
-OCC workspace-file access requires the private route; direct access does not
-provide it.
+For embedded Harnesses with direct access, set `gatewayRouting.enabled: false`,
+`agentNativeAdmin.enabled: false`, and `gatewayRouting.sandbox.enabled: false`
+in manual Helm values. Omit the Installation Compute `gatewayRouting` settings
+and configure [direct `network.gatewayClients` peers](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
 
-This mode creates no private Gateway, routing certificate, or routing key mounts.
-It does not support dedicated Harness node enrollment, native admin UI, or sandbox
-preview routing. Installation profiles always enable routing; use manual YAML
-for this opt-out.
+This omits private routing resources and key mounts. Dedicated Harness enrollment,
+OCC workspace files, native admin UI, and sandbox preview routing are unavailable.
+Installation profiles always enable routing; use manual YAML for this opt-out.
 
 ### Configure private routing
 

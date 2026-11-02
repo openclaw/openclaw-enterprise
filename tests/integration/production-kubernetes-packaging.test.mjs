@@ -2329,6 +2329,7 @@ test(
       valuesFile,
       JSON.stringify({
         images: { controller: values["images.controller"] },
+        gatewayRouting: { enabled: false },
         auth: {
           baseUrl: values["auth.baseUrl"],
           secretName: values["auth.secretName"],
@@ -2418,7 +2419,7 @@ test(
     }
     await execute(process.env.OCC_YQ_BIN ?? "yq", [
       "-i",
-      ".repositoryCredentials.enabled = true | del(.repositoryCredentials.hostname, .repositoryCredentials.serviceName)",
+      ".gatewayRouting.enabled = false | .repositoryCredentials.enabled = true | del(.repositoryCredentials.hostname, .repositoryCredentials.serviceName)",
       liveValues,
     ]);
     const installation = join(directory, "installation.json");
