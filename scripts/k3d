@@ -746,6 +746,10 @@ elif [ ! -f "$env_file" ] || [ ! -f "$ready_file" ]; then
 else
   [ "$(load_state_lane)" = "$prepared_lane" ] ||
     fail "prepared state is not for the selected Harness; run './scripts/k3d down --harness $harness' before retrying"
+  # Earlier preparation recorded a checkout commit for a native image the Gateway rejects.
+  if grep -q '^OCC_K3D_OPENCLAW_COMMIT=' "$env_file"; then
+    fail "prepared native OpenClaw image predates the pinned runtime; run './scripts/k3d down --harness $harness' before retrying"
+  fi
   info "Reusing the prepared cluster, PostgreSQL database, and runtime images."
 fi
 

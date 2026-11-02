@@ -150,8 +150,7 @@ done <<< "$source_args"
 
 Keep this shell for the build. CI and the development launchers resolve the
 same manifest automatically. An explicitly selected prebuilt runtime image
-keeps its own identity. The separate [local OpenClaw checkout test path](../../docs/testing/openshell.md)
-builds its selected checkout and records that checkout's commit.
+keeps its own identity.
 
 ## Build a local runtime image
 
