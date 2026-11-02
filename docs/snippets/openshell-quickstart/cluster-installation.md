@@ -38,7 +38,9 @@ jq -n --arg cluster "$CLUSTER_NAME" --arg controller "${CONTROLLER_IMAGE:?}" --a
   --argjson apiCidrs "${API_CIDRS:?}" -f "$assets/values.jq" > "$RUN_DIR/values.json"
 ```
 
-Check the browser values **before** the first Helm install. These origins, including port 18443, are distinct from the private Envoy hostname.
+<a id="set-the-production-browser-origins-before-installing-occ"></a>
+
+Check the browser values **before** the first Helm install. Keep port 18443 in the Console origin and laptop forward. These browser origins are distinct from the private Envoy hostname. For an existing HTTPS ingress, use the [native-admin ingress requirements](native-admin.md#production-requirements) for its Console and wildcard Agent hosts.
 
 ```bash
 jq -e --arg d "$CLUSTER_NAME.oce.localhost" '
@@ -98,7 +100,9 @@ kubectl -n envoy-gateway-system get svc occ-gateway-362888b35fce -o json |
     .metadata.labels["gateway.envoyproxy.io/owning-gateway-namespace"]=="oce-system"'
 ```
 
-Helm bootstraps OCC with zero workers. [Read the owner password and service key](eks-openshell-browser.md#read-the-protected-initial-owner-files), then [install the TLS listener and laptop forward](eks-openshell-browser.md#install-the-loopback-tls-listener). Keep the same session directory and kubeconfig.
+Helm bootstraps OCC with zero workers. Keep the same session directory and kubeconfig.
+
+<Snippet file="./cluster-browser-access.md" />
 
 ## 3. Authenticate and prepare the Namespace
 

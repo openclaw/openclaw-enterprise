@@ -1,5 +1,5 @@
 ---
-tags: [human_verified]
+tags: [human_verified, nolimit]
 ---
 
 # Set up an OpenShell Codex Agent on Kubernetes

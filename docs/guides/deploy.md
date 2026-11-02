@@ -35,11 +35,12 @@ Choose the guide for your cluster:
 
 - [Standard Kubernetes](deploy/kubernetes.md): prepare an existing Kubernetes
   cluster, storage, networking, and PostgreSQL.
-- [Amazon EKS](deploy/eks.md): prepare AWS managed Kubernetes, node groups,
-  VPC networking, EBS storage, and optional RDS PostgreSQL.
+- [Amazon EKS quickstart](deploy/eks-openshell-setup.md): prepare AWS infrastructure,
+  install OCE, configure browser access, and onboard a dedicated OpenShell Agent.
 
-Both paths use the same Helm chart and shared installation procedure. Cluster
-hosting does not select the Agent model provider.
+The EKS quickstart includes installation and Agent deployment; do not repeat the
+sequence below after completing it. For a custom installation, use the shared
+procedure below. Cluster hosting does not select the Agent model provider.
 
 ### Production prerequisites
 

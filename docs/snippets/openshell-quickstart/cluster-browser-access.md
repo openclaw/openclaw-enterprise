@@ -1,21 +1,12 @@
-# Open a Kubernetes Agent from a laptop
+---
+published: false
+---
 
-Use the same Bash shell, private `RUN_DIR`, kubeconfig and `oce-system` Namespace as your Kubernetes or [EKS installation](eks-openshell-setup.md). This procedure uses the deployment’s pinned controller image to terminate TLS on Pod loopback. The laptop operator needs permission to get the listener Deployment, list its Pods and create `pods/portforward` in `oce-system`. Kubernetes carries the connection through that subresource. The listener streams HTTP and WebSocket bytes to the OCC API Service. OCC receives the original Host, Origin, browser cookie and WebSocket upgrade. OCC holds the separate private Envoy routing key and authorizes native UI access for the signed-in user.
+### Configure browser access
 
-## Set the production browser origins before installing OCC
+Continue in the same operator shell. The laptop needs OpenSSL, jq and kubectl, plus permission to read the bootstrap claim, get the listener Deployment, list its Pods and create `pods/portforward` in `oce-system`. The listener terminates TLS on Pod loopback and forwards HTTP/WebSocket traffic to OCC. OCC retains browser authentication and authorizes access to the Agent UI.
 
-Use a cluster name that is also a lowercase DNS label. Keep the browser port at 18443 in both the Helm values and the laptop forward. The quickstart values template sets these fields for the selected cluster:
-
-| Setting                               | Value                                           |
-| ------------------------------------- | ----------------------------------------------- |
-| `auth.baseUrl`                        | `https://console.<cluster>.oce.localhost:18443` |
-| `agentNativeAdmin.enabled`            | `true`                                          |
-| `agentNativeAdmin.domain`             | `agents.<cluster>.oce.localhost`                |
-| `agentNativeAdmin.sharedCookieDomain` | `<cluster>.oce.localhost`                       |
-
-Keep the private Gateway routing Service as `ClusterIP`, with its own serving certificate and hostname. For an existing HTTPS ingress, use the [native-admin ingress procedure](native-admin.md#production-requirements) with that ingress’s console and wildcard Agent hosts and their trusted cookie domain.
-
-## Read the protected initial owner files
+### Read the protected initial owner files
 
 After the Helm initialization Job succeeds, mount its output claim read-only. Use a fresh private output directory. Kubernetes permission to read this claim is privileged. The one-use reader must run in the claim’s volume topology on a control node with access to the chosen storage.
 
@@ -39,7 +30,7 @@ export OCC_SERVICE_KEY_FILE="$RUN_DIR/service-key.json"
 
 Use `ADMIN_EMAIL` and `$RUN_DIR/initial-admin-password` for ordinary Console password sign-in. The initial administrator has the required Agent administration access. Other owners need a browser account with `administer` permission on this exact Agent. The service key file authenticates operator REST calls. Retain the original bootstrap claim for recovery.
 
-## Install the loopback TLS listener
+### Install the loopback TLS listener
 
 Run the following on the laptop with OpenSSL, jq and kubectl. Create a separate private test CA for this installation. Its leaf covers the Console and one-label Agent hostnames. Keep the CA key private on the laptop. Mount only the serving certificate and its key in the listener.
 
@@ -82,11 +73,11 @@ kubectl -n "$PLATFORM_NS" rollout status deploy/oce-owner-listener
 
 The NetworkPolicy permits the listener (`app=oce-owner-browser`) to reach the exact API Service VIP and selected API Pods on TCP 8080, and the DNS VIP and CoreDNS Pods on UDP/TCP 53. The chart’s `api.clients` entry permits the matching API ingress. If an existing CoreDNS ingress policy restricts DNS clients, admit only `app=oce-owner-browser` in `oce-system` on UDP/TCP 53 alongside the existing clients. Re-render when these Services change. No new public address or Kubernetes Service is needed.
 
-In a second laptop terminal, select the same private kubeconfig and context and keep the following process running:
+Print a self-contained command for a second laptop terminal. Run that printed command there and leave it running:
 
 ```bash
-kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" -n oce-system \
-  port-forward --address 127.0.0.1 deployment/oce-owner-listener 18443:8443
+printf 'kubectl --kubeconfig %q --context %q -n %q port-forward --address 127.0.0.1 deployment/oce-owner-listener 18443:8443\n' \
+  "$KUBECONFIG" "$CONTEXT" "$PLATFORM_NS"
 ```
 
 In the original shell, verify TLS and the signed-out session. Import **only** `$tls_dir/ca.crt` into the owner browser’s trust store. The Console and Agent `.localhost` names must resolve to laptop loopback.
@@ -97,5 +88,3 @@ curl --fail --silent --show-error --noproxy '*' --cacert "$tls_dir/ca.crt" \
   jq -e 'has("data") and .data==null'
 printf 'Owner Console: %s/console/\n' "$CONSOLE_ORIGIN"
 ```
-
-Return to step 3 of your selected [Kubernetes](kubernetes-setup.md#3-authenticate-and-prepare-the-namespace) or [EKS](eks-openshell-setup.md#3-authenticate-and-prepare-the-namespace) setup page.

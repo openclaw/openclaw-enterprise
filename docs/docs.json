@@ -568,14 +568,6 @@
                     "label": "Kubernetes"
                   },
                   {
-                    "page": "guides/deploy/eks",
-                    "label": "Amazon EKS"
-                  },
-                  {
-                    "page": "guides/deploy/eks-openshell-browser",
-                    "label": "EKS Browser Access"
-                  },
-                  {
                     "page": "guides/quickstart",
                     "label": "Local Setup Without OpenShell"
                   },
@@ -1195,6 +1187,29 @@
         "complete-onboarding-in-the-browser": "/guides/deploy/eks-openshell-setup/#7-complete-onboarding-in-the-control-ui",
         "temporarily-grant-one-push": "/guides/repository-credentials/openshell-git-push/",
         "restore-read-only-access": "/guides/repository-credentials/openshell-read-only/"
+      }
+    },
+    {
+      "from": "/guides/deploy/eks/",
+      "to": "/guides/deploy/eks-openshell-setup/",
+      "anchors": {
+        "prepare-aws-infrastructure": "/guides/deploy/eks-openshell-setup/#prepare-aws-infrastructure",
+        "select-the-cluster": "/guides/deploy/eks-openshell-setup/#select-the-cluster",
+        "authenticate-the-image-builder-to-ecr": "/guides/deploy/eks-openshell-setup/#authenticate-the-image-builder-to-ecr",
+        "configure-network-enforcement-and-storage": "/guides/deploy/eks-openshell-setup/#configure-network-enforcement-and-storage",
+        "enable-console-workspace-files": "/guides/deploy/eks-openshell-setup/#enable-console-workspace-files",
+        "configure-the-protected-copies-and-install": "/guides/deploy/eks-openshell-setup/#configure-the-protected-copies-and-install",
+        "verify-workspace-routing": "/guides/deploy/eks-openshell-setup/#verify-workspace-routing",
+        "update-an-existing-eks-installation": "/guides/deploy/production-upgrade/"
+      }
+    },
+    {
+      "from": "/guides/deploy/eks-openshell-browser/",
+      "to": "/guides/deploy/eks-openshell-setup/#configure-browser-access",
+      "anchors": {
+        "set-the-production-browser-origins-before-installing-occ": "/guides/deploy/eks-openshell-setup/#set-the-production-browser-origins-before-installing-occ",
+        "read-the-protected-initial-owner-files": "/guides/deploy/eks-openshell-setup/#read-the-protected-initial-owner-files",
+        "install-the-loopback-tls-listener": "/guides/deploy/eks-openshell-setup/#install-the-loopback-tls-listener"
       }
     }
   ]
