@@ -376,21 +376,27 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	return runtimeReference, nil
 }
 
+// Kubernetes-only installations always authenticate the Gateway, independently
+// of the optional static-inference authority. Compose keeps its existing profile.
+func (state *developmentState) authenticatedOpenShell() bool {
+	return state.DeploymentMode == "k3d" && state.SandboxDriver == "openshell"
+}
+
 func (r *runner) installOpenShellGateway(ctx context.Context, state *developmentState, assets *openShellDevelopmentAssets, namespace string, timeout time.Duration) error {
 	if _, err := r.output(ctx, "kubectl", "get", "namespace", namespace); err != nil {
 		if err := r.run(ctx, "kubectl", "create", "namespace", namespace); err != nil {
 			return err
 		}
 	}
-	if !state.ProtectedEgress {
+	if !state.authenticatedOpenShell() {
 		if err := r.ensureOpenShellJWTSecret(ctx, state, namespace); err != nil {
 			return err
 		}
 	}
-	var protectedValues string
-	if state.ProtectedEgress {
+	var gatewayValues string
+	if state.authenticatedOpenShell() {
 		var err error
-		protectedValues, err = r.writeProtectedOpenShellValues(state)
+		gatewayValues, err = r.writeOpenShellGatewayValues(state)
 		if err != nil {
 			return err
 		}
@@ -401,7 +407,7 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 	if !state.ProtectedEgress {
 		args = append(args, "--wait")
 	}
-	args = append(args, openShellGatewayValues(state, assets, protectedValues)...)
+	args = append(args, openShellGatewayValues(state, assets, gatewayValues)...)
 	if err := r.run(ctx, "helm", args...); err != nil {
 		return err
 	}
@@ -417,7 +423,7 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 	return nil
 }
 
-func openShellGatewayValues(state *developmentState, assets *openShellDevelopmentAssets, protectedValues string) []string {
+func openShellGatewayValues(state *developmentState, assets *openShellDevelopmentAssets, gatewayValues string) []string {
 	values := []string{
 		"--set-string=fullnameOverride=" + openShellGatewayService,
 		"--set-string=serviceAccount.name=" + openShellGatewayService,
@@ -436,8 +442,8 @@ func openShellGatewayValues(state *developmentState, assets *openShellDevelopmen
 		"--set=sandboxRuntime.image.pullPolicy=Never",
 		"--set=supervisor.image.pullPolicy=Never",
 	}
-	if protectedValues != "" {
-		values = append(values, "-f", protectedValues)
+	if gatewayValues != "" {
+		values = append(values, "-f", gatewayValues)
 	} else {
 		values = append(values, "--set=pkiInitJob.enabled=false", "--set=server.disableTls=true", "--set=server.auth.allowUnauthenticatedUsers=true")
 	}

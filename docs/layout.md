@@ -181,6 +181,7 @@ use formatting, builds, and link checks; do not add or run tests solely for pros
 | `specs/README.md`                     | RFC index with linked numbers, names, and implementation statuses.                                 |
 | `specs/rfcs/`                         | Architectural proposals and decisions.                                                             |
 | `specs/plans/`                        | All implementation plans and historical delivery records; relevant RFCs are linked in frontmatter. |
+| `docs/snippets/`                      | Reusable Markdown and code examples embedded with `Snippet`; Markdown uses `published: false`.     |
 | `docs/assets/`                        | Documentation images and other shared assets.                                                      |
 
 Use stable feature names for living references. Follow

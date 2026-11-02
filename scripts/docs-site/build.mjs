@@ -125,6 +125,49 @@ for (const file of walk(docs)) {
     parsed,
   });
 }
+// Former published routes remain usable without retaining duplicate source pages.
+const redirects = config.redirects ?? [];
+if (!Array.isArray(redirects)) {
+  throw new Error("docs/docs.json redirects must be an array");
+}
+const redirectSources = new Set();
+function checkRedirectTarget(target) {
+  if (typeof target !== "string" || !target.startsWith("/") || target.startsWith("//")) {
+    throw new Error("Invalid redirect target: " + target);
+  }
+  const url = new URL(target, "https://local.invalid");
+  const page = [...pages.values()].find((candidate) => candidate.route === url.pathname);
+  if (
+    url.origin !== "https://local.invalid" ||
+    !page ||
+    url.search ||
+    (url.hash && !resolveDocsFragment(url.hash, page.ids))
+  ) {
+    throw new Error("Missing redirect page or heading: " + target);
+  }
+}
+for (const redirect of redirects) {
+  if (
+    !redirect ||
+    typeof redirect.from !== "string" ||
+    !/^\/(?:[a-z0-9-]+\/)+$/.test(redirect.from) ||
+    redirectSources.has(redirect.from) ||
+    [...pages.values()].some((page) => page.route === redirect.from)
+  ) {
+    throw new Error("Invalid or duplicate redirect route: " + redirect?.from);
+  }
+  redirectSources.add(redirect.from);
+  checkRedirectTarget(redirect.to);
+  if (
+    redirect.anchors !== undefined &&
+    (!redirect.anchors || typeof redirect.anchors !== "object" || Array.isArray(redirect.anchors))
+  ) {
+    throw new Error("Redirect anchors must be an object: " + redirect.from);
+  }
+  for (const target of Object.values(redirect.anchors ?? {})) {
+    checkRedirectTarget(target);
+  }
+}
 const configuredTabs = config.navigation.languages.find(
   (language) => language.language === "en",
 )?.tabs;
@@ -337,6 +380,9 @@ fs.mkdirSync(path.join(output, "assets"), { recursive: true });
 if (fs.existsSync(path.join(docs, "assets"))) {
   fs.cpSync(path.join(docs, "assets"), path.join(output, "assets"), { recursive: true });
 }
+if (fs.existsSync(path.join(docs, "snippets"))) {
+  fs.cpSync(path.join(docs, "snippets"), path.join(output, "snippets"), { recursive: true });
+}
 fs.cpSync(path.join(assets, "fonts"), path.join(output, "assets/fonts"), { recursive: true });
 const carapaceCss = [
   "tokens.css",
@@ -460,9 +506,6 @@ for (const page of pages.values()) {
         escape(group.group) +
         "</h2>" +
         renderSidebarPages(group.pages, page) +
-        (group.landing.ids.has("next-steps")
-          ? '<a href="' + escape(group.landing.route) + '#next-steps">Next Steps</a>'
-          : "") +
         "</section>",
     )
     .join("");
@@ -529,6 +572,26 @@ fs.writeFileSync(
     2,
   ) + "\n",
 );
+for (const redirect of redirects) {
+  const directory = path.join(output, redirect.from.slice(1));
+  fs.mkdirSync(directory, { recursive: true });
+  const settings = JSON.stringify(redirect).replaceAll("<", "\\u003c");
+  fs.writeFileSync(
+    path.join(directory, "index.html"),
+    `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex">
+<title>Page moved</title><link rel="canonical" href="${escape(redirect.to)}">
+<script>
+const redirect = ${settings};
+const anchor = decodeURIComponent(location.hash.slice(1));
+const mapped = Object.hasOwn(redirect.anchors ?? {}, anchor) ? redirect.anchors[anchor] : undefined;
+const target = new URL(mapped ?? redirect.to, location.origin);
+if (!mapped && !target.hash) target.hash = location.hash;
+target.search = location.search;
+location.replace(target.href);
+</script></head><body><p>This page moved. <a href="${escape(redirect.to)}">Continue to the current guide</a>.</p></body></html>`,
+  );
+}
 console.log(
   "Built " +
     pages.size +

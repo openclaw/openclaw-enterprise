@@ -75,10 +75,26 @@ array for a deep page linked by an index: it remains available by URL and search
 without adding another sidebar item. See [Write platform documentation](contributing/documentation.md)
 for menu and naming conventions.
 
+Keep reusable Markdown and embedded code examples in `docs/snippets/`.
+Embed them with `<Snippet file="relative/path/to/source.md" />`; add `lang`
+for a literal code example. Markdown snippets use `published: false` and have
+no sidebar entry. Their content counts toward each including page's word limit.
+Use site-root routes such as `/guides/cli/` for links in Markdown snippets
+shared by pages at different directory depths: embedded links resolve from the
+including page. Media stays in `docs/assets/`. The build also copies snippet
+sources to `/snippets/` so links to downloadable code examples keep working.
+
 `docs/README.md` renders at `/`; `docs/reference/README.md` renders at `/reference/`.
 Other pages use their source path without `.md`, such as `/guides/quickstart/`.
 Assets under `docs/assets/` are served at `/assets/`. Keep paths and existing
 heading anchors when changing only the navigation or label.
+
+When moving a published page, add a `redirects` entry to `docs/docs.json` with
+site-root `from` and `to` routes. Use an `anchors` map from an old heading ID to
+its new route and fragment when a section moves separately. The build validates
+each destination and emits a redirect page outside navigation and search.
+Query strings are preserved. Unmapped fragments are preserved when the destination
+has no fragment. Source Markdown pages do not need to remain at the old paths.
 
 The [HTTP API reference](reference/api.md) and [API cheat sheet](reference/cheatsheets/api.md)
 are generated. Edit the owning routes, schemas, or generator; then run

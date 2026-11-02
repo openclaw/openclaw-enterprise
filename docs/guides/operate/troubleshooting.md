@@ -195,11 +195,13 @@ installation generates a new CA and requires its own trust step.
 
 ## Open the console from another machine
 
-Kubernetes-only startup without OpenShell prints an HTTPS console URL such as
+With the browser port enabled, Kubernetes-only startup prints an HTTPS console
+URL and its public CA, including when using OpenShell. For example:
 `https://console.<cluster>.oce.localhost:8443/console/`. `<cluster>` is the k3d
-cluster name from startup. `8443` is the default `OCC_DEVELOPMENT_BROWSER_PORT`;
-use the printed port when it differs. Kubernetes-only startup with OpenShell
-prints `Console: <apiURL>/console/` and does not print this browser URL or CA.
+cluster name from startup. The local OpenShell quickstart explicitly sets
+`OCC_DEVELOPMENT_BROWSER_PORT=8443`; use the printed port when it differs.
+When the browser port is disabled, OpenShell startup prints only the HTTP API
+Console URL. Enable the browser port for the HTTPS workflow below.
 
 Open that URL on the machine that ran `occ dev up`. The hostname ends in
 `.localhost`, so the computer that looks it up resolves it to its own loopback
