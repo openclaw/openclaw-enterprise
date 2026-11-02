@@ -61,6 +61,9 @@ regressions with the patched source.
 `openclaw-plugin-config-startup-report.patch` (openclaw/openclaw#189392) makes
 startup name each invalid plugin setting and exit 78. Remove both bridges after
 selecting an OpenClaw commit that contains them.
+The same-node MCP bridge lets a dedicated worker execute tools that its node hosts
+when the Gateway authorizes them for the turn. Tools hosted on other nodes keep
+their Gateway route. Remove the bridge when the pinned source includes this change.
 The source archive and patch hashes identify the resulting custom build.
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it

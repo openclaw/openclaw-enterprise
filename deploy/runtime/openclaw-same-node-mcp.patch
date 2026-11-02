@@ -1,0 +1,2127 @@
+diff --git a/packages/gateway-protocol/src/schema/worker-admission.ts b/packages/gateway-protocol/src/schema/worker-admission.ts
+index 6466dac..fa05655 100644
+--- a/packages/gateway-protocol/src/schema/worker-admission.ts
++++ b/packages/gateway-protocol/src/schema/worker-admission.ts
+@@ -74,10 +74,12 @@ export const WORKER_NATIVE_PROCESS_OWNER_PROTOCOL_FEATURE = "worker-native-proce
+ export const WORKER_NATIVE_PROCESS_OWNER_V2_PROTOCOL_FEATURE = "worker-native-process-owner-v2";
+ export const NODE_WORKER_IDLE_RETENTION_PROTOCOL_FEATURE = "node-worker-idle-retention-v1";
+ export const NODE_WORKER_PROCESS_CHANGES_PROTOCOL_FEATURE = "node-worker-process-changes-v1";
++export const WORKER_LOCAL_MCP_PROTOCOL_FEATURE = "worker-local-mcp-v1";
+ export const WORKER_LOCAL_INFERENCE_PROTOCOL_FEATURE = "worker-local-inference-v1";
+ export const WORKER_PROTOCOL_FEATURES = [
+   WORKER_TURN_ADMISSION_PROTOCOL_FEATURE,
+   WORKER_LOCAL_INFERENCE_PROTOCOL_FEATURE,
++  WORKER_LOCAL_MCP_PROTOCOL_FEATURE,
+   "skill-resources-v1",
+   "worker-heartbeat-v1",
+   WORKER_GITHUB_REFRESH_PROTOCOL_FEATURE,
+diff --git a/packages/gateway-protocol/src/server-capabilities.ts b/packages/gateway-protocol/src/server-capabilities.ts
+index ecd6367..f4a81e3 100644
+--- a/packages/gateway-protocol/src/server-capabilities.ts
++++ b/packages/gateway-protocol/src/server-capabilities.ts
+@@ -30,6 +30,7 @@ export const GATEWAY_SERVER_CAPS = {
+   NODE_WORKER_ENVIRONMENT_SESSION: "node-worker-environment-session-v1",
+   NODE_WORKER_HOST_DIAGNOSTICS: "node-worker-host-diagnostics-v1",
+   NODE_WORKER_IDLE_RETENTION: "node-worker-idle-retention-v1",
++  WORKER_LOCAL_MCP: "worker-local-mcp-v1",
+   NODE_WORKER_LAUNCH_TOOL_NAMES: "node-worker-launch-tool-names-v1",
+   NODE_WORKER_NATIVE_INFERENCE: "node-worker-native-inference-v1",
+   NODE_WORKER_PORTAL_STREAM: "node-worker-portal-stream-v1",
+diff --git a/src/gateway/events.ts b/src/gateway/events.ts
+index e777dcf..e57934e 100644
+--- a/src/gateway/events.ts
++++ b/src/gateway/events.ts
+@@ -58,6 +58,7 @@ export const GATEWAY_EVENTS = [
+   GATEWAY_EVENT_NODE_RUNNER_INVENTORY_CHANGED,
+   "node.invoke.cancel",
+   "node.invoke.input",
++  "node.worker.localMcpPolicy",
+   "node.invoke.request",
+   GATEWAY_EVENT_DEVICE_PAIR_CHANGED,
+   "device.pair.requested",
+diff --git a/src/gateway/node-command-policy.test.ts b/src/gateway/node-command-policy.test.ts
+index c01ec8a..1b0b436 100644
+--- a/src/gateway/node-command-policy.test.ts
++++ b/src/gateway/node-command-policy.test.ts
+@@ -19,6 +19,7 @@ import {
+   isNodeCommandAllowed,
+   listDangerousPluginNodeCommands,
+   normalizeDeclaredNodeCommands,
++  requiresGatewayNodeInvokePolicy,
+   resolveNodeCommandAllowlist,
+   resolveNodePairingCommandAllowlist,
+   resolveRequiredNodeCommandAuthority,
+@@ -52,6 +53,12 @@ describe("gateway/node-command-policy", () => {
+     return registry;
+   }
+ 
++  it("preserves the registered invocation policy when a node tool could execute locally", () => {
++    installCanvasPluginDefaults();
++    expect(requiresGatewayNodeInvokePolicy("canvas.snapshot")).toBe(true);
++    expect(requiresGatewayNodeInvokePolicy("mcp.tools.call.v1")).toBe(false);
++  });
++
+   it("allows paired desktop streaming without a persistent allow and keeps deny-wins", () => {
+     const node = {
+       platform: "linux",
+diff --git a/src/gateway/node-command-policy.ts b/src/gateway/node-command-policy.ts
+index e4d1023..5ec274d 100644
+--- a/src/gateway/node-command-policy.ts
++++ b/src/gateway/node-command-policy.ts
+@@ -221,6 +221,23 @@ const pluginPolicies = new WeakMap<
+   PreparedPluginNodePolicy
+ >();
+ 
++export function canInvokeNodeMcpLocally(commands: readonly string[]): boolean {
++  return (
++    commands.includes(NODE_MCP_TOOLS_CALL_COMMAND) &&
++    !requiresGatewayNodeInvokePolicy(NODE_MCP_TOOLS_CALL_COMMAND)
++  );
++}
++
++/** A local transport cannot run the Gateway's registered node.invoke policy or its missing-policy check. */
++export function requiresGatewayNodeInvokePolicy(command: string): boolean {
++  return (
++    getPreparedPluginNodePolicy()?.dangerous.has(command) === true ||
++    getActivePluginGatewayNodePolicyRegistry()?.nodeInvokePolicies.some((entry) =>
++      entry.policy.commands.includes(command),
++    ) === true
++  );
++}
++
+ function getPreparedPluginNodePolicy(): PreparedPluginNodePolicy | undefined {
+   const registry = getActivePluginGatewayNodePolicyRegistry();
+   if (!registry) {
+diff --git a/src/gateway/node-registry-private.ts b/src/gateway/node-registry-private.ts
+index 0962e5f..3603c15 100644
+--- a/src/gateway/node-registry-private.ts
++++ b/src/gateway/node-registry-private.ts
+@@ -36,6 +36,7 @@ import {
+ } from "./node-registry.system-run.js";
+ import {
+   createNodeRunnerStatePublisher,
++  createNodeRunnerInventoryRecord,
+   waitForNodeRunnerAvailability,
+   collectNodeRunnerCatalogState,
+   isNodeWorkerHostClientId,
+@@ -104,6 +105,7 @@ type NodeRegistryPrivateContext = {
+   pendingInvokes: Map<string, PendingInvoke>;
+   invokeStreams: NodeInvokeStreamController;
+   sendEventToSession: (node: NodeRunnerRegistrySession, event: string, payload: unknown) => boolean;
++  setLocalMcpAvailable: (node: NodeRunnerRegistrySession, available: boolean) => void;
+   rememberAuthorizedSystemRunEvent: (
+     event: PendingSystemRunEvent & {
+       nodeId: string;
+@@ -622,6 +624,7 @@ export function updateNodeRunnerInventory(params: {
+   }
+   const previous = state.runnerInventoryByConn.get(node.connId);
+   if (!publishesRunnerDialect) {
++    state.context.setLocalMcpAvailable(node, false);
+     const inventoryChanged = state.runnerInventoryByConn.delete(node.connId);
+     const statusChanged = state.bundleStatusByConn.delete(node.connId);
+     const changed = inventoryChanged || statusChanged;
+@@ -632,17 +635,7 @@ export function updateNodeRunnerInventory(params: {
+     }
+     return { changed };
+   }
+-  const workerHost = "workerHost" in params.declaration ? params.declaration.workerHost : undefined;
+-  const next: NodeRunnerInventoryRecord = {
+-    nodeId: node.nodeId,
+-    connId: node.connId,
+-    pairingIdentity: node.pairingIdentity,
+-    ...(node.pairingGeneration ? { pairingGeneration: node.pairingGeneration } : {}),
+-    clientId: node.clientId,
+-    clientMode: "node",
+-    protocolFeatures: [...params.declaration.protocolFeatures],
+-    ...(workerHost ? { workerHost: structuredClone(workerHost) } : {}),
+-  };
++  const next = createNodeRunnerInventoryRecord(node, node.clientId, params.declaration);
+   const statusCleared =
+     next.workerHost?.enabled !== true ||
+     next.workerHost.bundleRetention === undefined ||
+@@ -658,6 +651,10 @@ export function updateNodeRunnerInventory(params: {
+   if (changed) {
+     state.catalogRevision++;
+     state.runnerInventoryByConn.set(node.connId, next);
++    state.context.setLocalMcpAvailable(
++      node,
++      Boolean(node.pairingGeneration && next.workerHost?.enabled && next.workerHost.localMcp),
++    );
+     state.context.publishActiveNodeContext();
+     state.runnerState.reconcile(node.nodeId, true);
+   }
+diff --git a/src/gateway/node-registry.test.ts b/src/gateway/node-registry.test.ts
+index c51665e..2aa7695 100644
+--- a/src/gateway/node-registry.test.ts
++++ b/src/gateway/node-registry.test.ts
+@@ -29,6 +29,8 @@ import {
+ import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
+ import { resetLogger, setLoggerOverride } from "../logging/logger.js";
+ import { createDiagnosticLogRecordCapture } from "../logging/test-helpers/diagnostic-log-capture.js";
++import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
++import { setActivePluginRegistry, resetPluginRuntimeStateForTest } from "../plugins/runtime.js";
+ import { buildNodeInvokeRequest } from "./node-invoke-request.js";
+ import {
+   listConnectedNodePluginTools,
+@@ -629,6 +631,78 @@ describe("gateway/node-registry", () => {
+     expectChange();
+   });
+ 
++  it("sends effective MCP permission changes only to a supervisor executing local MCP grants", () => {
++    const command = "mcp.tools.call.v1";
++    const { registry, frames } = privateFixture({}, { commands: [command] });
++    const setDenied = (denied: boolean) =>
++      registry.refreshRuntimePolicy({
++        gateway: { nodes: { commands: { allow: [command], deny: denied ? [command] : [] } } },
++      });
++    const policies = () =>
++      frames
++        .map((frame) => JSON.parse(frame))
++        .filter((frame) => frame.event === "node.worker.localMcpPolicy")
++        .map((frame) => frame.payload.allowed);
++    setDenied(true);
++    const host = { enabled: true, capacity: { total: 1, available: 1 } } as const;
++    publishRunner(registry, host);
++    expect(policies()).toEqual([]);
++    publishRunner(registry, { ...host, localMcp: true });
++    setDenied(false);
++    setDenied(false);
++    const pluginRegistry = createEmptyPluginRegistry();
++    pluginRegistry.nodeInvokePolicies.push({
++      pluginId: "restricted-mcp",
++      pluginName: "Restricted MCP",
++      source: "test",
++      pluginConfig: {},
++      rootDir: "/test",
++      policy: { commands: [command], handle: (ctx) => ctx.invokeNode() },
++    });
++    try {
++      setActivePluginRegistry(pluginRegistry);
++      registry.refreshRuntimePolicy();
++      setDenied(true);
++      expect(policies()).toEqual([false, true, false]);
++    } finally {
++      resetPluginRuntimeStateForTest();
++    }
++    setDenied(false);
++    registerPairedNode(registry, [], { commands: [command] }, "replacement");
++    expect(policies()).toEqual([false, true, false, true, false]);
++  });
++
++  it("retires local MCP grants on the still-connected supervisor when pairing is promoted", () => {
++    const frames: string[] = [];
++    const socket = createTestNodeSocket(frames);
++    let generation = generationTransition.expectedPairingGeneration;
++    const registry = createNodeRegistry({
++      isPairingStateCurrent: (_nodeId, expected) =>
++        expected.identity === pairingA.pairingIdentity && expected.generation === generation,
++    });
++    const command = "mcp.tools.call.v1";
++    registerPairedNode(registry, frames, {
++      clientId: GATEWAY_CLIENT_IDS.NODE_HOST,
++      commands: [command],
++      socket: socket as unknown as GatewayWsClient["socket"],
++    });
++    publishRunner(registry, {
++      enabled: true,
++      localMcp: true,
++      capacity: { total: 1, available: 1 },
++    });
++    // Device pairing publishes the new authority before notifying the registry.
++    generation = generationTransition.nextPairingGeneration;
++    registry.updateSurface("node-1", { commands: [command] }, generationTransition);
++    expect(
++      frames
++        .map((frame) => JSON.parse(frame))
++        .filter((frame) => frame.event === "node.worker.localMcpPolicy")
++        .map((frame) => frame.payload.allowed),
++    ).toEqual([true, false]);
++    expect(socket.close).not.toHaveBeenCalled();
++  });
++
+   it.each([GATEWAY_CLIENT_IDS.NODE_HOST])(
+     "keeps capacity admission separate from negotiated environment turn reuse (%s)",
+     async (clientId) => {
+diff --git a/src/gateway/node-registry.ts b/src/gateway/node-registry.ts
+index bddfd15..1ccb581 100644
+--- a/src/gateway/node-registry.ts
++++ b/src/gateway/node-registry.ts
+@@ -87,7 +87,9 @@ import type {
+   NodeSessionConnectParams,
+ } from "./node-session.types.js";
+ import { normalizeNodeSkillDescriptors } from "./node-skill-descriptors.js";
++import { NodeWorkerLocalMcpPolicy } from "./node-worker-local-mcp-policy.js";
+ import { WEBSOCKET_OPEN_READY_STATE } from "./server-constants.js";
++import { closeGatewayTransportWithGrace } from "./server/connection-transport-close.js";
+ import type { GatewayWsClient } from "./server/ws-types.js";
+ 
+ export type { NodeInvokeResult } from "./node-invoke.types.js";
+@@ -221,6 +223,14 @@ export class NodeRegistry {
+   });
+   private authorizedSystemRunEvents = new Map<string, AuthorizedSystemRunEvent>();
+   private pairingGenerationEventChains = new Map<string, Promise<void>>();
++  private readonly localMcpPolicy = new NodeWorkerLocalMcpPolicy((node, allowed) => {
++    if (
++      !this.sendEventToSession(node, "node.worker.localMcpPolicy", { allowed }) &&
++      node.client.socket.readyState === WEBSOCKET_OPEN_READY_STATE
++    ) {
++      closeGatewayTransportWithGrace(node.client.socket, 1011, "MCP policy delivery failed");
++    }
++  });
+   private committedConfig: OpenClawConfig | undefined;
+   private hostStatsCheckpoints: NodeHostStatsCheckpoints;
+ 
+@@ -256,6 +266,12 @@ export class NodeRegistry {
+           ? this.sendEventToSession(current, event, payload)
+           : false;
+       },
++      setLocalMcpAvailable: (node, available) => {
++        const session = this.nodesById.get(node.nodeId);
++        if (session?.connId === node.connId) {
++          this.localMcpPolicy.setAvailable(session, available);
++        }
++      },
+       rememberAuthorizedSystemRunEvent: (event) => this.rememberAuthorizedSystemRunEvent(event),
+       publishActiveNodeContext: () => this.publishActiveNodeContext(),
+       closeHostStats: () => this.hostStatsCheckpoints.close(),
+@@ -390,6 +406,7 @@ export class NodeRegistry {
+       displayName: node.displayName,
+       skills: node.nodeSkills,
+     });
++    this.localMcpPolicy.refresh(node);
+   }
+ 
+   private isCommandAllowed(nodeId: string, command: string, liveConfig?: OpenClawConfig): boolean {
+@@ -513,6 +530,9 @@ export class NodeRegistry {
+       skills: [],
+       withheldCommands: connect.withheldCommands ?? [],
+     });
++    if (previousSession) {
++      this.localMcpPolicy.setAvailable(previousSession, false);
++    }
+     const replacesPresence = previousSession?.lastActiveAtMs !== undefined;
+     forgetNodeRunnerInventory(this, client.connId);
+     this.nodesById.set(nodeId, session);
+@@ -557,11 +577,14 @@ export class NodeRegistry {
+     if (!nodeId) {
+       return null;
+     }
++    const node = this.nodesById.get(nodeId);
++    const unregistersCurrentNode = node?.connId === connId;
++    if (unregistersCurrentNode) {
++      this.localMcpPolicy.setAvailable(node, false);
++    }
+     this.nodesByConn.delete(connId);
+     this.eventTransportsByConn.delete(connId);
+     forgetNodeRunnerInventory(this, connId);
+-    const node = this.nodesById.get(nodeId);
+-    const unregistersCurrentNode = node?.connId === connId;
+     if (unregistersCurrentNode) {
+       this.hostStatsCheckpoints.forget(node);
+       invalidateNodeCatalog(this);
+@@ -661,6 +684,7 @@ export class NodeRegistry {
+     if (this.nodesById.get(node.nodeId) !== node || node.client.invalidated === true) {
+       return false;
+     }
++    this.localMcpPolicy.setAvailable(node, false);
+     node.client.invalidated = true;
+     this.hostStatsCheckpoints.forget(node);
+     invalidateNodeCatalog(this);
+@@ -1009,6 +1033,7 @@ export class NodeRegistry {
+       this.hostStatsCheckpoints.forget(node);
+       node.hostStats = undefined;
+       node.pairingGeneration = generationTransition.nextPairingGeneration;
++      this.localMcpPolicy.setAvailable(node, false);
+     }
+     this.refreshSessionPolicy(node);
+ 
+diff --git a/src/gateway/node-runner-inventory-runtime.ts b/src/gateway/node-runner-inventory-runtime.ts
+index c66c0fd..2e44983 100644
+--- a/src/gateway/node-runner-inventory-runtime.ts
++++ b/src/gateway/node-runner-inventory-runtime.ts
+@@ -11,6 +11,7 @@ import {
+   NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE,
+   resolveNodeWorkerExecutionIssue,
+   type NodeRunnerInventoryIssue,
++  type NodeRunnerInventoryDeclaration,
+   type NodeWorkerHostDeclaration,
+   type NodeWorkerCapacitySnapshot,
+ } from "../infra/node-runner-inventory.js";
+@@ -65,6 +66,24 @@ export type NodeRunnerInventoryRecord = Omit<
+   workerHost?: NodeWorkerHostDeclaration;
+ };
+ 
++export function createNodeRunnerInventoryRecord(
++  node: NodeRunnerRegistrySession & { pairingIdentity: string },
++  clientId: NodeWorkerHostClientId,
++  declaration: NodeRunnerInventoryDeclaration,
++): NodeRunnerInventoryRecord {
++  const workerHost = "workerHost" in declaration ? declaration.workerHost : undefined;
++  return {
++    nodeId: node.nodeId,
++    connId: node.connId,
++    pairingIdentity: node.pairingIdentity,
++    ...(node.pairingGeneration ? { pairingGeneration: node.pairingGeneration } : {}),
++    clientId,
++    clientMode: "node",
++    protocolFeatures: [...declaration.protocolFeatures],
++    ...(workerHost ? { workerHost: structuredClone(workerHost) } : {}),
++  };
++}
++
+ export type NodeRunnerStateChange = {
+   inventoryChanged: boolean;
+   availabilityChanged: boolean;
+diff --git a/src/gateway/node-worker-local-mcp-policy.ts b/src/gateway/node-worker-local-mcp-policy.ts
+new file mode 100644
+index 0000000..7e062b3
+--- /dev/null
++++ b/src/gateway/node-worker-local-mcp-policy.ts
+@@ -0,0 +1,31 @@
++import { canInvokeNodeMcpLocally } from "./node-command-policy.js";
++import type { NodeSession } from "./node-session.types.js";
++
++/** Keep the command permission on the physical supervisor that received the grant. */
++export class NodeWorkerLocalMcpPolicy {
++  private readonly permissions = new WeakMap<NodeSession, boolean>();
++
++  constructor(private readonly send: (node: NodeSession, allowed: boolean) => void) {}
++
++  setAvailable(node: NodeSession, available: boolean): void {
++    const previous = this.permissions.get(node);
++    if (!available) {
++      this.permissions.delete(node);
++      if (previous === true) {
++        this.send(node, false);
++      }
++      return;
++    }
++    const allowed = canInvokeNodeMcpLocally(node.commands);
++    if (allowed !== previous) {
++      this.permissions.set(node, allowed);
++      this.send(node, allowed);
++    }
++  }
++
++  refresh(node: NodeSession): void {
++    if (this.permissions.has(node)) {
++      this.setAvailable(node, true);
++    }
++  }
++}
+diff --git a/src/gateway/server/ws-connection/connect-hello.ts b/src/gateway/server/ws-connection/connect-hello.ts
+index c6473ea..21730c3 100644
+--- a/src/gateway/server/ws-connection/connect-hello.ts
++++ b/src/gateway/server/ws-connection/connect-hello.ts
+@@ -224,6 +224,7 @@ export async function sendGatewayHello(
+         GATEWAY_SERVER_CAPS.NODE_WORKER_IDLE_RETENTION,
+         GATEWAY_SERVER_CAPS.NODE_WORKER_LAUNCH_TOOL_NAMES,
+         GATEWAY_SERVER_CAPS.NODE_WORKER_NATIVE_INFERENCE,
++        GATEWAY_SERVER_CAPS.WORKER_LOCAL_MCP,
+         GATEWAY_SERVER_CAPS.NODE_WORKER_PORTAL_STREAM,
+         GATEWAY_SERVER_CAPS.NODE_WORKER_PROMPT_CONTEXT,
+         GATEWAY_SERVER_CAPS.NODE_WORKER_STATUS_WAIT,
+diff --git a/src/gateway/worker-environments/node-worker-tunnel.lifecycle.test.ts b/src/gateway/worker-environments/node-worker-tunnel.lifecycle.test.ts
+index 3518c75..75bbbf6 100644
+--- a/src/gateway/worker-environments/node-worker-tunnel.lifecycle.test.ts
++++ b/src/gateway/worker-environments/node-worker-tunnel.lifecycle.test.ts
+@@ -9,6 +9,7 @@ import {
+ import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
+ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+ import {
++  NODE_MCP_TOOLS_CALL_COMMAND,
+   NODE_WORKER_ENVIRONMENT_STOP_COMMAND as STOP_ENVIRONMENT,
+   NODE_WORKER_SUPERVISOR_CANCEL_COMMAND as CANCEL_LAUNCH,
+   NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND as LAUNCH,
+@@ -382,6 +383,20 @@ describe("node worker tunnel lifetime", () => {
+     }
+   });
+ 
++  it("negotiates local MCP only for a paired host approved to invoke MCP", async () => {
++    const node = (await nodeTransport.listCurrentNodes())[0]!;
++    const manager = createManager();
++    const handle = await manager.start(startRequest());
++    nodeTransport.listCurrentNodes = async () => [
++      { ...node, commands: [NODE_MCP_TOOLS_CALL_COMMAND] },
++    ];
++    await expect(handle.supportsLocalMcp!()).resolves.toBe(false);
++    node.workerHost.localMcp = true;
++    await expect(handle.supportsLocalMcp!()).resolves.toBe(true);
++    nodeTransport.listCurrentNodes = async () => [{ ...node, commands: [] }];
++    await expect(handle.supportsLocalMcp!()).resolves.toBe(false);
++  });
++
+   it("reads the current destination's launch vocabulary with a legacy fallback while offline", async () => {
+     const host = await currentNodeHost();
+     let currentTransport: NodeWorkerSupervisorTransport | undefined = nodeTransport;
+diff --git a/src/gateway/worker-environments/node-worker-tunnel.ts b/src/gateway/worker-environments/node-worker-tunnel.ts
+index fac0e93..cfb8a07 100644
+--- a/src/gateway/worker-environments/node-worker-tunnel.ts
++++ b/src/gateway/worker-environments/node-worker-tunnel.ts
+@@ -21,6 +21,7 @@ import {
+   NodeWorkerWorkspaceTransferError,
+ } from "../../worker/node-workspace-transfer-protocol.js";
+ import { sameWorkerBuild } from "../../worker/worker-build-identity.js";
++import { canInvokeNodeMcpLocally } from "../node-command-policy.js";
+ import type { NodeWorkerSupervisorTransport } from "../node-registry-private.js";
+ import { measureGatewayCloseStep } from "../restart-trace.js";
+ import {
+@@ -374,6 +375,10 @@ export function createNodeWorkerTunnelManager(options: NodeWorkerTunnelManagerOp
+       ownerEpoch: entry.ownerEpoch,
+       measureLaunchTurn: (plan, claim) =>
+         measureNodeWorkerLaunchBytes(entry.deviceId, buildLaunchInput(plan, claim)),
++      supportsLocalMcp: async () => {
++        const node = await options.getTransport()?.getCurrentNode(entry.deviceId);
++        return node?.workerHost.localMcp === true && canInvokeNodeMcpLocally(node.commands);
++      },
+       readLaunchToolNames: async () => {
+         const node = await options.getTransport()?.getCurrentNode(entry.deviceId);
+         return resolveNodeWorkerLaunchToolNames(node?.workerHost);
+diff --git a/src/gateway/worker-environments/tunnel-contract.ts b/src/gateway/worker-environments/tunnel-contract.ts
+index 19b863a..2926631 100644
+--- a/src/gateway/worker-environments/tunnel-contract.ts
++++ b/src/gateway/worker-environments/tunnel-contract.ts
+@@ -278,6 +278,8 @@ export type WorkerTurnTunnelHandle = Omit<
+   measureLaunchTurn(plan: WorkerLaunchPlan, claim: WorkerSessionTurnClaim): number;
+   /** Placement tool implementations available in the destination's installed supervisor. */
+   readLaunchToolNames(): Promise<readonly string[]>;
++  /** The currently paired node has approved MCP execution on its local worker transport. */
++  supportsLocalMcp?(): Promise<boolean>;
+   launchTurn(request: WorkerTurnLaunchRequest): Promise<WorkerTurnProcessResult>;
+ };
+ 
+diff --git a/src/gateway/worker-environments/worker-gateway-tool-runtime.ts b/src/gateway/worker-environments/worker-gateway-tool-runtime.ts
+index 9e1e51e..0f8ea4a 100644
+--- a/src/gateway/worker-environments/worker-gateway-tool-runtime.ts
++++ b/src/gateway/worker-environments/worker-gateway-tool-runtime.ts
+@@ -103,7 +103,12 @@ export function createWorkerGatewayToolRuntime(params: {
+             tools: tools.map((tool, index) => {
+               const location = getAgentToolExecutionLocation(tool);
+               const plugin = getPluginToolMeta(tool);
+-              const id = String(index);
++              // Local MCP handles also cross the node supervisor. Keep them distinct
++              // across turns on a retained worker even when catalog indices repeat.
++              const id =
++                location.kind === "placement" && plugin?.mcp?.node
++                  ? `${generation}:${index}`
++                  : String(index);
+               handles.set(id, tool);
+               return {
+                 id,
+diff --git a/src/gateway/worker-environments/worker-turn-execution.test.ts b/src/gateway/worker-environments/worker-turn-execution.test.ts
+index 5b0335b..3fe883e 100644
+--- a/src/gateway/worker-environments/worker-turn-execution.test.ts
++++ b/src/gateway/worker-environments/worker-turn-execution.test.ts
+@@ -5,6 +5,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
+ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ import {
+   WORKER_LAUNCH_V2_PROTOCOL_FEATURE,
++  WORKER_LOCAL_MCP_PROTOCOL_FEATURE,
+   WORKER_EXECUTION_CONTEXT_PROTOCOL_FEATURE,
+ } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
+ import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
+@@ -23,7 +24,10 @@ import {
+   CORE_WORKER_LAUNCH_TOOL_NAMES,
+   resolveCoreToolExecutionLocation,
+ } from "../../agents/tool-catalog.js";
+-import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
++import {
++  patchSessionEntryCore,
++  replaceSessionEntry,
++} from "../../config/sessions/session-accessor.js";
+ import { setActiveNodeContexts } from "../../infra/active-node-context.js";
+ import { resolveNodeWorkerLaunchToolNames } from "../../infra/node-runner-inventory.js";
+ import { requireNodeSqlite } from "../../infra/node-sqlite.js";
+@@ -39,6 +43,10 @@ import { closeStateDatabaseForTest } from "../../test-utils/database-cleanup.js"
+ import { observeMainThreadSql } from "../../test-utils/main-thread-sql-spies.test-support.js";
+ import type { WorkerLaunchPlan } from "../../worker/launch-descriptor.js";
+ import { roundTripWorkerLaunchDescriptor } from "../../worker/launch-descriptor.test-support.js";
++import {
++  replaceConnectedNodePluginTools,
++  removeConnectedNodePluginTools,
++} from "../node-plugin-tool-snapshot.js";
+ import { projectWorkerSessionTurnClaim } from "./placement-record.js";
+ import { getWorkerTurnToolSurface } from "./placement-turn-claim-events.js";
+ import { WorkerRunnerCapacityError, type WorkerTunnelHandle } from "./tunnel-contract.js";
+@@ -408,6 +416,120 @@ describe("worker turn execution", () => {
+     },
+   );
+ 
++  it.each(["local", "legacy", "completion-handoff"] as const)(
++    "grants only the admitted same-node MCP tool to a capable placement (%s)",
++    async (scenario) => {
++      const supported = scenario !== "legacy";
++      await seedActivePlacement();
++      const environment = attachedEnvironment();
++      environment.nodeDeviceId = "local-node";
++      environment.bootstrapReceipt!.protocolFeatures.push(WORKER_LOCAL_MCP_PROTOCOL_FEATURE);
++      for (const [nodeId, names] of [
++        ["local-node", ["local_search", "local_action", "local_denied"]],
++        ["other-node", ["remote_search"]],
++      ] as const) {
++        replaceConnectedNodePluginTools({
++          nodeId,
++          tools: names.map((name) => ({
++            registered: false,
++            descriptor: {
++              pluginId: "node-mcp",
++              name,
++              description: name,
++              parameters: {
++                type: "object",
++                properties: name === "local_action" ? { action: { type: "string" } } : {},
++              },
++              command: "mcp.tools.call.v1",
++              mcp: { server: "workspace", tool: name },
++            },
++          })),
++        });
++      }
++      const authorize = vi.spyOn(placements, "authorizeWorkerTurnTools");
++      const launchTurn = vi.fn<NonNullable<WorkerTunnelHandle["launchTurn"]>>(async () => {
++        throw new WorkerRunnerCapacityError();
++      });
++      const provider = turnProvider({
++        get: () => environment,
++        acquireTurnCredential: async () => credential(),
++        startTunnel: async () =>
++          unusedTunnel({ launchTurn, supportsLocalMcp: async () => supported }),
++      });
++      const input = turn("admit-local-mcp");
++      const handoff = scenario === "completion-handoff";
++      const child = { sessionKey: "agent:main:subagent:child", sessionId: "child-session" };
++      if (handoff) {
++        await replaceSessionEntry(
++          { ...sessionTarget, sessionKey: child.sessionKey },
++          {
++            sessionId: child.sessionId,
++            updatedAt: Date.now(),
++            spawnedBy: input.sessionKey,
++            spawnDepth: 1,
++            subagentRole: "orchestrator",
++            subagentControlScope: "children",
++            inheritedToolPolicyVersion: 1,
++            inheritedToolAllow: ["remote_search"],
++          },
++        );
++      }
++      try {
++        await expect(
++          execute(provider, {
++            ...input,
++            ...(handoff && {
++              inputProvenance: {
++                kind: "inter_session",
++                sourceTool: "subagent_announce",
++                sourceSessionKey: child.sessionKey,
++              },
++              trustedInternalHandoff: {
++                kind: "subagent-completion",
++                sourceSessionKey: child.sessionKey,
++                sourceSessionId: child.sessionId,
++                targetSessionKey: input.sessionKey,
++                targetSessionId: input.sessionId,
++                provider: input.provider,
++                model: input.model,
++              },
++            }),
++            toolsAllow: ["local_search", "local_action", "remote_search"],
++            config: {
++              ...input.config,
++              tools: {
++                profile: "full",
++                gatewayPolicy: {
++                  allow: ["local_search", "local_action", "remote_search"],
++                  actions: { local_action: ["read"] },
++                },
++              },
++              session: { store: sessionTarget.storePath },
++            },
++          }),
++        ).rejects.toBeInstanceOf(WorkerRunnerCapacityError);
++        const { toolAuthority } = launchTurn.mock.calls[0]![0].plan.assignment;
++        expect(authorize.mock.calls[0]![1].toSorted()).toEqual([
++          "local_action",
++          "local_search",
++          "remote_search",
++        ]);
++        expect(toolAuthority.allowedToolNames).toEqual(
++          scenario === "local" ? ["local_search"] : [],
++        );
++        expect(toolAuthority.mcpTools).toEqual(
++          scenario === "local"
++            ? [{ id: expect.any(String), server: "workspace", tool: "local_search" }]
++            : undefined,
++        );
++      } finally {
++        input.preparedRunAdmission.close();
++        removeConnectedNodePluginTools("local-node");
++        removeConnectedNodePluginTools("other-node");
++      }
++    },
++  );
++
+   it.each([false, true])(
+     "preserves prepared context and limits launch authority to supervisor tools (declared: %s)",
+     async (declared) => {
+diff --git a/src/gateway/worker-environments/worker-turn-execution.ts b/src/gateway/worker-environments/worker-turn-execution.ts
+index d1a2060..f9967fa 100644
+--- a/src/gateway/worker-environments/worker-turn-execution.ts
++++ b/src/gateway/worker-environments/worker-turn-execution.ts
+@@ -3,10 +3,6 @@ import { SKILL_RESOURCE_PROTOCOL_FEATURE } from "../../../packages/gateway-proto
+ import { WORKER_LOCAL_INFERENCE_PROTOCOL_FEATURE } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
+ import { WORKER_TURN_ADMISSION_PROTOCOL_FEATURE } from "../../../packages/gateway-protocol/src/schema/worker-turn-admission.js";
+ import { resolveAgentDir } from "../../agents/agent-scope.js";
+-import {
+-  copyAgentToolMetadata,
+-  getAgentToolExecutionLocation,
+-} from "../../agents/agent-tool-metadata.js";
+ import { createOpenClawCodingToolsInternalAsync } from "../../agents/agent-tools.js";
+ import { applyEmbeddedAttemptToolsAllow } from "../../agents/embedded-agent-runner/run/attempt-tool-construction-plan.js";
+ import { admitEmbeddedContextEngine } from "../../agents/embedded-agent-runner/run/context-engine-admission.js";
+@@ -15,7 +11,6 @@ import { createModelVisibilityPolicy } from "../../agents/model-visibility-polic
+ import { acquireAgentRunPreparedModelRuntime } from "../../agents/prepared-model-runtime.js";
+ import { createLibrarySkillWorkshopTool } from "../../agents/tools/skill-workshop-tool-library.js";
+ import { registerAgentRunDelegatedAuthorityClosedHandler } from "../../infra/agent-run-registry.js";
+-import { logInfo } from "../../logger.js";
+ import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
+ import { prepareSkillResourceDelivery } from "../../skills/runtime/resources.js";
+ import { parseWorkerLaunchPlan } from "../../worker/launch-descriptor.js";
+@@ -55,6 +50,12 @@ import {
+   windowInitialMessages,
+ } from "./worker-turn-payload.js";
+ import { prepareWorkerTurnPrompt, WORKER_CONTEXT_ENGINE_HOST } from "./worker-turn-prompt.js";
++import {
++  collectWorkerMcpGrants,
++  filterWorkerPlacementTools,
++  retainWorkerTurnTools,
++  resolveLocalMcpNodeId,
++} from "./worker-turn-tool-surface.js";
+ import { resolveWorkerTurnTranscriptTarget } from "./worker-turn-transcript-target.js";
+ import {
+   createWorkerTurnInputAdmission,
+@@ -232,6 +233,7 @@ export async function executeWorkerTurn(
+       placement.activeOwnerEpoch,
+     )) === true;
+   const launchToolNames = await tunnel.readLaunchToolNames();
++  const localMcpNodeId = await resolveLocalMcpNodeId(environment, bootstrapReceipt, tunnel);
+   const desktop = await prepareWorkerDesktopLaunchPlan({
+     desktop: environment.desktop,
+     protocolFeatures: bootstrapReceipt.protocolFeatures,
+@@ -383,20 +385,11 @@ export async function executeWorkerTurn(
+                 additionalInheritedToolNamesRef.length = 0;
+                 return [];
+               }
+-              return applyEmbeddedAttemptToolsAllow(prepared, turn.toolsAllow).filter((tool) => {
+-                const location = getAgentToolExecutionLocation(tool);
+-                const reason =
+-                  location.kind === "gateway"
+-                    ? location.unavailableReason
+-                    : !availablePlacementTools.has(tool.name) ||
+-                        !launchToolNames.includes(tool.name)
+-                      ? "the placement has no available execution capability"
+-                      : undefined;
+-                if (reason) {
+-                  logInfo(`Worker tool ${tool.name} withheld: ${reason}.`);
+-                }
+-                return !reason;
+-              });
++              return filterWorkerPlacementTools(
++                applyEmbeddedAttemptToolsAllow(prepared, turn.toolsAllow),
++                availablePlacementTools,
++                launchToolNames,
++              );
+             },
+           }),
+         );
+@@ -411,15 +404,16 @@ export async function executeWorkerTurn(
+             additionalInheritedToolNamesRef.map((name) => ({ name })),
+             turn.toolsAllow,
+           ).map((tool) => tool.name),
+-          tools: tools.map((tool) =>
+-            copyAgentToolMetadata(tool, {
+-              ...tool,
+-              execute: (...args) =>
+-                withPluginRuntimeGenerationScope(preparedRuntime.snapshot, () =>
+-                  tool.execute(...args),
+-                ),
+-            }),
+-          ),
++          tools: retainWorkerTurnTools(tools, {
++            localMcpNodeId:
++              capabilityProfile.policy.requesterPolicySource === "completion-handoff"
++                ? undefined
++                : localMcpNodeId,
++            config: turn.config,
++            agentId: placement.agentId,
++            runPrepared: (callback) =>
++              withPluginRuntimeGenerationScope(preparedRuntime.snapshot, callback),
++          }),
+         };
+       },
+     });
+@@ -544,6 +538,7 @@ export async function executeWorkerTurn(
+       throw new WorkerTurnExecutionError(WORKER_PROVIDER_REPLAY_LOCAL_RETRY_MESSAGE);
+     }
+     // Project the wire handshake; the receipt also carries storage-only provenance.
++    const mcpTools = collectWorkerMcpGrants(surface);
+     const { bundleHash, openclawVersion, protocolFeatures } = bootstrapReceipt;
+     githubGrant = await bindWorkerGitHubTurn({
+       session: placement,
+@@ -605,6 +600,7 @@ export async function executeWorkerTurn(
+             },
+             toolAuthority: {
+               exec,
++              ...(mcpTools.length && { mcpTools }),
+               allowedToolNames: surface.tools
+                 .filter((tool) => tool.execution === "placement")
+                 .map((tool) => tool.definition.name),
+diff --git a/src/gateway/worker-environments/worker-turn-tool-surface.ts b/src/gateway/worker-environments/worker-turn-tool-surface.ts
+new file mode 100644
+index 0000000..17b41ad
+--- /dev/null
++++ b/src/gateway/worker-environments/worker-turn-tool-surface.ts
+@@ -0,0 +1,92 @@
++import { WORKER_LOCAL_MCP_PROTOCOL_FEATURE } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
++import type { WorkerToolSurface } from "../../../packages/gateway-protocol/src/schema/worker-gateway-tool.js";
++import {
++  bindAgentToolExecutionLocation,
++  copyAgentToolMetadata,
++  getAgentToolExecutionLocation,
++} from "../../agents/agent-tool-metadata.js";
++import { hasBeforeToolCallPolicy } from "../../agents/agent-tools.before-tool-call.js";
++import { resolveToolLoopDetectionConfig } from "../../agents/agent-tools.js";
++import { isGatewayToolAllowedWithoutAction } from "../../agents/gateway-tool-policy.js";
++import type { AnyAgentTool } from "../../agents/tools/common.js";
++import type { OpenClawConfig } from "../../config/types.openclaw.js";
++import { logInfo } from "../../logger.js";
++import { hasGlobalHooks } from "../../plugins/hook-runner-global.js";
++import { getPluginToolMeta } from "../../plugins/tool-metadata.js";
++import type { WorkerTurnTunnelHandle } from "./tunnel-contract.js";
++
++export async function resolveLocalMcpNodeId(
++  { nodeDeviceId: nodeId }: { nodeDeviceId?: string | null },
++  { protocolFeatures }: { protocolFeatures: readonly string[] },
++  tunnel: WorkerTurnTunnelHandle,
++) {
++  return nodeId &&
++    protocolFeatures.includes(WORKER_LOCAL_MCP_PROTOCOL_FEATURE) &&
++    (await tunnel.supportsLocalMcp?.())
++    ? nodeId
++    : undefined;
++}
++
++/** Retain the Gateway executor unless a policy-admitted tool can run unchanged at this placement. */
++export function retainWorkerTurnTools(
++  tools: AnyAgentTool[],
++  options: {
++    localMcpNodeId?: string;
++    config?: OpenClawConfig;
++    agentId: string;
++    runPrepared: <T>(run: () => T) => T;
++  },
++): AnyAgentTool[] {
++  const canPlace =
++    options.localMcpNodeId &&
++    options.runPrepared(
++      () =>
++        !hasBeforeToolCallPolicy() &&
++        !hasGlobalHooks("after_tool_call") &&
++        !resolveToolLoopDetectionConfig({ cfg: options.config, agentId: options.agentId })?.enabled,
++    );
++  return tools.map((tool) => {
++    const retained = copyAgentToolMetadata(tool, {
++      ...tool,
++      execute: (...args) => options.runPrepared(() => tool.execute(...args)),
++    });
++    const mcp = getPluginToolMeta(tool)?.mcp;
++    if (
++      canPlace &&
++      mcp?.operation === "tool" &&
++      mcp.node?.id === options.localMcpNodeId &&
++      isGatewayToolAllowedWithoutAction(tool.name, options.config)
++    ) {
++      bindAgentToolExecutionLocation(retained, { kind: "placement" });
++    }
++    return retained;
++  });
++}
++
++export function collectWorkerMcpGrants(surface: WorkerToolSurface) {
++  return surface.tools.flatMap(({ id, execution, plugin }) =>
++    execution === "placement" && plugin?.mcp?.node
++      ? [{ id, server: plugin.mcp.serverName, tool: plugin.mcp.toolName }]
++      : [],
++  );
++}
++
++export function filterWorkerPlacementTools(
++  tools: AnyAgentTool[],
++  availablePlacementTools: ReadonlySet<string>,
++  launchToolNames: readonly string[],
++) {
++  return tools.filter((tool) => {
++    const location = getAgentToolExecutionLocation(tool);
++    const reason =
++      location.kind === "gateway"
++        ? location.unavailableReason
++        : !availablePlacementTools.has(tool.name) || !launchToolNames.includes(tool.name)
++          ? "the placement has no available execution capability"
++          : undefined;
++    if (reason) {
++      logInfo(`Worker tool ${tool.name} withheld: ${reason}.`);
++    }
++    return !reason;
++  });
++}
+diff --git a/src/infra/node-runner-inventory.ts b/src/infra/node-runner-inventory.ts
+index 9708c5a..45dcd21 100644
+--- a/src/infra/node-runner-inventory.ts
++++ b/src/infra/node-runner-inventory.ts
+@@ -97,6 +97,7 @@ const WorkerHost = z
+       workspaceQuiescence: z.literal(NODE_WORKER_WORKSPACE_QUIESCENCE_VERSION).optional(),
+       launchToolNames: LaunchToolNames.optional(),
+       idleRetention: z.literal(true).optional(),
++      localMcp: z.literal(true).optional(),
+       nativeInference: z.literal(NODE_WORKER_NATIVE_INFERENCE_VERSION).optional(),
+       promptContext: z.literal(NODE_WORKER_PROMPT_CONTEXT_VERSION).optional(),
+     }).refine(
+diff --git a/src/node-host/connection.ts b/src/node-host/connection.ts
+index da661ab..7077472 100644
+--- a/src/node-host/connection.ts
++++ b/src/node-host/connection.ts
+@@ -363,6 +363,10 @@ export function startNodeHostConnection({
+               ...(gatewayCapabilities.has(GATEWAY_SERVER_CAPS.NODE_WORKER_PROMPT_CONTEXT)
+                 ? { promptContext: NODE_WORKER_PROMPT_CONTEXT_VERSION }
+                 : {}),
++              ...(prepared.localMcpEnabled &&
++              gatewayCapabilities.has(GATEWAY_SERVER_CAPS.WORKER_LOCAL_MCP)
++                ? { localMcp: true as const }
++                : {}),
+               ...(prepared.nativeInferenceEnabled &&
+               gatewayCapabilities.has(GATEWAY_SERVER_CAPS.NODE_WORKER_NATIVE_INFERENCE)
+                 ? { nativeInference: NODE_WORKER_NATIVE_INFERENCE_VERSION }
+diff --git a/src/node-host/mcp-server-config.ts b/src/node-host/mcp-server-config.ts
+new file mode 100644
+index 0000000..c5c97ab
+--- /dev/null
++++ b/src/node-host/mcp-server-config.ts
+@@ -0,0 +1,12 @@
++import type { McpServerConfig } from "../config/types.mcp.js";
++
++export function listEnabledNodeHostMcpServers(
++  servers: Record<string, McpServerConfig> | undefined,
++): ReadonlyArray<readonly [string, McpServerConfig]> {
++  return Object.entries(servers ?? {})
++    .filter(
++      ([serverName, config]) =>
++        serverName.length > 0 && serverName === serverName.trim() && config.enabled !== false,
++    )
++    .toSorted(([left], [right]) => left.localeCompare(right));
++}
+diff --git a/src/node-host/mcp.ts b/src/node-host/mcp.ts
+index 306e557..3fb59ea 100644
+--- a/src/node-host/mcp.ts
++++ b/src/node-host/mcp.ts
+@@ -27,6 +27,7 @@ import {
+   NODE_MCP_TOOLS_CALL_COMMAND,
+ } from "../infra/node-commands.js";
+ import { VERSION } from "../version.js";
++import { listEnabledNodeHostMcpServers } from "./mcp-server-config.js";
+ 
+ const NODE_MCP_PLUGIN_ID = "node-mcp";
+ const NODE_MCP_DESCRIPTION_MAX_CHARS = 1_024;
+@@ -581,14 +582,3 @@ export async function startNodeHostMcpManager(
+     },
+   };
+ }
+-
+-function listEnabledNodeHostMcpServers(
+-  servers: Record<string, McpServerConfig> | undefined,
+-): ReadonlyArray<readonly [string, McpServerConfig]> {
+-  return Object.entries(servers ?? {})
+-    .filter(
+-      ([serverName, config]) =>
+-        serverName.length > 0 && serverName === serverName.trim() && config.enabled !== false,
+-    )
+-    .toSorted(([left], [right]) => left.localeCompare(right));
+-}
+diff --git a/src/node-host/node-worker-child-lifecycle.ts b/src/node-host/node-worker-child-lifecycle.ts
+index eacdd0f..be0794e 100644
+--- a/src/node-host/node-worker-child-lifecycle.ts
++++ b/src/node-host/node-worker-child-lifecycle.ts
+@@ -28,6 +28,7 @@ import {
+   sendNodeWorkerInput,
+   type NodeWorkerChildAdapter,
+ } from "./node-worker-launch-transport.js";
++import { handleNodeWorkerMcpMessage } from "./node-worker-mcp.js";
+ import { resolveNodeWorkerNativeInferenceWorkspace } from "./node-worker-native-inference.js";
+ import {
+   createNodeWorkerCredentialScrubber,
+@@ -213,7 +214,7 @@ export class NodeWorkerChildLifecycle {
+     const active = {
+       state: "running",
+       binding: nodeWorkerEnvironmentBinding(params.input),
+-      turn: createNodeWorkerActiveTurn(params.claim),
++      turn: createNodeWorkerActiveTurn(params.claim, params.descriptor, this.options.localMcp?.()),
+       retiring: false,
+       idleRetention: params.idleRetention,
+       adapter,
+@@ -355,7 +356,7 @@ export class NodeWorkerChildLifecycle {
+       return admitted.receipt;
+     }
+     clearNodeWorkerRetention(active);
+-    active.turn = createNodeWorkerActiveTurn(claim);
++    active.turn = createNodeWorkerActiveTurn(claim, descriptor, this.options.localMcp?.());
+     const negotiated = active.idleRetention || idleRetention;
+     active.idleRetention = idleRetention;
+     if (negotiated) {
+@@ -510,7 +511,10 @@ export class NodeWorkerChildLifecycle {
+       (frame) => this.settleTurn(active, frame),
+       () => active.turn?.claim.launchId,
+       active.container ? () => this.cleanupChildContainer(active) : undefined,
+-    ).finally(() => this.processObservations.retire(active));
++    ).finally(() => {
++      active.turn?.mcp?.close();
++      this.processObservations.retire(active);
++    });
+     if (observation.kind === "deferred") {
+       active.deferredOutcome = observation.outcome;
+       return;
+@@ -523,6 +527,16 @@ export class NodeWorkerChildLifecycle {
+     active: NodeWorkerRunningChild,
+     frame: WorkerProcessMessage,
+   ): Promise<void> {
++    if (frame.type === "mcp-call" || frame.type === "mcp-cancel") {
++      return handleNodeWorkerMcpMessage({
++        active,
++        frame,
++        isClosed: this.options.isClosed(),
++        ownsChild: () => this.owners.get(active.launchId) === active,
++        sendResult: (response) => sendNodeWorkerInput(active.adapter, response),
++        stopChild: () => this.stopChild(active, "interrupted"),
++      });
++    }
+     if (frame.type === "processes-changed") {
+       if (
+         !active.stopState &&
+@@ -546,6 +560,7 @@ export class NodeWorkerChildLifecycle {
+       if (!turn || turn.claim.launchId !== frame.turnId || active.retiring) {
+         throw new Error("node worker returned a result outside its active turn");
+       }
++      turn.mcp?.close();
+       // Publish this operation before finish can invoke a reentrant cancellation.
+       await (turn.settling = Promise.resolve()
+         .then(async () => {
+@@ -676,6 +691,7 @@ export class NodeWorkerChildLifecycle {
+   async stopChild(active: NodeWorkerRunningChild, state?: NodeWorkerStopState): Promise<void> {
+     const stopping = (async () => {
+       active.retiring = true;
++      active.turn?.mcp?.close();
+       if (active.retention?.reason === "idle") {
+         clearTimeout(active.retention.timer);
+       }
+diff --git a/src/node-host/node-worker-mcp.ts b/src/node-host/node-worker-mcp.ts
+new file mode 100644
+index 0000000..9a86e03
+--- /dev/null
++++ b/src/node-host/node-worker-mcp.ts
+@@ -0,0 +1,198 @@
++import { Value } from "typebox/value";
++import { WORKER_LOCAL_MCP_PROTOCOL_FEATURE } from "../../packages/gateway-protocol/src/schema/worker-admission.js";
++import {
++  WORKER_PROTOCOL_MAX_CONCURRENT_TOOLS,
++  isWorkerFrameWithinBudget,
++} from "../../packages/gateway-protocol/src/schema/worker-protocol-primitives.js";
++import { logDebug } from "../logger.js";
++import type { WorkerLaunchDescriptor } from "../worker/launch-descriptor.js";
++import type { WorkerMcpResult, WorkerProcessMessage } from "../worker/worker-process-protocol.js";
++import type { NodeHostMcpManager } from "./mcp.js";
++import { warnNodeWorkerIdleCleanupFailure } from "./node-worker-output.js";
++import type { NodeWorkerRunningChild } from "./node-worker-supervisor-ownership.js";
++
++export type NodeWorkerMcpSession = Pick<NodeHostMcpManager, "callMcpTool" | "descriptors"> & {
++  signal: AbortSignal;
++};
++type McpCall = Extract<WorkerProcessMessage, { type: "mcp-call" }>;
++
++/** A turn keeps the generation it was granted, including across deny then allow. */
++export class NodeWorkerMcpPolicy {
++  #generation?: AbortController;
++  #revoked = AbortSignal.abort();
++
++  get signal(): AbortSignal {
++    return this.#generation?.signal ?? this.#revoked;
++  }
++
++  session(manager: NodeHostMcpManager | undefined): NodeWorkerMcpSession | undefined {
++    if (manager) {
++      return {
++        callMcpTool: manager.callMcpTool,
++        descriptors: manager.descriptors,
++        signal: this.signal,
++      };
++    }
++    return undefined;
++  }
++
++  setAllowed(allowed: boolean): void {
++    if (allowed) {
++      this.#generation ??= new AbortController();
++    } else {
++      this.#generation?.abort();
++      this.#generation = undefined;
++    }
++  }
++}
++
++/** Only handles admitted to this turn can use the node's existing MCP sessions. */
++export function createNodeWorkerMcpTurn(
++  descriptor: WorkerLaunchDescriptor,
++  session?: NodeWorkerMcpSession,
++) {
++  const { turnId: admittedTurnId, toolAuthority } = descriptor.assignment;
++  const handles = toolAuthority.mcpTools;
++  if (
++    !session ||
++    !handles?.length ||
++    !descriptor.admission.handshake.protocolFeatures.includes(WORKER_LOCAL_MCP_PROTOCOL_FEATURE)
++  ) {
++    return undefined;
++  }
++  const tools = new Map(handles.map((tool) => [tool.id, tool]));
++  const lifetime = new AbortController();
++  const pending = new Map<string, AbortController>();
++  const seen = new Set<string>();
++  return {
++    async invoke(frame: McpCall, send: (reply: WorkerMcpResult) => Promise<void>): Promise<void> {
++      const { turnId, requestId } = frame;
++      const reply = { type: "mcp-result", turnId, requestId } as const;
++      if (turnId !== admittedTurnId || lifetime.signal.aborted || seen.has(requestId)) {
++        return;
++      }
++      // Exactly-once within this turn, including side-effecting tools. Bound the replay index.
++      if (seen.size >= 4096) {
++        return send({ ...reply, error: "Worker MCP call limit reached for this turn" });
++      }
++      seen.add(requestId);
++      const tool = tools.get(frame.toolId);
++      if (!tool || session.signal.aborted) {
++        return send({ ...reply, error: "Worker MCP tool is unavailable for this turn" });
++      }
++      if (pending.size >= WORKER_PROTOCOL_MAX_CONCURRENT_TOOLS) {
++        return send({ ...reply, error: "Worker MCP concurrency limit reached" });
++      }
++      const controller = new AbortController();
++      pending.set(requestId, controller);
++      let response: WorkerMcpResult;
++      try {
++        const toolDescriptor = session.descriptors.find(
++          ({ mcp }) => mcp?.server === tool.server && mcp.tool === tool.tool,
++        );
++        if (
++          !toolDescriptor?.parameters ||
++          !Value.Check(toolDescriptor.parameters, frame.arguments)
++        ) {
++          response = { ...reply, error: "Worker MCP tool arguments or descriptor are invalid" };
++        } else {
++          logDebug(`node-host: invoking local MCP tool ${tool.id} on turn ${turnId}`);
++          const raw = await session.callMcpTool({
++            server: tool.server,
++            tool: tool.tool,
++            arguments: frame.arguments,
++            signal: AbortSignal.any([lifetime.signal, session.signal, controller.signal]),
++          });
++          // Only forward the MCP fields consumed by the model and its Code Mode guest.
++          const result = {
++            content: raw.content,
++            ...(raw.structuredContent !== undefined && {
++              structuredContent: raw.structuredContent,
++            }),
++            ...(raw.isError !== undefined && { isError: raw.isError }),
++          };
++          response = { ...reply, result };
++          if (
++            !isWorkerFrameWithinBudget(response, () =>
++              raw.content.flatMap((block) => (block.type === "image" ? [block.data] : [])),
++            )
++          ) {
++            response = { ...reply, error: "Worker MCP result exceeds the size limit" };
++          }
++        }
++      } catch {
++        response = { ...reply, error: "Worker MCP call failed" };
++      } finally {
++        pending.delete(requestId);
++      }
++      if (!lifetime.signal.aborted && !controller.signal.aborted) {
++        await send(
++          session.signal.aborted
++            ? { ...reply, error: "Worker MCP admission was revoked" }
++            : response,
++        );
++      }
++    },
++    cancel(requestId: string) {
++      pending.get(requestId)?.abort();
++    },
++    close() {
++      lifetime.abort();
++    },
++  };
++}
++
++/** The stdout reader must stay free to receive cancellations while an MCP call runs. */
++export async function handleNodeWorkerMcpMessage({
++  active,
++  frame,
++  isClosed,
++  ownsChild,
++  sendResult,
++  stopChild,
++}: {
++  active: NodeWorkerRunningChild;
++  frame: Extract<WorkerProcessMessage, { type: "mcp-call" | "mcp-cancel" }>;
++  isClosed: boolean;
++  ownsChild: () => boolean;
++  sendResult: (response: WorkerMcpResult) => Promise<void>;
++  stopChild: () => Promise<void>;
++}): Promise<void> {
++  const turn = active.turn;
++  if (
++    !ownsChild() ||
++    !turn ||
++    turn.claim.launchId !== frame.turnId ||
++    turn.cancelled ||
++    turn.settling ||
++    active.retiring ||
++    active.stopState ||
++    isClosed
++  ) {
++    // A late cancellation from a settled turn must never affect a retained child's next turn.
++    return;
++  }
++  if (!turn.mcp) {
++    if (frame.type === "mcp-call") {
++      await sendResult({
++        type: "mcp-result",
++        turnId: frame.turnId,
++        requestId: frame.requestId,
++        error: "Worker MCP execution is unavailable for this turn",
++      });
++    }
++    return;
++  }
++  if (frame.type === "mcp-cancel") {
++    turn.mcp.cancel(frame.requestId);
++  } else {
++    void turn.mcp
++      .invoke(frame, sendResult)
++      .catch(() => {
++        if (active.turn === turn && ownsChild()) {
++          return stopChild();
++        }
++      })
++      .catch(warnNodeWorkerIdleCleanupFailure);
++  }
++}
+diff --git a/src/node-host/node-worker-supervisor-ownership.ts b/src/node-host/node-worker-supervisor-ownership.ts
+index 8f15789..dcb1651 100644
+--- a/src/node-host/node-worker-supervisor-ownership.ts
++++ b/src/node-host/node-worker-supervisor-ownership.ts
+@@ -1,5 +1,6 @@
+ import type { NodeWorkerCapacitySnapshot } from "../infra/node-runner-inventory.js";
+ import { createDeferredCore } from "../shared/deferred.js";
++import type { WorkerLaunchDescriptor } from "../worker/launch-descriptor.js";
+ import type {
+   NodeWorkerEnvironmentStopInput,
+   NodeWorkerLaunchInput,
+@@ -18,6 +19,7 @@ import type {
+   NodeWorkerTerminalState,
+ } from "./node-worker-launch-store.js";
+ import type { NodeWorkerChildAdapter } from "./node-worker-launch-transport.js";
++import { createNodeWorkerMcpTurn, type NodeWorkerMcpSession } from "./node-worker-mcp.js";
+ import type { NodeWorkerNativeInferenceSnapshot } from "./node-worker-native-inference.js";
+ import type { NodeWorkerCredentialScrubber } from "./node-worker-output.js";
+ import type { NodeWorkerProcessIdentity } from "./node-worker-process-identity.js";
+@@ -84,15 +86,26 @@ export function nodeWorkerEnvironmentMatches(
+ 
+ type NodeWorkerActiveTurn = {
+   claim: NodeWorkerLaunchClaim;
++  mcp?: ReturnType<typeof createNodeWorkerMcpTurn>;
+   done: Promise<void>;
+   settle: () => void;
+   cancelled: boolean;
+   settling?: Promise<void>;
+ };
+ 
+-export function createNodeWorkerActiveTurn(claim: NodeWorkerLaunchClaim): NodeWorkerActiveTurn {
++export function createNodeWorkerActiveTurn(
++  claim: NodeWorkerLaunchClaim,
++  descriptor: WorkerLaunchDescriptor,
++  session?: NodeWorkerMcpSession,
++): NodeWorkerActiveTurn {
+   const { promise, resolve } = createDeferredCore();
+-  return { claim, done: promise, settle: resolve, cancelled: false };
++  return {
++    claim,
++    mcp: createNodeWorkerMcpTurn(descriptor, session),
++    done: promise,
++    settle: resolve,
++    cancelled: false,
++  };
+ }
+ 
+ type NodeWorkerActiveBase = {
+@@ -160,6 +173,7 @@ export function createNodeWorkerObservedTerminal(
+ export type NodeWorkerActiveOwnership = NodeWorkerRunningChild | NodeWorkerObservedTerminal;
+ 
+ export type NodeWorkerSupervisorOptions = {
++  localMcp?: () => NodeWorkerMcpSession | undefined;
+   bundleRoot?: string;
+   env?: NodeJS.ProcessEnv;
+   capacity?: number;
+@@ -196,6 +210,7 @@ export function nodeWorkerReceiptMatchesOwner(
+ }
+ 
+ export type NodeWorkerChildLifecycleOptions = {
++  localMcp?: NodeWorkerSupervisorOptions["localMcp"];
+   onProcessesChanged?: NodeWorkerSupervisorOptions["onProcessesChanged"];
+   bundleRoot: string;
+   nativeInferenceSnapshot?: NodeWorkerNativeInferenceSnapshot;
+diff --git a/src/node-host/node-worker-supervisor.idle.test.ts b/src/node-host/node-worker-supervisor.idle.test.ts
+index 937a118..1cfdf6a 100644
+--- a/src/node-host/node-worker-supervisor.idle.test.ts
++++ b/src/node-host/node-worker-supervisor.idle.test.ts
+@@ -10,6 +10,7 @@ import { nodeWorkerTurnMatchesIdentity } from "../worker/node-supervisor-protoco
+ import type { WorkerProcessMessage } from "../worker/worker-process-protocol.js";
+ import type { NodeWorkerLaunchReceipt } from "./node-worker-launch-store.js";
+ import type { NodeWorkerChildAdapter } from "./node-worker-launch-transport.js";
++import { NodeWorkerMcpPolicy, type NodeWorkerMcpSession } from "./node-worker-mcp.js";
+ import { createNodeWorkerSupervisor, mocks } from "./node-worker-supervisor.mock.test-support.js";
+ import {
+   TEST_WORKER_ENDPOINT,
+@@ -27,6 +28,17 @@ afterEach(() => {
+   vi.resetAllMocks();
+ });
+ 
++const fixtureMcpDescriptors = [
++  {
++    name: "fixture_lookup",
++    description: "A fixture",
++    command: "mcp.tools.call.v1",
++    pluginId: "node-mcp",
++    mcp: { server: "fixture", tool: "lookup" },
++    parameters: { type: "object", properties: { key: { type: "string" } }, required: ["key"] },
++  },
++];
++
+ function input(turnId: string, environmentId = "environment-1") {
+   const value = testWorkerLaunchInput("/synthetic/workspace", turnId);
+   value.idleRetention = true;
+@@ -46,7 +58,7 @@ function settle<T>(pending: Promise<T>) {
+   );
+ }
+ 
+-function fixture(capacity = 1, container = false) {
++function fixture(capacity = 1, container = false, localMcp?: () => NodeWorkerMcpSession) {
+   const launches = new Map<string, NodeWorkerLaunchReceipt>();
+   const turns = new Map<string, NodeWorkerTurnReceipt>();
+   const snapshots: NodeWorkerCapacitySnapshot[] = [];
+@@ -231,6 +243,7 @@ function fixture(capacity = 1, container = false) {
+     return owner.observe(active, receive);
+   });
+   const supervisor = createNodeWorkerSupervisor({
++    localMcp,
+     bundleRoot: "/synthetic/bundles",
+     env: { OPENCLAW_STATE_DIR: "/synthetic/state" },
+     capacity,
+@@ -305,6 +318,134 @@ describe("node worker idle retention", () => {
+     },
+   );
+ 
++  it("calls only MCP handles granted to the current turn on a retained worker", async () => {
++    const call = vi.fn<NodeWorkerMcpSession["callMcpTool"]>().mockResolvedValue({
++      content: [{ type: "text", text: "result" }],
++      structuredContent: { value: 42 },
++      _meta: { private: "not part of the guest result" },
++    });
++    const signal = new AbortController().signal;
++    await using f = fixture(1, false, () => ({
++      callMcpTool: call,
++      descriptors: fixtureMcpDescriptors,
++      signal,
++    }));
++    const first = input("first-mcp-turn");
++    first.descriptor.assignment.toolAuthority.mcpTools = [
++      { id: "allowed", server: "fixture", tool: "lookup" },
++    ];
++    const owner = await f.launch(first);
++    const request = {
++      type: "mcp-call",
++      turnId: first.launchId,
++      requestId: "request-1",
++      toolId: "allowed",
++      arguments: { key: "chosen" },
++    } as const;
++    const reply = createDeferred();
++    mocks.send.mockImplementationOnce(async (_adapter, result) => {
++      expect(result).toEqual({
++        type: "mcp-result",
++        turnId: first.launchId,
++        requestId: request.requestId,
++        result: { content: [{ type: "text", text: "result" }], structuredContent: { value: 42 } },
++      });
++      reply.resolve();
++    });
++    await owner.emit(request);
++    await reply.promise;
++    await owner.emit(request);
++    expect(call).toHaveBeenCalledExactlyOnceWith({
++      server: "fixture",
++      tool: "lookup",
++      arguments: { key: "chosen" },
++      signal: expect.any(AbortSignal),
++    });
++
++    await owner.emit({ ...request, requestId: "malformed", arguments: { key: 123 } });
++    expect(mocks.send).toHaveBeenLastCalledWith(
++      owner.adapter,
++      expect.objectContaining({
++        requestId: "malformed",
++        error: expect.stringContaining("invalid"),
++      }),
++    );
++    expect(call).toHaveBeenCalledTimes(1);
++    const pending = createDeferred();
++    call.mockImplementationOnce(async ({ signal: callSignal }) => {
++      assert(callSignal);
++      callSignal.addEventListener("abort", () => pending.resolve(), { once: true });
++      await pending.promise;
++      throw new Error("cancelled");
++    });
++    await owner.emit({ ...request, requestId: "blocked" });
++    await owner.complete(first.launchId, "idle");
++    await pending.promise;
++
++    const second = input("next-mcp-turn");
++    await f.supervisor.launch(second, TEST_WORKER_ENDPOINT);
++    await owner.emit({ ...request, requestId: "late" });
++    await owner.emit({ ...request, turnId: second.launchId, requestId: "ungranted" });
++    expect(mocks.send).toHaveBeenLastCalledWith(owner.adapter, {
++      type: "mcp-result",
++      turnId: second.launchId,
++      requestId: "ungranted",
++      error: "Worker MCP execution is unavailable for this turn",
++    });
++    expect(call).toHaveBeenCalledTimes(2);
++    await owner.complete(second.launchId);
++  });
++
++  it("revokes in-flight MCP calls on policy change without ending the worker turn", async () => {
++    const policy = new NodeWorkerMcpPolicy();
++    expect(policy.signal.aborted).toBe(true);
++    policy.setAllowed(true);
++    const aborted = createDeferred();
++    const call = vi.fn<NodeWorkerMcpSession["callMcpTool"]>().mockResolvedValue({ content: [] });
++    call.mockImplementationOnce(async ({ signal }) => {
++      assert(signal);
++      signal.addEventListener("abort", () => aborted.resolve(), { once: true });
++      await aborted.promise;
++      throw new Error("cancelled");
++    });
++    await using f = fixture(1, false, () => ({
++      callMcpTool: call,
++      descriptors: fixtureMcpDescriptors,
++      signal: policy.signal,
++    }));
++    const first = input("policy-turn");
++    const handles = [{ id: "allowed", server: "fixture", tool: "lookup" }];
++    first.descriptor.assignment.toolAuthority.mcpTools = handles;
++    const owner = await f.launch(first);
++    const request = {
++      type: "mcp-call",
++      turnId: first.launchId,
++      requestId: "in-flight",
++      toolId: "allowed",
++      arguments: { key: "example" },
++    } as const;
++    await owner.emit(request);
++    expect(call).toHaveBeenCalledOnce();
++    policy.setAllowed(false);
++    await aborted.promise;
++    await owner.emit({ ...request, requestId: "while-denied" });
++    policy.setAllowed(true);
++    await owner.emit({ ...request, requestId: "after-allow" });
++    expect(call).toHaveBeenCalledOnce();
++    expect(mocks.send).toHaveBeenLastCalledWith(
++      owner.adapter,
++      expect.objectContaining({ requestId: "after-allow", error: expect.any(String) }),
++    );
++    await owner.complete(first.launchId, "idle");
++
++    const fresh = input("fresh-turn");
++    fresh.descriptor.assignment.toolAuthority.mcpTools = handles;
++    await f.supervisor.launch(fresh, TEST_WORKER_ENDPOINT);
++    await owner.emit({ ...request, turnId: fresh.launchId });
++    expect(call).toHaveBeenCalledTimes(2);
++    await owner.complete(fresh.launchId);
++  });
++
+   it("routes process observations after turn settlement and fences stale or retired owners", async () => {
+     await using f = fixture();
+     const value = input("process-owner");
+diff --git a/src/node-host/node-worker-supervisor.ts b/src/node-host/node-worker-supervisor.ts
+index 4076aba..f212498 100644
+--- a/src/node-host/node-worker-supervisor.ts
++++ b/src/node-host/node-worker-supervisor.ts
+@@ -103,6 +103,7 @@ class NodeWorkerSupervisor {
+       isRecoveryActive: () => !this.closed,
+     });
+     this.children = new NodeWorkerChildLifecycle({
++      localMcp: options.localMcp,
+       onProcessesChanged: options.onProcessesChanged,
+       bundleRoot,
+       ...startup,
+@@ -635,6 +636,7 @@ class NodeWorkerSupervisor {
+       return await afterSettlement(turn.settling);
+     }
+     turn.cancelled = true;
++    turn.mcp?.close();
+     try {
+       // A worker that stopped reading can block the write as well as the reply.
+       await withTimeout(
+diff --git a/src/node-host/runner.test-support.ts b/src/node-host/runner.test-support.ts
+index ba134c4..7e342bb 100644
+--- a/src/node-host/runner.test-support.ts
++++ b/src/node-host/runner.test-support.ts
+@@ -71,6 +71,7 @@ const mocks = vi.hoisted(() => {
+     activeRuntime: {
+       invoke: vi.fn(async () => {}),
+       handleInput: vi.fn(),
++      setLocalMcpAllowed: vi.fn(),
+       cancel: vi.fn(),
+       cancelAll: vi.fn(async () => {}),
+       tryPauseForUpdate: vi.fn(async () => true),
+diff --git a/src/node-host/runner.test.ts b/src/node-host/runner.test.ts
+index 73bd03e..ee34964 100644
+--- a/src/node-host/runner.test.ts
++++ b/src/node-host/runner.test.ts
+@@ -219,8 +219,14 @@ describe("runNodeHost", () => {
+         event: "node.invoke.cancel",
+         payload: { invokeId: "invoke-1", nodeId: "node-1" },
+       });
++      options?.onEvent?.({
++        type: "event",
++        event: "node.worker.localMcpPolicy",
++        payload: { allowed: false },
++      });
+       options?.onClose?.(1000, "connection closed");
+ 
++      expect(mocks.activeRuntime.setLocalMcpAllowed).toHaveBeenCalledWith(false);
+       expect(mocks.activeRuntime.handleInput).toHaveBeenCalledWith(
+         "invoke-1",
+         3,
+diff --git a/src/node-host/runner.ts b/src/node-host/runner.ts
+index 819624a..046a180 100644
+--- a/src/node-host/runner.ts
++++ b/src/node-host/runner.ts
+@@ -345,6 +345,12 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
+         }
+         return;
+       }
++      if (evt.event === "node.worker.localMcpPolicy") {
++        if (isRecord(evt.payload) && typeof evt.payload.allowed === "boolean") {
++          activeRuntime.setLocalMcpAllowed(evt.payload.allowed);
++        }
++        return;
++      }
+       if (evt.event === "node.invoke.cancel") {
+         const payload = coerceNodeInvokeCancelPayload(evt.payload);
+         if (payload) {
+diff --git a/src/node-host/runtime-manifest.ts b/src/node-host/runtime-manifest.ts
+index 856e0f7..1c85ffb 100644
+--- a/src/node-host/runtime-manifest.ts
++++ b/src/node-host/runtime-manifest.ts
+@@ -21,6 +21,19 @@ export const preferMacAppExecHost =
+ 
+ export type NodeHostManifest = ReturnType<typeof buildNodeHostManifest>;
+ 
++export function requireRequestedCommands(
++  manifest: NodeHostManifest,
++  commandAllowlist?: ReadonlySet<string>,
++) {
++  if (commandAllowlist && manifest.commands.length === 0) {
++    const requested = [...commandAllowlist].toSorted().join(", ") || "(empty allowlist)";
++    throw new Error(
++      `Node command allowlist retained no available commands. Unknown or unavailable ids: ${requested}. Check --commands and enable the plugin that provides each command.`,
++    );
++  }
++  return manifest;
++}
++
+ export function buildNodeHostManifest(params: {
+   pluginManifest: ReturnType<typeof listRegisteredNodeHostCapsAndCommands>;
+   commandAllowlist?: ReadonlySet<string>;
+diff --git a/src/node-host/runtime.ts b/src/node-host/runtime.ts
+index 35c5e3a..1d3ff0b 100644
+--- a/src/node-host/runtime.ts
++++ b/src/node-host/runtime.ts
+@@ -1,5 +1,3 @@
+-/** Transport-independent CLI node-host runtime shared by Gateway and app workers. */
+-import type { CloudflareAccessCredentials } from "../../packages/gateway-client/src/cloudflare-access.js";
+ import type { OpenClawConfig } from "../config/config.js";
+ import { captureRuntimeConfigAsyncReader } from "../config/config.js";
+ import { throwCollectedErrors } from "../infra/error-graph-internal.js";
+@@ -23,6 +21,7 @@ import { createNodeInvokeResponder, type NodeHostClient } from "./client.js";
+ import { resolveNodeDesktopHostConfig } from "./desktop-stream-command.js";
+ import { requestsClaudeNodeSkillRuntime } from "./invoke-agent-cli-claude-params.js";
+ import { handleInvoke, type NodeInvokeRequestPayload } from "./invoke.js";
++import { listEnabledNodeHostMcpServers } from "./mcp-server-config.js";
+ import { startNodeHostMcpManager, type NodeHostMcpManager } from "./mcp.js";
+ import { buildNodeEventParams } from "./node-event-params.js";
+ import {
+@@ -34,8 +33,10 @@ import { createNodeInvokeProgressWriter } from "./node-invoke-progress.js";
+ import { NodeWorkerBundleInstaller } from "./node-worker-bundle-installer.js";
+ import { resolveNodeWorkerContainerEngine } from "./node-worker-container-engine.js";
+ import { NodeWorkerContainerContextMismatchError } from "./node-worker-container-lifecycle.js";
++import { NodeWorkerMcpPolicy } from "./node-worker-mcp.js";
+ import { snapshotNodeWorkerNativeInference } from "./node-worker-native-inference.js";
+ import { createNodeWorkerSupervisor } from "./node-worker-supervisor.js";
++import type { NodeWorkerTransferGateway } from "./node-worker-transfer-client.js";
+ import { NodeWorkerWorkspaceRuntime } from "./node-worker-workspace.js";
+ import {
+   ensureNodeHostPluginRegistry,
+@@ -46,6 +47,7 @@ import {
+   watchRegisteredNodeHostCommandAvailability,
+ } from "./plugin-node-host.js";
+ import {
++  requireRequestedCommands,
+   buildNodeHostManifest,
+   createNodeHostInventory,
+   sameNodeHostManifest,
+@@ -117,6 +119,7 @@ async function settleNodeHostCleanup(owners: Array<Promise<unknown> | undefined>
+   throwCollectedErrors(errors, "node-host runtime cleanup failed");
+ }
+ 
++/** Transport-independent CLI node-host runtime shared by Gateway and app workers. */
+ export async function prepareNodeHostRuntime(params?: {
+   config?: OpenClawConfig;
+   env?: NodeJS.ProcessEnv;
+@@ -239,10 +242,14 @@ export async function prepareNodeHostRuntime(params?: {
+       await disablePreparedWorkerHosting(error);
+     }
+   }
++  const subprocessWorkers =
++    workerRunsEnabled && config.nodeHost?.workerRuns?.isolation !== "container";
++  const localMcpEnabled =
++    subprocessWorkers &&
++    !commandAllowlist &&
++    listEnabledNodeHostMcpServers(config.nodeHost?.mcp?.servers).length > 0;
+   const nativeInferenceSnapshot =
+-    workerRunsEnabled &&
+-    platform !== "win32" &&
+-    config.nodeHost?.workerRuns?.isolation !== "container"
++    subprocessWorkers && platform !== "win32"
+       ? snapshotNodeWorkerNativeInference(config, env, platform)
+       : undefined;
+   const skills =
+@@ -257,14 +264,7 @@ export async function prepareNodeHostRuntime(params?: {
+       ephemeral: params?.ephemeral === true,
+       pathEnv,
+     });
+-  const manifest = buildManifest(pluginNodeHost);
+-  if (commandAllowlist && manifest.commands.length === 0) {
+-    const requested = [...commandAllowlist].toSorted().join(", ") || "(empty allowlist)";
+-    throw new Error(
+-      `Node command allowlist retained no available commands. Unknown or unavailable ids: ${requested}. Check --commands and enable the plugin that provides each command.`,
+-    );
+-  }
+-  const initialInventory = createNodeHostInventory(skills, pluginNodeHost.nodePluginTools);
++  const manifest = requireRequestedCommands(buildManifest(pluginNodeHost), commandAllowlist);
+ 
+   return {
+     manifest,
+@@ -273,10 +273,11 @@ export async function prepareNodeHostRuntime(params?: {
+       ? { deviceFoldersEnabled: true as const }
+       : {}),
+     preparedWorkspacesEnabled: workerRunsEnabled && params?.ephemeral === true,
++    ...(localMcpEnabled ? { localMcpEnabled: true as const } : {}),
+     nativeInferenceEnabled: workerRunsEnabled && nativeInferenceSnapshot !== undefined,
+     ...(commandAllowlist ? { restrictedSurface: true as const } : {}),
+     ...(workerHostingDisabledReason ? { workerHostingDisabledReason } : {}),
+-    initialInventory,
++    initialInventory: createNodeHostInventory(skills, pluginNodeHost.nodePluginTools),
+     start({
+       client,
+       onInventoryChanged,
+@@ -304,6 +305,8 @@ export async function prepareNodeHostRuntime(params?: {
+       const workerBundleInstaller = workerRunsEnabled
+         ? new NodeWorkerBundleInstaller({ env })
+         : undefined;
++      let manager: NodeHostMcpManager | undefined;
++      const localMcpPolicy = new NodeWorkerMcpPolicy();
+       let workerSupervisor =
+         preparedContainerSupervisor ??
+         (workerRunsEnabled
+@@ -311,6 +314,7 @@ export async function prepareNodeHostRuntime(params?: {
+               env,
+               capacity: config.nodeHost?.workerRuns?.capacity,
+               nativeInferenceSnapshot,
++              ...(localMcpEnabled ? { localMcp: () => localMcpPolicy.session(manager) } : {}),
+               onCapacityChanged: onRunnerCapacityChanged,
+               onProcessesChanged: publishProcessChanges,
+               workspace: workerWorkspace,
+@@ -372,14 +376,7 @@ export async function prepareNodeHostRuntime(params?: {
+       };
+       let currentPluginNodeHost = pluginNodeHost;
+       let currentManifest = manifest;
+-      let gatewayConnection:
+-        | {
+-            url: string;
+-            tlsFingerprint?: string;
+-            cloudflareAccess?: CloudflareAccessCredentials;
+-          }
+-        | undefined;
+-      let manager: NodeHostMcpManager | undefined;
++      let gatewayConnection: NodeWorkerTransferGateway | undefined;
+       let mcpStartupComplete = Boolean(commandAllowlist);
+       const publishInventory = () =>
+         onInventoryChanged?.(
+@@ -627,8 +624,10 @@ export async function prepareNodeHostRuntime(params?: {
+         cancel(invokeId: string) {
+           activeInvokes.get(invokeId)?.controller.abort();
+         },
++        setLocalMcpAllowed: (allowed: boolean) => localMcpPolicy.setAllowed(allowed),
+         cancelAll() {
+           connectionGeneration += 1;
++          localMcpPolicy.setAllowed(false);
+           // Retired refreshes may still finish; their cache must never serve the next connection.
+           skillBins = new SkillBinsCache(client, pathEnv);
+           // Close can reenter from an abort listener and must see this cleanup barrier.
+diff --git a/src/worker/embedded-agent.runtime.ts b/src/worker/embedded-agent.runtime.ts
+index 7f7e320..f16d258 100644
+--- a/src/worker/embedded-agent.runtime.ts
++++ b/src/worker/embedded-agent.runtime.ts
+@@ -56,6 +56,7 @@ import { createNativeInferenceStreamGuard } from "./native-inference-stream.js";
+ import type { NativeRuntimeResolved } from "./native-runtime.js";
+ import { WORKER_PROVIDER_REPLAY_LOCAL_RETRY_MESSAGE } from "./transcript-message.js";
+ import { createWorkerGatewayToolProxies } from "./worker-gateway-tools.js";
++import { createWorkerLocalMcpTool, type WorkerLocalMcpCall } from "./worker-local-mcp.js";
+ import { createWorkerPlacementTools, WORKER_TOOL_CONFIG } from "./worker-placement-tools.js";
+ 
+ function toWorkerAgentError(value: unknown, fallback: string): Error {
+@@ -85,6 +86,8 @@ type RunWorkerEmbeddedTurnParams = Omit<
+   gatewayTools: Parameters<typeof createWorkerGatewayToolProxies>[1];
+   toolSurface: WorkerToolSurface;
+   allowedToolNames: readonly string[];
++  mcpTools?: WorkerLaunchPlan["assignment"]["toolAuthority"]["mcpTools"];
++  localMcp?: WorkerLocalMcpCall;
+   execAuthority: WorkerLaunchPlan["assignment"]["toolAuthority"]["exec"];
+   createApprovalTransport?: ExecToolDefaults["createApprovalTransport"];
+   browserRuntime?: WorkerBrowserRuntime;
+@@ -278,7 +281,9 @@ export async function runWorkerEmbeddedTurn(params: RunWorkerEmbeddedTurnParams)
+           if (entry.execution === "gateway") {
+             return wrapToolWithAbortSignal(gatewayTools.get(entry.definition.name)!, toolSignal);
+           }
+-          const source = localTools.get(entry.definition.name);
++          const source = entry.plugin?.mcp
++            ? createWorkerLocalMcpTool(entry, params.mcpTools, params.localMcp)
++            : localTools.get(entry.definition.name);
+           if (!source) {
+             throw new Error(`Worker placement tool unavailable: ${entry.definition.name}`);
+           }
+diff --git a/src/worker/launch-descriptor.ts b/src/worker/launch-descriptor.ts
+index 1f225c5..0a32bc2 100644
+--- a/src/worker/launch-descriptor.ts
++++ b/src/worker/launch-descriptor.ts
+@@ -24,6 +24,7 @@ import {
+   WorkerTranscriptUserMessageSchema,
+   WORKER_PROTOCOL_MAX_IDENTIFIER_LENGTH,
+   WORKER_LOCAL_INFERENCE_PROTOCOL_FEATURE,
++  WORKER_LOCAL_MCP_PROTOCOL_FEATURE,
+ } from "../../packages/gateway-protocol/src/schema/worker-admission.js";
+ import type {
+   WorkerInferenceModelRef,
+@@ -124,10 +125,24 @@ const ToolAuthoritySchema = workerProtocolObject({
+     .array(Identifier)
+     .max(256)
+     .refine((names) => new Set(names).size === names.length),
++  // The supervisor resolves these opaque handles within this launch only.
++  mcpTools: z
++    .array(
++      workerProtocolObject({
++        id: Identifier,
++        server: z.string().min(1),
++        tool: z.string().min(1),
++      }),
++    )
++    .min(1)
++    .max(256)
++    .refine((tools) => new Set(tools.map((entry) => entry.id)).size === tools.length)
++    .optional(),
+   // Legacy absence denies execution; workers never reconstruct permissive policy.
+   exec: ExecAuthoritySchema.optional(),
+-}).transform(({ exec, ...authority }) => ({
++}).transform(({ exec, mcpTools, ...authority }) => ({
+   ...authority,
++  ...(mcpTools === undefined ? {} : { mcpTools }),
+   ...(exec === undefined ? {} : { exec }),
+ }));
+ const BrowserLaunchSchema = workerProtocolObject({
+@@ -297,6 +312,10 @@ function validateWorkerLaunchPlan(candidate: WorkerLaunchPlan): WorkerLaunchPlan
+     !Value.Check(WorkerConnectRequestFrameSchema, frame) ||
+     candidate.admission.sessionId === null ||
+     candidate.admission.ownerEpoch < 1 ||
++    (candidate.assignment.toolAuthority.mcpTools &&
++      !candidate.admission.handshake.protocolFeatures.includes(
++        WORKER_LOCAL_MCP_PROTOCOL_FEATURE,
++      )) ||
+     (candidate.assignment.inference === "runtime-local" &&
+       !candidate.admission.handshake.protocolFeatures.includes(
+         WORKER_LOCAL_INFERENCE_PROTOCOL_FEATURE,
+diff --git a/src/worker/worker-command.runtime.ts b/src/worker/worker-command.runtime.ts
+index 03b2870..6a798f7 100644
+--- a/src/worker/worker-command.runtime.ts
++++ b/src/worker/worker-command.runtime.ts
+@@ -20,6 +20,7 @@ import {
+   takeNativeInferenceStartup,
+   type NativeInferenceStartup,
+ } from "./native-inference-startup.js";
++import { createWorkerLocalMcpClient } from "./worker-local-mcp.js";
+ import {
+   parseWorkerProcessRequest,
+   type WorkerProcessMessage,
+@@ -61,7 +62,13 @@ async function runManagedWorkerCommand(
+     | { environmentId: string; sessionId: string; ownerEpoch: number; agentId: string }
+     | undefined;
+   let lastTurnId: string | undefined;
+-  let active: { turnId: string; controller: AbortController } | undefined;
++  let active:
++    | {
++        turnId: string;
++        controller: AbortController;
++        mcp: ReturnType<typeof createWorkerLocalMcpClient>;
++      }
++    | undefined;
+   let running: Promise<void> | undefined;
+   let idleCleanup: Promise<void> | undefined;
+   let draining: Promise<void> | undefined;
+@@ -131,6 +138,12 @@ async function runManagedWorkerCommand(
+           throw new Error("managed worker request is not valid JSON");
+         }
+         const request = parseWorkerProcessRequest(value);
++        if (request.type === "mcp-result") {
++          if (request.turnId === active?.turnId) {
++            active.mcp.receive(request);
++          }
++          return;
++        }
+         if (request.type === "process") {
+           const owner = processBinding;
+           const matches =
+@@ -170,7 +183,11 @@ async function runManagedWorkerCommand(
+         // The node turn journal owns replay history; retain only the immediate
+         // transport duplicate here, then require fresh Gateway admission.
+         lastTurnId = request.turnId;
+-        const current = { turnId: request.turnId, controller: new AbortController() };
++        const current = {
++          turnId: request.turnId,
++          controller: new AbortController(),
++          mcp: createWorkerLocalMcpClient(request.turnId, write),
++        };
+         active = current;
+         running = (async (descriptor: WorkerLaunchDescriptor, idleRetention?: true) => {
+           // Device-folder admission binds a canonical path. Do not independently
+@@ -235,6 +252,7 @@ async function runManagedWorkerCommand(
+             },
+             {
+               environmentStateDir: environment.stateDir,
++              localMcp: current.mcp.call,
+               ...(assertWorkspaceCurrent ? { assertWorkspaceCurrent } : {}),
+               nativeInference: options.nativeInference,
+               signal: current.controller.signal,
+@@ -301,7 +319,9 @@ async function runManagedWorkerCommand(
+             active = undefined;
+             finish();
+           }
+-        })(request.descriptor, request.idleRetention).catch(finish);
++        })(request.descriptor, request.idleRetention)
++          .catch(finish)
++          .finally(current.mcp.close);
+       };
+       const onData = (raw: unknown) => {
+         if (closed) {
+diff --git a/src/worker/worker-local-mcp.test.ts b/src/worker/worker-local-mcp.test.ts
+new file mode 100644
+index 0000000..a93b0e9
+--- /dev/null
++++ b/src/worker/worker-local-mcp.test.ts
+@@ -0,0 +1,87 @@
++import { expect, it, vi } from "vitest";
++import type { WorkerToolSurface } from "../../packages/gateway-protocol/src/schema/worker-gateway-tool.js";
++import { consumeMcpCodeModeGuestResult } from "../agents/mcp-content.js";
++import { createWorkerLocalMcpClient, createWorkerLocalMcpTool } from "./worker-local-mcp.js";
++import {
++  parseWorkerProcessMessage,
++  parseWorkerProcessRequest,
++  type WorkerProcessMessage,
++} from "./worker-process-protocol.js";
++
++const entry: WorkerToolSurface["tools"][number] = {
++  id: "generation-1:0",
++  execution: "placement",
++  definition: {
++    name: "documents_search",
++    label: "Search",
++    description: "Search documents",
++    parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
++  },
++  plugin: {
++    pluginId: "node-mcp",
++    optional: false,
++    mcp: {
++      node: { id: "node-1" },
++      serverName: "documents",
++      safeServerName: "documents",
++      toolName: "search",
++      operation: "tool",
++    },
++  },
++};
++const grants = [{ id: entry.id, server: "documents", tool: "search" }];
++
++it("invokes the admitted handle over the supervisor pipe and projects the result for Code Mode in the worker", async () => {
++  const result = { content: [{ type: "text", text: "found" }], structuredContent: { document: 7 } };
++  const write = vi.fn(async (message: WorkerProcessMessage) => {
++    const frame = parseWorkerProcessMessage(structuredClone(message));
++    if (frame?.type !== "mcp-call") {
++      throw new Error("Unexpected worker frame");
++    }
++    const reply = parseWorkerProcessRequest({
++      type: "mcp-result",
++      turnId: frame.turnId,
++      requestId: frame.requestId,
++      result,
++    });
++    if (reply.type !== "mcp-result") {
++      throw new Error("Unexpected supervisor frame");
++    }
++    client.receive(reply);
++  });
++  const client = createWorkerLocalMcpClient("turn-1", write);
++  const tool = createWorkerLocalMcpTool(entry, grants, client.call)!;
++  const response = await tool.execute("call-1", { query: "hello" });
++  expect(write).toHaveBeenCalledExactlyOnceWith({
++    type: "mcp-call",
++    turnId: "turn-1",
++    requestId: expect.any(String),
++    toolId: entry.id,
++    arguments: { query: "hello" },
++  });
++  expect(consumeMcpCodeModeGuestResult(response)).toEqual(result);
++
++  await expect(tool.execute("call-2", { query: 42 })).rejects.toThrow("arguments");
++  expect(write).toHaveBeenCalledTimes(1);
++  expect(
++    createWorkerLocalMcpTool(entry, [{ ...grants[0], tool: "delete" }], client.call),
++  ).toBeUndefined();
++});
++
++it("cancels the same local request when a tool call aborts", async () => {
++  const write = vi.fn(async (_message: WorkerProcessMessage) => {});
++  const client = createWorkerLocalMcpClient("turn-2", write);
++  const controller = new AbortController();
++  const call = client.call(entry.id, {}, controller.signal);
++  const first = write.mock.calls[0][0];
++  if (first.type !== "mcp-call") {
++    throw new Error("Expected an MCP call");
++  }
++  controller.abort(new Error("turn cancelled"));
++  await expect(call).rejects.toThrow("turn cancelled");
++  expect(write).toHaveBeenLastCalledWith({
++    type: "mcp-cancel",
++    turnId: "turn-2",
++    requestId: first.requestId,
++  });
++});
+diff --git a/src/worker/worker-local-mcp.ts b/src/worker/worker-local-mcp.ts
+new file mode 100644
+index 0000000..28c7660
+--- /dev/null
++++ b/src/worker/worker-local-mcp.ts
+@@ -0,0 +1,102 @@
++import { randomUUID } from "node:crypto";
++import { isRecord } from "@openclaw/normalization-core/record-coerce";
++import { Value } from "typebox/value";
++import type { WorkerToolSurface } from "../../packages/gateway-protocol/src/schema/worker-gateway-tool.js";
++import {
++  WORKER_PROTOCOL_MAX_CONCURRENT_TOOLS,
++  WORKER_PROTOCOL_MAX_PAYLOAD_BYTES,
++} from "../../packages/gateway-protocol/src/schema/worker-protocol-primitives.js";
++import { projectMcpCallToolResult } from "../agents/mcp-content.js";
++import type { AnyAgentTool } from "../agents/tools/common.js";
++import { createDeferredCore, type Deferred } from "../shared/deferred.js";
++import type { WorkerLaunchPlan } from "./launch-descriptor.js";
++import type { WorkerMcpResult, WorkerProcessMessage } from "./worker-process-protocol.js";
++
++type McpResult = Extract<WorkerMcpResult, { result: unknown }>["result"];
++export type WorkerLocalMcpCall = (
++  toolId: string,
++  args: Record<string, unknown>,
++  signal?: AbortSignal,
++) => Promise<McpResult>;
++
++/** Only an admitted tool handle crosses the private, turn-scoped supervisor pipe. */
++export function createWorkerLocalMcpClient(
++  turnId: string,
++  write: (message: WorkerProcessMessage) => Promise<void>,
++) {
++  const pending = new Map<string, Deferred<McpResult>>();
++  const call: WorkerLocalMcpCall = async (toolId, args, signal) => {
++    signal?.throwIfAborted();
++    if (pending.size >= WORKER_PROTOCOL_MAX_CONCURRENT_TOOLS) {
++      throw new Error("Worker MCP tool concurrency limit exceeded");
++    }
++    const requestId = randomUUID();
++    const frame = { type: "mcp-call", turnId, requestId, toolId, arguments: args } as const;
++    if (Buffer.byteLength(JSON.stringify(frame)) > WORKER_PROTOCOL_MAX_PAYLOAD_BYTES) {
++      throw new Error("Worker MCP arguments exceed the tool payload limit");
++    }
++    const result = createDeferredCore<McpResult>();
++    pending.set(requestId, result);
++    const cancel = () => {
++      result.reject(signal?.reason);
++      void write({ type: "mcp-cancel", turnId, requestId }).catch(() => {});
++    };
++    signal?.addEventListener("abort", cancel, { once: true });
++    try {
++      void write(frame).catch(result.reject);
++      return await result.promise;
++    } finally {
++      pending.delete(requestId);
++      signal?.removeEventListener("abort", cancel);
++    }
++  };
++  return {
++    call,
++    receive(frame: WorkerMcpResult) {
++      const request = pending.get(frame.requestId);
++      if (frame.turnId === turnId && request) {
++        if ("error" in frame) {
++          request.reject(new Error(frame.error));
++        } else {
++          request.resolve(frame.result);
++        }
++      }
++    },
++    close() {
++      for (const request of pending.values()) {
++        request.reject(new Error("Worker MCP turn ended"));
++      }
++      pending.clear();
++    },
++  };
++}
++
++export function createWorkerLocalMcpTool(
++  entry: WorkerToolSurface["tools"][number],
++  grants: WorkerLaunchPlan["assignment"]["toolAuthority"]["mcpTools"],
++  call: WorkerLocalMcpCall | undefined,
++): AnyAgentTool | undefined {
++  const mcp = entry.plugin?.mcp;
++  if (
++    !call ||
++    !mcp?.node ||
++    mcp.operation !== "tool" ||
++    entry.execution !== "placement" ||
++    !grants?.some(
++      (grant) =>
++        grant.id === entry.id && grant.server === mcp.serverName && grant.tool === mcp.toolName,
++    )
++  ) {
++    return undefined;
++  }
++  return {
++    ...entry.definition,
++    execute: async (_toolCallId, args, signal) => {
++      if (!isRecord(args) || !Value.Check(entry.definition.parameters, args)) {
++        throw new Error("Worker MCP tool arguments are invalid");
++      }
++      const result = await call(entry.id, args, signal);
++      return projectMcpCallToolResult(result, { mcpServer: mcp.serverName, mcpTool: mcp.toolName });
++    },
++  };
++}
+diff --git a/src/worker/worker-process-protocol.ts b/src/worker/worker-process-protocol.ts
+index d980279..6e88fd6 100644
+--- a/src/worker/worker-process-protocol.ts
++++ b/src/worker/worker-process-protocol.ts
+@@ -97,7 +97,28 @@ const ProcessResultSchema = workerProtocolObject({
+       result.status === "completed" ||
+       (result.status === "failed" && result.reason === "turn-failed")),
+ );
++const mcpCallIdentity = { turnId: TurnIdSchema, requestId: TurnIdSchema };
++const McpResultSchema = z.union([
++  workerProtocolObject({
++    type: z.literal("mcp-result"),
++    ...mcpCallIdentity,
++    result: workerProtocolObject({
++      content: z.array(z.unknown()),
++      structuredContent: z.record(z.string(), z.unknown()).optional(),
++      isError: z.boolean().optional(),
++    }),
++  }),
++  workerProtocolObject({ type: z.literal("mcp-result"), ...mcpCallIdentity, error: z.string() }),
++]);
++export type WorkerMcpResult = z.infer<typeof McpResultSchema>;
+ const ProcessMessageSchema = z.union([
++  workerProtocolObject({
++    type: z.literal("mcp-call"),
++    ...mcpCallIdentity,
++    toolId: TurnIdSchema,
++    arguments: z.record(z.string(), z.unknown()),
++  }),
++  workerProtocolObject({ type: z.literal("mcp-cancel"), ...mcpCallIdentity }),
+   WorkerProcessObservationResultSchema,
+   workerProtocolObject({ type: z.literal("processes-changed") }),
+   ProcessResultSchema,
+@@ -112,6 +133,9 @@ export type WorkerProcessResult = z.infer<typeof ProcessResultSchema>;
+ export type WorkerProcessMessage = z.infer<typeof ProcessMessageSchema>;
+ 
+ export function parseWorkerProcessRequest(value: unknown) {
++  if (isRecord(value) && value.type === "mcp-result") {
++    return McpResultSchema.parse(value);
++  }
+   const observation = WorkerProcessObservationRequestSchema.safeParse(value);
+   if (observation.success) {
+     return observation.data;
+diff --git a/src/worker/worker.runtime.ts b/src/worker/worker.runtime.ts
+index e07f334..46c8f81 100644
+--- a/src/worker/worker.runtime.ts
++++ b/src/worker/worker.runtime.ts
+@@ -21,6 +21,7 @@ import type { NativeRuntime, NativeRuntimeResolved } from "./native-runtime.js";
+ import { WorkerAdmissionDeadlineExceededError } from "./worker-connection-contract.js";
+ import { createWorkerConnection, type WorkerConnectionState } from "./worker-connection.js";
+ import { createWorkerExecApprovalTransport } from "./worker-exec-approval.js";
++import type { WorkerLocalMcpCall } from "./worker-local-mcp.js";
+ import { WorkerNodeLostError } from "./worker-node-loss.js";
+ import type { WorkerRuntimeResult } from "./worker-process-protocol.js";
+ import { WorkerInferenceProxyClient } from "./worker-rpc-inference-client.js";
+@@ -127,6 +128,7 @@ export async function runWorkerDescriptor(
+     signal?: AbortSignal;
+     onConnectionFailure?: (cause: string | undefined) => void;
+     browserRuntime?: WorkerBrowserRuntime;
++    localMcp?: WorkerLocalMcpCall;
+     /** Supplied by the managed process owner, which closes state after its final turn. */
+     environmentStateDir?: string;
+     nativeInference?: NativeInferenceStartup;
+@@ -391,6 +393,8 @@ export async function runWorkerDescriptor(
+             },
+           },
+           gatewayTools: connection,
++          mcpTools: toolAuthority.mcpTools,
++          localMcp: options.localMcp,
+           createApprovalTransport: (toolCallId, signal) =>
+             createWorkerExecApprovalTransport(connection, toolCallId, signal),
+           signal: abortController.signal,
