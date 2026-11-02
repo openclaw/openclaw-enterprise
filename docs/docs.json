@@ -31,32 +31,63 @@
                 ]
               },
               {
-                "group": "Quickstart (Local)",
+                "group": "Quickstart",
                 "pages": [
                   {
-                    "page": "guides/deploy/local-setup",
-                    "label": "Setup OCE"
+                    "group": "Set Up Installation",
+                    "pages": [
+                      {
+                        "page": "guides/deploy/local-setup",
+                        "label": "Local k3d"
+                      },
+                      {
+                        "page": "guides/deploy/kubernetes-setup",
+                        "label": "Kubernetes"
+                      },
+                      {
+                        "page": "guides/deploy/eks-openshell-setup",
+                        "label": "Amazon EKS"
+                      }
+                    ]
                   },
                   {
-                    "page": "guides/repository-credentials/openshell-git-push",
-                    "label": "Add Git"
+                    "group": "Add Capabilities",
+                    "pages": [
+                      {
+                        "page": "guides/repository-credentials/openshell-git-push",
+                        "label": "Add Git"
+                      },
+                      {
+                        "page": "guides/integrations/codex-plugins",
+                        "label": "Add Plugin"
+                      }
+                    ]
                   },
                   {
-                    "page": "guides/integrations/codex-plugins",
-                    "label": "Add Plugin"
-                  },
-                  {
-                    "page": "guides/deploy/local-cleanup",
-                    "label": "Clean Up"
-                  }
-                ]
-              },
-              {
-                "group": "Quickstart (K8)",
-                "pages": [
-                  {
-                    "page": "guides/kubernetes-setup",
-                    "label": "Setup OCE"
+                    "group": "Cleanup",
+                    "pages": [
+                      {
+                        "page": "guides/deploy/quickstart-delete-agent",
+                        "label": "Delete Agent"
+                      },
+                      {
+                        "group": "Clean Up Installation",
+                        "pages": [
+                          {
+                            "page": "guides/deploy/local-cleanup",
+                            "label": "Local k3d"
+                          },
+                          {
+                            "page": "guides/deploy/kubernetes-cleanup",
+                            "label": "Kubernetes"
+                          },
+                          {
+                            "page": "guides/deploy/eks-cleanup",
+                            "label": "Amazon EKS"
+                          }
+                        ]
+                      }
+                    ]
                   }
                 ]
               },
@@ -73,7 +104,9 @@
             "hidden": [
               "guides/README",
               "guides/repository-credentials/openshell-read-only",
-              "guides/repository-credentials/openshell-git-renewal"
+              "guides/repository-credentials/openshell-git-renewal",
+              "guides/kubernetes-setup",
+              "guides/deploy/quickstart-session"
             ]
           },
           {
@@ -546,10 +579,6 @@
                   {
                     "page": "guides/deploy/eks",
                     "label": "Amazon EKS"
-                  },
-                  {
-                    "page": "guides/deploy/eks-openshell-setup",
-                    "label": "OpenShell on EKS"
                   },
                   {
                     "page": "guides/deploy/eks-openshell-browser",

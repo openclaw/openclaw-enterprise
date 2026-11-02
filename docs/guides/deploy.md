@@ -3,7 +3,7 @@
 Install OpenClaw Enterprise on Kubernetes, verify access to the OpenClaw
 Control Plane (OCC), then deploy an Agent and check its model response. Use
 [Local Setup](quickstart.md) for a first installation on your machine. The
-production guides below are for operators using an existing cluster; [Kubernetes Setup](kubernetes-setup.md) gives a short introduction. Run
+production guides below are for operators using an existing cluster; [Kubernetes setup](deploy/kubernetes-setup.md) installs an OpenShell Codex Agent and finishes with the shared operator session. Run
 repository commands from the repository root. Starting OCC needs no model
 credential; an Agent needs one to send a model request.
 

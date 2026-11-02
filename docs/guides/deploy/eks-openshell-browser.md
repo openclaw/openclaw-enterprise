@@ -1,10 +1,10 @@
-# Open an EKS Agent from a laptop
+# Open a Kubernetes Agent from a laptop
 
-Use the same Bash shell, private `RUN_DIR`, kubeconfig and `oce-system` Namespace as the [EKS OpenShell installation](eks-openshell-setup.md). This procedure uses the deployment’s pinned controller image to terminate TLS on Pod loopback. The laptop operator needs permission to get the listener Deployment, list its Pods and create `pods/portforward` in `oce-system`. Kubernetes carries the connection through that subresource. The listener streams HTTP and WebSocket bytes to the OCC API Service. OCC receives the original Host, Origin, browser cookie and WebSocket upgrade. OCC holds the separate private Envoy routing key and authorizes native UI access for the signed-in user.
+Use the same Bash shell, private `RUN_DIR`, kubeconfig and `oce-system` Namespace as your Kubernetes or [EKS installation](eks-openshell-setup.md). This procedure uses the deployment’s pinned controller image to terminate TLS on Pod loopback. The laptop operator needs permission to get the listener Deployment, list its Pods and create `pods/portforward` in `oce-system`. Kubernetes carries the connection through that subresource. The listener streams HTTP and WebSocket bytes to the OCC API Service. OCC receives the original Host, Origin, browser cookie and WebSocket upgrade. OCC holds the separate private Envoy routing key and authorizes native UI access for the signed-in user.
 
 ## Set the production browser origins before installing OCC
 
-Use a cluster name that is also a lowercase DNS label. Keep the browser port at 18443 in both the Helm values and the laptop forward. The EKS values template sets these fields for the selected cluster:
+Use a cluster name that is also a lowercase DNS label. Keep the browser port at 18443 in both the Helm values and the laptop forward. The quickstart values template sets these fields for the selected cluster:
 
 | Setting                               | Value                                           |
 | ------------------------------------- | ----------------------------------------------- |
@@ -17,7 +17,7 @@ Keep the private Gateway routing Service as `ClusterIP`, with its own serving ce
 
 ## Read the protected initial owner files
 
-After the Helm initialization Job succeeds, mount its output claim read-only. Use a fresh private output directory. Kubernetes permission to read this claim is privileged. The one-use reader must run in the claim’s availability zone on a control node with EBS access.
+After the Helm initialization Job succeeds, mount its output claim read-only. Use a fresh private output directory. Kubernetes permission to read this claim is privileged. The one-use reader must run in the claim’s volume topology on a control node with access to the chosen storage.
 
 ```bash
 jq -n --arg image "$CONTROLLER_IMAGE" -f "$assets/bootstrap-reader.jq" |
@@ -33,7 +33,8 @@ for file in initial-admin-password initial-admin-service-key.json; do
   mv "$RUN_DIR/$file.tmp" "$RUN_DIR/$file"
 done
 kubectl -n "$PLATFORM_NS" delete pod oce-owner-bootstrap-reader
-export OCC_SERVICE_KEY_FILE="$RUN_DIR/initial-admin-service-key.json"
+mv "$RUN_DIR/initial-admin-service-key.json" "$RUN_DIR/service-key.json"
+export OCC_SERVICE_KEY_FILE="$RUN_DIR/service-key.json"
 ```
 
 Use `ADMIN_EMAIL` and `$RUN_DIR/initial-admin-password` for ordinary Console password sign-in. The initial administrator has the required Agent administration access. Other owners need a browser account with `administer` permission on this exact Agent. The service key file authenticates operator REST calls. Retain the original bootstrap claim for recovery.
@@ -43,10 +44,10 @@ Use `ADMIN_EMAIL` and `$RUN_DIR/initial-admin-password` for ordinary Console pas
 Run the following on the laptop with OpenSSL, jq and kubectl. Create a separate private test CA for this installation. Its leaf covers the Console and one-label Agent hostnames. Keep the CA key private on the laptop. Mount only the serving certificate and its key in the listener.
 
 ```bash
-cookie_domain="$EKS_CLUSTER.oce.localhost"
+cookie_domain="$CLUSTER_NAME.oce.localhost"
 console_host="console.$cookie_domain"
-console_origin="https://$console_host:18443"
-agent_domain="agents.$cookie_domain"
+CONSOLE_ORIGIN="https://$console_host:18443"
+NATIVE_ADMIN_DOMAIN="agents.$cookie_domain"
 tls_dir="$RUN_DIR/owner-tls"
 mkdir -m 700 "$tls_dir"
 cat > "$tls_dir/ca.cnf" <<'CONF'
@@ -65,7 +66,7 @@ openssl req -x509 -newkey rsa:3072 -nodes -days 30 -config "$tls_dir/ca.cnf" \
 openssl req -new -newkey rsa:2048 -nodes -subj "/CN=OCE private owner browser" \
   -keyout "$tls_dir/tls.key" -out "$tls_dir/tls.csr"
 printf '%s\n' 'basicConstraints=critical,CA:false' 'keyUsage=critical,digitalSignature,keyEncipherment' \
-  'extendedKeyUsage=serverAuth' "subjectAltName=DNS:$console_host,DNS:*.$agent_domain" > "$tls_dir/leaf.ext"
+  'extendedKeyUsage=serverAuth' "subjectAltName=DNS:$console_host,DNS:*.$NATIVE_ADMIN_DOMAIN" > "$tls_dir/leaf.ext"
 openssl x509 -req -in "$tls_dir/tls.csr" -CA "$tls_dir/ca.crt" -CAkey "$tls_dir/ca.key" \
   -CAcreateserial -days 28 -extfile "$tls_dir/leaf.ext" -out "$tls_dir/tls.crt"
 openssl verify -CAfile "$tls_dir/ca.crt" -verify_hostname "$console_host" "$tls_dir/tls.crt"
@@ -92,9 +93,9 @@ In the original shell, verify TLS and the signed-out session. Import **only** `$
 
 ```bash
 curl --fail --silent --show-error --noproxy '*' --cacert "$tls_dir/ca.crt" \
-  --resolve "$console_host:18443:127.0.0.1" "$console_origin/api/auth/session" |
+  --resolve "$console_host:18443:127.0.0.1" "$CONSOLE_ORIGIN/api/auth/session" |
   jq -e 'has("data") and .data==null'
-printf 'Owner Console: %s/console/\n' "$console_origin"
+printf 'Owner Console: %s/console/\n' "$CONSOLE_ORIGIN"
 ```
 
-Return to the [EKS setup](eks-openshell-setup.md#3-authenticate-and-prepare-the-namespace) to finish provisioning. Then [choose the Console action for a new Agent or saved draft](eks-openshell-owner-session.md#choose-a-console-deployment-action).
+Return to step 3 of your selected [Kubernetes](kubernetes-setup.md#3-authenticate-and-prepare-the-namespace) or [EKS](eks-openshell-setup.md#3-authenticate-and-prepare-the-namespace) setup page.

@@ -2,27 +2,27 @@
 tags: [human_verified]
 ---
 
-# Add Codex plugins to a local OpenShell Agent
+# Add Codex plugins to an OpenShell Agent
 
 Use the Console or API to discover Linear, enable it on your existing Codex Agent, and run a read through OpenClaw. The same Agent can have native Git access; a repository credential is optional for this procedure.
 
 ## Before you start
 
-Complete [Setup OCE on local k3d](../deploy/local-setup.md), including its successful OpenClaw turn. Continue in its Bash shell or source the private `session.sh` printed at the end of setup. Use the same Agent and model Secret. The service account must already have an authorized Linear connection. Selecting a plugin does not authorize a new connection.
+Complete one installation setup path: [local k3d](../deploy/local-setup.md), [Kubernetes](../deploy/kubernetes-setup.md), or [Amazon EKS](../deploy/eks-openshell-setup.md), including browser onboarding and reopening the same conversation. Continue in its Bash shell or source the private `session.sh` printed at the end of setup. Use the same Agent and model Secret. The service account must already have an authorized Linear connection. Selecting a plugin does not authorize a new connection.
 
 ## 1. Enable Linear and redeploy
 
 <AccordionGroup>
 <Accordion title="Console">
 
-Open the same Agent’s draft and select **Plugins** → **Configure plugins**. Find Linear and enable it. Set approval for write actions with a human reviewer. Preserve the other selections, select **Save plugin selections**, then **Deploy new version**. Wait for deployment to succeed. See [Plugins tab](../console/configuration-plugins-and-files.md#plugins-tab) for required permissions.
+Open the same Agent’s draft and select **Plugins** → **Configure plugins**. Find Linear and enable it. Set approval for write actions with a human reviewer. Preserve the other selections, select **Save plugin selections**, then run `deployment_preflight` in the operator shell before selecting **Deploy new version**. Copy the `revision` ID from its Console URL and run `wait_deployment <deployment-id>` in that shell to prepare network rules and wait for success. See [Plugins tab](../console/configuration-plugins-and-files.md#plugins-tab) for required permissions.
 
 </Accordion>
 <Accordion title="CLI">
 
 ### Discover Linear in the account catalog
 
-Use the ready Credential Gateway source for the connected service account. If you resumed setup in a new shell, set `modelSource` to that Namespace source ID. Search its account catalog for an available Linear plugin. Follow the continuation cursor until you find it. Select the plugin with human approval for write actions.
+Use the ready Credential Gateway source for the connected service account. The saved session supplies its Namespace source ID as `modelSource`. Search its account catalog for an available Linear plugin. Follow the continuation cursor until you find it. Select the plugin with human approval for write actions.
 
 ```bash
 # POST $base/agents/plugins: use the model Secret reference to search this account.
@@ -107,14 +107,14 @@ linear_run_id='' # Console turn: the transcript reader finds the marked run.
 # linear_run_id=$(jq -er .runId "$RUN_DIR/linear-result")
 
 read -r gateway_ns gateway_pod < <(
-  kubectl --kubeconfig "$KUBECONFIG" --context "$context" get pods -A \
+  kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get pods -A \
     -l "openclaw.dev/agent=$agent" -o json |
     jq -er '[.items[] | select(.metadata.deletionTimestamp==null and
       (.metadata.name|startswith("gateway-")) and
       any(.status.containerStatuses[]?;.name=="gateway" and .ready))] |
       select(length==1) | first | [.metadata.namespace,.metadata.name] | @tsv'
 )
-kubectl --kubeconfig "$KUBECONFIG" --context "$context" -n "$gateway_ns" \
+kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" -n "$gateway_ns" \
   exec -i "$gateway_pod" -c gateway -- node --input-type=module - \
   "$linear_marker" "$linear_run_id" \
   < "$RUN_DIR/inspect-linear-transcript.mjs" \
@@ -124,4 +124,4 @@ cat "$RUN_DIR/linear-transcript.json"
 
 The [transcript reader](../../snippets/openshell-quickstart/inspect-linear-transcript.mjs) opens the database read-only, finds the marked prompt, and matches a direct `codex_apps.linear.list_teams` call or its `dispatch_action` envelope to a successful result by tool-call ID in the same run. It returns that result and the terminal reply. Compare the team IDs in `results[].content` with `reply`. Keep this file private because it contains connected-account data. Code Mode calls are not decoded by this reader. Missing evidence is not success; check the selected Pod and marker without replaying the turn.
 
-A successful turn includes `codex_apps.linear.list_teams` and a reply matching its result. If plugin installation fails, check the [plugin installation requirements](../../testing/openshell.md#codex-plugin-installation). When finished, [clean up the local Installation](../deploy/local-cleanup.md).
+A successful turn includes `codex_apps.linear.list_teams` and a reply matching its result. If plugin installation fails, check the [plugin installation requirements](../../testing/openshell.md#codex-plugin-installation). You can now [add Git](../repository-credentials/openshell-git-push.md) to this same Agent, or [delete the Agent](../deploy/quickstart-delete-agent.md) and clean up the selected Installation.
