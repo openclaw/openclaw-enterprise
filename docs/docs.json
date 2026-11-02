@@ -548,6 +548,14 @@
                     "label": "OpenShell on EKS"
                   },
                   {
+                    "page": "guides/deploy/eks-openshell-browser",
+                    "label": "EKS Browser Access"
+                  },
+                  {
+                    "page": "guides/deploy/eks-openshell-owner-session",
+                    "label": "EKS Owner Session"
+                  },
+                  {
                     "page": "guides/quickstart",
                     "label": "Local Setup Without OpenShell"
                   },
