@@ -32,7 +32,7 @@ Run the commands below from the repository root on Linux or macOS. You need:
   see [development settings](../reference/settings/development.md#required-development-controller-environment).
 
 You do not need a model credential to install the platform. Have an OpenAI API
-key available when you continue to [deploy your first Agent](first-agent.md).
+key available when you continue to [deploy and verify an Agent](deploy/production-agents.md).
 
 ## Start the local stack
 
@@ -110,8 +110,8 @@ key from the file; do not pass the credential value as an argument or share it.
 
 Expect one Namespace named `default`. Wait for `STATUS` to become `ready` and
 note its server-assigned ID. This platform Namespace is separate from Kubernetes'
-built-in `default` namespace. Continue to [Deploy your first Agent](first-agent.md)
-to create an Agent and verify its model response.
+built-in `default` namespace. Continue to [Deploy and verify Agents](deploy/production-agents.md)
+to create an Agent on this installation and verify its model response.
 
 ## Clean up and stop
 

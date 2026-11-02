@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Clean up the Kubernetes installation
 
 Remove the quickstart installation from the Kubernetes cluster selected during setup. This does not delete the cluster or shared infrastructure.

@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Run a dedicated OpenShell Agent on EKS
 
 Install OpenClaw Enterprise (OCE) with OpenShell, deploy a dedicated Codex Agent and complete onboarding in its Control UI. Start on the owner’s laptop in a checkout containing this guide and its assets. Select images, chart and installation schema from compatible recorded source revisions. Keep the records from each step in an owner-only directory.

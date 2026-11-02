@@ -134,7 +134,9 @@ Send `Reply with OCE_READY.` and confirm the reply. Close the Agent tab, reopen 
 
 The shared `turn` helper starts a new conversation on each call. A terminal model reply does not replace this browser onboarding and continuity check.
 
-## Keep the session for the next stage
+<a id="keep-the-session-for-the-next-stage"></a>
+
+## Resume the operator session
 
 ```bash
 save_session

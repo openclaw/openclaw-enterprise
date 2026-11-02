@@ -13,10 +13,8 @@ select **Open Agent UI** on the Agent detail page. Your account needs
 The checkbox requires supported Dedicated provisioning and installation native
 admin access. For an existing Agent, follow [Configure each Agent](#configure-each-agent).
 
-With Kubernetes Compute and OpenShell on either local control plane, the
-[first-Agent command](../first-agent.md) can prepare native admin access with
-`--control-ui`. Other local profiles require the console workflow above.
-The helper refuses to reuse its Agent after outside Configuration edits.
+The [local OpenShell quickstart](local-setup.md) includes native admin setup,
+browser onboarding and reopening the same conversation.
 
 <a id="requirements"></a>
 

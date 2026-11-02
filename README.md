@@ -26,7 +26,7 @@ Agents.
 
 You need Docker Engine or Podman, k3d, kubectl, Helm, Bash, Python 3, Go (the version in [`go.mod`](go.mod)), Node.js 24.22.1 or newer, and the pnpm version in [`package.json`](package.json). The quickstart covers installation checks, the local API credentials, and cleanup.
 
-After local setup, [deploy your first Agent](docs/guides/first-agent.md) and send it a model request. You need an OpenAI API key with access to the [default model or your selected override](docs/guides/first-agent.md#before-you-start) for that step. If you installed on an existing cluster, [deploy and verify an Agent on that installation](docs/guides/deploy/production-agents.md).
+For a dedicated OpenShell Codex Agent, follow the [local k3d quickstart](docs/guides/deploy/local-setup.md) through deployment and browser onboarding. For an existing installation, [deploy and verify an Agent](docs/guides/deploy/production-agents.md).
 
 Reuse settings with [Agent Presets](docs/guides/topics/agent-presets.md), then fill variables and review the copied draft in the console.
 

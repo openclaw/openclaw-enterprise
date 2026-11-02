@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Clean up the Amazon EKS installation
 
 Remove the quickstart installation, then retire its dedicated AWS resources through the provisioning workflow that created them. Keep the recorded AWS account, region and EKS cluster name from setup.

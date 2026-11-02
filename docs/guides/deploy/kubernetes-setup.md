@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Set up an OpenShell Codex Agent on Kubernetes
 
 Install OpenClaw Enterprise (OCE) and onboard a dedicated OpenShell Codex Agent on an existing Kubernetes cluster.

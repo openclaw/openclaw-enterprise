@@ -90,15 +90,6 @@
                     ]
                   }
                 ]
-              },
-              {
-                "group": "Deploy",
-                "pages": [
-                  {
-                    "page": "guides/first-agent",
-                    "label": "Deploy Your First Agent"
-                  }
-                ]
               }
             ],
             "hidden": [
