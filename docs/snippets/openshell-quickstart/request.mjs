@@ -1,7 +1,7 @@
 // Run in the existing API container. The operator supplies one JSON request on stdin.
 let input = "";
 for await (const chunk of process.stdin) input += chunk;
-const { method, path, ip, key, body } = JSON.parse(input);
+const { method, path, ip, key, body, responseMode } = JSON.parse(input);
 if (!/^[0-9.]+$/.test(ip)) throw new Error("Invalid API Pod IP");
 const target = new URL(`http://${ip}:8080${path}`);
 const scopedNamespace =
@@ -19,7 +19,9 @@ try {
     redirect: "error",
     signal: AbortSignal.timeout(90000),
   });
-  if (!response.ok) {
+  if (responseMode === "status") {
+    console.log(response.status);
+  } else if (!response.ok) {
     console.error(`OCE REST request failed with HTTP ${response.status}`);
     process.exitCode = 1;
   } else if (response.status !== 204) {

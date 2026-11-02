@@ -152,7 +152,7 @@ for supported engines, images, and security restrictions.
 
 ### First Agent and local model credentials
 
-For a local model turn, see [Deploy your first Agent](../../guides/first-agent.md).
+These inputs belong to the [local first-Agent helper](../../../scripts/first-agent.mjs).
 Use only one of the two credential inputs. In production, use
 [platform Secret bindings](../configuration/secrets.md) instead of setting the
 credential on the controller.

@@ -9,8 +9,12 @@ on your own machine, start with [Local Setup](../quickstart.md).
 
 ## Install the platform
 
-1. Choose [standard Kubernetes](../deploy/kubernetes.md) or
-   [Amazon EKS](../deploy/eks.md) to prepare the cluster, storage, and network.
+For EKS, follow the [complete quickstart](../deploy/eks-openshell-setup.md) from
+AWS prerequisites through browser access and Agent onboarding.
+
+For a custom Kubernetes installation:
+
+1. Prepare the [cluster, storage, and network](../deploy/kubernetes.md).
 2. [Install the control plane](../deploy/production-installation.md) and make an
    authenticated API request. Helm readiness alone does not verify API access.
 3. [Deploy a production Agent](../deploy/production-agents.md) and verify the

@@ -9,8 +9,11 @@ platform itself, start with [Contribute](../contributing/README.md).
 
 Read [Concepts](concepts.md) for Namespaces, Agents, versions, and Secrets. Then choose a setup:
 
-- [Set up OCE locally](deploy/local-setup.md) on k3d with OpenShell and Codex. Continue with [Git support](repository-credentials/openshell-git-push.md), then [Codex plugins](integrations/codex-plugins.md), then [clean up](deploy/local-cleanup.md).
-- [Kubernetes Setup](kubernetes-setup.md): install the control plane on an existing cluster, then [deploy and verify an Agent on it](deploy/production-agents.md).
+- [Local k3d](deploy/local-setup.md)
+- [Kubernetes](deploy/kubernetes-setup.md)
+- [Amazon EKS](deploy/eks-openshell-setup.md)
+
+All three paths install OpenShell and finish with an onboarded, running Codex Agent. Use the same saved session for [Add Git](repository-credentials/openshell-git-push.md), [Add Plugin](integrations/codex-plugins.md), and [Delete Agent](deploy/quickstart-delete-agent.md), then clean up the selected installation.
 
 ## Work with Agents
 

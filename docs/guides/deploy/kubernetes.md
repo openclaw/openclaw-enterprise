@@ -2,7 +2,7 @@
 
 Prepare an existing Kubernetes cluster for OpenClaw Enterprise (OCE), then run
 [the shared Helm installation](production-installation.md). For AWS managed
-Kubernetes, use the [Amazon EKS guide](eks.md).
+Kubernetes, use the [Amazon EKS guide](eks-openshell-setup.md).
 
 ## Prepare the cluster
 
