@@ -15,9 +15,11 @@ Starters enable native Control UI at `http://127.0.0.1:18789` and
 `http://localhost:18789`. Compute renders gateway authentication from Installation
 trust; starters supply no token and reference only the generated
 `OPENCLAW_GATEWAY_PASSWORD`. Do not expose the gateway publicly.
-**Open Agent UI** requires [native admin setup](../../guides/deploy/native-admin.md):
-trusted-proxy authentication and the exact Agent HTTPS origin. Loopback origins alone
-are insufficient. Presets and edited Configuration JSON retain their settings.
+For browser access, select **Enable Native admin UI** (initially unchecked).
+It requires [installation setup](../../guides/deploy/native-admin.md) and supported
+Dedicated provisioning; opening the UI requires Agent `administer`.
+See [creation-time preparation](../agent-native-admin.md#enable-during-creation)
+for the exact Agent HTTPS origin, trusted-proxy settings, and refused conflicts.
 
 Experimental Dedicated OpenClaw requires [native worker support](../harness-execution.md#native-worker-support)
 and full-facet Sandbox provisioning. The pinned runtime enables it. Compute
