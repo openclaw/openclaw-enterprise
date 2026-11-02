@@ -1,17 +1,20 @@
 # Configure private Agent workspace routing
 
 Manage Agent workspace files through OCC and Console using private routing.
-Complete [production installation](production-installation.md), retaining its
-protected Helm values, Installation YAML and Kubernetes context. EKS also needs
+Use these steps during [production installation](production-installation.md#prepare-workspace-access),
+before installing the chart. Retain its protected Helm values, Installation YAML
+and Kubernetes context. EKS also needs
 [strict mode](eks.md#enable-console-workspace-files).
 
 OCC API/worker Pods must share the private Envoy Service's cluster; OCC in
 Compose needs [hybrid routing](local-compose-kubernetes.md). Enabling a Helm
 value alone does not connect a Compose API to the private Service.
-The chart defaults to `gatewayRouting.enabled: false`, unlike production examples.
+The chart defaults to `gatewayRouting.enabled: true`, as do production examples.
 Install routing controllers, create the service-key Secret, and configure Helm,
 Installation settings and [proxy trust](#configure-native-gateway-authentication)
-before deploying. Console starters omit Driver-owned authentication.
+before deploying. Helm requires the GatewayClass and Secret names but does not
+install the controllers or verify their readiness. Console starters omit
+Driver-owned authentication.
 
 ## Runtime prerequisite for separate storage
 
@@ -41,8 +44,10 @@ See [routing ownership, credentials and TLS](../../reference/gateway-routing.md)
 
 Provide Kubernetes enforcing NetworkPolicies,
 [Envoy Gateway](https://gateway.envoyproxy.io/docs/tasks/quickstart/) (tested v1.6.7),
-Gateway API CRDs, [cert-manager](https://cert-manager.io/docs/installation/) and an
-Envoy GatewayClass. Operate these controllers separately. The chart defaults create
+Gateway API and Envoy Gateway CRDs, [cert-manager](https://cert-manager.io/docs/installation/)
+and its CRDs, and an Envoy GatewayClass. Before installing OCE, confirm the CRDs
+are Established, both controllers are ready, and the GatewayClass is Accepted.
+Operate these controllers separately. The chart defaults create
 a namespaced SelfSigned Issuer, root CA Certificate, CA Issuer, shared Gateway,
 ClusterIP EnvoyProxy and API-key SecurityPolicy; cert-manager generates certificates.
 There is no public listener. Chart operators need infrastructure permissions;
@@ -51,6 +56,21 @@ the OCC API does not.
 The chart gives Envoy a stable Service name; Pod DNS search resolves its `.svc`
 hostname, which the certificate and Compute routes share
 ([endpoint and route](../../reference/gateway-routing.md#endpoint-and-route)).
+
+### Explicit opt-out
+
+For embedded Harnesses with configured direct gateway access, manual Helm values
+can set `gatewayRouting.enabled: false`. Also disable `agentNativeAdmin.enabled`
+and `gatewayRouting.sandbox.enabled`. Omit the Installation Compute
+`gatewayRouting` settings and configure its direct `network.gatewayClients` peers
+instead. See the [Compute network settings](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
+OCC workspace-file access requires the private route; direct access does not
+provide it.
+
+This mode creates no private Gateway, routing certificate, or routing key mounts.
+It does not support dedicated Harness node enrollment, native admin UI, or sandbox
+preview routing. Installation profiles always enable routing; use manual YAML
+for this opt-out.
 
 ### Configure private routing
 

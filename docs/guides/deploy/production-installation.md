@@ -3,7 +3,11 @@
 Prepare [Kubernetes](kubernetes.md) or [EKS](eks.md), the
 [production prerequisites](../deploy.md#production-prerequisites), and
 [workspace routing](workspace-routing.md#requirements), including a GatewayClass.
-Keep private routing enabled. Start with the password profile and
+Private routing is enabled by default. The chart does not install Envoy Gateway,
+Gateway API or Envoy CRDs, cert-manager, or the GatewayClass. Prepare those
+controllers first; create the service-key Secret and match Helm and Installation
+settings in [Prepare workspace access](#prepare-workspace-access) before Helm installation.
+Start with the password profile and
 [native Agent administration](native-admin.md#requirements); optional
 [GitHub](#enable-github-browser-sign-in) or [Google](google-sign-in.md) sign-in requires disabling native administration.
 

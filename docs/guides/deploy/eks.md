@@ -12,7 +12,8 @@ role-based access control (RBAC), and network policies. The EKS-managed
 Kubernetes control plane is distinct from
 OCC, which runs as application Pods on your nodes. For Agent model
 authentication, follow [production Agent deployment](production-agents.md).
-Console workspace files also require [private gateway routing](#enable-console-workspace-files).
+Prepare [private gateway routing](#enable-console-workspace-files) before installing OCC;
+the chart enables routing by default but does not install its prerequisites.
 
 For a dedicated Codex Agent with managed Linear and Git access, use the [OpenShell on EKS procedure](eks-openshell-setup.md).
 

@@ -57,7 +57,10 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 
 This profile uses the pinned K3s image, installs PostgreSQL and OCE (not
 OpenShell) in `oce-system`, and writes a generated administrator password and
-service key to the private state directory.
+service key to the private state directory. The launcher installs the routing
+controllers and CRDs, creates the GatewayClass and service-key Secret, and writes
+matching Helm and Installation routing settings before bootstrap. These are
+launcher steps; the Helm chart alone does not install routing prerequisites.
 
 Before bootstrapping, startup checks the Codex `0.164.0` sandbox with
 its exact imported runtime image. If the node's `RuntimeDefault` blocks it, the
