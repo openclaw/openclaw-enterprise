@@ -1803,6 +1803,7 @@ assert.deepEqual(provenance.patches, {
   "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
   "openclaw-linux-private-store-setgid.patch": "e97b0274d925f886638b0d8508d88842886b7ac3d84eacd29d76baf6cc487c8c",
   "openclaw-plugin-config-startup-report.patch": "47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93",
+  "openclaw-same-node-mcp.patch": "656340049eb6515388f54e5b3529beec7cb27ba9d1c2dc292bdb811ab307216c",
 });
 assert.equal(provenance.codex.version, "0.164.0");
 assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
