@@ -25,10 +25,12 @@ Namespace limit moved to a separate quota RFC. The first branches,
 `feat/default-users-grant-removal`, implement the earlier design and are
 reworked into slices 1 to 3.
 
-1. **Default users and Owner bindings.**
-   - A migration creates the immutable Agent Creator, Namespace Creator, Owner,
-     and Namespace member Roles, the Default users Group, deletable Group
-     memberships, and `namespaces.created_by`.
+1. **Default users and Owner bindings.** Reworked on
+   `feat/default-users-agent-grants` (draft PR #4231); review pending.
+   - Migration `0066_default_users` creates the immutable Agent Creator,
+     Namespace Creator, Owner, and Namespace member Roles, the Default users
+     Group, the binding-shape constraint, and deletable Group memberships. It
+     lets an Installation Group be bound inside a Namespace.
    - OCC binds Default users to Agent Creator in the Namespace named `default`
      when it creates that Namespace; the migration binds an existing one.
    - Installation configuration `defaultUser.namespaceCreate` writes or deletes
@@ -37,7 +39,8 @@ reworked into slices 1 to 3.
      Namespace-wide for a Namespace, exact for other resources.
    - `GET`, `PUT`, and `DELETE /iam/default-users/{principalId}` for Installation
      administrators, audited.
-   - Removed from the first branch: the Namespace limit, its lock, and its `409`.
+   - Removed from the first branch: the Namespace limit, its lock, its `409`,
+     and `namespaces.created_by`, which the Owner binding replaces.
 2. **Bindings without a resource and parent checks.** Optional `resourceKind`
    and `resourceId` and Group subjects in the Namespace IAM API for any Role.
    OCC passes the parent Agent with `agent_revision` and `sandbox_policy`

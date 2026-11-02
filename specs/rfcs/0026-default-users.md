@@ -284,8 +284,8 @@ Guardrails work replaces them. An empty ceiling allows no additions.
 - **Provider unavailable.** Sign-in fails and memberships do not change. A
   failed group lookup never counts as "no groups".
 - **Deleted rule.** Its memberships are removed at each member's next sign-in.
-- **Deleted `default` Namespace.** Its Default users binding goes with it.
-  Creating a Namespace named `default` writes the binding again.
+- **Deleted `default` Namespace.** Namespace names stay reserved after
+  deletion, so Default users then create Agents only in Namespaces they own.
 - **Partial writes.** Each transaction writes all of its rows or none, so a
   resource never exists without its Owner binding.
 
