@@ -175,6 +175,10 @@ the key. Private Gateway configuration qualifies parent and subagent selections
 (strings or primary/fallback objects), preserving native IDs and admitted values.
 Transport uses the authenticated app server and fail-closed HTTP. See [Harness execution](../harness-execution.md).
 
+`runtime.codexModelSupportsStandaloneWebSearch` declares an explicit endpoint's
+standalone-search capability. See [custom Codex provider capabilities](kubernetes-compute/managed-native-configuration.md#custom-codex-provider-capabilities)
+for defaults, restrictions, and deployment behavior.
+
 ### Authentication
 
 Choose exactly one Kubernetes authentication mode:
@@ -303,8 +307,11 @@ model turn.
 
 ## Failure conditions
 
-- **Namespace provisioning fails:** Verify tenant-local RoleBindings, namespace
-  ownership labels, restricted Pod Security labels, and enforced
+- **Namespace provisioning fails:** A `worker.completed` log for `namespace.ensure` with
+  `hintCode: KUBERNETES_TENANT_ACCESS_DENIED` means Kubernetes returned HTTP 403 while the
+  worker reconciled the tenant's quota, limits, or network policies. Check the worker's
+  [tenant-local RoleBinding](../../guides/deploy/production-agents.md#grant-tenant-rolebindings) in the affected target.
+  Also verify namespace ownership labels, restricted Pod Security labels, and enforced
   NetworkPolicies in each selected tenant target. Existing
   namespaces also require external lifecycle ownership, exclusive tenant use,
   and no foreign NetworkPolicies.
@@ -322,6 +329,8 @@ model turn.
   Native plugin startup, authentication, transport, and installation failures
   remain generic workload startup failures unless the Compute-owned runtime
   reports a verified current-startup warning for an admitted selected plugin.
+- **Check `gateway-config` fails:** See
+  [configuration OpenClaw refuses](kubernetes-compute/managed-native-configuration.md#configuration-openclaw-refuses-at-startup).
 - **Gateway storage is pending or rejected:** Check the configured
   `runtime.gatewayStorageClassName`, available `10Gi` capacity, filesystem
   support, worker PVC permissions, and the PVC's exact ownership. Preserve

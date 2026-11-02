@@ -10,15 +10,16 @@ import type { SlackDirectoryContext } from "../agents/slack-directory.mjs";
 import {
   element,
   button,
-  describeDisabled,
   dismissOnBackdrop,
   field as formField,
   focusSaveOutcome,
+  setUnavailable,
   statusBlock,
   validateOnSubmit,
   withRequestId,
 } from "../dom.mjs";
 import { renderSecretReference } from "../agents/secret-picker.mjs";
+import { pluginPolicyId } from "../environment-references.mjs";
 import { carryList, carryValue } from "../carry.mjs";
 
 export type ChannelValues = Record<string, unknown>;
@@ -180,6 +181,19 @@ function statusOf(config: unknown) {
   return { label: "Configured (enabled)", enabled: true };
 }
 
+// OpenClaw matches plugins.allow, plugins.deny and plugins.entries keys by policy ID
+// (pluginPolicyId), so ` Slack` in plugins.deny blocks the slack plugin, and the entries keyed
+// `Slack` and `slack` merge into its one entry in key order (finding 3082).
+function namesPlugin(list: unknown[], plugin: string) {
+  const id = pluginPolicyId(plugin);
+  return list.some((name) => pluginPolicyId(name) === id);
+}
+
+function pluginEntryKeys(entries: Record<string, unknown>, plugin: string) {
+  const id = pluginPolicyId(plugin);
+  return Object.keys(entries).filter((key) => pluginPolicyId(key) === id);
+}
+
 function pluginBlockReason(values: ChannelValues, provider: ChannelProvider) {
   const plugins = values?.plugins;
   if (plugins === undefined) {
@@ -191,7 +205,7 @@ function pluginBlockReason(values: ChannelValues, provider: ChannelProvider) {
   if (plugins.enabled === false) {
     return "Native plugins are disabled. Enable them through the Configuration API before configuring channels.";
   }
-  if (Array.isArray(plugins.deny) && plugins.deny.includes(provider.plugin)) {
+  if (Array.isArray(plugins.deny) && namesPlugin(plugins.deny, provider.plugin)) {
     return `${provider.name} is explicitly blocked in native plugin configuration.`;
   }
   if (plugins.allow !== undefined && !Array.isArray(plugins.allow)) {
@@ -200,8 +214,8 @@ function pluginBlockReason(values: ChannelValues, provider: ChannelProvider) {
   if (plugins.entries !== undefined && !isRecord(plugins.entries)) {
     return "Plugin entries configuration is not an object.";
   }
-  const entry = plugins.entries?.[provider.plugin];
-  if (entry !== undefined && !isRecord(entry)) {
+  const entries = isRecord(plugins.entries) ? plugins.entries : {};
+  if (pluginEntryKeys(entries, provider.plugin).some((key) => !isRecord(entries[key]))) {
     return `${provider.name} plugin entry is not an object.`;
   }
   return null;
@@ -230,8 +244,16 @@ function withPlugin(values: ChannelValues, provider: ChannelProvider) {
   const entries = isRecord(plugins.entries) ? { ...plugins.entries } : {};
   const entry = isRecord(entries[plugin]) ? { ...entries[plugin] } : {};
   // An omitted allowlist must stay omitted; introducing one can exclude another Harness plugin.
-  if (Array.isArray(plugins.allow)) {
-    plugins.allow = [...new Set([...plugins.allow, plugin])];
+  if (Array.isArray(plugins.allow) && !namesPlugin(plugins.allow, plugin)) {
+    plugins.allow = [...plugins.allow, plugin];
+  }
+  // OpenClaw merges the entries of every spelling, and the last boolean `enabled` wins. The stored
+  // key order is not the order the client wrote, so enable every spelling's `enabled: false`.
+  for (const key of pluginEntryKeys(entries, plugin)) {
+    const variant = entries[key];
+    if (key !== plugin && isRecord(variant) && variant.enabled === false) {
+      entries[key] = { ...variant, enabled: true };
+    }
   }
   entries[plugin] = { ...entry, enabled: true };
   plugins.entries = entries;
@@ -276,7 +298,8 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
       provider.secretBindings.some(
         (binding) => !state.drawerContext.secretBindings?.[binding.key]?.source,
       ));
-  // A disabled action is described by the reason shown on the card (findings 2495, D749).
+  // A disabled action is described by the reason shown on the card (findings 2495, D749), and
+  // stays in the Tab order while it shows (class of finding 2899).
   const reasonId = `channel-${provider.id}-unavailable`;
   let reason: HTMLElement | null = null;
   if (state.readOnly) {
@@ -303,9 +326,23 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
   }
   const actionButton = state.readOnly
     ? null
-    : button(action, () => openDrawer(section, state, provider), canOpen ? {} : { disabled: "" });
+    : button(action, () => openDrawer(section, state, provider));
   if (actionButton) {
-    describeDisabled(actionButton, reason);
+    setUnavailable(actionButton, !canOpen, reason);
+  }
+  // Disable keeps a Secret this caller cannot operate: the hint under the card says which, and
+  // describes the unavailable Disable (finding 2471).
+  const disableReason =
+    canDisable && state.disableRefusal
+      ? element("p", { className: "hint" }, state.disableRefusal)
+      : null;
+  const disableButton = canDisable
+    ? button(`Disable ${provider.name}`, () => void disableProvider(state, provider), {
+        tone: "danger",
+      })
+    : null;
+  if (disableButton) {
+    setUnavailable(disableButton, Boolean(state.disableRefusal), disableReason);
   }
   const card = element(
     "section",
@@ -324,21 +361,9 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
         ),
         setupShown ? element("p", { className: "hint" }, provider.setup) : null,
       ),
-      element(
-        "div",
-        { className: "channel-actions" },
-        actionButton,
-        canDisable
-          ? button(`Disable ${provider.name}`, () => void disableProvider(state, provider), {
-              tone: "danger",
-              ...(state.disableRefusal ? { disabled: "" } : {}),
-            })
-          : null,
-      ),
+      element("div", { className: "channel-actions" }, actionButton, disableButton),
     ),
-    canDisable && state.disableRefusal
-      ? element("p", { className: "hint" }, state.disableRefusal)
-      : null,
+    disableReason,
   );
   const credentials = element("dl", { className: "configuration-summary" });
   for (const binding of provider.secretBindings ?? []) {

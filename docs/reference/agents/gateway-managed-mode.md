@@ -17,13 +17,18 @@ can apply the saved setting. The revision records the requested mode. OCE can
 select the revision before the replacement starts, so verify that deployment
 succeeded on a supporting runtime before relying on the restrictions.
 
-After configuration setup, OCE sets three variables on the managed Gateway.
+After configuration setup, OCE applies three enforcement controls to the managed Gateway.
 
 | Setting                                      | Effect                                                                                     |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | `OPENCLAW_CONFIG_READONLY=1`                 | The OpenClaw config writer refuses edits. The watcher still picks up trusted OCE updates.  |
 | `OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS=1` | The Gateway refuses local terminals. Authorized node-relayed terminals remain available.   |
 | `OPENCLAW_DISABLE_CRON_HOST_EXECUTION=1`     | The Gateway refuses Gateway-hosted command jobs. Ordinary scheduled Agent turns still run. |
+
+OCE also sets `OPENCLAW_CONFIG_READONLY_NOTICE` with guidance for the Gateway UI.
+Gateways that support the notice show where to edit the Agent's draft Configuration
+while native configuration is read-only. Save the draft and select **Deploy new version**
+to apply your changes. See [Edit Agent Configuration](../../guides/console/configuration-plugins-and-files.md#configuration-tab).
 
 The [pinned OpenClaw revision](../../../deploy/runtime/openclaw-source.json) includes all three controls.
 The Compute Driver must declare support and launch a qualified runtime.

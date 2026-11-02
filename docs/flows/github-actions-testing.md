@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: 2026-10-23
-last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
+updated: 2026-10-29
+last_updated_session: authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0
 ---
 
 # GitHub Actions testing flow
@@ -13,7 +13,7 @@ The [ordinary CI lanes](../testing/ci.md#ci) reject missing or skipped coverage.
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
-- `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests opt in with `full-qa`.
+- `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci.md#qa-matrix).
 - `.github/workflows/full-integration.yml:jobs`: manual integrations from main or approved Kubernetes model/OpenShell branches, pinned to the dispatched commit.
 
 ## Flow
@@ -61,6 +61,12 @@ graph TD
 `loadTestSuites` assembles `scripts/ci/test-suites.json` and its ordered
 `scripts/ci/test-suites/<lane>.json` references for runners and preparation.
 Each lane owns its tests, environment, required inputs and preparation settings.
+
+For focused proof, `run-tests.mjs:selectLane` requires an exact file path from the
+selected lane. The composite action calls `check-selection` before tool setup or
+preparation. `runLane` uses the same selector and retains the file's expected
+cases, environment and cleanup. Results carry `scope: focused`;
+`validateLaneEvidence` rejects them for full-lane aggregation, even for a one-file lane.
 
 CI uses the event checkout without external service credentials. Impact and Suite Audit start independently. In every mode, `static-checks` verifies checkout identity and runs workspace, lint, format, OpenAPI and docs checks (no product tests), alone in docs mode. The [coverage map](../testing/ci.md#tests-in-each-workflow) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup parts 1 and 2, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other lanes, Static Checks and audit use `blacksmith-16vcpu-ubuntu-2404`.
 
@@ -186,6 +192,17 @@ prevent retention.
 Fixture bootstrap diagnostics upload separately as `diagnostics-<artifact-prefix>-<lane>-attempt-<N>`.
 They survive cluster/private-state cleanup but cannot satisfy required test results.
 
+`tests/helpers/local-first-agent-native.mjs:nativeWorkerPlacementObservation`
+classifies public placement errors and projects environment/tunnel states, node
+connection and capability counts, and exact workspace-node matches. The expected
+node comes from the selected revision's Gateway Pod. Failure reads use
+`sessions.describe`, `environments.status` and `node.list` share a five-second
+budget; failed refreshes retain a labeled fallback observation.
+`reporter.mjs:nativeFirstAgentProofDiagnostic` validates the fixed categories,
+booleans and counters again. Raw errors and identifiers do not enter the record.
+Public RPCs do not expose workspace-binding readiness or restoration; a workspace
+reference does not prove either state.
+
 Per-file cleanup releases its database; job cleanup removes state-owned resources.
 Deleting an owned `k3d-cluster` removes its Collector Namespace and RBAC. Logging
 cleanup removes its Docker backend and JSONL/config directory even without
@@ -241,6 +258,8 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 02:11: Add focused Compose OpenShell selection and sanitized native worker observations. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - aa2cfe543b3bba361679e7e1a3028c3327d2c388)
 
 - 2026-10-23 07:40: Preserve upstream CI selection alongside locale-independent timestamp ordering after conflict resolution. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - a6a49a5192fa1c9cc5035801eed7d64b03336491)
 

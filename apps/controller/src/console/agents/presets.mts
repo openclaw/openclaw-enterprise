@@ -7,9 +7,19 @@ import type {
   SecretMetadata,
 } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
+import { sameValue } from "../carry.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
-import { element, button, field as formField, statusBlock, validateFields } from "../dom.mjs";
+import {
+  element,
+  button,
+  field as formField,
+  focusSaveOutcome,
+  setFieldError,
+  setUnavailable,
+  statusBlock,
+  validateFields,
+} from "../dom.mjs";
 import {
   renderPresetTemplate,
   requiredPresetVariables,
@@ -76,10 +86,154 @@ function saveField(field: VariableField | SecretField): SavedField {
     : { type };
 }
 
-interface PresetDraft {
+export interface PresetDraft {
   id: string;
   touched: boolean;
   fields: Record<string, SavedField> | undefined;
+}
+
+// Each Configuration setting a Preset variable filled, by its path segments (keys and array
+// indexes), with the variables that filled it. Create Agent maps a refusal that names a setting
+// back to these (finding 3122).
+export type PresetSettingVariables = { setting: readonly string[]; variables: string[] }[];
+
+// The Preset step reopened after Create Agent refused a setting its variables filled: the chooser
+// state to restore, and the variables to mark with the refusal.
+export interface PresetReturn {
+  draft: PresetDraft;
+  variables: readonly string[];
+  refusal: string;
+}
+
+const VARIABLE_REFERENCE = /(?<!\\)\{\{\s*vars\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
+
+const referencedVariables = (text: string) =>
+  [...text.matchAll(VARIABLE_REFERENCE)].map((match) => match[1] ?? "");
+
+// A key as the API shows it in a setting path: control, format, line and paragraph separator
+// characters show as ? (OCC's shownSettingKey).
+const shownSettingKey = (key: string) => key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
+
+// A refusal's setting path as segments. The API writes an array index as `allow[0]` or
+// `allow.0`, and a key that is not a plain ID quoted, as `entries["my agent"].model` (OCC's
+// keyedSettingPath). A path it shortened with … names no exact setting.
+const SETTING_SEGMENT = /\.?([^.[\]"\s]+)|\[(\d+)\]|\[("(?:[^"\\]|\\.)*")\]/uy;
+
+function settingSegments(path: string): string[] | undefined {
+  if (path.endsWith("…")) {
+    return undefined;
+  }
+  const segments: string[] = [];
+  SETTING_SEGMENT.lastIndex = 0;
+  while (SETTING_SEGMENT.lastIndex < path.length) {
+    const match = SETTING_SEGMENT.exec(path);
+    const [, plain, index, quoted] = match ?? [];
+    const segment = quoted === undefined ? (plain ?? index) : parseQuotedKey(quoted);
+    if (segment === undefined) {
+      return undefined;
+    }
+    segments.push(segment);
+  }
+  return segments.length ? segments : undefined;
+}
+
+function parseQuotedKey(quoted: string): string | undefined {
+  try {
+    const key: unknown = JSON.parse(quoted);
+    return typeof key === "string" ? key : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// The setting a refusal names: plain, indexed and quoted segments, up to the colon, comma or
+// space after it.
+const REFUSED_SETTING =
+  /^Configuration setting ((?:[^\s"[]|\[\d+\]|\["(?:[^"\\]|\\.)*"\])+?)[:,]?\s/u;
+
+// Where each variable went in configuration.values. A key that holds a variable is named by its
+// rendered text, as the API names it.
+function presetSettingVariables(
+  template: PresetTemplate,
+  inputs: Record<string, string | number | boolean>,
+): PresetSettingVariables {
+  const found: PresetSettingVariables = [];
+  const visit = (value: unknown, setting: readonly string[]) => {
+    if (typeof value === "string") {
+      const variables = referencedVariables(value);
+      if (variables.length) {
+        found.push({ setting, variables });
+      }
+    } else if (Array.isArray(value)) {
+      value.forEach((child, index) => visit(child, [...setting, String(index)]));
+    } else if (value !== null && typeof value === "object") {
+      for (const [key, child] of Object.entries(value)) {
+        const keyVariables = referencedVariables(key);
+        const rendered = keyVariables.length
+          ? (Object.keys(
+              renderPresetTemplate(
+                { variables: template.variables ?? {}, configuration: { values: { [key]: null } } },
+                inputs,
+              ).configuration?.values ?? {},
+            )[0] ?? key)
+          : key;
+        const path = [...setting, shownSettingKey(rendered)];
+        if (keyVariables.length) {
+          found.push({ setting: path, variables: keyVariables });
+        }
+        visit(child, path);
+      }
+    }
+  };
+  visit(template.configuration?.values, []);
+  return found;
+}
+
+// The value at `segments` in Configuration values, or undefined.
+function settingValue(values: unknown, segments: readonly string[]): unknown {
+  let value = values;
+  for (const segment of segments) {
+    value =
+      value !== null && typeof value === "object" && Object.hasOwn(value, segment)
+        ? (value as Record<string, unknown>)[segment]
+        : undefined;
+  }
+  return value;
+}
+
+/** The Preset variables that filled the Configuration setting `refusal` names, or none: the setting
+ * itself or a value inside it. Never a value, only the setting's name (finding 3122). A setting
+ * the submitted values no longer hold as the Preset rendered it names none: the reader changed
+ * it after the Preset (finding 3125). */
+export function refusedPresetVariables(
+  refusal: string | undefined,
+  settings: PresetSettingVariables | undefined,
+  values: { submitted: unknown; rendered: unknown },
+): string[] {
+  const named = REFUSED_SETTING.exec(refusal ?? "")?.[1];
+  const refused = named === undefined ? undefined : settingSegments(named);
+  if (
+    !refused ||
+    !settings ||
+    !sameValue(settingValue(values.submitted, refused), settingValue(values.rendered, refused))
+  ) {
+    return [];
+  }
+  const variables = new Set<string>();
+  for (const { setting, variables: names } of settings) {
+    if (refused.every((segment, index) => setting[index] === segment)) {
+      names.forEach((name) => variables.add(name));
+    }
+  }
+  return [...variables];
+}
+
+/** The variables' field labels as one phrase: "Human", "Human and Team". */
+export function presetVariableLabels(names: readonly string[]) {
+  const labels = names.map(variableLabel);
+  return labels.length > 1
+    ? `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`
+    : (labels[0] ?? "");
 }
 
 type ModelSecret = { kind: "new" } | { kind: "existing"; secret: SecretMetadata };
@@ -150,12 +304,21 @@ export function createPresetFields(
   context: PresetContext,
   apply: (
     settings: PresetLaunchSettings,
-    options: { modelSecret: ModelSecret | undefined; presetName: string },
+    options: {
+      modelSecret: ModelSecret | undefined;
+      presetName: string;
+      presetDraft: PresetDraft;
+      settingVariables: PresetSettingVariables;
+    },
     draft: Pick<PresetDraft, "touched">,
   ) => void,
+  returning?: PresetReturn,
 ) {
-  // This scoped draft is written only by the capture below.
-  let retained = context.drafts.get("preset") as PresetDraft | undefined;
+  // This scoped draft is written only by the capture below, unless Create Agent sent the reader
+  // back to change the variables it refused.
+  let retained = returning?.draft ?? (context.drafts.get("preset") as PresetDraft | undefined);
+  // Marked once, when the returned Preset's fields are built.
+  let refused = returning;
   const selector = element(
     "select",
     { id: "agent-preset", disabled: true },
@@ -175,10 +338,10 @@ export function createPresetFields(
   };
   inputs.addEventListener("input", markTouched);
   inputs.addEventListener("change", markTouched);
+  // Without default-codex, the hint under the shortcut already says it is not available, so the
+  // status line does not repeat it (finding 2946).
   const chooseHint = () =>
-    defaultId
-      ? "Choose a Preset or start with the default Preset."
-      : "Choose a Preset. default-codex is not available to you in this Namespace.";
+    defaultId ? "Choose a Preset or start with the default Preset." : "Choose a Preset.";
   const startDefault = button(
     "Start with default Preset",
     () => {
@@ -395,8 +558,23 @@ export function createPresetFields(
             }
           : template;
       const applied = renderPresetTemplate(settings, values);
-      // The form names the Preset it started from (UX plan A2, flows.md C8).
-      apply(applied, { modelSecret, presetName: selected.name }, { touched });
+      const presetDraft: PresetDraft = {
+        id: selector.value,
+        touched,
+        fields: Object.fromEntries(fields.map((field) => [field.name, saveField(field)])),
+      };
+      // The form names the Preset it started from (UX plan A2, flows.md C8), and keeps where
+      // each variable went, so a refused setting names the field that filled it (finding 3122).
+      apply(
+        applied,
+        {
+          modelSecret,
+          presetName: selected.name,
+          presetDraft,
+          settingVariables: presetSettingVariables(template, values),
+        },
+        { touched },
+      );
       for (const field of fields) {
         if (field.definition.type === "password") {
           field.input.value = "";
@@ -417,7 +595,14 @@ export function createPresetFields(
     applyButton,
     feedback,
   );
-  applyButton.disabled = true;
+  let applyUnavailable = true;
+  // An unavailable Use Preset is described by the line that says why (finding D793): the
+  // Preset's load failure, else the status line ("Choose a Preset or start with the default
+  // Preset."), and stays in the Tab order while it shows (finding 2878). Called wherever either
+  // line or the button changes.
+  const describeApply = () =>
+    setUnavailable(applyButton, applyUnavailable, feedback.textContent?.trim() ? feedback : status);
+  describeApply();
   selector.addEventListener("change", async () => {
     const version = ++loadVersion;
     const selectedId = selector.value;
@@ -432,12 +617,14 @@ export function createPresetFields(
     fields = [];
     inputs.replaceChildren();
     feedback.textContent = "";
-    applyButton.disabled = true;
+    applyUnavailable = true;
     if (!selectedId) {
       status.textContent = chooseHint();
+      describeApply();
       return;
     }
     status.textContent = "Loading Preset…";
+    describeApply();
     try {
       const value = await context.request(
         `${namespacePath(context.namespaceId)}/presets/${encodeURIComponent(selectedId)}`,
@@ -506,6 +693,7 @@ export function createPresetFields(
           }
           input.dataset.supplied = "true";
           feedback.textContent = "";
+          setFieldError(input, "");
         });
         input.addEventListener("change", () => {
           if (definition.type === "string") {
@@ -581,7 +769,19 @@ export function createPresetFields(
       });
       status.textContent =
         "Fill in the variables, then use this Preset to create an editable draft.";
-      applyButton.disabled = false;
+      applyUnavailable = false;
+      describeApply();
+      // Create Agent refused the setting these variables filled: its refusal shows under each,
+      // and focus moves to the first to change (finding 3122).
+      const returned = refused?.draft.id === selectedId ? refused : undefined;
+      refused = undefined;
+      const marked = fields.filter(
+        (field) => returned?.variables.includes(field.name) && !("mode" in field),
+      );
+      for (const field of marked) {
+        setFieldError(field.input, returned?.refusal);
+      }
+      marked[0]?.input.focus();
       if (applyDefault && fields.length === 0) {
         applyButton.click();
       }
@@ -597,8 +797,17 @@ export function createPresetFields(
         context.onExpired();
       } else {
         feedback.textContent = `This Preset could not be loaded. ${describeFailure(error)}`;
+        describeApply();
         // Use Preset stays disabled, so the filled style goes back to the shortcut.
         emphasize(false);
+        // Create Agent sent the reader back here and removed the button they pressed. With no
+        // field to mark, focus goes to the chooser heading, not the document (findings 1446,
+        // 3122).
+        if (refused) {
+          refused = undefined;
+          const chooser = section.closest(".launch-preset");
+          focusSaveOutcome(chooser ?? section, [], chooser?.querySelector("h2"));
+        }
       }
     } finally {
       if (version === loadVersion) {
@@ -631,10 +840,15 @@ export function createPresetFields(
       );
       selector.disabled = false;
       defaultId = presets.find((preset) => preset.name === "default-codex")?.id;
-      startDefault.disabled = !defaultId;
+      // The hint beside the shortcut names the default Preset, or says that it is not
+      // available, and then describes the unavailable shortcut, which stays in the Tab order
+      // (finding 2937).
+      defaultHint.textContent = defaultId
+        ? "The default Preset is default-codex."
+        : "default-codex is not available to you in this Namespace.";
+      defaultHint.hidden = false;
+      setUnavailable(startDefault, !defaultId, defaultHint);
       if (defaultId) {
-        defaultHint.textContent = "The default Preset is default-codex.";
-        defaultHint.hidden = false;
         startDefault.setAttribute("aria-describedby", defaultHint.id);
       }
       if (retained && presets.some((preset) => preset.id === retained?.id)) {
@@ -648,6 +862,7 @@ export function createPresetFields(
       } else {
         status.textContent = chooseHint();
       }
+      describeApply();
     })
     .catch((error) => {
       if (!context.isCurrent() || !section.isConnected) {
@@ -657,6 +872,9 @@ export function createPresetFields(
         context.onExpired();
       } else {
         status.textContent = `Presets unavailable. ${message(error, false, namespaceListNeed("Presets"))}`;
+        describeApply();
+        // The chooser stays unavailable, so its status says why the shortcut is too.
+        setUnavailable(startDefault, true, status);
       }
     });
   return { section, startDefault, defaultHint };

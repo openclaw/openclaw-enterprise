@@ -20,6 +20,7 @@ import {
   apiRequests,
   expectNoText,
   expireSessions,
+  expireSessionsWhenSettled,
   login,
   loginThroughForm,
   newPage,
@@ -1284,11 +1285,10 @@ test("console retained views clear after session expiry and exact Agent denial",
   await page.getByText("Denied retained Agent", { exact: true }).waitFor();
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
-  // Each row reads its Namespace delete permission after the list shows. If that read reached
-  // the API after the expiry below, its 401 would show the expired sign-in before the Agents
-  // click. Expire only once the page has no read in flight, so the held return finds it.
+  // Each row reads its Namespace delete permission after the list shows, so wait for the view
+  // to settle before expiring: the held return, not a row read, must find the expiry.
   await waitForSettledView(page);
-  expireSessions(fixture);
+  await expireSessionsWhenSettled(page, fixture);
   const sessionPattern = "**/api/auth/session";
   const expiredSession = await holdRoute(t, page, sessionPattern, (route, response) =>
     response ? route.fulfill({ response }) : route.continue(),
@@ -1354,7 +1354,8 @@ test("console retained views clear after session expiry and exact Agent denial",
   await expectNoText(page, /Configuration draft|Selected revision/, () => waitForIdleFetches(page));
 });
 
-// Both shared admission reads must revoke every preview when their outcome is unknown.
+// Both shared admission reads must revoke every preview when their outcome is unknown. Here the
+// API answers 503; a read that never reaches it is covered in console-shell.test.ts.
 for (const gate of ["/api/auth/session", "/namespaces"]) {
   test(`console clears all retained pages after ${gate} fails`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
@@ -1368,7 +1369,7 @@ for (const gate of ["/api/auth/session", "/namespaces"]) {
     await page.getByRole("link", { name: "Namespaces", exact: true }).click();
     await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
 
-    await page.route(`**${gate}`, (route) => route.abort("failed"));
+    await page.route(`**${gate}`, (route) => route.fulfill({ status: 503 }));
     await page.getByRole("link", { name: "Agents", exact: true }).click();
     await page
       .getByRole("heading", {
@@ -2331,6 +2332,8 @@ test("header Namespace selection leaves Agent detail and creation for the select
 // admission or navigation, including a reload of the same Namespace already in the URL.
 async function rejectStaleNamespaceOption(page, selector, staleId, requests) {
   const url = page.url();
+  // Count after a settle, so requests the page started earlier are already logged.
+  await settlePageRequests(page);
   const count = requests.length;
   await selector.evaluate((select, id) => {
     const option = new globalThis.Option("Stale selection", id);
@@ -2463,6 +2466,9 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
       );
       assert.equal(readable.includes(beta.id), true, "fresh admission includes readable Namespace");
       await page.getByRole("heading", { name: "Namespace unavailable", exact: true }).waitFor();
+      // The inline heading already shows while admission is pending. Wait for the admitted
+      // render, whose list reads each row's permission answer, before the stale-option check.
+      await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
       assert.equal(await selector.locator(`option[value="${alpha.id}"]`).count(), 0);
       await rejectStaleNamespaceOption(page, selector, alpha.id, requests);
       await selector.selectOption(beta.id);
@@ -2500,6 +2506,13 @@ test("Namespaces recovers stale selection inline and handles losing all readable
   const selector = page.getByRole("combobox", { name: "Choose a valid Namespace", exact: true });
   assert.equal(await selector.isVisible(), true);
   assert.equal(await page.locator(".page-header select").count(), 0);
+  // The panel gives the reason Agents and Secrets give for the same ID, not a bare heading
+  // (finding 2956).
+  const reason = page
+    .getByRole("status")
+    .filter({ has: page.getByRole("heading", { name: "Namespace unavailable", exact: true }) })
+    .getByText(`${NAMESPACE_UNAVAILABLE}. Choose another Namespace.`, { exact: true });
+  await reason.waitFor();
   await selector.selectOption({ label: "Alpha" });
   await shownList.waitFor();
   assert.equal(new URL(page.url()).pathname, "/console/namespaces");
@@ -2508,6 +2521,7 @@ test("Namespaces recovers stale selection inline and handles losing all readable
     await page.getByRole("heading", { name: "Namespace unavailable", exact: true }).count(),
     0,
   );
+  assert.equal(await page.getByText(NAMESPACE_UNAVAILABLE, { exact: false }).count(), 0);
   assert.equal(await page.getByRole("combobox").count(), 0);
 
   await page.goBack();
@@ -2527,6 +2541,8 @@ test("Namespaces recovers stale selection inline and handles losing all readable
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await shownList.waitFor();
   await selector.waitFor();
+  // A Namespace that still exists but is no longer readable gets the same reason.
+  await reason.waitFor();
   assert.equal(await page.getByRole("option", { name: "Alpha", exact: true }).count(), 0);
   await selector.selectOption({ label: "Beta" });
   await shownList.waitFor();
@@ -2842,6 +2858,34 @@ test("a first visit to a deep link asks to sign in; a tab whose session expired 
   await page.getByLabel("Email", { exact: true }).waitFor();
 });
 
+// A page address with a trailing slash names the same page, through sign-in and when
+// signed in, and the address bar shows it without the slash (finding 1906).
+test("a page address with a trailing slash opens that page", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Trailing slash", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await loginThroughForm(page, fixture, "/console/namespaces/");
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/namespaces");
+  await page.goto(`${fixture.origin}/console/agents/new/?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  const url = new URL(page.url());
+  assert.equal(url.pathname + url.search, `/console/agents/new?namespace=${namespace.id}`);
+  // Every trailing slash goes, not only the last; the query and tab stay.
+  const agent = await fixture.createAgent(namespace.id, "Trailing assistant");
+  await page.goto(`${fixture.origin}/console/agents//?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Agents" }).waitFor();
+  const listUrl = new URL(page.url());
+  assert.equal(listUrl.pathname + listUrl.search, `/console/agents?namespace=${namespace.id}`);
+  const detail = `/console/agents/${agent.id}`;
+  await page.goto(`${fixture.origin}${detail}///?namespace=${namespace.id}&tab=configuration`);
+  await page.getByRole("heading", { name: "Trailing assistant" }).waitFor();
+  const detailUrl = new URL(page.url());
+  assert.equal(detailUrl.pathname, detail);
+  assert.equal(detailUrl.searchParams.get("tab"), "configuration");
+});
+
 test("login ignores untrusted returns and resolves an opaque Agent key only after authentication", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -3006,12 +3050,10 @@ test("a naturally expired session returns to the requested page after sign-in", 
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
-  // The button shows before the Namespace's Preset read returns. If that read reached the API
-  // after the expiry below, its 401 would show the expired sign-in on this page before the click,
-  // and the Namespaces link would be gone. Expire only once the page has no read in flight.
-  await waitForIdleFetches(page);
-  // Expire the actual session: the controller must reject it before returning to login.
-  expireSessions(fixture);
+  // The button shows before the Namespace's Preset read returns, and that read must not find
+  // the expiry. Expire the actual session: the controller must reject it before returning to
+  // login.
+  await expireSessionsWhenSettled(page, fixture);
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByLabel("Email", { exact: true }).waitFor();
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
@@ -3026,6 +3068,7 @@ test("session expiry after a failed check returns to the requested page", async 
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Interrupted expiry", { ready: true });
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
   await page.route(
@@ -3040,7 +3083,8 @@ test("session expiry after a failed check returns to the requested page", async 
   );
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByText("Session unavailable", { exact: true }).waitFor();
-  expireSessions(fixture);
+  // The Preset read may still be out (see the test above); Retry must find the expiry.
+  await expireSessionsWhenSettled(page, fixture);
   await page.getByRole("button", { name: "Retry" }).click();
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
@@ -3063,7 +3107,7 @@ test("expiry on an active Agent page returns safely and rechecks denied access",
   const requests = apiRequests(page, fixture.origin);
 
   // A foreground recheck discovers real expiry without navigating away from this Agent.
-  expireSessions(fixture);
+  await expireSessionsWhenSettled(page, fixture);
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await page.getByText("Your session has expired").waitFor();
   await expectNoText(page, /Expired page Agent/, () => waitForIdleFetches(page));

@@ -91,7 +91,7 @@ uses OpenShell's experimental provider-file and bearer-passthrough APIs, so it
 is a development workflow rather than production qualification. Reuse the same
 `--harness` selection with that Agent name.
 
-When Local setup runs OCC in Compose with both Kubernetes Compute and OpenShell,
+When Local setup uses Kubernetes Compute and OpenShell,
 you can also expose this Agent's native Control UI through OCC:
 
 ```bash
@@ -251,6 +251,11 @@ new name for the next run.
 <span id="troubleshooting"></span>
 
 ## Troubleshoot
+
+- **`EACCES` opening an old helper record:** inspect the exact file named in
+  the error and confirm it is your regular helper record. Restore mode `0600`
+  and retry the same Agent name. Do not print the record. New record writes
+  retain owner read/write permissions even with a restrictive umask.
 
 - **`No Namespace named default exists`:** the command creates its Agent only in
   the `default` Namespace from Local setup. After that Namespace is deleted, its

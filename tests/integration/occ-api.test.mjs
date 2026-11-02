@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.mjs";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
@@ -40,17 +41,30 @@ import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  AGENT_DELETING,
   AGENT_NAME_CONFLICT,
   BINDING_SUBJECT_EMAIL,
   BINDING_SUBJECT_INELIGIBLE,
   callerDenied,
+  DEDICATED_STORAGE_ROUTING_REQUIRED,
   DEPLOYMENT_FAILED,
+  KUBERNETES_ALLOW_USERS_REFUSAL,
+  managedPluginSettingRefusal,
+  MODEL_CREDENTIAL_REJECTED_RECORDED,
+  NAMESPACE_NAME_CONFLICT,
+  pluginPolicyListRefusal,
   referenceFormRefusal,
+  SECRET_NAME_CONFLICT,
   SERVICE_ACCOUNT_CROSS_NAMESPACE,
+  SERVICE_ACCOUNT_NAME_CONFLICT,
   SLACK_ROUTE_NOT_CONFIGURED,
+  sshGatewayPasswordRefusal,
   unboundReferenceRefusal,
+  unreadableSecretRefProblem,
   unsubstitutedReferenceRefusal,
+  unsupportedChannelRefusal,
 } from "../helpers/refusal-text.mjs";
+import { INVALID_ALLOW_USERS_SAMPLE } from "../helpers/trusted-proxy-shapes.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
@@ -1299,6 +1313,7 @@ test("Agent reads return the bound credentialSources; revision reads return only
     id: "sandbox-api",
     capability: "sandbox",
     implementation: "test-sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async cleanup() {},
   };
@@ -1455,6 +1470,7 @@ test("refresh source PATCH and rotate refuse a stale refresh token and audit a f
     id: "sandbox-refresh-api",
     capability: "sandbox",
     implementation: "test-sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async cleanup() {},
   };
@@ -1533,10 +1549,7 @@ test("a duplicate Secret name answers 409 naming the taken Secret name", async (
     body: { name: "Model API key", value: "second-value" },
   });
   assertApiError(duplicate, 409, "RESOURCE_CONFLICT");
-  assert.equal(
-    duplicate.body.error.message,
-    "A Secret with this name already exists in this Namespace. Choose a different name.",
-  );
+  assert.equal(duplicate.body.error.message, SECRET_NAME_CONFLICT);
 });
 
 test("Secret values with an unpaired surrogate are refused as an invalid value", async () => {
@@ -2659,7 +2672,7 @@ test("Agent deletion closes every synchronous mutation boundary before teardown"
   ]) {
     const rejected = await mutation();
     assertApiError(rejected, 409, "AGENT_DELETING");
-    assert.equal(rejected.body.error.message, "The requested Agent is being deleted.");
+    assert.equal(rejected.body.error.message, AGENT_DELETING);
   }
 
   // Credential provisioning and workspace routing are intentionally absent
@@ -3132,8 +3145,7 @@ test("a refused deployment's status names its cause and remedy without naming pr
       "The controller worker stopped or lost its claim during this deployment's last attempt. Deploy again.",
     // Finding 1393: held runtime failures name the next step too, so occ and HTTP clients get
     // the guidance the console used to add on its own.
-    RUNTIME_AUTHENTICATION_FAILED:
-      "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.",
+    RUNTIME_AUTHENTICATION_FAILED: MODEL_CREDENTIAL_REJECTED_RECORDED,
     RUNTIME_CPU_STARVED: DEPLOYMENT_FAILED.RUNTIME_CPU_STARVED,
     RUNTIME_MODEL_PROBE_TIMEOUT:
       "The startup model check got no reply from the provider in time. With OpenClaw this includes an unreachable provider (refused connection or unknown host). Check egress, proxy or a custom baseUrl and that the provider responds, then deploy a new version.",
@@ -4178,6 +4190,7 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
     id: "sandbox-native",
     capability: "sandbox",
     implementation: "test-native-sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async provisionHarness() {},
     async cleanup() {},
@@ -4385,6 +4398,165 @@ test("the OpenClaw Plugin Driver refuses a selection whose every tool the Config
   assert.equal(await revisions(), 0);
   await store(allowed);
   const deployed = await deploy();
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+});
+
+test("the OpenClaw Plugin Driver refuses Configuration plugin settings the Gateway refuses for a selected plugin, at save and deployment", async () => {
+  const configurationDriver = createTestConfigurationDriver();
+  const controller = await configuredController({ configurationDriver });
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "openclaw-plugin-settings");
+  const pluginDriver = new OCCPluginDriver();
+  controller.fixture.controller.registerDriver(pluginDriver);
+  controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
+  const plugins = { [diffsPluginId]: pluginPolicy() };
+  const disabled = { [diffsPluginId]: { enabled: false } };
+  const step = {
+    enabled: "remove it or deselect the plugin",
+    deny: "remove that item or deselect the plugin",
+    allow: "add it or deselect the plugin",
+    entry: "OCE writes that entry from the selection; remove it or deselect the plugin",
+    origin:
+      "OCE writes that entry from the selection and gateway.publicOrigin; remove it or deselect the plugin",
+  };
+  const origin = "https://agent.example.com";
+  const servedOrigin = { publicOrigin: origin, controlUi: { allowedOrigins: [origin] } };
+  // The Gateway entrypoint writes the selected plugin's entry and exits at every start on each of
+  // these (finding 3091); deployment was admitted and the Gateway never started. A
+  // Configuration save does not know the Agents' plugins, so each one saves.
+  const copy = (enabled) => `must be unset or ${JSON.stringify({ enabled })}`;
+  const refusals = [
+    [{ enabled: false }, plugins, "plugins.enabled", "must not be false", step.enabled],
+    // OpenClaw compares plugin IDs trimmed and lowercased.
+    [{ deny: ["slack", " DIFFS "] }, plugins, "plugins.deny", "must not list diffs", step.deny],
+    // The Standard Codex Presets and channel saves write a non-empty allowlist.
+    [{ allow: ["codex"] }, plugins, "plugins.allow", "must list diffs", step.allow],
+    [{ entries: { diffs: { config: {} } } }, plugins, "plugins.entries.diffs", copy(true)],
+    [{ entries: { diffs: { enabled: false } } }, plugins, "plugins.entries.diffs", copy(true)],
+    // A disabled selection still writes its entry, so another one conflicts there too.
+    [{ entries: { diffs: { enabled: true } } }, disabled, "plugins.entries.diffs", copy(false)],
+    // Where the Gateway can serve a public origin, the entrypoint writes the entry with the Diffs
+    // viewer's config, and PostgreSQL stores a copy of it with its keys reordered: no copy matches.
+    [
+      { entries: { diffs: { enabled: true } } },
+      plugins,
+      "plugins.entries.diffs",
+      "must be unset",
+      step.origin,
+      servedOrigin,
+    ],
+  ];
+  for (const [
+    index,
+    [settings, selection, setting, rule, fix = step.entry, gateway],
+  ] of refusals.entries()) {
+    const configuration = await createConfiguration(controller, namespace.id, {
+      plugins: settings,
+      ...(gateway === undefined ? {} : { gateway }),
+    });
+    const refused = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+      body: {
+        name: `plugin-settings-${index}`,
+        configurationId: configuration.id,
+        plugins: selection,
+      },
+    });
+    assertApiError(refused, 400, "INVALID_REQUEST", `create ${index}`);
+    assert.equal(
+      refused.body.error.message,
+      managedPluginSettingRefusal(setting, rule, diffsPluginId, fix),
+    );
+  }
+  // The entrypoint trims every list item, even for a disabled selection, so one that is not text
+  // stops it (finding 3099), as OpenClaw's config schema stops every Gateway on one: Configuration
+  // save refuses it whatever the Agents select (finding 3101).
+  for (const [settings, key] of [
+    [{ allow: ["diffs", 1] }, "allow"],
+    [{ deny: [null] }, "deny"],
+  ]) {
+    const refused = await controller.request("POST", `/namespaces/${namespace.id}/configurations`, {
+      body: { kind: "agent", values: { plugins: settings } },
+    });
+    assertApiError(refused, 400, "INVALID_REQUEST", key);
+    assert.equal(refused.body.error.message, pluginPolicyListRefusal(key));
+  }
+  // A row saved before that rule still holds one. Agent save names it with the catalog rule, whose
+  // step only removes the item: deselecting the plugin cannot help, as OpenClaw's config schema
+  // stops every Gateway on it (finding 3102).
+  const older = await createConfiguration(controller, namespace.id, {});
+  await configurationDriver.update({
+    ...configurationDriver.stored({ namespaceId: namespace.id, id: older.id }),
+    values: { plugins: { deny: ["slack", 7] } },
+  });
+  const refusedOlder = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "plugin-settings-older", configurationId: older.id, plugins },
+  });
+  assertApiError(refusedOlder, 400, "INVALID_REQUEST", "older row");
+  assert.equal(
+    refusedOlder.body.error.message,
+    managedPluginSettingRefusal(
+      "plugins.deny",
+      "must list only plugin IDs as text",
+      diffsPluginId,
+      "remove any other item",
+    ),
+  );
+  assert.deepEqual(
+    (await controller.request("GET", `/namespaces/${namespace.id}/agents`)).data,
+    [],
+  );
+  // Settings that leave the selected plugin on, and a disabled selection's plugin turned off, save.
+  // So does an exact copy of the entry the entrypoint writes, which the Gateway starts with.
+  const accepted = [
+    [{ enabled: true, allow: ["codex", " Diffs"], deny: ["slack"] }, plugins],
+    [{ allow: [" "], entries: { slack: { enabled: true } } }, plugins],
+    [{ enabled: false, deny: ["diffs"], allow: ["codex"] }, disabled],
+    [{ entries: { diffs: { enabled: true } } }, plugins],
+    [{ entries: { diffs: { enabled: false } } }, disabled, servedOrigin],
+  ];
+  const agents = [];
+  for (const [index, [settings, selection, gateway]] of accepted.entries()) {
+    const configuration = await createConfiguration(controller, namespace.id, {
+      plugins: settings,
+      ...(gateway === undefined ? {} : { gateway }),
+    });
+    const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+      body: {
+        name: `plugin-settings-ok-${index}`,
+        configurationId: configuration.id,
+        plugins: selection,
+      },
+    });
+    assert.equal(created.status, 201, `${index}: ${JSON.stringify(created.body)}`);
+    agents.push(created.data);
+  }
+  // A later Configuration save can add such a setting under a saved Agent, so deployment checks
+  // the pair again and creates no revision; removing the setting deploys.
+  const [agent] = agents;
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  await controller.fixture.controller.handleNamespaceLifecycle(
+    controller.fixture.principal.id,
+    namespace.id,
+    "ready",
+  );
+  await bindHarnessKey(controller.fixture, namespace.id, agent);
+  const stored = configurationDriver.stored({
+    namespaceId: namespace.id,
+    id: agent.configurationId,
+  });
+  await configurationDriver.update({ ...stored, values: { plugins: { allow: ["codex"] } } });
+  const refusedDeploy = await controller.request("POST", `${agentPath}/deploy`);
+  assertApiError(refusedDeploy, 400, "INVALID_REQUEST", "deploy");
+  assert.equal(
+    refusedDeploy.body.error.message,
+    managedPluginSettingRefusal("plugins.allow", "must list diffs", diffsPluginId, step.allow),
+  );
+  assert.deepEqual((await controller.request("GET", `${agentPath}/revisions`)).data, []);
+  await configurationDriver.update({
+    ...stored,
+    values: { plugins: { allow: ["codex", "diffs"] } },
+  });
+  const deployed = await controller.request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
 });
 
@@ -5047,10 +5219,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   );
   assertApiError(duplicate, 409, "RESOURCE_CONFLICT");
   // The caller chose only the name, so the conflict says the name is taken here.
-  assert.equal(
-    duplicate.body.error.message,
-    "A ServiceAccount with this name already exists in this Namespace. Choose a different name.",
-  );
+  assert.equal(duplicate.body.error.message, SERVICE_ACCOUNT_NAME_CONFLICT);
 
   // Account ownership participates in Namespace emptiness even before any Agent is created.
   const occupiedNamespace = await controller.request("DELETE", `/namespaces/${namespaceA.id}`);
@@ -5702,10 +5871,7 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
     body: { name: "validated" },
   });
   assertApiError(duplicateNamespace, 409, "RESOURCE_CONFLICT");
-  assert.equal(
-    duplicateNamespace.body.error.message,
-    "A Namespace with this name already exists. Choose a different name.",
-  );
+  assert.equal(duplicateNamespace.body.error.message, NAMESPACE_NAME_CONFLICT);
 
   const invalidAgent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: { name: "" },
@@ -6369,7 +6535,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   for (const [values, message] of [
     [
       { ...model, channels: { discord: { enabled: true } } },
-      "Configuration setting channels.discord is not a supported channel: use slack or msteams, or set its enabled to false.",
+      unsupportedChannelRefusal("channels.discord"),
     ],
     [
       { ...model, env: { OPENAI_API_KEY: "${OPENAI_API_KEY}" } },
@@ -6467,7 +6633,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     {
       severity: "WARN",
       requestId: computeRefused.body.meta.requestId,
-      reason: "Dedicated Harness storage requires gateway routing and node enrollment.",
+      reason: DEDICATED_STORAGE_ROUTING_REQUIRED,
     },
   );
   assert.equal(computeRefused.body.error.code, "RESOURCE_CONFLICT");
@@ -7774,22 +7940,29 @@ test("deploy reports Configuration content a Compute Driver names as unsupported
     );
     assert.deepEqual(revisions.data, [], JSON.stringify(revisions.body));
   }
-  // A setting Compute leaves to preparation is admitted as before.
+  // An allowlist without the machine identity failed only in preparation, after a dedicated
+  // deployment stopped its predecessor (finding 3032). Admission names the setting and its
+  // requirement, never the submitted identity, before any revision.
+  const [allowUsers] = INVALID_ALLOW_USERS_SAMPLE;
   const allowUsersAgent = await createAgent(controller, namespace.id, "gateway-allow-users-agent", {
-    gateway: { auth: { mode: "trusted-proxy", trustedProxy: { allowUsers: ["someone"] } } },
+    gateway: { auth: { mode: "trusted-proxy", trustedProxy: { allowUsers } } },
   });
   await bindHarnessKey(fixture, namespace.id, allowUsersAgent);
-  const admitted = await controller.request(
+  const refusedAllowUsers = await controller.request(
     "POST",
     `/namespaces/${namespace.id}/agents/${allowUsersAgent.id}/deploy`,
   );
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-  // The driver hook names only settings every preparation attempt refuses.
-  assert.doesNotThrow(() =>
-    kubernetes.validateGatewaySettings({
-      gateway: { auth: { mode: "trusted-proxy", trustedProxy: { allowUsers: ["someone"] } } },
-    }),
+  assert.equal(refusedAllowUsers.status, 409, JSON.stringify(refusedAllowUsers.body));
+  assert.deepEqual(
+    { code: refusedAllowUsers.body.error.code, message: refusedAllowUsers.body.error.message },
+    { code: "RESOURCE_CONFLICT", message: KUBERNETES_ALLOW_USERS_REFUSAL },
   );
+  assert.doesNotMatch(JSON.stringify(refusedAllowUsers.body), new RegExp(allowUsers[0]));
+  const allowUsersRevisions = await controller.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${allowUsersAgent.id}/revisions`,
+  );
+  assert.deepEqual(allowUsersRevisions.data, [], JSON.stringify(allowUsersRevisions.body));
 
   // Deploy authorization comes first: a caller who cannot deploy learns nothing of the setting.
   const deniedAgent = await createAgent(controller, namespace.id, "gateway-denied-agent", {
@@ -8250,7 +8423,7 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
     assert.deepEqual(revisions.data, [], JSON.stringify(revisions.body));
   };
   const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
-  for (const [name, gateway, message] of [
+  for (const [name, gateway, message, secrets] of [
     [
       "token-mode",
       { auth: { mode: "token" } },
@@ -8273,10 +8446,19 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
           password: { source: "env", provider: "default", id: "SYNTHETIC_GATEWAY_PASSWORD" },
         },
       },
-      setting(
-        "gateway.auth.password",
-        'must be "${OPENCLAW_GATEWAY_PASSWORD}" or the default-provider environment SecretRef with id OPENCLAW_GATEWAY_PASSWORD, whose value SSH Compute generates',
-      ),
+      sshGatewayPasswordRefusal.reference(),
+    ],
+    // The refusal offers the reference on the default env alias.
+    [
+      "other-password-variable-custom-alias",
+      {
+        auth: {
+          mode: "password",
+          password: { source: "env", provider: "custom", id: "SYNTHETIC_GATEWAY_PASSWORD" },
+        },
+      },
+      sshGatewayPasswordRefusal.reference("custom"),
+      { defaults: { env: "custom" } },
     ],
     ["password", { auth: { mode: "password" } }],
     [
@@ -8284,10 +8466,68 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
       { auth: { mode: "password", password: "${OPENCLAW_GATEWAY_PASSWORD}" } },
     ],
     ["omitted", undefined],
+    // The unit's EnvironmentFile sets OPENCLAW_GATEWAY_PASSWORD, which every env provider reads,
+    // so a SecretRef to it on a custom default alias or a configured env provider deploys (finding
+    // 3065); SSH required provider default exactly before.
+    [
+      "custom-alias-reference",
+      {
+        auth: {
+          mode: "password",
+          password: { source: "env", provider: "custom", id: "OPENCLAW_GATEWAY_PASSWORD" },
+        },
+      },
+      undefined,
+      { defaults: { env: "custom" } },
+    ],
+    [
+      "env-provider-reference",
+      {
+        auth: {
+          mode: "password",
+          password: { source: "env", provider: "vault", id: "OPENCLAW_GATEWAY_PASSWORD" },
+        },
+      },
+      undefined,
+      { providers: { vault: { source: "env", allowlist: ["OPENCLAW_GATEWAY_PASSWORD"] } } },
+    ],
+    // Password mode renders an unset password and the expression on provider default, which a
+    // custom default alias leaves unconfigured: the Gateway would exit at every start, so deploy
+    // refuses and offers the reference on the alias.
+    ...[undefined, "${OPENCLAW_GATEWAY_PASSWORD}"].map((password) => [
+      `${password === undefined ? "unset" : "expression"}-custom-alias`,
+      { auth: { mode: "password", ...(password === undefined ? {} : { password }) } },
+      sshGatewayPasswordRefusal.rendered(
+        "custom",
+        unreadableSecretRefProblem("defaultAlias", "custom"),
+      ),
+      { defaults: { env: "custom" } },
+    ]),
+    // When OpenClaw cannot read the reference on the default alias either (an allowlist there
+    // omits the variable), the refusal states the requirement and offers no reference that the
+    // same rule would refuse.
+    [
+      "unset-alias-allowlist",
+      { auth: { mode: "password" } },
+      sshGatewayPasswordRefusal.unoffered(unreadableSecretRefProblem("defaultAlias", "vault")),
+      {
+        defaults: { env: "vault" },
+        providers: { vault: { source: "env", allowlist: ["OTHER_SECRET"] } },
+      },
+    ],
+    [
+      "unset-default-allowlist",
+      { auth: { mode: "password" } },
+      sshGatewayPasswordRefusal.unoffered(
+        unreadableSecretRefProblem("allowlist", "OPENCLAW_GATEWAY_PASSWORD"),
+      ),
+      { providers: { default: { source: "env", allowlist: ["OTHER_SECRET"] } } },
+    ],
   ]) {
     const configuration = await createConfiguration(controller, namespace.id, {
       ...values,
       ...(gateway === undefined ? {} : { gateway: { ...values.gateway, ...gateway } }),
+      ...(secrets === undefined ? {} : { secrets }),
     });
     const agent = await createAgentFor(`gateway-${name}`, configuration);
     const deployed = await deploy(agent);
@@ -9058,6 +9298,7 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
   const sandbox = {
     id: "sandbox-native",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     implementation: "test-native-sandbox",
     facets: ["networking", "filesystem", "process"],
     async provisionHarness() {},

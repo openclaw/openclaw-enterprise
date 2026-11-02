@@ -26,7 +26,8 @@ function usage() {
   return [
     "Usage:",
     "  node scripts/ci/run-tests.mjs audit [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path>] [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--manifest <file>] [--root <dir>]",
   ].join("\n");
 }
@@ -52,7 +53,7 @@ function parseArgs(argv) {
     index += 1;
   }
 
-  if (!["audit", "run", "aggregate"].includes(command)) {
+  if (!["audit", "check-selection", "run", "aggregate"].includes(command)) {
     throw new Error(usage());
   }
 
@@ -1384,12 +1385,27 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   };
 }
 
-async function runLane(root, manifest, laneName, statePath, resultsPath) {
-  const source = sourceEvidence(root);
-  const lane = manifest.lanes.get(laneName);
-  const issues = [...manifest.issues, ...source.issues];
-  const files = [];
-  let preservedNodeExitCode = 0;
+function selectLane(manifest, laneName, selectedFile) {
+  let lane = manifest.lanes.get(laneName);
+  const issues = [...manifest.issues];
+
+  if (lane && selectedFile !== undefined) {
+    const selected = lane.files.find((file) => file.path === selectedFile);
+    if (!selected) {
+      issues.push(
+        issue("invalid-file-selection", "--file must exactly match a file in the selected lane", {
+          lane: laneName,
+        }),
+      );
+    } else {
+      // Keep the manifest's expected tests, environment and cleanup requirements.
+      lane = {
+        ...lane,
+        files: [selected],
+        parallelFiles: lane.parallelFiles.filter((path) => path === selected.path),
+      };
+    }
+  }
 
   if (!lane) {
     issues.push(
@@ -1398,6 +1414,15 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
   } else if (lane.files.length === 0) {
     issues.push(issue("selected-zero", `lane ${laneName} selects no files`, { lane: laneName }));
   }
+  return { lane, issues };
+}
+
+async function runLane(root, manifest, laneName, statePath, resultsPath, selectedFile) {
+  const source = sourceEvidence(root);
+  const { lane, issues } = selectLane(manifest, laneName, selectedFile);
+  issues.push(...source.issues);
+  const files = [];
+  let preservedNodeExitCode = 0;
 
   const prepareFile = await loadPrepare(root);
   const startedAt = new Date().toISOString();
@@ -1480,6 +1505,7 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
     command: "run",
     sourceSha: source.sha,
     lane: laneName,
+    scope: selectedFile === undefined ? "full" : "focused",
     status,
     exitCode: preservedNodeExitCode || (status === "passed" ? 0 : 1),
     fileConcurrency: concurrency,
@@ -1564,6 +1590,13 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
       }),
     );
     return;
+  }
+  if (summary.scope === "focused") {
+    issues.push(
+      issue("focused-lane-evidence", `focused results do not complete lane ${laneName}`, {
+        lane: laneName,
+      }),
+    );
   }
   if (summary.status === "passed" && summary.exitCode !== 0) {
     issues.push(
@@ -1771,6 +1804,15 @@ async function main() {
   const manifestPath = resolve(root, options.manifest ?? defaultManifestPath);
   const manifest = normalizeManifest(loadTestSuites(manifestPath), manifestPath);
 
+  if (command === "check-selection") {
+    if (!positionals[0] || options.file === undefined) {
+      throw new Error(`check-selection requires <lane> and --file\n${usage()}`);
+    }
+    const { issues } = selectLane(manifest, positionals[0], options.file);
+    logIssues(issues);
+    return issues.length === 0 ? 0 : 1;
+  }
+
   if (command === "audit") {
     const summary = await auditManifest(root, manifest);
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
@@ -1788,6 +1830,7 @@ async function main() {
       laneName,
       resolve(root, options.state),
       resolve(root, options.results),
+      options.file,
     );
   }
 

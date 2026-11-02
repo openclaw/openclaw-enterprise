@@ -23,6 +23,7 @@ the same arguments and evidence directory after inspecting any unknown outcomes.
 Use --preflight-only to check the candidate before the maintenance window. It
 creates temporary resources with best-effort cleanup and stops before quiescence;
 its evidence cannot be resumed. To deploy, omit the flag and use a fresh evidence directory.
+After interruption, inspect final preflight-*-identity.json files alongside this run's parameters.json.
 OCC_URL, OCC_SERVICE_KEY_FILE, and OCC_CA_BUNDLE configure the OCC CLI connection.
 With the bundled Collector enabled, its config Secret must carry this checkout's
 deploy/logging collector.yaml and kubernetes.yaml; pass --collector-config-reviewed
@@ -233,7 +234,8 @@ project_yaml() {
 }
 
 # yaml_object FILE OUTPUT writes FILE's YAML object documents to OUTPUT as sorted
-# JSON and sets yaml_object_text to the same bytes; it fails without one.
+# JSON and sets yaml_object_text to the same bytes; it fails without one or if
+# any document is not an object.
 yaml_object() {
   local file=$1 output=$2 status=0
   yaml_json "$file" || status=$?
@@ -242,7 +244,7 @@ yaml_object() {
     printf '%s' "$yaml_object_text" >"$output" || return 1
     return 0
   fi
-  jq -eS 'select(type == "object")' <<<"$yaml_text" >"$output" || return 1
+  jq -eS -n 'inputs | if type == "object" then . else error("expected a YAML object") end' <<<"$yaml_text" >"$output" || return 1
   ((status == 0)) || return 1
   yaml_object_text=
   IFS= read -r -d '' yaml_object_text <"$output" || true
@@ -457,6 +459,17 @@ fi
 mkdir "$evidence_dir/.upgrade-lock" 2>/dev/null || die "the evidence directory is locked; check for a running upgrade before removing its stale .upgrade-lock directory."
 trap 'rmdir "$evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
 
+# An interrupted caller does not establish that its child or remote operation stopped.
+# Keep the lock and preflight resources until the operator reconciles that work.
+interrupted_upgrade() {
+  trap - EXIT
+  warn "upgrade interrupted; evidence lock retained. Check running helper and child commands and reconcile unfinished operations before removing .upgrade-lock." || true
+  exit "$1"
+}
+trap 'interrupted_upgrade 129' HUP
+trap 'interrupted_upgrade 130' INT
+trap 'interrupted_upgrade 143' TERM
+
 # Bind resume to the same inputs and chart. Kubeconfig bytes bind the selected
 # context to the same cluster even if the file is later replaced.
 parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$OCC_URL" "$occ" "${OCC_CA_BUNDLE:-}" "$requested_values" "$requested_installation" "$broker_image" <<'PYTHON'
@@ -541,6 +554,45 @@ PYTHON
   ((statuses[0] == 0)) || return 1
   ((statuses[1] == 0)) || return 2
 }
+# Register cleanup before local publication: a disk failure is not a failed create.
+# These records are identity evidence only; they are never read for replay.
+acknowledge_preflight() {
+  local slot=$1 resource=$2 delete_options=$3
+  preflight_resources+=("$resource $delete_options")
+  python3 - "$evidence_dir" "$slot" "$resource" 3<<<"$delete_options" 2>/dev/null <<'PYTHON' ||
+import json, os, sys
+root, slot, resource = sys.argv[1:]
+with os.fdopen(3, encoding="utf-8") as options:
+    uid = json.load(options)["preconditions"]["uid"]
+assert slot in ("networkpolicy", "secret", "api", "worker")
+kind, name = resource.split("/", 1)
+record = {"kind": kind, "name": name, "uid": uid}
+# Fixed local names, exclusive staging, and link publication refuse existing
+# files, directories and symlinks. Bind all operations to the same private
+# directory; publish only a complete, synced record.
+directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+filename = "preflight-" + slot + "-identity.json"
+staging = "." + filename + ".tmp"
+try:
+    fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                 0o600, dir_fd=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            json.dump(record, output, ensure_ascii=True, separators=(",", ":"))
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(staging, filename, src_dir_fd=directory, dst_dir_fd=directory,
+                follow_symlinks=False)
+        os.fsync(directory)
+    finally:
+        os.unlink(staging, dir_fd=directory)
+        os.fsync(directory)
+finally:
+    os.close(directory)
+PYTHON
+    die "preflight create acknowledged, but local identity evidence could not be confirmed; no OCC writer was stopped."
+}
 cleanup_preflight() {
   local entry resource name uri delete_options errors
   for entry in ${preflight_resources[@]+"${preflight_resources[@]}"}; do
@@ -578,7 +630,21 @@ trap 'cleanup_preflight; rmdir "$evidence_dir/.upgrade-lock" 2>/dev/null || true
 # migration.
 preflight_startup() {
   local suffix secret component pod phase waiting deadline remaining_seconds message failures refusal name_refusal delete_options
+  local drafts='' drafts_flag=none drafts_status=0 draft_refusals
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+  if [[ -s "${agent_drafts:-}" ]]; then
+    drafts="$evidence_dir/inventory/agent-drafts.json.gz"
+    node scripts/upgrade-startup-preflight.mjs drafts "$agent_drafts" "$candidate_installation" \
+      "$drafts" >/dev/null || drafts_status=$?
+    if ((drafts_status == 3)); then
+      warn "the recorded Agents' drafts do not fit in the startup preflight Secret beside the candidate Installation, so it does not check them; OCC checks each draft when the upgrade deploys it."
+      drafts=
+    elif ((drafts_status != 0)); then
+      die "cannot gather the recorded Agents' drafts for the startup preflight; no OCC writer was stopped."
+    else
+      drafts_flag=drafts
+    fi
+  fi
   secret="$release-upgrade-preflight-$suffix"
   yq -p=yaml -o=json -I=0 '.' "$rendered" >"$evidence_dir/preflight-rendered.jsonl" ||
     die "cannot read the rendered chart for the startup preflight; no OCC writer was stopped."
@@ -589,24 +655,24 @@ preflight_startup() {
     delete_options=$(create_preflight "$evidence_dir/preflight-networkpolicy.json" \
       preflight-networkpolicy-create.err) ||
       unconfirmed_preflight "networkpolicy.networking.k8s.io/$secret" preflight-networkpolicy-create.err $?
-    preflight_resources+=("networkpolicy.networking.k8s.io/$secret $delete_options")
+    acknowledge_preflight networkpolicy "networkpolicy.networking.k8s.io/$secret" "$delete_options"
   fi
   delete_options=$(node scripts/upgrade-startup-preflight.mjs secret "$candidate_installation" \
-    "$installation_key" "$secret" "$namespace" "$release" |
+    "$installation_key" "$secret" "$namespace" "$release" "$drafts" |
     create_preflight - preflight-secret-create.err scrub) ||
     unconfirmed_preflight "secret/$secret" preflight-secret-create.err $?
-  preflight_resources+=("secret/$secret $delete_options")
+  acknowledge_preflight secret "secret/$secret" "$delete_options"
   for component in api worker; do
     pod="$release-upgrade-preflight-$component-$suffix"
     node scripts/upgrade-startup-preflight.mjs pod "$evidence_dir/preflight-rendered.jsonl" \
       "$component" "$pod" "$namespace" "$release" "$installation_secret" "$secret" \
-      "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" \
+      "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" "$drafts_flag" \
       >"$evidence_dir/preflight-$component-pod.json" ||
       die "cannot build the $component startup preflight Pod from the rendered chart; no OCC writer was stopped."
     delete_options=$(create_preflight "$evidence_dir/preflight-$component-pod.json" \
       "preflight-$component-pod-create.err") ||
       unconfirmed_preflight "pod/$pod" "preflight-$component-pod-create.err" $?
-    preflight_resources+=("pod/$pod $delete_options")
+    acknowledge_preflight "$component" "pod/$pod" "$delete_options"
   done
   # Wait for every Pod and save each one's status and log before reporting, so a
   # refusal shows every component that failed, not only the first.
@@ -648,6 +714,13 @@ preflight_startup() {
         Succeeded)
           grep -qx installation-startup-ready "$evidence_dir/preflight-$component.log" ||
             message="the $component startup preflight succeeded without its result line; no OCC writer was stopped."
+          if [[ -z "$message" && "$component" == api && -n "$drafts" ]] &&
+            grep -qx agent-draft-check-unavailable "$evidence_dir/preflight-api.log"; then
+            warn "the selected controller image cannot check Agent drafts before the upgrade; OCC checks each draft when the upgrade deploys it."
+          elif [[ -z "$message" && "$component" == api && -n "$drafts" ]] &&
+            ! grep -qx agent-drafts-accepted "$evidence_dir/preflight-api.log"; then
+            message="the api startup preflight succeeded without checking the Agent drafts; no OCC writer was stopped."
+          fi
           ;;
         Stuck:*)
           message="the $component startup preflight Pod cannot start (${phase#Stuck:}); no OCC writer was stopped."
@@ -657,7 +730,19 @@ preflight_startup() {
             "$evidence_dir/preflight-$component.log" | cut -c 1-600 || true)
           refusal=$(grep -m 1 -E '^Kubernetes Compute startup preflight (refused the candidate release|could not complete):' \
             "$evidence_dir/preflight-$component.log" | cut -c 1-600 || true)
-          if [[ -n "$name_refusal" ]]; then
+          draft_refusals=
+          if [[ "$component" == api && -n "$drafts" ]]; then
+            draft_refusals=$(node scripts/upgrade-startup-preflight.mjs refusals \
+              "$evidence_dir/preflight-api.log") || draft_refusals=
+          fi
+          if [[ -n "$draft_refusals" ]]; then
+            message="the selected controller image refuses to deploy $(grep -c '^Agent draft refused: ' "$evidence_dir/preflight-api.log") recorded Agent draft(s):
+$draft_refusals
+No OCC writer was stopped; the old release keeps serving. Correct each draft as its refusal says, for example remove a setting the new release retired, or stop the Agent, then start again with a new evidence directory."
+          elif [[ "$component" == api && -n "$drafts" ]] &&
+            grep -Fxq 'Agent draft check could not load the configured Harness resolver.' "$evidence_dir/preflight-api.log"; then
+            message="the selected controller image could not check saved Agent drafts because its configured Harness resolver is unavailable. No OCC writer was stopped; the old release keeps serving. Select a corrected controller image and start again with a new evidence directory."
+          elif [[ -n "$name_refusal" ]]; then
             message="the $component startup preflight stopped: $name_refusal (INSTALLATION_NAME_INVALID) No OCC writer was stopped; the old release keeps serving. Rename the Installation as in docs/guides/deploy/production-upgrade-recovery.md#correct-an-invalid-installation-name, then start again with a new evidence directory."
           elif [[ -n "$refusal" ]]; then
             message="the $component startup preflight stopped: $refusal No OCC writer was stopped; the old release keeps serving."
@@ -811,6 +896,33 @@ Stop or delete each running Agent without an active revision (occ --namespace NA
     }
   ' "$inventory" >"$targets"
   target_count=$(wc -l <"$targets" | tr -d ' ')
+
+  # The draft each recorded Agent deploys: its saved Configuration. The startup preflight
+  # checks them with the selected controller image's deploy rules before any writer stops,
+  # so a setting that release refuses stops the upgrade here, not after the controller
+  # moved (finding 2809). Deploy needs the same Agent and Configuration reads.
+  agent_drafts="$evidence_dir/inventory/agent-drafts.jsonl"
+  : >"$agent_drafts"
+  while IFS= read -r target; do
+    json_fields "$target" namespace_id=namespaceId agent_id=agentId
+    prefix="$evidence_dir/inventory/$(json_file_name "$namespace_id--$agent_id")"
+    "${occ_json[@]}" --namespace "$namespace_id" agent get "$agent_id" </dev/null \
+      >"$prefix.agent.json" ||
+      die "cannot read Agent $agent_id in Namespace $namespace_id to check its draft; no cluster changes were made."
+    configuration_id=$(jq -er '.configurationId | select(type == "string" and length > 0)' \
+      "$prefix.agent.json") ||
+      die "OCC returned no Configuration for Agent $agent_id in Namespace $namespace_id; no cluster changes were made."
+    "${occ_json[@]}" --namespace "$namespace_id" configuration get "$configuration_id" </dev/null \
+      >"$prefix.configuration.json" ||
+      die "cannot read Configuration $configuration_id of Agent $agent_id in Namespace $namespace_id to check its draft; no cluster changes were made."
+    jq -ec --arg namespaceId "$namespace_id" --arg agentId "$agent_id" \
+      --arg configurationId "$configuration_id" --slurpfile agent "$prefix.agent.json" '
+      select(.id == $configurationId and (.values | type) == "object") |
+      {namespaceId: $namespaceId, agentId: $agentId, name: $agent[0].name,
+        configurationId: $configurationId, values: .values}
+    ' "$prefix.configuration.json" >>"$agent_drafts" ||
+      die "OCC returned no values for Configuration $configuration_id of Agent $agent_id; no cluster changes were made."
+  done <"$targets"
 
   current_gateway=$(yq -er '.drivers.compute.configuration.images.gateway' "$evidence_dir/before-installation.yaml")
   current_agent=$(yq -er '.drivers.compute.configuration.images.agent' "$evidence_dir/before-installation.yaml")
@@ -1511,7 +1623,8 @@ transient_kubectl_failure='^error: EOF$|"https?://[^" ]+": EOF$|Unable to connec
 
 # Prints the gateway container's free memory below its cgroup v2 limit in MiB,
 # or "unlimited". Inactive file cache counts as free, as in the kubelet's
-# working set. Fails when the container's cgroup files cannot be read.
+# working set. Fails when the container's cgroup files cannot be read, and
+# returns 2 without a read once the deadline has passed.
 gateway_free_memory() {
   local gateway_namespace=$1 gateway_name=$2 output=$3 free attempt remaining
   local LC_ALL=C
@@ -1520,7 +1633,7 @@ gateway_free_memory() {
   # failure, such as missing cgroup v2 files, falls back at once.
   for attempt in 1 2 3; do
     remaining=$((deadline - SECONDS))
-    ((remaining > 0)) || return 1
+    ((remaining > 0)) || return 2
     ((remaining <= 15)) || remaining=15
     "${kube[@]}" --request-timeout="${remaining}s" --namespace "$gateway_namespace" exec "$gateway_name" \
       --container gateway -- cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.current \
@@ -1650,8 +1763,19 @@ if ((target_count > 0)); then
     measured_low=0
     admitted=0
     free=unknown
-    while ((SECONDS < deadline)); do
-      if ! free=$(gateway_free_memory "$gateway_namespace" "$gateway_name" "$doctor_prefix.memory"); then
+    # The last successful read, for the timeout message when later reads fail.
+    measured=unknown
+    # gateway_free_memory checks the deadline before each read.
+    while :; do
+      read_status=0
+      read_free=$(gateway_free_memory "$gateway_namespace" "$gateway_name" "$doctor_prefix.memory") ||
+        read_status=$?
+      # The deadline passed before the read: keep the last read for the timeout message.
+      ((read_status != 2)) || break
+      if ((read_status == 0)); then
+        free=$read_free
+        measured=$free
+      else
         if ((measured_low == 0)); then
           warn "cannot read the cgroup v2 memory use of Agent $agent_id's gateway; running OpenClaw Doctor without checking its free memory."
           admitted=1
@@ -1680,7 +1804,11 @@ if ((target_count > 0)); then
     # A read that admitted Doctor can still end at the deadline; that is a plain
     # timeout below, not a memory shortage.
     if ((admitted == 0 && measured_low == 1)); then
-      doctor_timeout="Agent $agent_id's gateway did not keep $doctor_memory_mib MiB free below its memory limit before the upgrade timeout (last read: $free MiB free), so OpenClaw Doctor did not run: Doctor shares the gateway container's limit and could OOM-kill the serving gateway. Wait for the gateway's memory use to settle, then repeat the command with --resume; see docs/guides/deploy/production-upgrade-recovery.md#correct-a-doctor-failure."
+      last_read="last read: $free MiB free"
+      # A read that failed after a low one, such as one cut off at the deadline, measured
+      # nothing; name the last read that did.
+      [[ "$free" != unknown ]] || last_read="last measured: $measured MiB free; later reads failed"
+      doctor_timeout="Agent $agent_id's gateway did not keep $doctor_memory_mib MiB free below its memory limit before the upgrade timeout ($last_read), so OpenClaw Doctor did not run: Doctor shares the gateway container's limit and could OOM-kill the serving gateway. Wait for the gateway's memory use to settle, then repeat the command with --resume; see docs/guides/deploy/production-upgrade-recovery.md#correct-a-doctor-failure."
     fi
     # On a timeout, start no further Doctor. No Doctor is running then: each one
     # ends before the next starts, so the evidence lock outlasts all of them.

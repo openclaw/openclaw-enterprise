@@ -99,7 +99,11 @@ export async function setupStandingWorkerAuthority(
     }),
     drivers: { repo: "repository-credentials" },
   };
-  const driver = new GitHubRepositoryPolicy(backend, registry, { sessionDurationSeconds: 90 });
+  const driver = new GitHubRepositoryPolicy(
+    { driverId: backend.drivers.repo, backendId: backend.id },
+    registry,
+    { sessionDurationSeconds: 90 },
+  );
   const sender = new GitHubNativeRepositorySender(backend, { publicCa: credentials.tls.ca });
   const receipt = await startRepositoryReceiptServer({
     state: f.state,

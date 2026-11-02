@@ -1680,13 +1680,38 @@ test(
               claimName: volume.persistentVolumeClaim.claimName,
               subPath: mount.subPath,
             };
-            return { pod, sandbox, workspaceStorage };
+            // Match RPC node observations to this revision's configured workspace node.
+            // Kubernetes supplies the public identity; do not read node enrollment Secrets.
+            const gatewayPods = await readKubernetesJson(
+              kube,
+              [
+                "get",
+                "pods",
+                "--all-namespaces",
+                "--selector",
+                `openclaw.dev/agent=${nativeAgent.id},openclaw.dev/revision=${revisionId},openclaw.dev/workload-role=gateway,openclaw.dev/namespace=${first.namespaceId}`,
+              ],
+              "the native Gateway's workspace-node identity",
+            );
+            const gateways = gatewayPods.items.filter((item) => !item.metadata.deletionTimestamp);
+            assert.equal(gateways.length, 1);
+            const nodeIds = gateways[0].spec.containers.flatMap((item) =>
+              (item.env ?? [])
+                .filter(({ name }) => name === "OPENCLAW_WORKSPACE_NODE_ID")
+                .map(({ value }) => value),
+            );
+            assert.equal(nodeIds.length, 1);
+            assert.ok(
+              typeof nodeIds[0] === "string" && /^[a-f0-9]{64}$/.test(nodeIds[0]),
+              "The native Gateway must name its exact workspace node",
+            );
+            return { pod, sandbox, workspaceStorage, expectedNodeId: nodeIds[0] };
           };
           const initialProvider = await readProviderRevision(provisioned.revisionId);
-          const firstNativeProof = await assertNativeWorkerProofInController(
-            nativeContext,
-            proofOptions,
-          );
+          const firstNativeProof = await assertNativeWorkerProofInController(nativeContext, {
+            ...proofOptions,
+            expectedNodeId: initialProvider.expectedNodeId,
+          });
           assert.equal(
             firstNativeProof.hostname,
             initialProvider.pod.spec.hostname ?? initialProvider.pod.metadata.name,
@@ -1723,6 +1748,7 @@ test(
           }
           const replacementNativeProof = await assertNativeWorkerProofInController(nativeContext, {
             ...proofOptions,
+            expectedNodeId: replacementProvider.expectedNodeId,
             session: firstNativeProof.session,
             sessionFile: firstNativeProof.sessionFile,
           });

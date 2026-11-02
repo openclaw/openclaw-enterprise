@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   readFileSync,
   statSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -18,14 +19,17 @@ import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "n
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { describe } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
 
 const execute = promisify(execFile);
+const readyCapability = { status: 200, body: '{"durableAdmissionVersion":1}' };
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const sourceRevision = (
   await execute("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
@@ -160,7 +164,13 @@ async function runPreflight(root, cwd, state, pod) {
     return scripted;
   }
   if (!state.startupCheck) {
-    return { phase: "Succeeded", log: "installation-startup-ready\n" };
+    const drafts = pod.spec.containers[0].env?.some(
+      (variable) => variable.name === "OCC_UPGRADE_PREFLIGHT_AGENT_DRAFTS",
+    );
+    return {
+      phase: "Succeeded",
+      log: (drafts ? "agent-drafts-accepted\n" : "") + "installation-startup-ready\n",
+    };
   }
   const container = pod.spec.containers[0];
   const work = mkdtempSync(join(root, "preflight-"));
@@ -191,6 +201,46 @@ async function runPreflight(root, cwd, state, pod) {
     }
     mounts.push([directory, mount.mountPath]);
   }
+  const image = process.env.OCC_TEST_PRODUCTION_IMAGE;
+  if (state.unavailableDraftResolver) {
+    // Preserve all other exports, including those used by ordinary startup imports.
+    const resolver = "packages/occ/src/configured-harness.ts";
+    const current = "configured-harness-current.ts";
+    const overlay = join(work, "configured-harness.ts");
+    writeFileSync(
+      overlay,
+      `export * from ${JSON.stringify(image ? `./${current}` : join(cwd, resolver))};\n` +
+        "export const resolveConfiguredHarnessId = undefined;\n",
+    );
+    chmodSync(overlay, 0o644);
+    // As with olderDraftRules, image mode mounts the selected checkout's source beside
+    // the overlay. Source mode's existing local() mount mapping redirects the generated
+    // import to the overlay; the generated API program itself is unchanged.
+    if (image) {
+      mounts.push([join(cwd, resolver), `/app/packages/occ/src/${current}`]);
+    }
+    mounts.push([overlay, `/app/${resolver}`]);
+  }
+  if (state.olderDraftRules) {
+    // An image built before refuseUndeployableConfigurationValues existed: its
+    // configuration-settings module has every other export but not that one. The stand-in
+    // module re-exports the real one; its own export shadows the new rule.
+    const settings = "packages/occ/src/configuration-settings.ts";
+    const current = "configuration-settings-current.ts";
+    const older = join(work, "configuration-settings.ts");
+    writeFileSync(
+      older,
+      `export * from ${JSON.stringify(image ? `./${current}` : join(cwd, settings))};\n` +
+        "export const refuseUndeployableConfigurationValues = undefined;\n",
+    );
+    chmodSync(older, 0o644);
+    // In the image the stand-in replaces the module for every importer, so the real module
+    // moves beside it.
+    if (image) {
+      mounts.push([join(cwd, settings), `/app/packages/occ/src/${current}`]);
+    }
+    mounts.push([older, `/app/${settings}`]);
+  }
   // Kubernetes expands $(VAR) in literal values from earlier variables and turns $$ into $.
   const expanded = {};
   const env = (container.env ?? [])
@@ -202,7 +252,6 @@ async function runPreflight(root, cwd, state, pod) {
       expanded[item.name] = value;
       return { name: item.name, value };
     });
-  const image = process.env.OCC_TEST_PRODUCTION_IMAGE;
   const local = (value) =>
     mounts
       .reduce((current, [source, target]) => current.split(target).join(source), value)
@@ -398,7 +447,25 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
           `Error from server (AlreadyExists): ${collection[kind]} "${name}" already exists`,
         );
       }
-      object.metadata.uid = randomUUID();
+      if (state.preflightFault?.mode === "interrupt") {
+        object.metadata.annotations = { "fixture/manifest": "private-manifest-sentinel" };
+        if (kind === "secret") {
+          object.data.fixture = Buffer.from("private-secret-sentinel").toString("base64");
+        }
+      }
+      object.metadata.uid =
+        (state.preflightFault?.target === target && state.preflightFault.uid) || randomUUID();
+      (state.preflight.created ??= []).push({ kind, name, uid: object.metadata.uid });
+      if (fault === "evidence-file" || fault === "evidence-symlink") {
+        const destination = join(root, "evidence", "preflight-secret-identity.json");
+        if (fault === "evidence-symlink") {
+          const target = join(root, "unrelated");
+          writeFileSync(target, "unrelated sentinel");
+          symlinkSync(target, destination);
+        } else {
+          writeFileSync(destination, "unrelated sentinel");
+        }
+      }
       inventory[name] =
         object.kind === "Pod"
           ? {
@@ -832,7 +899,16 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       if (args.includes("worker") && state.simulatePair && take("fail-capability")) {
         return fail(9);
       }
-      out(args.includes("worker") && state.simulatePair ? "repository-admission-ready\n" : "{}");
+      if (state.simulatePair) {
+        const reply = state.capabilityReplies.shift() ?? readyCapability;
+        const result = await runDeployedCapability(args, cwd, reply);
+        state.capabilityProbes.push({ dispatches: state.dispatches, requests: result.requests });
+        save();
+        out(result.stdout);
+        io.stderr(result.stderr);
+        return io.exit(result.status);
+      }
+      out("{}");
     }
   } else if (tool === "occ") {
     if (args.includes("deployment-inventory")) {
@@ -880,8 +956,17 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       out({
         id: args.at(-1),
         name,
-        ...(args.includes("agent") ? { activeRevisionId: state.activeRevision ?? "rev_old" } : {}),
+        ...(args.includes("agent")
+          ? {
+              configurationId: `cfg_${args.at(-1)}`,
+              activeRevisionId: state.activeRevision ?? "rev_old",
+            }
+          : {}),
       });
+    } else if (args.includes("configuration") && args.includes("get")) {
+      // The Agent's saved Configuration (its draft), as OCC returns it.
+      const id = args.at(-1);
+      out({ id, kind: "agent", values: state.configurationValues?.[id] ?? {} });
     } else if (args.includes("deploy")) {
       state.dispatches += 1;
       // A scripted failure for this Agent answers like the real occ: exit 1 and its error
@@ -902,7 +987,12 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       }
       out({ id: "rev_new" });
     } else if (args.includes("agent") && args.includes("get")) {
-      out({ id: "agt_test", activeRevisionId: state.activeRevision ?? "rev_old" });
+      out({
+        id: "agt_test",
+        name: "Mail triage",
+        configurationId: "cfg_agt_test",
+        activeRevisionId: state.activeRevision ?? "rev_old",
+      });
     } else if (args.includes("deployment-status")) {
       out({ status: "succeeded" });
     } else {
@@ -1077,6 +1167,7 @@ async function fixture(
     controllerOnly = false,
     repositoryCredentials = false,
     simulatePair = false,
+    capabilityReplies = [],
     workerPlacement = "container",
     collector = null,
     chart = null,
@@ -1089,14 +1180,31 @@ async function fixture(
     installationName = "Production",
     inventoryNamespaces = null,
     names = null,
+    configurationValues = null,
+    olderDraftRules = false,
+    unavailableDraftResolver = false,
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "occ-upgrade-recovery-"));
   const bin = join(directory, "bin");
   await mkdir(bin);
+  let upgradeProcess;
+  let interrupted = false;
   const server = await startCommandServer({
     forwardedEnv: [],
-    handle: ({ command, args, cwd, io }) => fakeCommand(directory, { command, args, cwd }, io),
+    handle: ({ command, args, cwd, io }) => {
+      if (
+        preflightFault?.mode === "interrupt" &&
+        !interrupted &&
+        command === "kubectl" &&
+        args.includes("get") &&
+        args.some((arg) => arg.startsWith("pod/oce-upgrade-preflight-"))
+      ) {
+        interrupted = true;
+        upgradeProcess.kill("SIGTERM");
+      }
+      return fakeCommand(directory, { command, args, cwd }, io);
+    },
   });
   t.after(() => server.close());
   // Hooks run in order: stop answering commands before the directory goes.
@@ -1110,6 +1218,14 @@ async function fixture(
       { mode: 0o700 },
     );
   }
+  // The script waits "sleep 2" between polls. The fixture answers every poll at once, so
+  // it waits 0.25 s instead: each case sees the same reads, in the same order, sooner.
+  // Deadline cases script more reads than 0.25 s polls can use before their timeout.
+  await writeFile(
+    join(bin, "sleep"),
+    `#!${shimTools.bash}\n[[ "$*" != 2 ]] || set -- 0.25\nexec ${bashString(shimTools.sleep)} "$@"\n`,
+    { mode: 0o700 },
+  );
   const collectorSecretName = "occ-demo-collector-config";
   let values = JSON.stringify({
     images: { controller },
@@ -1246,6 +1362,9 @@ async function fixture(
     installationName,
     inventoryNamespaces,
     names,
+    configurationValues,
+    olderDraftRules,
+    unavailableDraftResolver,
     version: 1,
     helmStatus: "deployed",
     api: 1,
@@ -1254,6 +1373,8 @@ async function fixture(
     agent,
     workerPlacement,
     simulatePair,
+    capabilityReplies,
+    capabilityProbes: [],
     dispatches: 0,
     initActive: false,
     collectorSecretName,
@@ -1343,7 +1464,11 @@ async function fixture(
     kubernetesReads: api?.reads ?? [],
     executionReads: api?.executionReads ?? [],
     accessReviews: api?.reviews ?? [],
-    run: (...extra) => execute(script, [...args, ...extra], { cwd: repository, env }),
+    run: (...extra) => {
+      const result = execute(script, [...args, ...extra], { cwd: repository, env });
+      upgradeProcess = result.child;
+      return result;
+    },
     runWithStderr: (fd) =>
       spawnResult("/bin/bash", ["--", script, ...args], { cwd: repository, env }, fd),
     // Close the read end before launch; subprocess restores the CLI's default SIGPIPE.
@@ -1724,106 +1849,126 @@ test("OpenClaw Doctor waits for free gateway memory and names an OOM kill only f
   ]);
 });
 
-// A memory timeout at one gateway starts no further Doctor but waits for the ones
-// already running: the evidence lock must outlast them, or a second upgrade could
-// start while a Doctor still runs in a serving gateway. Doctor's own exit status, not
-// an exit code quoted on its stderr, classifies its failure.
-test("a Doctor memory timeout keeps the evidence lock until every started Doctor ends", async (t) => {
-  const agent = (id) => ({
-    id,
-    status: "active",
-    desiredRuntimeState: "running",
-    executionMode: "embedded",
-    activeRevisionId: "rev_old",
-    deploymentInProgress: false,
-  });
-  const f = await fixture(t, {
-    inventoryNamespaces: [
-      { id: "ns_test", status: "ready", agents: [agent("agt_a"), agent("agt_b")] },
-    ],
-  });
-  // Gateway A has room at once; gateway B never does before the 3 s timeout. A's Doctor
-  // runs past the timeout.
-  await scriptGatewayMemory(f, [2048, ...Array(20).fill(0)]);
-  const state = await f.state();
-  state.doctorHoldMs = 6000;
-  // The gateway was OOM-killed once before it became Ready; that restart is not Doctor's.
-  state.gatewayRestarts = 1;
-  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-  await f.failNext("doctor-hold");
-  const failure = await f.run("--timeout-seconds", "3").then(
-    () => assert.fail("the upgrade must stop at the memory timeout"),
-    (stopped) => stopped,
-  );
-  // Bounded wait: without the join, A ends after the command has exited.
-  for (let tries = 0; tries < 100; tries += 1) {
-    if ((await f.events()).some((event) => event.startsWith("doctor-ended "))) {
-      break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const events = await f.events();
-  assert.deepEqual(
-    events.filter((event) => event.startsWith("doctor")),
-    [doctorCommand(384), "doctor-ended lock held"],
-  );
-  assert.equal(existsSync(join(f.evidence, ".upgrade-lock")), false);
-  const lines = failure.stderr.trimEnd().split("\n");
-  assert.deepEqual(lines.slice(-3, -1), [
-    "upgrade-production-images: OpenClaw Doctor failed (exit 1) in Agent agt_a's gateway.",
-    "upgrade-production-images: Agent agt_a's gateway container did not restart after it became Ready.",
-  ]);
-  assert.match(
-    lines.at(-1),
-    /Agent agt_b's gateway did not keep 640 MiB free below its memory limit before the upgrade timeout \(last read: 0 MiB free\), so OpenClaw Doctor did not run/,
-  );
-});
-
-test("OpenClaw Doctor does not run while the gateway lacks free memory", async (t) => {
-  const f = await fixture(t, { agent: true });
-  await scriptGatewayMemory(f, Array(20).fill(639));
-  await assert.rejects(
-    f.run("--timeout-seconds", "3"),
-    /Agent agt_test's gateway did not keep 640 MiB free below its memory limit before the upgrade timeout \(last read: 639 MiB free\), so OpenClaw Doctor did not run/,
-  );
-  assert.equal(
-    (await f.events()).some((event) => event.startsWith("doctor ")),
-    false,
-  );
-});
-
-// A read can admit Doctor and still end at the deadline. Doctor then does not start,
-// and the error is a plain timeout: the gateway had the memory, so the low-memory
-// message (with its "last read" of ample memory) would contradict itself.
-test("OpenClaw Doctor admitted at the upgrade deadline reports a plain timeout", async (t) => {
-  const f = await fixture(t, { agent: true });
-  // The low read and the slow read both start well before the 8 s deadline.
-  await scriptGatewayMemory(f, [300, "slow:2048"]);
-  const failure = await f.run("--timeout-seconds", "8").then(
-    () => assert.fail("the upgrade must stop at the timeout"),
-    (stopped) => stopped,
-  );
-  assert.deepEqual(await doctorEvents(f), ["gateway-memory 300", "gateway-memory slow:2048"]);
-  assert.equal(
-    failure.stderr.trimEnd().split("\n").at(-1),
-    "upgrade-production-images: OpenClaw Doctor did not run before the upgrade timeout.",
-  );
-});
-
-test("OpenClaw Doctor keeps low memory admission closed across missing and transient reads", async (t) => {
-  for (const unavailable of ["missing", "transient"]) {
-    await t.test(unavailable, async (t) => {
-      const f = await fixture(t, { agent: true });
-      // Do not exhaust the script: the fixture defaults to ample memory afterward.
-      await scriptGatewayMemory(f, [300, ...Array(100).fill(unavailable)]);
-      await assert.rejects(f.run("--timeout-seconds", "8"), /before the upgrade timeout/);
-      const events = await doctorEvents(f);
-      assert.equal(events[0], "gateway-memory 300");
-      assert.ok(events.includes(`gateway-memory ${unavailable}`));
-      assert.ok(!events.includes("gateway-memory 2048"));
-      assert.ok(!events.some((event) => event.startsWith("doctor ")));
+// These cases each wait out a real upgrade timeout (3 s or 8 s) with their own fixture,
+// so they run side by side instead of one after another.
+describe("OpenClaw Doctor at the upgrade timeout", { concurrency: true }, () => {
+  // A memory timeout at one gateway starts no further Doctor but waits for the ones
+  // already running: the evidence lock must outlast them, or a second upgrade could
+  // start while a Doctor still runs in a serving gateway. Doctor's own exit status, not
+  // an exit code quoted on its stderr, classifies its failure.
+  test("a Doctor memory timeout keeps the evidence lock until every started Doctor ends", async (t) => {
+    const agent = (id) => ({
+      id,
+      status: "active",
+      desiredRuntimeState: "running",
+      executionMode: "embedded",
+      activeRevisionId: "rev_old",
+      deploymentInProgress: false,
     });
-  }
+    // A poll that finds the deadline passed reads nothing; the timeout still names B's last
+    // read (0 MiB), not "unknown".
+    const f = await fixture(t, {
+      inventoryNamespaces: [
+        { id: "ns_test", status: "ready", agents: [agent("agt_a"), agent("agt_b")] },
+      ],
+    });
+    // Gateway A has room at once; gateway B never does before the 3 s timeout. A's Doctor
+    // runs past the timeout.
+    await scriptGatewayMemory(f, [2048, ...Array(20).fill(0)]);
+    const state = await f.state();
+    state.doctorHoldMs = 6000;
+    // The gateway was OOM-killed once before it became Ready; that restart is not Doctor's.
+    state.gatewayRestarts = 1;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    await f.failNext("doctor-hold");
+    const failure = await f.run("--timeout-seconds", "3").then(
+      () => assert.fail("the upgrade must stop at the memory timeout"),
+      (stopped) => stopped,
+    );
+    // Bounded wait: without the join, A ends after the command has exited.
+    for (let tries = 0; tries < 100; tries += 1) {
+      if ((await f.events()).some((event) => event.startsWith("doctor-ended "))) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const events = await f.events();
+    assert.deepEqual(
+      events.filter((event) => event.startsWith("doctor")),
+      [doctorCommand(384), "doctor-ended lock held"],
+    );
+    assert.equal(existsSync(join(f.evidence, ".upgrade-lock")), false);
+    const lines = failure.stderr.trimEnd().split("\n");
+    assert.deepEqual(lines.slice(-3, -1), [
+      "upgrade-production-images: OpenClaw Doctor failed (exit 1) in Agent agt_a's gateway.",
+      "upgrade-production-images: Agent agt_a's gateway container did not restart after it became Ready.",
+    ]);
+    assert.match(
+      lines.at(-1),
+      /Agent agt_b's gateway did not keep 640 MiB free below its memory limit before the upgrade timeout \(last read: 0 MiB free\), so OpenClaw Doctor did not run/,
+    );
+  });
+
+  test("OpenClaw Doctor does not run while the gateway lacks free memory", async (t) => {
+    const f = await fixture(t, { agent: true });
+    // Every read is 1 MiB short; the timeout names the last one, even when the final poll
+    // finds the deadline passed and reads nothing.
+    await scriptGatewayMemory(f, Array(20).fill(639));
+    await assert.rejects(
+      f.run("--timeout-seconds", "3"),
+      /Agent agt_test's gateway did not keep 640 MiB free below its memory limit before the upgrade timeout \(last read: 639 MiB free\), so OpenClaw Doctor did not run/,
+    );
+    assert.equal(
+      (await f.events()).some((event) => event.startsWith("doctor ")),
+      false,
+    );
+  });
+
+  // A read can admit Doctor and still end at the deadline. Doctor then does not start,
+  // and the error is a plain timeout: the gateway had the memory, so the low-memory
+  // message (with its "last read" of ample memory) would contradict itself.
+  test("OpenClaw Doctor admitted at the upgrade deadline reports a plain timeout", async (t) => {
+    const f = await fixture(t, { agent: true });
+    // The low read and the slow read both start well before the 8 s deadline.
+    await scriptGatewayMemory(f, [300, "slow:2048"]);
+    const failure = await f.run("--timeout-seconds", "8").then(
+      () => assert.fail("the upgrade must stop at the timeout"),
+      (stopped) => stopped,
+    );
+    assert.deepEqual(await doctorEvents(f), ["gateway-memory 300", "gateway-memory slow:2048"]);
+    assert.equal(
+      failure.stderr.trimEnd().split("\n").at(-1),
+      "upgrade-production-images: OpenClaw Doctor did not run before the upgrade timeout.",
+    );
+  });
+
+  test(
+    "OpenClaw Doctor keeps low memory admission closed across missing and transient reads",
+    { concurrency: true },
+    async (t) => {
+      const cases = [];
+      for (const unavailable of ["missing", "transient"]) {
+        cases.push(
+          t.test(unavailable, async (t) => {
+            const f = await fixture(t, { agent: true });
+            // Do not exhaust the script: the fixture defaults to ample memory afterward.
+            await scriptGatewayMemory(f, [300, ...Array(100).fill(unavailable)]);
+            // The reads after the low one measure nothing; the timeout names the low one.
+            await assert.rejects(
+              f.run("--timeout-seconds", "8"),
+              /before the upgrade timeout \(last measured: 300 MiB free; later reads failed\), so OpenClaw Doctor did not run/,
+            );
+            const events = await doctorEvents(f);
+            assert.equal(events[0], "gateway-memory 300");
+            assert.ok(events.includes(`gateway-memory ${unavailable}`));
+            assert.ok(!events.includes("gateway-memory 2048"));
+            assert.ok(!events.some((event) => event.startsWith("doctor ")));
+          }),
+        );
+      }
+      await Promise.all(cases);
+    },
+  );
 });
 
 test("OpenClaw Doctor retains warning and run for initially unavailable transport observations", async (t) => {
@@ -1859,248 +2004,264 @@ test("OpenClaw Doctor recovers with fresh consecutive memory evidence after obse
   ]);
 });
 
-test("OpenClaw Doctor reports unknown restart history unless Ready and post-read observations are comparable", async (t) => {
-  const pod = (count = 0) => ({
-    metadata: { namespace: "tenant", name: "gateway", uid: "gateway-uid" },
-    spec: { containers: [{ name: "gateway", image: runtime }] },
-    status: {
-      phase: "Running",
-      conditions: [{ type: "Ready", status: "True" }],
-      containerStatuses: [{ name: "gateway", restartCount: count, lastState: {} }],
-    },
-  });
-  const withoutRows = pod();
-  delete withoutRows.status.containerStatuses;
-  const replacement = pod();
-  replacement.metadata.uid = "replacement-uid";
-  // Only Pod states the Kubernetes API returns: container statuses not reported, a Pod
-  // replaced under the same name (new UID), and a lower restart count.
-  const cases = [
-    ["missing Ready row", withoutRows, pod()],
-    ["missing post row", pod(), withoutRows],
-    ["replacement Pod", pod(), replacement],
-    ["decreased count", pod(2), pod(1)],
-    ["additional restart without reason", pod(), pod(1), "restart"],
-    ["true zero", pod(), pod(), true],
-    ["unchanged nonzero", pod(3), pod(3), true],
-  ];
-  for (const [name, ready, after, comparable] of cases) {
-    await t.test(name, async (t) => {
-      const f = await fixture(t, { agent: true });
-      const state = await f.state();
-      state.gatewayReady = ready;
-      state.gatewayAfter = after;
-      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-      await f.failNext("doctor-error");
-      const failure = await f.run().then(
-        () => assert.fail("Doctor command failure must stop the upgrade"),
-        (stopped) => stopped,
-      );
-      assert.match(failure.stderr, /OpenClaw Doctor failed \(exit 1\)/);
-      if (comparable === "restart") {
-        assert.match(
-          failure.stderr,
-          /restarted 1 time\(s\) after it became Ready \(last termination: none\)/,
-        );
-        assert.doesNotMatch(
-          failure.stderr,
-          /did not restart|OOM-killed and restarted|history since Ready is unknown/,
-        );
-      } else if (comparable) {
-        assert.match(failure.stderr, /gateway container did not restart after it became Ready/);
-        assert.doesNotMatch(failure.stderr, /restart history since Ready is unknown/);
-      } else {
-        assert.match(failure.stderr, /restart history since Ready is unknown/);
-        assert.doesNotMatch(failure.stderr, /did not restart|OOM-killed and restarted/);
-      }
+test(
+  "OpenClaw Doctor reports unknown restart history unless Ready and post-read observations are comparable",
+  { concurrency: true },
+  async (t) => {
+    const pod = (count = 0) => ({
+      metadata: { namespace: "tenant", name: "gateway", uid: "gateway-uid" },
+      spec: { containers: [{ name: "gateway", image: runtime }] },
+      status: {
+        phase: "Running",
+        conditions: [{ type: "Ready", status: "True" }],
+        containerStatuses: [{ name: "gateway", restartCount: count, lastState: {} }],
+      },
     });
-  }
-});
+    const withoutRows = pod();
+    delete withoutRows.status.containerStatuses;
+    const replacement = pod();
+    replacement.metadata.uid = "replacement-uid";
+    // Only Pod states the Kubernetes API returns: container statuses not reported, a Pod
+    // replaced under the same name (new UID), and a lower restart count.
+    const cases = [
+      ["missing Ready row", withoutRows, pod()],
+      ["missing post row", pod(), withoutRows],
+      ["replacement Pod", pod(), replacement],
+      ["decreased count", pod(2), pod(1)],
+      ["additional restart without reason", pod(), pod(1), "restart"],
+      ["true zero", pod(), pod(), true],
+      ["unchanged nonzero", pod(3), pod(3), true],
+    ];
+    const runs = [];
+    for (const [name, ready, after, comparable] of cases) {
+      runs.push(
+        t.test(name, async (t) => {
+          const f = await fixture(t, { agent: true });
+          const state = await f.state();
+          state.gatewayReady = ready;
+          state.gatewayAfter = after;
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+          await f.failNext("doctor-error");
+          const failure = await f.run().then(
+            () => assert.fail("Doctor command failure must stop the upgrade"),
+            (stopped) => stopped,
+          );
+          assert.match(failure.stderr, /OpenClaw Doctor failed \(exit 1\)/);
+          if (comparable === "restart") {
+            assert.match(
+              failure.stderr,
+              /restarted 1 time\(s\) after it became Ready \(last termination: none\)/,
+            );
+            assert.doesNotMatch(
+              failure.stderr,
+              /did not restart|OOM-killed and restarted|history since Ready is unknown/,
+            );
+          } else if (comparable) {
+            assert.match(failure.stderr, /gateway container did not restart after it became Ready/);
+            assert.doesNotMatch(failure.stderr, /restart history since Ready is unknown/);
+          } else {
+            assert.match(failure.stderr, /restart history since Ready is unknown/);
+            assert.doesNotMatch(failure.stderr, /did not restart|OOM-killed and restarted/);
+          }
+        }),
+      );
+    }
+    await Promise.all(runs);
+  },
+);
 
 // Doctor passing proves nothing about a gateway that Kubernetes then evicted, replaced
 // or restarted (finding 2736: node memory pressure evicted a gateway after its Doctor
 // passed, and the upgrade still reported success). Each case changes the gateway right
 // after a passing Doctor, in a state the Kubernetes API returns.
-test("a gateway changed after a passing Doctor fails the upgrade and resume checks its replacement", async (t) => {
-  const pod = ({
-    name = "gateway",
-    uid = "gateway-uid",
-    phase = "Running",
-    ready = true,
-  } = {}) => ({
-    metadata: { namespace: "tenant", name, uid },
-    spec: { containers: [{ name: "gateway", image: runtime }] },
-    status: {
-      phase,
-      conditions: [{ type: "Ready", status: ready ? "True" : "False" }],
-      containerStatuses: [{ name: "gateway", restartCount: 0, lastState: {} }],
-    },
-  });
-  // The Deployment's replacement Pod, Ready on the new revision.
-  const replacement = pod({ name: "gateway-2", uid: "gateway-2-uid" });
-  // The kubelet ends an evicted Pod and keeps it (phase Failed, reason Evicted).
-  const evicted = pod({ phase: "Failed", ready: false });
-  evicted.status.reason = "Evicted";
-  // On the dogfood cluster the evicted gateway ended with phase Succeeded.
-  const ended = pod({ phase: "Succeeded", ready: false });
-  const cases = [
-    ["evicted", { revisionPods: [evicted, replacement] }, /was evicted \(phase Failed\)/],
-    ["ended", { revisionPods: [ended, replacement] }, /stopped \(phase Succeeded, reason none\)/],
-    ["deleted", { revisionPods: [replacement] }, /no longer exists \(evicted or deleted\)/],
-    [
-      "replaced under the same name",
-      { gatewayAfter: pod({ uid: "gateway-uid-2" }) },
-      /was replaced by a new Pod with the same name/,
-    ],
-    [
-      "restarted",
-      { gatewayRestarts: 1, gatewayLastReason: "Error" },
-      /restarted 1 time\(s\) \(last termination: Error\)/,
-    ],
-    ["not Ready", { gatewayAfter: pod({ ready: false }) }, /is not Ready/],
-  ];
-  for (const [name, afterDoctor, change] of cases) {
-    await t.test(name, async (t) => {
-      const f = await fixture(t, { agent: true });
-      const state = await f.state();
-      state.afterDoctor = afterDoctor;
-      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-      const failure = await f.run().then(
-        () => assert.fail("a gateway changed after Doctor must stop the upgrade"),
-        (stopped) => stopped,
-      );
-      assert.match(
-        failure.stderr,
-        new RegExp(
-          `Agent agt_test's gateway Pod tenant/gateway ${change.source} after it became Ready for OpenClaw Doctor\\.`,
-        ),
-      );
-      assert.match(
-        failure.stderr,
-        /repeat the command with --resume and the same evidence directory/,
-      );
-      assert.doesNotMatch(failure.stdout, /Upgraded/);
-      assert.deepEqual(
-        (await f.events()).filter((event) => event.startsWith("doctor ")),
-        [doctorCommand(384)],
-      );
-    });
-  }
-  // Resume after the eviction: the ended Pod stays in the API, but the readiness wait
-  // ignores it, runs Doctor in the replacement and checks that Pod instead. No new deploy.
-  const f = await fixture(t, { agent: true });
-  const state = await f.state();
-  state.afterDoctor = { revisionPods: [evicted, replacement] };
-  await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-  await assert.rejects(f.run(), /did not stay on the same Ready Pod without restarts/);
-  const resumed = await f.run("--resume");
-  assert.match(resumed.stdout, /Upgraded runtime image/);
-  assert.equal((await f.state()).dispatches, 1);
-  assert.deepEqual(
-    (await f.events()).filter((event) => event.startsWith("doctor ")),
-    [doctorCommand(384), doctorCommand(384)],
-  );
-  const targets = (await readFile(join(f.evidence, "doctor-targets.jsonl"), "utf8"))
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
-  assert.deepEqual(
-    targets.map((target) => target.gatewayName),
-    ["gateway-2"],
-  );
-  // An eviction while Doctor runs kills Doctor (exit 137) without a container restart. The
-  // failure must still name the eviction, so it is not read as a Doctor or memory problem.
-  const killed = await fixture(t, { agent: true });
-  const killedState = await killed.state();
-  killedState.afterDoctor = { revisionPods: [evicted, replacement] };
-  await writeFile(join(killed.directory, "state.json"), JSON.stringify(killedState));
-  await killed.failNext("doctor-evicted");
-  const failure = await killed.run().then(
-    () => assert.fail("a Doctor killed by an eviction must stop the upgrade"),
-    (stopped) => stopped,
-  );
-  assert.match(failure.stderr, /OpenClaw Doctor was killed \(exit 137\)/);
-  assert.match(
-    failure.stderr,
-    /Agent agt_test's gateway Pod tenant\/gateway was evicted \(phase Failed\) after it became Ready for OpenClaw Doctor\./,
-  );
-  assert.match(failure.stderr, /OpenClaw Doctor failed for at least one replacement gateway/);
-  assert.doesNotMatch(failure.stdout, /Upgraded/);
-  // A dedicated Agent serves through its gateway and Codex agent Pods, and the readiness
-  // wait requires both. Node memory pressure during the Doctors evicts only the agent Pod
-  // (finding 2755): Doctor in the untouched gateway passes, but the upgrade must name the
-  // agent Pod instead of reporting success, and resume checks the replacement.
-  const agentPod = ({
-    name = "agent",
-    uid = "agent-uid",
-    phase = "Running",
-    ready = true,
-  } = {}) => ({
-    metadata: { namespace: "tenant", name, uid },
-    spec: { containers: [{ name: "agent", image: runtime }] },
-    status: {
-      phase,
-      ...(phase === "Failed" ? { reason: "Evicted" } : {}),
-      conditions: [{ type: "Ready", status: ready ? "True" : "False" }],
-      containerStatuses: [{ name: "agent", restartCount: 0, lastState: {} }],
-    },
-  });
-  const dedicated = await fixture(t, {
-    inventoryNamespaces: [
-      {
-        id: "ns_test",
-        status: "ready",
-        agents: [
-          {
-            id: "agt_test",
-            status: "active",
-            desiredRuntimeState: "running",
-            executionMode: "dedicated",
-            activeRevisionId: "rev_old",
-            deploymentInProgress: false,
-          },
-        ],
+test(
+  "a gateway changed after a passing Doctor fails the upgrade and resume checks its replacement",
+  { concurrency: true },
+  async (t) => {
+    const pod = ({
+      name = "gateway",
+      uid = "gateway-uid",
+      phase = "Running",
+      ready = true,
+    } = {}) => ({
+      metadata: { namespace: "tenant", name, uid },
+      spec: { containers: [{ name: "gateway", image: runtime }] },
+      status: {
+        phase,
+        conditions: [{ type: "Ready", status: ready ? "True" : "False" }],
+        containerStatuses: [{ name: "gateway", restartCount: 0, lastState: {} }],
       },
-    ],
-  });
-  const dedicatedState = await dedicated.state();
-  dedicatedState.revisionPods = [pod(), agentPod()];
-  dedicatedState.afterDoctor = {
-    revisionPods: [
-      pod(),
-      agentPod({ phase: "Failed", ready: false }),
-      agentPod({ name: "agent-2", uid: "agent-2-uid" }),
-    ],
-  };
-  await writeFile(join(dedicated.directory, "state.json"), JSON.stringify(dedicatedState));
-  const agentFailure = await dedicated.run().then(
-    () => assert.fail("an agent Pod evicted during Doctor must stop the upgrade"),
-    (stopped) => stopped,
-  );
-  assert.match(
-    agentFailure.stderr,
-    /Agent agt_test's agent Pod tenant\/agent was evicted \(phase Failed\) after it became Ready for OpenClaw Doctor\./,
-  );
-  assert.doesNotMatch(agentFailure.stderr, /gateway Pod tenant\/gateway|OpenClaw Doctor failed/);
-  assert.match(agentFailure.stderr, /did not stay on the same Ready Pod without restarts/);
-  assert.doesNotMatch(agentFailure.stdout, /Upgraded/);
-  const resumedDedicated = await dedicated.run("--resume");
-  assert.match(resumedDedicated.stdout, /Upgraded runtime image/);
-  assert.equal((await dedicated.state()).dispatches, 1);
-  const [dedicatedTarget] = (
-    await readFile(join(dedicated.evidence, "doctor-targets.jsonl"), "utf8")
-  )
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
-  assert.deepEqual(
-    dedicatedTarget.revisionPods.map(({ role, name }) => [role, name]),
-    [
-      ["gateway", "gateway"],
-      ["agent", "agent-2"],
-    ],
-  );
-});
+    });
+    // The Deployment's replacement Pod, Ready on the new revision.
+    const replacement = pod({ name: "gateway-2", uid: "gateway-2-uid" });
+    // The kubelet ends an evicted Pod and keeps it (phase Failed, reason Evicted).
+    const evicted = pod({ phase: "Failed", ready: false });
+    evicted.status.reason = "Evicted";
+    // On the dogfood cluster the evicted gateway ended with phase Succeeded.
+    const ended = pod({ phase: "Succeeded", ready: false });
+    const cases = [
+      ["evicted", { revisionPods: [evicted, replacement] }, /was evicted \(phase Failed\)/],
+      ["ended", { revisionPods: [ended, replacement] }, /stopped \(phase Succeeded, reason none\)/],
+      ["deleted", { revisionPods: [replacement] }, /no longer exists \(evicted or deleted\)/],
+      [
+        "replaced under the same name",
+        { gatewayAfter: pod({ uid: "gateway-uid-2" }) },
+        /was replaced by a new Pod with the same name/,
+      ],
+      [
+        "restarted",
+        { gatewayRestarts: 1, gatewayLastReason: "Error" },
+        /restarted 1 time\(s\) \(last termination: Error\)/,
+      ],
+      ["not Ready", { gatewayAfter: pod({ ready: false }) }, /is not Ready/],
+    ];
+    const runs = [];
+    for (const [name, afterDoctor, change] of cases) {
+      runs.push(
+        t.test(name, async (t) => {
+          const f = await fixture(t, { agent: true });
+          const state = await f.state();
+          state.afterDoctor = afterDoctor;
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+          const failure = await f.run().then(
+            () => assert.fail("a gateway changed after Doctor must stop the upgrade"),
+            (stopped) => stopped,
+          );
+          assert.match(
+            failure.stderr,
+            new RegExp(
+              `Agent agt_test's gateway Pod tenant/gateway ${change.source} after it became Ready for OpenClaw Doctor\\.`,
+            ),
+          );
+          assert.match(
+            failure.stderr,
+            /repeat the command with --resume and the same evidence directory/,
+          );
+          assert.doesNotMatch(failure.stdout, /Upgraded/);
+          assert.deepEqual(
+            (await f.events()).filter((event) => event.startsWith("doctor ")),
+            [doctorCommand(384)],
+          );
+        }),
+      );
+    }
+    await Promise.all(runs);
+    // Resume after the eviction: the ended Pod stays in the API, but the readiness wait
+    // ignores it, runs Doctor in the replacement and checks that Pod instead. No new deploy.
+    const f = await fixture(t, { agent: true });
+    const state = await f.state();
+    state.afterDoctor = { revisionPods: [evicted, replacement] };
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    await assert.rejects(f.run(), /did not stay on the same Ready Pod without restarts/);
+    const resumed = await f.run("--resume");
+    assert.match(resumed.stdout, /Upgraded runtime image/);
+    assert.equal((await f.state()).dispatches, 1);
+    assert.deepEqual(
+      (await f.events()).filter((event) => event.startsWith("doctor ")),
+      [doctorCommand(384), doctorCommand(384)],
+    );
+    const targets = (await readFile(join(f.evidence, "doctor-targets.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(
+      targets.map((target) => target.gatewayName),
+      ["gateway-2"],
+    );
+    // An eviction while Doctor runs kills Doctor (exit 137) without a container restart. The
+    // failure must still name the eviction, so it is not read as a Doctor or memory problem.
+    const killed = await fixture(t, { agent: true });
+    const killedState = await killed.state();
+    killedState.afterDoctor = { revisionPods: [evicted, replacement] };
+    await writeFile(join(killed.directory, "state.json"), JSON.stringify(killedState));
+    await killed.failNext("doctor-evicted");
+    const failure = await killed.run().then(
+      () => assert.fail("a Doctor killed by an eviction must stop the upgrade"),
+      (stopped) => stopped,
+    );
+    assert.match(failure.stderr, /OpenClaw Doctor was killed \(exit 137\)/);
+    assert.match(
+      failure.stderr,
+      /Agent agt_test's gateway Pod tenant\/gateway was evicted \(phase Failed\) after it became Ready for OpenClaw Doctor\./,
+    );
+    assert.match(failure.stderr, /OpenClaw Doctor failed for at least one replacement gateway/);
+    assert.doesNotMatch(failure.stdout, /Upgraded/);
+    // A dedicated Agent serves through its gateway and Codex agent Pods, and the readiness
+    // wait requires both. Node memory pressure during the Doctors evicts only the agent Pod
+    // (finding 2755): Doctor in the untouched gateway passes, but the upgrade must name the
+    // agent Pod instead of reporting success, and resume checks the replacement.
+    const agentPod = ({
+      name = "agent",
+      uid = "agent-uid",
+      phase = "Running",
+      ready = true,
+    } = {}) => ({
+      metadata: { namespace: "tenant", name, uid },
+      spec: { containers: [{ name: "agent", image: runtime }] },
+      status: {
+        phase,
+        ...(phase === "Failed" ? { reason: "Evicted" } : {}),
+        conditions: [{ type: "Ready", status: ready ? "True" : "False" }],
+        containerStatuses: [{ name: "agent", restartCount: 0, lastState: {} }],
+      },
+    });
+    const dedicated = await fixture(t, {
+      inventoryNamespaces: [
+        {
+          id: "ns_test",
+          status: "ready",
+          agents: [
+            {
+              id: "agt_test",
+              status: "active",
+              desiredRuntimeState: "running",
+              executionMode: "dedicated",
+              activeRevisionId: "rev_old",
+              deploymentInProgress: false,
+            },
+          ],
+        },
+      ],
+    });
+    const dedicatedState = await dedicated.state();
+    dedicatedState.revisionPods = [pod(), agentPod()];
+    dedicatedState.afterDoctor = {
+      revisionPods: [
+        pod(),
+        agentPod({ phase: "Failed", ready: false }),
+        agentPod({ name: "agent-2", uid: "agent-2-uid" }),
+      ],
+    };
+    await writeFile(join(dedicated.directory, "state.json"), JSON.stringify(dedicatedState));
+    const agentFailure = await dedicated.run().then(
+      () => assert.fail("an agent Pod evicted during Doctor must stop the upgrade"),
+      (stopped) => stopped,
+    );
+    assert.match(
+      agentFailure.stderr,
+      /Agent agt_test's agent Pod tenant\/agent was evicted \(phase Failed\) after it became Ready for OpenClaw Doctor\./,
+    );
+    assert.doesNotMatch(agentFailure.stderr, /gateway Pod tenant\/gateway|OpenClaw Doctor failed/);
+    assert.match(agentFailure.stderr, /did not stay on the same Ready Pod without restarts/);
+    assert.doesNotMatch(agentFailure.stdout, /Upgraded/);
+    const resumedDedicated = await dedicated.run("--resume");
+    assert.match(resumedDedicated.stdout, /Upgraded runtime image/);
+    assert.equal((await dedicated.state()).dispatches, 1);
+    const [dedicatedTarget] = (
+      await readFile(join(dedicated.evidence, "doctor-targets.jsonl"), "utf8")
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(
+      dedicatedTarget.revisionPods.map(({ role, name }) => [role, name]),
+      [
+        ["gateway", "gateway"],
+        ["agent", "agent-2"],
+      ],
+    );
+  },
+);
 
 // Doctors in several gateways on one node can together exhaust its memory, so they run
 // one at a time: each ends before the next gateway's memory check and Doctor start.
@@ -2594,6 +2755,11 @@ test("a changed eligible node stops the upgrade before mutation", async (t) => {
   assert.deepEqual(await f.events(), []);
 });
 
+const capabilityProbe = (dispatches) => ({
+  dispatches,
+  requests: [{ method: "GET", path: "/v1/capabilities", body: "" }],
+});
+
 test(
   "deployed pair verification stops before Agent dispatch on failure",
   { concurrency: true },
@@ -2654,10 +2820,65 @@ test(
           );
           assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
           assert.equal((await f.state()).controller, newController);
+          assert.deepEqual(
+            (await f.state()).capabilityProbes,
+            scenario.repositoryCredentials ? [capabilityProbe(0), capabilityProbe(0)] : [],
+          );
         }),
       );
     }
     await Promise.all(cases);
+  },
+);
+
+test(
+  "deployed capability gates Agent dispatch and completion",
+  { concurrency: true },
+  async (t) => {
+    await Promise.all(
+      [
+        {
+          name: "old before dispatch",
+          replies: [{ status: 200, body: '{"durableAdmissionVersion":0}' }],
+          dispatches: 0,
+          failure: /deployed controller cannot verify repository admission capability\./,
+        },
+        {
+          name: "denied at completion",
+          replies: [readyCapability, { status: 403, body: "{}" }],
+          dispatches: 1,
+          failure:
+            /deployed controller cannot verify repository admission capability at completion/,
+        },
+      ].map((scenario) =>
+        t.test(scenario.name, async (subtest) => {
+          const f = await fixture(subtest, {
+            agent: true,
+            repositoryCredentials: true,
+            simulatePair: true,
+            capabilityReplies: scenario.replies,
+          });
+          await assert.rejects(f.run(), (error) => {
+            // The sender translates the Unix client's refusal; a direct-client bypass does not.
+            assert.match(
+              error.stderr,
+              /DependencyUnavailableError: Repository credential control is unavailable\./,
+            );
+            assert.match(error.stderr, scenario.failure);
+            return true;
+          });
+          const state = await f.state();
+          assert.equal(state.dispatches, scenario.dispatches);
+          // The second read follows the sole dispatch; a refusal cannot report completion.
+          assert.deepEqual(
+            state.capabilityProbes,
+            scenario.dispatches === 0
+              ? [capabilityProbe(0)]
+              : [capabilityProbe(0), capabilityProbe(1)],
+          );
+        }),
+      ),
+    );
   },
 );
 
@@ -2765,73 +2986,79 @@ async function assertStoppedBeforeWriters(f) {
   return state;
 }
 
-test("the image-upgrade startup preflight validates the API's mounted theme before stopping writers", async (t) => {
-  if (!realHelm) {
-    t.skip("helm is unavailable to render the real chart");
-    return;
-  }
-  for (const [name, theme, failure] of [
-    [
-      "valid",
-      { schemaVersion: 1, displayName: "Example Console", colors: { accent: "#2457C5" } },
-      null,
-    ],
-    [
-      "invalid color",
-      { schemaVersion: 1, colors: { accent: "blue" } },
-      /colors must use supported roles/,
-    ],
-    [
-      "missing image",
-      { schemaVersion: 1, logo: "missing.png" },
-      /cannot read the configured bundle/,
-    ],
-  ]) {
-    await t.test(name, async (t) => {
-      const themeName = "console-theme-reviewed";
-      const f = await fixture(t, {
-        controllerOnly: true,
-        chart: {
-          values: (values) => ({
-            ...values,
-            api: { ...values.api, consoleTheme: { configMapName: themeName } },
-          }),
-          installation: (installation) => installation,
-          configMaps: { [themeName]: { data: { "theme.json": JSON.stringify(theme) } } },
-        },
-      });
-      // Helm renders the real theme mount. The generated Pod command runs real source
-      // loaders against actual files; only external cluster command protocols are fixtures.
-      if (failure) {
-        await assert.rejects(
-          f.run("--preflight-only"),
-          (error) =>
-            /the selected controller image cannot start the api with the candidate Installation:/.test(
-              error.stderr,
-            ) &&
-            /No OCC writer was stopped/.test(error.stderr) &&
-            failure.test(error.stderr),
-        );
-        const state = await assertStoppedBeforeWriters(f);
-        assert.deepEqual(state.preflight.deleted.map((resource) => resource.split("/")[0]).sort(), [
-          "networkpolicy.networking.k8s.io",
-          "pod",
-          "pod",
-          "secret",
-        ]);
-        assert.match(await readFile(join(f.evidence, "preflight-api.log"), "utf8"), failure);
-        assert.match(
-          await readFile(join(f.evidence, "preflight-worker.log"), "utf8"),
-          /installation-startup-ready/,
-        );
-      } else {
-        const result = await f.run("--preflight-only");
-        assert.match(result.stdout, /preflight/i);
-        await assertStoppedBeforeWriters(f);
-      }
-    });
-  }
-});
+test(
+  "the image-upgrade startup preflight validates the API's mounted theme before stopping writers",
+  { concurrency: true },
+  async (t) => {
+    if (!realHelm) {
+      t.skip("helm is unavailable to render the real chart");
+      return;
+    }
+    const runs = [];
+    for (const [name, theme, failure] of [
+      [
+        "valid",
+        { schemaVersion: 1, displayName: "Example Console", colors: { accent: "#2457C5" } },
+        null,
+      ],
+      [
+        "invalid color",
+        { schemaVersion: 1, colors: { accent: "blue" } },
+        /colors must use supported roles/,
+      ],
+      [
+        "missing image",
+        { schemaVersion: 1, logo: "missing.png" },
+        /cannot read the configured bundle/,
+      ],
+    ]) {
+      runs.push(
+        t.test(name, async (t) => {
+          const themeName = "console-theme-reviewed";
+          const f = await fixture(t, {
+            controllerOnly: true,
+            chart: {
+              values: (values) => ({
+                ...values,
+                api: { ...values.api, consoleTheme: { configMapName: themeName } },
+              }),
+              installation: (installation) => installation,
+              configMaps: { [themeName]: { data: { "theme.json": JSON.stringify(theme) } } },
+            },
+          });
+          // Helm renders the real theme mount. The generated Pod command runs real source
+          // loaders against actual files; only external cluster command protocols are fixtures.
+          if (failure) {
+            await assert.rejects(
+              f.run("--preflight-only"),
+              (error) =>
+                /the selected controller image cannot start the api with the candidate Installation:/.test(
+                  error.stderr,
+                ) &&
+                /No OCC writer was stopped/.test(error.stderr) &&
+                failure.test(error.stderr),
+            );
+            const state = await assertStoppedBeforeWriters(f);
+            assert.deepEqual(
+              state.preflight.deleted.map((resource) => resource.split("/")[0]).sort(),
+              ["networkpolicy.networking.k8s.io", "pod", "pod", "secret"],
+            );
+            assert.match(await readFile(join(f.evidence, "preflight-api.log"), "utf8"), failure);
+            assert.match(
+              await readFile(join(f.evidence, "preflight-worker.log"), "utf8"),
+              /installation-startup-ready/,
+            );
+          } else {
+            const result = await f.run("--preflight-only");
+            assert.match(result.stdout, /preflight/i);
+            await assertStoppedBeforeWriters(f);
+          }
+        }),
+      );
+    }
+    await Promise.all(runs);
+  },
+);
 
 // The 2026-09-28 release example offered DevDay Presets through presets.files; later
 // images no longer ship those files (finding 436). The selected controller image must
@@ -3416,12 +3643,418 @@ test("preflight-only checks the candidate without preparing or deploying it", as
     await readFile(join(f.evidence, "preflight-worker.log"), "utf8"),
     /^installation-startup-ready$/m,
   );
+  // The API Pod checked the recorded Agent's draft with the selected image's deploy rules.
+  assert.match(
+    await readFile(join(f.evidence, "preflight-api.log"), "utf8"),
+    /^agent-drafts-accepted$/m,
+  );
   assert.equal(existsSync(join(f.evidence, "prepared")), false);
   await assert.rejects(f.run("--resume"), /not a prepared deployment/);
   await assertStoppedBeforeWriters(f);
 });
 
+// A draft saved before the selected release retired one of its settings: deploy admission
+// refuses it, so before finding 2809 the upgrade moved the controller and then stopped at the
+// fleet deploy with the Agents on the old runtime. The API preflight Pod runs the selected
+// image's own stored-Configuration rules on each recorded Agent's draft, so the rehearsal and
+// the release itself stop before any writer stops, with OCC's deploy message for each Agent.
+for (const preflightOnly of [true, false]) {
+  test(`${preflightOnly ? "preflight-only" : "the release"} refuses an Agent draft the selected image would not deploy`, async (t) => {
+    if (!realHelm) {
+      t.skip("helm is unavailable to render the real chart");
+      return;
+    }
+    const f = await fixture(t, {
+      agent: true,
+      chart: { installation: (installation) => installation },
+      configurationValues: {
+        cfg_agt_test: { security: { preset: "corporate" }, tools: { exec: { mode: "full" } } },
+      },
+    });
+    await assert.rejects(f.run(...(preflightOnly ? ["--preflight-only"] : [])), (error) => {
+      assert.match(
+        error.stderr,
+        /the selected controller image refuses to deploy 1 recorded Agent draft\(s\):\n {2}- Agent agt_test "Mail triage" in Namespace ns_test: Configuration setting security\.preset must be removed: the OpenClaw runtime retired it \(configure the individual security controls explicitly\)\.\nNo OCC writer was stopped; the old release keeps serving\./,
+      );
+      return true;
+    });
+    const state = await assertStoppedBeforeWriters(f);
+    assert.equal(state.dispatches, 0);
+    assert.equal(existsSync(join(f.evidence, "prepared")), false);
+    // Only the API Pod carries the drafts; the worker's check is unchanged.
+    const api = JSON.parse(await readFile(join(f.evidence, "preflight-api-pod.json"), "utf8"));
+    const worker = JSON.parse(
+      await readFile(join(f.evidence, "preflight-worker-pod.json"), "utf8"),
+    );
+    assert.ok(api.spec.volumes.some((volume) => volume.name === "upgrade-preflight-agent-drafts"));
+    assert.ok(
+      !worker.spec.volumes.some((volume) => volume.name === "upgrade-preflight-agent-drafts"),
+    );
+  });
+}
+
+// Deploy admission checks the model provider settings before the other stored-value rules
+// (finding 1549), so the preflight runs them too: a baseUrl the runtime cannot use stops the
+// rehearsal with deploy's message instead of the fleet deploy (finding 2816).
+test("preflight-only refuses a draft's model provider setting that deploy refuses", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  const f = await fixture(t, {
+    agent: true,
+    chart: { installation: (installation) => installation },
+    configurationValues: {
+      cfg_agt_test: { models: { providers: { openai: { baseUrl: "ftp://models.example/v1" } } } },
+    },
+  });
+  await assert.rejects(f.run("--preflight-only"), (error) => {
+    assert.match(
+      error.stderr,
+      /refuses to deploy 1 recorded Agent draft\(s\):\n {2}- Agent agt_test "Mail triage" in Namespace ns_test: Configuration field \/models\/providers\/openai\/baseUrl must be an absolute http or https URL\.\n/,
+    );
+    return true;
+  });
+  await assertStoppedBeforeWriters(f);
+});
+
+// Run the generated API program with the real resolver. Catalog rows may use full refs or
+// remainders, but each must name a selected primary or fallback, including entry selections.
+test("the release checks saved model catalogs before stopping writers", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  for (const valid of [false, true]) {
+    await t.test(valid ? "selected rows pass" : "an unselected row refuses", async (t) => {
+      const values = {
+        agents: {
+          defaults: {
+            model: {
+              primary: "openai/synthetic-primary",
+              fallbacks: ["openai/synthetic-fallback"],
+            },
+          },
+          entries: {
+            researcher: {
+              model: {
+                primary: "openai/synthetic-primary",
+                fallbacks: ["openai/synthetic-entry"],
+              },
+            },
+          },
+        },
+        models: {
+          providers: {
+            openai: {
+              agentRuntime: { id: "openclaw" },
+              models: [
+                { id: "synthetic-primary" },
+                { id: "openai/synthetic-fallback" },
+                { id: valid ? "synthetic-entry" : "synthetic-unselected-private-value" },
+              ],
+            },
+          },
+        },
+      };
+      const f = await fixture(t, {
+        agent: true,
+        chart: { installation: (installation) => installation },
+        configurationValues: { cfg_agt_test: values },
+      });
+      if (valid) {
+        await f.run();
+        assert.equal((await f.state()).dispatches, 1);
+        assert.match(
+          await readFile(join(f.evidence, "preflight-api.log"), "utf8"),
+          /^agent-drafts-accepted$/m,
+        );
+      } else {
+        await assert.rejects(f.run(), (error) => {
+          assert.match(
+            error.stderr,
+            /Agent agt_test "Mail triage" in Namespace ns_test: Configuration setting models\.providers\.openai\.models may list only entries whose id names a primary or fallback model set in agents\.defaults\.model or agents\.entries\./,
+          );
+          assert.match(error.stderr, /No OCC writer was stopped; the old release keeps serving\./);
+          assert.doesNotMatch(error.stdout + error.stderr, /synthetic-/);
+          return true;
+        });
+        const state = await assertStoppedBeforeWriters(f);
+        assert.equal(state.dispatches, 0);
+        assert.equal(existsSync(join(f.evidence, "prepared")), false);
+        const log = await readFile(join(f.evidence, "preflight-api.log"), "utf8");
+        assert.doesNotMatch(log, /synthetic-|agent-drafts-accepted/);
+      }
+    });
+  }
+});
+
+// The degraded draft-check paths. Each one either warns and lets OCC check the draft at deploy,
+// as before finding 2809, or stops before any writer stops; none reports drafts as checked
+// when they were not (finding 2815).
+
+// Shared rules are available, but the resolver capability is not callable.
+// Exercise the generated reporter and the ordinary release's log collector together.
+test("the release refuses an image with an unavailable draft resolver", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  const f = await fixture(t, {
+    agent: true,
+    chart: { installation: (installation) => installation },
+    configurationValues: { cfg_agt_test: {} },
+    unavailableDraftResolver: true,
+  });
+  await assert.rejects(f.run(), (error) => {
+    assert.match(
+      error.stderr,
+      /upgrade-production-images: the selected controller image could not check saved Agent drafts because its configured Harness resolver is unavailable\. No OCC writer was stopped; the old release keeps serving\. Select a corrected controller image and start again with a new evidence directory\./,
+    );
+    assert.doesNotMatch(
+      error.stdout + error.stderr,
+      /correct the Installation|cannot start the api|refuses to deploy|cannot check Agent drafts before the upgrade|agent-drafts-accepted|installation-startup-ready/,
+    );
+    return true;
+  });
+  const log = await readFile(join(f.evidence, "preflight-api.log"), "utf8");
+  assert.match(log, /^Agent draft check could not load the configured Harness resolver\.$/m);
+  assert.doesNotMatch(
+    log,
+    /agent-draft-check-unavailable|agent-drafts-accepted|Agent draft refused:|installation-startup-ready/,
+  );
+  const status = JSON.parse(await readFile(join(f.evidence, "preflight-api-status.json"), "utf8"));
+  assert.equal(status.status.phase, "Failed");
+  assert.match(
+    await readFile(join(f.evidence, "preflight-worker.log"), "utf8"),
+    /^installation-startup-ready$/m,
+  );
+  const state = await assertStoppedBeforeWriters(f);
+  assert.equal(state.dispatches, 0);
+  assert.equal(state.controller, controller);
+  assert.equal(state.helmStatus, "deployed");
+  assert.equal(existsSync(join(f.evidence, "prepared")), false);
+  assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
+});
+
+// An image built before the shared rule cannot check drafts. Its preflight Pod runs and says
+// so; the helper warns and the upgrade deploys, so this draft, which a newer image would
+// refuse, is refused only by the deploy.
+test("an image without the draft rules warns, and the upgrade continues", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  const f = await fixture(t, {
+    agent: true,
+    chart: { installation: (installation) => installation },
+    olderDraftRules: true,
+    configurationValues: { cfg_agt_test: { security: { preset: "corporate" } } },
+  });
+  const result = await f.run();
+  assert.match(
+    result.stderr,
+    /upgrade-production-images: the selected controller image cannot check Agent drafts before the upgrade; OCC checks each draft when the upgrade deploys it\./,
+  );
+  const log = await readFile(join(f.evidence, "preflight-api.log"), "utf8");
+  assert.match(log, /^agent-draft-check-unavailable$/m);
+  assert.doesNotMatch(log, /^agent-drafts-accepted$/m);
+  const state = await f.state();
+  assert.equal(state.dispatches, 1);
+  assert.deepEqual(state.preflight.secrets, {});
+});
+
+// The Secret's values may total 1 MiB. Drafts that do not fit beside the candidate
+// Installation are not sent: the helper warns and the preflight goes on. Random text does not
+// compress, so the drafts stay over 1 MiB gzipped.
+test("drafts that do not fit in the preflight Secret warn, and the preflight passes", async (t) => {
+  const f = await fixture(t, {
+    agent: true,
+    configurationValues: {
+      cfg_agt_test: {
+        plugins: {
+          entries: { knowledge: { config: { note: randomBytes(1100 * 1024).toString("base64") } } },
+        },
+      },
+    },
+  });
+  const result = await f.run("--preflight-only");
+  assert.match(result.stdout, /Preflight passed/);
+  assert.match(
+    result.stderr,
+    /upgrade-production-images: the recorded Agents' drafts do not fit in the startup preflight Secret beside the candidate Installation, so it does not check them; OCC checks each draft when the upgrade deploys it\./,
+  );
+  // Neither the Secret nor the API Pod carried the drafts.
+  const api = JSON.parse(await readFile(join(f.evidence, "preflight-api-pod.json"), "utf8"));
+  assert.ok(!api.spec.volumes.some((volume) => volume.name === "upgrade-preflight-agent-drafts"));
+  assert.ok(
+    !api.spec.containers[0].env.some(
+      (variable) => variable.name === "OCC_UPGRADE_PREFLIGHT_AGENT_DRAFTS",
+    ),
+  );
+});
+
+// The drafts get the part of the Secret's 1 MiB that the candidate Installation leaves: about
+// 700 KiB of gzipped drafts fit beside a small Installation, but not beside a 400 KiB one.
+test("the drafts budget is the Secret limit less the candidate Installation", async (t) => {
+  const directory = await temporaryDirectory(t, "occ-upgrade-drafts-");
+  const drafts = join(directory, "agent-drafts.jsonl");
+  await writeFile(
+    drafts,
+    JSON.stringify({
+      namespaceId: "ns_test",
+      agentId: "agt_test",
+      name: "Mail triage",
+      configurationId: "cfg_agt_test",
+      values: {
+        plugins: {
+          entries: { knowledge: { config: { note: randomBytes(700 * 1024).toString("base64") } } },
+        },
+      },
+    }) + "\n",
+  );
+  const gather = async (installationBytes) => {
+    const installation = join(directory, `installation-${installationBytes}.yaml`);
+    await writeFile(installation, "x".repeat(installationBytes));
+    return spawnResult(
+      process.execPath,
+      [
+        "scripts/upgrade-startup-preflight.mjs",
+        "drafts",
+        drafts,
+        installation,
+        join(directory, `drafts-${installationBytes}.json.gz`),
+      ],
+      { cwd: repository },
+    );
+  };
+  const small = await gather(1024);
+  assert.equal(small.status, 0, small.stderr);
+  assert.ok(statSync(join(directory, "drafts-1024.json.gz")).size > 640 * 1024);
+  const large = await gather(400 * 1024);
+  assert.equal(large.status, 3);
+  assert.match(
+    large.stderr,
+    /1 Agent drafts take \d+ bytes gzipped; with the 409600-byte candidate Installation that is over the 1048576-byte Secret limit\./,
+  );
+  assert.equal(existsSync(join(directory, "drafts-409600.json.gz")), false);
+});
+
+// An API preflight that succeeds without either draft result, as an image that ignored the
+// drafts would, is not taken as a check: the helper stops before any writer stops.
+test("an API preflight that reports no draft result stops the upgrade", async (t) => {
+  const f = await fixture(t, {
+    agent: true,
+    preflightResults: { api: { phase: "Succeeded", log: "installation-startup-ready\n" } },
+  });
+  await assert.rejects(
+    f.run(),
+    /the api startup preflight succeeded without checking the Agent drafts; no OCC writer was stopped\./,
+  );
+  const state = await assertStoppedBeforeWriters(f);
+  assert.equal(state.dispatches, 0);
+});
+
 // The command fixture models API inventory and conditional deletion; it is not a live cluster.
+// Read only the four fixed identity records, never manifests or create stdout.
+async function preflightIdentities(f) {
+  const records = [];
+  for (const slot of ["networkpolicy", "secret", "api", "worker"]) {
+    const filename = join(f.evidence, `preflight-${slot}-identity.json`);
+    let handle;
+    try {
+      handle = await open(
+        filename,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        continue;
+      }
+      throw error;
+    }
+    try {
+      const stats = await handle.stat();
+      assert.ok(stats.isFile());
+      assert.equal(stats.mode & 0o777, 0o600);
+      const text = await handle.readFile("utf8");
+      const record = JSON.parse(text);
+      assert.deepEqual(Object.keys(record).sort(), ["kind", "name", "uid"]);
+      assert.doesNotMatch(
+        text,
+        /private-response-marker|private-manifest-sentinel|private-secret-sentinel|installation.yaml|apiVersion|spec|data/,
+      );
+      records.push(record);
+    } finally {
+      await handle.close();
+    }
+  }
+  return records;
+}
+
+test("cleanup ownership: acknowledged identities survive a real interruption", async (t) => {
+  // Valid opaque UIDs need not be UUIDs, safe filenames, or unescaped JSON strings.
+  const uid = '../opaque/"\\雪;$(value)';
+  const f = await fixture(t, {
+    controllerOnly: true,
+    preflightPolicy: true,
+    preflightFault: { target: "secret", mode: "interrupt", uid },
+    preflightResults: {
+      api: { phase: "Succeeded", log: "installation-startup-ready\n" },
+      worker: { phase: "Succeeded", log: "installation-startup-ready\n" },
+    },
+  });
+  const failure = await f.run().catch((error) => error);
+  assert.equal(failure.code, 143);
+  assert.match(failure.stderr, /upgrade interrupted/);
+  assert.ok(existsSync(join(f.evidence, ".upgrade-lock")));
+  const state = await f.state();
+  const records = await preflightIdentities(f);
+  assert.equal(records.length, 4);
+  assert.equal(statSync(f.evidence).mode & 0o777, 0o700);
+  assert.ok(!(await readdir(f.evidence)).some((name) => name.endsWith("-identity.json.tmp")));
+  assert.deepEqual(records, state.preflight.created);
+  assert.equal(records.find((record) => record.kind === "secret").uid, uid);
+  assert.equal(new Set(records.map((record) => record.uid)).size, 4);
+  assert.deepEqual(state.preflight.deleted, []);
+  const secret = Object.values(state.preflight.secrets)[0];
+  for (const value of Object.values(secret.data)) {
+    assert.ok(!JSON.stringify(records).includes(value), "no Secret data in identity evidence");
+  }
+  assert.deepEqual(await f.events(), []);
+});
+
+test("cleanup ownership: local publication failure retains guarded cleanup", async (t) => {
+  for (const mode of ["evidence-file", "evidence-symlink"]) {
+    await t.test(mode, async (t) => {
+      const f = await fixture(t, {
+        controllerOnly: true,
+        preflightPolicy: true,
+        preflightFault: { target: "secret", mode },
+      });
+      const failure = await f.run().catch((error) => error);
+      assert.equal(failure.code, 1);
+      assert.match(
+        failure.stderr,
+        /create acknowledged, but local identity evidence could not be confirmed/,
+      );
+      assert.doesNotMatch(failure.stderr, /ownership unconfirmed|Traceback|unrelated sentinel/);
+      assert.ok(!failure.stderr.includes(f.evidence), "no local path in the diagnostic");
+      const state = await f.state();
+      assert.deepEqual(state.preflight.secrets, {});
+      assert.equal(state.preflight.deleted.length, 2);
+      assert.equal(state.preflight.created.length, 2, "stops before creating Pods");
+      const destination = join(f.evidence, "preflight-secret-identity.json");
+      assert.equal(await readFile(destination, "utf8"), "unrelated sentinel");
+      if (mode === "evidence-symlink") {
+        assert.equal(await readFile(join(f.directory, "unrelated"), "utf8"), "unrelated sentinel");
+      }
+      assert.ok(!(await readdir(f.evidence)).some((name) => name.endsWith("-identity.json.tmp")));
+      assert.deepEqual(await f.events(), []);
+    });
+  }
+});
+
 // kubectl's create output stays off the terminal but is kept in the private evidence
 // directory, so an operator can tell a refusal from a lost or unusable acknowledgement.
 for (const [target, mode, acknowledged, errors, reason, kubectlOutput] of [
@@ -3481,6 +4114,9 @@ for (const [target, mode, acknowledged, errors, reason, kubectlOutput] of [
     );
     assert.equal(remaining.length, 1, "only the unconfirmed object survives");
     assert.equal(state.preflight.deleted.length, acknowledged, "acknowledged objects are cleaned");
+    const identities = await preflightIdentities(f);
+    assert.equal(identities.length, acknowledged);
+    assert.ok(!identities.some((record) => record.uid === remaining[0].metadata.uid));
     assert.equal(failure.code, 1);
     assert.ok(
       failure.stderr.includes(
@@ -3515,6 +4151,7 @@ test("cleanup ownership: a Secret manifest kubectl quotes stays out of the evide
   // kubectl refused before any request; only the NetworkPolicy existed and is cleaned.
   assert.deepEqual(state.preflight.secrets, {});
   assert.equal(state.preflight.deleted.length, 1);
+  assert.equal((await preflightIdentities(f)).length, 1);
   // The diagnosis survives, but not the Installation bytes the Secret carried.
   const errors = await readFile(join(f.evidence, "preflight-secret-create.err"), "utf8");
   assert.match(errors, /^error: unable to decode "STDIN": Object 'Kind' is missing in '/);
@@ -3538,6 +4175,13 @@ test("cleanup ownership: same-name replacement survives EXIT cleanup", async (t)
   const state = await f.state();
   assert.equal(Object.values(state.preflight.pods).length, 1);
   assert.equal(Object.values(state.preflight.pods)[0].foreign, true);
+  const records = await preflightIdentities(f);
+  assert.deepEqual(records, state.preflight.created);
+  const replacement = Object.values(state.preflight.pods)[0];
+  assert.notEqual(
+    records.find((record) => record.name === replacement.metadata.name).uid,
+    replacement.metadata.uid,
+  );
   assert.equal(state.preflight.deleted.length, 3, "cleanup continues for other owned objects");
   assert.equal(failure.code, 1);
   assert.match(failure.stderr, /primary startup failure/);

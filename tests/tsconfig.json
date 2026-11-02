@@ -8,7 +8,10 @@
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": false,
     "erasableSyntaxOnly": true,
-    "tsBuildInfoFile": "../.build/tests/tsconfig.tsbuildinfo"
+    "tsBuildInfoFile": "../.build/tests/tsconfig.tsbuildinfo",
+    "paths": {
+      "@openclaw-enterprise/contracts": ["../packages/contracts/src/index.ts"]
+    }
   },
   "include": [
     "**/*.test.ts",
@@ -18,9 +21,19 @@
     "../packages/contracts/prepack.ts",
     "../packages/utils/prepack.ts",
     "helpers/credential-source-owner-upgrade.ts",
+    "helpers/deployed-repository-capability.ts",
+    "helpers/compute-credential-catalog.ts",
+    "helpers/provisioning-repository-status.ts",
+    "helpers/provisioning-source-status.ts",
+    "helpers/codex-preparation-caller.ts",
+    "helpers/controlled-tls-origin.ts",
+    "helpers/controlled-tls-origin-scenario.ts",
     "fixtures/runtime-google-skill-policy.mts",
+    "fixtures/codex-local-plugins/probe.ts",
+    "fixtures/codex-local-plugins/enrollment.ts",
     "fixtures/repository-credentials/module-guard.ts",
-    "fixtures/repository-credentials/planning.ts"
+    "fixtures/repository-credentials/planning.ts",
+    "helpers/protected-static-secret-read.ts"
   ],
   "references": [
     {

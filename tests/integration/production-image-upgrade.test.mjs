@@ -64,7 +64,8 @@ fi
   *'.info.status'*) printf 'deployed\\n' ;;
   *'.data['*) printf 'cHJvdGVjdGVkCg==\\n' ;;
   *'openclaw.dev/installation-id'*) printf '%s\\n' "$CLUSTER_INSTALLATION_ID" ;;
-  '-S '*|'-eS '*) cat ;;
+  '-eS '*) PATH="$ORIGINAL_TOOL_PATH" exec jq "$@" ;;
+  '-S '*) cat ;;
   *'.installationId == '*) exit 0 ;;
   *'.spec.template.spec as $pod'*) exit 0 ;;
   *'.deploymentInProgress'*|*'.activeRevisionId == null'*|*'.status != "ready"'*) exit 1 ;;
@@ -178,6 +179,7 @@ fi
     ...process.env,
     CLUSTER_INSTALLATION_ID: "ins_upgrade_test",
     CURRENT_CONTROLLER_IMAGE: baselineControllerImage,
+    ORIGINAL_TOOL_PATH: process.env.PATH,
     LIVE_INSTALLATION_FILE: liveInstallation,
     LIVE_VALUES_FILE: liveValues,
     OCC_SERVICE_KEY_FILE: protectedFiles["service-key"],
@@ -234,6 +236,39 @@ fi
     },
   );
 
+  // Preserve ordered mapping documents, but refuse a scalar hidden before them.
+  const installationDocuments = `${installationDocument}\n${JSON.stringify({ name: "second" })}\n`;
+  try {
+    await writeFile(liveInstallation, installationDocuments, { mode: 0o600 });
+    await writeFile(protectedFiles.installation, installationDocuments, { mode: 0o600 });
+    await assert.rejects(
+      execute(upgradeScript, upgradeArguments(join(directory, "mapping-documents-evidence")), {
+        cwd: repository,
+        env: environment,
+      }),
+      (error) => {
+        assert.equal(error.code, 47);
+        return true;
+      },
+    );
+
+    await writeFile(protectedFiles.installation, `42\n${installationDocuments}`, { mode: 0o600 });
+    await assert.rejects(
+      execute(upgradeScript, upgradeArguments(join(directory, "scalar-document-evidence")), {
+        cwd: repository,
+        env: environment,
+      }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /the protected Installation YAML differs from the live Secret/);
+        return true;
+      },
+    );
+  } finally {
+    await writeFile(liveInstallation, installationDocument, { mode: 0o600 });
+    await writeFile(protectedFiles.installation, installationDocument, { mode: 0o600 });
+  }
+
   const readinessCounter = join(directory, "readiness-counter");
   const runtimeCountCounter = join(directory, "runtime-count-counter");
   const commandLog = join(directory, "commands.log");
@@ -271,6 +306,8 @@ case "$*" in
   *'.installationId == '*) exit 0 ;;
   *'.spec.template.spec as $pod'*) exit 0 ;;
   *'.deploymentInProgress'*|*'.activeRevisionId == null'*|*'.status != "ready"'*) exit 1 ;;
+  *'.configurationId | select'*) printf 'cfg_test\\n' ;;
+  *'configurationId: $configurationId'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","name":"Test","configurationId":"cfg_test","values":{}}' ;;
   *'namespaceId: $namespace.id'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","executionMode":"dedicated","baselineRevisionId":"rev_test"}' ;;
   *'gatewayNamespace: $gatewayNamespace'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","deploymentId":"rev_candidate","gatewayNamespace":"tenant-test","gatewayName":"gateway-test","gatewayRestarts":0,"gatewayUid":"gateway-test-uid","revisionPods":[{"role":"gateway","namespace":"tenant-test","name":"gateway-test","uid":"gateway-test-uid","restarts":0}]}' ;;
   *'{namespaceId: $namespaceId'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","executionMode":"dedicated","deploymentId":"rev_candidate"}' ;;
@@ -330,7 +367,7 @@ case "$*" in
   *'jsonpath='*) printf '%s\\n' "$OBSERVED_CONTROLLER_IMAGE" ;;
   *'get pods'*) printf '%s\\n' '{"items":[]}' ;;
   *' get pod/'*) printf '%s\\n' '{"status":{"phase":"Succeeded"}}' ;;
-  *' logs pod/'*) printf 'installation-startup-ready\\n' ;;
+  *' logs pod/'*) printf 'agent-drafts-accepted\\ninstallation-startup-ready\\n' ;;
 esac
 `,
     { interpreter: "bash" },
@@ -343,7 +380,8 @@ case "$*" in
   *'deployment-inventory'*) printf '%s\\n' '{"installationId":"ins_upgrade_test","namespaces":[{"id":"ns_test","status":"ready","agents":[{"id":"agt_test","status":"active","desiredRuntimeState":"running","executionMode":"dedicated","activeRevisionId":"rev_test","deploymentInProgress":false}]}]}' ;;
   *'agent deploy'*) printf '%s\\n' '{"id":"rev_candidate"}' ;;
   *'deployment-status'*) printf '%s\\n' '{"status":"succeeded"}' ;;
-  *'agent get'*) printf '%s\\n' '{"activeRevisionId":"rev_candidate"}' ;;
+  *'agent get'*) printf '%s\\n' '{"activeRevisionId":"rev_candidate","configurationId":"cfg_test"}' ;;
+  *'configuration get'*) printf '%s\\n' '{"id":"cfg_test","values":{}}' ;;
   *) printf '%s\\n' '{"id":"ins_upgrade_test","name":"Production"}' ;;
 esac
 `,
@@ -715,5 +753,62 @@ test("production image upgrades refuse non-ASCII inputs under a UTF-8 locale", a
       assert.match(error.stderr, message);
       return true;
     });
+  }
+});
+
+test("manual baseline comparison preserves mapping semantics and contains parser failures", async (t) => {
+  const directory = await temporaryDirectory(t, "occ-baseline-compare-");
+  const bin = join(directory, "bin");
+  await mkdir(bin);
+  const protectedFile = join(directory, "protected.yaml");
+  const observedFile = join(directory, "observed.yaml");
+  const compareScript = join(repository, "scripts/compare-upgrade-baseline");
+
+  // Feed JSON-compatible YAML to real jq and simulate a parser that fails after
+  // writing a valid document. The wrapper also checks its environment.
+  await writeCommand(
+    bin,
+    "yq",
+    `
+[[ "\${protected-} \${observed-}" != *synthetic-private* ]] || exit 48
+jq . "\${@: -1}" || exit $?
+if [[ "\${PARTIAL_FAILURE:-}" == yes ]]; then
+  echo 'synthetic-private parser excerpt' >&2
+  exit 47
+fi
+`,
+    { interpreter: "bash" },
+  );
+  for (const [left, right, status, partial] of [
+    ['{"value":"synthetic-private","n":1}', '{"n":1,"value":"synthetic-private"}', 0],
+    ['{"n":1}', '{"n":2}', 1],
+    ["{}", "{}", 0],
+    ['{"n":true}', '{"n":"true"}', 1],
+    ['{"n":[1,2]}', '{"n":[2,1]}', 1],
+    ["", "{}", 2],
+    ["{} {}", "", 2],
+    ["[]", "[]", 2],
+    ['{"value":"synthetic-private"', "{}", 2],
+    ["{}", '{"value":"synthetic-private"', 2],
+    ["{}", "{}", 2, "yes"],
+  ]) {
+    await writeFile(protectedFile, left);
+    await writeFile(observedFile, right);
+    const result = await execute(compareScript, [protectedFile, observedFile], {
+      cwd: repository,
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        protected: "",
+        observed: "",
+        SHELLOPTS: "allexport",
+        PARTIAL_FAILURE: partial ?? "",
+      },
+    }).then(
+      (result) => ({ ...result, code: 0 }),
+      (error) => error,
+    );
+    assert.equal(result.code, status);
+    assert.equal(result.stdout, status === 0 ? "Configurations match.\n" : "");
+    assert.doesNotMatch(result.stderr, /synthetic-private/);
   }
 });

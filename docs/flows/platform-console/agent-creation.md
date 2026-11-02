@@ -84,7 +84,9 @@ Compute supplies gateway authentication; Presets replace the starter unchanged.
 ### 3. Load repository options
 
 `agents/repositories.mts:createRepositoryFields` loads `GET /namespaces/:namespaceId/agents/repository-options`,
-then requests optional descriptions for visible refs. [Repository admission](../agent-repository-credentials.md) resolves the
+which authorizes Agent create. Create Agent holds this read until the permission answer allows
+Agent create, or the Installation read succeeds without an answer; after a known refusal it
+reads none and says so, without a retry. After the read it requests optional descriptions for visible refs. [Repository admission](../agent-repository-credentials.md) resolves the
 submitted `repositoryAccess`. Retained drafts keep selections through failed
 discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE`
 or `meta.notConfigured` (no `repository` settings) permits creation without bindings, and only without retained selections; other
@@ -139,8 +141,11 @@ Agent/Configuration for [workspace setup](../workspace-files.md).
 same-Namespace `env` bindings. Failure retains the Agent; **Retry credential access**
 rereads grants without duplication. Grants are Installation administration: a session
 known not to administer the Installation sends no IAM request and names the administrator
-step, and a member's refused grant offers no retry. After a refused Installation read, a
-failed permission read offers **Retry permission check**, which rereads only that answer. Failed Agent writes retain Configuration ID
+step, and a member's refused grant offers no retry. After a refused Installation read, the
+"Your access" status block above the form gives the permission answer: create allowed,
+refused, or not checked. A failed permission read adds **Retry permission check**, which
+rereads only that answer. A retry that refuses create shows the refusal a fresh load shows,
+without the form. Failed Agent writes retain Configuration ID
 and lock JSON/Harness for explicit reuse. Writes never retry automatically; drafts
 save no version and start no runtime.
 

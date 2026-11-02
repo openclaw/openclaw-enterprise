@@ -1,4 +1,4 @@
-import { describeDisabled, element } from "../dom.mjs";
+import { element, setUnavailable } from "../dom.mjs";
 import { admitGatewaySecurityDefaults } from "../gateway-security-defaults.mjs";
 
 type ConfigurationDocument = Readonly<Record<string, unknown>>;
@@ -11,9 +11,8 @@ type GatewaySafetySetting = {
   readonly help: (values: ConfigurationDocument) => string;
   // The locked-down value Strict mode sets.
   readonly strict: boolean;
-  // OpenClaw's `security.preset` value for an unset setting that deployment admission leaves
-  // unset (packages/occ/src/gateway-security-defaults.ts fills the others).
-  readonly preset: { readonly personal: boolean; readonly corporate: boolean };
+  // OpenClaw's default when deployment admission leaves the setting unset.
+  readonly gatewayDefault: boolean;
 };
 
 /** The Gateway collaboration and safety settings the Configuration tab offers as toggles. */
@@ -25,7 +24,7 @@ export const GATEWAY_SAFETY_SETTINGS: readonly GatewaySafetySetting[] = [
     help: (values) =>
       `On: while a turn runs, another Gateway participant in the conversation can add guidance to it. The turn keeps the identity and permissions of the participant who started it, even when the participant steering has fewer. Participants are channel users or local operators with distinct Gateway identities. OCE native admin and workspace access share one Gateway identity, so this setting does not separate OCE users. ${steeringOffHelp(values)}`,
     strict: false,
-    preset: { personal: true, corporate: false },
+    gatewayDefault: true,
   },
   {
     id: "apply-patch-workspace",
@@ -34,7 +33,7 @@ export const GATEWAY_SAFETY_SETTINGS: readonly GatewaySafetySetting[] = [
     help: () =>
       "On: the apply_patch tool can add and change files only in the Agent’s workspace. Off: it can also change files outside the workspace that the Agent’s runtime can write.",
     strict: true,
-    preset: { personal: false, corporate: true },
+    gatewayDefault: false,
   },
 ];
 
@@ -47,20 +46,9 @@ function isObject(value: unknown): value is ConfigurationDocument {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function corporatePreset(values: ConfigurationDocument) {
-  return isObject(values.security) && values.security.preset === "corporate";
-}
-
-/**
- * What the Gateway does with another participant's message while steering is off:
- * `messages.queue.collaborativeSteeringFallback`, else OpenClaw's preset default ("reject" for
- * `corporate`, "queue" otherwise). The Gateway refuses any other value at startup.
- */
 function steeringOffHelp(values: ConfigurationDocument) {
   const queue = isObject(values.messages) ? values.messages.queue : undefined;
-  const fallback = isObject(queue) ? queue.collaborativeSteeringFallback : undefined;
-  const reject = fallback === undefined ? corporatePreset(values) : fallback === "reject";
-  return reject
+  return isObject(queue) && queue.collaborativeSteeringFallback === "reject"
     ? "Off: the Gateway refuses their message and asks them to resend it with /followup, which runs it as a separate turn after it."
     : "Off: their message runs as a separate turn after it.";
 }
@@ -83,7 +71,7 @@ function configured(values: unknown, path: readonly string[]) {
 
 /**
  * The value the Gateway runs with for `setting`: the Configuration's own, else the value
- * deployment admission fills, else OpenClaw's preset default.
+ * deployment admission fills, else OpenClaw's default.
  */
 export function gatewaySafetyValue(
   values: ConfigurationDocument,
@@ -94,12 +82,9 @@ export function gatewaySafetyValue(
     return own.kind === "value" ? { ...own, explicit: true } : own;
   }
   const admitted = configured(admitGatewaySecurityDefaults(values), setting.path);
-  if (admitted.kind === "value") {
-    return { kind: "value", value: admitted.value, explicit: false };
-  }
   return {
     kind: "value",
-    value: corporatePreset(values) ? setting.preset.corporate : setting.preset.personal,
+    value: admitted.kind === "value" ? admitted.value : setting.gatewayDefault,
     explicit: false,
   };
 }
@@ -228,7 +213,7 @@ export function gatewaySafetyControls({
       element("label", { className: "gateway-safety-toggle" }, input, label),
       hint,
     );
-    return { input, source, help, node };
+    return { input, source, help, hint, node };
   };
   const stage = (next: ConfigurationDocument) => {
     if (current !== undefined && next !== current) {
@@ -263,7 +248,7 @@ export function gatewaySafetyControls({
     reason.hidden = !unavailable;
     reason.textContent = unavailable ?? "";
     let anyBlocked = false;
-    for (const { setting, input, source, help } of rows) {
+    for (const { setting, input, source, help, hint } of rows) {
       const value = values === undefined ? undefined : gatewaySafetyValue(values, setting);
       const invalid = value?.kind === "invalid";
       // A non-object on the path: only the JSON editor can correct it.
@@ -272,18 +257,28 @@ export function gatewaySafetyControls({
       anyBlocked ||= blocked;
       input.checked = value?.kind === "value" && value.value;
       input.indeterminate = invalid;
-      input.disabled = Boolean(unavailable) || values === undefined || blocked;
       source.textContent = value === undefined ? "" : `${sourceText(value)} `;
       // Unreadable JSON keeps the last help shown.
       if (values !== undefined) {
         help.textContent = setting.help(values);
       }
-      describeDisabled(input, reason);
+      // An unavailable toggle stays in the Tab order, described by why (finding 2878): the
+      // section's reason, or its own help when the JSON holds a value only the editor can fix.
+      setUnavailable(
+        input,
+        Boolean(unavailable) || values === undefined || blocked,
+        unavailable || values === undefined ? reason : hint,
+      );
     }
     strict.input.checked = values !== undefined && gatewaySafetyStrict(values);
-    strict.input.disabled = Boolean(unavailable) || values === undefined || anyBlocked;
     strict.source.textContent = "";
-    describeDisabled(strict.input, reason);
+    // A blocked setting below names its own reason; Strict mode then has none to read and is
+    // natively disabled.
+    setUnavailable(
+      strict.input,
+      Boolean(unavailable) || values === undefined || anyBlocked,
+      unavailable || values === undefined ? reason : null,
+    );
   }
 
   return { node, update };

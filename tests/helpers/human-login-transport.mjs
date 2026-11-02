@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
@@ -16,6 +17,28 @@ export const loginOrigin = "https://console.example.test";
 export const loginSecret = "test-only-authentication-secret-with-at-least-32-characters";
 export const attemptBinding = "b".repeat(43);
 export const callbackState = "s".repeat(43);
+
+/**
+ * The provider instance ID that sign-in records for a human-login provider: `<kind>:` and
+ * the hex SHA-256 of the client ID, or for OIDC of `<issuer>\0<clientId>`, so a new issuer
+ * on the same host is a new instance. Written out here, not imported from product code, so
+ * tests check the derivation rather than reuse it.
+ */
+export function providerInstanceId(kind, { clientId, issuer }) {
+  assert.ok(["github", "google", "oidc"].includes(kind), `unknown provider kind ${kind}`);
+  assert.equal(issuer === undefined, kind !== "oidc", "only OIDC instances include the issuer");
+  const input = kind === "oidc" ? `${issuer}\0${clientId}` : clientId;
+  return `${kind}:${createHash("sha256").update(input).digest("hex")}`;
+}
+
+/**
+ * The provider ID that a sign-in attempt records: the provider instance ID, `:` and the hex
+ * SHA-256 of the client secret, so rotating the secret voids pending attempts. Written out
+ * here, not imported from product code.
+ */
+export function providerAttemptId(instanceId, clientSecret) {
+  return `${instanceId}:${createHash("sha256").update(clientSecret).digest("hex")}`;
+}
 
 // Runs the actual Better Auth handler and external-provider plugin with a boundary
 // State fixture. Callers make no PostgreSQL or session-commit claims through it.

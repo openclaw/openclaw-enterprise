@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-10-24"
-last_updated_session: "authoring-run/21b9b442-e8b7-45d3-a482-742f1742b077"
+updated: "2026-10-30"
+last_updated_session: "authoring-run/b8400fae-dc1a-49fd-be49-5d07e9dbb899"
 ---
 
 # Production Startup Flow
@@ -197,6 +197,20 @@ replica has no peer or `preStop`; the 30-second grace cuts off unfinished reques
 Logs show `shutdown.started` (`signal`), then `shutdown.completed` (`durationMs`),
 or `shutdown.failed` (exit 1). Only `shutdown.started` means an interrupted drain.
 
+The PostgreSQL API compositions close the exchange binding, protected Driver,
+prepared GitHub owner, and database in order, continuing after a close fails.
+Shutdown reports the first failure, wrapping a falsey thrown value as an error
+with the original value as its cause. Failed startup preserves the startup error.
+The exchange binding is independent of the protected Driver. See
+`apps/controller/src/composition/production.ts:composeProduction` and
+`apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`.
+
+The worker closes the repository Git sender binding, prepared Git owner, receipt
+listener, metrics, and prepared GitHub owner in order, continuing after a close
+fails, then stops its loop and database. A listener left open would keep the Pod
+running until its grace ends. Any failure logs `worker.error` `SHUTDOWN_FAILED`
+(exit 1). See `apps/controller/src/worker/shutdown.ts:closeWorkerComposition`.
+
 Nonempty `controlPlane.nodeSelector` places API, worker, migration and bootstrap
 on reviewed control-plane nodes; empty defaults omit it.
 `deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` also applies it
@@ -241,11 +255,11 @@ preflight with the same advisory warning, emits `worker.started`, and polls
 durable Namespace/AgentRevision work. Readiness requires fresh queue-health
 observations; neither process mounts the bootstrap PVC.
 
-`apps/controller/src/composition/repository-credentials/platform.ts:composeRepositoryAccess`
+`apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 
 With `repository` selected, both processes load the same registry and construct
 `GitHubRepositoryPolicy`; the GitHub Backend's `drivers.repo` member must equal
-`repository.id`. Native delivery adds the public CA and a lazy Unix client for
+`repository.id`. Only native delivery loads the Unix client and CA reader used by
 `GitHubNativeRepositorySender`. Startup refuses the retired Installation
 `drivers.repo`. API startup performs no control operation and loads no App key.
 With prepared repository Git, the worker reads the App key at startup and exits
@@ -333,6 +347,12 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 14:36: Attempt every worker resource close in order after a close fails. (authoring-run/b8400fae-dc1a-49fd-be49-5d07e9dbb899 - 2b3b206b63525e31a6170e239991394b7909fc15)
+
+- 2026-10-30 05:46: Attempt every PostgreSQL API resource close in order and preserve the original error. (authoring-run/3277ff6a-7559-43e6-842d-93513c8dd124 - 60b6beb56d038c012d318cc6249003707c7ec9d5)
+
+- 2026-10-30 03:58: Load the native repository transport only for explicit native delivery. (authoring-run/43b61103-4082-4fc2-b9a0-511a18ebc761 - 87ed6c37e543e5501eae6285450d01d03d8abe7d)
 
 - 2026-10-28: Give the worker a startup probe and 5-second exec probe timeouts.
 

@@ -60,6 +60,57 @@ command; use this page as its migration inventory.
       and stop all other database writers through recovery. For runtime releases,
       also stop Agent deployments and draft edits and resolve existing deployment work.
 
+### Check ReplicaSet capacity
+
+Plan capacity before Helm or stopping workloads. For planning or a stalled
+rollout, use Bash with the release's kubeconfig, context and namespace. Set the
+affected Deployment name.
+
+```bash
+kube=(kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>'
+  --namespace '<release-namespace>')
+deployment=openclaw-enterprise-api # repeat for openclaw-enterprise-worker
+"${kube[@]}" get resourcequota -o yaml
+"${kube[@]}" get replicasets
+"${kube[@]}" describe deployment "$deployment"
+"${kube[@]}" get events --field-selector "involvedObject.kind=Deployment,involvedObject.name=$deployment" \
+  --sort-by=.metadata.creationTimestamp
+```
+
+These commands are read-only. A condition or event naming the affected
+Deployment and reporting `exceeded quota` for `count/replicasets.apps` during
+this rollout identifies the cause. A full quota alone does not. Reason names
+vary, and events expire.
+
+For `count/replicasets.apps`, inspect each quota's `spec.hard`, `status.hard`
+and `status.used`. A limit is absent only after a successful full list shows
+none configured for this resource. Capacity is unknown if reads fail or an
+applicable status is missing or has not caught up with the configured limit.
+Ask the namespace owner to resolve uncertainty without adding privileges.
+Compare each limit independently against namespace usage plus needed slots.
+Room under these limits does not guarantee other admission checks will pass.
+
+The unfiltered ReplicaSet list includes current sets, retained history and other
+releases, even with zero replicas. Before Helm, compare each **candidate** Pod
+template rendered with the target values against the Deployment's owned sets.
+Allow for target admission defaults and mutations. Reserve a slot for each
+concurrent rollout unless its resulting template is known to match an owned
+set. If admission is uncertain, reserve the slot. The live Deployment still
+describes the old release and cannot establish a match for the candidate.
+
+After Helm submits the candidate, inspect the live `spec.template` and
+`revisionHistoryLimit` with `"${kube[@]}" get deployment "$deployment" -o yaml`.
+Compare the template with `"${kube[@]}" get replicaset '<set-name>' -o yaml`.
+Check owner UIDs and ignore the generated `pod-template-hash` label. Scaling or
+a generation change alone does not require a new set. Preserve history; do not
+count on cleanup before creation.
+
+If room is insufficient, ask the namespace owner for object capacity. After
+recovery, confirm rollout completion, Ready Pods and expected running `imageID`
+values when checking manually. Do not replay Helm or delete history or data.
+Follow [upgrade recovery](production-upgrade-recovery.md) and preserve any
+existing helper or rollback owner's control.
+
 ## Record the starting state
 
 Create a private evidence directory and record these values before mutation.
@@ -80,6 +131,19 @@ Create a private evidence directory and record these values before mutation.
 - [ ] PVC names and UIDs, PV names, representative workspace file hashes,
       session counts, and gateway state. Back up volumes when recovery could
       require restoring Agent data.
+- [ ] If recovery needs both PostgreSQL and Agent storage, capture the database
+      and affected volumes at one consistent point. Pause all relevant writers
+      throughout capture, or use storage tooling that guarantees consistency
+      across those stores. A PostgreSQL recovery window spanning two disk
+      snapshots does not prove their contents agree.
+      Before booking downtime, restore the database, Gateway state, and
+      workspaces together on an isolated copy. Before starting restored
+      services, block production traffic and outbound access to production
+      repository, channel, and model providers. A restored worker can otherwise
+      revoke credentials still in use or send live deliveries. Use isolated test
+      endpoints and credentials for checks that need a provider. Through the
+      restored application, verify a known Agent revision, reopen an existing
+      session, and check a known workspace file. Record the recovery time.
 - [ ] Authentication origin, cookie domain, auth-secret identity, TLS material,
       bootstrap key storage, service-principal and service-key identities,
       repository registry metadata, broker sessions, and external provider or
@@ -159,7 +223,10 @@ and database migrations to retained volumes and local profile state.
 - [ ] Required Slack or other channel delivery, repository clone or write,
       plugin tool policy, workspace access, and native admin UI each pass a
       representative live check. Where plugin approval is required, verify an
-      approval and a denial through the intended reviewer.
+      approval and a denial through the intended reviewer. For installed integrations,
+      check negotiated capabilities through the authenticated connection before
+      the downstream smoke. For example, gateway capability negotiation does not
+      prove an actual repository operation.
 - [ ] Where CredentialSources are enabled, confirm source status and Agent
       bindings, then verify a real model response through the selected Gateway.
 - [ ] Evidence contains the before/after inventory, rendered configuration,
@@ -178,6 +245,9 @@ considering rollback. Do not run an older controller against state it cannot
 read. After a partial runtime failure, keep the healthy control plane and recover
 the affected Agents individually. Never delete persistent resources to make the
 upgrade appear clean.
+
+If the candidate accepted writes, preserve them before restoring older data and
+reconcile them before reopening traffic, or repair the candidate in place.
 
 ## Related guides
 

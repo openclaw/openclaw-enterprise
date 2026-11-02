@@ -23,6 +23,7 @@ import {
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import {
+  LIVE_BUTTON,
   configurationPostRequests,
   createModelCredentialSecret,
   createRepositoryLaunchFixture,
@@ -34,8 +35,10 @@ import {
   createAgentThroughForm,
   routeProvisioningJob,
   provisioningJob,
+  waitForCreateFormReads,
 } from "./console-agents-test-support.mjs";
 import {
+  AGENT_CREATE_RESTRICTED,
   AGENT_NAME_CONFLICT,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
   REPOSITORY_EDITS_PENDING,
@@ -230,6 +233,39 @@ test("a draft kept after a refusal between the Secret and the Configuration keep
   );
 });
 
+test("an administrator's kept draft that a Restriction now refuses says why Create Agent waits", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Restricted later", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+  const name = page.getByLabel("Agent name", { exact: true });
+  await name.fill("Kept administrator draft");
+  await waitForCreateFormReads(page);
+  await sidebarLink(page, "Agents").click();
+  await settled(page);
+
+  // A deny Restriction now refuses Agent create, administration included. The kept draft comes
+  // back with that answer and a readable Installation: no block above the form explains the
+  // disabled Create Agent, so the repository section names the Restriction instead of waiting
+  // for a check that already answered (finding 2909).
+  restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
+  await page.goBack();
+  await name.waitFor();
+  assert.equal(await name.inputValue(), "Kept administrator draft");
+  await page
+    .getByText(`Repository choices are not shown. ${AGENT_CREATE_RESTRICTED}`, { exact: true })
+    .waitFor();
+  assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
+  // The Installation read itself succeeded: nothing offers to retry it.
+  assert.equal(await page.getByRole("button", { name: "Retry capability check" }).count(), 0);
+  assert.equal(
+    await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+    true,
+  );
+});
+
 test("a failed Namespace read keeps drafts; a read that no longer lists their Namespace drops them", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -243,7 +279,7 @@ test("a failed Namespace read keeps drafts; a read that no longer lists their Na
   const failed = failNextNamespacesRead(page);
   await sidebarLink(page, "Namespaces").click();
   await failed;
-  await heading(page, "Namespace access unavailable").waitFor();
+  await heading(page, "Could not reach OpenClaw Enterprise").waitFor();
   // Hiding private content does not need dropping the in-memory draft (finding 1935).
   assert.equal(await asksBeforeUnload(page), true);
   await page.getByRole("button", { name: "Retry", exact: true }).click();
@@ -305,7 +341,7 @@ test("a failed Namespace recheck keeps the Agent page's Configuration edit", asy
   const failed = failNextNamespacesRead(page);
   await refocus(page);
   await failed;
-  await heading(page, "Namespace access unavailable").waitFor();
+  await heading(page, "Could not reach OpenClaw Enterprise").waitFor();
   assert.equal(await asksBeforeUnload(page), true);
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await waitForInputValue(editor, '{"edited": true}');
@@ -335,7 +371,7 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
   await openTab("Channels", "channels");
   assert.equal(await disableSlack.getAttribute("data-retained"), "true");
   const deploy = page.getByRole("button", { name: "Deploy new version" });
-  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
   const held = await holdRequests(
     t,
     page,
@@ -459,7 +495,7 @@ for (const pending of [
       await page.getByRole("tab", { name: tabLabel, exact: true }).click();
       await page.waitForURL((url) => url.searchParams.get("tab") === pending.tab);
     }
-    await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+    await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
     const held = await holdRequests(t, page, ...pending.hold({ namespace, agent }));
     await pending.start(page, { replacement });
     await held.requested;
@@ -558,7 +594,7 @@ test("a plugin save that settles after Delete lets the page go", async (t) => {
   const { agent } = await createSlackAgent(fixture, namespace, "Plugin Delete Agent");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
-  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
   // The controller applies the save; its answer waits until after Delete.
   const held = await holdRequests(t, page, `**/namespaces/${namespace.id}/agents/${agent.id}`, {
     method: "PATCH",

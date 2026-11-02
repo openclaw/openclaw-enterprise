@@ -502,10 +502,8 @@ test(
       sha256(await readFile(environments[winnerIndex].OCC_BOOTSTRAP_SERVICE_KEY_FILE, "utf8")),
       winnerOutputDigest,
     );
-    const installation = await reloaded.inject({
-      method: "GET",
-      url: "/installation",
-      headers: { "x-api-key": winnerOutput.data.key, host: "127.0.0.1" },
+    const installation = await injectJson(reloaded, "GET", "/installation", {
+      key: winnerOutput.data.key,
     });
     assert.equal(installation.statusCode, 200, installation.body);
     assert.equal(installation.json().data.id, winnerOutput.meta.installationId);
@@ -586,10 +584,8 @@ test(
       );
       assert.match(loserOutput.meta.installationId, /^ins_/);
       assert.match(loserOutput.data.servicePrincipalId, /^spn_/);
-      const rejectedInstallation = await reloaded.inject({
-        method: "GET",
-        url: "/installation",
-        headers: { "x-api-key": loserOutput.data.key, host: "127.0.0.1" },
+      const rejectedInstallation = await injectJson(reloaded, "GET", "/installation", {
+        key: loserOutput.data.key,
       });
       assert.ok([401, 403].includes(rejectedInstallation.statusCode), rejectedInstallation.body);
     }

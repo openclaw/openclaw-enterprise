@@ -6,6 +6,7 @@ import type { BrowserContextOptions, Locator, Page } from "playwright";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import {
+  accessibleDescription,
   fileBrowser,
   holdRequests,
   login,
@@ -355,6 +356,107 @@ test("changing between desktop and phone layouts closes the account menu left be
   );
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.locator("#account-menu-top").isVisible(), false);
+});
+
+const isFocused = (locator: Locator) =>
+  locator.evaluate((node) => node === globalThis.document.activeElement);
+
+// Refresh while offline rereads the session, and that read never reaches the API, which says
+// nothing about the session (finding 1896). The tab keeps its signed-in shell with the account
+// and navigation, names the connection on the page with focus on Retry, and shows no page or
+// Namespace data read before. A second Retry offline keeps that; Retry once online loads the page.
+for (const context of [desktop, phone]) {
+  test(`an offline Refresh keeps the signed-in shell and names the connection at ${context.viewport.width} px`, async (t) => {
+    const { fixture, page } = await openAgents(t, context);
+    const { email, name } = fixture.credentials;
+    const account = page.getByRole("button", {
+      name: context === desktop ? `${name} ${email}` : `Account: ${name}`,
+      exact: true,
+    });
+    const navigation =
+      context === desktop
+        ? page.getByRole("navigation", { name: "Main navigation", exact: true })
+        : page.getByRole("button", { name: "Open navigation", exact: true });
+
+    await page.context().setOffline(true);
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    const unreachable = page.locator(".content .state-panel");
+    await unreachable
+      .getByRole("heading", { name: "Could not reach OpenClaw Enterprise", exact: true })
+      .waitFor();
+    const retry = unreachable.getByRole("button", { name: "Retry", exact: true });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      assert.equal(await isFocused(retry), true, "focus is on Retry, not the page body");
+      assert.equal(await accessibleDescription(retry), "Check your connection, then try again.");
+      assert.equal(await account.isVisible(), true, "the account stays");
+      assert.equal(await navigation.isVisible(), true, "the navigation stays");
+      assert.doesNotMatch(await page.locator("body").innerText(), /Shell|Session unavailable/);
+      if (attempt === 0) {
+        await retry.click();
+        await page.locator(settledView).locator(".state-panel h2").waitFor();
+      }
+    }
+
+    await page.context().setOffline(false);
+    await retry.click();
+    await page.locator(settledView).getByText("Shell Agent", { exact: true }).waitFor();
+  });
+}
+
+// An answer from the API still signs the tab out after an offline Retry: here the controller
+// refuses this tab's pinned session key (401) because another tab signed in.
+test("Retry after an offline Refresh still signs out on a 401", async (t) => {
+  const { fixture, page } = await openAgents(t, desktop);
+  await page.context().setOffline(true);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  const retry = page.locator(".content .state-panel").getByRole("button", { name: "Retry" });
+  await retry.waitFor();
+  await page.context().setOffline(false);
+  const response = await page.context().request.post(`${fixture.origin}/api/auth/sign-in/email`, {
+    headers: { origin: fixture.origin },
+    data: { email: fixture.credentials.email, password: fixture.credentials.password },
+  });
+  assert.equal(response.status(), 200);
+
+  const refused = page.waitForResponse(
+    (candidate) => new URL(candidate.url()).pathname === "/api/auth/session",
+  );
+  await retry.click();
+  assert.equal((await refused).status(), 401);
+  await page.getByText("Your session has expired.", { exact: true }).waitFor();
+  await page.getByLabel("Email", { exact: true }).waitFor();
+  assert.equal(await page.locator(".shell").count(), 0);
+});
+
+// A session read the API does not answer within the console's 15 s request deadline says
+// nothing about the session either: the tab keeps its shell and names the connection.
+test("a Refresh whose session check times out keeps the signed-in shell", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Shell", { ready: true });
+  await fixture.createAgent(namespace.id, "Shell Agent");
+  const { page } = await newPage(t, fixture, { browser, context: desktop });
+  await page.clock.install();
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.locator(settledView).getByText("Shell Agent", { exact: true }).waitFor();
+  const { email, name } = fixture.credentials;
+
+  const held = await holdRequests(t, page, "**/api/auth/session", { once: true });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await held.requested;
+  await page.clock.runFor(15_000);
+  const unreachable = page.locator(".content .state-panel");
+  await unreachable
+    .getByRole("heading", { name: "Could not reach OpenClaw Enterprise", exact: true })
+    .waitFor();
+  const retry = unreachable.getByRole("button", { name: "Retry", exact: true });
+  assert.equal(await isFocused(retry), true, "focus is on Retry, not the page body");
+  assert.equal(
+    await page.getByRole("button", { name: `${name} ${email}`, exact: true }).isVisible(),
+    true,
+    "the account stays",
+  );
+  assert.doesNotMatch(await page.locator("body").innerText(), /Shell|Session unavailable/);
 });
 
 // Sign-in (UX spec 3.12): "Sign in" with the email hint as its one muted line, Email and

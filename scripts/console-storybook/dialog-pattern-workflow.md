@@ -64,3 +64,12 @@ Open **Components / Dialogs / Create Secret**, then repeat in **Create Secret
 Capture the initial Name, the edited form and the selected Secret on desktop and
 phone, plus a short recording of editing and creation. Use synthetic values only.
 These fixtures do not verify backend persistence or delivery to Slack.
+
+## Return after deferred plugin prefetch
+
+Open **Pages / Agent detail / Return before plugin prefetch starts**. The initial
+actions leave Plugins before its catalog read starts. Wait on Configuration,
+return to Plugins, and open Configure plugins. The catalog must load instead of
+staying on Loading plugins. Calendar's saved selection and policy stay unchanged.
+Close and reopen the picker, then Reset story and repeat. This scenario simulates
+catalog responses; it does not establish plugin installation or runtime access.

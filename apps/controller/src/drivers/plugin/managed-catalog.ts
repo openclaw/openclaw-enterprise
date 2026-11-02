@@ -12,7 +12,7 @@ import {
   googleDiscoveryRequests,
   googleRequestScope,
   googleRelease,
-} from "./google-operations.ts";
+} from "./google-workspace/operations.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 

@@ -202,7 +202,19 @@ const permissionScopeQualifiers = {
   provisioning_work: " (once created)",
   gateway_managed_mode_disabled: " (when `gatewayManagedMode` is `false`)",
   gateway_managed_mode_changed: " (when the request changes `gatewayManagedMode`)",
+  saved_sandbox_policy_additions: " (when saved network policy additions exist)",
 };
+
+function renderedExamples(content, contentType) {
+  return Object.values(content.examples ?? {}).map(({ summary, value }) =>
+    [
+      summary ?? "Example",
+      contentType === "text/plain" ? "```text" : "```json",
+      contentType === "text/plain" ? value : JSON.stringify(value, null, 2),
+      "```",
+    ].join("\n"),
+  );
+}
 
 function operationReference(path, method, operation, document, { headingLevel = 2 } = {}) {
   const childHeading = "#".repeat(Math.min(headingLevel + 1, 6));
@@ -231,8 +243,8 @@ function operationReference(path, method, operation, document, { headingLevel = 
     sections.push(
       `${childHeading} Parameters`,
       [
-        "| Name | In | Type | Required | Constraints |",
-        "| --- | --- | --- | --- | --- |",
+        "| Name | In | Type | Required | Constraints | Example |",
+        "| --- | --- | --- | --- | --- | --- |",
         ...operation.parameters.map((parameter) => {
           const columns = [
             `\`${parameter.name}\``,
@@ -240,6 +252,7 @@ function operationReference(path, method, operation, document, { headingLevel = 
             `\`${schemaType(parameter.schema, document)}\``,
             parameter.required ? "Yes" : "No",
             schemaConstraints(parameter.schema),
+            JSON.stringify(parameter.examples?.example?.value)?.replaceAll("|", "\\|") ?? "—",
           ];
           return `| ${columns.join(" | ")} |`;
         }),
@@ -254,7 +267,11 @@ function operationReference(path, method, operation, document, { headingLevel = 
     );
 
     for (const [contentType, content] of Object.entries(operation.requestBody.content ?? {})) {
-      sections.push(`**Content type:** \`${contentType}\``, schemaTable(content.schema, document));
+      sections.push(
+        `**Content type:** \`${contentType}\``,
+        schemaTable(content.schema, document),
+        ...renderedExamples(content, contentType),
+      );
     }
   }
 
@@ -283,6 +300,7 @@ function operationReference(path, method, operation, document, { headingLevel = 
       sections.push(
         `**\`${status}\` response body:** \`${contentType}\``,
         schemaTable(content.schema, document),
+        ...renderedExamples(content, contentType),
       );
     }
   }
@@ -316,6 +334,11 @@ function errorSchema(document, entries) {
 
 function generatedComment() {
   return "<!-- Generated from packages/contracts/openapi/occ-api.openapi.json. Do not edit directly. -->";
+}
+
+function tableOfContents(titles) {
+  const links = titles.map((title) => `- [${title}](#${tagAnchor(title)})`);
+  return `## Table of contents\n\n${links.join("\n")}`;
 }
 
 function introduction(document) {
@@ -378,11 +401,7 @@ function referenceGroups(entries) {
 }
 
 function referencePage(document, groups, entries) {
-  const sections = [
-    `# ${document.info.title} reference`,
-    generatedComment(),
-    ...introduction(document),
-  ];
+  const sections = [];
   const schema = errorSchema(document, entries);
 
   if (schema) {
@@ -418,6 +437,7 @@ function referencePage(document, groups, entries) {
   }
 
   sections.push(
+    "[Browse interactive examples in the API explorer](api-explorer.md).",
     "## Resources",
     [
       "| Resource | Operations |",
@@ -460,7 +480,17 @@ function referencePage(document, groups, entries) {
     );
   }
 
-  return `${sections.join("\n\n")}\n`;
+  const titles = sections
+    .filter((section) => section.startsWith("## "))
+    .map((heading) => heading.slice(3));
+  const page = [
+    `# ${document.info.title} reference`,
+    generatedComment(),
+    ...introduction(document),
+    tableOfContents(titles),
+    ...sections,
+  ];
+  return `${page.join("\n\n")}\n`;
 }
 
 function cheatSheetEntityOrder(title) {
@@ -534,10 +564,15 @@ function cheatSheetPage(entries) {
     groups.get(title).push({ ...entry, summary });
   }
 
-  const sections = ["# API cheat sheet", generatedComment(), "## Operations"];
   const entities = [...groups].sort(
     ([left], [right]) => cheatSheetEntityOrder(left) - cheatSheetEntityOrder(right),
   );
+  const sections = [
+    "# API cheat sheet",
+    generatedComment(),
+    tableOfContents(entities.map(([title]) => title)),
+    "## Operations",
+  ];
   for (const [title, operations] of entities) {
     operations.sort(
       (left, right) =>

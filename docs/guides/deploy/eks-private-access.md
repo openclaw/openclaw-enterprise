@@ -80,6 +80,39 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   --namespace openclaw-system get events --sort-by=.lastTimestamp
 ```
 
+Choose a Pod for your intended release from `get jobs,pods` above, replace
+`<pod-name>` once, and use the chosen kubeconfig, context, and namespace.
+JSON Lines show that Pod's returned namespace/name/UID and declared containers
+only; release ownership, other replicas, traffic, and data remain unverified.
+Check the exit status before using the output. A nonzero status means the snapshot failed.
+
+```bash
+(
+set -o pipefail
+pod='<pod-name>'; namespace='openclaw-system'
+kubectl --kubeconfig "${KUBECONFIG_FILE:?Set a kubeconfig}" \
+  --context "${CONTEXT:?Set a context}" --namespace "${namespace:?Set a namespace}" \
+  --request-timeout=15s get "pod/${pod:?Set a Pod name}" -o json 2>/dev/null |
+jq -ce --arg pod "$pod" --arg ns "$namespace" '
+  def rows($kind; $declared; $statuses): $declared[]? as $c |
+    ([$statuses[]? | select(.name == $c.name)][0] // {}) as $s |
+    {kind: $kind, name: $c.name, restartPolicy: $c.restartPolicy,
+     ready: $s.ready, restartCount: $s.restartCount, waitingReason: $s.state.waiting.reason,
+     currentExit: $s.state.terminated.exitCode, previousReason: $s.lastState.terminated.reason,
+     previousExit: $s.lastState.terminated.exitCode};
+  select(.metadata.name == $pod and .metadata.namespace == $ns) |
+  {namespace: .metadata.namespace, name: .metadata.name, uid: .metadata.uid},
+  rows("ordinary"; .spec.containers; .status.containerStatuses),
+  rows("init"; .spec.initContainers; .status.initContainerStatuses)' 2>/dev/null
+)
+```
+
+`null` means absent or unknown; `false` and numeric `0` are actual values,
+including `previousExit: 0`.
+An `init` with `restartPolicy: "Always"` is a restartable sidecar whose false
+readiness is not setup completion; other init containers with `currentExit: 0`
+have completed setup even if not ready.
+
 Compare the release revision and status, hook Jobs and their logs, and observed
 workload images with the intended operation. Check the Installation Secret's
 metadata and the intended configuration through an approved protected path;

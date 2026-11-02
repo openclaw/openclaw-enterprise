@@ -18,6 +18,7 @@ import {
 import { PresetFileError } from "./composition/installation-presets.ts";
 import { createOccLogger, createWorkerLogEmitter, emitOccLogEvent } from "./logging.ts";
 import { createControllerWorker, workerDatabasePoolOptions } from "./worker.ts";
+import { closeWorkerComposition } from "./worker/shutdown.ts";
 import { workerEnvironmentSettings } from "./worker/timer-settings.ts";
 import { PostgresMetricsSnapshot } from "@openclaw-enterprise/occ";
 import { createOccMetrics } from "./metrics/index.ts";
@@ -198,16 +199,16 @@ try {
       pool,
       registry: drivers.repositoryRegistry,
       ...repositoryGitAuthority(drivers),
-      report: (code, context) =>
-        emitOccLogEvent(logger, { event: "worker.error", code, ...context }),
+      report: (code, context, severity = "error") =>
+        emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
     });
     repositoryGitTransport = await bindRepositoryGitTransport(
       drivers,
-      preparedRepositoryGit,
+      preparedRepositoryGit.protectedGit,
       pool,
       (event) => emitOccLogEvent(logger, event),
     );
-  } else if (drivers?.repositoryGitDriver || drivers?.openShellGit) {
+  } else if (drivers?.repositoryGitDriver || drivers?.repositoryTransport) {
     throw new Error("The repository Git transport requires its selected prepared owner.");
   }
   let metrics;
@@ -233,6 +234,10 @@ try {
     ...options,
     emit: createWorkerLogEmitter(logger),
     ...(drivers === undefined ? { computeDriver } : { drivers }),
+    // Native prepared Git: a deployment waits for its version's first GitHub token (finding 2415).
+    ...(preparedRepositoryGit?.revisionMaterial === undefined
+      ? {}
+      : { repositoryGitMaterial: preparedRepositoryGit.revisionMaterial }),
     ...(readinessPath === undefined
       ? {}
       : {
@@ -249,7 +254,9 @@ try {
   preparedGitHub = drivers?.preparedGitHub;
   await preparedGitHub?.connect(pool);
   await worker.start();
-  preparedGitHub?.startWorker((code) => emitOccLogEvent(logger, { event: "worker.error", code }));
+  preparedGitHub?.startWorker((code, context, severity = "error") =>
+    emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
+  );
 
   let closing = false;
   async function shutdown() {
@@ -258,24 +265,15 @@ try {
     }
     closing = true;
     try {
-      if (readinessPath !== undefined) {
-        await unlink(readinessPath).catch(() => {});
-      }
-      try {
-        try {
-          try {
-            await repositoryGitTransport?.close();
-          } finally {
-            await preparedRepositoryGit?.close();
-          }
-          await receiptServer?.close();
-        } finally {
-          await closeMetrics();
-        }
-      } finally {
-        await preparedGitHub?.close();
-        await worker.stop();
-      }
+      await closeWorkerComposition({
+        readinessPath,
+        repositoryGitTransport,
+        preparedRepositoryGit,
+        receiptServer,
+        closeMetrics,
+        preparedGitHub,
+        worker,
+      });
       process.exitCode = 0;
     } catch {
       emitOccLogEvent(logger, { event: "worker.error", code: "SHUTDOWN_FAILED" });
