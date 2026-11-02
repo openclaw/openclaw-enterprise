@@ -203,7 +203,7 @@ RUN echo '47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93  /tmp
 
 # Execute admitted MCP tools on the worker that owns their MCP session.
 COPY deploy/runtime/openclaw-same-node-mcp.patch /tmp/openclaw-same-node-mcp.patch
-RUN echo '5a99c4e81e836ad7f50d9b9a132758efc65bef20775ab940ba55c0fbc0ac1fc6  /tmp/openclaw-same-node-mcp.patch' | sha256sum --check --strict \
+RUN echo '656340049eb6515388f54e5b3529beec7cb27ba9d1c2dc292bdb811ab307216c  /tmp/openclaw-same-node-mcp.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-same-node-mcp.patch
 
 # Run the bridge tests alongside the build using the same patched source.
@@ -219,6 +219,7 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     src/infra/private-store-file.test.ts src/worker/worker-local-mcp.test.ts \
+    src/agents/mcp-sdk-compatibility.test.ts src/node-host/connection.test.ts \
     src/node-host/node-worker-supervisor.idle.test.ts src/node-host/runner.test.ts \
     src/gateway/node-command-policy.test.ts src/gateway/node-registry.test.ts \
     src/gateway/worker-environments/node-worker-tunnel.lifecycle.test.ts \

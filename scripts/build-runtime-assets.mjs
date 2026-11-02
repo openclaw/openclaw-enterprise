@@ -56,7 +56,7 @@ const appliedPatches = [
   },
   {
     file: "openclaw-same-node-mcp.patch",
-    sha256: "5a99c4e81e836ad7f50d9b9a132758efc65bef20775ab940ba55c0fbc0ac1fc6",
+    sha256: "656340049eb6515388f54e5b3529beec7cb27ba9d1c2dc292bdb811ab307216c",
   },
 ];
 const [command, sourceRoot, output, sourceManifest] = process.argv.slice(2);

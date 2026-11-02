@@ -886,6 +886,18 @@ index 9708c5a..45dcd21 100644
        nativeInference: z.literal(NODE_WORKER_NATIVE_INFERENCE_VERSION).optional(),
        promptContext: z.literal(NODE_WORKER_PROMPT_CONTEXT_VERSION).optional(),
      }).refine(
+diff --git a/src/node-host/connection.test.ts b/src/node-host/connection.test.ts
+index 12367ec..db1a512 100644
+--- a/src/node-host/connection.test.ts
++++ b/src/node-host/connection.test.ts
+@@ -142,6 +142,7 @@ function startConnectionFixture(
+     handleInput: vi.fn(),
+     cancel: vi.fn(),
+     cancelAll: vi.fn<() => Promise<void>>(async () => undefined),
++    setLocalMcpAllowed: vi.fn(),
+     tryPauseForUpdate: vi.fn(async () => true),
+     resumeAfterUpdate: vi.fn(),
+     updateGatewayConnection: vi.fn(),
 diff --git a/src/node-host/connection.ts b/src/node-host/connection.ts
 index da661ab..7077472 100644
 --- a/src/node-host/connection.ts
@@ -947,17 +959,17 @@ index 306e557..3fb59ea 100644
 -    .toSorted(([left], [right]) => left.localeCompare(right));
 -}
 diff --git a/src/node-host/node-worker-child-lifecycle.ts b/src/node-host/node-worker-child-lifecycle.ts
-index eacdd0f..be0794e 100644
+index eacdd0f..5feec41 100644
 --- a/src/node-host/node-worker-child-lifecycle.ts
 +++ b/src/node-host/node-worker-child-lifecycle.ts
-@@ -28,6 +28,7 @@ import {
-   sendNodeWorkerInput,
-   type NodeWorkerChildAdapter,
- } from "./node-worker-launch-transport.js";
-+import { handleNodeWorkerMcpMessage } from "./node-worker-mcp.js";
- import { resolveNodeWorkerNativeInferenceWorkspace } from "./node-worker-native-inference.js";
- import {
-   createNodeWorkerCredentialScrubber,
+@@ -46,6 +46,7 @@ import {
+   clearNodeWorkerRetention,
+   createNodeWorkerObservedTerminal,
+   createNodeWorkerActiveTurn,
++  handleNodeWorkerMcpMessage,
+   nodeWorkerEnvironmentBinding,
+   nodeWorkerReceiptMatchesOwner,
+   type NodeWorkerActiveOwnership,
 @@ -213,7 +214,7 @@ export class NodeWorkerChildLifecycle {
      const active = {
        state: "running",
@@ -1023,22 +1035,21 @@ index eacdd0f..be0794e 100644
        }
 diff --git a/src/node-host/node-worker-mcp.ts b/src/node-host/node-worker-mcp.ts
 new file mode 100644
-index 0000000..9a86e03
+index 0000000..88de98c
 --- /dev/null
 +++ b/src/node-host/node-worker-mcp.ts
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,144 @@
 +import { Value } from "typebox/value";
 +import { WORKER_LOCAL_MCP_PROTOCOL_FEATURE } from "../../packages/gateway-protocol/src/schema/worker-admission.js";
 +import {
 +  WORKER_PROTOCOL_MAX_CONCURRENT_TOOLS,
 +  isWorkerFrameWithinBudget,
 +} from "../../packages/gateway-protocol/src/schema/worker-protocol-primitives.js";
++import { toLegacyMcpCallToolResult } from "../agents/mcp-sdk-compatibility.js";
 +import { logDebug } from "../logger.js";
 +import type { WorkerLaunchDescriptor } from "../worker/launch-descriptor.js";
 +import type { WorkerMcpResult, WorkerProcessMessage } from "../worker/worker-process-protocol.js";
 +import type { NodeHostMcpManager } from "./mcp.js";
-+import { warnNodeWorkerIdleCleanupFailure } from "./node-worker-output.js";
-+import type { NodeWorkerRunningChild } from "./node-worker-supervisor-ownership.js";
 +
 +export type NodeWorkerMcpSession = Pick<NodeHostMcpManager, "callMcpTool" | "descriptors"> & {
 +  signal: AbortSignal;
@@ -1126,12 +1137,14 @@ index 0000000..9a86e03
 +          response = { ...reply, error: "Worker MCP tool arguments or descriptor are invalid" };
 +        } else {
 +          logDebug(`node-host: invoking local MCP tool ${tool.id} on turn ${turnId}`);
-+          const raw = await session.callMcpTool({
-+            server: tool.server,
-+            tool: tool.tool,
-+            arguments: frame.arguments,
-+            signal: AbortSignal.any([lifetime.signal, session.signal, controller.signal]),
-+          });
++          const raw = toLegacyMcpCallToolResult(
++            await session.callMcpTool({
++              server: tool.server,
++              tool: tool.tool,
++              arguments: frame.arguments,
++              signal: AbortSignal.any([lifetime.signal, session.signal, controller.signal]),
++            }),
++          );
 +          // Only forward the MCP fields consumed by the model and its Code Mode guest.
 +          const result = {
 +            content: raw.content,
@@ -1170,7 +1183,71 @@ index 0000000..9a86e03
 +    },
 +  };
 +}
-+
+diff --git a/src/node-host/node-worker-supervisor-ownership.ts b/src/node-host/node-worker-supervisor-ownership.ts
+index 8f15789..73f7ce6 100644
+--- a/src/node-host/node-worker-supervisor-ownership.ts
++++ b/src/node-host/node-worker-supervisor-ownership.ts
+@@ -1,11 +1,13 @@
+ import type { NodeWorkerCapacitySnapshot } from "../infra/node-runner-inventory.js";
+ import { createDeferredCore } from "../shared/deferred.js";
++import type { WorkerLaunchDescriptor } from "../worker/launch-descriptor.js";
+ import type {
+   NodeWorkerEnvironmentStopInput,
+   NodeWorkerLaunchInput,
+   NodeWorkerSupervisorIdentity,
+ } from "../worker/node-supervisor-protocol.js";
+ import type { NodeWorkerProcessesChanged } from "../worker/worker-process-observation.js";
++import type { WorkerMcpResult, WorkerProcessMessage } from "../worker/worker-process-protocol.js";
+ import type { NodeWorkerCapacity } from "./node-worker-capacity.js";
+ import type { NodeWorkerContainerEngine } from "./node-worker-container-engine.js";
+ import type { NodeWorkerContainerLifecycle } from "./node-worker-container-lifecycle.js";
+@@ -18,8 +20,12 @@ import type {
+   NodeWorkerTerminalState,
+ } from "./node-worker-launch-store.js";
+ import type { NodeWorkerChildAdapter } from "./node-worker-launch-transport.js";
++import { createNodeWorkerMcpTurn, type NodeWorkerMcpSession } from "./node-worker-mcp.js";
+ import type { NodeWorkerNativeInferenceSnapshot } from "./node-worker-native-inference.js";
+-import type { NodeWorkerCredentialScrubber } from "./node-worker-output.js";
++import {
++  warnNodeWorkerIdleCleanupFailure,
++  type NodeWorkerCredentialScrubber,
++} from "./node-worker-output.js";
+ import type { NodeWorkerProcessIdentity } from "./node-worker-process-identity.js";
+ import type { NodeWorkerTurnStore } from "./node-worker-turn-store.js";
+ import type { NodeWorkerWorkspaceRuntime } from "./node-worker-workspace.js";
+@@ -84,15 +90,26 @@ export function nodeWorkerEnvironmentMatches(
+ 
+ type NodeWorkerActiveTurn = {
+   claim: NodeWorkerLaunchClaim;
++  mcp?: ReturnType<typeof createNodeWorkerMcpTurn>;
+   done: Promise<void>;
+   settle: () => void;
+   cancelled: boolean;
+   settling?: Promise<void>;
+ };
+ 
+-export function createNodeWorkerActiveTurn(claim: NodeWorkerLaunchClaim): NodeWorkerActiveTurn {
++export function createNodeWorkerActiveTurn(
++  claim: NodeWorkerLaunchClaim,
++  descriptor: WorkerLaunchDescriptor,
++  session?: NodeWorkerMcpSession,
++): NodeWorkerActiveTurn {
+   const { promise, resolve } = createDeferredCore();
+-  return { claim, done: promise, settle: resolve, cancelled: false };
++  return {
++    claim,
++    mcp: createNodeWorkerMcpTurn(descriptor, session),
++    done: promise,
++    settle: resolve,
++    cancelled: false,
++  };
+ }
+ 
+ type NodeWorkerActiveBase = {
+@@ -123,6 +140,62 @@ export type NodeWorkerRunningChild = NodeWorkerActiveBase & {
+   deferredOutcome?: NodeWorkerTerminalOutcome;
+ };
+ 
 +/** The stdout reader must stay free to receive cancellations while an MCP call runs. */
 +export async function handleNodeWorkerMcpMessage({
 +  active,
@@ -1221,59 +1298,16 @@ index 0000000..9a86e03
 +        if (active.turn === turn && ownsChild()) {
 +          return stopChild();
 +        }
++        return undefined;
 +      })
 +      .catch(warnNodeWorkerIdleCleanupFailure);
 +  }
 +}
-diff --git a/src/node-host/node-worker-supervisor-ownership.ts b/src/node-host/node-worker-supervisor-ownership.ts
-index 8f15789..dcb1651 100644
---- a/src/node-host/node-worker-supervisor-ownership.ts
-+++ b/src/node-host/node-worker-supervisor-ownership.ts
-@@ -1,5 +1,6 @@
- import type { NodeWorkerCapacitySnapshot } from "../infra/node-runner-inventory.js";
- import { createDeferredCore } from "../shared/deferred.js";
-+import type { WorkerLaunchDescriptor } from "../worker/launch-descriptor.js";
- import type {
-   NodeWorkerEnvironmentStopInput,
-   NodeWorkerLaunchInput,
-@@ -18,6 +19,7 @@ import type {
-   NodeWorkerTerminalState,
- } from "./node-worker-launch-store.js";
- import type { NodeWorkerChildAdapter } from "./node-worker-launch-transport.js";
-+import { createNodeWorkerMcpTurn, type NodeWorkerMcpSession } from "./node-worker-mcp.js";
- import type { NodeWorkerNativeInferenceSnapshot } from "./node-worker-native-inference.js";
- import type { NodeWorkerCredentialScrubber } from "./node-worker-output.js";
- import type { NodeWorkerProcessIdentity } from "./node-worker-process-identity.js";
-@@ -84,15 +86,26 @@ export function nodeWorkerEnvironmentMatches(
- 
- type NodeWorkerActiveTurn = {
-   claim: NodeWorkerLaunchClaim;
-+  mcp?: ReturnType<typeof createNodeWorkerMcpTurn>;
-   done: Promise<void>;
-   settle: () => void;
-   cancelled: boolean;
-   settling?: Promise<void>;
- };
- 
--export function createNodeWorkerActiveTurn(claim: NodeWorkerLaunchClaim): NodeWorkerActiveTurn {
-+export function createNodeWorkerActiveTurn(
-+  claim: NodeWorkerLaunchClaim,
-+  descriptor: WorkerLaunchDescriptor,
-+  session?: NodeWorkerMcpSession,
-+): NodeWorkerActiveTurn {
-   const { promise, resolve } = createDeferredCore();
--  return { claim, done: promise, settle: resolve, cancelled: false };
-+  return {
-+    claim,
-+    mcp: createNodeWorkerMcpTurn(descriptor, session),
-+    done: promise,
-+    settle: resolve,
-+    cancelled: false,
-+  };
- }
- 
- type NodeWorkerActiveBase = {
-@@ -160,6 +173,7 @@ export function createNodeWorkerObservedTerminal(
++
+ export function clearNodeWorkerRetention(active: NodeWorkerRunningChild): void {
+   if (active.retention?.reason === "idle") {
+     clearTimeout(active.retention.timer);
+@@ -160,6 +233,7 @@ export function createNodeWorkerObservedTerminal(
  export type NodeWorkerActiveOwnership = NodeWorkerRunningChild | NodeWorkerObservedTerminal;
  
  export type NodeWorkerSupervisorOptions = {
@@ -1281,7 +1315,7 @@ index 8f15789..dcb1651 100644
    bundleRoot?: string;
    env?: NodeJS.ProcessEnv;
    capacity?: number;
-@@ -196,6 +210,7 @@ export function nodeWorkerReceiptMatchesOwner(
+@@ -196,6 +270,7 @@ export function nodeWorkerReceiptMatchesOwner(
  }
  
  export type NodeWorkerChildLifecycleOptions = {
@@ -1290,7 +1324,7 @@ index 8f15789..dcb1651 100644
    bundleRoot: string;
    nativeInferenceSnapshot?: NodeWorkerNativeInferenceSnapshot;
 diff --git a/src/node-host/node-worker-supervisor.idle.test.ts b/src/node-host/node-worker-supervisor.idle.test.ts
-index 937a118..1cfdf6a 100644
+index 937a118..b83d1c7 100644
 --- a/src/node-host/node-worker-supervisor.idle.test.ts
 +++ b/src/node-host/node-worker-supervisor.idle.test.ts
 @@ -10,6 +10,7 @@ import { nodeWorkerTurnMatchesIdentity } from "../worker/node-supervisor-protoco
@@ -1336,7 +1370,7 @@ index 937a118..1cfdf6a 100644
      bundleRoot: "/synthetic/bundles",
      env: { OPENCLAW_STATE_DIR: "/synthetic/state" },
      capacity,
-@@ -305,6 +318,134 @@ describe("node worker idle retention", () => {
+@@ -305,6 +318,140 @@ describe("node worker idle retention", () => {
      },
    );
  
@@ -1393,6 +1427,12 @@ index 937a118..1cfdf6a 100644
 +      }),
 +    );
 +    expect(call).toHaveBeenCalledTimes(1);
++    call.mockResolvedValueOnce({ content: [], structuredContent: [42] });
++    await owner.emit({ ...request, requestId: "unsupported-result" });
++    expect(mocks.send).toHaveBeenLastCalledWith(
++      owner.adapter,
++      expect.objectContaining({ requestId: "unsupported-result", error: expect.any(String) }),
++    );
 +    const pending = createDeferred();
 +    call.mockImplementationOnce(async ({ signal: callSignal }) => {
 +      assert(callSignal);
@@ -1414,7 +1454,7 @@ index 937a118..1cfdf6a 100644
 +      requestId: "ungranted",
 +      error: "Worker MCP execution is unavailable for this turn",
 +    });
-+    expect(call).toHaveBeenCalledTimes(2);
++    expect(call).toHaveBeenCalledTimes(3);
 +    await owner.complete(second.launchId);
 +  });
 +
@@ -1854,10 +1894,10 @@ index 03b2870..6a798f7 100644
          if (closed) {
 diff --git a/src/worker/worker-local-mcp.test.ts b/src/worker/worker-local-mcp.test.ts
 new file mode 100644
-index 0000000..a93b0e9
+index 0000000..864ea58
 --- /dev/null
 +++ b/src/worker/worker-local-mcp.test.ts
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,88 @@
 +import { expect, it, vi } from "vitest";
 +import type { WorkerToolSurface } from "../../packages/gateway-protocol/src/schema/worker-gateway-tool.js";
 +import { consumeMcpCodeModeGuestResult } from "../agents/mcp-content.js";
@@ -1889,7 +1929,8 @@ index 0000000..a93b0e9
 +    },
 +  },
 +};
-+const grants = [{ id: entry.id, server: "documents", tool: "search" }];
++const grant = { id: entry.id, server: "documents", tool: "search" };
++const grants = [grant];
 +
 +it("invokes the admitted handle over the supervisor pipe and projects the result for Code Mode in the worker", async () => {
 +  const result = { content: [{ type: "text", text: "found" }], structuredContent: { document: 7 } };
@@ -1924,7 +1965,7 @@ index 0000000..a93b0e9
 +  await expect(tool.execute("call-2", { query: 42 })).rejects.toThrow("arguments");
 +  expect(write).toHaveBeenCalledTimes(1);
 +  expect(
-+    createWorkerLocalMcpTool(entry, [{ ...grants[0], tool: "delete" }], client.call),
++    createWorkerLocalMcpTool(entry, [{ ...grant, tool: "delete" }], client.call),
 +  ).toBeUndefined();
 +});
 +
@@ -1933,8 +1974,8 @@ index 0000000..a93b0e9
 +  const client = createWorkerLocalMcpClient("turn-2", write);
 +  const controller = new AbortController();
 +  const call = client.call(entry.id, {}, controller.signal);
-+  const first = write.mock.calls[0][0];
-+  if (first.type !== "mcp-call") {
++  const first = write.mock.calls[0]?.[0];
++  if (first?.type !== "mcp-call") {
 +    throw new Error("Expected an MCP call");
 +  }
 +  controller.abort(new Error("turn cancelled"));
@@ -1947,7 +1988,7 @@ index 0000000..a93b0e9
 +});
 diff --git a/src/worker/worker-local-mcp.ts b/src/worker/worker-local-mcp.ts
 new file mode 100644
-index 0000000..28c7660
+index 0000000..cf27d0e
 --- /dev/null
 +++ b/src/worker/worker-local-mcp.ts
 @@ -0,0 +1,102 @@
@@ -2015,7 +2056,7 @@ index 0000000..28c7660
 +        }
 +      }
 +    },
-+    close() {
++    close(this: void) {
 +      for (const request of pending.values()) {
 +        request.reject(new Error("Worker MCP turn ended"));
 +      }
