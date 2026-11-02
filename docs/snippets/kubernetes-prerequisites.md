@@ -20,7 +20,7 @@ published: false
   runtime image digests. Buildx is needed only when building images. Every eligible
   node needs registry pull access; see [private registry delivery](/guides/deploy/private-registry-images/).
 - **Database:** External PostgreSQL 18.6 with separate application and migration roles
-  and verified TLS. Follow [database preparation and version checks](/guides/deploy/postgresql/).
+  and verified TLS. See [version compatibility](/reference/settings/operations/#postgresql-server-compatibility).
   Prepare protected startup, database, authentication, and any
   selected Backend credentials during installation.
 - **Node pools:** A trusted pool for OCC and dedicated Agent gateways, separate

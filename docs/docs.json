@@ -564,10 +564,6 @@
                     "label": "Local Setup Without OpenShell"
                   },
                   {
-                    "page": "guides/deploy/postgresql",
-                    "label": "PostgreSQL"
-                  },
-                  {
                     "page": "guides/deploy/production-installation",
                     "label": "Control Plane Setup"
                   },
