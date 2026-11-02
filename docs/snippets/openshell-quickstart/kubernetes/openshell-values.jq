@@ -70,7 +70,7 @@
       "gatewayId": "openshell-gateway"
     },
     "defaultRuntimeClassName": "openshell-sandbox",
-    "dataStorageClass": "encrypted-gp3",
+    "dataStorageClass": $storageClass,
     "dataStorageSize": "1Gi",
     "drivers": {
       "kubernetes": {

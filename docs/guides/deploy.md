@@ -10,7 +10,7 @@ credential; an Agent needs one to send a model request.
 ## Development
 
 Use [Local Setup](quickstart.md) to start the platform with Kubernetes and
-verify authenticated access. Then [deploy and verify an Agent](deploy/production-agents.md).
+verify authenticated access. Then [prepare the local Agent session](quickstart.md#deploy-an-agent).
 The [local Kubernetes development guide](deploy/local-kubernetes-development.md)
 explains the profile for contributors working on the platform.
 

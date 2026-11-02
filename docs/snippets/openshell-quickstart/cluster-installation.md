@@ -9,6 +9,7 @@ The templates use release `oce`, OpenShell release `openshell-gateway`, namespac
 ```bash
 assets="$RUN_DIR/kubernetes"
 jq -n --arg registry "${SANDBOX_REGISTRY:?}" \
+  --arg storageClass "${STORAGE_CLASS:?}" \
   --arg repository "${SANDBOX_REPOSITORY:?}" -f "$assets/openshell-values.jq" \
   > "$RUN_DIR/openshell.json"
 helm upgrade --install openshell-gateway "${OPENSHELL_CHART:?}" \
