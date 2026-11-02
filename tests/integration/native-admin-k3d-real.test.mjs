@@ -672,7 +672,7 @@ async function assertNativeAdminAudit(topology) {
   }
 }
 
-async function assertDeviceStillEnrolled(topology, deviceId) {
+async function enrolledDeviceScopes(topology, deviceId) {
   assert.ok(deviceId, "the real native connection must present a device identity");
   // Inspect only enrollment metadata in the running Gateway's database. Do not
   // export device tokens, public keys, or other runtime state into test output.
@@ -682,7 +682,7 @@ async function assertDeviceStillEnrolled(topology, deviceId) {
     try {
       db.exec("PRAGMA busy_timeout=5000");
       const row = db.prepare("SELECT approved_scopes_json FROM device_pairing_paired WHERE device_id = ?").get(${JSON.stringify(deviceId)});
-      process.stdout.write(JSON.stringify({ enrolled: !!row, admin: row ? JSON.parse(row.approved_scopes_json).includes("operator.admin") : false }));
+      process.stdout.write(JSON.stringify({ enrolled: !!row, scopes: row ? JSON.parse(row.approved_scopes_json) : [] }));
     } finally { db.close(); }
   `;
   const result = JSON.parse(
@@ -697,7 +697,9 @@ async function assertDeviceStillEnrolled(topology, deviceId) {
       script,
     ),
   );
-  assert.deepEqual(result, { enrolled: true, admin: true });
+  assert.equal(result.enrolled, true);
+  assert.ok(result.scopes.length > 0, "the enrolled device must retain its approved scopes");
+  return result.scopes.sort();
 }
 
 async function assertSharedNativeSessions(
@@ -856,7 +858,9 @@ async function assertSharedNativeSessions(
     const socket = terminalFrame.socket;
     assert.ok(socket && !socket.isClosed(), "recipient has a confirmed active native stream");
     const deviceId = deviceIds.get(socket);
-    await assertDeviceStillEnrolled(topology, deviceId);
+    // Identity grants supply administration independently of device scopes. Retaining
+    // this enrollment must not bypass later permission withdrawal or session expiry.
+    const deviceScopes = await enrolledDeviceScopes(topology, deviceId);
     if (label === "withdrawn") {
       await nativePage.screenshot({
         path: join(artifacts, "native-chat-before-withdrawal.png"),
@@ -866,6 +870,7 @@ async function assertSharedNativeSessions(
     people.push({
       page,
       deviceId,
+      deviceScopes,
       request,
       nativePage,
       frames,
@@ -927,7 +932,10 @@ async function assertSharedNativeSessions(
     200,
   );
   assert.equal((await withdrawn.request(namespacePath)).status, 200, "discovery grant remains");
-  await assertDeviceStillEnrolled(topology, withdrawn.deviceId);
+  assert.deepEqual(
+    await enrolledDeviceScopes(topology, withdrawn.deviceId),
+    withdrawn.deviceScopes,
+  );
   await assertNativeDenied(withdrawn.page);
   const lastReply = await submitChatTurnWithAssistantProof(
     unaffected.nativePage,
@@ -956,7 +964,10 @@ async function assertSharedNativeSessions(
       .then(({ rowCount }) => assert.equal(rowCount, 1, "expired this recipient's session")),
   ]);
   assert.equal(health.status(), 403, "the open native tab observed the session refusal");
-  await assertDeviceStillEnrolled(topology, unaffected.deviceId);
+  assert.deepEqual(
+    await enrolledDeviceScopes(topology, unaffected.deviceId),
+    unaffected.deviceScopes,
+  );
   await assertNativeDenied(unaffected.page);
 
   const reconnect = nativePage.getByRole("link", {
@@ -1018,7 +1029,7 @@ async function assertSharedNativeSessions(
     );
   }
   context.diagnostic(
-    "Read/operate-only and revoked callers were refused before upstream I/O; both browser devices remained enrolled with operator.admin.",
+    "Read/operate-only and revoked callers were refused before upstream I/O; both browser devices remained enrolled with unchanged approved scopes.",
   );
 }
 
