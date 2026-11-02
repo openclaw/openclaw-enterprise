@@ -1,6 +1,6 @@
 import {
   managedGoogleInstall,
-  managedSlackInstall,
+  managedMcpInstalls,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspace-chart.mjs";
@@ -37,6 +37,11 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import {
+  assertNoManagedMcpRouteOverlap,
+  managedMcpNetwork,
+  managedMcpProviderEndpoint,
+} from "../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts";
 import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { validateOpenShellRepositoryTransport } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
@@ -1291,7 +1296,57 @@ test("a selected Google account uses its exact provider and a signed, fail-close
   assert.equal(created.spec.policy.network_policies["oce-google-requests"], undefined);
 });
 
+test("OpenShell builds managed MCP rules for the declared endpoint and upstream tool name", () => {
+  const endpoint = { host: "mcp.tools.example", port: 8443, path: "/api/mcp" };
+  const install = {
+    runtimeName: "inventory",
+    endpoint,
+    binaryPath: "/opt/inventory/bin/client",
+    mcpVersions: ["2025-11-25"],
+  };
+  const provider = managedMcpProviderEndpoint(install);
+  const network = managedMcpNetwork(install, ["read_inventory"]);
+  assert.deepEqual(provider, {
+    ...endpoint,
+    protocol: "mcp",
+    mcp: { strict_tool_names: true, versions: ["2025-11-25"] },
+    rules: [{ allow: { method: "ping" } }],
+  });
+  assert.equal(network.name, "oce-inventory-mcp");
+  assert.deepEqual(network.binaries, [{ path: install.binaryPath }]);
+  assert.deepEqual(network.endpoints, [
+    {
+      host: endpoint.host,
+      ports: [endpoint.port],
+      path: endpoint.path,
+      protocol: "mcp",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      mcp: provider.mcp,
+      rules: [
+        { allow: { method: "ping" } },
+        { allow: { method: "initialize" } },
+        { allow: { method: "notifications/initialized" } },
+        { allow: { method: "tools/list" } },
+        { allow: { method: "tools/call", params: { name: { glob: "read_inventory" } } } },
+      ],
+    },
+  ]);
+  const policyWith = (port) => ({
+    [network.name]: network,
+    other: { endpoints: [{ host: "*.tools.example", ports: [port] }] },
+  });
+  assert.doesNotThrow(() =>
+    assertNoManagedMcpRouteOverlap(policyWith(443), install, [network.name]),
+  );
+  assert.throws(
+    () => assertNoManagedMcpRouteOverlap(policyWith(endpoint.port), install, [network.name]),
+    /overlaps the credentialed managed MCP endpoint/,
+  );
+});
+
 test("OpenShell limits a Slack connection to the revision's exact MCP tools and recovers after detach", async () => {
+  const install = managedMcpInstalls.find(({ id }) => id === "occ-plugin:slack@1.0.0");
+  assert.ok(install);
   const client = workspaceGatewayClient();
   const driver = openShellDriver(client);
   const { context, revision, requirements } = runtimeSandboxFixture(driver, {
@@ -1310,14 +1365,14 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
   const selection = {
     enabled: true,
     driverPolicy: {
-      releaseSha256: managedSlackInstall.releaseSha256,
+      releaseSha256: install.releaseSha256,
       credentials: { account: sourceId },
       toolNames: ["slack_search_public"],
     },
   };
   revision.plugins = {
     driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-    plugins: { [managedSlackInstall.id]: selection },
+    plugins: { [install.id]: selection },
   };
   requirements.credentialAttachments = [
     {
@@ -1366,7 +1421,7 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
           path: "/mcp",
           protocol: "mcp",
           enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-          mcp: { strict_tool_names: true, versions: [...managedSlackInstall.mcpVersions] },
+          mcp: { strict_tool_names: true, versions: [...install.mcpVersions] },
           rules: [{ allow: { method: "ping" } }],
           provider_credentialed: true,
         },
@@ -1386,7 +1441,7 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
   const provision = () => driver.provisionHarness({ ...context, revision, requirements });
   await driver.ensureNamespace(context);
   revision.sandboxPolicy = { defaults: {}, additions: [broadGrant] };
-  await assert.rejects(provision, /overlaps the credentialed Slack MCP endpoint/);
+  await assert.rejects(provision, /overlaps the credentialed managed MCP endpoint/);
   assert.equal(created, undefined);
   revision.sandboxPolicy = { defaults: {}, additions: [] };
   const plugins = revision.plugins;
@@ -1398,6 +1453,15 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
   assert.ok(created.spec.providers.includes(ref));
   created = undefined;
   revision.plugins = plugins;
+  revision.credentialSources = [{ sourceId }];
+  const requestScope = requirements.credentialAttachments[0].requestScope;
+  requestScope.port = 8443;
+  await assert.rejects(
+    provision,
+    /requires its reviewed OpenShell provider and an isolated endpoint/,
+  );
+  assert.equal(created, undefined);
+  requestScope.port = 443;
   await provision();
   const route = created.spec.policy.network_policies[routeName];
   assert.equal(route.endpoints[0].protocol, "mcp");
@@ -1428,7 +1492,7 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
         operationId: "slack-policy-update",
       },
     ),
-    /overlaps the credentialed Slack MCP endpoint/,
+    /overlaps the credentialed managed MCP endpoint/,
   );
   assert.equal(updateCount, 0);
   await driver.applyNetworkPolicy(
@@ -1441,10 +1505,9 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
   );
   assert.equal(updateCount, 1);
   broadenEffective = true;
-  await assert.rejects(provision, /overlaps the credentialed Slack MCP endpoint/);
+  await assert.rejects(provision, /overlaps the credentialed managed MCP endpoint/);
   broadenEffective = false;
 
-  revision.credentialSources = [{ sourceId }];
   requirements.credentialAttachments = [];
   await assert.rejects(provision, /exact AgentRevision ownership and content/);
   created.spec.providers = created.spec.providers.filter((name) => name !== ref);
@@ -5228,7 +5291,12 @@ test("a Slack MCP source stays independent and cannot acquire a broad REST crede
     path: "/mcp",
     env_var: "SLACK_MCP_TOKEN",
   };
-  const source = { ...context.source, type: "bearer-token", config };
+  const source = {
+    ...context.source,
+    type: "bearer-token",
+    config,
+    secrets: { token: { kind: "secret", id: "sec_mcp", namespaceId: context.namespace.id } },
+  };
   const sourceContext = { ...context, source };
   const register = (config) =>
     f.driver.registerSource(sourceContext, {

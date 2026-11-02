@@ -2,33 +2,41 @@ import type { AgentRevision, HarnessWorkloadRequirements } from "@openclaw-enter
 import { SandboxRevisionUnsupportedError } from "@openclaw-enterprise/occ";
 import { asRecord, numericLastLabel } from "@openclaw-enterprise/utils";
 import { openShellProviderName } from "../../backends/openshell.ts";
-import { managedSlackCredentialBinding, managedSlackInstall } from "../plugin/managed-catalog.ts";
+import {
+  type ManagedMcpInstall,
+  managedMcpCredentialBinding,
+  managedMcpInstalls,
+} from "../plugin/managed-catalog.ts";
 import { openShellProfileEndpoint } from "./openshell-gateway-client.ts";
 import { sameOpenShellPolicy } from "./openshell-policy.ts";
 
-export const slackMcpNetworkName = "oce-slack-mcp";
+function managedMcpNetworkName(install: ManagedMcpInstall): string {
+  return `oce-${install.runtimeName}-mcp`;
+}
 
 /** The profile contributes credential custody and a single harmless method.
  * Keep the same endpoint and MCP options on the Sandbox's revision rule. */
-export const slackMcpProviderEndpoint = {
-  ...managedSlackInstall.endpoint,
-  protocol: "mcp",
-  mcp: { strict_tool_names: true, versions: managedSlackInstall.mcpVersions },
-  rules: [{ allow: { method: "ping" } }],
-} as const;
+export function managedMcpProviderEndpoint(install: ManagedMcpInstall) {
+  return {
+    ...install.endpoint,
+    protocol: "mcp",
+    mcp: { strict_tool_names: true, versions: install.mcpVersions },
+    rules: [{ allow: { method: "ping" } }],
+  } as const;
+}
 
 function unsupported(message: string): never {
   throw new SandboxRevisionUnsupportedError("SANDBOX_HARNESS_UNSUPPORTED", message);
 }
 
-export function slackMcpNetwork(toolNames: readonly string[]) {
+export function managedMcpNetwork(install: ManagedMcpInstall, toolNames: readonly string[]) {
   const methods = toolNames.length
     ? ["ping", "initialize", "notifications/initialized", "tools/list"]
     : ["ping"];
-  const { port, ...endpoint } = openShellProfileEndpoint(slackMcpProviderEndpoint);
+  const { port, ...endpoint } = openShellProfileEndpoint(managedMcpProviderEndpoint(install));
   return {
-    name: slackMcpNetworkName,
-    binaries: [{ path: managedSlackInstall.binaryPath }],
+    name: managedMcpNetworkName(install),
+    binaries: [{ path: install.binaryPath }],
     endpoints: [
       {
         ...endpoint,
@@ -44,15 +52,17 @@ export function slackMcpNetwork(toolNames: readonly string[]) {
   };
 }
 
-export function openShellSlackMcpPolicy(
+function openShellManagedMcpPolicy(
+  install: ManagedMcpInstall,
   revision: Readonly<AgentRevision>,
   requirements: HarnessWorkloadRequirements,
   installationProviders: readonly string[],
 ) {
-  const binding = managedSlackCredentialBinding(revision.plugins?.plugins);
-  const attachments = requirements.credentialAttachments;
-  const attached = attachments.filter(
-    (item) => item.requestScope?.host === managedSlackInstall.endpoint.host,
+  const binding = managedMcpCredentialBinding(revision.plugins?.plugins, install);
+  const { host, port, path } = install.endpoint;
+  const attached = requirements.credentialAttachments.filter(
+    ({ sourceId, requestScope }) =>
+      sourceId === binding?.sourceId || (requestScope?.host === host && requestScope.port === port),
   );
   const selected = attached[0];
   // Compute drops withdrawn sources from the dispatch even when the immutable revision names one.
@@ -66,8 +76,9 @@ export function openShellSlackMcpPolicy(
     attached.length !== 1 ||
     !selected ||
     selected.ref !== openShellProviderName(selected.sourceId) ||
-    selected.requestScope?.port !== managedSlackInstall.endpoint.port ||
-    selected.requestScope?.path !== managedSlackInstall.endpoint.path ||
+    selected.requestScope?.host !== host ||
+    selected.requestScope.port !== port ||
+    selected.requestScope.path !== path ||
     requirements.proxyWiring ||
     revision.egressPlan ||
     installationProviders.length ||
@@ -78,38 +89,59 @@ export function openShellSlackMcpPolicy(
         binding.sourceId !== selected.sourceId))
   ) {
     unsupported(
-      "The Slack MCP credential requires its reviewed OpenShell provider and an isolated endpoint.",
+      "A managed MCP credential requires its reviewed OpenShell provider and an isolated endpoint.",
     );
   }
   return {
+    install,
     provider: {
       name: "_provider_" + selected.ref.replaceAll("-", "_"),
-      binaries: [{ path: managedSlackInstall.binaryPath }],
+      binaries: [{ path: install.binaryPath }],
       endpoints: [
-        { ...openShellProfileEndpoint(slackMcpProviderEndpoint), provider_credentialed: true },
+        {
+          ...openShellProfileEndpoint(managedMcpProviderEndpoint(install)),
+          provider_credentialed: true,
+        },
       ],
     },
-    network: slackMcpNetwork(binding?.toolNames ?? []),
+    network: managedMcpNetwork(install, binding?.toolNames ?? []),
   };
+}
+
+export function openShellManagedMcpPolicies(
+  revision: Readonly<AgentRevision>,
+  requirements: HarnessWorkloadRequirements,
+  installationProviders: readonly string[],
+) {
+  return managedMcpInstalls.flatMap((install) => {
+    const policy = openShellManagedMcpPolicy(
+      install,
+      revision,
+      requirements,
+      installationProviders,
+    );
+    return policy ? [policy] : [];
+  });
 }
 
 /** Matching OpenShell allowances compose. A second route must not permit
  * uninspected traffic or grant another operation against the credentialed host. */
-export function assertNoSlackMcpRouteOverlap(
+export function assertNoManagedMcpRouteOverlap(
   policies: unknown,
+  install: ManagedMcpInstall,
   exactRoutes: readonly string[] = [],
 ): void {
   const network = asRecord(policies);
   if (!network) {
-    unsupported("OpenShell could not verify the Slack MCP network policy.");
+    unsupported("OpenShell could not verify the managed MCP network policy.");
   }
-  const { host, port } = managedSlackInstall.endpoint;
+  const { host, port } = install.endpoint;
   for (const [name, rule] of Object.entries(network)) {
     if (exactRoutes.includes(name)) {
       continue;
     }
-    if (name === slackMcpNetworkName) {
-      unsupported("The Slack MCP network rule name is reserved.");
+    if (name === managedMcpNetworkName(install)) {
+      unsupported("The managed MCP network rule name is reserved.");
     }
     const endpoints = asRecord(rule)?.endpoints;
     if (endpoints === undefined) {
@@ -117,13 +149,13 @@ export function assertNoSlackMcpRouteOverlap(
       continue;
     }
     if (!Array.isArray(endpoints)) {
-      unsupported("OpenShell could not verify an endpoint against the Slack MCP network policy.");
+      unsupported("OpenShell could not verify an endpoint against the managed MCP network policy.");
     }
     for (const entry of endpoints) {
       const endpoint = asRecord(entry);
       if (typeof endpoint?.host !== "string") {
         unsupported(
-          "OpenShell could not verify a destination against the Slack MCP network policy.",
+          "OpenShell could not verify a destination against the managed MCP network policy.",
         );
       }
       const ports =
@@ -143,15 +175,15 @@ export function assertNoSlackMcpRouteOverlap(
         candidate === host ||
         (wildcard && host.endsWith(candidate.slice(candidate.indexOf("."))))
       ) {
-        unsupported("An OpenShell network route overlaps the credentialed Slack MCP endpoint.");
+        unsupported("An OpenShell network route overlaps the credentialed managed MCP endpoint.");
       }
     }
   }
 }
 
-export function verifySlackMcpPolicy(
+export function verifyManagedMcpPolicy(
   config: Readonly<Record<string, unknown>> | undefined,
-  expected: NonNullable<ReturnType<typeof openShellSlackMcpPolicy>>,
+  expected: NonNullable<ReturnType<typeof openShellManagedMcpPolicy>>,
   workspace: string,
 ): void {
   if (
@@ -162,7 +194,7 @@ export function verifySlackMcpPolicy(
     config.configuration_error ||
     config.policy_validation_failure_mode !== "fail_closed"
   ) {
-    unsupported("OpenShell has not admitted the fail-closed Slack MCP network policy.");
+    unsupported("OpenShell has not admitted the fail-closed managed MCP network policy.");
   }
   const policies = asRecord(asRecord(config.policy)?.network_policies);
   const network = expected.network;
@@ -178,11 +210,12 @@ export function verifySlackMcpPolicy(
   ];
   for (const rule of exact) {
     if (!sameOpenShellPolicy(policies?.[rule.name], rule)) {
-      unsupported("OpenShell has not admitted the exact credentialed Slack MCP rules.");
+      unsupported("OpenShell has not admitted the exact credentialed managed MCP rules.");
     }
   }
-  assertNoSlackMcpRouteOverlap(
+  assertNoManagedMcpRouteOverlap(
     policies,
+    expected.install,
     exact.map(({ name }) => name),
   );
 }

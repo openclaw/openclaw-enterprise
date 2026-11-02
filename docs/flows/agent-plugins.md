@@ -144,9 +144,7 @@ The Gateway loads the Google skill. OpenShell injects the bearer after the share
 guard checks the `gog` operation and the account’s host, path, and scopes.
 Other attachments survive withdrawal. [Deployment and inspection](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
-OCE stores Slack’s access token through the Secret Driver. The worker stages the
-MCP server. An independently attached source permits MCP `ping`. The Sandbox
-Driver rejects overlapping routes and removes injection after withdrawal.
+The Credential Gateway matches the reviewed MCP endpoint and placeholder. The Sandbox Driver compiles selected tools, rejects overlapping routes, and removes injection after withdrawal.
 
 ### 3. Deliver requested state through Compute preparation
 

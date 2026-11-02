@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import type {
-  CredentialSource,
-  PluginCatalogEntry,
-  PluginDesiredState,
+import {
+  isAllowedSecretBindingDestination,
+  type CredentialSource,
+  type PluginCatalogEntry,
+  type PluginDesiredState,
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { exactDnsName } from "../credential-source-endpoint.ts";
 import {
   eligibleGoogleOperations,
   googleDiscoveryRequests,
@@ -39,15 +41,19 @@ export const managedPluginMiddlewareImplementation = "oce/managed-plugin-request
 export const managedPluginMiddlewareAudience = `urn:openshell:extension:middleware:${managedPluginMiddleware}`;
 
 // Only released packages bundled into both images participate in managed deployment.
-function loadManagedInstall(packageName: string, runtimeName: string) {
+function loadManagedInstall(packageName: string) {
   const directory = new URL(`../../../plugins/${packageName}/`, import.meta.url);
   const pkg = asRecord(JSON.parse(readFileSync(new URL("plugin.json", directory), "utf8")));
   const extension = asRecord(asRecord(pkg?.extensions)?.["ai.openclaw.oce"]);
   const policyScope = extension?.policyScope;
+  const runtimeName =
+    typeof extension?.id === "string"
+      ? /^occ-plugin:([a-z][a-z0-9]*(?:-[a-z0-9]+)*)$/u.exec(extension.id)?.[1]
+      : undefined;
   if (
     policyScope !== "enablement_only" ||
     extension?.release !== "./ai.openclaw.oce/release.json" ||
-    !isNonEmptyString(extension.id) ||
+    !runtimeName ||
     !isNonEmptyString(extension.displayName) ||
     !isNonEmptyString(pkg?.version) ||
     !isNonEmptyString(pkg?.description)
@@ -70,6 +76,7 @@ function loadManagedInstall(packageName: string, runtimeName: string) {
   const id = `${extension.id}@${pkg.version}`;
   return {
     id,
+    packageName,
     directory,
     release,
     runtimeName,
@@ -86,9 +93,33 @@ function loadManagedInstall(packageName: string, runtimeName: string) {
   } as const;
 }
 
-const googleInstall = loadManagedInstall("oce-google-workspace", "google");
+const marketplaceSchema = Type.Object({
+  plugins: Type.Array(
+    Type.Object({
+      name: Type.String({ pattern: "^[a-z][a-z0-9-]*$" }),
+      source: Type.String(),
+    }),
+    { minItems: 1 },
+  ),
+});
+const marketplace: unknown = JSON.parse(
+  readFileSync(new URL("../../../plugins/marketplace.json", import.meta.url), "utf8"),
+);
+if (!Check(marketplaceSchema, marketplace)) {
+  throw new Error("Invalid bundled plugin marketplace.");
+}
+const bundledInstalls = marketplace.plugins.map(({ name, source }) => {
+  if (source !== "./" + name) {
+    throw new Error(`Invalid source for bundled package: ${name}.`);
+  }
+  return loadManagedInstall(name);
+});
+const googleInstall = bundledInstalls.find(
+  ({ packageName }) => packageName === "oce-google-workspace",
+);
 const credentials = googleRelease?.credentials;
 if (
+  !googleInstall ||
   !Check(
     Type.Record(Type.String({ pattern: "^[a-z][a-z0-9-]*$" }), credentialSlot, {
       minProperties: 1,
@@ -108,59 +139,104 @@ export const managedGoogleInstall = {
   credentials,
   binaryPath: `/usr/local/lib/oce/plugins/google/bin/${googleRelease.executable}`,
 } as const;
-const slackInstall = loadManagedInstall("oce-slack", "slack");
-const slackSlot = asRecord(asRecord(slackInstall.release?.credentials)?.account);
-const slackDelivery = asRecord(slackSlot?.delivery);
-const slackMcp = asRecord(slackSlot?.mcp);
-const slackManifestBytes = readFileSync(new URL("mcp.json", slackInstall.directory));
-const slackManifest = asRecord(JSON.parse(slackManifestBytes.toString("utf8")));
-const slackServer = slackMcp?.server;
-const slackDeclaration = isNonEmptyString(slackServer)
-  ? asRecord(asRecord(slackManifest?.mcpServers)?.[slackServer])
-  : undefined;
-const slackUrl = typeof slackDeclaration?.url === "string" ? URL.parse(slackDeclaration.url) : null;
-if (
-  slackServer !== "slack" ||
-  slackDeclaration?.type !== "streamable-http" ||
-  slackUrl?.href !== "https://mcp.slack.com/mcp" ||
-  slackUrl.origin !== slackMcp?.resource ||
-  createHash("sha256").update(slackManifestBytes).digest("hex") !==
-    slackInstall.release?.mcpServersSha256 ||
-  slackDelivery?.role !== "harness" ||
-  slackDelivery?.presentation !== "bearer" ||
-  slackDelivery?.env !== "SLACK_MCP_TOKEN" ||
-  !isNonEmptyString(slackSlot?.label) ||
-  !Array.isArray(slackMcp?.versions) ||
-  slackMcp.versions.length === 0 ||
-  !slackMcp.versions.every(
-    (version): version is string =>
-      typeof version === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(version),
-  ) ||
-  !Array.isArray(slackMcp?.tools) ||
-  slackMcp.tools.length === 0 ||
-  !slackMcp.tools.every(
-    (tool): tool is string => typeof tool === "string" && /^[a-z][a-z0-9_]{0,57}$/u.test(tool),
-  ) ||
-  new Set(slackMcp.tools).size !== slackMcp.tools.length
-) {
-  throw new Error("Invalid bundled Slack MCP release.");
-}
-export const managedSlackInstall = {
-  ...slackInstall,
-  server: slackServer,
-  url: slackUrl.href,
-  endpoint: {
-    host: slackUrl.hostname,
-    port: Number(slackUrl.port || 443),
-    path: slackUrl.pathname,
+const mcpSlot = Type.Object(
+  {
+    label: Type.String({ minLength: 1 }),
+    issuer: Type.String({ minLength: 1 }),
+    delivery: credentialSlot.properties.delivery,
+    mcp: Type.Object({
+      server: Type.String({ pattern: "^[a-zA-Z](?:[a-zA-Z0-9_-]{0,21}[a-zA-Z0-9])?$" }),
+      resource: Type.String(),
+      versions: Type.Array(Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" }), {
+        minItems: 1,
+        uniqueItems: true,
+      }),
+      tools: Type.Array(
+        Type.String({ pattern: "^[a-zA-Z](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$", maxLength: 62 }),
+        { minItems: 1, uniqueItems: true },
+      ),
+    }),
   },
-  credentialEnvironment: slackDelivery.env,
-  credentialLabel: slackSlot.label,
-  binaryPath: "/usr/local/bin/node",
-  mcpVersions: Object.freeze(slackMcp.versions),
-  toolNames: Object.freeze(slackMcp.tools),
-} as const;
-export const managedInstalls = [managedGoogleInstall, managedSlackInstall] as const;
+  { additionalProperties: false },
+);
+const mcpSlots = Type.Record(Type.String({ pattern: "^[a-z][a-z0-9-]*$" }), mcpSlot, {
+  minProperties: 1,
+  maxProperties: 1,
+  additionalProperties: false,
+});
+const mcpEndpointUrl = /^https:\/\/[a-z0-9.-]+(?::[1-9][0-9]{0,4})?\/[a-zA-Z0-9/._~-]{0,255}$/u;
+
+function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
+  const invalid = () => new Error(`Invalid managed MCP release: ${install.packageName}.`);
+  const { release } = install;
+  const slots = release?.credentials;
+  const capabilities = asRecord(release?.capabilities);
+  if (
+    !Check(mcpSlots, slots) ||
+    !Array.isArray(capabilities?.harness) ||
+    !capabilities.harness.includes("mcp") ||
+    install.placement.harnessId !== "openclaw" ||
+    install.placement.mode !== "dedicated"
+  ) {
+    throw invalid();
+  }
+  const [slotId, slot] = Object.entries(slots)[0]!;
+  const { server, resource, versions, tools } = slot.mcp;
+  const bytes = readFileSync(new URL("mcp.json", install.directory));
+  if (createHash("sha256").update(bytes).digest("hex") !== release?.mcpServersSha256) {
+    throw invalid();
+  }
+  const manifest = asRecord(JSON.parse(bytes.toString("utf8")));
+  const servers = asRecord(manifest?.mcpServers);
+  const declaration = asRecord(servers?.[server]);
+  const url =
+    typeof declaration?.url === "string" && mcpEndpointUrl.test(declaration.url)
+      ? URL.parse(declaration.url)
+      : null;
+  if (
+    !servers ||
+    Object.keys(servers).length !== 1 ||
+    declaration?.type !== "streamable-http" ||
+    !url ||
+    url.href !== declaration.url ||
+    !isAllowedSecretBindingDestination(slot.delivery.env) ||
+    !exactDnsName(url.hostname) ||
+    !url.hostname.includes(".") ||
+    (resource !== url.origin && resource !== url.href) ||
+    tools.some((tool) => `oce_mcp_${server}_${tool}`.length > 64) ||
+    new Set(tools.map((tool) => tool.toLowerCase())).size !== tools.length
+  ) {
+    throw invalid();
+  }
+  // Literal names also keep the OpenClaw alias stable and the OpenShell glob exact.
+  return {
+    ...install,
+    server,
+    slotId,
+    url: url.href,
+    endpoint: { host: url.hostname, port: Number(url.port || 443), path: url.pathname },
+    credentialEnvironment: slot.delivery.env,
+    credentialLabel: slot.label,
+    binaryPath: "/usr/local/bin/node",
+    mcpVersions: Object.freeze(versions),
+    toolNames: Object.freeze(tools),
+  } as const;
+}
+
+export type ManagedMcpInstall = ReturnType<typeof loadManagedMcpInstall>;
+export const managedMcpInstalls: readonly ManagedMcpInstall[] = Object.freeze(
+  bundledInstalls.filter((install) => install !== googleInstall).map(loadManagedMcpInstall),
+);
+export const managedInstalls = [managedGoogleInstall, ...managedMcpInstalls] as const;
+if (
+  new Set(managedInstalls.map(({ runtimeName }) => runtimeName)).size !== managedInstalls.length ||
+  new Set(managedMcpInstalls.map(({ endpoint }) => `${endpoint.host}:${endpoint.port}`)).size !==
+    managedMcpInstalls.length
+) {
+  throw new Error(
+    "Bundled plugins must have distinct runtime names and managed MCP hosts and ports.",
+  );
+}
 
 /** A selection holds references only. Installation without an account remains valid. */
 export function managedCredentialBinding(selections: PluginDesiredState | undefined) {
@@ -192,20 +268,26 @@ export function managedCredentialBinding(selections: PluginDesiredState | undefi
   return { slot, sourceId, credential };
 }
 
-/** The raw upstream names are scoped to this pinned Slack MCP instance. */
-export function managedSlackCredentialBinding(selections: PluginDesiredState | undefined) {
-  const selection = selections?.[managedSlackInstall.id];
+/** Upstream tool names belong to one pinned MCP server. */
+export function managedMcpCredentialBinding(
+  selections: PluginDesiredState | undefined,
+  install = managedMcpInstalls.find(({ id }) => selections?.[id]?.driverPolicy !== undefined),
+) {
+  if (!install) {
+    return undefined;
+  }
+  const selection = selections?.[install.id];
   const policy = selection?.driverPolicy;
   if (policy === undefined) {
     return undefined;
   }
-  if (policy.releaseSha256 !== managedSlackInstall.releaseSha256) {
+  if (policy.releaseSha256 !== install.releaseSha256) {
     throw new ConfigurationHarnessError(
-      "The Slack release has changed. Select the account again for the current release.",
+      `The ${install.entry.name} release has changed. Select the account again for the current release.`,
     );
   }
   const credentials = asRecord(policy.credentials);
-  const sourceId = credentials?.account;
+  const sourceId = credentials?.[install.slotId];
   if (
     !selection?.enabled ||
     Object.keys(policy).some(
@@ -216,10 +298,10 @@ export function managedSlackCredentialBinding(selections: PluginDesiredState | u
     !sourceId.startsWith("cs_")
   ) {
     throw new ConfigurationHarnessError(
-      "Enable Slack and select exactly one Slack credential, or clear its credential policy.",
+      `Enable ${install.entry.name} and select exactly one credential, or clear its credential policy.`,
     );
   }
-  const reviewed = managedSlackInstall.toolNames;
+  const reviewed = install.toolNames;
   const selected = policy.toolNames;
   if (
     selected !== undefined &&
@@ -227,10 +309,12 @@ export function managedSlackCredentialBinding(selections: PluginDesiredState | u
       !selected.every((name) => typeof name === "string" && reviewed.includes(name)) ||
       new Set(selected).size !== selected.length)
   ) {
-    throw new ConfigurationHarnessError("Select Slack tools from the reviewed plugin release.");
+    throw new ConfigurationHarnessError(
+      `Select ${install.entry.name} tools from the reviewed plugin release.`,
+    );
   }
   const toolNames = reviewed.filter((name) => selected?.includes(name));
-  return { sourceId, toolNames };
+  return { install, sourceId, toolNames };
 }
 
 export function requireManagedCredentialRuntime(
@@ -296,35 +380,32 @@ export function googleAttachmentConflict(
   }
 }
 
-export function managedSlackSourceConfigMismatch(
+export function managedMcpInstallForSourceConfig(
   config: CredentialSource["config"],
-): string | undefined {
-  const { credentialEnvironment, endpoint } = managedSlackInstall;
-  const expected = {
-    protocol: "mcp",
-    host: endpoint.host,
-    path: endpoint.path,
-    env_var: credentialEnvironment,
-  };
-  for (const [field, value] of Object.entries(expected)) {
-    if (config[field] !== value) {
-      return field;
-    }
+): ManagedMcpInstall | undefined {
+  if (config.protocol !== "mcp") {
+    return undefined;
   }
-  if (Number(config.port ?? 443) !== endpoint.port) {
-    return "port";
-  }
-  return undefined;
+  return managedMcpInstalls.find(
+    ({ credentialEnvironment, endpoint }) =>
+      config.host === endpoint.host &&
+      Number(config.port ?? 443) === endpoint.port &&
+      config.path === endpoint.path &&
+      config.env_var === credentialEnvironment,
+  );
 }
 
-export function managedSlackSlotAcceptsSource(source: CredentialSource): boolean {
+export function managedMcpSlotAcceptsSource(
+  install: ManagedMcpInstall,
+  source: CredentialSource,
+): boolean {
   return (
     source.state === "ready" &&
     source.ownerCapability === "credential_gateway" &&
     source.egress === undefined &&
     source.type === "bearer-token" &&
     source.secrets.token?.namespaceId === source.namespaceId &&
-    managedSlackSourceConfigMismatch(source.config) === undefined
+    managedMcpInstallForSourceConfig(source.config) === install
   );
 }
 

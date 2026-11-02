@@ -25,15 +25,14 @@ import {
 import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 import { verifyManagedPluginRegistration } from "../sandbox/openshell-plugin-policy.ts";
-import { slackMcpProviderEndpoint } from "../sandbox/openshell-slack-mcp-policy.ts";
+import { managedMcpProviderEndpoint } from "../sandbox/openshell-managed-mcp-policy.ts";
 import {
   googleAttachmentConflict,
   managedCredentialBinding,
   managedGoogleInstall,
-  managedSlackCredentialBinding,
-  managedSlackInstall,
-  managedSlackSlotAcceptsSource,
-  managedSlackSourceConfigMismatch,
+  managedMcpCredentialBinding,
+  managedMcpInstallForSourceConfig,
+  managedMcpSlotAcceptsSource,
   managedSlotAcceptsSource,
 } from "../plugin/managed-catalog.ts";
 
@@ -158,7 +157,7 @@ const BEARER_TOKEN_CONFIG = Object.freeze([
   Object.freeze({
     name: "protocol",
     required: false,
-    description: "Use mcp for the managed Slack MCP connection; defaults to REST.",
+    description: "Use mcp for a reviewed managed MCP connection. If omitted, the protocol is REST.",
   }),
 ]);
 
@@ -644,17 +643,17 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
       if (config.protocol === undefined) {
         return;
       }
-      const mismatch = managedSlackSourceConfigMismatch(config);
-      if (mismatch) {
-        throw new CredentialSourceConfigError(
-          mismatch,
-          "Use the reviewed settings for the managed Slack MCP connection.",
-        );
-      }
-      if (!allowsOAuthBinary(options, managedSlackInstall.binaryPath)) {
+      const install = managedMcpInstallForSourceConfig(config);
+      if (!install) {
         throw new CredentialSourceConfigError(
           "protocol",
-          "Managed Slack MCP requires the worker Node executable in the installation toolBinaries.",
+          "Use the reviewed settings for a managed MCP connection.",
+        );
+      }
+      if (!allowsOAuthBinary(options, install.binaryPath)) {
+        throw new CredentialSourceConfigError(
+          "protocol",
+          "Managed MCP requires the worker Node executable in the installation toolBinaries.",
         );
       }
     },
@@ -673,16 +672,16 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
       if (config.protocol === undefined) {
         return profile;
       }
-      const mismatch = managedSlackSourceConfigMismatch(config);
-      if (mismatch) {
-        throw new StoredCredentialSourceConfigError(mismatch);
+      const install = managedMcpInstallForSourceConfig(config);
+      if (!install) {
+        throw new StoredCredentialSourceConfigError("protocol");
       }
       return {
         ...profile,
-        // The provider projects only the access token and supplies an exact endpoint. The
-        // revision's Sandbox rule grants selected tools.
-        endpoints: [slackMcpProviderEndpoint],
-        binaries: requiredToolBinaries(options, managedSlackInstall.binaryPath),
+        // The provider projects the access token at the exact endpoint. Only the
+        // revision's Sandbox rule grants access to selected tools.
+        endpoints: [managedMcpProviderEndpoint(install)],
+        binaries: requiredToolBinaries(options, install.binaryPath),
       };
     },
   },
@@ -1176,26 +1175,33 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const binding = managedCredentialBinding(context.revision.plugins?.plugins);
-    const slackBinding = managedSlackCredentialBinding(context.revision.plugins?.plugins);
-    const slackSource = context.sources.find(({ id }) => id === slackBinding?.sourceId);
-    if (slackSource && !managedSlackSlotAcceptsSource(slackSource)) {
+    const mcpBinding = managedMcpCredentialBinding(context.revision.plugins?.plugins);
+    const mcpSource = context.sources.find(({ id }) => id === mcpBinding?.sourceId);
+    if (mcpBinding && mcpSource && !managedMcpSlotAcceptsSource(mcpBinding.install, mcpSource)) {
       throw new ScopeViolationError(
-        "The attached Slack account does not match the reviewed credential slot.",
+        "The attached MCP account does not match the reviewed credential slot.",
       );
     }
     for (const source of context.sources.filter(({ config }) => config.protocol === "mcp")) {
+      const install = managedMcpInstallForSourceConfig(source.config);
+      if (!install || !managedMcpSlotAcceptsSource(install, source)) {
+        throw new ScopeViolationError(
+          "The attached credential does not match a reviewed MCP slot.",
+        );
+      }
       const conflict = context.sources.some((other) => {
         const baseUrl = other.config[OPENAI_BASE_URL_CONFIG];
         const host =
           other.config.host ?? (baseUrl && URL.canParse(baseUrl) ? new URL(baseUrl).hostname : "");
         return (
           other.id !== source.id &&
-          host.toLowerCase().replace(/\.$/, "") === managedSlackInstall.endpoint.host
+          (host.toLowerCase().replace(/\.$/, "") === install.endpoint.host ||
+            other.config.env_var === install.credentialEnvironment)
         );
       });
       if (conflict) {
         throw new ScopeViolationError(
-          "The managed Slack MCP credential conflicts with another credential for its host.",
+          "The managed MCP credential conflicts with another credential for its host or placeholder.",
         );
       }
     }
