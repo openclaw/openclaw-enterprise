@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Add Codex plugins to a local OpenShell Agent
 
 Use the Console or API to discover Linear, enable it on your existing Codex Agent, and run a read through OpenClaw. The same Agent can have native Git access; a repository credential is optional for this procedure.

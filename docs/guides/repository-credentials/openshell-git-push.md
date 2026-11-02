@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Push a Git branch from an OpenShell Agent
 
 Give an existing dedicated Codex Agent access to one GitHub repository. The OCE worker holds the GitHub App signing key and mints short-lived installation tokens. OpenShell authorizes Git requests through the repository Credential Proxy and injects a scoped token. Credential Gateway continues to supply the Codex service-account credential, including the account's authorized Linear connection.

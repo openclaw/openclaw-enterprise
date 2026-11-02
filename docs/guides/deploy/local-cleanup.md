@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Clean up the local Installation
 
 Delete the Agent, then remove the disposable Installation when you finish the local quickstart. Use the saved operator session from Setup OCE. Removing the Installation deletes its k3d cluster, database and generated Kubernetes credentials.

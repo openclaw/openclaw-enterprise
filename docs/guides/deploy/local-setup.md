@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Set up OCE locally with OpenShell and Codex
 
 Install OpenClaw Enterprise (OCE) in a private k3d cluster and verify a Codex Agent conversation before [adding Git](../repository-credentials/openshell-git-push.md) or [plugins](../integrations/codex-plugins.md).
