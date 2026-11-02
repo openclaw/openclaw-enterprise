@@ -1,8 +1,7 @@
 name: Bun formatter write proof
 
 on:
-  push:
-    branches: [investigate/enterprise-bun-proof-20261102]
+  workflow_dispatch:
 
 permissions:
   contents: read
