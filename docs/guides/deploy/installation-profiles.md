@@ -1,9 +1,8 @@
 # Render installation profiles
 
-Installation profiles generate the two trusted files used by a production
-OpenClaw Enterprise install: a Helm values overlay and the Installation startup
-YAML mounted into the controller. Use a profile when you want the standard
-OpenClaw or Codex defaults without editing the production examples by hand.
+Installation profiles generate Helm values and the Installation startup YAML for
+a production OpenClaw Enterprise install. Use a profile for standard OpenClaw or
+Codex defaults instead of editing production examples.
 
 Profiles only render configuration for an already prepared environment. They do
 not create clusters, Secrets, databases, DNS, certificates, hosted plugin
