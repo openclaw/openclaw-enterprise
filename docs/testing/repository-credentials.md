@@ -161,6 +161,34 @@ Its authorized run proves the packaged sender in a real cluster; it is separate 
 The PostgreSQL tests cover receipt recovery and no-replay behavior, while the runtime image tests
 cover stock Codex and generated client material. These checks do not replace the installed lane.
 
+To bind its receipt to a [selected OCE release](../guides/deploy/production-upgrade.md#prepare-the-release),
+prepare an independent JSON control file with `sourceSha` (the full OCE checkout SHA)
+and `images.controller`, `images.runtime`, and `images.repository` (the broker), each
+an immutable `sha256:<64 lowercase hex characters>` built manifest digest. Obtain
+these expected values from the release selection, not from the receipt being checked.
+From that release checkout, run:
+
+```sh
+node scripts/ci/run-tests.mjs aggregate skipper-prepared-git-installed \
+  --results-dir /path/to/results --release-selection /path/to/release.json
+```
+
+The consumer requires the selected SHA, all three built digests, recorded imported
+manifest and config digests, the complete chat/Git/withdrawal journey, and successful
+test and cluster cleanup. Missing control, release fields or proof fails qualification;
+a generic runner summary is insufficient. Success adds `releaseQualification` to the
+aggregate. Without `--release-selection`, normal smoke aggregation remains unchanged
+and does not qualify a selected release.
+
+The prepared runtime includes an added synthetic-model CA trust layer. Its recorded
+runtime digest identifies **that prepared image**, not the underlying stock or published
+runtime image. Qualification applies only to the exact selected digest set under
+`checkout-images-with-synthetic-model-trust-layer`; it cannot establish qualification
+of a different published image set, even at the same OCE commit.
+
+Run `node --test tests/integration/skipper-release.test.ts` for positive and adverse
+offline checks through the actual aggregate CLI. They do not execute an installed journey.
+
 ## Controller and broker image compatibility probe
 
 Run the `image-pair-qualification` lane using the

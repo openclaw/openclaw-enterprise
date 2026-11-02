@@ -233,6 +233,9 @@
       "path": "tests/integration/ci-image-config-digest.test.mjs"
     },
     {
+      "path": "tests/integration/skipper-release.test.ts"
+    },
+    {
       "path": "tests/integration/repository-credentials-draft-pr-cli.test.mjs"
     },
     {
