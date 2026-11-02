@@ -67,8 +67,10 @@ The central-gateway case checks real Agent/browser/model behavior before its
 seven cleanup scenarios remove authority. Those scenarios check worker/provider
 cleanup after placement loss, external claim release, and reassignment refusal
 across retry. The separate bare-service case creates no Agent and needs no model
-credential: it removes its tenant-local alias after provider confirmation, then
-checks retry without that endpoint. Cleanup evidence does not qualify production
+credential: with no bound Namespaces, it uses the official chart's full-PKI reset
+to add its alias DNS name, reloads mutual-TLS identities, and verifies the alias
+before binding a target. It then removes that alias after provider confirmation
+and checks retry without the endpoint. Cleanup evidence does not qualify production
 TLS or model execution; the central case verifies its model behavior separately.
 Selected cases fail when their prerequisites are unavailable.
 

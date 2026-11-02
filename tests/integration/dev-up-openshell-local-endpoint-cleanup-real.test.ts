@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { access, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -10,6 +10,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { localOpenShellGatewayOptions } from "../helpers/local-openshell-gateway.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 
@@ -103,6 +104,8 @@ test(
     delete environment.OPENAI_API_KEY;
     delete environment.CODEX_ACCESS_TOKEN;
     delete environment.KUBECONFIG;
+    delete environment.OCC_DEVELOPMENT_PROTECTED_EGRESS;
+    delete environment.OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP;
     delete environment.OCC_DEVELOPMENT_OPENSHELL_HELM_CHART;
     delete environment.OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART;
     delete environment.OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST;
@@ -213,44 +216,56 @@ test(
       }
     };
 
-    const gatewayPort = await availablePort();
-    const forward = spawn(
-      "kubectl",
-      [
-        ...clusterArguments,
-        "port-forward",
-        "--namespace=oce-system",
-        "service/openshell-gateway",
-        `${gatewayPort}:8080`,
-      ],
-      { cwd: repository, env: environment, stdio: ["ignore", "ignore", "ignore"] },
-    );
-    resources.forward = forward;
-    // A missing kubectl must fail the selected prerequisite without an unhandled child error.
-    let forwardFailed = false;
-    forward.once("error", () => {
-      forwardFailed = true;
-    });
-    const observer = new GrpcOpenShellGatewayClient({
-      endpoint: `http://127.0.0.1:${gatewayPort}`,
-      auth: { mode: "unauthenticated" },
-      requestTimeoutMs: 1_000,
-    });
-    resources.gateway = observer;
-    await waitFor("official central OpenShell gateway", async () => {
-      assert.equal(forwardFailed, false, "the owned management port-forward must start");
-      assert.equal(
-        forward?.exitCode,
-        null,
-        "the owned management port-forward must remain running",
+    const startObserver = async () => {
+      const gatewayPort = await availablePort();
+      const forward = spawn(
+        "kubectl",
+        [
+          ...clusterArguments,
+          "port-forward",
+          "--namespace=oce-system",
+          "service/openshell-gateway",
+          `${gatewayPort}:8080`,
+        ],
+        { cwd: repository, env: environment, stdio: ["ignore", "ignore", "ignore"] },
       );
-      try {
-        await observer.health(AbortSignal.timeout(2_000));
-        return true;
-      } catch {
-        return undefined;
-      }
-    });
+      resources.forward = forward;
+      // A missing kubectl must fail the selected prerequisite without an unhandled child error.
+      let forwardFailed = false;
+      forward.once("error", () => {
+        forwardFailed = true;
+      });
+      const options = await localOpenShellGatewayOptions(
+        t,
+        clusterArguments,
+        environment,
+        "oce-system",
+        gatewayPort,
+      );
+      assert.equal(options.auth.mode, "mtls");
+      const observer = new GrpcOpenShellGatewayClient({
+        ...options,
+        auth: { ...options.auth, mode: "mtls" },
+        requestTimeoutMs: 1_000,
+      });
+      resources.gateway = observer;
+      await waitFor("official central OpenShell gateway", async () => {
+        assert.equal(forwardFailed, false, "the owned management port-forward must start");
+        assert.equal(
+          forward?.exitCode,
+          null,
+          "the owned management port-forward must remain running",
+        );
+        try {
+          await observer.health(AbortSignal.timeout(2_000));
+          return true;
+        } catch {
+          return undefined;
+        }
+      });
+      return observer;
+    };
+    let observer = await startObserver();
 
     // Remove the only existing lifecycle normally before selecting a different Backend address.
     // No live Namespace is retargeted, and its completed journal is never rewritten.
@@ -276,6 +291,98 @@ test(
     assert.equal((await namespace<LogicalNamespace[]>("list")).length, 0);
     await setWorkerReplicas(0);
 
+    // No Namespace remains bound to the old authority. Use the official chart's
+    // full-PKI reset to add this fixture's Service DNS SAN before creating a target.
+    // Never weaken TLS or reuse a channel/identity across the rotation.
+    const physicalName = `os-local-${suffix}`;
+    const aliasName = "openshell-gateway";
+    const aliasHost = `${aliasName}.${physicalName}.svc`;
+    const previousClient = await clusterJson<StartupSecret>(
+      "get",
+      "secret",
+      "openshell-client-tls",
+      "--namespace=oce-system",
+    );
+    observer.close();
+    await stopProcess(resources.forward!);
+    delete resources.forward;
+    const chartDirectory = join(stateDirectory, "openshell", "chart");
+    const gatewayCharts = (await readdir(chartDirectory)).filter((name) =>
+      /^helm-chart-[0-9]+\.[0-9]+\.[0-9]+\.tgz$/.test(name),
+    );
+    assert.equal(gatewayCharts.length, 1, "use the exact official chart packaged by dev-up");
+    await kubectl(
+      "delete",
+      "secret",
+      "openshell-server-tls",
+      "openshell-client-tls",
+      "openshell-gateway-jwt-keys",
+      "--namespace=oce-system",
+    );
+    await run(
+      "helm",
+      [
+        "upgrade",
+        "openshell-gateway",
+        join(chartDirectory, gatewayCharts[0]!),
+        "--kubeconfig",
+        clusterArguments[1]!,
+        "--kube-context",
+        clusterArguments[3]!,
+        "--namespace=oce-system",
+        "--reuse-values",
+        // The certgen hook completes before upgrade returns. Restart below before
+        // waiting, so readiness cannot reuse the old server's in-memory certificate.
+        `--set-string=pkiInitJob.serverDnsNames[0]=${aliasHost}`,
+        "--timeout=300s",
+      ],
+      { timeout: 330_000 },
+    );
+    const gatewayValues = loadYaml(
+      await run("helm", [
+        "get",
+        "values",
+        "openshell-gateway",
+        "--kubeconfig",
+        clusterArguments[1]!,
+        "--kube-context",
+        clusterArguments[3]!,
+        "--namespace=oce-system",
+      ]),
+    ) as {
+      server: {
+        disableTls: boolean;
+        tls: { enableMtls: boolean };
+        auth: { allowUnauthenticatedUsers: boolean };
+      };
+      pkiInitJob: { serverDnsNames: string[] };
+    };
+    assert.equal(gatewayValues.server.disableTls, false);
+    assert.equal(gatewayValues.server.tls.enableMtls, true);
+    assert.equal(gatewayValues.server.auth.allowUnauthenticatedUsers, false);
+    assert.ok(gatewayValues.pkiInitJob.serverDnsNames.includes(aliasHost));
+    const nextClient = await clusterJson<StartupSecret>(
+      "get",
+      "secret",
+      "openshell-client-tls",
+      "--namespace=oce-system",
+    );
+    assert.notEqual(nextClient.metadata.uid, previousClient.metadata.uid);
+    assert.notEqual(
+      nextClient.data["ca.crt"],
+      previousClient.data["ca.crt"],
+      "the observer must load the newly generated trust",
+    );
+    await kubectl("rollout", "restart", "deployment/openshell-gateway", "--namespace=oce-system");
+    await kubectl(
+      "rollout",
+      "status",
+      "deployment/openshell-gateway",
+      "--namespace=oce-system",
+      "--timeout=120s",
+    );
+    observer = await startObserver();
+
     const startupSecret = await clusterJson<StartupSecret>(
       "get",
       "secret",
@@ -287,14 +394,19 @@ test(
     ) as StartupConfiguration;
     const backend = configuration.backend.find((entry) => entry.type === "openshell");
     assert.ok(backend);
-    const centralEndpoint = "http://openshell-gateway.oce-system.svc.cluster.local:8080";
+    const centralEndpoint = "https://openshell-gateway.oce-system.svc.cluster.local:8080";
     assert.equal(backend.configuration.endpoint, centralEndpoint);
-    assert.equal(backend.configuration.insecureTransport, "network-policy");
+    assert.equal(backend.configuration.insecureTransport, undefined);
+    assert.equal(backend.configuration.rootCertificatePath, "/etc/openclaw/openshell/ca.crt");
+    assert.deepEqual(backend.configuration.auth, {
+      mode: "mtls",
+      certificatePath: "/etc/openclaw/openshell/tls.crt",
+      privateKeyPath: "/etc/openclaw/openshell/tls.key",
+    });
     assert.equal(backend.configuration.serviceName, undefined);
     assert.equal(configuration.drivers.sandbox.configuration.gateway.readiness, undefined);
     const { endpoint: originalEndpoint, ...unchangedConnection } = backend.configuration;
     assert.equal(originalEndpoint, centralEndpoint);
-    const aliasName = "openshell-gateway";
     backend.configuration = { ...unchangedConnection, serviceName: aliasName };
     const installation = JSON.stringify(configuration);
     const secretManifest = join(root, "installation-startup.json");
@@ -336,7 +448,6 @@ test(
 
     // The Service is operator infrastructure in an explicitly adopted Namespace. It is real
     // DNS indirection to the official gateway; neither the provider nor its transport is replaced.
-    const physicalName = `os-local-${suffix}`;
     await kubectl("create", "namespace", physicalName);
     await kubectl(
       "label",
@@ -369,6 +480,36 @@ test(
       { mode: 0o600 },
     );
     await kubectl("create", "--filename", aliasManifest);
+    const probeReachability = async () => {
+      const aliasEndpoint = `https://${aliasName}.${physicalName}.svc:8080`;
+      // Fresh production clients run from the surviving API Pod's actual network position. No
+      // old gRPC channel or host port-forward can make the deleted alias appear reachable.
+      const probe = `
+      import { GrpcOpenShellGatewayClient } from "./apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+      const observe = async (endpoint) => {
+        const client = new GrpcOpenShellGatewayClient({ ...${JSON.stringify({ rootCertificatePath: backend.configuration.rootCertificatePath, auth: backend.configuration.auth })}, endpoint, requestTimeoutMs: 1000 });
+        try { await client.health(AbortSignal.timeout(2000)); return "reachable"; }
+        catch { return "unreachable"; }
+        finally { client.close(); }
+      };
+      console.log(JSON.stringify({
+        central: await observe(${JSON.stringify(centralEndpoint)}),
+        alias: await observe(${JSON.stringify(aliasEndpoint)}),
+      }));
+    `;
+      return JSON.parse(
+        await kubectl(
+          "exec",
+          "deployment/openclaw-enterprise-api",
+          "--namespace=oce-system",
+          "--",
+          "node",
+          "--input-type=module",
+          "--eval",
+          probe,
+        ),
+      ) as { central: string; alias: string };
+    };
     const logical = await namespace<LogicalNamespace>(
       "create",
       `local-endpoint-${suffix}`,
@@ -391,6 +532,7 @@ test(
       "--namespace",
       physicalName,
     );
+    assert.deepEqual(await probeReachability(), { central: "reachable", alias: "reachable" });
     const finalizer = `cleanup-test.openclaw.dev/local-${suffix}`;
     await kubectl(
       "patch",
@@ -468,35 +610,7 @@ test(
       "",
     );
 
-    const aliasEndpoint = `http://${aliasName}.${physicalName}.svc:8080`;
-    // Fresh production clients run from the surviving API Pod's actual network position. No
-    // old gRPC channel or host port-forward can make the deleted alias appear reachable.
-    const probe = `
-      import { GrpcOpenShellGatewayClient } from "./apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-      const observe = async (endpoint) => {
-        const client = new GrpcOpenShellGatewayClient({ endpoint, requestTimeoutMs: 1000, auth: { mode: "unauthenticated" } });
-        try { await client.health(AbortSignal.timeout(2000)); return "reachable"; }
-        catch { return "unreachable"; }
-        finally { client.close(); }
-      };
-      console.log(JSON.stringify({
-        central: await observe(${JSON.stringify(centralEndpoint)}),
-        alias: await observe(${JSON.stringify(aliasEndpoint)}),
-      }));
-    `;
-    const reachability = JSON.parse(
-      await kubectl(
-        "exec",
-        "deployment/openclaw-enterprise-api",
-        "--namespace=oce-system",
-        "--",
-        "node",
-        "--input-type=module",
-        "--eval",
-        probe,
-      ),
-    ) as { central: string; alias: string };
-    assert.deepEqual(reachability, { central: "reachable", alias: "unreachable" });
+    assert.deepEqual(await probeReachability(), { central: "reachable", alias: "unreachable" });
     assert.equal(await observer.getWorkspace(physicalName, AbortSignal.timeout(10_000)), undefined);
     assert.equal((await liveNamespace(logical.id))?.status, "deleting");
 
