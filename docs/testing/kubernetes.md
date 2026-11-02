@@ -152,9 +152,8 @@ OCC_TEST_HARNESS_K3D_REAL=1 OCC_TEST_SLACK_LIVE=0 \
 ```
 
 All seven non-Slack cases must pass: dedicated Codex, dedicated Skill source
-uploads, embedded OpenClaw, Secret lifecycle, a Default user deploy in the
-`default` Namespace, and startup-failure evidence with plugins disabled and
-enabled. The Skill source case needs local `zip`. A
+uploads, embedded OpenClaw, Secret lifecycle, a Default user deploy, and
+startup-failure evidence with plugins disabled and enabled. The Skill source case needs local `zip`. A
 selected suite fails on missing prerequisites; an unselected suite skips. The
 suite does not install OCC with Helm. Credentials belong only in the selected
 runtime Pods, not controllers, logs, or shell history. For private workspace
