@@ -5,8 +5,10 @@
 // and the inactive Slack approver startup check on both production launchers.
 // Ephemeral native worker reconnect is in runtime-image-startup-probe.test.mjs.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -21,7 +23,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   managedGoogleInstall,
-  managedSlackInstall,
+  managedMcpInstalls,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
@@ -56,7 +58,7 @@ async function startGoogleGateway(t, enabled, workspaceNodeId) {
 
 // Run the production worker bootstrap with its packaged files and child environment. The child
 // inspects the installed plugin in place of enrolling; the model probe uses a fixture.
-function runManagedWorker(plugin, childArgs, digest, mounts = [], environment = []) {
+function runManagedWorker(childArgs, mounts = [], environment = []) {
   const launch = `
 const cp = require("node:child_process"), realSpawn = cp.spawn;
 cp.spawnSync = () => ({status:0,stdout:JSON.stringify({auth:{probes:{results:[{provider:"openai",model:"openai/test",source:"env",status:"ok"}]}}})});
@@ -83,9 +85,6 @@ ${NATIVE_WORKER_ENTRYPOINT}`;
       "ALL",
       "--tmpfs",
       "/tmp:mode=1777",
-      ...(digest === undefined
-        ? []
-        : ["-e", `OPENCLAW_MANAGED_${plugin}_RELEASE_SHA256=${digest}`]),
       ...mounts,
       ...environment.flatMap((entry) => ["--env", entry]),
       "--entrypoint",
@@ -123,8 +122,11 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
       const probe = `const r = require("node:child_process").spawnSync("gog", ["--version"], {encoding:"utf8"});
 console.log(JSON.stringify({...(r.error ? {code:r.error.code} : {version:r.stdout.trim().split(" ")[0]}), markerVisible:process.env.GOG_ACCESS_TOKEN===undefined?undefined:"present"}));
 process.exit(r.error ? 0 : r.status);`;
-      const worker = (digest, mounts, environment) =>
-        runManagedWorker("GOOGLE", ["-e", probe], digest, mounts, environment);
+      const worker = (digest, mounts, environment = []) =>
+        runManagedWorker(["-e", probe], mounts, [
+          ...environment,
+          ...(digest === undefined ? [] : ["OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256=" + digest]),
+        ]);
       const marker =
         "GOG_ACCESS_TOKEN=openshell:resolve:env:s" + "a".repeat(64) + "_GOG_ACCESS_TOKEN";
       assert.deepEqual(JSON.parse((await worker(undefined, [], [marker])).stdout.trim()), {
@@ -180,49 +182,50 @@ process.exit(r.error ? 0 : r.status);`;
       const volume = await gatewayStateVolume(t, "/tmp/node", {
         seed: "echo retained > /tmp/node/enrollment-sentinel",
       });
-      const inspect = async (digest, mounts = [], environment = []) => {
+      const { packageName, slotId, releaseSha256 } = managedMcpInstalls.find(
+        ({ id }) => id === "occ-plugin:slack@1.0.0",
+      );
+      const settings = (digest, toolNames) =>
+        "OPENCLAW_MANAGED_MCP_JSON=" +
+        JSON.stringify({ packageName, slotId, releaseSha256: digest, toolNames });
+      const inspect = async (digest, mounts = [], toolNames) => {
         const result = await runManagedWorker(
-          "SLACK",
           ["/app/openclaw.mjs", "config", "get", "nodeHost", "--json"],
-          digest,
           ["-v", volume + ":/tmp/node", ...mounts],
-          environment,
+          digest === undefined ? [] : [settings(digest, toolNames)],
         );
         return JSON.parse(result.stdout);
       };
-      const { releaseSha256 } = managedSlackInstall;
       const selected = await inspect(releaseSha256);
-      assert.deepEqual(selected.mcp.servers.slack, {
+      assert.deepEqual(selected.mcp.servers.oce_mcp_slack, {
         enabled: false,
         transport: "streamable-http",
         url: "https://mcp.slack.com/mcp",
       });
-      const tools = 'OPENCLAW_MANAGED_SLACK_TOOL_NAMES=["slack_search_public"]';
+      const tools = ["slack_search_public"];
       for (const marker of [
         "openshell:resolve:env:v7_SLACK_MCP_TOKEN",
         "openshell:resolve:env:s" + "a".repeat(64) + "_SLACK_MCP_TOKEN",
       ]) {
         const connected = await runManagedWorker(
-          "SLACK",
           [
             "-e",
             "console.log(require('node:fs').readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8'))",
           ],
-          releaseSha256,
           ["-v", volume + ":/tmp/node"],
-          [tools, "SLACK_MCP_TOKEN=" + marker],
+          [settings(releaseSha256, tools), "SLACK_MCP_TOKEN=" + marker],
         );
-        assert.deepEqual(JSON.parse(connected.stdout).nodeHost.mcp.servers.slack, {
-          ...selected.mcp.servers.slack,
+        assert.deepEqual(JSON.parse(connected.stdout).nodeHost.mcp.servers.oce_mcp_slack, {
+          ...selected.mcp.servers.oce_mcp_slack,
           enabled: true,
           headers: { Authorization: "Bearer " + marker },
           toolFilter: { include: ["slack_search_public"] },
         });
       }
-      const withdrawn = await inspect(releaseSha256, [], [tools]);
-      assert.deepEqual(withdrawn.mcp.servers.slack, selected.mcp.servers.slack);
+      const withdrawn = await inspect(releaseSha256, [], tools);
+      assert.deepEqual(withdrawn.mcp.servers.oce_mcp_slack, selected.mcp.servers.oce_mcp_slack);
       const deselected = await inspect(undefined);
-      assert.equal(deselected.mcp?.servers?.slack, undefined);
+      assert.equal(deselected.mcp?.servers?.oce_mcp_slack, undefined);
       const sentinel = await runDocker([
         "run",
         "--rm",
@@ -236,13 +239,72 @@ process.exit(r.error ? 0 : r.status);`;
         "/tmp/node/enrollment-sentinel",
       ]);
       assert.equal(sentinel.stdout.trim(), "retained");
-      const mcpPath = "/usr/local/lib/oce/plugins/slack/mcp.json";
+      const mcpPath = "/usr/local/lib/oce/plugin-catalog/oce-slack/mcp.json";
       const replacement = fileURLToPath(
         new URL("../../apps/controller/plugins/oce-slack/plugin.json", import.meta.url),
       );
       await assert.rejects(
         inspect(releaseSha256, ["-v", replacement + ":" + mcpPath + ":ro"]),
         (error) => error.stderr.includes("image integrity check: " + mcpPath),
+      );
+    },
+  );
+
+  test(
+    "the dedicated worker stages a different MCP package from its reviewed release",
+    imageTestOptions,
+    async (t) => {
+      const directory = await mkdtemp(join(tmpdir(), "oce-managed-mcp-"));
+      t.after(() => rm(directory, { recursive: true, force: true }));
+      await mkdir(join(directory, "ai.openclaw.oce"));
+      const url = "https://documents.example.test/services/mcp";
+      const manifest = JSON.stringify({
+        mcpServers: { documents: { type: "streamable-http", url } },
+      });
+      const digest = (content) => createHash("sha256").update(content).digest("hex");
+      const release = JSON.stringify({
+        capabilities: { gateway: [], harness: ["mcp"] },
+        mcpServersSha256: digest(manifest),
+        credentials: {
+          workspace: {
+            delivery: { role: "harness", env: "DOCUMENTS_ACCESS_TOKEN", presentation: "bearer" },
+            mcp: { server: "documents", tools: ["ListItems", "UpdateItem"] },
+          },
+        },
+      });
+      await writeFile(join(directory, "mcp.json"), manifest);
+      await writeFile(join(directory, "ai.openclaw.oce/release.json"), release);
+      const marker = "openshell:resolve:env:v9_DOCUMENTS_ACCESS_TOKEN";
+      const run = (toolNames) =>
+        runManagedWorker(
+          [
+            "-e",
+            "console.log(require('node:fs').readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8'))",
+          ],
+          ["-v", directory + ":/usr/local/lib/oce/plugin-catalog/oce-documents:ro"],
+          [
+            "OPENCLAW_MANAGED_MCP_JSON=" +
+              JSON.stringify({
+                packageName: "oce-documents",
+                slotId: "workspace",
+                releaseSha256: digest(release),
+                toolNames,
+              }),
+            "DOCUMENTS_ACCESS_TOKEN=" + marker,
+          ],
+        );
+      const configured = await run(["ListItems"]);
+      assert.deepEqual(JSON.parse(configured.stdout).nodeHost.mcp.servers, {
+        oce_mcp_documents: {
+          enabled: true,
+          transport: "streamable-http",
+          url,
+          headers: { Authorization: "Bearer " + marker },
+          toolFilter: { include: ["ListItems"] },
+        },
+      });
+      await assert.rejects(run(["UnreviewedTool"]), (error) =>
+        error.stderr.includes("The selected MCP tools do not match the managed release."),
       );
     },
   );

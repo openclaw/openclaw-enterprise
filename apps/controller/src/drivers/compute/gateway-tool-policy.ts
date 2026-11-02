@@ -246,14 +246,17 @@ export function managedGatewayConfiguration(
     "gateway_exec",
     "gateway_process",
   ];
-  if (approved.allow.some((tool) => administrativeTools.includes(tool))) {
+  const reviewedPluginTools = names(managedPluginTools, "tools.gatewayPolicy.allow", true);
+  if (
+    [...approved.allow, ...reviewedPluginTools].some((tool) => administrativeTools.includes(tool))
+  ) {
     throw createError("tools.gatewayPolicy.allow", "must not grant Gateway administrative tools");
   }
   const effective = object(configuration.tools ?? undefined, "tools").gatewayPolicy;
   const existing = effective === undefined ? undefined : parsePolicy(effective);
   const admittedAllow =
     supplied === undefined
-      ? [...new Set([...approved.allow, ...managedPluginTools])]
+      ? [...new Set([...approved.allow, ...reviewedPluginTools])]
       : approved.allow;
   const allow =
     existing === undefined
@@ -287,7 +290,7 @@ export function managedGatewayConfiguration(
   const next: Record<string, OpenClawConfigurationDocument[string]> =
     structuredClone(configuration);
   const tools = object(next.tools ?? undefined, "tools");
-  const pluginGrants = managedPluginTools.filter((tool) => allow.includes(tool));
+  const pluginGrants = reviewedPluginTools.filter((tool) => allow.includes(tool));
   if (pluginGrants.length && (tools.alsoAllow === undefined || Array.isArray(tools.alsoAllow))) {
     tools.alsoAllow = [...new Set([...(tools.alsoAllow ?? []), ...pluginGrants])];
   }

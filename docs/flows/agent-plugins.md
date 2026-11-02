@@ -122,13 +122,13 @@ OCC revalidates Configuration and selections, snapshots Driver and policies, and
 
 For Google Workspace, the Gateway loads the skill. The Sandbox Driver binds the selected Agent credential’s host, path and scopes to the pinned release. OpenShell injects a bearer after the cluster’s shared guard checks each `gog` request against the binding and release operation map. Withdrawal detaches the credential. Worker recovery preserves other attachments. [Deployment and inspection](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
-For Slack, Kubernetes Compute gives the worker the pinned MCP descriptor, account
-placeholder, and upstream tool names. The worker advertises that subset and the
-Gateway admits its OpenClaw names. OCE stores the account's access token through
-the Secret Driver. The Credential Gateway projects it into the OpenShell
-provider. The Sandbox Driver installs the revision's native MCP rules, so OpenShell
-checks tool names before injecting the bearer for both worker and script calls.
-No account or tools leaves the server disabled.
+For a managed MCP release, Kubernetes Compute gives the worker the pinned
+server descriptor, account placeholder, and selected upstream tool names.
+The worker advertises that subset and the Gateway admits its OpenClaw names.
+The Credential Gateway projects the saved access token into the OpenShell
+provider. The Sandbox Driver installs the revision's native MCP rules. OpenShell
+checks tool names before injecting the bearer for worker and script calls.
+The worker enables the server when the selection has an account and tools.
 
 ### 3. Deliver requested state through Compute preparation
 

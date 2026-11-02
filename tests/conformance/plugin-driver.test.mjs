@@ -7,7 +7,7 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { managedSlackInstall } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import {
   codexCatalogEntries,
   codexOpenClawConfiguration,
@@ -197,7 +197,7 @@ test("dedicated OpenClaw admits one managed package and validates Slack's review
   assert.deepEqual((await driver.discoverCatalog({ q: "SLACK" })).plugins, [slack]);
   driver.validatePolicies({ [slack.id]: { enabled: false } });
   const slackPolicy = {
-    releaseSha256: managedSlackInstall.releaseSha256,
+    releaseSha256: managedMcpInstalls.find(({ id }) => id === slack.id).releaseSha256,
     credentials: { account: "cs_slack" },
   };
   const selections = { [slack.id]: { enabled: true, driverPolicy: slackPolicy } };

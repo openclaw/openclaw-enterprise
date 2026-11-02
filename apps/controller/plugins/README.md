@@ -5,7 +5,9 @@ Each package has a [plugin.json](./oce-google-workspace/plugin.json) at its root
 `ai.openclaw.oce` extension points to the release that OCE deploys.
 
 - [Google Workspace](./oce-google-workspace/ai.openclaw.oce/release.json) pins the ClawHub skill and Linux `gog` binaries.
-- [Slack](./oce-slack/mcp.json) declares Slack’s hosted MCP server. The [release](./oce-slack/ai.openclaw.oce/release.json) pins the descriptor and the reviewed tool names. Select a Slack credential already attached to the Agent to enable public search on the dedicated worker. OpenShell limits credentialed requests to the selected tools. See [Slack MCP](https://docs.slack.dev/ai/slack-mcp-server/).
+- [Slack](./oce-slack/mcp.json) is the first example of a managed MCP package. It supplies Slack public search. See [Slack MCP](https://docs.slack.dev/ai/slack-mcp-server/).
+
+To bundle another managed MCP server, add its package to the marketplace index. Its `mcp.json` declares one Streamable HTTP server with a fixed HTTPS endpoint. Its [release](./oce-slack/ai.openclaw.oce/release.json) pins the descriptor hash and declares the credential slot, bearer placeholder, MCP protocol versions, and reviewed upstream tool names. The controller and runtime images ship the reviewed package together. An Agent selects a compatible attached credential and tools, and OpenShell enforces those tool names at the declared endpoint.
 
 The Plugin Driver registers each package by version. Publish changed release bytes under a new version so existing Agent selections continue to identify the reviewed release.
 

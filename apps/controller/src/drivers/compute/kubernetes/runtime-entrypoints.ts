@@ -274,7 +274,7 @@ const googleAccountEnv: string = JSON.parse(
   ),
 ).credentials.account.delivery.env;
 
-export const MANAGED_SLACK_TOOLS_ENVIRONMENT = "OPENCLAW_MANAGED_SLACK_TOOL_NAMES";
+export const MANAGED_MCP_ENVIRONMENT = "OPENCLAW_MANAGED_MCP_JSON";
 
 const MANAGED_INSTALL_HELPERS = String.raw`
 function verifiedPluginFile(path, expected) {
@@ -286,37 +286,45 @@ function verifiedPluginFile(path, expected) {
 }
 
 function managedPluginInstallation() {
-  let install;
-  for (const name of ["google", "slack"]) {
-    const prefix = "OPENCLAW_MANAGED_" + name.toUpperCase();
-    const id = process.env[prefix + "_PLUGIN_ID"];
-    const digest = process.env[prefix + "_RELEASE_SHA256"];
-    if (id === undefined && digest === undefined) continue;
-    if (install) throw new Error("Only one managed plugin can be selected.");
-    const root = "/usr/local/lib/oce/plugins/" + name;
-    const release = digest === undefined ? undefined : JSON.parse(verifiedPluginFile(root + "/release.json", digest));
-    const skills = root + "/skills";
-    let skill;
-    if (release?.capabilities.gateway.includes("skill")) {
-      const directory = skills + "/" + release.skill;
-      const instructions = directory + "/SKILL.md";
-      skill = { directory, instructions };
+  const googleId = process.env.OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID;
+  const googleDigest = process.env.OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256;
+  const mcpJson = process.env[${JSON.stringify(MANAGED_MCP_ENVIRONMENT)}];
+  if (mcpJson !== undefined) {
+    if (googleId !== undefined || googleDigest !== undefined) {
+      throw new Error("Only one managed plugin can be selected.");
     }
-    install = { name, id, root, release, skills, skill };
+    const { id, packageName, releaseSha256, slotId, toolNames = [] } = JSON.parse(mcpJson);
+    if (typeof packageName !== "string" || !/^[a-z][a-z0-9-]*$/.test(packageName)) {
+      throw new Error("The managed MCP package name is invalid.");
+    }
+    const root = "/usr/local/lib/oce/plugin-catalog/" + packageName;
+    const release = releaseSha256 === undefined ? undefined
+      : JSON.parse(verifiedPluginFile(root + "/ai.openclaw.oce/release.json", releaseSha256));
+    const slot = release?.credentials?.[slotId];
+    if (!Array.isArray(toolNames) || (release ? !Array.isArray(slot?.mcp?.tools) ||
+        !toolNames.every((name) => typeof name === "string" && slot.mcp.tools.includes(name))
+      : toolNames.length > 0)) {
+      throw new Error("The selected MCP tools do not match the managed release.");
+    }
+    const mcp = slot && {
+      delivery: slot.delivery,
+      server: slot.mcp.server,
+      localServer: "oce_mcp_" + slot.mcp.server,
+      toolNames,
+    };
+    return { id, root, release, mcp };
   }
-  return install;
-}
-
-function managedSlackToolNames(install) {
-  const selected = process.env[${JSON.stringify(MANAGED_SLACK_TOOLS_ENVIRONMENT)}];
-  if (selected === undefined) return [];
-  const tools = JSON.parse(selected);
-  const reviewed = install?.name === "slack" && install.release?.credentials?.account?.mcp?.tools;
-  if (!Array.isArray(reviewed) || !Array.isArray(tools) ||
-      !tools.every((name) => typeof name === "string" && reviewed.includes(name))) {
-    throw new Error("The selected Slack tools do not match the managed release.");
+  if (googleId === undefined && googleDigest === undefined) return undefined;
+  const root = "/usr/local/lib/oce/plugins/google";
+  const release = googleDigest === undefined ? undefined
+    : JSON.parse(verifiedPluginFile(root + "/release.json", googleDigest));
+  const skills = root + "/skills";
+  let skill;
+  if (release?.capabilities.gateway.includes("skill")) {
+    const directory = skills + "/" + release.skill;
+    skill = { directory, instructions: directory + "/SKILL.md" };
   }
-  return tools;
+  return { name: "google", id: googleId, root, release, skills, skill };
 }
 `;
 
@@ -2660,10 +2668,8 @@ function requireWorkspaceNodePlugins(config) {
   }
 }
 
-function installGatewayPlugins(runtime, failures) {
-  if (runtime.manifest.kind !== "openclaw") return installOpenClawPlugins(runtime, failures);
-  const install = managedPluginInstallation();
-  if (!install) return installOpenClawPlugins(runtime, failures);
+function installGatewayPlugins(runtime, failures, install) {
+  if (runtime.manifest.kind !== "openclaw" || !install) return installOpenClawPlugins(runtime, failures);
 
   // The image supplies the managed skill. Only native packages go through OpenClaw's installer.
   const { id, release, skills: skillsDirectory, skill } = install;
@@ -3095,13 +3101,14 @@ function configureGateway(peerStatus) {
     process.env.APP_SERVER_TOKEN = derivePluginAppServerToken(peerStatus.startupId);
   }
   const pluginInstallStartedAt = Date.now();
+  const install = pluginRuntime?.manifest.kind === "openclaw" ? managedPluginInstallation() : undefined;
   const pluginResult =
     pluginRuntime === undefined
       ? { successfulPluginIds: [], failures: peerFailures }
-      : installGatewayPlugins(pluginRuntime, peerFailures);
-  const managedSlackGatewayTools = process.env[${JSON.stringify(MANAGED_SLACK_TOOLS_ENVIRONMENT)}] === undefined
-    ? []
-    : managedSlackToolNames(managedPluginInstallation()).map((name) => "slack_" + name);
+      : installGatewayPlugins(pluginRuntime, peerFailures, install);
+  const mcp = install?.mcp;
+  // Reviewed MCP names fit OpenClaw's node-host descriptor limits without normalization.
+  const managedMcpGatewayTools = mcp?.toolNames.map((name) => mcp.localServer + "_" + name) ?? [];
   if (pluginRuntime !== undefined) {
     logStartupPhase("plugin-install", pluginInstallStartedAt);
   }
@@ -3129,7 +3136,7 @@ function configureGateway(peerStatus) {
     commands.allow = [...new Set([
       ...(commands.allow ?? []), "file.fetch", "file.stat", "file.write", "file.create",
       "dir.list", "workspace.memory", "workspace.skills",
-      ...(managedSlackGatewayTools.length ? ["mcp.tools.call.v1"] : []),
+      ...(managedMcpGatewayTools.length ? ["mcp.tools.call.v1"] : []),
     ])];
     if (environmentWorkspaceNodeId !== undefined || workspaceNodeBindingPath !== undefined) {
       // Refuse a revision that cannot host its node now, not when the node arrives.
@@ -3139,7 +3146,7 @@ function configureGateway(peerStatus) {
     }
     writeOpenClawConfig(config);
   }
-  if (appliesGatewayToolPolicy) configureManagedGatewayTools(gatewayToolPolicyInput, managedSlackGatewayTools);
+  if (appliesGatewayToolPolicy) configureManagedGatewayTools(gatewayToolPolicyInput, managedMcpGatewayTools);
   return { pluginResult, workspaceNodeId };
 }
 
@@ -4954,29 +4961,28 @@ if (pluginBin) {
 // OpenShell supplies the placeholder for the selected account. A withdrawn
 // account leaves the definition staged with discovery disabled.
 let nodeMcp;
-if (release?.capabilities.harness.includes("mcp")) {
+if (install?.mcp) {
   const bytes = verifiedPluginFile(join(install.root, "mcp.json"), release.mcpServersSha256);
   const manifest = JSON.parse(bytes);
-  const { delivery, mcp: { server } } = release.credentials.account;
+  const { delivery, server, localServer, toolNames } = install.mcp;
   const endpoint = manifest.mcpServers[server];
   if (endpoint?.type !== "streamable-http" || new URL(endpoint.url).protocol !== "https:") {
     throw new Error("The managed MCP server declaration is invalid.");
   }
-  const tools = managedSlackToolNames(install);
   const placeholder = process.env[delivery.env];
   // OpenShell can scope its placeholder to a provider revision or a stable credential identity.
   const matchingPlaceholder = /^openshell:resolve:env:(?:v[0-9]+|s[0-9a-f]{64})_([A-Z][A-Z0-9_]*)$/.exec(placeholder ?? "")?.[1] === delivery.env;
-  const enabled = tools.length > 0 && matchingPlaceholder;
+  const enabled = toolNames.length > 0 && matchingPlaceholder;
   if (!matchingPlaceholder) delete process.env[delivery.env];
   nodeMcp = {
     servers: {
-      [server]: {
+      [localServer]: {
         enabled,
         transport: endpoint.type,
         url: endpoint.url,
         ...(enabled && {
           headers: { Authorization: "Bearer " + placeholder },
-          toolFilter: { include: tools },
+          toolFilter: { include: toolNames },
         }),
       },
     },

@@ -192,8 +192,10 @@ import {
 import { requireHarnessAuthMethod } from "../harness-auth-method.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import {
+  managedGoogleInstall,
   managedInstalls,
-  managedSlackCredentialBinding,
+  managedMcpCredentialBinding,
+  managedMcpInstalls,
   requireManagedCredentialRuntime,
 } from "../../plugin/managed-catalog.ts";
 import {
@@ -267,7 +269,7 @@ import {
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
-  MANAGED_SLACK_TOOLS_ENVIRONMENT,
+  MANAGED_MCP_ENVIRONMENT,
   MANAGED_CONFIGURATION_DIRECTORY,
   NATIVE_HOOK_CREDENTIAL_DIRECTORY,
   NATIVE_WORKER_ENTRYPOINT,
@@ -16101,24 +16103,33 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     // The managed release is in the image. The two processes receive only its
     // identity and the reviewed tool selection, never the account's bearer.
     if (dedicated && pluginRuntime?.runtime.kind === "openclaw") {
-      for (const install of managedInstalls) {
-        const selection = pluginRuntime.runtime.selections[install.id];
-        if (!selection) {
-          continue;
-        }
-        const prefix = `OPENCLAW_MANAGED_${install.runtimeName.toUpperCase()}`;
-        if (role === "gateway") {
-          variables.push({ name: prefix + "_PLUGIN_ID", value: install.id });
-        }
-        if (selection.enabled) {
-          variables.push({ name: prefix + "_RELEASE_SHA256", value: install.releaseSha256 });
-        }
-      }
-      const slack = managedSlackCredentialBinding(pluginRuntime.runtime.selections);
-      if (slack?.toolNames.length) {
+      const { selections } = pluginRuntime.runtime;
+      const google = selections[managedGoogleInstall.id];
+      if (google && role === "gateway") {
         variables.push({
-          name: MANAGED_SLACK_TOOLS_ENVIRONMENT,
-          value: JSON.stringify(slack.toolNames),
+          name: "OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID",
+          value: managedGoogleInstall.id,
+        });
+      }
+      if (google?.enabled) {
+        variables.push({
+          name: "OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256",
+          value: managedGoogleInstall.releaseSha256,
+        });
+      }
+      const mcp = managedMcpInstalls.find(({ id }) => Object.hasOwn(selections, id));
+      if (mcp && (selections[mcp.id]?.enabled || role === "gateway")) {
+        const selection = selections[mcp.id]!;
+        const binding = managedMcpCredentialBinding(selections);
+        variables.push({
+          name: MANAGED_MCP_ENVIRONMENT,
+          value: JSON.stringify({
+            packageName: mcp.packageName,
+            slotId: mcp.slotId,
+            ...(role === "gateway" && { id: mcp.id }),
+            ...(selection.enabled && { releaseSha256: mcp.releaseSha256 }),
+            ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
+          }),
         });
       }
     }

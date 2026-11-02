@@ -9,7 +9,7 @@ import {
   managedCredentialBinding,
   managedInstalls,
   managedPluginCredentials,
-  managedSlackCredentialBinding,
+  managedMcpCredentialBinding,
   requireManagedCredentialRuntime,
 } from "./managed-catalog.ts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
@@ -417,7 +417,7 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
       );
     }
     managedCredentialBinding(selections);
-    managedSlackCredentialBinding(selections);
+    managedMcpCredentialBinding(selections);
     this.validate("openclaw", {}, defaultApprovers);
   }
 

@@ -54,6 +54,9 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
 
 ## Configure Slack search
 
+Slack public search is the first bundled managed MCP release. The release pins
+its endpoint and reviewed upstream tool names.
+
 Register a `bearer-token` credential source that references the saved Slack
 OAuth access token as its `token` Secret. Use
 `protocol: mcp`, `host: mcp.slack.com`, `port: "443"`, `path: /mcp`,
@@ -76,7 +79,7 @@ calls. An empty selection leaves the worker server disabled.
 Inspect the worker's server and tool filter:
 
 ```sh
-OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.slack --json
+OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.oce_mcp_slack --json
 ```
 
 ## Before you start
