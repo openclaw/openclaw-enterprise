@@ -8,13 +8,13 @@ author: grs
 
 - **ID:** RFC-0027
 - **Created:** 2026-10-23
-- **Last updated:** 2026-10-28
+- **Last updated:** 2026-11-02
 - **Prototype:** `openshell-managed-workspaces`
 
 ## Summary
 
-Use one stable OpenShell Sandbox per Agent, with OpenShell owning Harness
-placement and persistent storage.
+Use one stable OpenShell Sandbox per Agent through the existing Kubernetes
+Compute Driver, with OpenShell owning Harness placement and persistent storage.
 
 ## Motivation
 
@@ -36,9 +36,18 @@ Embedded OpenClaw mode and cross-cluster deployment.
 
 ### Architecture
 
-A dedicated Compute implementation reuses Kubernetes Gateway orchestration and
-delegates Harness lifecycle to OpenShell. Runtime bootstrap prepares retained
-directories.
+The existing Kubernetes Compute Driver owns Gateway orchestration and delegates
+Harness lifecycle through an internal runtime selected from the Sandbox
+capability. With the bundled OpenShell Sandbox in managed Workspace mode,
+composition supplies `ManagedOpenShellSandbox` and Compute selects
+`ManagedOpenShellHarnessRuntime`. The configured Compute ID and
+`occ/kubernetes` implementation identity stay unchanged.
+
+Compute builds a shared Harness launch description with logical retained
+directories. The managed runtime delegates placement, readiness, stop, and
+deletion to OpenShell. Runtime bootstrap prepares retained directories under
+`/sandbox/oce`; OCE does not create or manage a Harness PVC. The existing
+Kubernetes and operator Sandbox paths retain their lifecycle and storage behavior.
 
 OCE owns Agent authorization, revisions, activation, and Gateway resources.
 OpenShell owns Harness placement, execution, and persistent storage, which OCE
@@ -48,23 +57,26 @@ be preserved.
 Each Agent has one stable Sandbox across revisions. Redeployment stops the
 previous workload, updates the existing Sandbox, then starts and verifies the
 replacement. Stop and revision retirement preserve the Sandbox and its data;
-Agent deletion removes them. Unsupported updates fail explicitly, and delayed
-operations from an older revision must not affect its successor.
+Agent deletion removes them. Replacement uses resource-version checks and reads
+back the updated specification before starting the workload. Unsupported updates
+fail explicitly.
 
 ## Delivery and verification
 
-The prototype requires rebuilt runtime images and expanded OpenShell
-`UpdateSandbox` support. The author verified Codex creation in two Workspaces,
-Agent redeployment, and data retention across redeployment. Deletion and failure
-recovery need further verification through the Agent workflow.
+The implementation requires rebuilt runtime images and expanded
+OpenShell `UpdateSandbox` support. The author verified Codex creation
+in two Workspaces, Agent redeployment, and data retention across
+redeployment. Deletion and failure recovery need further verification
+through the Agent workflow.
 
 ## Rationale and alternatives
 
 OpenShell ownership lets sandboxed Harness placement and storage remain separate
-from OCE-managed Gateway resources. Prefer a dedicated Compute implementation
-with an explicit interface for ownership and lifecycle, reducing implicit
-assumptions about placement and storage in the existing Kubernetes/Sandbox
-integration.
+from OCE-managed Gateway resources. Keep one Kubernetes Compute Driver and make
+Harness lifecycle and storage ownership explicit through its internal runtimes
+and the Sandbox contract. This preserves shared Gateway orchestration and launch
+preparation. A distinct Compute Driver would duplicate that integration without
+changing the ownership boundary.
 
 ## References
 
