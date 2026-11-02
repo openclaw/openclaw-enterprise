@@ -61,10 +61,10 @@ none. See
 [Sandbox policies](sandbox-policies.md#authority-and-admission) for
 its grant schema and authorization boundaries.
 
-The optional `defaultUser.namespaceCreate` boolean lets
+The optional `defaultUser.namespaceCreate` boolean (default `false`, read at API
+start) lets
 [Default users](authorization/default-users.md#let-default-users-create-namespaces)
-members create and own Namespaces. Absent means `false`. OCC applies a change at
-the next API start.
+create and own Namespaces.
 
 The optional `observability` block sets one external console destination:
 
