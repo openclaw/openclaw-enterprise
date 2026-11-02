@@ -1160,6 +1160,31 @@ const HARNESS_LOST_CODES: ReadonlySet<string> = new Set<SandboxHarnessLostCode>(
   "HARNESS_EXITED",
 ]);
 /** The Harness Sandbox record as the leading `agent` `sandbox` diagnostic check. */
+/**
+ * A resource to authorize. For an `agent_revision`, OCC also names the Agent that owns it, taken
+ * from stored state or from the route whose later lookups are scoped to that Agent; IAM then
+ * applies that Agent's exact bindings to the revision (RFC-0026).
+ */
+type AuthorizationTarget = ResourceRef & { readonly parentAgentId?: string };
+
+function authorizationResource({ kind, id, namespaceId }: AuthorizationTarget): ResourceRef {
+  return namespaceId === undefined ? { kind, id } : { kind, id, namespaceId };
+}
+
+/**
+ * The Agent that owns the target. A sandbox policy's ID derives from its Agent's ID, which the
+ * database enforces (migration 0058), so OCC supplies its parent without a lookup.
+ */
+function authorizationParentAgentId(target: AuthorizationTarget): string | undefined {
+  if (target.kind === "agent_revision") {
+    return target.parentAgentId;
+  }
+  if (target.kind === "sandbox_policy" && /^sbp_[0-9a-f-]{36}$/.test(target.id)) {
+    return `agt_${target.id.slice(4)}`;
+  }
+  return undefined;
+}
+
 function harnessDiagnosticCheck(
   observed: AgentRuntimeHarnessStatus,
   checkedAt: string,
@@ -2348,6 +2373,7 @@ export class OpenClawController {
               kind: "agent_revision",
               id: agent.activeRevisionId,
               namespaceId: namespace.id,
+              parentAgentId: agent.id,
             });
           }
           agents.push(
@@ -3448,6 +3474,7 @@ export class OpenClawController {
         kind: "agent_revision",
         id: revisionId,
         namespaceId: record.namespaceId,
+        parentAgentId: record.agentId,
       }))
     ) {
       return undefined;
@@ -4449,6 +4476,7 @@ export class OpenClawController {
               kind: "agent_revision",
               id: revision.id,
               namespaceId: agent.namespaceId,
+              parentAgentId: agent.id,
             }))
           ) {
             continue;
@@ -4481,10 +4509,13 @@ export class OpenClawController {
     if (!isNonEmptyString(revisionId)) {
       throw new ScopeViolationError("The exact AgentRevision identity is missing.");
     }
+    // The route's Agent is the parent: the lookups below accept only this Agent's revision, so a
+    // revision of another Agent ends as not found, as an unknown ID does.
     await this.authorize(principalId, "read", {
       kind: "agent_revision",
       id: revisionId,
       namespaceId,
+      parentAgentId: agentId,
     });
     return this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
@@ -4519,10 +4550,13 @@ export class OpenClawController {
     if (!isNonEmptyString(revisionId)) {
       throw new ScopeViolationError("The exact AgentRevision identity is missing.");
     }
+    // The route's Agent is the parent: the lookups below accept only this Agent's revision, so a
+    // revision of another Agent ends as not found, as an unknown ID does.
     await this.authorize(principalId, "read", {
       kind: "agent_revision",
       id: revisionId,
       namespaceId,
+      parentAgentId: agentId,
     });
     return this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
@@ -11861,16 +11895,16 @@ export class OpenClawController {
   private async authorize(
     principalId: string,
     action: AuthorizationRequest["action"],
-    resource: ResourceRef,
+    target: AuthorizationTarget,
   ): Promise<Readonly<DeployAgentAuthorization>> {
-    const authorization = await this.authorizationDecision(principalId, action, resource);
+    const authorization = await this.authorizationDecision(principalId, action, target);
     if (!authorization.decision.allowed) {
       throw new AuthorizationDeniedError(
         isNonEmptyString(authorization.decision.reason)
           ? authorization.decision.reason
           : "The exact operation was denied.",
         authorization.decision.evidence,
-        { action, resource },
+        { action, resource: authorizationResource(target) },
         principalId,
       );
     }
@@ -11916,8 +11950,8 @@ export class OpenClawController {
     }
   }
 
-  private async canRead(principalId: string, resource: ResourceRef): Promise<boolean> {
-    return (await this.authorizationDecision(principalId, "read", resource)).decision.allowed;
+  private async canRead(principalId: string, target: AuthorizationTarget): Promise<boolean> {
+    return (await this.authorizationDecision(principalId, "read", target)).decision.allowed;
   }
 
   /**
@@ -12078,14 +12112,16 @@ export class OpenClawController {
   private async authorizationDecision(
     principalId: string,
     action: AuthorizationRequest["action"],
-    resource: ResourceRef,
+    target: AuthorizationTarget,
     selected: IAMDriver = this.authorizationAuthority(principalId),
     authorize?: IAMDriver["authorize"],
   ): Promise<Readonly<DeployAgentAuthorization>> {
-    const request = Object.freeze({
+    const parentAgentId = authorizationParentAgentId(target);
+    const request: AuthorizationRequest = Object.freeze({
       principalId,
       action,
-      resource: Object.freeze({ ...resource }),
+      resource: Object.freeze(authorizationResource(target)),
+      ...(parentAgentId === undefined ? {} : { parentAgentId }),
     });
     let decision: AuthorizationDecision;
     try {

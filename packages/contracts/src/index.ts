@@ -1360,10 +1360,22 @@ export interface Restriction extends Scope {
   readonly effect: "deny";
 }
 
+/** Resource kinds that belong to one Agent, so an exact binding on that Agent applies to them. */
+export const AGENT_CHILD_RESOURCE_KINDS = Object.freeze([
+  "agent_revision",
+  "sandbox_policy",
+] as const);
+
 export interface AuthorizationRequest {
   readonly principalId: string;
   readonly action: PermissionAction;
   readonly resource: ResourceRef;
+  /**
+   * The Agent that owns an `agent_revision` or `sandbox_policy` resource, supplied by OCC from
+   * stored state. An exact binding on this Agent also applies its Role's permissions for the
+   * requested kind. Absent for every other kind.
+   */
+  readonly parentAgentId?: string;
 }
 
 /** Asks whether one identity already holds every grant of another identity. */

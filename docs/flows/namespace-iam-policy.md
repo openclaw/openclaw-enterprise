@@ -228,6 +228,13 @@ behavior; this phase traces the writes.
   else, and `auditBinding` appends the event with `reason: "creator"`. A
   Namespace's Owner binding comes before its default Presets, so the creator's
   own grant creates them.
+- **Parent checks.** `authorizationDecision` passes `parentAgentId` with each
+  `agent_revision` and `sandbox_policy` check. Revision reads name the Agent
+  they loaded, or the route's Agent in `getRevision`, whose later lookups accept
+  only that Agent's revision. A sandbox policy's parent derives from its ID,
+  which migration 0058 ties to the Agent ID. The native Driver's `sameResource`
+  then matches an exact binding on that Agent, and `effectiveGrants` keeps those
+  permissions for identity access coverage.
 - **Built-in Default users bindings.** When `createNamespace` creates the
   Namespace named `default`, `bindDefaultUsers` calls the Driver's
   `setDefaultUsersBinding` for Agent Creator there. `applyDefaultUserSettings`,
@@ -291,6 +298,7 @@ behavior; this phase traces the writes.
 ## Changelog
 
 - 2026-11-02 10:00: Trace Owner bindings for every create, the default Namespace binding, and the Namespace Creator setting; drop the Namespace limit. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - aba993606)
+- 2026-11-02 16:00: Trace parent checks that apply an exact Agent binding to the Agent's revisions and sandbox policy. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-10-30 09:02: Trace Default users membership, the Namespace owner binding, and deploy-time Agent grants; working tree changes uncommitted. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - a382326dde18057a250e93a222aa8f4000477166)
 - 2026-10-15 13:28: Retain assigning sessions through policy COMMIT, require transactional IAM writes, and preserve caller limits with shared guarded-session holds. (authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851 - a302a3e2061575b64dcc37e212c55075d5c74b9a)
 - 2026-10-14 11:00: Read, validate and index native policy once per State unit of work instead of once per decision. (fix-1322)

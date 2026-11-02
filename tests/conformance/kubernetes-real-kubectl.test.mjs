@@ -1549,7 +1549,7 @@ test(
     );
     // Tests per file: each must reach arrangeProductionTopology, so a new test bumps its count.
     const files = {
-      "harness-topology-k3d-real.test.mjs": 6,
+      "harness-topology-k3d-real.test.mjs": 7,
       "harness-topology-k3d-otel-real.test.mjs": 2,
       "harness-topology-k3d-slack-real.test.mjs": 1,
     };

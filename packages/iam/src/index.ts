@@ -2,6 +2,7 @@ import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { isImmutableSnapshot, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import {
+  AGENT_CHILD_RESOURCE_KINDS,
   BUILT_IN_ROLE_IDS,
   DEFAULT_USERS_BINDING_IDS,
   DEFAULT_USERS_GROUP_ID,
@@ -33,7 +34,6 @@ import {
   type PermissionAction,
   type Principal,
   type ResourceKind,
-  type ResourceRef,
   type Restriction,
   type Role,
   type ServicePrincipal,
@@ -818,22 +818,33 @@ function validRequest(request: AuthorizationRequest): boolean {
     (request.resource.kind !== "secret" || isNonEmptyString(request.resource.namespaceId)) &&
     (!["credential_source", "sandbox_policy"].includes(request.resource.kind) ||
       isNonEmptyString(request.resource.namespaceId)) &&
+    (request.parentAgentId === undefined ||
+      (isNonEmptyString(request.parentAgentId) &&
+        isNonEmptyString(request.resource.namespaceId) &&
+        AGENT_CHILD_RESOURCE_KINDS.some((kind) => kind === request.resource.kind))) &&
     ACTIONS.includes(request.action) &&
     RESOURCE_KINDS.includes(request.resource.kind)
   );
 }
 
-function sameResource(binding: AccessBinding, resource: ResourceRef): boolean {
+function sameResource(binding: AccessBinding, request: AuthorizationRequest): boolean {
   if (binding.resourceKind === undefined) {
     return true;
   }
-  return binding.resourceKind === resource.kind && binding.resourceId === resource.id;
+  const { resource } = request;
+  return (
+    (binding.resourceKind === resource.kind && binding.resourceId === resource.id) ||
+    // An Agent's revisions and sandbox policy belong to it, so its exact bindings apply to them.
+    (request.parentAgentId !== undefined &&
+      binding.resourceKind === "agent" &&
+      binding.resourceId === request.parentAgentId)
+  );
 }
 
-function bindingScopeMatches(binding: AccessBinding, resource: ResourceRef): boolean {
+function bindingScopeMatches(binding: AccessBinding, request: AuthorizationRequest): boolean {
   return (
-    (binding.namespaceId === undefined || binding.namespaceId === resource.namespaceId) &&
-    sameResource(binding, resource)
+    (binding.namespaceId === undefined || binding.namespaceId === request.resource.namespaceId) &&
+    sameResource(binding, request)
   );
 }
 
@@ -897,7 +908,7 @@ function evaluateValidatedAuthorization(
     ...[...applicableGroupIds].flatMap((groupId) => policy.groupBindings.get(groupId) ?? []),
   ];
   for (const binding of subjectBindings) {
-    if (!bindingScopeMatches(binding, request.resource)) {
+    if (!bindingScopeMatches(binding, request)) {
       continue;
     }
 
@@ -999,7 +1010,11 @@ function effectiveGrants(identity: Identity, policy: NativeIAMPolicy): Effective
         resourceId: binding.resourceId,
         permissions: role.permissions.filter(
           (permission) =>
-            binding.resourceKind === undefined || permission.resourceKind === binding.resourceKind,
+            binding.resourceKind === undefined ||
+            permission.resourceKind === binding.resourceKind ||
+            // An exact Agent binding also grants these permissions on the Agent's own children.
+            (binding.resourceKind === "agent" &&
+              AGENT_CHILD_RESOURCE_KINDS.some((kind) => kind === permission.resourceKind)),
         ),
       });
     }

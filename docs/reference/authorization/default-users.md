@@ -37,7 +37,8 @@ The Namespace set holds every action that OCC checks inside a Namespace:
 | `agent_revision`, `namespace`                | `read`                                                                                                |
 
 An exact binding applies only the permissions whose kind matches its resource,
-so one Owner Role serves every resource kind. No built-in Role changes IAM
+so one Owner Role serves every resource kind. An exact Agent binding also
+applies to the Agent's revisions and sandbox policy. No built-in Role changes IAM
 policy or holds an `installation` permission. Per-Agent sandbox policy editing
 still needs an administrator to enable it; see
 [policy authority](../sandbox-policies.md#authority-and-admission).
@@ -117,7 +118,9 @@ administrators and ServiceAccounts:
 - A Namespace gets a Namespace-wide binding, so the creator holds every
   Namespace permission there. That grant lets the same transaction create the
   Namespace's default Presets.
-- Any other resource gets an exact binding on that resource.
+- Any other resource gets an exact binding on that resource. An Agent's Owner
+  binding also covers its revisions and sandbox policy, so the owner can read
+  each revision and the deployment status of its deploys.
 - The binding ID is `binding_owner_<resource-id>`. The audit event is
   `openclaw.iam.access_bindings.create` with `reason: "creator"`.
 
@@ -181,10 +184,6 @@ These parts of the Default users design are not implemented:
 - Identity provider group mappings and membership changes at sign-in.
   Administrators still create each account and add each member.
 - Namespace-wide and Group bindings through the Namespace policy API.
-- Revision and sandbox policy checks through the parent Agent's bindings. An
-  Agent owner can deploy the Agent but cannot yet read its revisions, deployment
-  status, or sandbox policy. The Agent's `activeRevisionId` shows when a deploy
-  is active.
 - Shared team Namespaces. Nothing binds the Namespace member Role.
 - Removal of deploy-time grants when an Agent stops using a source.
 - CLI and console support for Default users.

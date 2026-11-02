@@ -291,7 +291,7 @@ ServicePrincipal.
 The Role and target must exist in the path Namespace. `namespace` Permissions
 support only `read`; for a `namespace` target, `resourceId` must equal the
 Namespace ID in the path.
-Agent revision `read` needs an `agent_revision` target, not its parent Agent. A
+An exact Agent binding also covers that Agent's revisions and sandbox policy. A
 ServiceAccount resource is not an IAM identity. Caller IDs, scope, wildcard
 targets, Groups, and unknown permissions are rejected. An invalid Permission,
 or a subject, Role or target that is not usable in the path Namespace (including an Agent being

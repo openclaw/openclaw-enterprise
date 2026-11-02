@@ -2302,9 +2302,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       ownerId: secretAssignmentPrincipalId,
     });
   }
-  // TODO(TASK-0050 slice 2): read as the Default user once revision checks use the parent Agent's
-  // bindings; an exact Owner binding on the Agent does not cover agent_revision read yet.
-  const observedRevision = await (options.defaultUser === true ? adminRequest : request)(
+  const observedRevision = await request(
     "GET",
     `/namespaces/${namespaceId}/agents/${agent.data.id}/revisions/${deployed.data.id}`,
   );

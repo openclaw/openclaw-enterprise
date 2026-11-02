@@ -61,6 +61,13 @@ test(
     );
     // The deploy-written grant is what lets the worker project the owner's model Secret.
     assert.equal(environment.OPENAI_API_KEY, true);
+    // Parent checks: the owner reads its own deployment's status through its Agent binding.
+    const deployment = await topology.request(
+      "GET",
+      `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deployments/${topology.revision.id}`,
+    );
+    assert.equal(deployment.status, 200, JSON.stringify(deployment.error));
+    assert.equal(deployment.data.status, "succeeded");
     await resource("networkpolicy", "default-deny", topology.placement);
     await assertActualModelTurn(topology);
   },

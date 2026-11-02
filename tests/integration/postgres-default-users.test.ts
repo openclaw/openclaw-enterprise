@@ -203,6 +203,63 @@ test(
     });
     assert.equal(bobsAgent.status, 403, "Bob cannot build an Agent on Alice's resources");
 
+    // Parent checks: the deploy's revision and the Agent's sandbox policy belong to Alice's Agent,
+    // so IAM applies her exact Owner binding on the Agent to them. She can follow her own deploy;
+    // Bob cannot.
+    const agentPath = `${base}/agents/${agent.data.id}`;
+    const revisionPath = `${agentPath}/revisions/${deployed.data.id}`;
+    const deploymentPath = `${agentPath}/deployments/${deployed.data.id}`;
+    const policyPath = `${agentPath}/sandbox-policy/networking`;
+    for (const path of [revisionPath, policyPath]) {
+      const own = await alice.request("GET", path);
+      assert.equal(own.status, 200, `${path}: ${JSON.stringify(own.error)}`);
+    }
+    // This app runs no worker, so no deployment has a reconciliation record and the status read
+    // fails after authorization for everyone; Alice passes authorization and gets exactly what
+    // the administrator gets. The k3d Default user case reads a real deployment's status.
+    const adminStatus = await inject("GET", deploymentPath);
+    const aliceStatus = await alice.request("GET", deploymentPath);
+    assert.equal(aliceStatus.status, adminStatus.statusCode);
+    assert.equal(aliceStatus.error?.code, adminStatus.json().error?.code);
+    for (const path of [revisionPath, deploymentPath, policyPath]) {
+      assert.equal((await bob.request("GET", path)).status, 403, path);
+    }
+
+    // The route's Agent is a revision read's parent only because the lookup is scoped to that
+    // Agent: Alice naming her Agent with Bob's revision finds nothing, as an unknown ID does.
+    const bobConfiguration = await bob.request("POST", `${base}/configurations`, {
+      kind: "agent",
+      values: createHarnessConfiguration("openclaw", "gpt-4.1"),
+    });
+    assert.equal(bobConfiguration.status, 201);
+    const bobSecret = await bob.request("POST", `${base}/secrets`, {
+      name: `bob key ${randomUUID()}`,
+      value: `test-key-${randomUUID()}`,
+    });
+    assert.equal(bobSecret.status, 201);
+    const bobAgent = await bob.request("POST", `${base}/agents`, {
+      name: `bob own agent ${randomUUID()}`,
+      configurationId: bobConfiguration.data.id,
+      harnessAuth: { method: "api_key", source: bobSecret.data.ref },
+    });
+    assert.equal(bobAgent.status, 201);
+    const bobDeployed = await bob.request("POST", `${base}/agents/${bobAgent.data.id}/deploy`);
+    assert.equal(bobDeployed.status, 202);
+    const crossed = await alice.request("GET", `${agentPath}/revisions/${bobDeployed.data.id}`);
+    const unknown = await alice.request("GET", `${agentPath}/revisions/rev_${randomUUID()}`);
+    assert.notEqual(crossed.status, 200);
+    assert.equal(crossed.status, unknown.status);
+    assert.equal(crossed.error?.code, unknown.error?.code);
+    assert.equal(
+      (
+        await alice.request(
+          "GET",
+          `${base}/agents/${bobAgent.data.id}/revisions/${bobDeployed.data.id}`,
+        )
+      ).status,
+      403,
+    );
+
     // With defaultUser.namespaceCreate absent, Default users cannot create Namespaces.
     assert.equal(
       (await alice.request("POST", "/namespaces", { name: `alice ${randomUUID()}` })).status,

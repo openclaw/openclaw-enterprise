@@ -27,10 +27,10 @@ every grant of the target at the same or a broader scope. OCC requires it before
 issuing or revoking a service key and before changing a human account; a Driver
 without it cannot issue or revoke service keys.
 
-| Method                  | Contract                                                                                                                                                                                                       |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `lookupIdentity(input)` | Takes an authenticated `issuer`, `subject`, and optional Namespace scope. Returns one provisioned Identity, or `undefined` when no identity can be established. It does not create an account or grant a Role. |
-| `authorize(request)`    | Takes a `principalId`, exact action, and server-owned resource reference. Returns an allow or deny decision with a reason, selected `driverId`, and evidence.                                                  |
+| Method                  | Contract                                                                                                                                                                                                                                                                                                                                                                  |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lookupIdentity(input)` | Takes an authenticated `issuer`, `subject`, and optional Namespace scope. Returns one provisioned Identity, or `undefined` when no identity can be established. It does not create an account or grant a Role.                                                                                                                                                            |
+| `authorize(request)`    | Takes a `principalId`, exact action, and server-owned resource reference. For an `agent_revision` or `sandbox_policy`, OCC also passes `parentAgentId`, the owning Agent from stored state, and an exact binding on that Agent applies its Role's permissions for the requested kind. Returns an allow or deny decision with a reason, selected `driverId`, and evidence. |
 
 Evidence identifies the contributing identity, Groups, AccessBindings, Roles,
 and Restrictions. OCC uses it to attribute audit records. The worker rejects
