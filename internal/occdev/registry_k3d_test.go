@@ -453,7 +453,7 @@ func TestK3dRegistryAttachmentOrdering(t *testing.T) {
 		"k3d cluster create " + cluster + " ",
 		"docker network connect k3d-" + cluster + " " + registryTestContainer,
 		"docker exec k3d-" + cluster + "-server-0 ctr -n k8s.io images pull --plain-http --platform linux/amd64 " + registryTestAddress + ":5000/oce-smoke/runtime@" + profileTestDigest,
-		"node scripts/prepare-development-codex-seccomp.mjs ",
+		"docker exec k3d-" + cluster + "-server-0 ctr -n k8s.io images pull --plain-http --platform linux/amd64 " + registryTestAddress + ":5000/oce-smoke/controller@" + profileTestDigest,
 		"docker network disconnect k3d-" + cluster + " " + registryTestContainer,
 		"k3d cluster delete " + cluster,
 	} {
@@ -462,6 +462,10 @@ func TestK3dRegistryAttachmentOrdering(t *testing.T) {
 			t.Fatalf("stage %q out of order or absent: %v", stage, calls)
 		}
 		previous = i
+	}
+	// The Codex probe and controller import overlap; either may finish first.
+	if index("node scripts/prepare-development-codex-seccomp.mjs ") < 0 {
+		t.Fatal("the Codex sandbox probe was not attempted")
 	}
 	for _, call := range calls {
 		if strings.Contains(call, "image save") && !strings.Contains(call, staging) {
