@@ -1,7 +1,11 @@
+---
+tags: [nolimit]
+---
+
 # Install the production control plane
 
 Prepare [Kubernetes](kubernetes.md) or [EKS](eks.md), the
-[production prerequisites](../deploy.md#production-prerequisites), and
+[prerequisites below](#before-you-start), and
 [workspace routing](workspace-routing.md#requirements), including a GatewayClass.
 Keep private routing enabled. Start with the password profile and
 [native Agent administration](native-admin.md#requirements); optional
@@ -14,6 +18,10 @@ Use a clean checkout matching the image source commit. Follow
 [private-registry delivery](private-registry-images.md) for provenance, ECR copies,
 and chart selection. Retain this shell and protected files for
 [Agent deployment](production-agents.md).
+
+## Before you start
+
+<Snippet file="../../snippets/kubernetes-prerequisites.md" />
 
 ## Use published images
 

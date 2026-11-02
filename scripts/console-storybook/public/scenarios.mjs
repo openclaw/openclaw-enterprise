@@ -2159,6 +2159,36 @@ export const scenarios = {
       "Open Runtime details and Tab to Execution mode. With Codex it takes focus and looks unavailable, described by its hint; keys and clicks do not change it. OpenClaw makes it selectable (finding 2945).",
     ],
   },
+  createNativeAdmin: {
+    group: "Pages/Create Agent",
+    name: "Native admin UI opt-in",
+    path: create,
+    nativeAdminSetup: true,
+    actions: readyForm,
+    description:
+      "Enable native administration during the first deployment. Simulated UI proof; no runtime is deployed.",
+    steps: [
+      "Check Enable Native admin UI, then uncheck it. It starts off and explains the required Agent administer permission.",
+      "Check it again and create the Agent. The provisioning request includes nativeAdmin: true.",
+    ],
+  },
+  createNativeAdminSelected: {
+    group: "Pages/Create Agent",
+    name: "Native admin UI selected",
+    path: create,
+    nativeAdminSetup: true,
+    actions: [...readyForm, { selector: "#native-admin", click: true }],
+    description:
+      "The explicit opt-in is selected before creation. The API prepares the exact Agent origin; this preview does not prove deployment or authentication.",
+  },
+  createNativeAdminDisabled: {
+    group: "Pages/Create Agent",
+    name: "Native admin UI unavailable",
+    path: create,
+    actions: form,
+    description:
+      "The installation has not enabled native admin access. The unchecked control is disabled with an explanation; Agent creation remains available.",
+  },
   createSecretCreateNotPermitted: {
     group: "Pages/Create Agent",
     name: "Secret creation not permitted",
@@ -5000,6 +5030,7 @@ export const scenarios = {
     ],
     actions: [
       ...shareExistingPerson,
+      click("Configuration"),
       click("Delete Agent"),
       { selector: ".agent-delete-dialog button.danger", click: true },
       { selector: "a.page-back", click: true },
@@ -5933,8 +5964,9 @@ export const scenarios = {
       { repositoryRef: "handbook", profile: "git-read" },
     ],
     description:
-      "Reopening the desired configuration keeps the Agent default and each explicit override. Saving changes updates the draft; admitted revisions retain their prior access.",
+      "Reopening the desired configuration keeps the Agent default and each explicit override. Saving changes updates the draft; earlier Agent revisions retain their prior access.",
     steps: [
+      "Check that Repository access shows the controls without a Runtime support and access limits disclosure or an empty space in its place. Create Agent keeps that disclosure.",
       "Visit Channels, return to Repositories, change a selection, then press browser Back. The selection stays, with a note to save or cancel before leaving.",
       "Cancel the edit. Back returns to Channels; Forward opens Repositories with the saved selection.",
     ],
@@ -7174,9 +7206,9 @@ export const scenarios = {
     candidateDeploymentStatus: "succeeded",
     rules: [{ suffix: "/runtime", delayMs: 1200, once: true }],
     description:
-      "The first runtime status takes 1.2 s after the Logs tab is selected. Stop Agent and Delete Agent stay hidden under the reserved area until the strip and output appear, so nothing below moves.",
+      "The first runtime status takes 1.2 s after the Logs tab is selected. The Logs panel reserves space for the strip and output.",
     steps: [
-      "Scroll to the version tabs and select Logs. The area keeps its height and Stop and Delete are hidden; after 1.2 s the strip, output and both cards appear in place and the panel scrolls into view.",
+      "Scroll to the version tabs and select Logs. The area keeps its height. After 1.2 s the strip and output appear and the panel scrolls into view.",
     ],
   },
   runtimeLogsStartupWarnings: {
@@ -9643,8 +9675,9 @@ export const scenarios = {
       click("Logs"),
       { text: "Runtime status requires Agent operate" },
       click("Workspace files"),
-      { selector: "#agent-stop-title" },
       click("Configuration"),
+      { selector: "#agent-stop-title" },
+      click("Deployment"),
       { selector: ".version-diagnostics .deployment-heading button:not(:disabled)" },
       click("Workspace files"),
       {
@@ -9659,9 +9692,9 @@ export const scenarios = {
     description:
       "Workspace files stay parked while Logs reads a newer Agent operate answer. A grant makes them editable on return, shows the Stop row and enables Run diagnostics. A revocation makes them read-only again, keeps unsaved text, hides Stop and disables Run diagnostics.",
     steps: [
-      "Workspace files open read-only, with the note that saving needs Agent operate. The Danger zone has no Stop row.",
+      "Workspace files open read-only, with the note that saving needs Agent operate. Open Configuration to check that the Danger zone has no Stop row.",
       "Logs records the runtime-status refusal. Returning to Workspace files keeps that note.",
-      "The next Logs visit reads an operate grant. Returning hides the note, AGENTS.md is editable, the Stop row appears, and Configuration offers Run diagnostics.",
+      "The next Logs visit reads an operate grant. Returning hides the note, AGENTS.md is editable, Configuration offers Stop, and Deployment offers Run diagnostics.",
       "After the edit, the following Logs visit reads a revocation. Returning keeps the unsaved text and makes AGENTS.md read-only; Stop hides and Run diagnostics is disabled with its reason.",
     ],
     gap: "The permission changes and runtime refusal are simulated. The preview checks Stop and Run diagnostics after the grant only; the browser test also checks them after the revocation, changing the controller's real IAM policy across the same tab visits. A failed permission read is not shown; the page keeps the previous answer. The controller still authorizes every write.",
@@ -10261,6 +10294,20 @@ export const scenarios = {
       "Cancel or press Escape. The page explains why Stop is unavailable, without sending a stop request; Stop Agent stays in the Tab order, described by that note.",
     ],
   },
+  dangerZoneTabs: {
+    group: "Pages/Agent detail",
+    name: "Danger zone on Configuration",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    stopped: true,
+    description:
+      "Compare the Workspace files and Configuration tabs for an Agent with a stop request.",
+    steps: [
+      "Workspace files opens directly. Scroll to the end of the tab.",
+      "Select Configuration and scroll to Danger zone. Check the stop status, Request Stop again, Refresh stop status and Delete Agent.",
+      "Return to Workspace files. The lifecycle controls disappear.",
+    ],
+  },
   dangerZoneReader: {
     group: "Pages/Agent detail",
     name: "Danger zone, viewer cannot stop or delete",
@@ -10280,7 +10327,7 @@ export const scenarios = {
     description: "Confirm stopping the Agent or cancel without changing its requested state.",
     steps: [
       "Confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the version detail does not reload.",
-      "For the revision clearing while Workspace is open, use Flows / Stop an Agent.",
+      "For the revision clearing after Stop, use Flows / Stop an Agent.",
     ],
   },
   stopPending: {
@@ -10422,10 +10469,10 @@ export const scenarios = {
     description:
       "Open the Stop Agent confirmation and request the stopped desired state while preserving draft, revisions, credentials, and workspace data.",
     steps: [
-      "Open Stop Agent and review the confirmation copy.",
-      "With Workspace files open, confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the current version still has file editors.",
-      "Refresh stop status. The fixture now clears the current version; Workspace shows why files are unavailable, without reloading the page.",
-      "Open Configuration, then Workspace files again. The unavailable notice remains; the old editors do not return.",
+      "Select Configuration and open Stop Agent. Review the confirmation.",
+      "Confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the current version still has file editors.",
+      "Select Refresh stop status. The fixture clears the current version.",
+      "Open Workspace files. It explains why the files are unavailable. Return to Configuration.",
       "Focus Request Stop again, press Enter, then Cancel or Escape. Focus returns to Request Stop again without submitting. Reopen and confirm if recovery is needed; refresh an uncertain outcome before retrying.",
       "Return to Open draft and Deploy new version to request running again.",
     ],
@@ -10529,6 +10576,11 @@ for (const [id, state, name] of [
     description:
       "Observed denial records, aggregated provider suggestions, and governed policy additions remain distinct.",
     steps: [
+      ...(state === "many"
+        ? [
+            "Scroll to Denials. The pager is the last control below the five rows. Go to page 2 and turn on Follow. The page stays in place when 12 new denials arrive. Choose Show newest to see page 1 of 43 with 212 loaded denials.",
+          ]
+        : []),
       "Expand a denial to inspect the sanitized log. Review its exact executable and endpoint before saving an addition.",
       "Select denial rows across pages, then Allow selected. Confirm the validated proposal retains existing rules and combines repeated executable/host/port requests. Back to editing preserves the draft.",
       "Open Manage rules. Search the five-row pages, use a row menu to edit or remove a rule, or Add rule. Compare Save for later with Save and apply to current revision. Apply saved rules is unavailable while a proposal has unsaved edits.",
@@ -10540,6 +10592,7 @@ for (const [id, state, name] of [
           description:
             "A normalized executable path has 281 Unicode code points and 551 UTF-16 code units, within the API schema's 512-code-point limit.",
           steps: [
+            "Expand Policy details, then Read-only Installation defaults. The JSON is indented and the executable path wraps inside the block, even on a phone.",
             "Open View network limits and copy the full executable path from the Installation ceiling. Close the dialog, choose Review suggestion, then paste the copied path into Executable path. Confirm the value still ends with /tool.",
             "Choose Review changes. Confirm the complete executable path, including /tool, appears in Proposed rules. Choose Save for later and confirm policy v2 keeps that same path while the current revision stays unchanged.",
             "Reset the story to repeat. The six directory components each contain 45 Deseret letters (U+10400); the path is 1091 UTF-8 bytes.",

@@ -4161,6 +4161,7 @@ test("an Agent read answered after deletion was requested leaves the Workspace f
   const poll = await makeCurrent({ waitForPoll: false });
   await agentRead.requested;
   await page.clock.resume();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("button", { name: "Delete Agent" }).click();
   await page
     .getByRole("dialog", { name: `Delete ${name}?` })

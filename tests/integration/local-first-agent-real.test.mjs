@@ -24,6 +24,7 @@ import {
   runtimeLogSources,
   waitForNativeRedeploy,
 } from "../helpers/local-first-agent-native.mjs";
+import { localOpenShellGatewayOptions } from "../helpers/local-openshell-gateway.mjs";
 import { localFirstAgentStack } from "../helpers/local-first-agent-stack.mjs";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { availablePort } from "../helpers/available-port.mjs";
@@ -1285,10 +1286,22 @@ test(
           { env: safeEnvironment, stdio: "ignore" },
         );
         context.after(() => stopProcess(forward));
-        const client = new GrpcOpenShellGatewayClient({
-          endpoint: `http://127.0.0.1:${port}`,
-          auth: { mode: "unauthenticated" },
-        });
+        const options =
+          recorded.deploymentMode === "k3d"
+            ? await localOpenShellGatewayOptions(
+                context,
+                [
+                  "--kubeconfig",
+                  join(stateDirectory, "kubeconfig"),
+                  "--context",
+                  `k3d-${recorded.cluster}`,
+                ],
+                safeEnvironment,
+                openShellNamespace,
+                port,
+              )
+            : { endpoint: `http://127.0.0.1:${port}`, auth: { mode: "unauthenticated" } };
+        const client = new GrpcOpenShellGatewayClient(options);
         try {
           const sandboxName = new URL(appServerUrl).hostname.split("--")[1].split(".")[0];
           const deadline = Date.now() + 30_000;

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-30
-last_updated_session: authoring-run/010dd6ea-2b4f-455b-bfe5-593e04307743
+updated: 2026-11-02
+last_updated_session: authoring-run/c9f16ccb-c34a-4d8b-a04c-5b0ccc4b01c1
 ---
 
 # Compose development flow
@@ -60,8 +60,9 @@ graph TD
   KCodex -->|failure| KRollback
   KDriver -->|OpenShell| KOpenFirst["Prepare OpenShell assets,<br/>install routing, then import runtime"]
   KRoutingFirst --> KOnly["Install selected control-plane profile<br/>and retain all readiness gates"]
-  KOpenFirst --> KProtection{"Protected egress?"}
-  KProtection -->|Off| KOnly
+  KOpenFirst --> KProtection{"Static inference enabled?"}
+  KProtection -->|Off| KGateway["Install authenticated Gateway<br/>and wait for readiness"]
+  KGateway --> KOnly
   KProtection -->|On| KAuthority["Prepare authority TLS and registry<br/>Install Gateway without readiness wait"]
   KAuthority --> KOnly
   KOnly --> KWait["Complete readiness gates<br/>including protected Gateway rollout"]
@@ -217,9 +218,16 @@ OCC Namespace becomes ready. See the
 `internal/occdev/openshell_k3d.go:installDevelopmentPlatform`,
 `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:createClient`
 
-The explicit protected profile requires Kubernetes Compute, Kubernetes control
-plane, OpenShell Sandbox, and reviewed
-candidate images/charts. It prepares authority server TLS and its public CA,
+`internal/occdev/openshell.go:installOpenShellGateway` enables native PKI,
+TLS, mTLS and authentication for every Kubernetes-only OpenShell installation.
+`openShellBackendConfiguration` selects HTTPS and client certificates;
+`installKubernetesControlPlane` projects them into the API and worker through Helm.
+The default profile registers no static-inference middleware and waits for the
+Gateway before installing OCE. It needs no corrective Gateway upgrade or Pod deletion.
+
+The explicit `OCC_DEVELOPMENT_PROTECTED_EGRESS=1` profile additionally enables
+static-inference enforcement. It requires Kubernetes Compute, Kubernetes control
+plane and OpenShell Sandbox with compatible images/charts. It prepares authority server TLS and its public CA,
 then installs OpenShell with native PKI and a TLS middleware registration.
 OpenShell owns the complete Gateway server/client certificate and extension-JWT
 key set. The launcher reads only its public key ID and writes the paired Backend,
@@ -306,6 +314,6 @@ distinguishes local proof from pending connected runtime qualification.
 
 ## Changelog
 
-- 2026-10-30 21:23: Preserve patched runtime provenance and durable cleanup in the accompanying main merge. (authoring-run/010dd6ea-2b4f-455b-bfe5-593e04307743 - a85796bbb3aa8c167350824697171ca1ca52101d)
+- 2026-11-02 18:38: Preserve authenticated Gateway defaults and durable cleanup while merging main. (authoring-run/c9f16ccb-c34a-4d8b-a04c-5b0ccc4b01c1 - 94f7cd4a4cacd9ab8031ceb35fcd40d3522b3647)
 
 [Compose development documentation history](docker-compose-development/history.md) preserves the older dated entries.

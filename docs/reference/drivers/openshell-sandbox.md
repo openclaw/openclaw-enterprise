@@ -136,7 +136,7 @@ not satisfy the per-Agent production requirement below.
 ### Protected Codex artifact rules
 
 For protected, dedicated Codex repository execution, select
-[approved artifact rules](../../assets/openshell-quickstart/plugin-network-policy.yaml)
+[approved artifact rules](../../snippets/openshell-quickstart/plugin-network-policy.yaml)
 with `policy.codexArtifactRuleNames`, for example
 `codexArtifactRuleNames: [codex-plugin-artifacts]`. Each name must identify exactly
 one existing `policy.networkPolicies` rule. Omission grants no artifact access.
@@ -174,11 +174,11 @@ installs one Gateway with workspace resources disabled in `oce-system`
 Installation configuration; the Driver creates each Namespace's resources before
 its Workspace, without per-Namespace Helm releases.
 
-Development uses unauthenticated mode. The pinned release shares one Gateway
-port for control-plane RPCs and Harness traffic. NetworkPolicies restrict access
-to trusted OCE, OpenShell, and dedicated Agent Gateway Pods, but cannot give
-Agent Gateways service-only authority there. Use only owned disposable clusters;
-this topology is not qualified for production.
+Kubernetes-only installations enable Gateway TLS, mTLS and authentication. Static
+inference requires explicit opt-in. The Compose-backed profile permits unauthenticated
+Gateway access. Its shared port exposes both control-plane RPCs and Harness traffic;
+NetworkPolicies cannot give Agent Gateways service-only authority. Use that mode
+only in owned disposable development clusters, never production.
 
 `gateway.operatorWorkspaceResources` takes the ServiceAccount, Role,
 RoleBinding, and NetworkPolicy manifests the workspace chart renders;

@@ -1,5 +1,4 @@
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
-import type { githubRepositoryConfiguration } from "../../drivers/repo/github/installation.ts";
 import { loadPublicCa } from "./public-ca.ts";
 import type { GitHubRepositoryCredentialBackendDefinition } from "@openclaw-enterprise/contracts";
 import { GitHubNativeRepositorySender } from "../../drivers/repo/github/driver.ts";
@@ -12,7 +11,6 @@ import { composeRepositoryPolicy } from "./policy.ts";
 export async function composeRepositoryAccess(input: {
   readonly backend: GitHubRepositoryCredentialBackendDefinition;
   readonly selection: SelectedDriverConfiguration;
-  readonly configuration?: ReturnType<typeof githubRepositoryConfiguration>;
 }) {
   const { backend: definition, selection } = input;
   if (selection.implementation !== "github" || selection.id !== definition.drivers.repo) {
