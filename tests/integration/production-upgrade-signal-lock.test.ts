@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, rmdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, rmdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const script = join(repository, "scripts/upgrade-production-images");
@@ -16,8 +16,7 @@ const revision = execFileSync("git", ["rev-parse", "HEAD"], {
 }).trim();
 
 async function setup(t: TestContext) {
-  const directory = await mkdtemp(join(tmpdir(), "upgrade-signal-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "upgrade-signal-");
   const bin = join(directory, "bin");
   const evidence = join(directory, "evidence");
   const lock = join(evidence, ".upgrade-lock");
@@ -113,13 +112,11 @@ exec "$SIGNAL_PYTHON" "$@"
     return { child, done };
   };
   const commands = () => readFile(journal, "utf8");
-  const waitReady = async () => {
-    const deadline = Date.now() + 30000;
-    while (!existsSync(ready)) {
-      assert.ok(Date.now() < deadline, "parameter-binding child did not start");
-      await delay(20);
-    }
-  };
+  const waitReady = () =>
+    waitUntil("the parameter-binding child to start", () => existsSync(ready), {
+      timeoutMs: 30000,
+      intervalMs: 20,
+    });
   const assertLockedResume = async () => {
     const before = await commands();
     const { done } = start("--resume");

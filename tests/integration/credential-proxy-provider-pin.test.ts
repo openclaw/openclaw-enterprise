@@ -1,3 +1,4 @@
+import type { OpenShellCredentialGatewaySelection } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -576,17 +577,17 @@ test("an unbound source update keeps its admitted provider when same-type provid
   assert.equal(created.status, 201);
   const { id } = created.data;
   const update = () => f.request("PATCH", `${f.path}/${id}`, { body: { secrets: body.secrets } });
-  const savedAdmission = () =>
-    f.controller.transact(
-      async (unit: PlatformUnitOfWork) =>
-        (await unit.credentialSources.findCredentialSource(f.namespace.id, id))?.egress?.key,
+  const savedSource = () =>
+    f.controller.transact((unit: PlatformUnitOfWork) =>
+      unit.credentialSources.findCredentialSource(f.namespace.id, id),
     );
-  assert.deepEqual((await savedAdmission())?.provider, a.ref);
+  assert.deepEqual((await savedSource())?.egress?.key.provider, a.ref);
   providers.reverse();
   const reads = f.secretReads;
   const updated = await update();
   assert.equal(updated.status, 200);
-  const key = await savedAdmission();
+  const source = await savedSource();
+  const key = source?.egress?.key;
   assert.deepEqual(
     { validations, provider: key?.provider.id, generation: key?.source.generation },
     { validations: [a.ref.id, a.ref.id], provider: a.ref.id, generation: 2 },
@@ -605,9 +606,26 @@ test("an unbound source update keeps its admitted provider when same-type provid
       });
     }
     assert.equal(f.secretReads, reads + 1);
-    assert.deepEqual(await savedAdmission(), key);
+    assert.deepEqual(await savedSource(), source);
     assert.deepEqual(validations, [a.ref.id, a.ref.id]);
   }
+  // With its admitted provider available, a historical Gateway-owned live source
+  // still needs its original owner's catalog. No material may be read during an outage.
+  const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
+  assert.ok(source);
+  assert.equal(source.driverId, gateway.id);
+  assert.equal(source.ownerCapability, "credential_gateway");
+  assert.equal(source.egress?.adoption, "live");
+  providers.splice(0, providers.length, a);
+  t.mock.method(gateway, "listSourceTypes", async () => {
+    throw new Error("synthetic catalog outage");
+  });
+  const unavailable = await update();
+  assert.equal(unavailable.status, 503);
+  assert.equal(unavailable.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.deepEqual(await savedSource(), source);
+  assert.equal(f.secretReads, reads + 1);
+  assert.deepEqual(validations, [a.ref.id, a.ref.id]);
   assert.equal(f.providerRequests.length, 0);
 });
 
@@ -775,7 +793,7 @@ test("a source update withholds resolved material after its provider or injector
   assert.equal(f.providerRequests.length, 0);
 });
 
-test("live static registration does not require Gateway placement", async (t) => {
+test("live static registration does not require Compute placement", async (t) => {
   const f = await staticEgressFixture(t, { physicalPlacement: true });
   assert.ok("egress" in f);
   const compute: Required<Pick<ComputeDriver, "resolveSandboxNamespace">> =
@@ -794,12 +812,79 @@ test("live static registration does not require Gateway placement", async (t) =>
     unit.credentialSources.findCredentialSource(f.namespace.id, result.data.id),
   );
   assert.equal(stored?.state, "ready");
+  assert.deepEqual(stored?.config, {});
   assert.equal(stored?.ownerCapability, "credential_gateway");
   assert.equal(stored?.driverId, gateway.id);
   assert.equal(stored?.egress?.adoption, "live");
   assert.equal(f.secretReads - reads, 1);
   assert.equal(placement.mock.callCount(), 0);
   assert.equal(registration.mock.callCount(), 0);
+});
+
+test("live static source validation does not consult backend Gateway placement", async (t) => {
+  const f = await staticEgressFixture(t, { physicalPlacement: true });
+  assert.ok("egress" in f);
+  assert.ok("iamDriver" in f);
+  const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
+  // Instrument the fixture-owned backend after setup, leaving the real source validator intact.
+  const backend = Reflect.get(gateway, "backend") as OpenShellCredentialGatewaySelection["backend"];
+  const placement = t.mock.method(backend.client, "placement", () => {
+    throw new Error("Gateway placement unavailable");
+  });
+  const authorization = t.mock.method(f.iamDriver, "authorize");
+  const reads = f.secretReads;
+  const result = await f.request("POST", f.path, {
+    body: {
+      name: "static-no-backend-placement",
+      type: "openai",
+      config: { base_url: "https://MODELS.example.test:8443/api/v1/" },
+      secrets: { api_key: f.secret.ref },
+    },
+  });
+  assert.equal(
+    placement.mock.callCount(),
+    0,
+    "static validation must not resolve backend placement",
+  );
+  assert.equal(result.status, 201);
+  const stored = await f.controller.transact((unit: PlatformUnitOfWork) =>
+    unit.credentialSources.findCredentialSource(f.namespace.id, result.data.id),
+  );
+  assert.equal(stored?.state, "ready");
+  assert.equal(stored?.ownerCapability, "credential_gateway");
+  assert.equal(stored?.driverId, gateway.id);
+  assert.equal(stored?.egress?.adoption, "live");
+  assert.deepEqual(stored?.config, { base_url: "https://models.example.test:8443/api/v1" });
+  assert.equal(f.secretReads - reads, 1);
+  const secretOperations = authorization.mock.calls
+    .map((call) => call.arguments[0])
+    .filter((request) => request.action === "operate" && request.resource.kind === "secret");
+  assert.equal(secretOperations.length, 1);
+  assert.equal(secretOperations[0]?.resource.id, f.secret.ref.id);
+
+  for (const host of ["127.0.0.1", "127.1"]) {
+    const denied = await f.request("POST", f.path, {
+      body: {
+        name: "invalid-static-endpoint",
+        type: "openai",
+        config: { base_url: `https://${host}/v1` },
+        secrets: { api_key: f.secret.ref },
+      },
+    });
+    assert.equal(denied.status, 400);
+    assert.equal(denied.body.error.code, "INVALID_REQUEST");
+    assert.deepEqual(denied.body.error.details, [
+      { path: "/config/base_url", code: "INVALID_VALUE" },
+    ]);
+    assert.equal(denied.body.error.message, "The openai base_url host must be an exact DNS name.");
+    assert.equal(f.secretReads - reads, 1);
+    assert.equal(placement.mock.callCount(), 0);
+  }
+  const listed = await f.request("GET", f.path);
+  assert.equal(listed.status, 200);
+  assert.ok(
+    !listed.data.some((source: CredentialSource) => source.name === "invalid-static-endpoint"),
+  );
 });
 
 test("live static registration losing to DELETE preserves its deleting row without Gateway cleanup", async (t) => {

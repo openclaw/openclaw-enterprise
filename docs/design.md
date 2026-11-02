@@ -228,6 +228,9 @@ OCC checks admission and session retention, but does not authorize or audit each
 native command. Operators share the selected gateway's exposed conversations
 and credentials; this grants no access to another Agent or platform IAM.
 
+Operators can provide a separate [human access path](reference/drivers/kubernetes-compute/gateway-authentication.md)
+to the shared Agent. This path does not grant OCC access.
+
 Configuration and AgentRevision records remain authoritative for
 managed deployments. Native edits may diverge; OCC neither imports them nor
 promises to reset persistent gateway state on redeployment.

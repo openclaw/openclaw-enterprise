@@ -247,8 +247,8 @@ a.overview-primary:hover {
   color: var(--color-danger);
   border-color: var(--color-danger);
 }
-button.button--danger:not(:disabled):hover,
-button.danger:not(:disabled):hover {
+button.button--danger:not(:disabled, [aria-disabled="true"]):hover,
+button.danger:not(:disabled, [aria-disabled="true"]):hover {
   color: var(--color-danger);
   background: var(--color-danger-subtle);
 }
@@ -644,6 +644,10 @@ p {
   min-height: 100dvh;
   align-self: stretch;
   z-index: 3;
+  /* The account row sits at the bottom of the stretched sidebar. As the browser's scroll anchor
+     it pinned the page to its end, so content that grew anywhere moved the reader's view
+     (finding 3012). The anchor comes from the page content instead. */
+  overflow-anchor: none;
 }
 .sidebar .brand,
 .topbar .brand,
@@ -1849,6 +1853,9 @@ select:not([multiple])[size="1"] {
   gap: var(--space-6);
   margin-bottom: var(--space-8);
   overflow-wrap: anywhere;
+  /* The summary grows when a poll shows a stop or redeploy. As the scroll anchor it moved the open
+     tab below it, such as Logs, down (finding 3012), so the tab stays in place instead. */
+  overflow-anchor: none;
 }
 .agent-overview-status > .agent-card {
   margin: 0;
@@ -2135,6 +2142,7 @@ label:has(> input[type="checkbox"].control-unavailable:focus-visible) {
 /* An unavailable select or text field fades its text, not the field, so its focus ring keeps full
    contrast (finding 2899). */
 select.control-unavailable,
+textarea.control-unavailable,
 input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   cursor: not-allowed;
   color: color-mix(in srgb, var(--text) 60%, var(--color-surface));
@@ -2411,6 +2419,13 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: var(--surface);
+}
+/* The details grow while a deploy runs and shrink when it settles. As the scroll anchor, they or
+   their label above moved the version's record below them (finding 3016). The browser anchors on
+   the first box crossing the top of the view, so neither is an anchor and the record stays put. */
+.agent-deployment-panels > .hint,
+.agent-deployment-panels > .deployment-evidence {
+  overflow-anchor: none;
 }
 .agent-deployment-panels > .deployment-evidence > button {
   top: 18px;
@@ -3036,10 +3051,18 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   color: var(--danger);
   border-color: var(--danger);
 }
-.deletion-note .danger:not(:disabled):hover,
-.stop-note .danger:not(:disabled):hover {
+.deletion-note .danger:not(:disabled, [aria-disabled="true"]):hover,
+.stop-note .danger:not(:disabled, [aria-disabled="true"]):hover {
   background: var(--danger-subtle);
   color: var(--danger);
+}
+/* An unavailable Stop or Delete Agent that stays in the Tab order (findings 2935, 2951) fades its
+   label and edge, as other unavailable buttons do; the rule above would keep its full danger
+   color, so it would look usable. */
+.deletion-note .danger.control-unavailable,
+.stop-note .danger.control-unavailable {
+  color: color-mix(in srgb, var(--danger) 60%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--danger) 60%, var(--color-surface));
 }
 /* Danger zone (UX spec 3.9): one card at the end of the Agent page with a row each for Stop and
    Delete: title and one sentence, the outlined danger button at the right, and any status the
@@ -3116,10 +3139,18 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   border-color: var(--color-danger);
   color: var(--color-on-accent);
 }
-.dialog.agent-stop-dialog button.danger:not(:disabled):hover,
-.dialog.agent-delete-dialog button.danger:not(:disabled):hover {
+.dialog.agent-stop-dialog button.danger:not(:disabled, [aria-disabled="true"]):hover,
+.dialog.agent-delete-dialog button.danger:not(:disabled, [aria-disabled="true"]):hover {
   background: var(--color-danger);
   color: var(--color-on-accent);
+}
+/* A refused confirmation stays in the Tab order (finding 2935): its fill and edge fade, as an
+   unavailable primary button's do, so its focus ring keeps full contrast. */
+.dialog.agent-stop-dialog button.danger.control-unavailable,
+.dialog.agent-delete-dialog button.danger.control-unavailable {
+  cursor: not-allowed;
+  background: color-mix(in srgb, var(--color-danger) 60%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-danger) 60%, var(--color-surface));
 }
 .agent-kept-resources {
   margin-top: var(--space-3);
@@ -4540,6 +4571,9 @@ html:has(#create-agent-form) {
 
 /* Held back until the Logs view's first reads settle (finding 1413). */
 .agent-logs-pending > .runtime-strip,
+.agent-logs-pending > .log-running-version,
+.agent-logs-pending > .log-deployment-failure,
+.agent-logs-pending > .log-serving-change,
 .agent-logs-pending > .log-viewer {
   display: none;
 }
@@ -4554,6 +4588,19 @@ html:has(#create-agent-form) {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
   gap: var(--space-3);
   margin: var(--space-2) 0 var(--space-5);
+}
+/* Names the version selected for service when the viewed one has no running Pod (finding 2975),
+   the latest deployment's failure (finding 2993), and a stop or another version selected for
+   service in place of an unreadable viewed one (finding 3012). */
+.log-running-version,
+.log-deployment-failure,
+.log-serving-change {
+  margin: 0 0 var(--space-5);
+}
+.log-running-version:empty,
+.log-deployment-failure:empty,
+.log-serving-change:empty {
+  display: none;
 }
 .runtime-pod {
   min-width: 0;

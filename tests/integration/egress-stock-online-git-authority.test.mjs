@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { createOpenShellOnlineGitAuthority } from "../../apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts";
 import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
@@ -563,4 +564,266 @@ test("expired binding lookup cannot begin durable Git approval", { timeout: 1000
   assert.equal(result.decision, 2);
   await lookupAborted.promise;
   assert.equal(approvals, 0);
+});
+
+// Strong provider permissions do not authorize issuing a new portable credential.
+// Exercise the signed production RPC and prove refusal precedes the material owner.
+test("repository API credential issuance is refused while ordinary collaboration stays available", async (t) => {
+  let approvals = 0;
+  let current = true;
+  let lastDigest;
+  const repositories = [
+    { repositoryId: binding.repositoryId, repository: binding.repository },
+    { repositoryId: "43", repository: "openclaw/openclaw-enterprise" },
+  ];
+  let scope = "github-repository";
+  const { client, keys } = await openShellOnlineGitWire(t, {
+    budgetMs: 3000,
+    lookupBinding: async () =>
+      scope === undefined
+        ? binding
+        : {
+            ...binding,
+            scope,
+            installationId: "71",
+            apiOrigin: "https://api.github.com",
+            repositories,
+            installed: {
+              ...binding.installed,
+              route: { revisionId: binding.executionId, fence: 1 },
+            },
+          },
+    authorizeOnlineRequest: async (q, installed) => {
+      approvals++;
+      lastDigest = q.requestDigestSha256;
+      if (scope === "github-repository") {
+        assert.deepEqual(q.repositories, repositories);
+      }
+      if (!current) {
+        return { kind: "denied", reason: "access_withdrawn" };
+      }
+      return {
+        kind: "allow",
+        exchangeId: q.exchangeId,
+        requestDigestSha256: q.requestDigestSha256,
+        preparationAttemptId: installed.preparationAttemptId,
+        materialVersion: installed.materialVersion,
+        replyBy: q.deadlineAt,
+      };
+    },
+  });
+  const send = (input) =>
+    invoke(client, "EvaluateHttpRequest", input, token(keys, "supervisor", binding.sandboxId));
+  const evaluate = async (path, method = "POST", body) => {
+    const input = request(
+      path,
+      method,
+      body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body)),
+      body === undefined ? [] : [{ name: "content-type", value: "application/json" }],
+    );
+    input.target.host = "api.github.com";
+    return send(input);
+  };
+  for (scope of ["github-repository", "github-installation"]) {
+    for (const prefix of ["/repos/example/project", "/orgs/example"]) {
+      for (const endpoint of ["registration-token", "remove-token", "generate-jitconfig"]) {
+        for (const body of [
+          undefined,
+          { name: "runner", runner_group_id: 1, labels: ["self-hosted"] },
+        ]) {
+          const before = approvals;
+          const result = await evaluate(`${prefix}/actions/runners/${endpoint}`, "POST", body);
+          assert.equal(result.decision, 2, `${scope}: ${endpoint}`);
+          assert.equal(result.reason_code, "request_not_allowed");
+          assert.equal(
+            approvals,
+            before,
+            "credential issuer refusal must precede durable owner approval",
+          );
+        }
+      }
+    }
+    for (const path of [
+      "/repos/example/project/keys",
+      "/repos/EXAMPLE/Project/keys",
+      "/repos/example/project/KEYS",
+      "/REPOS/example/project/keys",
+      "/repos/openclaw/openclaw-enterprise/keys",
+    ]) {
+      for (const read_only of [undefined, false, true]) {
+        const before = approvals;
+        const result = await evaluate(path, "POST", {
+          title: "inert fixture",
+          key: "not-a-real-public-key",
+          ...(read_only === undefined ? {} : { read_only }),
+        });
+        assert.deepEqual(
+          [result.decision, approvals - before],
+          [2, 0],
+          `${scope}: ${path}: read_only=${read_only}; refusal before owner approval`,
+        );
+        assert.equal(result.reason_code, "request_not_allowed");
+      }
+    }
+    for (const [path, method, body] of [
+      ["/repos/example/project/keys", "GET"],
+      ["/repos/example/project/keys/12", "GET"],
+      ["/repos/example/project/keys/12", "DELETE"],
+      ["/repos/example/project/issues", "POST", { title: "keys" }],
+      ["/repos/example/project", "GET"],
+      ["/repos/example/project/actions/runners", "GET"],
+      ["/repos/example/project/actions/runners/12/labels", "POST", { labels: ["ordinary-label"] }],
+      ["/repos/example/project/issues", "POST", { title: "ordinary issue" }],
+      [
+        "/repos/example/project/pulls",
+        "POST",
+        { title: "ordinary pull", head: "feature", base: "main" },
+      ],
+      [
+        "/graphql",
+        "POST",
+        { query: 'query { repository(owner: "example", name: "project") { name } }' },
+      ],
+      [
+        "/graphql",
+        "POST",
+        { query: 'mutation { addStar(input: {starrableId: "node"}) { starrable { id } } }' },
+      ],
+    ]) {
+      assert.equal((await evaluate(path, method, body)).decision, 1, `${scope}: ${path}`);
+    }
+    const git = pushRequest();
+    assert.equal(
+      (
+        await invoke(
+          client,
+          "EvaluateHttpRequest",
+          git,
+          token(keys, "supervisor", binding.sandboxId),
+        )
+      ).decision,
+      1,
+    );
+  }
+
+  await t.test("bounded selected REST bodies retain transport and authority limits", async () => {
+    const KiB = 1024;
+    const MiB = 1024 * KiB;
+    const contents = (bytes) => {
+      const overhead = JSON.stringify({ message: "update", content: "" }).length;
+      const content = Buffer.alloc(Math.floor((bytes - overhead) / 4) * 3).toString("base64");
+      return Buffer.from(JSON.stringify({ message: "update", content }).padEnd(bytes));
+    };
+    const api = (body, path = "/repos/example/project/contents/src/data.json", method = "PUT") => {
+      const input = request(path, method, body, [
+        { name: "content-type", value: "application/json" },
+      ]);
+      input.target.host = "api.github.com";
+      return input;
+    };
+    const check = async (input, allowed) => {
+      const before = approvals;
+      const result = await send(input);
+      assert.deepEqual(
+        [result.decision, approvals - before],
+        allowed ? [1, 1] : [2, 0],
+        `${scope}: ${input.target.path}: ${input.body.length} bytes`,
+      );
+    };
+    scope = "github-repository";
+    await check(api(contents(64 * KiB + 1)), true);
+    await check(api(contents(MiB + 1)), false);
+    const large = api(contents(MiB));
+    await check(large, true);
+    const digest = lastDigest;
+    // Same request identity; only a byte near the end of the JSON string changes.
+    const tail = Buffer.from(large.body);
+    tail[tail.lastIndexOf('"') - 1] = 98;
+    await check({ ...large, body: tail }, true);
+    assert.notEqual(lastDigest, digest, "the digest covers the tail of the complete body");
+    await check(api(large.body, "/repos/example/outside/contents/data.json"), false);
+    current = false;
+    const before = approvals;
+    assert.equal((await send(large)).reason_code, "access_withdrawn");
+    assert.equal(approvals, before + 1, "large valid requests still need current owner authority");
+    current = true;
+
+    for (scope of ["github-repository", "github-installation"]) {
+      for (const bytes of [64 * KiB, 64 * KiB + 1]) {
+        const json = JSON.stringify({ query: "query { viewer { login } }" });
+        await check(api(Buffer.from(json.padEnd(bytes)), "/graphql", "POST"), bytes === 64 * KiB);
+      }
+    }
+    await check(api(contents(64 * KiB)), true);
+    await check(api(contents(64 * KiB + 1)), false);
+    scope = "github-repository";
+
+    // Exact RPC body boundaries, not valid Git packs or proof of upstream writes.
+    for (const [route, limit] of [
+      ["receive-pack", 4 * MiB],
+      ["upload-pack", MiB],
+    ]) {
+      for (const bytes of [limit, limit + 1]) {
+        await check(
+          request(`/example/project.git/git-${route}`, "POST", Buffer.alloc(bytes), [
+            { name: "content-type", value: `application/x-git-${route}-request` },
+          ]),
+          bytes === limit,
+        );
+      }
+    }
+  });
+
+  await t.test("shipped gh metadata stays within selected-repository authority", async () => {
+    // Exact captured bodies; stock 0.1.6 lowercases visible header names and
+    // omits credentials/framing. REST overrides only its differing metadata.
+    const fixture = JSON.parse(
+      readFileSync(new URL("../fixtures/gh-pr-create-2.103.2.json", import.meta.url), "utf8"),
+    );
+    const captured = (entry = fixture.requests[0]) => {
+      const target = { ...fixture.target, ...entry.target };
+      const headers = fixture.headers.flatMap(([name, value]) =>
+        entry.headers?.[name] === null ? [] : [{ name, value: entry.headers?.[name] ?? value }],
+      );
+      return { ...request(target.path, target.method, Buffer.from(entry.body), headers), target };
+    };
+    scope = "github-repository";
+    for (const entry of fixture.requests) {
+      const result = await send(captured(entry));
+      assert.equal(result.decision, 1, entry.operation);
+      assert.equal(result.has_body ?? false, false);
+      assert.deepEqual(result.header_mutations ?? [], []);
+    }
+    const beforeWithdrawal = approvals;
+    current = false;
+    assert.equal((await send(captured())).reason_code, "access_withdrawn");
+    assert.equal(approvals, beforeWithdrawal + 1, "valid shape still reaches the current owner");
+    current = true;
+    const refused = async (input) => {
+      const before = approvals;
+      assert.equal((await send(input)).decision, 2);
+      assert.equal(approvals, before, "shape/scope refusal must precede owner approval");
+    };
+    for (const name of ["graphql-features", "time-zone"]) {
+      const input = captured();
+      const header = input.headers.find((h) => h.name === name);
+      await refused({ ...input, headers: [...input.headers, header] });
+      header.value = "unapproved";
+      await refused(input);
+    }
+    for (const target of [
+      { host: "github.com" },
+      { path: "/repos/openclaw/openclaw-enterprise" },
+    ]) {
+      const input = captured();
+      await refused({ ...input, target: { ...input.target, ...target } });
+    }
+    await refused({
+      ...captured(),
+      body: Buffer.from(JSON.stringify({ query: "query { repository { tempCloneToken } }" })),
+    });
+    for (scope of ["github-installation", undefined]) {
+      await refused(captured());
+    }
+  });
 });

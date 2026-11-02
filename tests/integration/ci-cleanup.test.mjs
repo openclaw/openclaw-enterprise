@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -25,6 +26,37 @@ async function fixture(t) {
   return root;
 }
 
+// The process state letter of `pid` ("S", "Z", ...), or "" when no such process exists.
+// On Linux it reads /proc/<pid>/stat: forking ps from a loaded runner took over a second
+// and failed the observation (finding 2942), while the fixture process had already ended.
+// Other errors (an unreadable /proc, a ps failure) still fail the caller.
+function processState(pid) {
+  if (process.platform === "linux") {
+    let stat;
+    try {
+      stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT" || error.code === "ESRCH") {
+        return "";
+      }
+      throw error;
+    }
+    // Field 3, after the parenthesized command name, which may itself contain ") ".
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ", 1)[0];
+  }
+  const observation = spawnSync("ps", ["-p", String(pid), "-o", "stat="], {
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  assert.equal(observation.error, undefined, `could not observe process ${pid}`);
+  const state = observation.stdout.trim();
+  if (observation.status === 1 && state === "" && observation.stderr.trim() === "") {
+    return "";
+  }
+  assert.equal(observation.status, 0, `process ${pid} observation failed`);
+  return state;
+}
+
 async function commandTreeFixture(t) {
   const root = await mkdtemp(join(tmpdir(), "ci-cleanup-descendant-"));
   await mkdir(join(root, "bin"));
@@ -39,20 +71,8 @@ async function commandTreeFixture(t) {
     const status = await waitFor(
       `fixture descendant ${pid} to stop running`,
       () => {
-        const observation = spawnSync("ps", ["-p", String(pid), "-o", "stat="], {
-          encoding: "utf8",
-          timeout: 1000,
-        });
-        assert.equal(observation.error, undefined, "could not observe fixture descendant");
-        const state = observation.stdout.trim();
-        if (
-          (observation.status === 1 && state === "" && observation.stderr.trim() === "") ||
-          /^Z/.test(state)
-        ) {
-          return state;
-        }
-        assert.equal(observation.status, 0, "fixture process observation failed");
-        return undefined;
+        const state = processState(pid);
+        return state === "" || /^Z/.test(state) ? state : undefined;
       },
       { timeoutMs, intervalMs: 50 },
     );
@@ -831,18 +851,18 @@ for (const scenario of [
       if (scenario === "escaped-group") {
         // A separate group is outside the executor's signalling authority. Cleanup
         // must end without killing that process.
-        const pid = await readFile(descendantPidPath, "utf8");
-        const observation = spawnSync("ps", ["-p", pid, "-o", "stat="], {
-          encoding: "utf8",
-          timeout: 5000,
-        });
-        // Released only after the observation, so a cleanup that waited for the
-        // descendant's pipes still waits out its four-second lifetime and fails the
-        // elapsed-time assertion above.
-        await writeFile(release, "");
-        assert.equal(observation.error, undefined, "could not observe escaped descendant");
-        assert.equal(observation.status, 0, "escaped descendant stopped during cleanup");
-        assert.doesNotMatch(observation.stdout, /^Z/, "escaped descendant stopped during cleanup");
+        const pid = Number(await readFile(descendantPidPath, "utf8"));
+        let state;
+        try {
+          state = processState(pid);
+        } finally {
+          // Released only after the observation, so a cleanup that waited for the
+          // descendant's pipes still waits out its four-second lifetime and fails the
+          // elapsed-time assertion above.
+          await writeFile(release, "");
+        }
+        assert.notEqual(state, "", "escaped descendant stopped during cleanup");
+        assert.doesNotMatch(state, /^Z/, "escaped descendant stopped during cleanup");
       } else {
         // Every owned kill path fires before the driver exits; the limit only covers
         // observing the reaped or zombie process.

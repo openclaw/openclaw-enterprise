@@ -50,4 +50,4 @@ Enterprise, start with [Concepts](../concepts.md) or
 
 For setup instructions for a specific vendor or Driver, use
 [Integrations](../integrations/README.md). For installation-wide work, use
-[Operate](../operate/README.md).
+[Deploy & Operate](../operate/README.md).

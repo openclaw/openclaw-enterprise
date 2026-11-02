@@ -630,13 +630,13 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       const chunk = Buffer.alloc(16384, 42);
       const pump = setInterval(() => client.closed || client.socket.write(chunk), 2);
       t.after(() => clearInterval(pump));
-      await eventually(() => answeredAt !== undefined, { message: "refusal was not answered" });
+      await eventually(() => answeredAt !== undefined, { description: "the refusal answer" });
       // The sole exchange slot is free while the refused upload still lingers.
       assert.deepEqual(await readDiscovery(fixture), completed());
       assert.equal(client.closed, false);
       await eventually(() => client.closed, {
         timeoutMs: 5000,
-        message: "refused upload kept lingering",
+        description: "the refused upload to close",
       });
       clearInterval(pump);
       assert.match(answer, /^HTTP\/1\.1 413 /);

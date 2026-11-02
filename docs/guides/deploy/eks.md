@@ -14,6 +14,8 @@ OCC, which runs as application Pods on your nodes. For Agent model
 authentication, follow [production Agent deployment](production-agents.md).
 Console workspace files also require [private gateway routing](#enable-console-workspace-files).
 
+For a dedicated Codex Agent with managed Linear and Git access, use the [OpenShell on EKS procedure](eks-openshell-setup.md).
+
 ## Update an existing EKS installation
 
 Use `scripts/upgrade-production-images` from the selected release checkout; follow

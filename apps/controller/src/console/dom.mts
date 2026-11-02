@@ -530,7 +530,8 @@ export function describeDisabled(
   }
 }
 
-type UnavailableControl = HTMLButtonElement | HTMLInputElement | HTMLSelectElement;
+type UnavailableControl =
+  HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 
 const guardedControls = new WeakSet<UnavailableControl>();
 

@@ -10,13 +10,13 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
 
 ## Open the Logs tab
 
-1. Open the Agent and select a deployed version. The editable draft is not a
-   version and has no runtime; a version without a running Pod shows no Pod.
+1. Select a deployed version of the Agent; the draft has no runtime. A version
+   without a running Pod shows none and links to another running version's Logs.
+   A newer failed deployment shows on the Agent's page.
 2. Select **Logs**. The runtime strip refreshes every 10 seconds. Each Pod card
-   lists every main and init container's state and recent warning Events, prefixed
-   with their container. Last termination
+   lists each container's state and recent warning Events. Last termination
    shows the current exit for a terminated container, otherwise its prior exit.
-   If a refresh fails, the cards stay and the strip says when they were last observed.
+   A failed refresh keeps the cards and says when they were last observed.
 3. Choose a **Source**: **Gateway** (the OpenClaw Gateway container),
    **Agent (Harness)** (the dedicated Codex or OpenClaw Harness container, only
    for dedicated execution) or **Sandbox (policy decisions)** (see
@@ -29,7 +29,8 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
 4. Select **Follow** to poll for new lines every 2 seconds. Following pauses while
    the browser tab is hidden or you scroll up, and stops after a permission denial.
 5. Select **Previous instance** after a restart to read the exited container's
-   output. Following is off for it.
+   output. Following is off for it. Before a restart, the option is
+   unavailable and a note says why.
 
 ### Filter the loaded output
 
@@ -142,32 +143,34 @@ Other structured output, including Codex JSON-RPC protocol traffic, oversized
 lines and malformed lines that start like a JSON object or array, is
 **withheld**: the page shows a count, never content. A pretty-printed
 (multi-line) JSON value becomes one withheld row. Each row names its reason
-code, as `occ agent logs` does: `unrecognised_structured` (structured output
+code: `unrecognised_structured` (structured output
 OCC does not keep), `malformed` (JSON split across lines, as Codex prints
 it, JSON that does not parse, or JSON nested too deeply) or `oversized`.
 The console and `occ agent logs` show an invisible or direction-changing
 character in retained text, such as a bidirectional override, as an escape like
 `\u202e`, so a line cannot reorder or hide what you read.
 
-Every retained string is then redacted. OCC replaces PEM blocks, `Authorization`
+Every retained string is redacted. OCC replaces PEM blocks, `Authorization`
 and cookie header values, `Bearer` tokens, `Basic` user:password values, JWTs,
 known token prefixes (`sk-`, `sk_live_`, `rk_live_`, `ghp_`, `ghs_`,
 `github_pat_`, `hf_`, `xoxb-`, `AKIA` and others), URL user information, every
 URL query value and fragment, `password=`/`token:`/`"api_key":`-style values,
 upper-case `*_KEY=` assignments, netrc `login <user> password <secret>` values,
 the value after a command-line credential flag such as `curl -u user:password`
-(listed under [Sandbox source](#sandbox-source)), and long base64 or hex runs
+(see [Sandbox source](#sandbox-source)), and long base64 or hex runs
 with `[redacted:<pattern>]`. A PEM block printed over several lines is masked
 from an observed BEGIN through END, across follow polls in the same container
 view. Only ordered lines newer than the prior cursor position can close it (at
 END or the first line that is not base64, a PEM header or blank). PEM-shaped
 lines may stay masked for the rest of that view.
-A restart, Pod change, expired cursor or new view starts without that context,
-and a page that begins inside a block whose BEGIN it never saw cannot mask it.
+A restart, Pod change, expired cursor or new view starts without that context
+and cannot mask a block that began before it.
 Redaction is best-effort: an opaque token under 40 characters with no known
 prefix and no key name or `Bearer` next to it stays visible. Do not rely on
 redaction to make a runtime that prints secrets safe.
-Control characters are removed and messages are capped at 8 KiB.
+Tabs, line breaks and cursor-forward escapes become spaces; other controls are
+removed. In plain text, written `\n`, `\t` and `%3D` also separate words for
+redaction. Messages are capped at 8 KiB.
 
 Runtime status Event messages are redacted the same way; node names, image
 references and Secret and ConfigMap names are masked in the standard scheduler
@@ -266,7 +269,7 @@ source shares an ID with the sandbox. Each decision row carries the label
 **Gateway lines: inferred (time window)**: Gateway or Harness lines near that
 time may be related, but nothing links them.
 
-The logs cannot tell you, and you should not infer:
+Do not infer from the logs:
 
 - which Agent turn, session, user or prompt caused a sandbox decision;
 - which policy generation decided a line whose generation reads `unknown`

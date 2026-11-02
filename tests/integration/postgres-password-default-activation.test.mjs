@@ -3,6 +3,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import {
+  changeAccount,
   consoleOrigin as origin,
   createAccount,
   currentSession,
@@ -10,9 +11,11 @@ import {
   githubUpgradeSettings,
   memoryLogger,
   passwordSignIn,
+  readAccount,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
@@ -152,10 +155,8 @@ test(
 
     await t.test("a skipped account signs in once repaired and enrolled online", async () => {
       const enrol = () =>
-        app.inject({
-          method: "POST",
-          url: `/api/auth/accounts/${unprovisioned.id}/enrol`,
-          headers: adminHeaders,
+        injectLocalhost(app, "POST", `/api/auth/accounts/${unprovisioned.id}/enrol`, {
+          session: adminHeaders,
         });
       assert.equal((await enrol()).statusCode, 404, "no Principal yet");
       await state.appendNativeIAMPrincipal(
@@ -174,24 +175,16 @@ test(
     await t.test("guarded account revocation waits for an authenticated IAM commit", async () => {
       const assigning = await signedInHeaders(app, origin, admin);
       const revoking = await signedInHeaders(app, origin, admin);
-      const account = await app.inject({
-        url: `/api/auth/accounts/${admin.id}`,
-        headers: revoking,
-      });
-      assert.equal(account.statusCode, 200, account.body);
-      const createdNamespace = await app.inject({
-        method: "POST",
-        url: "/namespaces",
-        headers: assigning,
-        payload: { name: "Guarded IAM commit" },
+      const account = await readAccount(app, revoking, admin.id);
+      const createdNamespace = await injectLocalhost(app, "POST", "/namespaces", {
+        session: assigning,
+        body: { name: "Guarded IAM commit" },
       });
       assert.equal(createdNamespace.statusCode, 201, createdNamespace.body);
       const namespaceId = createdNamespace.json().data.id;
-      const independentNamespace = await app.inject({
-        method: "POST",
-        url: "/namespaces",
-        headers: revoking,
-        payload: { name: "Independent guarded IAM commit" },
+      const independentNamespace = await injectLocalhost(app, "POST", "/namespaces", {
+        session: revoking,
+        body: { name: "Independent guarded IAM commit" },
       });
       assert.equal(independentNamespace.statusCode, 201, independentNamespace.body);
       const independentId = independentNamespace.json().data.id;
@@ -206,20 +199,16 @@ test(
           rows: [{ pid }],
         } = await blocker.query("SELECT pg_backend_pid() AS pid");
         await blocker.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [namespaceId]);
-        policy = app
-          .inject({
-            method: "POST",
-            url: `/namespaces/${namespaceId}/iam/roles`,
-            headers: assigning,
-            payload: {
-              name: "Guarded commit",
-              permissions: [{ action: "read", resourceKind: "agent" }],
-            },
-          })
-          .then((response) => {
-            settledPolicy = response;
-            return response;
-          });
+        policy = injectLocalhost(app, "POST", `/namespaces/${namespaceId}/iam/roles`, {
+          session: assigning,
+          body: {
+            name: "Guarded commit",
+            permissions: [{ action: "read", resourceKind: "agent" }],
+          },
+        }).then((response) => {
+          settledPolicy = response;
+          return response;
+        });
         const protectedPid = await waitForLockWaiter(
           pool,
           pid,
@@ -243,12 +232,7 @@ test(
         assert.equal(independent.statusCode, 201, independent.body);
         // The account owner validates method/account versions and locks the same
         // user. Revocation must not invalidate either admitted session mid-commit.
-        revoke = app.inject({
-          method: "POST",
-          url: `/api/auth/accounts/${admin.id}/revoke`,
-          headers: revoking,
-          payload: { expectedVersion: account.json().data.version },
-        });
+        revoke = changeAccount(app, revoking, admin.id, "revoke", account.version);
         await waitForLockWaiter(
           pool,
           protectedPid,

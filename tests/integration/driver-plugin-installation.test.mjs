@@ -22,6 +22,7 @@ import {
   createInstallationDriverConfiguration as installation,
 } from "../helpers/installation-driver-configuration.mjs";
 import { injectJson } from "../helpers/inject-json.mjs";
+import { AUTHORIZATION_HEADER_REFUSED, CREDENTIAL_REQUIRED } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "../fixtures/driver-packages");
@@ -230,11 +231,8 @@ async function authenticatedApplication(t, drivers) {
   });
   t.after(async () => app.close());
 
-  const signedIn = await app.inject({
-    method: "POST",
-    url: "/api/auth/sign-in/email",
-    headers: { host: "127.0.0.1", "content-type": "application/json" },
-    payload: { email: authFixture.email, password: authFixture.password },
+  const signedIn = await injectJson(app, "POST", "/api/auth/sign-in/email", {
+    body: { email: authFixture.email, password: authFixture.password },
   });
   assert.equal(signedIn.statusCode, 200, signedIn.body);
   const setCookie = signedIn.headers["set-cookie"];
@@ -506,24 +504,21 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
       });
       const fixture = await authenticatedApplication(scenario, drivers);
 
-      // Require an actual Better Auth session before creating the singleton Installation.
-      for (const headers of [{}, { authorization: "Bearer invalid-production-token" }]) {
-        const unauthenticated = await fixture.app.inject({
-          method: "POST",
-          url: "/installation/bootstrap",
-          headers: {
-            host: "127.0.0.1",
-            ...headers,
-          },
-          payload: { name: "Unauthenticated Driver selection" },
+      // Require an actual Better Auth session before creating the singleton Installation. A
+      // bearer token is refused as a header the API never accepts, not as a missing credential.
+      for (const [headers, message] of [
+        [{}, CREDENTIAL_REQUIRED],
+        [{ authorization: "Bearer invalid-production-token" }, AUTHORIZATION_HEADER_REFUSED],
+      ]) {
+        const unauthenticated = await injectJson(fixture.app, "POST", "/installation/bootstrap", {
+          headers,
+          body: { name: "Unauthenticated Driver selection" },
         });
         assert.equal(unauthenticated.statusCode, 401);
+        assert.equal(unauthenticated.json().error.message, message);
       }
-      const publicSignup = await fixture.app.inject({
-        method: "POST",
-        url: "/api/auth/sign-up/email",
-        headers: { host: "127.0.0.1", "content-type": "application/json" },
-        payload: {
+      const publicSignup = await injectJson(fixture.app, "POST", "/api/auth/sign-up/email", {
+        body: {
           email: "public-driver-plugin@example.test",
           password: "public-driver-plugin-password",
           name: "Public",

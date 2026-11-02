@@ -43,7 +43,7 @@ interface Catalog {
 // Only reviewed bytes from the bundled package can provide routes or request schemas. An
 // account selection pins release.json, which in turn pins this potentially much larger file.
 const directory = new URL(
-  "../../../plugins/oce-google-workspace/ai.openclaw.oce/",
+  "../../../../plugins/oce-google-workspace/ai.openclaw.oce/",
   import.meta.url,
 );
 const releaseBytes = readFileSync(new URL("release.json", directory));

@@ -26,6 +26,21 @@ const runtimeLogsPage = {
   deployed: true,
   candidateDeploymentStatus: "succeeded",
 };
+// The current version, v8, which the viewer cannot read, opened on its Logs tab.
+const hiddenCurrentLogsPage = {
+  group: "Pages/Agent detail",
+  path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&tab=logs",
+  deployed: true,
+  candidateDeploymentStatus: "succeeded",
+  candidateSuperseded: true,
+  rules: [
+    {
+      suffix: "/revisions/rev_00000000-0000-4000-8000-000000000008",
+      status: 403,
+      code: "FORBIDDEN",
+    },
+  ],
+};
 const refuseLogRead = { suffix: "/runtime/logs", status: 403, code: "FORBIDDEN" };
 const form = [click("Start with default Preset")];
 // The OpenShell Sandbox Driver's refusal of Dedicated OpenClaw on its settings alone.
@@ -62,6 +77,19 @@ const modelCredentialSourceTypes = [
     harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
   },
 ];
+// A Credential Gateway that also offers ChatGPT device login. Without that source type Sign in
+// with OAuth is unavailable before the click (finding 2991).
+const deviceLoginSourceTypes = [
+  ...modelCredentialSourceTypes,
+  {
+    type: "codex-oauth",
+    config: [],
+    secrets: [],
+    rotation: "refresh",
+    deviceAuthorization: { harnessId: "codex" },
+    harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" },
+  },
+];
 const dedicatedOpenclawForm = [
   ...readyForm,
   { selector: "#agent-harness", value: "openclaw" },
@@ -82,6 +110,51 @@ const existingPresetSecret = [
   { selector: "#preset-variable-modelSecret-secret-source", value: "existing" },
 ];
 const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets";
+// A Preset variable that duplicates the machine identity in the trusted-proxy allowlist, which
+// the Compute preflight refuses by the setting's name (finding 3122).
+const presetVariableRefusal = {
+  standardCodexPreset: true,
+  presetTrustedProxyVariable: true,
+  rules: [
+    {
+      suffix: "/agents/validate",
+      method: "POST",
+      status: 400,
+      code: "INVALID_REQUEST",
+      message:
+        "Configuration setting gateway.auth.trustedProxy.allowUsers must include occ-workspace-files and list distinct (case-insensitive for occ-workspace-files and @ identities), nonblank, trimmed, printable ASCII identities that are not object property names.",
+    },
+  ],
+};
+const presetVariableRefused = [
+  ...passwordPresetForm.slice(0, -1),
+  { selector: "#preset-variable-human", value: "OCC-Workspace-Files" },
+  click("Use Preset"),
+  click("Create Agent"),
+];
+// A model policy key a Preset variable filled with a space, which the API quotes in the setting
+// it refuses (finding 3122). The message is the API's sentence for that model policy rule
+// (packages/occ/src/configured-harness.ts); tests/browser/console-agent-presets.test.ts pins it.
+const presetQuotedSettingRefusal = {
+  standardCodexPreset: true,
+  presetModelKeyVariable: true,
+  rules: [
+    {
+      suffix: "/agents/validate",
+      method: "POST",
+      status: 400,
+      code: "INVALID_REQUEST",
+      message:
+        'Configuration setting agents.defaults.models["openai/gpt 5 mini"] is not on the primary model\'s provider, "codex": remove it, or list a model of that provider.',
+    },
+  ],
+};
+const presetQuotedSettingRefused = [
+  ...passwordPresetForm.slice(0, -1),
+  { selector: "#preset-variable-fallback", value: "openai/gpt 5 mini" },
+  click("Use Preset"),
+  click("Create Agent"),
+];
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
 // A plugin tool-deny refusal as the API words it, naming the selected plugin.
 const pluginToolRefusal =
@@ -540,6 +613,10 @@ export const scenarios = {
     ],
     description:
       "The permission answer allowed creation, but the API refuses it (for example, a grant removed after the page loaded). The form clears the value, disables editing, and focuses Close.",
+    steps: [
+      "Tab to Secret name, Show value, Value and Create Secret. Each takes focus and looks unavailable, described by the refusal; typing, Enter, Space or a click sends nothing and the value stays masked (finding 2935).",
+      "Close the dialog. The page's Create Secret looks unavailable, described by the note under the toolbar that asks to select Refresh after access changes.",
+    ],
   },
   secretsUnknownSave: {
     group: "Pages/Secrets",
@@ -652,6 +729,9 @@ export const scenarios = {
     ],
     description:
       "A newly added reference can refuse deletion after the detail read. Reopen the detail to inspect current consumers.",
+    steps: [
+      "Tab to Permanently delete Secret. It takes focus and looks unavailable, described by the refusal; Enter, Space or a click sends nothing (finding 2935).",
+    ],
   },
   secretsDeletionUnconfirmed: {
     group: "Pages/Secrets",
@@ -1238,7 +1318,7 @@ export const scenarios = {
       { selector: ".agent-stop-dialog button.danger", click: true },
     ],
     description:
-      "Permission advice allowed Stop, but the controller refuses the confirmed write, as after a removed grant. The alert names the missing Agent operate access; the row stays running.",
+      "Permission advice allowed Stop, but the controller refuses the confirmed write, as after a removed grant. The alert names the missing Agent operate access; the row stays running. Its Stop icon takes focus back and looks unavailable, described by the alert, and the row's note under the icons says Needs Agent operate.",
   },
   agentsRowDeleteDenied: {
     group: "Pages/Agents",
@@ -1256,7 +1336,64 @@ export const scenarios = {
       { selector: ".agent-delete-dialog button.danger", click: true },
     ],
     description:
-      "Permission advice allowed Delete, but the controller refuses the confirmed write. The alert names the missing Agent delete access; the Agent stays in the list.",
+      "Permission advice allowed Delete, but the controller refuses the confirmed write. The alert names the missing Agent delete access; the Agent stays in the list. Its Delete icon takes focus back and looks unavailable, described by the alert, and the row's note under the icons says Needs Agent delete.",
+  },
+  agentsRowDeleteRefusedOther: {
+    group: "Pages/Agents",
+    name: "Delete from the list refused for another reason",
+    deployed: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "DELETE",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Only the actor that started this deletion can retry it while that actor still holds delete. Retry as that actor, or remove its delete permission first.",
+      },
+    ],
+    actions: [
+      { selector: '[aria-label="Delete Research assistant"]', click: true },
+      { selector: ".agent-delete-dialog button.danger", click: true },
+    ],
+    description:
+      "The row is stale: another person's deletion of this Agent failed after the list loaded, and the controller refuses this caller's Delete for that reason, not for a missing grant. The alert shows the API's text with the Agent's name. The row's note names no grant; it reads Not deleted: see above, so a narrow screen that scrolled the alert away still says why. Both icons stay in the Tab order, unavailable and described by the refusal, until Refresh; focus stays on Delete.",
+  },
+  agentsRowRefocusDeleting: {
+    group: "Pages/Agents",
+    name: "Refocus after another person's deletion, with a kept refusal",
+    deployed: true,
+    deletingOnListReread: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "DELETE",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Only the actor that started this deletion can retry it while that actor still holds delete. Retry as that actor, or remove its delete permission first.",
+      },
+    ],
+    actions: [
+      { selector: '[aria-label="Delete Research assistant"]', click: true },
+      { selector: ".agent-delete-dialog button.danger", click: true },
+    ],
+    description:
+      "This caller's Delete was refused for a reason that is not a grant, and another person's deletion of the Agent started after the list loaded. A window refocus rebuilds the list: the row gains its Deleting badge, keeps the refusal and its note, and focus returns to Delete. The page scrolls only as far as needed to keep the icon and its note in view (finding 2976). Simulated API; no backend proof.",
+    steps: [
+      "At 390 px, scroll until the note Not deleted: see above sits at the bottom of the window, with Delete Research assistant focused. Switch to another window, then return. The row reads Deleting, and Delete and its note are both in view.",
+    ],
+  },
+  agentsRowRefocusStopped: {
+    group: "Pages/Agents",
+    name: "Refocus after another person's stop",
+    deployed: true,
+    stoppedOnListReread: true,
+    description:
+      "Another person's stop completes after the list loads, so the Agent has no selected version. A window refocus rechecks the list and rebuilds it; the row has no Stop icon now, so focus on it moves to the same row's name, not to the page (finding 2967). Simulated API; no backend proof.",
+    steps: [
+      "Press Tab until Stop Research assistant has focus. Switch to another window, then return. The row has no Stop icon, and focus is on the Research assistant link.",
+    ],
   },
   agentsRowRestricted: {
     group: "Pages/Agents",
@@ -1266,11 +1403,27 @@ export const scenarios = {
     description:
       "The permission summary says this caller can neither stop nor delete these Agents. Each row disables its icons and says why before any confirmation.",
     steps: [
-      "Tab to a row's Stop and Delete icons. Each takes focus and looks unavailable, its description is the row's note, and Enter, Space or a click opens no confirmation.",
+      "Tab to a row's Stop and Delete icons. Each takes focus and looks unavailable, its description is the row's whole reason without the short grant line, and Enter, Space or a click opens no confirmation.",
       "Find Needs operate and delete under each row's icons. Hover it for the whole reason, which names an Installation administrator as who grants them. The icons do not open a confirmation.",
       "Open an Agent: its detail page explains the same restrictions.",
     ],
     gap: "The summary is advisory. The controller still authorizes each write.",
+  },
+  agentsRowStopPermissionDuringConfirmation: {
+    group: "Pages/Agents",
+    name: "Stop from the list, permission arrives while confirmation is open",
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    rules: [
+      { suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions", delayMs: 3500 },
+    ],
+    actions: [{ selector: '[aria-label="Stop Research assistant"]', click: true }],
+    description:
+      "The story opens Stop from the list before the delayed permission answer says no. The confirmation explains the restriction and focuses Cancel.",
+    steps: [
+      "Tab to Stop Agent. It takes focus and looks unavailable, described by the restriction; Enter, Space or a click sends nothing (finding 2935).",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes every request.",
   },
   agentsRowStopUnknown: {
     group: "Pages/Agents",
@@ -1295,6 +1448,9 @@ export const scenarios = {
     name: "No readable Namespaces",
     emptyNamespaces: true,
     description: "Agent pages need an accessible Namespace.",
+    steps: [
+      "Tab to the Namespace selector. It takes focus and looks unavailable, described by the panel's sentence; arrow keys and a click change nothing (finding 2936).",
+    ],
     gap: "Create a Namespace from Namespaces; granting access still requires an administrator.",
   },
   namespaceMissing: {
@@ -1615,7 +1771,8 @@ export const scenarios = {
     group: "Pages/Namespaces",
     name: "Unavailable selection",
     path: "/console/namespaces?namespace=ns_00000000-0000-4000-8000-000000000099",
-    description: "Recover from a stale Namespace URL using the selector inside the message.",
+    description:
+      "Recover from a stale Namespace URL using the selector inside the message, which says the Namespace is missing or not readable.",
     steps: [
       "Choose Engineering under Choose a valid Namespace; the URL changes and the warning disappears without leaving Namespaces.",
       "Use browser Back to return to the unavailable selection and recover again.",
@@ -1739,6 +1896,9 @@ export const scenarios = {
     ],
     description:
       "A creation denial explains the missing Installation permission and disables resubmission. Cancel returns to the empty list.",
+    steps: [
+      "Tab to Namespace name and Create Namespace. Each takes focus and looks unavailable, described by the refusal; typing, Enter, Space or a click sends nothing (finding 2935).",
+    ],
   },
   namespaceCreatePending: {
     group: "Pages/Namespaces",
@@ -1765,6 +1925,9 @@ export const scenarios = {
     ],
     description:
       "An unconfirmed write blocks resubmission. Check Namespaces rereads the list before a deliberate new attempt; this fixture does not establish whether the write committed.",
+    steps: [
+      "Tab to Namespace name and Create Namespace. Each takes focus and looks unavailable, described by the Outcome unknown warning; Enter, Space or a click sends nothing (finding 2935).",
+    ],
   },
   namespaceCreateSuccess: {
     group: "Pages/Namespaces",
@@ -1993,7 +2156,38 @@ export const scenarios = {
       'In Configuration JSON, edit plugins.entries.codex.config.appServer: set sandbox to "workspace-write", approvalPolicy to "never", and remoteWorkspaceRoot to "/workspace/custom".',
       "Change the model, then replace the dummy credential. Confirm the selected model remains. Confirm all three edited appServer settings remain in Configuration JSON.",
       "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
+      "Open Runtime details and Tab to Execution mode. With Codex it takes focus and looks unavailable, described by its hint; keys and clicks do not change it. OpenClaw makes it selectable (finding 2945).",
     ],
+  },
+  createNativeAdmin: {
+    group: "Pages/Create Agent",
+    name: "Native admin UI opt-in",
+    path: create,
+    nativeAdminSetup: true,
+    actions: readyForm,
+    description:
+      "Enable native administration during the first deployment. Simulated UI proof; no runtime is deployed.",
+    steps: [
+      "Check Enable Native admin UI, then uncheck it. It starts off and explains the required Agent administer permission.",
+      "Check it again and create the Agent. The provisioning request includes nativeAdmin: true.",
+    ],
+  },
+  createNativeAdminSelected: {
+    group: "Pages/Create Agent",
+    name: "Native admin UI selected",
+    path: create,
+    nativeAdminSetup: true,
+    actions: [...readyForm, { selector: "#native-admin", click: true }],
+    description:
+      "The explicit opt-in is selected before creation. The API prepares the exact Agent origin; this preview does not prove deployment or authentication.",
+  },
+  createNativeAdminDisabled: {
+    group: "Pages/Create Agent",
+    name: "Native admin UI unavailable",
+    path: create,
+    actions: form,
+    description:
+      "The installation has not enabled native admin access. The unchecked control is disabled with an explanation; Agent creation remains available.",
   },
   createSecretCreateNotPermitted: {
     group: "Pages/Create Agent",
@@ -3888,6 +4082,42 @@ export const scenarios = {
       "Switching the refused password draft to OAuth clears the Secret collision choices and required alternate name. Returning to API key requires fresh credentials without restoring the collision.",
     gap: "Simulated UI proof; native fixtures cover the actual duplicate refusal and keyboard recovery.",
   },
+  createPresetVariableRefused: {
+    group: "Pages/Create Agent",
+    name: "Refused setting filled by a Preset variable",
+    path: create,
+    ...presetVariableRefusal,
+    actions: presetVariableRefused,
+    description:
+      "Create Agent's preflight refuses gateway.auth.trustedProxy.allowUsers, which the Preset variable Human filled. The refusal keeps the API's sentence, names the variable and offers Change Human.",
+    steps: ["Select Change Human: the Preset step opens with Human marked and focused."],
+    gap: "The preflight refusal is simulated; tests/browser/console-agent-presets.test.ts covers it with the real Kubernetes Compute rules.",
+  },
+  createPresetQuotedSettingRefused: {
+    group: "Pages/Create Agent",
+    name: "Refused quoted setting filled by a Preset variable",
+    path: create,
+    ...presetQuotedSettingRefusal,
+    actions: presetQuotedSettingRefused,
+    description:
+      'Create Agent\'s preflight refuses agents.defaults.models["openai/gpt 5 mini"], a key the Preset variable Fallback filled. The API quotes the key; the refusal still names the variable and offers Change Fallback.',
+    steps: ["Select Change Fallback: the Preset step opens with Fallback marked and focused."],
+    gap: "The preflight refusal is simulated; tests/browser/console-agent-presets.test.ts covers it with the real model policy rules.",
+  },
+  createPresetVariableMarked: {
+    group: "Pages/Create Agent",
+    name: "Preset variable marked after a refusal",
+    path: create,
+    ...presetVariableRefusal,
+    actions: [...presetVariableRefused, click("Change Human")],
+    description:
+      "Change Human reopens the Preset with the entered variables kept, except the model key. Human shows the refusal under it and has focus.",
+    steps: [
+      "Type in Human: the refusal clears.",
+      "Enter the model key again and select Use Preset to return to the form.",
+    ],
+    gap: "The preflight refusal is simulated; tests/browser/console-agent-presets.test.ts covers it with the real Kubernetes Compute rules.",
+  },
   createPasswordPresetDenied: {
     group: "Pages/Create Agent",
     name: "Password Secret creation denied",
@@ -3912,6 +4142,9 @@ export const scenarios = {
     rules: [{ path: presetSecretsPath.replace(/secrets$/, "presets"), status: 403 }],
     description:
       "Denied Preset access leaves quick-start disabled and reports the error. Start without Preset remains available as a separate action.",
+    steps: [
+      "Tab to Start with default Preset. It takes focus and looks unavailable, described by the Presets unavailable status; Enter, Space or a click does nothing.",
+    ],
   },
   createPresetInvalidField: {
     group: "Pages/Create Agent",
@@ -4022,6 +4255,20 @@ export const scenarios = {
     emptyPresets: true,
     description:
       "The default starter is unavailable until an administrator installs a readable Preset. Start without Preset opens an independent form.",
+    steps: [
+      "Tab to Start with default Preset. It takes focus and looks unavailable, described by the hint under it, “default-codex is not available to you in this Namespace.” Enter, Space or a click does nothing (finding 2937).",
+    ],
+  },
+  createNoDefaultPreset: {
+    group: "Pages/Create Agent",
+    name: "Other Presets, no default",
+    path: create,
+    noDefaultPreset: true,
+    description:
+      "Another Preset is readable, but default-codex is not. The chooser's status says “Choose a Preset.” and the hint under Start with default Preset says why the shortcut is unavailable, once (finding 2946).",
+    steps: [
+      "Tab to Use Preset. It is described by “Choose a Preset.” Then Tab to Start with default Preset. It is described by the hint, “default-codex is not available to you in this Namespace.”",
+    ],
   },
   createWithoutPreset: {
     group: "Pages/Create Agent",
@@ -4078,6 +4325,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT OAuth before sign-in (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     pluginDiscovery,
     pluginCapabilities,
     actions: oauthForm,
@@ -4088,15 +4336,27 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT device login pending (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     oauthPending: true,
     actions: startOAuthLogin,
     description:
       "The user code and provider link are visible while authorization is pending. Cancel login removes this staged login locally.",
   },
+  createOAuthStartNavigation: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT sign-in interrupted by navigation (Experimental)",
+    path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
+    rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
+    actions: oauthForm,
+    description:
+      "Start sign-in, navigate to Secrets, and return with Back. The retained attempt blocks a second start and asks an administrator to investigate. The fixture holds the response; it does not prove provider persistence.",
+  },
   createOAuthReady: {
     group: "Pages/Create Agent",
     name: "ChatGPT login ready for plugin discovery (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     pluginDiscovery,
     pluginCapabilities,
     actions: startOAuthLogin,
@@ -4111,6 +4371,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login permission denied (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/device-authorizations", method: "POST", status: 403 }],
     actions: startOAuthLogin,
     description:
@@ -4120,15 +4381,35 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login unavailable (Experimental)",
     path: create,
-    rules: [{ suffix: "/device-authorizations", method: "POST", status: 501 }],
+    credentialSourceTypes: deviceLoginSourceTypes,
+    rules: [
+      {
+        suffix: "/device-authorizations",
+        method: "POST",
+        status: 501,
+        code: "NOT_IMPLEMENTED",
+        message:
+          "Device login needs a Credential Gateway and a Credential Refresh Driver, and this Installation does not select both. Ask an Installation administrator to select them; see the credential lifecycle guide.",
+      },
+    ],
     actions: startOAuthLogin,
     description:
-      "An Installation whose selected Drivers do not support device login reports it as unavailable. Choose another authentication method; no device code or sign-in link appears.",
+      "The Credential Gateway offers device login, but the Installation selects no Credential Refresh Driver. The refused start names the API's reason, and Sign in with OAuth stays unavailable, described by it. No device code or sign-in link appears.",
+  },
+  createOAuthNotOffered: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT login not offered by the Drivers (Experimental)",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: oauthForm,
+    description:
+      "The Installation's Credential Gateway offers no ChatGPT device login. Sign in with OAuth is unavailable before any request: Tab reaches it, it is described by the reason, and Enter sends nothing.",
   },
   createOAuthStartUnconfirmed: {
     group: "Pages/Create Agent",
     name: "ChatGPT sign-in start unconfirmed (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/device-authorizations", method: "POST", bodyError: true }],
     actions: oauthForm,
     description:
@@ -4138,6 +4419,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login exchange failed (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     rules: [{ suffix: "/poll", method: "POST", status: 503 }],
     actions: startOAuthLogin,
     description:
@@ -4147,6 +4429,7 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT device login expired (Experimental)",
     path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
     oauthExpired: true,
     actions: startOAuthLogin,
     description:
@@ -4167,10 +4450,61 @@ export const scenarios = {
       "Tab to Save plugin selections and Discard changes. Each takes focus, looks unavailable and is described by No plugin changes to save.; Enter or Space does nothing. Edit the JSON: both become live.",
     ],
   },
+  authOAuthStartNavigation: {
+    group: "Components/Credentials",
+    name: "ChatGPT replacement interrupted by navigation (Experimental)",
+    path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
+    deployed: true,
+    auth: "oauth",
+    rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
+    description:
+      "Start a replacement sign-in, navigate to Secrets, and return with Back. The saved authentication remains; the unconfirmed replacement cannot start twice.",
+  },
+  authOAuthStartTabSwitch: {
+    group: "Components/Credentials",
+    name: "ChatGPT sign-in answered on another tab (Experimental)",
+    path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
+    deployed: true,
+    auth: "oauth",
+    oauthPending: true,
+    rules: [{ suffix: "/device-authorizations", method: "POST", delayMs: 3000, once: true }],
+    description:
+      "Start a replacement sign-in and open Configuration within 3 s. The reply arrives while Configuration shows; Credentials keeps it, so returning shows the code and Cancel login. The fixture delays the reply; it does not prove provider persistence.",
+  },
+  authOAuthStartTabSwitchRefused: {
+    group: "Components/Credentials",
+    name: "ChatGPT sign-in refused on another tab (Experimental)",
+    path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
+    deployed: true,
+    auth: "oauth",
+    rules: [
+      { suffix: "/device-authorizations", method: "POST", delayMs: 3000, status: 403, once: true },
+    ],
+    description:
+      "Start a replacement sign-in and open Configuration within 3 s. The simulated refusal arrives while Configuration shows; returning to Credentials names the missing grants and offers Sign in with OAuth again.",
+  },
+  authOAuthRestartTabSwitch: {
+    group: "Components/Credentials",
+    name: "ChatGPT sign-in restarted on another tab (Experimental)",
+    path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
+    deployed: true,
+    auth: "oauth",
+    oauthPending: true,
+    rules: [
+      { suffix: "/device-authorizations", method: "POST", delayMs: 3000, skip: 1, once: true },
+    ],
+    description:
+      "Start a replacement sign-in, choose Cancel login, then start again and open Configuration within 3 s. The second reply arrives while Configuration shows; Credentials keeps it, so returning shows the code. The fixture delays the reply; it does not prove provider persistence.",
+  },
   authOAuthReconnect: {
     group: "Components/Credentials",
     name: "Explicit ChatGPT credential replacement (Experimental)",
     path: `${draft}&tab=credentials`,
+    credentialSourceTypes: deviceLoginSourceTypes,
     deployed: true,
     auth: "oauth",
     credentialSources: [
@@ -4321,7 +4655,7 @@ export const scenarios = {
         status: 409,
         code: "RESOURCE_CONFLICT",
         message:
-          "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
+          "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment. Select a codex/<model> model with agentRuntime.id codex, or ask an Installation administrator for such a SandboxDriver.",
         once: true,
       },
     ],
@@ -4551,6 +4885,26 @@ export const scenarios = {
     ],
     gap: "The deployment records are simulated; the API reports each listed version's outcome the same way.",
   },
+  earlierSupersededVersion: {
+    group: "Pages/Agent detail",
+    name: "Earlier superseded version",
+    path: draft,
+    deployed: true,
+    revisionHistory: 3,
+    earlierFailedVersion: 2,
+    // The API lists a superseded deployment as failed with this code.
+    earlierVersionError: {
+      code: "REVISION_SUPERSEDED",
+      message: "Deployment was superseded by a newer revision.",
+    },
+    description:
+      "v3 took over before v2's deployment finished. The version picker marks v2 Superseded, not Failed, from the list's own outcome, and v2's page says a newer version took over.",
+    steps: [
+      'Check Viewing version: v3 includes "Selected for service" and v2 reads "v2 · Superseded"; v1 has no outcome label.',
+      'Choose v2. The notice reads "Superseded version · read-only admitted snapshot. A newer version took over before its deployment finished." and names neither the newer version nor a runtime stop.',
+    ],
+    gap: "The deployment records are simulated; the API reports each listed version's outcome the same way.",
+  },
   longVersionHistory: {
     group: "Pages/Agent detail",
     name: "Long version history",
@@ -4719,6 +5073,41 @@ export const scenarios = {
     ],
     gap: "Simulated UI proof: the refused reread stands in for administration revoked while the page is open.",
   },
+  agentSharingRegranted: {
+    group: "Pages/Agent detail",
+    name: "Refresh sharing after administration is granted again",
+    path: `${draft}&tab=access`,
+    rules: [
+      // The page load reads the policy; the share's reread is refused, as after a revoke.
+      { suffix: "/iam/roles", status: 403, skip: 1, once: true },
+      // The permission answer that settles the refusal says "not an administrator"; the one
+      // Refresh sharing asks reports administration granted again.
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/permissions",
+        skip: 1,
+        once: true,
+        data: {
+          delete: true,
+          agents: { create: true },
+          secrets: { create: true },
+          installation: { administer: false },
+        },
+      },
+    ],
+    actions: [
+      { text: "Current policy loaded." },
+      ...shareExistingPerson,
+      { text: "Sharing policy requires Installation administration." },
+      click("Refresh sharing"),
+    ],
+    description:
+      "A share is refused after a revoke, and administration is granted again. Refresh sharing rereads the Agent's and the Namespace's permission answers, then the policy, one list at a time: the Access tab stays and shows the current policy without a page reload (finding 2943).",
+    steps: [
+      "The panel shows “Current policy loaded.” and the Share form is usable again; the Access tab is still selected.",
+      "The request log shows the Agent and Namespace /permissions reads after Refresh sharing, then one /iam/roles and one /iam/access-bindings read.",
+    ],
+    gap: "Simulated UI proof: the refused reread and the permission answers stand in for administration revoked and granted again while the page is open.",
+  },
   agentSharingUnknown: {
     group: "Pages/Agent detail",
     name: "Sharing outcome uncertain",
@@ -4844,6 +5233,244 @@ export const scenarios = {
     description:
       "The saved Configuration uses the generated password; deployment is still required to apply edits.",
   },
+  gatewayPasswordUnreadable: {
+    group: "Pages/Agent detail",
+    name: "Gateway password reference OpenClaw cannot read",
+    path: draft,
+    deployed: true,
+    gatewayPasswordProviderless: true,
+    description:
+      "An older release saved gateway.auth.password without a provider. OpenClaw cannot read it and OCC refuses to save or deploy it, so the page shows OCC's refusal and keeps Enable gateway password access.",
+    steps: [
+      "On Configuration the hint reads Configuration setting gateway.auth.password is a SecretRef without a provider: add provider default, then says to enable access, save and deploy.",
+      "In Prepare this version, the first step reads Fix the gateway password and Deploy new version is disabled with the same refusal.",
+      "Select Enable gateway password access and Save Configuration: the hint says access is enabled and the status returns to Ready to deploy.",
+    ],
+    gap: "The stored reference is simulated; this story does not call OCC's save or deploy admission or start a Gateway.",
+  },
+  secretProviderAliasRefused: {
+    group: "Pages/Agent detail",
+    name: "Secret provider alias OpenClaw refuses",
+    path: draft,
+    deployed: true,
+    secretProviderAliasRefused: true,
+    description:
+      "An older release saved secrets.defaults.env as BAD. OpenClaw's configuration check refuses an alias outside its grammar and OCC refuses to save or deploy it, so the page names the alias and offers no Enable gateway password access.",
+    steps: [
+      "On Configuration the hint reads Configuration setting secrets.defaults.env is BAD, not a provider alias OpenClaw reads, with the grammar and the fix (use bad, or remove it), then says to edit the Configuration before you enable gateway password access; the button is absent.",
+      "In Prepare this version, the first step reads Fix the secret provider alias and Deploy new version is disabled with the same refusal.",
+    ],
+    gap: "The stored alias is simulated; this story does not call OCC's save or deploy admission or start a Gateway.",
+  },
+  pluginSecretInputUnreadable: {
+    group: "Pages/Agent detail",
+    name: "Plugin secret input OpenClaw cannot read",
+    path: draft,
+    deployed: true,
+    pluginSecretInputProviderless: true,
+    description:
+      "An older release saved a Google web search header as a SecretRef without a provider. OpenClaw cannot read it and Kubernetes Compute refuses to save or deploy it, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the plugin secret input.",
+      "Deploy new version is disabled with Configuration setting plugins.entries.google.config.webSearch.headers.X-Goog-User-Project is a SecretRef without a provider: add provider default, or remove plugins.entries.google or set its enabled to false.",
+    ],
+    gap: "The stored reference is simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
+  configIncludeRefused: {
+    group: "Pages/Agent detail",
+    name: "Configuration include OCE refuses",
+    path: draft,
+    deployed: true,
+    configInclude: true,
+    description:
+      "An older release saved OpenClaw's $include in agents.defaults. OpenClaw would merge settings from another file that OCE does not check, and every Compute refuses to save or deploy it, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Remove the $include setting.",
+      "Deploy new version is disabled with Configuration setting agents.defaults.$include is not supported: OpenClaw would merge settings from another file that OCE does not check. Write those settings in the Configuration instead.",
+    ],
+    gap: "The stored include is simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
+  pluginEntryKeyVariantRefused: {
+    group: "Pages/Agent detail",
+    name: "Plugin entry key in another spelling",
+    path: draft,
+    deployed: true,
+    pluginEntryKeyVariant: true,
+    description:
+      "An older release saved a plugins.entries.Codex entry beside codex. OpenClaw merges it into codex, and every Compute refuses to save or deploy it, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the plugin entry key.",
+      "Deploy new version is disabled with Configuration setting plugins.entries.Codex must be named codex: OpenClaw merges it into plugins.entries.codex, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key.",
+    ],
+    gap: "The stored key is simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
+  openClawSandboxRefused: {
+    group: "Pages/Agent detail",
+    name: "OpenClaw sandbox before a plugin entry key",
+    path: draft,
+    deployed: true,
+    openClawSandbox: true,
+    pluginEntryKeyVariant: true,
+    description:
+      "An older release saved OpenClaw's sandbox on and a plugins.entries.Codex entry beside codex. Every Compute refuses to save or deploy both, and deploy names the sandbox first, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Turn off OpenClaw's sandbox.",
+      'Deploy new version is disabled with Configuration setting agents.defaults.sandbox.mode must be "off" or unset: OCE runs each Agent in its own isolated runtime and does not support OpenClaw\'s sandbox.',
+    ],
+    gap: "The stored settings are simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
+  providerKeyVariantRefused: {
+    group: "Pages/Agent detail",
+    name: "Model provider key in another spelling",
+    path: draft,
+    deployed: true,
+    providerKeyVariant: true,
+    description:
+      "An older release saved a models.providers.OpenAI entry. OpenClaw applies it to openai, and every Compute refuses to save or deploy it, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the model provider key.",
+      'Deploy new version is disabled with Configuration setting models.providers.OpenAI must be named "openai": OpenClaw applies it to that provider\'s entry, the one OCE checks. Move these settings there if that key exists, else rename this key.',
+    ],
+    gap: "The stored key is simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
+  pluginPolicyListRefused: {
+    group: "Pages/Agent detail",
+    name: "Plugin deny list item that is not text",
+    path: draft,
+    deployed: true,
+    pluginDeny: ["discord", 7],
+    description:
+      "An older release saved a plugins.deny list with a number in it. OpenClaw's config schema refuses it, so no Gateway starts, and every Compute refuses to save or deploy it: the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the plugin allow or deny list.",
+      "Deploy new version is disabled with Configuration setting plugins.deny must list only plugin IDs as text, or the Gateway does not start: remove any other item.",
+    ],
+    gap: "The stored list is simulated; this story does not call save or deploy admission or start a Gateway.",
+  },
+  kubernetesEntryKeyVariantRefused: {
+    group: "Pages/Agent detail",
+    name: "Plugin entry key Kubernetes Compute refuses",
+    path: draft,
+    deployed: true,
+    kubernetesEntryKeyVariant: true,
+    rules: [
+      {
+        suffix: "/agents/validate",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting plugins.entries.File-Transfer must be named file-transfer: OpenClaw merges it into plugins.entries.file-transfer, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key.",
+      },
+    ],
+    description:
+      "An older release saved a plugins.entries.File-Transfer entry. Only Kubernetes Compute refuses that spelling, so the page asks Create Agent's preflight, which runs the Installation's Compute rules. Here it refuses, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the plugin entry key.",
+      "Deploy new version is disabled with Configuration setting plugins.entries.File-Transfer must be named file-transfer: OpenClaw merges it into plugins.entries.file-transfer, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key.",
+    ],
+    gap: "The stored key and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes and SSH Compute rules.",
+  },
+  codexPluginsDisabledRefused: {
+    group: "Pages/Agent detail",
+    name: "Codex plugin turned off on Dedicated Codex",
+    path: draft,
+    deployed: true,
+    codexPluginsDisabled: true,
+    rules: [
+      {
+        suffix: "/agents/validate",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting plugins.enabled must not be false: Dedicated Codex runs the codex plugin, so its Gateway would not start. Remove it.",
+      },
+    ],
+    description:
+      "An older release saved plugins.enabled false on a Dedicated Codex Agent. Only Kubernetes Compute refuses it, so the page asks Create Agent's preflight, which runs the Installation's Compute rules. Here it refuses, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Let the codex plugin run.",
+      "Deploy new version is disabled with Configuration setting plugins.enabled must not be false: Dedicated Codex runs the codex plugin, so its Gateway would not start. Remove it.",
+    ],
+    gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes Compute rules.",
+  },
+  trustedProxyAllowUsersRefused: {
+    group: "Pages/Agent detail",
+    name: "Trusted-proxy allowlist without the machine identity",
+    path: draft,
+    deployed: true,
+    trustedProxyWithoutMachine: true,
+    rules: [
+      {
+        suffix: "/agents/validate",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting gateway.auth.trustedProxy.allowUsers must include occ-workspace-files and list distinct (case-insensitive for occ-workspace-files and @ identities), nonblank, trimmed, printable ASCII identities that are not object property names.",
+      },
+    ],
+    description:
+      "An older release saved a trusted-proxy allowlist without occ-workspace-files. Only Kubernetes Compute refuses it, so the page asks Create Agent's preflight, which runs the Installation's Compute rules. Here it refuses, so the page shows that refusal and holds Deploy.",
+    steps: [
+      "In Prepare this version, the first step reads Fix the Gateway authentication.",
+      "Deploy new version is disabled with the allowUsers refusal deploy gives.",
+    ],
+    gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes Compute rules.",
+  },
+  kubernetesEntryKeyVariantChecking: {
+    group: "Pages/Agent detail",
+    name: "Plugin entry key, Compute check in flight",
+    path: draft,
+    deployed: true,
+    kubernetesEntryKeyVariant: true,
+    rules: [{ suffix: "/agents/validate", method: "POST", hold: true }],
+    description:
+      "An older release saved a plugins.entries.File-Transfer entry, and Create Agent's preflight has not answered yet. Deploy waits for it, and after 250 ms the draft says it is checking the Configuration with this Installation's Compute.",
+    steps: [
+      "Deploy new version is disabled with Checking the Configuration with this Installation's Compute before deploying.",
+    ],
+    gap: "The preflight is held by the fixture; the API client gives up after 15 seconds, and then the page holds nothing and Deploy is enabled.",
+  },
+  kubernetesEntryKeyVariantCreateDenied: {
+    group: "Pages/Agent detail",
+    name: "Plugin entry key, caller without Agent create",
+    path: draft,
+    deployed: true,
+    kubernetesEntryKeyVariant: true,
+    agentCreateRestricted: true,
+    rules: [
+      {
+        suffix: "/agents/validate",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message:
+          "Configuration setting plugins.entries.File-Transfer must be named file-transfer: OpenClaw merges it into plugins.entries.file-transfer, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key.",
+      },
+    ],
+    description:
+      "An older release saved a plugins.entries.File-Transfer entry, and the Namespace permission answer says this caller may not create Agents. Create Agent's preflight needs that permission, so the page does not ask it and holds nothing. Deploy stays the authority and gives Kubernetes Compute's refusal, if any.",
+    steps: [
+      "Deploy new version is enabled and the draft reads Ready to deploy.",
+      "The fixture would refuse the preflight, yet no refusal is shown: the page never sent it.",
+    ],
+    gap: "The permission answer is simulated; tests/browser/console-agent-detail.test.mjs covers a member without Agent create against the real API, with no preflight request and no audited denial.",
+  },
+  gatewayPasswordAllowlistOmits: {
+    group: "Pages/Agent detail",
+    name: "Gateway password reference an allowlist omits",
+    path: draft,
+    deployed: true,
+    gatewayPasswordAllowlistOmits: true,
+    description:
+      "The default env alias is vault, a configured env provider whose allowlist leaves out OPENCLAW_GATEWAY_PASSWORD. OpenClaw cannot read the generated reference on that alias and OCC refuses to save it, so the page states why and offers no Enable gateway password access.",
+    steps: [
+      'On Configuration the hint reads The generated gateway password reference {source: "env", provider: "vault", id: "OPENCLAW_GATEWAY_PASSWORD"} references OPENCLAW_GATEWAY_PASSWORD, which secrets.providers.vault.allowlist omits: add it to that allowlist, then says to edit the Configuration before you enable gateway password access; the button is absent.',
+    ],
+    gap: "The stored secrets are simulated; this story does not call OCC's save or deploy admission or start a Gateway.",
+  },
   gatewayPasswordSaveDenied: {
     group: "Pages/Agent detail",
     name: "Gateway password save denied",
@@ -4960,6 +5587,8 @@ export const scenarios = {
     name: "Version draft, editor cannot operate a bound Secret",
     path: `${draft}&tab=configuration`,
     deployed: true,
+    slack: true,
+    secretOperateDenied: ["sec_demo_slack_app_token", "sec_demo_slack_bot_token"],
     agentPermissionSummary: {
       update: true,
       deploy: false,
@@ -4977,6 +5606,8 @@ export const scenarios = {
       "The permission answer allows Agent and Configuration update but not operate on a Secret the Configuration binds, which every save checks. Each editor is disabled, so the draft reads as read-only with this access, as for a viewer.",
     steps: [
       "Read the notice: Version draft · read-only with your access.",
+      "In Configuration, read that saving needs Secret operate on Slack app token (simulated) and Slack bot token (simulated). No Edit Configuration button is offered. View native Configuration still opens the saved JSON.",
+      "In Plugins and Credentials, read the same missing Secret names after the general source-grant explanation. Plugin selections remain a saved summary; authentication controls remain unavailable. Switching tabs retains their state.",
       "The Versions entry reads Version draft with Read-only Configuration, and the draft card has no Prepare this version steps.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every save.",
@@ -6323,20 +6954,8 @@ export const scenarios = {
     ],
   },
   agentCurrentVersionHiddenLogs: {
-    group: "Pages/Agent detail",
+    ...hiddenCurrentLogsPage,
     name: "Logs of a current version the viewer cannot read",
-    // The current version, v8, which the viewer cannot read, opened on its Logs tab.
-    path: "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&tab=logs",
-    deployed: true,
-    candidateDeploymentStatus: "succeeded",
-    candidateSuperseded: true,
-    rules: [
-      {
-        suffix: "/revisions/rev_00000000-0000-4000-8000-000000000008",
-        status: 403,
-        code: "FORBIDDEN",
-      },
-    ],
     description:
       "An operator opens Logs on a current version she cannot read. Runtime status also needs AgentRevision read on it, so the page does not read it and says why in words; log text, which needs no version read, still shows.",
     steps: [
@@ -6344,6 +6963,19 @@ export const scenarios = {
       "The request log shows no /runtime status read and no read of the current version; log output still loads.",
     ],
     gap: "Simulated UI proof: it does not verify the API's refusal of the status read.",
+  },
+  agentCurrentVersionHiddenLogsStopped: {
+    ...hiddenCurrentLogsPage,
+    name: "Logs of a current version the viewer cannot read, stopped elsewhere",
+    stopElsewhereOnReread: true,
+    description:
+      "The operator has Logs open on the current version, which she cannot read. Another person stops the Agent. The Logs view reads no runtime status for this version, so it says in place that a stop was requested (finding 3012), as the summary does.",
+    steps: [
+      "Wait for the next Agent reread (at most 10 seconds). The summary reads Selected for service None.",
+      "Check the Logs view under the runtime status: “Stop requested. This Agent will not start again until a new version is deployed.” It says nothing else about the version. Focus and the Logs view stay where they were, at 1440 and at 390 px wide.",
+      "The request log shows only Agent reads: no /runtime status read and no read of the version.",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live stop or the screen reader announcement.",
   },
   deploymentSucceeded: {
     group: "Pages/Agent detail",
@@ -6585,7 +7217,10 @@ export const scenarios = {
     candidateDeploymentStatus: "succeeded",
     runtimePod: "startupWarnings",
     description:
-      "The Gateway Pod is Ready with no restarts; its startup readiness-probe Event is listed in muted text as an earlier warning instead of in the warning color.",
+      "The Gateway Pod is Ready with no restarts; its startup readiness-probe Event is listed in muted text as an earlier warning instead of in the warning color. With no restart there is no previous instance, and a note under the log toolbar says so.",
+    steps: [
+      "Tab through the log controls. Previous instance takes focus and looks unavailable, described by “This container has not restarted, so there is no previous instance.” Space or a click does not check it (finding 2944).",
+    ],
   },
   runtimeLogsDedicatedPods: {
     ...runtimeLogsPage,
@@ -6620,6 +7255,36 @@ export const scenarios = {
       "Tab through the log controls. Previous instance, Follow, Refresh logs and Download each take focus and look unavailable, described by “This version has no running Pod for this source.” Enter, Space or a click does nothing (finding 2929).",
     ],
     gap: "Simulated UI state only; this preview does not prove a live Pod transition.",
+  },
+  runtimeLogsReplacedVersion: {
+    ...runtimeLogsPage,
+    name: "Logs of a version stopped and replaced since",
+    path: `${currentVersion}&tab=logs`,
+    runtimePod: "replaced",
+    description:
+      "v6 has no running Pod: it was stopped and v7 is now selected for service. The Logs view keeps v6, says it has no running Pod, and names v7 with a link to its Logs.",
+    steps: [
+      "Check the notice under the runtime status: “v7 is selected for service.” with Open v7 Logs. The version picker still shows v6, and its log controls stay unavailable, described by “This version has no running Pod for this source.” (finding 2975).",
+      "Select Open v7 Logs. The page opens v7's Logs with its running Gateway Pod and no notice.",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live stop and redeploy.",
+  },
+  runtimeLogsFailedRedeploy: {
+    ...runtimeLogsPage,
+    name: "Logs of a stopped version after a failed redeploy elsewhere",
+    stopped: true,
+    stopNoSelection: true,
+    runtimePod: "none",
+    failedRedeployOnReread: true,
+    description:
+      "v7 was stopped, so no version is selected and its Pods are gone. While its Logs are open, another person deploys v8, and v8's startup model check times out: the Agent runs again with no version selected. The Logs status poll rereads the Agent and, finding it running with no version selected, lists the versions again: the page shows v8's failed deployment (finding 2978), and the Logs view says so in place under its runtime status (finding 2993).",
+    steps: [
+      "Wait for the Logs view to say “This version has no running Pod for this source.” The summary reads Latest visible deployment v7 · Completed and Selected for service None.",
+      "Wait for the next status poll (10 seconds). The summary then reads Latest visible deployment v8 · Failed, and Deployment needs attention leads with v8's timed-out model check.",
+      "Check the Logs view under the runtime status: “v8 failed its startup model check.” with the same next step and no error code, and View v8 deployment. Focus and the scroll position stay where they were; at 390 px wide the line is in view under the Runtime heading.",
+      "Open the version picker: v8 is listed above v7.",
+    ],
+    gap: "Simulated UI state only; this preview does not prove a live stop, redeploy or deployment failure.",
   },
   runtimeLogsFilteredDownload: {
     group: "Pages/Agent detail",
@@ -7593,6 +8258,17 @@ export const scenarios = {
     description:
       "The Socket Mode editor disables editing for an HTTP-mode configuration and shows native JSON.",
   },
+  slackPluginDenied: {
+    group: "Components/Channels",
+    name: "Slack plugin denied",
+    path: `${draft}&tab=channels`,
+    pluginDeny: [" Slack"],
+    description:
+      'plugins.deny names " Slack". OpenClaw matches deny entries by trimmed, lowercased plugin ID, so the slack plugin is blocked: Configure Slack is disabled and described by the danger note.',
+    steps: [
+      "Tab to Configure Slack. It takes focus and looks unavailable, described by the blocked note; Enter, Space or a click opens nothing.",
+    ],
+  },
   slackMixedUsersUnsupported: {
     group: "Components/Channels",
     name: "Slack mixed sender lists",
@@ -8413,6 +9089,64 @@ export const scenarios = {
       "Select Retry Secret access. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy.",
     ],
   },
+  credentialsSlackOffGrantMissing: {
+    group: "Components/Credentials",
+    name: "Slack off with a bound Secret without an Agent grant",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackOff: true,
+    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    description:
+      "Disable Slack kept both token bindings, and the app token Secret has no Agent grant. Deploy checks every bound Secret, so with Slack off the tab still lists the bound keys as read by no Slack setting, marks the app token, blocks Deploy, and offers Retry Secret access (finding 3018).",
+    steps: [
+      "SLACK_APP_TOKEN reads Bound · not read by the Slack settings · Agent access not confirmed; Deploy new version names SLACK_APP_TOKEN and says to select Retry Secret access.",
+      "Select Retry Secret access. The section says Secret access granted. This Agent can use its bound Secrets. Deploy the new version to deliver them. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy (finding 3021).",
+    ],
+  },
+  credentialsSlackOffRetryUnconfirmed: {
+    group: "Components/Credentials",
+    name: "Slack off Retry with an unconfirmed grant",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackOff: true,
+    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 503, once: true }],
+    actions: [click("Retry Secret access")],
+    description:
+      "With Slack off, Retry Secret access sends the app token Secret's grant, and the IAM API is unavailable (503), so the grant is not confirmed. A Retry saves no Configuration, so the warning names only the grant and what to do next (finding 3023).",
+    gap: "The unavailable IAM API is simulated.",
+    steps: [
+      "The section says Secret access grants could not be confirmed. Select Retry Secret access again; if it is refused, ask an Installation administrator. It does not say Configuration saved.",
+      "Select Retry Secret access again. The section says Secret access granted and Deploy new version is available; do not deploy.",
+    ],
+  },
+  credentialsSlackOffRetryAnswerLost: {
+    group: "Components/Credentials",
+    name: "Slack off Retry whose answer is lost",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackOff: true,
+    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    rules: [{ suffix: "/iam/access-bindings", method: "POST", lostAnswer: true, once: true }],
+    // Another browser saves the Configuration after the first Retry, so the second one asks for
+    // Reload draft.
+    configurationChangedElsewhere: {
+      afterReads: 2,
+      values: { channels: { slack: { allowFrom: ["UOTHER99"] } } },
+    },
+    actions: [click("Retry Secret access")],
+    description:
+      "With Slack off, Retry Secret access makes the app token Secret's grant, but its answer is lost, so the grant is not confirmed. Reload draft rebuilds the section, and its grant read finds the grant: the section says that access is confirmed and takes focus, instead of disappearing (finding 3030).",
+    gap: "The lost answer and the other browser's save are simulated; the simulated API keeps the grant.",
+    steps: [
+      "The section says Secret access grants could not be confirmed. Select Retry Secret access again; if it is refused, ask an Installation administrator.",
+      "Select Retry Secret access: another browser changed the Configuration, so the section asks for Reload draft.",
+      "Select Reload draft. Once the grant read lands, the section says Secret access confirmed. This Agent can use its bound Secrets. Deploy the new version to deliver them. Focus is on that message, and Deploy new version is available; do not deploy.",
+    ],
+  },
   credentialsSlackGrantReadPending: {
     group: "Components/Credentials",
     name: "Slack grant read in progress",
@@ -9136,8 +9870,8 @@ export const scenarios = {
     actions: [click("Delete Agent")],
     description: "The story opens Delete before the delayed permission summary answers no.",
     steps: [
-      "Watch the open confirmation explain the restriction, disable Delete, and move focus to Cancel.",
-      "Cancel or press Escape. The page should explain why Delete is unavailable, without sending a delete request.",
+      "Watch the open confirmation explain the restriction, make Permanently delete Agent unavailable, and move focus to Cancel. Tab to it: it takes focus, described by the restriction, and Enter, Space or a click sends nothing (finding 2935).",
+      "Cancel or press Escape. The page explains why Delete is unavailable, without sending a delete request; Delete Agent stays in the Tab order, described by that note.",
     ],
   },
   deletionConfirm: {
@@ -9222,7 +9956,7 @@ export const scenarios = {
     ],
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     description:
-      "Permission advice is unavailable. The attempted deletion is denied; the Console shows the API's sentence naming the missing grant and who grants it.",
+      "Permission advice is unavailable. The attempted deletion is denied; the Console names the Agent, the missing grant and who grants it, keeps the Request ID, and leaves Delete Agent unavailable, described by the refusal.",
   },
   deletionConflict: {
     group: "Components/Deletion",
@@ -9255,6 +9989,9 @@ export const scenarios = {
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     description:
       "Deletion may have started. Refresh deletion status checks this Agent without sending another deletion request.",
+    steps: [
+      "Tab to Delete Agent. It takes focus and looks unavailable, described by the Outcome unknown alert; Enter, Space or a click sends nothing (finding 2935).",
+    ],
   },
   createFlow: {
     group: "Flows",
@@ -9550,8 +10287,8 @@ export const scenarios = {
     actions: [click("Stop Agent")],
     description: "The story opens Stop before the delayed permission summary answers no.",
     steps: [
-      "Watch the open confirmation explain the restriction, disable Stop, and move focus to Cancel.",
-      "Cancel or press Escape. The page should explain why Stop is unavailable, without sending a stop request.",
+      "Watch the open confirmation explain the restriction, make Stop Agent unavailable, and move focus to Cancel. Tab to it: it takes focus, described by the restriction, and Enter, Space or a click sends nothing (finding 2935).",
+      "Cancel or press Escape. The page explains why Stop is unavailable, without sending a stop request; Stop Agent stays in the Tab order, described by that note.",
     ],
   },
   dangerZoneReader: {
@@ -9622,7 +10359,7 @@ export const scenarios = {
     stopped: true,
     actions: [click("Request Stop again")],
     description:
-      "An explicit repeated Stop uses the same confirmation and preserves the selected version. Cancel or Escape returns keyboard focus to Request Stop again.",
+      "An explicit repeated Stop preserves the selected version. Its confirmation says the Agent is already requested to stop and that this sends the request again, not that it interrupts a running gateway (finding D815). Cancel or Escape returns keyboard focus to Request Stop again.",
   },
   stopNoSelection: {
     group: "Components/Stop Agent",
@@ -9683,11 +10420,18 @@ export const scenarios = {
     deployed: true,
     rules: [
       { suffix: "/permissions", status: 503 },
-      { suffix: "/stop", method: "POST", status: 403 },
+      {
+        suffix: "/stop",
+        method: "POST",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Not authorized: this needs Agent operate on Agent agt_00000000-0000-4000-8000-000000000001. Ask an Installation administrator to grant it.",
+      },
     ],
     actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
     description:
-      "Permission advice is unavailable. The attempted stop is denied and the Console explains the required access.",
+      "Permission advice is unavailable. The attempted stop is denied; the Console names the Agent, the missing grant and who grants it, keeps the Request ID, and leaves Stop Agent unavailable, described by the refusal.",
   },
   stopUnknown: {
     group: "Components/Stop Agent",
@@ -9934,6 +10678,71 @@ scenarios.policyDenialsNoSandboxDriver = {
     "The Policy denials tab says once that Agents run without a Sandbox, and offers no policy editor.",
   steps: [
     "Confirm the single status sentence names the missing Sandbox Driver, and that the Policy editing switch and Manage rules are absent.",
+  ],
+};
+
+// Collaborator-only approval exercises the same editor as the legacy default story.
+const collaboratorRepositoryOptions = [
+  {
+    repositoryRef: "application",
+    displayName: "example/application",
+    allowedProfiles: ["github-repository", "github-installation"],
+  },
+  {
+    repositoryRef: "api-only",
+    displayName: "example/api-only",
+    allowedProfiles: ["github-installation"],
+  },
+  {
+    repositoryRef: "handbook",
+    displayName: "example/handbook",
+    allowedProfiles: ["git-read"],
+  },
+];
+scenarios.repositoryCollaborator = {
+  ...scenarios.repositoryEditor,
+  name: "Select repository collaborator from an empty set",
+  repositoryOptions: collaboratorRepositoryOptions,
+  repositoryAccess: { defaultProfile: "git-full", repositories: [] },
+  repositoryBindings: [],
+  description:
+    "An empty selection offers the approved collaborator repository. API-only access is not a Git repository choice; the existing Contributor default stays unchanged.",
+  steps: [
+    "Select example/application. Its access reads Repository collaborator; the Agent default remains Contributor.",
+    "Save repository access. Confirm the saved message, visit Channels, and return to Repositories to inspect the saved selection.",
+    "Confirm example/api-only is absent from repository choices.",
+  ],
+  gap: "Simulated API state only; saving does not prove Controller persistence, authorization, or runtime Git access.",
+};
+scenarios.repositoryCollaboratorSaved = {
+  ...scenarios.repositoryCollaborator,
+  name: "Saved inheritance survives delayed collaborator discovery",
+  repositoryAccess: {
+    defaultProfile: "git-full",
+    repositories: [{ repositoryRef: "application" }],
+  },
+  repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+  rules: [{ suffix: "/repository-options", delayMs: 3000 }],
+  description:
+    "A saved inherited Contributor selection meets a changed collaborator-only approval after a three-second discovery delay. Discovery must not migrate the saved intent or mark it dirty.",
+  steps: [
+    "During discovery, inspect Access awaiting verification. After discovery, inspect Choose approved access; Save stays disabled and Channels stays enabled.",
+    "Expand Access for example/application, clear Use Agent default, and choose Repository collaborator. Save the explicit change and confirm the saved message.",
+  ],
+};
+scenarios.repositoryCollaboratorReadOnly = {
+  ...scenarios.repositoryCollaborator,
+  name: "Explicit Read-only refuses implicit collaborator access",
+  actions: [
+    { selector: "#repository-default-git-read", click: true },
+    { selector: 'input[data-repository-ref="application"]', click: true },
+  ],
+  description:
+    "Choosing Read-only before adding a collaborator-only repository preserves that intent. The editor requires an explicit per-repository choice before saving.",
+  steps: [
+    "Confirm Read-only stays selected, the repository needs approved access, and Save is disabled.",
+    "Expand Access for example/application, clear Use Agent default, and choose Repository collaborator. The Agent default stays Read-only; Save now succeeds.",
+    "Reset, remove example/application, and select example/handbook. Save succeeds with inherited Read-only access.",
   ],
 };
 

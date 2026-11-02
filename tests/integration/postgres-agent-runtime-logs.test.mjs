@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
+import { assertApiError } from "../helpers/api-error.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 
@@ -42,8 +43,7 @@ test(
     // Audit failure: no row, no Driver read, no content.
     failAudit = true;
     const refused = await inject("GET", logs);
-    assert.equal(refused.statusCode, 503, refused.body);
-    assert.equal(refused.json().error.code, "RUNTIME_LOGS_AUDIT_UNAVAILABLE");
+    assertApiError(refused, 503, "RUNTIME_LOGS_AUDIT_UNAVAILABLE");
     assert.equal(refused.body.includes("first line"), false);
     assert.equal(computeDriver.calls.filter(({ operation }) => operation === "read").length, 0);
     assert.equal((await viewRows()).rowCount, 0);

@@ -76,3 +76,15 @@ backend, access outside the admitted scope, or cancellation where supported.
 Update the capability reference or implementation guide and the owning
 [runtime flow](runtime-flows.md) when behavior changes. Use the contributor
 [documentation guide](documentation.md) for placement and writing conventions.
+
+### Check protected static Secret reads
+
+Copy the [test-only helper](../../tests/helpers/protected-static-secret-read.ts) into your Node.js 24 test project with packed contracts types. Call
+`await assertProtectedStaticSecretRead(t, driver, identity, isIdentityRefusal, 1_000)`
+inside `test("protected read", { timeout: 5_000 }, async (t) => { /* call here */ })`;
+run it with `node --test your-adapter.test.ts`. Supply a disposable Driver, valid
+`SecretIdentity`, and exact adapter error matcher. All reads share the supplied
+millisecond budget; Node's finite enclosing timeout fails hung reads and runs cleanup.
+The helper creates, rotates, and deletes one synthetic Secret. A create without a
+returned reference cannot be cleaned up. Cancellation does not prove I/O drained.
+This local check does not certify a backend or enable external Secret installation.

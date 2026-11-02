@@ -48,11 +48,20 @@ type PolicyRole = ReturnType<typeof policyRole>;
 // The Agent page's Access tab (spec 3.8). `onDenied` runs when the policy read is refused, after
 // the panel hides itself. `onWriting` runs with true when a share or removal starts and false
 // when it ends: the page holds version and page changes meanwhile (finding 2108). `recheck` reads
-// the policy again for a reader who returns to the tab.
+// the policy again for a reader who returns to the tab. `rereadAccess` runs before Refresh sharing
+// reads the policy: the page rereads the caller's permission answers, which audit nothing.
 export function renderAgentAccess(
   context: AgentAccessContext,
   agent: Pick<Agent, "id">,
-  { onDenied, onWriting }: { onDenied?(): void; onWriting?(writing: boolean): void } = {},
+  {
+    onDenied,
+    onWriting,
+    rereadAccess,
+  }: {
+    onDenied?(): void;
+    onWriting?(writing: boolean): void;
+    rereadAccess?(): Promise<unknown>;
+  } = {},
 ) {
   const { namespaceId } = context;
   const path = `${namespacePath(namespaceId)}/iam`;
@@ -73,7 +82,7 @@ export function renderAgentAccess(
   const acknowledge = element("input", { type: "checkbox", required: true });
   // The Agent page's one primary action is its next deployment step, not sharing.
   const share = element("button", { type: "submit" }, "Share Agent");
-  const refresh = button("Refresh sharing", () => void load(), { size: "sm" });
+  const refresh = button("Refresh sharing", () => void load({ reread: true }), { size: "sm" });
   const form = element(
     "form",
     { className: "agent-access-form" },
@@ -289,7 +298,7 @@ export function renderAgentAccess(
     }
   }
 
-  async function load({ recheck = false } = {}) {
+  async function load({ recheck = false, reread = false } = {}) {
     if (state.pending || !context.isCurrent()) {
       return;
     }
@@ -299,6 +308,17 @@ export function renderAgentAccess(
     state.error = null;
     render();
     try {
+      // Refresh sharing first rereads the caller's permission answers. Administration granted
+      // again after a refused share left this read refused unsent, the tab hidden and the page
+      // read-only until Refresh (finding 2943); the page now follows the new answer, and the
+      // policy is read when it confirms administration. Still revoked, the read is refused as
+      // before, with no added audited refusal.
+      if (reread) {
+        await rereadAccess?.();
+        if (!context.isCurrent()) {
+          return;
+        }
+      }
       await readPolicy();
       section.hidden = false;
       state.needsRefresh = false;

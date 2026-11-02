@@ -169,6 +169,12 @@ test("credential source boundary rejects new raw capabilities in the real source
 
   const cases = [
     [
+      "issuer trust identity cannot import private keys",
+      'import { createPrivateKey } from "node:crypto";',
+      /unreviewed runtime import from node:crypto \(createPrivateKey\)/,
+      "drivers/repo/github/credentials/origin.ts",
+    ],
+    [
       "shared fields reject direct file IO",
       'import { readFile } from "node:fs/promises";',
       /unreviewed shared field validation/,

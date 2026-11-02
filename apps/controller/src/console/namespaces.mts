@@ -163,8 +163,12 @@ export function renderNamespaces(
         {
           ...context,
           statusChanged: setStatus,
-          onRemoved(namespace) {
-            const focused = row.contains(document.activeElement);
+          onRemoved(namespace, refocus) {
+            // The check Refresh requested disabled it while it read, which dropped focus to the
+            // page; focus left there goes to the outcome too.
+            const active = document.activeElement;
+            const focused =
+              row.contains(active) || (refocus && (!active || active === document.body));
             row.remove();
             context.onRemoved(namespace);
             outcome.replaceChildren(
@@ -463,16 +467,21 @@ export function renderNamespaces(
         // 2102).
         const requestId =
           (unknown || forbidden) && error.requestId ? [requestIdLine(error.requestId)] : [];
+        let refusal: HTMLElement | null = null;
         if (error.status === 400) {
           // The name is the only field: mark it invalid with the refusal linked to it, until
           // it is edited (finding 2046).
           feedback.replaceChildren(...requestId);
           name.setCustomValidity(message);
         } else {
-          feedback.replaceChildren(statusBlock("danger", null, message), ...requestId);
+          refusal = statusBlock("danger", null, message, [], { id: "create-namespace-refusal" });
+          feedback.replaceChildren(refusal, ...requestId);
         }
-        name.disabled = unknown || forbidden;
-        submit.disabled = unknown || forbidden;
+        // A refused or unconfirmed creation leaves the name and Create Namespace in the Tab
+        // order, described by the alert that says why (finding 2935); focus moves to Cancel.
+        for (const control of [name, submit]) {
+          setUnavailable(control, unknown || forbidden, refusal);
+        }
         submit.textContent = "Create Namespace";
         cancel.disabled = false;
         cancel.textContent = unknown ? "Check Namespaces" : "Cancel";

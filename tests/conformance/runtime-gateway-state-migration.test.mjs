@@ -598,12 +598,20 @@ async function runHarness(
       };
       return {
         execFile() {},
-        spawnSync: (command, args, options) => (record(args, options), setup(options)),
         spawn(command, args, options) {
           const child = new EventEmitter();
           child.kill = () => {};
-          if (record(args, options) === "doctor") {
+          const name = record(args, options);
+          if (name === "doctor") {
             setImmediate(() => doctor(child));
+          } else if (name === "setup") {
+            // Setup writes its result and diagnostics while its descriptors are open.
+            const result = setup(options);
+            setImmediate(() =>
+              result.error === undefined
+                ? child.emit("exit", result.status ?? null, result.signal ?? null)
+                : child.emit("error", result.error),
+            );
           }
           return child;
         },
@@ -658,8 +666,12 @@ async function harnessDirectory(t, version) {
 test("Harness starts current and fresh workspace node state without Doctor", async (t) => {
   for (const version of [undefined, STATE_CURRENT]) {
     const outcome = await runHarness(await harnessDirectory(t, version));
-    // Current state adds no await before native setup and the children.
-    assert.deepEqual(outcome.synchronous, ["setup", "codex", "node"]);
+    // Current state adds no await before native setup; the children follow its exit.
+    assert.deepEqual(outcome.synchronous, ["setup"]);
+    assert.deepEqual(
+      outcome.spawned.map(({ name }) => name),
+      ["setup", "codex", "node"],
+    );
     assert.equal(outcome.holds, 0);
   }
 });
@@ -913,13 +925,14 @@ test("Harness names a failed native setup that reported no message", async (t) =
 // replaced: runtime asset publication, the model probe (it answers "ok"), the
 // readiness listener (`ready()` asks it) and every child process. Doctor runs
 // `doctor(child, { ready })`; `node identity` runs `identity(callback)`, which answers
-// with a fixed device id by default.
+// with a fixed device id by default. `timer` replaces the program's setTimeout.
 async function runNativeWorker(
   directory,
   doctor = () => assert.fail("Doctor must not run"),
   {
     env = COMPUTE_STATUS_ENV,
     identity = (callback) => callback(null, JSON.stringify({ deviceId: "a".repeat(64) })),
+    timer = setTimeout,
   } = {},
 ) {
   const spawned = [];
@@ -953,7 +966,7 @@ async function runNativeWorker(
     Promise,
     URL,
     clearTimeout,
-    setTimeout,
+    setTimeout: timer,
     console: { error: (line) => errors.push(String(line)), log() {} },
     process: {
       env: {
@@ -1094,6 +1107,51 @@ test("Native worker readiness checks again after a failed check and ignores a di
   callbacks[1](null, JSON.stringify({ deviceId: "a".repeat(64) }));
   assert.deepEqual(await Promise.all([first, last]), [200, 200]);
   assert.deepEqual(dropped.writes, []);
+  assert.deepEqual(outcome.identities, ["identity", "identity", "identity"]);
+});
+
+// A check that never settles (here an identity call that never answers) holds the shared
+// slot only until the outer deadline: every waiting probe answers 503 then, and the next
+// probe starts a fresh check instead of waiting on the hung one (finding 2941).
+test("Native worker readiness answers 503 at its deadline when a check never settles", async (t) => {
+  const callbacks = [];
+  const deadlines = [];
+  const outcome = await runNativeWorker(await harnessDirectory(t, STATE_CURRENT), undefined, {
+    identity: (callback) => callbacks.push(callback),
+    // The readiness deadline (5 s) fires when the test says; other timers run as usual.
+    timer: (callback, delay, ...args) => {
+      if (delay !== 5000) {
+        return setTimeout(callback, delay, ...args);
+      }
+      const deadline = { fire: () => callback(...args), unref: () => deadline };
+      deadlines.push(deadline);
+      return deadline;
+    },
+  });
+  const hung = Promise.all([outcome.ready(), outcome.ready()]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 1);
+  assert.equal(deadlines.length, 1);
+  deadlines[0].fire();
+  assert.deepEqual(await hung, [503, 503]);
+
+  const next = outcome.ready();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 2);
+  // The hung check fails late, while the fresh check still runs: its answer reaches no probe
+  // and does not free the fresh check's slot, so a probe now joins the fresh check.
+  callbacks[0](new Error("node identity failed"));
+  await new Promise((resolve) => setImmediate(resolve));
+  const joined = outcome.ready();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 2);
+  callbacks[1](null, JSON.stringify({ deviceId: "a".repeat(64) }));
+  assert.deepEqual(await Promise.all([next, joined]), [200, 200]);
+  const after = outcome.ready();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbacks.length, 3);
+  callbacks[2](new Error("node identity failed"));
+  assert.equal(await after, 503);
   assert.deepEqual(outcome.identities, ["identity", "identity", "identity"]);
 });
 

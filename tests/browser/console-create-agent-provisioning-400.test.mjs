@@ -50,6 +50,7 @@ import {
   CONSOLE_NAMESPACE_NOT_READY,
   CODEX_PLACEMENT_REFUSAL,
   DEDICATED_PLACEMENT_REQUIREMENT,
+  dedicatedOpenClawSandboxRefusal,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
@@ -1014,8 +1015,7 @@ test("Dedicated Agent provisioning names a Namespace that is not ready", async (
   );
 });
 
-const DEDICATED_SANDBOX_REFUSAL =
-  "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.";
+const DEDICATED_SANDBOX_REFUSAL = dedicatedOpenClawSandboxRefusal(false);
 const NO_OPENCLAW_MODE =
   "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. Choose OpenAI with the Codex harness, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support.";
 
@@ -1088,7 +1088,11 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   await page.getByLabel("Provider", { exact: true }).selectOption("openai");
   // Codex does not need the Sandbox Driver and keeps Dedicated.
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
-  assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
+  // The select is unavailable with Codex (aria-disabled, finding 2945); its option is not refused.
+  assert.equal(
+    await mode.locator('option[value="dedicated"]').evaluate((node) => node.disabled),
+    false,
+  );
   assert.equal(
     await page.locator("#agent-harness-hint").textContent(),
     "This Agent will run Codex with Dedicated execution.",

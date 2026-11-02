@@ -9,6 +9,7 @@ import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import {
   createKubernetesClient,
   createKubernetesInstallationConfiguration,
+  explicitK3dSelection,
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
 } from "./kubernetes-real.mjs";
@@ -29,10 +30,7 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
       assert.ok(process.env[name], `${name} is required for explicit model-turn validation`);
     }
   }
-  const selection = {
-    kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
-    kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
-  };
+  const selection = explicitK3dSelection();
   await validateExplicitK3dLoopbackContext(selection);
   const images = Object.fromEntries(
     [

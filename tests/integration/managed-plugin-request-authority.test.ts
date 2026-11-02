@@ -61,10 +61,10 @@ test("the signed OpenShell request guard intersects the source envelope with the
   const gateway = token(keys, "gateway", undefined, managedPluginMiddlewareAudience);
   const context = { sandbox_id: sandbox, workspace: "default", request_id: "gmail-request-1" };
   const gmail = "https://www.googleapis.com/auth/gmail.readonly";
-  const scopeConfig = (host: string, path: string, scope: string) => ({
+  const scopeConfig = (host: string, path: string, scope: string, port = 443) => ({
     fields: {
       binding_id: { stringValue: managedGoogleInstall.releaseSha256 },
-      request_scope: { stringValue: JSON.stringify({ host, port: 443, path, scopes: [scope] }) },
+      request_scope: { stringValue: JSON.stringify({ host, port, path, scopes: [scope] }) },
     },
   });
   const config = scopeConfig("gmail.googleapis.com", "/gmail/v1/users/me/messages", gmail);
@@ -114,6 +114,15 @@ test("the signed OpenShell request guard intersects the source envelope with the
   };
   assert.equal((await invoke(client, "ValidateConfig", stale, gateway)).valid, false);
   assert.equal(await evaluate(stale), 2);
+  // A source envelope outside Google's HTTPS shape fails binding validation at the Gateway,
+  // and a request under it is denied.
+  const plaintext = { ...request, config: scopeConfig(target.host, target.path, gmail, 80) };
+  assert.equal(
+    (await invoke(client, "ValidateConfig", plaintext, gateway)).valid,
+    false,
+    "port 80 source",
+  );
+  assert.equal(await evaluate(plaintext), 2, "port 80 source");
   assert.equal(
     await evaluate(
       request,
@@ -335,6 +344,20 @@ test("the signed OpenShell request guard intersects the source envelope with the
     }),
     1,
   );
+  // The request host must be the source host, even when the source path and grant also fit
+  // another Google service: drive.readonly authorizes both Docs and Slides reads under /v1/**.
+  const driveRead = "https://www.googleapis.com/auth/drive.readonly";
+  const slides = {
+    ...request,
+    config: scopeConfig("slides.googleapis.com", "/v1/**", driveRead),
+    target: { ...target, host: "slides.googleapis.com", path: "/v1/presentations/deck", query: "" },
+  };
+  assert.equal(await evaluate(slides), 1, "Slides read under a Slides source");
+  assert.equal(
+    await evaluate({ ...slides, config: scopeConfig("docs.googleapis.com", "/v1/**", driveRead) }),
+    2,
+    "a Docs source cannot credential a Slides read",
+  );
   const sheetsRead = scopeConfig(
     "sheets.googleapis.com",
     "/v4/**",
@@ -344,6 +367,25 @@ test("the signed OpenShell request guard intersects the source envelope with the
     await evaluate({ ...cells, config: sheetsRead, ...json({ values: [["hello"]] }) }),
     2,
     "read-only scope refuses write",
+  );
+  // Dot segments may resolve upstream to another resource than the one routed here. A malformed
+  // escape makes the path decoder throw, and the guard denies a request whose check throws.
+  for (const segment of [".", "..", "%zz"]) {
+    assert.equal(
+      await evaluate({
+        ...request,
+        config: subtree,
+        target: { ...get, path: `${target.path}/${segment}` },
+      }),
+      2,
+      segment,
+    );
+  }
+  // Calendar's Discovery still declares Google's userIp system parameter; it stays refused.
+  assert.equal(
+    await evaluate({ ...freebusy, target: { ...freebusy.target, query: "userIp=192.0.2.1" } }),
+    2,
+    "userIp",
   );
   for (const denied of [
     { ...request, target: { ...target, method: "POST" } },

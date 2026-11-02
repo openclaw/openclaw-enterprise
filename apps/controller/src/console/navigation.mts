@@ -26,11 +26,12 @@ interface NavigationOptions {
   }): void;
 }
 
-// A page address with a trailing slash names the same page (finding 1906).
+// A page address with trailing slashes names the same page (finding 1906), however many there
+// are; `/console/` itself stays. The server answers both alike (console-assets.ts).
 function canonicalUrl(href: string) {
   const url = new URL(href);
-  if (url.pathname.length > "/console/".length && url.pathname.endsWith("/")) {
-    url.pathname = url.pathname.slice(0, -1);
+  if (url.pathname.startsWith("/console/")) {
+    url.pathname = `/console/${url.pathname.slice("/console/".length).replace(/\/+$/, "")}`;
   }
   return url.href;
 }

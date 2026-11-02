@@ -1,14 +1,27 @@
 # Agent native admin UI
 
-Agent native admin UI access lets an authorized operator open the selected Agent's native OpenClaw administration UI from the platform console. It is an explicit pilot capability for trusted operators. It exposes the stock native administrator surface for one Agent Gateway, subject to [Gateway managed mode](#gateway-managed-mode).
-
-The feature is disabled by default. When enabled, the console shows **Native admin UI** on the Agent detail tabs only for callers with exact Agent `administer` permission. Opening the Agent host uses the operator's ordinary OCE console session cookie, resolves the exact Agent represented by that host, then serves native HTTP and WebSocket traffic through OCC.
+Native admin UI is a disabled-by-default pilot for trusted operators. It exposes one Agent Gateway’s stock administration surface, subject to [Gateway managed mode](#gateway-managed-mode). OCC resolves the Agent host and proxies native HTTP and WebSocket traffic using the operator’s OCE session.
 
 ## Who can open it
 
-Native admin UI is the only Agent chat surface in the console, and it is for exact Agent `administer` holders with a human session (see [Authorization and availability](#authorization-and-availability)). Other people message the Agent through a channel its Configuration sets up, such as [Slack](../guides/integrations/slack.md), or ask someone who can edit that Configuration to let them in. An operator with cluster access can check a real response with [model verification](../guides/operate/model-verification.md) or the [OpenClaw TUI](../guides/deploy/production-tui.md).
+Native admin UI is the console’s Agent chat surface. It requires a human session and exact Agent `administer` permission. Other users need a configured channel such as [Slack](../guides/integrations/slack.md). Operators with cluster access can use [model verification](../guides/operate/model-verification.md) or the [OpenClaw TUI](../guides/deploy/production-tui.md).
 
 Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup rejects enablement (`<Provider> sign-in does not support native administration.`). That profile issues a host-only `__Host-openclaw_occ.session_token` session cookie on HTTPS, which cannot carry the `Domain` attribute that lets Agent hosts read the [shared session](authentication.md#native-admin-shared-sessions).
+
+## Enable during creation
+
+In **Create Agent**, select **Enable Native admin UI** for supported Dedicated
+provisioning. Unchecked by default, it requires Installation native admin
+enablement. API callers set `nativeAdmin: true` on
+`POST /namespaces/:namespaceId/agents/provision`.
+
+Provisioning saves `controlUi.enabled`, the exact derived HTTPS origin (including
+its port), `gateway.publicOrigin`, and trusted-proxy admin device approval in the
+initial Configuration. It preserves existing allowed origins, Secret bindings,
+and unrelated settings. Conflicting authentication modes, unsupported auth fields,
+disabled device authentication, and host-header origin fallback are refused.
+Retries retain the Agent identity and prepared Configuration. This option grants
+no Agent `administer` permission.
 
 ## Requirements
 
@@ -20,7 +33,7 @@ Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup re
 - Better Auth cookie configuration using the shared cookie parent domain while preserving `Secure`, `HttpOnly`, appropriate `SameSite`, CSRF, and trusted-origin protections. A domain-scoped cookie cannot use a host-only `__Host-` prefix. The shared-domain session uses the `openclaw_occ_shared` cookie prefix and clears prior host-only `openclaw_occ` and `openclaw_occ_shared` session-cookie names during sign-in/sign-out migration. When native admin is disabled, OCC ignores leftover shared-cookie-domain configuration and keeps the legacy host-only `openclaw_occ` session cookie scope.
 - Private Agent gateway routing configured through [Gateway routing with Envoy](gateway-routing.md).
 - The Agent must be running with a selected version owned by the selected Compute Driver: both Driver ID and implementation must match the version. Its `ComputeDriver.getGatewayEndpoint` value must map from private `wss:` to private `https:`.
-- The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy admin device auto-approval. The support check rejects token auth, disabled device auth, and host-header origin fallback.
+- The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy device auto-approval. The machine identity grant supplies admin authority; device auto-approval can stay limited to read/write. The support check rejects token auth, disabled device auth, and host-header origin fallback.
 
 The local Compose-control-plane profile enables this capability only when both
 Kubernetes Compute and OpenShell are selected. Its development proxy terminates
