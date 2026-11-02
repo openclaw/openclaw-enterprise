@@ -1,0 +1,99 @@
+name: Bun formatter write proof
+
+on:
+  push:
+    branches: [investigate/enterprise-bun-proof-20261102]
+
+permissions:
+  contents: read
+
+jobs:
+  cold:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PROOF_MODE: cold
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: harness
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 7f8678844a8cf0be94aacda849e26b2e2c051df4
+          fetch-depth: 2
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          package_json_file: source/package.json
+      - name: Provision baseline from empty task cache
+        run: time npm install --prefix "$RUNNER_TEMP/formatter-tools" --cache "$RUNNER_TEMP/formatter-npm-cache" --ignore-scripts --no-audit --no-fund --save-exact prettier@3.9.10
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version-file: source/.bun-version
+      - name: Expose exact baseline formatter
+        run: echo "$RUNNER_TEMP/formatter-tools/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: Actual formatter entrypoint parity and interleaved timings
+        id: proof
+        continue-on-error: true
+        run: node harness/.github/bun-format-write-proof.mjs
+      - name: Save task-only tool and content cache
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ${{ runner.temp }}/formatter-tools
+            ${{ runner.temp }}/formatter-npm-cache
+            ${{ runner.temp }}/formatter-content-cache
+          key: bun-format-write-${{ github.sha }}
+      - name: Require parity proof
+        if: steps.proof.outcome != 'success'
+        run: exit 1
+  restored:
+    needs: cold
+    if: always() && needs.cold.result != 'cancelled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PROOF_MODE: restored
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: harness
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 7f8678844a8cf0be94aacda849e26b2e2c051df4
+          fetch-depth: 2
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          package_json_file: source/package.json
+      - name: Restore exact task-only cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ${{ runner.temp }}/formatter-tools
+            ${{ runner.temp }}/formatter-npm-cache
+            ${{ runner.temp }}/formatter-content-cache
+          key: bun-format-write-${{ github.sha }}
+          fail-on-cache-miss: true
+      - name: Require actual cache hit
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        run: test "$CACHE_HIT" = true
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version-file: source/.bun-version
+      - name: Expose exact baseline formatter
+        run: echo "$RUNNER_TEMP/formatter-tools/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: Actual formatter entrypoint parity and interleaved timings
+        run: node harness/.github/bun-format-write-proof.mjs
