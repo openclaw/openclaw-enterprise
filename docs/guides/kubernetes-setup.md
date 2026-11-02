@@ -3,7 +3,7 @@
 Prepare a Kubernetes cluster you already operate, then follow the shared
 [production installation runbook](deploy/production-installation.md) to install
 and authenticate to the OpenClaw Control Plane (OCC). If you want to try
-OpenClaw Enterprise on your machine, use [Setup OCE on local k3d](deploy/local-openshell-setup.md). For an Amazon EKS cluster, start with the [EKS prerequisites](deploy/eks.md#prepare-aws-infrastructure), then return here for the shared Helm installation.
+OpenClaw Enterprise on your machine, use [Setup OCE on local k3d](deploy/local-setup.md). For an Amazon EKS cluster, start with the [EKS prerequisites](deploy/eks.md#prepare-aws-infrastructure), then return here for the shared Helm installation.
 
 ## What the install creates
 

@@ -10,7 +10,7 @@ Start with [Getting Started](docs/README.md) to use the platform, [Deploy & Oper
 
 ## Getting started
 
-For k3d with OpenShell, follow [Local Setup OCE](docs/guides/deploy/local-openshell-setup.md), then [add Git support](docs/guides/repository-credentials/openshell-git-push.md) or [Codex plugins](docs/guides/integrations/codex-plugins.md). For a cluster you already operate, use [Kubernetes Setup OCE](docs/guides/kubernetes-setup.md). For the [local quickstart without OpenShell](docs/guides/quickstart.md), run from the repository root:
+For k3d with OpenShell, follow [Local Setup OCE](docs/guides/deploy/local-setup.md), [add Git support](docs/guides/repository-credentials/openshell-git-push.md), then [Codex plugins](docs/guides/integrations/codex-plugins.md). For a cluster you already operate, use [Kubernetes Setup OCE](docs/guides/kubernetes-setup.md). For the [local quickstart without OpenShell](docs/guides/quickstart.md), run from the repository root:
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ

@@ -199,7 +199,7 @@ kubectl -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-worker \
 
 ## 4. Enroll Linear and protected Git
 
-Keep the EKS `request` function, `base` and `RUN_DIR` from step 3. Use the model Secret and CredentialSource registration commands in [local OpenShell setup](local-openshell-setup.md#4-connect-to-the-api-and-register-the-model-credential). Set `MODEL` to the authorized model ID. Supply a private PAT file for a service account with an authorized Linear connection. Keep `name` and `modelSource` from registration for step 5. Verify the source is `ready`, type `codex-pat`, and owned by `credential_gateway` before enabling the repository Credential Proxy.
+Keep the EKS `request` function, `base` and `RUN_DIR` from step 3. Use the model Secret and CredentialSource registration commands in [local OpenShell setup](local-setup.md#4-connect-to-the-api-and-register-the-model-credential). Set `MODEL` to the authorized model ID. Supply a private PAT file for a service account with an authorized Linear connection. Keep `name` and `modelSource` from registration for step 5. Verify the source is `ready`, type `codex-pat`, and owned by `credential_gateway` before enabling the repository Credential Proxy.
 
 Use `installation-with-peers.json` as the base for the protected Installation. Keep the verified Envoy Pod /32s when merging the repository fragment. Re-read the peer set after a data-plane rollout. If it changes, update the versioned Installation and reconcile it before another Agent deployment.
 
@@ -224,9 +224,9 @@ Mount the listener’s public CA on the stock OpenShell Gateway. Register the ma
 
 ## 5. Deploy and open the owner’s Agent
 
-Owners working in the Console can [create a dedicated Agent or deploy its saved draft](eks-openshell-owner-session.md#choose-a-console-deployment-action). For the scripted workflow, create a dedicated Gateway-managed Agent using the [Codex configuration](local-openshell-setup.md#5-create-the-configuration-and-agent) and [exact model-source grant](local-openshell-setup.md#6-grant-model-access-and-deploy). Native process and file tools have full access inside OpenShell with approval set to `on-request` and reviewer `user`. Provision transport once. Discover the managed Linear plugin and add it and the approved repository binding to the same draft. [Linear selection](../integrations/codex-plugins.md) · [Git binding](../repository-credentials/openshell-git-push.md#2-bind-the-agent-and-deploy-once)
+Owners working in the Console can [create a dedicated Agent or deploy its saved draft](eks-openshell-owner-session.md#choose-a-console-deployment-action). For the scripted workflow, create a dedicated Gateway-managed Agent using the [Codex configuration](local-setup.md#5-create-the-configuration-and-agent) and [exact model-source grant](local-setup.md#6-grant-model-access-and-deploy). Native process and file tools have full access inside OpenShell with approval set to `on-request` and reviewer `user`. Provision transport once. Discover the managed Linear plugin and add it and the approved repository binding to the same draft. [Linear selection](../integrations/codex-plugins.md) · [Git binding](../repository-credentials/openshell-git-push.md#2-bind-the-agent-and-deploy-once)
 
-Bind the exact Agent hostname before deployment. Use the shared host derivation and configuration patch from the [browser onboarding guide](local-openshell-browser.md#bind-the-origin-before-deployment) with the following EKS inputs. Run only that guide’s origin and Configuration commands. Keep the EKS REST helper and use its exact `GET /installation`.
+Bind the exact Agent hostname before deployment. Use the shared host derivation and configuration patch from the [browser onboarding guide](local-setup.md#bind-the-origin-before-deployment) with the following EKS inputs. Run only that guide’s origin and Configuration commands. Keep the EKS REST helper and use its exact `GET /installation`.
 
 ```bash
 api=''   # EKS request takes a path relative to the API root.

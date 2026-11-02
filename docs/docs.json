@@ -34,20 +34,20 @@
                 "group": "Quickstart (Local)",
                 "pages": [
                   {
-                    "page": "guides/deploy/local-openshell-setup",
+                    "page": "guides/deploy/local-setup",
                     "label": "Setup OCE"
                   },
                   {
-                    "page": "guides/deploy/local-openshell-browser",
-                    "label": "OpenShell Agent in a Browser"
-                  },
-                  {
                     "page": "guides/repository-credentials/openshell-git-push",
-                    "label": "Add Git Support"
+                    "label": "Add Git"
                   },
                   {
                     "page": "guides/integrations/codex-plugins",
-                    "label": "Add Codex Plugins"
+                    "label": "Add Plugin"
+                  },
+                  {
+                    "page": "guides/deploy/local-cleanup",
+                    "label": "Clean Up"
                   }
                 ]
               },
@@ -70,7 +70,11 @@
                 ]
               }
             ],
-            "hidden": ["guides/README"]
+            "hidden": [
+              "guides/README",
+              "guides/repository-credentials/openshell-read-only",
+              "guides/repository-credentials/openshell-git-renewal"
+            ]
           },
           {
             "tab": "Topics",

@@ -261,7 +261,7 @@ Verify directory search and gateway Socket Mode using the
 
 ## Verify the local boundary
 
-Startup prints the API, kubeconfig, HTTPS Console URL and public browser CA. See [Local Setup](../quickstart.md#open-the-platform-console), the [shared session boundary](../../reference/agent-native-admin.md#shared-session-boundary) and [OpenShell browser access](local-openshell-browser.md).
+Startup prints the API, kubeconfig, HTTPS Console URL and public browser CA. See [Local Setup](../quickstart.md#open-the-platform-console), the [shared session boundary](../../reference/agent-native-admin.md#shared-session-boundary) and [OpenShell browser access](local-setup.md).
 
 Use the printed paths with other tools:
 
