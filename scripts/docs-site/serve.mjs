@@ -1,5 +1,5 @@
-import { createReadStream } from "node:fs";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, readFile, realpath, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { extname, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
@@ -97,6 +97,7 @@ const server = createServer(async (request, response) => {
     response.once("close", () => generation.release());
   }
   const root = generation?.directory ?? staticRoot;
+  let handle;
   try {
     let file = resolve(root, `.${pathname}`);
     if (!file.startsWith(`${root}${sep}`) && file !== root) {
@@ -114,12 +115,13 @@ const server = createServer(async (request, response) => {
     if (!file.startsWith(`${root}${sep}`)) {
       throw new Error("Outside site");
     }
-    const details = await stat(file);
+    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const details = await handle.stat();
     if (!details.isFile()) {
       throw new Error("Not a file");
     }
     if (generation && extname(file) === ".html") {
-      const html = (await readFile(file, "utf8")).replace(
+      const html = (await handle.readFile("utf8")).replace(
         "</body>",
         `${refreshScript(generation.revision)}</body>`,
       );
@@ -137,9 +139,10 @@ const server = createServer(async (request, response) => {
     if (request.method === "HEAD") {
       response.end();
     } else {
-      createReadStream(file)
-        .on("error", () => response.destroy())
-        .pipe(response);
+      const stream = handle.createReadStream();
+      handle = undefined;
+      response.once("close", () => stream.destroy());
+      stream.on("error", () => response.destroy()).pipe(response);
     }
   } catch {
     if (!generation) {
@@ -152,6 +155,8 @@ const server = createServer(async (request, response) => {
         ? undefined
         : `<!doctype html><html lang="en"><title>Page not found</title><body><h1>Page not found</h1><p>If you renamed this page, open its new URL. This tab updates after the next successful build.</p>${refreshScript(generation.revision)}</body></html>`,
     );
+  } finally {
+    await handle?.close();
   }
 });
 
