@@ -1,7 +1,8 @@
 import { createReadStream } from "node:fs";
-import { realpath, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { extname, resolve, sep } from "node:path";
+import { createPreviewBuild } from "./preview-build.mjs";
 
 const args = process.argv.slice(2);
 if (args.length !== 0 && (args.length !== 2 || args[0] !== "--port" || !/^\d+$/.test(args[1]))) {
@@ -11,9 +12,14 @@ const port = args.length ? Number(args[1]) : 4173;
 if (!Number.isInteger(port) || port < 0 || port > 65535) {
   throw new Error("Invalid preview port");
 }
-const root = await realpath(resolve("dist/docs")).catch(() => {
-  throw new Error("Missing dist/docs; run npm run docs:build first.");
+const clients = new Set();
+const preview = await createPreviewBuild((state) => {
+  for (const client of clients) {
+    client.write(`data: ${JSON.stringify(state)}\n\n`);
+  }
 });
+const refreshScript = (revision) =>
+  `<script type="module" src="/__docs_preview/client.mjs" data-docs-preview="${revision}"></script>`;
 const mime = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -53,6 +59,39 @@ const server = createServer(async (request, response) => {
     response.writeHead(403).end("Loopback preview only");
     return;
   }
+  if (pathname === "/__docs_preview/events") {
+    response.writeHead(200, { "Content-Type": "text/event-stream", Connection: "keep-alive" });
+    if (request.method === "HEAD") {
+      response.end();
+      return;
+    }
+    clients.add(response);
+    response.write(`data: ${JSON.stringify(preview.state())}\n\n`);
+    response.on("close", () => clients.delete(response));
+    return;
+  }
+  if (pathname === "/__docs_preview/client.mjs") {
+    try {
+      const client = await readFile(new URL("./preview-client.mjs", import.meta.url));
+      response.writeHead(200, { "Content-Type": mime[".mjs"] });
+      response.end(request.method === "HEAD" ? undefined : client);
+    } catch {
+      response.writeHead(500).end("Cannot read preview client; check the preview terminal.");
+    }
+    return;
+  }
+  const generation = preview.acquire();
+  if (!generation) {
+    response.writeHead(503, { "Content-Type": mime[".html"], "Retry-After": "1" });
+    response.end(
+      request.method === "HEAD"
+        ? undefined
+        : `<!doctype html><html lang="en"><title>Docs preview</title><body><h1>Preparing documentation preview</h1><p>Check the preview terminal for build progress. This page updates automatically.</p>${refreshScript("")}</body></html>`,
+    );
+    return;
+  }
+  response.once("close", () => generation.release());
+  const root = generation.directory;
   try {
     let file = resolve(root, `.${pathname}`);
     if (!file.startsWith(`${root}${sep}`) && file !== root) {
@@ -74,6 +113,18 @@ const server = createServer(async (request, response) => {
     if (!details.isFile()) {
       throw new Error("Not a file");
     }
+    if (extname(file) === ".html") {
+      const html = (await readFile(file, "utf8")).replace(
+        "</body>",
+        `${refreshScript(generation.revision)}</body>`,
+      );
+      response.writeHead(200, {
+        "Content-Type": mime[".html"],
+        "Content-Length": Buffer.byteLength(html),
+      });
+      response.end(request.method === "HEAD" ? undefined : html);
+      return;
+    }
     response.writeHead(200, {
       "Content-Type": mime[extname(file)] ?? "application/octet-stream",
       "Content-Length": details.size,
@@ -86,13 +137,35 @@ const server = createServer(async (request, response) => {
         .pipe(response);
     }
   } catch {
-    response.writeHead(404).end("Page not found");
+    response.writeHead(404, { "Content-Type": mime[".html"] });
+    response.end(
+      request.method === "HEAD"
+        ? undefined
+        : `<!doctype html><html lang="en"><title>Page not found</title><body><h1>Page not found</h1><p>If you renamed this page, open its new URL. This tab updates after the next successful build.</p>${refreshScript(generation.revision)}</body></html>`,
+    );
   }
 });
 
+server.on("error", async (error) => {
+  console.error(`Docs preview: ${error.message}`);
+  await preview.close();
+  process.exitCode = 1;
+});
 server.listen(port, "127.0.0.1", () => {
   process.stdout.write(`Docs preview: http://127.0.0.1:${server.address().port}/\n`);
 });
+let closing = false;
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => server.close(() => process.exit(0)));
+  process.on(signal, async () => {
+    if (closing) {
+      return;
+    }
+    closing = true;
+    for (const client of clients) {
+      client.end();
+    }
+    server.close();
+    server.closeAllConnections();
+    await preview.close();
+  });
 }

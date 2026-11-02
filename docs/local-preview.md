@@ -17,9 +17,21 @@ npm run docs:dev
 ```
 
 Open [the local preview](http://127.0.0.1:4173). The server binds only to loopback.
-Stop it with Ctrl+C. Generated output lives in `dist/docs/` and is ignored by Git.
-After an edit, run `npm run docs:build` in another terminal and refresh the browser.
-The preview serves the latest build; it does not watch source files.
+Save an edit to rebuild the site and refresh connected tabs automatically. Each
+tab keeps its URL and heading anchor. The preview watches `docs/`, including
+shared snippets, assets, and `docs.json`, plus `scripts/docs-site/` and the OpenAPI
+contracts. File creation, deletion, and renames also trigger a rebuild.
+
+The preview combines rapid edits and runs one build at a time. It publishes pages
+and their search index together after both succeed. A failed build shows the
+error in the terminal and open tabs; the last successful site stays available.
+Fix the source and save it to resume updates. If the first build fails, the
+preview shows a waiting page with the error until a build succeeds.
+
+Use `npm run docs:dev -- --port 4174` to select another port. Stop with Ctrl+C;
+this stops the watcher and build process and removes temporary preview output
+under `dist/.docs-preview-*/`. Generated output and installed dependencies do not
+trigger rebuilds. Restart the command after editing the preview server itself.
 
 The `npm run` commands dispatch scripts without installing the controller
 workspace. `docs:install` uses the pinned pnpm version and frozen docs lockfile.
@@ -40,6 +52,7 @@ assets, and historical specs outside `docs/` link to the Enterprise repository
 on GitHub. These links require repository access. External URLs are not fetched.
 `docs:check` checks word limits, navigation, and links without writing the site or
 running a test suite.
+The standalone build writes `dist/docs/` without a watcher or live-refresh script.
 Do not add or run tests for documentation changes, including docs-site
 presentation; use the build, formatting, link checks, and visual inspection.
 

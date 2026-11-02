@@ -2,6 +2,7 @@ import fs from "node:fs";
 import GithubSlugger from "github-slugger";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { createMarkdownRenderer, renderMdxish } from "./vendor/mdx-ish.mjs";
 import { renderComputeMatrixBlocks } from "./compute-matrix.mjs";
 import {
@@ -12,13 +13,13 @@ import {
 import { createGithubAnchorReader, githubHeadingVisibleText } from "./github-anchors.mjs";
 import { publicMarkdown } from "./public-markdown.mjs";
 
-if (process.argv.slice(2).some((arg) => arg !== "--check")) {
-  throw new Error("Usage: build.mjs [--check]");
-}
-const checkOnly = process.argv.includes("--check");
+const { values } = parseArgs({
+  options: { check: { type: "boolean" }, output: { type: "string" } },
+});
+const checkOnly = values.check;
 const root = process.cwd();
 const docs = path.join(root, "docs");
-const output = path.join(root, "dist/docs");
+const output = path.resolve(root, values.output ?? "dist/docs");
 const assets = path.dirname(fileURLToPath(import.meta.url));
 const repository = "https://github.com/openclaw/openclaw-enterprise";
 const themeBootstrap =
@@ -510,4 +511,11 @@ fs.writeFileSync(
     2,
   ) + "\n",
 );
-console.log("Built " + pages.size + " pages; validated " + linkCount + " links → dist/docs");
+console.log(
+  "Built " +
+    pages.size +
+    " pages; validated " +
+    linkCount +
+    " links → " +
+    path.relative(root, output),
+);
