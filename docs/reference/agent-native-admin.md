@@ -1,8 +1,6 @@
 # Agent native admin UI
 
-Native admin UI is a trusted-operator pilot that exposes one Agent Gateway’s stock administration surface, subject to [Gateway managed mode](#gateway-managed-mode).
-
-The feature is disabled by default. When enabled, the console shows native access to exact Agent administrators. OCC resolves the Agent host and proxies native HTTP and WebSocket traffic using the operator’s OCE session.
+Native admin UI is a disabled-by-default pilot for trusted operators. It exposes one Agent Gateway’s stock administration surface, subject to [Gateway managed mode](#gateway-managed-mode). OCC resolves the Agent host and proxies native HTTP and WebSocket traffic using the operator’s OCE session.
 
 ## Who can open it
 

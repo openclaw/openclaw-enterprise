@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-10-28
-last_updated_session: codex/01a1558e-c27f-7bc0-a403-af59e9364ddf
+updated: 2026-11-02
+last_updated_session: authoring-run/275c0d0a-d040-47d3-9e52-47ff86b87ab9
 ---
 
 # Agent Native Admin UI Flow
@@ -78,16 +78,14 @@ graph TD
 `apps/controller/src/gateway/native-admin.ts:prepareNativeAdminConfiguration`
 `packages/occ/src/index.ts:provisionAgent`
 
-The unchecked checkbox becomes available when Installation discovery reports
-native admin support and the selected runtime supports provisioning. The form
-sends `nativeAdmin: true`. After authorization, provisioning reserves an Agent ID
-and asks the HTTP adapter to prepare its Configuration. The adapter uses the
-configured public origin and Agent domain; no browser-supplied origin is trusted.
-The native gateway adapter merges the required policy or refuses a conflict
-before work is queued. The request fingerprint includes the preparation choice.
-Retries reuse the saved plan and identity. The worker creates the Agent with
-that reserved ID and deploys its initial Configuration through the normal
-provisioning lifecycle. No later patch or second deployment is needed.
+The unchecked checkbox requires Installation native admin support and runtime
+provisioning support. It sends `nativeAdmin: true`. After authorization,
+provisioning reserves an Agent ID. The HTTP adapter prepares Configuration from
+the configured public origin and Agent domain, never a browser-supplied origin.
+It merges the policy or refuses conflicts before queueing. The request fingerprint
+includes the preparation choice; retries reuse the saved plan and identity.
+The worker creates that Agent and deploys its initial Configuration through
+the normal provisioning lifecycle, without a later patch or second deployment.
 
 ### 0a. Local first-Agent opts into native admin
 
@@ -253,10 +251,7 @@ admin Configuration remains Pod-local.
 ## Debugging and Verification
 
 - `AGENT_NATIVE_ADMIN_INVALID` at startup points to native admin enablement, the Agent domain, or a missing shared cookie domain. A bad shared cookie domain or public origin reports `AUTH_BASE_URL_INVALID`, short auth secret material `AUTH_SECRET_INVALID`, and a missing gateway API key path `GATEWAY_API_KEY_UNAVAILABLE`.
-- `disabled` means the Installation has not enabled the feature.
-- `stopped` means the exact Agent is not desired running. Its response has no origin or version after stop reconciliation clears the selected version, or before the first deployment.
-- `unavailable` means a desired-running Agent has no selected version, or a newer version on a Compute Driver with `requiresStoppedPredecessors` has stopped the active workload. If replacement fails, the old version remains selected without a workload.
-- `unsupported` means the selected Compute Driver, gateway endpoint, or native trusted-proxy/control UI configuration cannot support the selected version.
+- For `disabled`, `stopped`, `unavailable`, and `unsupported`, use the [availability status definitions](../reference/agent-native-admin.md#authorization-and-availability). A failed replacement can leave the previous version selected without a workload.
 - Wrong or unknown Agent hosts fail before gateway proxying. Check the derived host calculation, Agent lifecycle state, and `agentNativeAdmin.domain`.
 - Browser requests contain no native-admin exchange, callback, verifier, or Agent-specific session-cookie traffic.
 - IAM denial audits should appear for attributable denied status checks, proxy admission, and WebSocket lease renewal, with the human principal and exact Agent target preserved.
@@ -278,6 +273,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-02 09:55: Shorten provisioning prose and link shared status definitions after rebasing. (authoring-run/275c0d0a-d040-47d3-9e52-47ff86b87ab9 - 393b1585e4b10a3232abf10c60b766d8e55d85ce)
 
 - 2026-10-28 19:58: Document how managed deployments supply read-only configuration guidance. (codex/01a1558e-c27f-7bc0-a403-af59e9364ddf - aa352e92bcdc7cab58364c692a01042c5e459db0)
 - 2026-10-28 12:08: Preserve current native UI navigation and human identity grants during the main refresh. (authoring-run/bafb2708-241b-4261-ab93-1df07dbe94fc - 19c62e378cce0658dff99f5a2d264669a48fc5c6)
