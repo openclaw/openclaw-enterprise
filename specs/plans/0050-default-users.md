@@ -37,14 +37,15 @@ reworked into slices 1 to 3.
      the Namespace Creator binding at startup.
    - Every create writes the creator's Owner binding in its transaction:
      Namespace-wide for a Namespace, exact for other resources.
+   - Parent checks, moved here from slice 2: OCC passes the parent Agent with
+     `agent_revision` and `sandbox_policy` checks, and IAM applies the Agent's
+     exact bindings to them, so an owner can follow its own deploys.
    - `GET`, `PUT`, and `DELETE /iam/default-users/{principalId}` for Installation
      administrators, audited.
    - Removed from the first branch: the Namespace limit, its lock, its `409`,
      and `namespaces.created_by`, which the Owner binding replaces.
-2. **Bindings without a resource and parent checks.** Optional `resourceKind`
-   and `resourceId` and Group subjects in the Namespace IAM API for any Role.
-   OCC passes the parent Agent with `agent_revision` and `sandbox_policy`
-   checks, and IAM applies the Agent's bindings to them.
+2. **Bindings without a resource.** Optional `resourceKind` and `resourceId`
+   and Group subjects in the Namespace IAM API for any Role.
 3. **Agent grants.** Deploy writes the Agent's exact `operate` grants when the
    Owner or Namespace member Role allows the caller, with the binding ID
    `binding_deploy_<agent>_<source>_operate`. `releaseDeployedAgentGrants`
@@ -68,10 +69,11 @@ SCIM through `@better-auth/scim` is a later plan.
   in `default`; a second member is refused every read and write on them. With
   `defaultUser.namespaceCreate` on, a member creates and owns a Namespace; with
   it off, the create is refused. Removal from Default users stops new creates
-  and keeps owned resources.
+  and keeps owned resources. The owner reads the revision and deployment status
+  of its deploy and its Agent's sandbox policy; another member is refused. On
+  k3d, a Default user deploys in `default` and gets a real model turn.
 - Slice 2: a custom Role bound without a resource applies across its Namespace
-  and not in another one; an Agent owner reads the revisions their deploys
-  create.
+  and not in another one.
 - Slice 3: an owner's deploy writes and audits the Secret grant; a deploy
   allowed only by a custom Role writes none. The real worker activates a second
   revision. The first deploy grant goes only after the first revision retires,
