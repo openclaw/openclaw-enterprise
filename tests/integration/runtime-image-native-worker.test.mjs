@@ -38,10 +38,15 @@ import {
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.mjs";
 
-async function startGoogleGateway(t, enabled, workspaceNodeId) {
+const slack = managedMcpInstalls.find(({ id }) => id === "occ-plugin:slack@1.0.0");
+
+async function startGatewayWithSlack(t, enabled, workspaceNodeId) {
   const { id, releaseSha256 } = managedGoogleInstall;
   const configurationPath = await temporaryGatewayConfiguration(t, "openclaw");
-  const manifest = { kind: "openclaw", selections: { [id]: { enabled } } };
+  const manifest = {
+    kind: "openclaw",
+    selections: { [id]: { enabled }, [slack.id]: { enabled: true } },
+  };
   return runGatewaySmoke(t, "openclaw", {
     configurationPath: "/etc/openclaw/openclaw.json",
     entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
@@ -51,6 +56,15 @@ async function startGoogleGateway(t, enabled, workspaceNodeId) {
       ...(workspaceNodeId ? ["OPENCLAW_WORKSPACE_NODE_ID=" + workspaceNodeId] : []),
       "OPENCLAW_PLUGIN_RUNTIME_JSON=" + JSON.stringify({ manifest }),
       "OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID=" + id,
+      "OPENCLAW_MANAGED_MCP_JSON=" +
+        JSON.stringify([
+          {
+            packageName: slack.packageName,
+            id: slack.id,
+            slotId: slack.slotId,
+            releaseSha256: slack.releaseSha256,
+          },
+        ]),
       ...(enabled ? ["OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256=" + releaseSha256] : []),
     ],
   });
@@ -182,17 +196,17 @@ process.exit(r.error ? 0 : r.status);`;
       const volume = await gatewayStateVolume(t, "/tmp/node", {
         seed: "echo retained > /tmp/node/enrollment-sentinel",
       });
-      const { packageName, slotId, releaseSha256 } = managedMcpInstalls.find(
-        ({ id }) => id === "occ-plugin:slack@1.0.0",
-      );
+      const { packageName, slotId, releaseSha256 } = slack;
       const settings = (digest, toolNames) =>
         "OPENCLAW_MANAGED_MCP_JSON=" +
         JSON.stringify({ packageName, slotId, releaseSha256: digest, toolNames });
+      const googleRelease =
+        "OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256=" + managedGoogleInstall.releaseSha256;
       const inspect = async (digest, mounts = [], toolNames) => {
         const result = await runManagedWorker(
           ["/app/openclaw.mjs", "config", "get", "nodeHost", "--json"],
           ["-v", volume + ":/tmp/node", ...mounts],
-          digest === undefined ? [] : [settings(digest, toolNames)],
+          digest === undefined ? [googleRelease] : [settings(digest, toolNames)],
         );
         return JSON.parse(result.stdout);
       };
@@ -203,17 +217,19 @@ process.exit(r.error ? 0 : r.status);`;
         url: "https://mcp.slack.com/mcp",
       });
       const tools = ["slack_search_public"];
+      // Execute the Google CLI in the same child that reads the worker's Slack MCP configuration.
+      const probe = `
+require("node:child_process").execFileSync("gog", ["--version"]);
+console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8"));
+`;
       for (const marker of [
         "openshell:resolve:env:v7_SLACK_MCP_TOKEN",
         "openshell:resolve:env:s" + "a".repeat(64) + "_SLACK_MCP_TOKEN",
       ]) {
         const connected = await runManagedWorker(
-          [
-            "-e",
-            "console.log(require('node:fs').readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8'))",
-          ],
+          ["-e", probe],
           ["-v", volume + ":/tmp/node"],
-          [settings(releaseSha256, tools), "SLACK_MCP_TOKEN=" + marker],
+          [googleRelease, settings(releaseSha256, tools), "SLACK_MCP_TOKEN=" + marker],
         );
         assert.deepEqual(JSON.parse(connected.stdout).nodeHost.mcp.servers.oce_mcp_slack, {
           ...selected.mcp.servers.oce_mcp_slack,
@@ -251,7 +267,7 @@ process.exit(r.error ? 0 : r.status);`;
   );
 
   test(
-    "the dedicated worker stages a different MCP package from its reviewed release",
+    "the dedicated worker configures two MCP servers with their own credentials and tool selections",
     imageTestOptions,
     async (t) => {
       const directory = await mkdtemp(join(tmpdir(), "oce-managed-mcp-"));
@@ -275,6 +291,7 @@ process.exit(r.error ? 0 : r.status);`;
       await writeFile(join(directory, "mcp.json"), manifest);
       await writeFile(join(directory, "ai.openclaw.oce/release.json"), release);
       const marker = "openshell:resolve:env:v9_DOCUMENTS_ACCESS_TOKEN";
+      const slackMarker = "openshell:resolve:env:v19_SLACK_MCP_TOKEN";
       const run = (toolNames) =>
         runManagedWorker(
           [
@@ -284,17 +301,33 @@ process.exit(r.error ? 0 : r.status);`;
           ["-v", directory + ":/usr/local/lib/oce/plugin-catalog/oce-documents:ro"],
           [
             "OPENCLAW_MANAGED_MCP_JSON=" +
-              JSON.stringify({
-                packageName: "oce-documents",
-                slotId: "workspace",
-                releaseSha256: digest(release),
-                toolNames,
-              }),
+              JSON.stringify([
+                {
+                  packageName: slack.packageName,
+                  slotId: slack.slotId,
+                  releaseSha256: slack.releaseSha256,
+                  toolNames: ["slack_search_public"],
+                },
+                {
+                  packageName: "oce-documents",
+                  slotId: "workspace",
+                  releaseSha256: digest(release),
+                  toolNames,
+                },
+              ]),
+            "SLACK_MCP_TOKEN=" + slackMarker,
             "DOCUMENTS_ACCESS_TOKEN=" + marker,
           ],
         );
       const configured = await run(["ListItems"]);
       assert.deepEqual(JSON.parse(configured.stdout).nodeHost.mcp.servers, {
+        oce_mcp_slack: {
+          enabled: true,
+          transport: "streamable-http",
+          url: "https://mcp.slack.com/mcp",
+          headers: { Authorization: "Bearer " + slackMarker },
+          toolFilter: { include: ["slack_search_public"] },
+        },
         oce_mcp_documents: {
           enabled: true,
           transport: "streamable-http",
@@ -317,10 +350,10 @@ process.exit(r.error ? 0 : r.status);`;
   );
 
   test(
-    "the native Gateway discovers the selected Google installation instructions",
+    "the native Gateway discovers the Google instructions with Slack selected alongside it",
     imageTestOptions,
     async (t) => {
-      const { containerName } = await startGoogleGateway(t, true);
+      const { containerName } = await startGatewayWithSlack(t, true);
       const { stdout } = await runDocker([
         "exec",
         "-e",
@@ -349,7 +382,7 @@ process.exit(r.error ? 0 : r.status);`;
         "utf8",
       );
       for (const enabled of [false, true]) {
-        const { containerName } = await startGoogleGateway(t, enabled, "a".repeat(64));
+        const { containerName } = await startGatewayWithSlack(t, enabled, "a".repeat(64));
         await runDocker(
           [
             "exec",

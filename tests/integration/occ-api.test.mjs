@@ -9292,7 +9292,7 @@ test("Slack validation with no Slack proxy names the setting at provision and de
   assert.equal(deploy.body.error.message, noRoute);
 });
 
-test("deploying Slack freezes the reviewed tool selection and keeps its credential attachment independent", async () => {
+test("deploying Google Workspace and Slack together freezes both selections and preserves independent credentials", async () => {
   const sourceConfig = {
     protocol: "mcp",
     host: "mcp.slack.com",
@@ -9435,40 +9435,40 @@ test("deploying Slack freezes the reviewed tool selection and keeps its credenti
   assert.equal(capabilities.status, 200, JSON.stringify(capabilities.body));
   const slot = capabilities.data.credentialSlots.find((entry) => entry.pluginId === pluginId);
   assert.deepEqual(slot.sources, [{ id: source.data.id, name: "Slack account" }]);
-  const save = (toolNames) =>
-    controller.request("PATCH", agentPath, {
-      body: {
-        configurationId: configuration.id,
-        plugins: {
-          [pluginId]: {
-            enabled: true,
-            driverPolicy: {
-              releaseSha256: slot.releaseSha256,
-              credentials: { account: source.data.id },
-              toolNames,
-            },
-          },
-        },
+  const google = { "occ-plugin:google@1.0.0": { enabled: true } };
+  const pluginsFor = (toolNames) => ({
+    ...google,
+    [pluginId]: {
+      enabled: true,
+      driverPolicy: {
+        releaseSha256: slot.releaseSha256,
+        credentials: { account: source.data.id },
+        toolNames,
       },
+    },
+  });
+  const save = (plugins) =>
+    controller.request("PATCH", agentPath, {
+      body: { configurationId: configuration.id, plugins },
     });
-  const refused = await save(["slack_send_message"]);
+  const refused = await save(pluginsFor(["slack_*"]));
   assertApiError(refused, 400, "INVALID_REQUEST");
-  assert.match(refused.body.error.message, /reviewed plugin release/);
-  const saved = await save(["slack_search_public"]);
+  assert.match(refused.body.error.message, /distinct literal Slack tool names/);
+  const approved = pluginsFor(["slack_search_public"]);
+  const saved = await save(approved);
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const deployed = await controller.request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
-  assert.deepEqual(deployed.data.plugins.plugins, saved.data.plugins);
+  assert.deepEqual(deployed.data.plugins.plugins, approved);
   assert.deepEqual(deployed.data.credentialSources, credentialSources);
 
-  const cleared = await controller.request("PATCH", agentPath, {
-    body: { configurationId: configuration.id, plugins: {} },
-  });
+  const cleared = await save(google);
   assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  assert.deepEqual(cleared.data.plugins, google);
   assert.deepEqual(cleared.data.credentialSources, credentialSources);
   const revision = await controller.request("GET", `${agentPath}/revisions/${deployed.data.id}`);
   assert.equal(revision.status, 200, JSON.stringify(revision.body));
-  assert.deepEqual(revision.data.plugins.plugins, saved.data.plugins);
+  assert.deepEqual(revision.data.plugins.plugins, approved);
 });
 
 test("saved-Agent discovery offers managed packages only where Agent save admits them", async () => {

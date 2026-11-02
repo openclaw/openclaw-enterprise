@@ -11517,12 +11517,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return [];
     }
     const { runtime } = pluginRuntime;
+    const selectedIds = Object.keys(runtime.selections);
     if (
       runtime.kind === "openclaw" &&
-      Object.keys(runtime.selections).length === 1 &&
-      managedInstalls.some(({ id }) => Object.hasOwn(runtime.selections, id))
+      selectedIds.length > 0 &&
+      selectedIds.every((id) => managedInstalls.some((install) => install.id === id))
     ) {
-      return []; // The managed package is already in the image.
+      return []; // The image supplies all selected packages.
     }
     const data = pluginRuntimeConfigMapData(runtime);
     const environment = new Map([
@@ -16117,20 +16118,23 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           value: managedGoogleInstall.releaseSha256,
         });
       }
-      const mcp = managedMcpInstalls.find(({ id }) => Object.hasOwn(selections, id));
-      if (mcp && (selections[mcp.id]?.enabled || role === "gateway")) {
-        const selection = selections[mcp.id]!;
-        const binding = managedMcpCredentialBinding(selections);
-        variables.push({
-          name: MANAGED_MCP_ENVIRONMENT,
-          value: JSON.stringify({
-            packageName: mcp.packageName,
-            slotId: mcp.slotId,
-            ...(role === "gateway" && { id: mcp.id }),
-            ...(selection.enabled && { releaseSha256: mcp.releaseSha256 }),
-            ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
-          }),
+      const mcpSettings = [];
+      for (const install of managedMcpInstalls) {
+        const selection = selections[install.id];
+        if (!selection || (!selection.enabled && role !== "gateway")) {
+          continue;
+        }
+        const binding = managedMcpCredentialBinding(selections, install);
+        mcpSettings.push({
+          packageName: install.packageName,
+          slotId: install.slotId,
+          ...(role === "gateway" && { id: install.id }),
+          ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
+          ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
         });
+      }
+      if (mcpSettings.length > 0) {
+        variables.push({ name: MANAGED_MCP_ENVIRONMENT, value: JSON.stringify(mcpSettings) });
       }
     }
     const needsPluginRuntime =

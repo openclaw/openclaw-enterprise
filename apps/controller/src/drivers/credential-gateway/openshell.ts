@@ -30,7 +30,7 @@ import {
   googleAttachmentConflict,
   managedCredentialBinding,
   managedGoogleInstall,
-  managedMcpCredentialBinding,
+  managedMcpCredentialBindings,
   managedMcpInstallForSourceConfig,
   managedMcpSlotAcceptsSource,
   managedSlotAcceptsSource,
@@ -1175,12 +1175,15 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const binding = managedCredentialBinding(context.revision.plugins?.plugins);
-    const mcpBinding = managedMcpCredentialBinding(context.revision.plugins?.plugins);
-    const mcpSource = context.sources.find(({ id }) => id === mcpBinding?.sourceId);
-    if (mcpBinding && mcpSource && !managedMcpSlotAcceptsSource(mcpBinding.install, mcpSource)) {
-      throw new ScopeViolationError(
-        "The attached MCP account does not match the reviewed credential slot.",
-      );
+    for (const { install, sourceId } of managedMcpCredentialBindings(
+      context.revision.plugins?.plugins,
+    )) {
+      const source = context.sources.find(({ id }) => id === sourceId);
+      if (source && !managedMcpSlotAcceptsSource(install, source)) {
+        throw new ScopeViolationError(
+          "The attached MCP account does not match the reviewed credential slot.",
+        );
+      }
     }
     for (const source of context.sources.filter(({ config }) => config.protocol === "mcp")) {
       const install = managedMcpInstallForSourceConfig(source.config);

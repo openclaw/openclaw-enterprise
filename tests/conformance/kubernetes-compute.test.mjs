@@ -1770,7 +1770,10 @@ async function verifyManagedRelease({ id, packageName, releaseSha256, slotId, to
   }
   for (const selection of selectionCases) {
     const { enabled, driverPolicy } = selection;
-    const selections = { [id]: selection };
+    const selections = {
+      ...(slotId !== undefined && { [managedGoogleInstall.id]: { enabled: true } }),
+      [id]: selection,
+    };
     let worker;
     const sandboxDriver = {
       id: "native-sandbox",
@@ -1815,15 +1818,19 @@ async function verifyManagedRelease({ id, packageName, releaseSha256, slotId, to
     const gateway = fixture.read("Deployment", fixture.gatewayName).spec.template.spec;
     const gatewayEnv = gateway.containers[0].env;
     const variable = (environment, name) => environment.find((item) => item.name === name)?.value;
-    if (slotId === undefined) {
-      assert.equal(variable(gatewayEnv, "OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID"), id);
-      for (const environment of [worker.environment, gatewayEnv]) {
-        assert.equal(
-          variable(environment, "OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256"),
-          enabled ? releaseSha256 : undefined,
-        );
-      }
-    } else {
+    assert.equal(
+      variable(gatewayEnv, "OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID"),
+      managedGoogleInstall.id,
+    );
+    for (const environment of [worker.environment, gatewayEnv]) {
+      assert.equal(
+        variable(environment, "OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256"),
+        selections[managedGoogleInstall.id].enabled
+          ? managedGoogleInstall.releaseSha256
+          : undefined,
+      );
+    }
+    if (slotId !== undefined) {
       const workerSettings = variable(worker.environment, "OPENCLAW_MANAGED_MCP_JSON");
       const gatewaySettings = variable(gatewayEnv, "OPENCLAW_MANAGED_MCP_JSON");
       const expected = {
@@ -1834,9 +1841,9 @@ async function verifyManagedRelease({ id, packageName, releaseSha256, slotId, to
       };
       assert.deepEqual(
         workerSettings && JSON.parse(workerSettings),
-        enabled ? expected : undefined,
+        enabled ? [expected] : undefined,
       );
-      assert.deepEqual(JSON.parse(gatewaySettings), { ...expected, id });
+      assert.deepEqual(JSON.parse(gatewaySettings), [{ ...expected, id }]);
     }
     // An Agent editor cannot replace deployment inputs with Secret bindings.
     for (const { name } of gatewayEnv.filter(({ name }) => name.startsWith("OPENCLAW_MANAGED_"))) {

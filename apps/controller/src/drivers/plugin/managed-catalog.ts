@@ -263,11 +263,8 @@ export function managedCredentialBinding(selections: PluginDesiredState | undefi
 /** Upstream tool names belong to one pinned MCP server. */
 export function managedMcpCredentialBinding(
   selections: PluginDesiredState | undefined,
-  install = managedMcpInstalls.find(({ id }) => selections?.[id]?.driverPolicy !== undefined),
+  install: ManagedMcpInstall,
 ) {
-  if (!install) {
-    return undefined;
-  }
   const selection = selections?.[install.id];
   const policy = selection?.driverPolicy;
   if (policy === undefined) {
@@ -312,6 +309,40 @@ export function managedMcpCredentialBinding(
   return { install, sourceId, toolNames: selected as string[] };
 }
 
+export function managedMcpCredentialBindings(
+  selections: PluginDesiredState | undefined,
+  installs = managedMcpInstalls,
+) {
+  const servers = new Set<string>();
+  const tools = new Set<string>();
+  const bindings = [];
+  for (const install of installs) {
+    if (selections?.[install.id]?.enabled) {
+      if (servers.has(install.server)) {
+        throw new ConfigurationHarnessError(
+          `Two enabled MCP packages use the same worker server name: ${install.server}.`,
+        );
+      }
+      servers.add(install.server);
+    }
+    const binding = managedMcpCredentialBinding(selections, install);
+    if (!binding) {
+      continue;
+    }
+    for (const name of binding.toolNames) {
+      const alias = `oce_mcp_${install.server}_${name}`.toLowerCase();
+      if (tools.has(alias)) {
+        throw new ConfigurationHarnessError(
+          `Two selected MCP tools use the same Gateway name: ${alias}. Deselect one of them.`,
+        );
+      }
+      tools.add(alias);
+    }
+    bindings.push(binding);
+  }
+  return bindings;
+}
+
 export function requireManagedCredentialRuntime(
   selections: PluginDesiredState | undefined,
   sandbox?: string,
@@ -323,7 +354,7 @@ export function requireManagedCredentialRuntime(
       "A bound Google account requires the OpenShell Sandbox and Credential Gateway.",
     );
   }
-  if (managedMcpCredentialBinding(selections) && !supported) {
+  if (managedMcpCredentialBindings(selections).length > 0 && !supported) {
     throw new ConfigurationHarnessError(
       "A bound MCP account requires the OpenShell Sandbox and Credential Gateway.",
     );
@@ -438,8 +469,7 @@ export const managedPluginCredentials = {
     sources: readonly CredentialSource[],
     modelSourceId?: string,
   ) {
-    const mcp = managedMcpCredentialBinding(selections);
-    if (mcp) {
+    for (const mcp of managedMcpCredentialBindings(selections)) {
       const source = sources.find(({ id }) => id === mcp.sourceId);
       if (
         !source ||
