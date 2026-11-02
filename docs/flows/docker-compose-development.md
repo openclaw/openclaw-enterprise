@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-30
-last_updated_session: authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f
+updated: 2026-11-02
+last_updated_session: authoring-run/8801e4ac-3c1b-405c-9f54-47c609315bcd
 ---
 
 # Compose development flow
@@ -178,6 +178,8 @@ results, and removes the archive. Tagged builds share this path.
 `internal/occdev/registry_k3d.go:pullDevelopmentImage` pulls digest-pinned
 `OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER` images instead; `state.json` records
 the registry attachment for `occ dev down` to detach.
+`internal/occdev/state.go:rewriteState` sets the replacement file to `0600` before
+writing, so a restrictive umask cannot remove the owner access needed for recovery.
 
 ### 5. Prepare the optional OpenShell development profile
 
@@ -305,6 +307,8 @@ distinguishes local proof from pending connected runtime qualification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-02 21:52: Preserve readable private recovery state across restrictive umasks. (authoring-run/8801e4ac-3c1b-405c-9f54-47c609315bcd - 036b7da9cd6365499e2ef03c7eb8499e7bddb450)
 
 - 2026-10-30 16:09: Reconcile patched OpenShell documentation with capability-based repository admission. (authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f - 87d52638bda95e06820328e244ba2ad9960df1c4)
 

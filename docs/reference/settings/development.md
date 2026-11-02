@@ -60,6 +60,9 @@ worker require initialized state and do not read those credentials or output.
 | `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP`         | Optional canonical private IPv4 address.                                                                                                     | Protected profile only. Sets the supplier chart’s `server.hostGatewayIP` for the native `host.openshell.internal` alias. The operator must verify ownership, reachability and the endpoint certificate SAN; this setting does not grant egress permission or configure trust.                                                                                                                                                                                                                                    |
 | `OCC_DEVELOPMENT_DATABASE_NAME`                     | Optional `openclaw_k8s_[a-z0-9_]+`, at most 63 characters.                                                                                   | Kubernetes control plane only. Selects one disposable database consistently for creation, readiness, migration, bootstrap, API and worker. Default: `openclaw_enterprise`; the application role remains `occ_app`.                                                                                                                                                                                                                                                                                               |
 
+Registry attachment updates replace `state.json` with a `0600` file, including
+under a restrictive umask. The owner can read it on the next `occ dev down`.
+
 When `OCC_DEVELOPMENT_STATE_DIRECTORY` is unset, the state directory is the
 launching process's temporary directory plus `openclaw-development`. On Linux
 that temporary directory is `TMPDIR` if the launching process set it, and
