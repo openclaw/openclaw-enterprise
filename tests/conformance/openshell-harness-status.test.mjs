@@ -18,6 +18,7 @@ import { OpenShellServiceTransportError } from "../../apps/controller/src/driver
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { refusingPort } from "../helpers/available-port.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
 // A provider-owned Codex Harness (OpenShell) receives only the transport token's
 // verifier and no Compute status port. When it holds a startup failure it serves
@@ -623,8 +624,7 @@ function tlsGateway(keyPath, certPath, seen) {
 }
 
 test("the OpenShell client verifies a TLS gateway listener against its root certificate and name", async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "openshell-service-tls-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const directory = temporaryDirectorySync(t, "openshell-service-tls-");
   // The certificate names only the control endpoint, never the service host.
   const { keyPath, certPath } = await selfSignedCertificate(directory, "tls", "DNS:localhost");
   const seen = [];
@@ -662,8 +662,7 @@ test("the OpenShell client verifies a TLS gateway listener against its root cert
 });
 
 test("the OpenShell client verifies an IP-literal TLS gateway listener against the endpoint address, not Host", async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "openshell-service-tls-ip-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const directory = temporaryDirectorySync(t, "openshell-service-tls-ip-");
   // IPv6 loopback is optional on CI hosts; without it the IPv6 cases are skipped.
   const probe = createServer();
   const ipv6 = await new Promise((resolve) => {
@@ -794,8 +793,7 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
     () => {
       const stop = new Error("stop after the readiness server starts");
       let handler;
-      const directory = mkdtempSync(join(tmpdir(), "native-worker-readiness-"));
-      t.after(() => rmSync(directory, { recursive: true, force: true }));
+      const directory = temporaryDirectorySync(t, "native-worker-readiness-");
       assert.throws(
         () =>
           vm.runInNewContext(NATIVE_WORKER_ENTRYPOINT, {

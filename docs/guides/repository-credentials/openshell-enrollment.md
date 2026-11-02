@@ -10,6 +10,9 @@ installing OpenShell does not grant it.
 
 ### Register the Harness model source first
 
+For a fresh local k3d installation, use the authenticated
+[Gateway-only bootstrap](#prepare-an-authenticated-local-gateway).
+
 A fresh installation needs a ready, Gateway-owned model source before enabling
 the repository Credential Proxy. If that source already exists, start at step 2.
 
@@ -20,6 +23,71 @@ the repository Credential Proxy. If that source already exists, start at step 2.
    `harnessAuth.method: credential_source`. Enable the repository Credential Proxy
    as described below. This procedure is for a fresh installation; changing an
    existing installation can affect running Agents.
+
+### Prepare an authenticated local Gateway
+
+Use this procedure only during a new local installation, before creating any
+CredentialSources or Agents. Start with
+`OCC_DEVELOPMENT_PROTECTED_EGRESS=1` to prepare Gateway mTLS and signing keys.
+The generated static inference authority is separate from repository access.
+If startup waits while `oce-authority` reports `Describe` unavailable, remove
+only that unused registration and selection. Keep mTLS and the Credential Gateway.
+
+In a second Bash terminal, use the first terminal's private `RUN_DIR`, state
+directory and cluster name. Wait until the OCE Helm release is deployed. The
+[editor](../../../docs/assets/openshell-quickstart/configure-installation.mjs)
+checks the generated selections and preserves the TLS settings. It also removes
+the uninspected GitHub rule and selects the curated Codex plugin catalog.
+
+```bash
+set -euo pipefail
+umask 077
+state=${OCC_DEVELOPMENT_STATE_DIRECTORY:?}
+export KUBECONFIG="$state/kubeconfig"
+cluster=$(jq -er .cluster "$state/state.json")
+context="k3d-$cluster"
+ns=$(jq -er .platformNamespace "$state/state.json")
+test "$(kubectl config current-context)" = "$context"
+helm --kubeconfig "$KUBECONFIG" --kube-context "$context" -n "$ns" \
+  get values openshell-gateway -o json > "$RUN_DIR/gateway-values.json"
+secret="oce-gateway-only-$(date +%s)"
+node "$RUN_DIR/configure-installation.mjs" --gateway-only-bootstrap \
+  "$RUN_DIR/gateway-values.json" "$secret"
+kubectl --context "$context" -n "$ns" create secret generic "$secret" \
+  --from-file="installation.yaml=$state/installation.yaml"
+
+# Complete this upgrade before unblocking the launcher's worker startup.
+helm --kubeconfig "$KUBECONFIG" --kube-context "$context" upgrade \
+  openclaw-enterprise deploy/helm/openclaw-enterprise -n "$ns" \
+  -f "$state/helm-values.json" --set worker.replicaCount=0 --wait
+charts=("$state"/openshell/chart/helm-chart-*.tgz)
+test "${#charts[@]}" -eq 1 && test -f "${charts[0]}"
+helm --kubeconfig "$KUBECONFIG" --kube-context "$context" -n "$ns" \
+  upgrade openshell-gateway "${charts[0]}" -f "$RUN_DIR/gateway-values.json"
+
+# A failed old StatefulSet Pod can block adoption of the corrected template.
+pod=$(kubectl --context "$context" -n "$ns" get pod openshell-gateway-0 -o json)
+desired=$(kubectl --context "$context" -n "$ns" get statefulset openshell-gateway -o json |
+  jq -er '.spec.template.metadata.annotations["checksum/gateway-config"]')
+if jq -e --arg desired "$desired" \
+  '.status.containerStatuses[0].ready==false and
+   .metadata.annotations["checksum/gateway-config"]!=$desired' <<<"$pod" >/dev/null; then
+  kubectl --context "$context" -n "$ns" delete pod openshell-gateway-0
+fi
+kubectl --context "$context" -n "$ns" rollout status statefulset/openshell-gateway
+```
+
+This conditional deletion follows Kubernetes's
+[failed StatefulSet recovery](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#forced-rollback).
+It removes only the unready Pod using the old configuration; the StatefulSet
+recreates it from the corrected template. If Helm already waits on that Pod,
+run the conditional check in another terminal.
+
+The original launcher now starts the worker and completes bootstrap. Require its
+ready message. Skip the later Installation-editor step in the local setup guide;
+these settings are already applied. Then register the Gateway-owned model source
+before adding the repository Proxy below. Do not use this recovery on a shared
+installation or remove an authority used by existing sources.
 
 ### Configure authorized repositories
 
@@ -62,8 +130,9 @@ Mount the edited registry as `registry.json` in an immutable versioned ConfigMap
 In the OCE Helm values set `repositoryCredentials.registryConfigMapName` to that
 ConfigMap, `backendId: repository-backend`, `authority: prepared-git`, and
 `enabled: false`. Set `appKeySecretName` and `preparedCustodySecretName` to the
-operator-managed worker-only Secrets, and `upstreamCidrs` to the approved provider
-endpoints. Preserve the custody key across restarts. Never put keys in Agent JSON.
+operator-managed worker-only Secrets, and `upstreamCidrs` to the
+[approved provider endpoints](../deploy/installation-profiles.md#required-environment-checks).
+Preserve the custody key across restarts. Never put keys in Agent JSON.
 
 Complete [the request-phase service setup](../../reference/repository-credentials/protected-openshell-git.md#prepare-the-request-phase-service):
 set `openshellGit.enabled: true`, `mode: protected`, its TLS Secret, public issuer
@@ -73,7 +142,83 @@ with `binding_policy: allowlist` and `bindings: [http_request_pre_credentials]`.
 Missing or response-only bindings are not sufficient. Render the normal Helm
 release and run normal Installation startup validation before admitting Agents.
 
+### Allow the Supervisor to reach the authority
+
+If the Supervisor namespace enforces egress, add this policy to the Sandbox
+configuration's `gateway.networkPolicyResources`. For an existing namespace,
+also apply the same file there before deployment. Replace `openclaw-system` with
+the OCE Kubernetes namespace and the release label with the worker's observed
+label. Keep existing DNS and management allowances.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-oce-prepared-git
+spec:
+  podSelector:
+    matchLabels:
+      openshell.ai/managed-by: openshell
+      openshell.ai/boundary-role: supervisor
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openclaw-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: openclaw-enterprise
+              app.kubernetes.io/instance: openclaw-enterprise
+              app.kubernetes.io/component: worker
+      ports:
+        - { protocol: TCP, port: 8445 }
+```
+
+```bash
+kubectl --context "$CONTEXT" -n "$SUPERVISOR_NAMESPACE" \
+  apply -f supervisor-authority-egress.yaml
+```
+
+`SUPERVISOR_NAMESPACE` is the observed Kubernetes namespace, not its OCE Namespace
+ID. If the Gateway is also isolated for egress, allow its observed Pod labels to
+the same worker and port. Do not select Agent workload Pods as trusted peers.
+
 ### Select repositories and deploy
+
+Before activating a repository binding, verify the App installation from the
+current worker. Use its mounted signing key and the issuer's CA configuration;
+an operator's `gh` result or an unsigned HTTPS read does not check this path.
+The [installation check](../../assets/openshell-quickstart/verify-github-installation.mjs)
+uses the worker's signer and issuer request-options factory, but sends only a
+bodyless installation GET. It creates no admission and requests no token.
+
+Set `ISSUER_CA_PATH` to `repository.preparedGitHub.issuerCaPath`, or leave it
+empty if that setting is absent. The example uses the fragment's standard mount
+paths and GitHub.com. Set `NAMESPACE_ID` to the OCE Namespace ID approved in the
+registry. Set `WORKER_POD` to the current worker Pod and `PLATFORM_NS`
+to its Kubernetes namespace, then run from the matching release checkout:
+
+```bash
+kubectl --context "$CONTEXT" -n "$PLATFORM_NS" get pod "$WORKER_POD" \
+  -o jsonpath='{.metadata.uid}{"\n"}{.spec.containers[?(@.name=="worker")].image}{"\n"}{.status.containerStatuses[?(@.name=="worker")].imageID}{"\n"}'
+
+kubectl --context "$CONTEXT" -n "$PLATFORM_NS" exec -i "$WORKER_POD" -c worker -- \
+  node --input-type=module - "$NAMESPACE_ID" application "${ISSUER_CA_PATH:-}" \
+  < docs/assets/openshell-quickstart/verify-github-installation.mjs
+```
+
+Require `success: true`: HTTP 200, verified TLS and matching App and installation
+IDs. The helper keeps the key, JWT, headers and response body inside the worker.
+Save the context, Pod UID, selected image, runtime image ID and result together.
+Check the result's `connection` addresses against the worker's enforced egress
+rule and approved provider inventory. The helper records at most four DNS
+addresses and four connection errors, plus TCP, verified TLS and request-end
+stages. A DNS snapshot from another Pod or workstation does not verify this path.
+If it fails, keep the Agent stopped and correct the observed prerequisite before
+deployment. A successful GET does not prove token issuance or Git access. If an
+issuance is already uncertain, preserve its original recovery bound and follow
+the [Token Service lifecycle](../../reference/repository-credentials.md#token-service-lifecycle).
 
 Select any authorized set of up to 16 repositories on the Agent. The normal Agent
 create/update JSON uses registry references, for example:

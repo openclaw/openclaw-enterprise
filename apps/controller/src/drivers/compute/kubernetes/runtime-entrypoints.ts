@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
+import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import {
@@ -1940,13 +1941,20 @@ async function searchCodexSelectionParams(selections, request, deadline) {
       const response = await request("plugin/search", {
         ...selection.params, ...(cursor === undefined ? {} : { cursor }),
       });
+      if (Date.now() >= deadline) {
+        throw new Error("Codex plugin search deadline expired.");
+      }
       const params = pluginRuntimeTranslator.codexReadParamsFromSearch(selection.pluginId, response);
-      if (params !== undefined) { resolved.push(params); break; }
+      if (params !== undefined) {
+        resolved.push(params);
+        break;
+      }
       if (typeof response.nextCursor !== "string" || response.nextCursor.length === 0) {
         throw new Error("Codex plugin catalog did not contain the selected plugin.");
       }
-      if (Date.now() >= deadline) throw new Error("Codex plugin search deadline expired.");
-      if (seen.has(response.nextCursor)) throw new Error("Codex plugin search repeated its cursor.");
+      if (seen.has(response.nextCursor)) {
+        throw new Error("Codex plugin search repeated its cursor.");
+      }
       cursor = response.nextCursor;
       seen.add(cursor);
     }
@@ -2465,6 +2473,7 @@ ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
 ${startupPhaseHelper("gateway")}
 ${openClawStateMigrationHelper("Gateway", "restart the Pod")}
+${OPENCLAW_CONFIG_ISSUE_HELPER}
 
 function nativeGatewayAnswers(path) {
   return new Promise((resolve) => {
@@ -2491,6 +2500,11 @@ function nativeGatewayAnswers(path) {
   });
 }
 
+// Whether a native Gateway this wrapper started has answered its /readyz, which the
+// kubelet's readiness probe asks every 2 s. Until one has, an exit may be OpenClaw refusing
+// its configuration at startup.
+let gatewayServed = false;
+
 // OpenClaw's /readyz admits a Gateway whose agent databases are still in
 // background startup inspection, and a chat turn then gets HTTP 500 until it
 // finishes (19.6 s after start in finding 2185). /startupz stays 503 until
@@ -2501,6 +2515,7 @@ async function gatewayRuntimeReady() {
     return false;
   }
   const answers = await Promise.all([nativeGatewayAnswers("/startupz"), nativeGatewayAnswers("/readyz")]);
+  if (answers[1]) gatewayServed = true;
   return answers.every((ready) => ready);
 }
 
@@ -2602,12 +2617,15 @@ function configureNativeWorkerProfile() {
 }
 
 // Admission applies the same rule (configuration-rules.ts); a parity test pins the two.
+// OpenClaw matches a deny entry trimmed and lowercased, and plugins.enabled false
+// turns off every plugin.
 function requireWorkspaceNodePlugins(config) {
   const plugins = isPlainObject(config.plugins) ? config.plugins : {};
-  if (
-    plugins.deny?.includes("file-transfer") ||
-    plugins.entries?.["file-transfer"]?.enabled === false
-  ) {
+  const deny = plugins.deny;
+  const denied = Array.isArray(deny)
+    ? deny.some((id) => typeof id === "string" && id.trim().toLowerCase() === "file-transfer")
+    : deny?.includes("file-transfer");
+  if (denied || plugins.enabled === false || plugins.entries?.["file-transfer"]?.enabled === false) {
     throw new Error("The workspace node requires the file-transfer plugin.");
   }
 }
@@ -3120,6 +3138,39 @@ function gatewayEnvironment() {
   }
 }
 
+let gatewayConfigurationHeld = false;
+
+// OpenClaw exits at startup (status 78) when any setting fails its schema, including a plugin
+// entry's config when that plugin is disabled or denied (finding 3043; the runtime image carries
+// openclaw/openclaw#189392, so OpenClaw's own log names a failing plugin setting too). Each
+// restart fails the same way, until the convergence deadline. So once a Gateway that never
+// served exits non-zero, OpenClaw's own validator checks the same configuration. An invalid
+// one is held as check gateway-config, which ends the deployment at once, and the log names
+// the settings. Any other exit, or a validator that prints no report (it failed or timed
+// out), restarts the container as before, as does a Gateway with no Compute status port to
+// serve the hold on.
+function holdInvalidGatewayConfiguration(code, signal) {
+  if (runtimeStatusPort() === undefined) return false;
+  const validation = pluginSpawnSync("node", ["/app/openclaw.mjs", "config", "validate", "--json"], {
+    env: { ...gatewayEnvironment(), OPENCLAW_CONFIG_READONLY: "1" },
+    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, maxBuffer: 1024 * 1024,
+  });
+  let report;
+  try {
+    report = JSON.parse(validation.stdout);
+  } catch {
+    return false;
+  }
+  if (report?.valid !== false) return false;
+  gatewayConfigurationHeld = true;
+  publishRuntimeFailure("gateway-config", "UNAVAILABLE");
+  console.error(invalidOpenClawConfigurationLine(
+    "The OpenClaw Gateway exited (" + (signal ?? "exit-" + code) + ") before it served", report.issues,
+  ));
+  setInterval(() => {}, 3600000);
+  return true;
+}
+
 function startGatewayProcess() {
   const spawned = spawn(
     "node",
@@ -3138,6 +3189,9 @@ function startGatewayProcess() {
         return;
       }
       if (gatewayTerminating || ((!respawning || waitingForPeerDuringOutage || verifyingServingReplacement) && spawned === child)) {
+        if (!gatewayTerminating && !gatewayServed && code !== 0 && holdInvalidGatewayConfiguration(code, signal)) {
+          return;
+        }
         process.exit(code ?? (signal === "SIGTERM" ? 0 : 1));
       }
     });
@@ -3287,7 +3341,7 @@ if (workspaceNodeBindingPath !== undefined) {
     }
   };
   const workspaceNodePoll = setInterval(async () => {
-    if (pollInFlight || respawning) return;
+    if (pollInFlight || respawning || gatewayConfigurationHeld) return;
     pollInFlight = true;
     try {
       await pollWorkspaceNode();
@@ -3427,7 +3481,7 @@ if (followsPeerStatus) {
     }
   };
   const peerStatusPoll = setInterval(async () => {
-    if (pollInFlight || respawning || stoppingContainer) return;
+    if (pollInFlight || respawning || stoppingContainer || gatewayConfigurationHeld) return;
     pollInFlight = true;
     try {
       let current;
@@ -3824,7 +3878,14 @@ if (providerManagedPat) {
     JSON.stringify({ personal_access_token: accessToken }), { mode: 0o600 });
 }
 const loginFlag = loginMode === "api_key" ? "--with-api-key" : "--with-access-token";
+// Native metrics have a separate upstream exporter default from logs.
+const nativeTelemetryArguments = [
+  "-c", "otel.exporter=\"none\"",
+  "-c", "otel.metrics_exporter=\"none\"",
+  "-c", "otel.log_user_prompt=false",
+];
 const loginArguments = [
+  ...nativeTelemetryArguments,
   "-c", "cli_auth_credentials_store=file", "login", providerManagedPat ? "status" : loginFlag,
 ];
 function codexChildEnvironment() {
@@ -4055,6 +4116,7 @@ function probeCodexAuthentication(timeout) {
       "skill_mcp_dependency_install", "tool_suggest", "recommended_plugins", "request_permissions_tool",
     ];
     result = spawnSync(codexExecutable(), [
+      ...nativeTelemetryArguments,
 ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,
@@ -4261,13 +4323,10 @@ if (digest === undefined) {
   digest = createHash("sha256").update(process.env.APP_SERVER_TOKEN).digest("hex");
 }
 const nativeArguments = [
+    ...nativeTelemetryArguments,
     // Preserve the admitted model selection for native policy readback.
     "-c",
     "model=" + JSON.stringify(process.env.OPENCLAW_HARNESS_MODEL.slice(process.env.OPENCLAW_HARNESS_MODEL.indexOf("/") + 1)),
-    "-c",
-    "otel.exporter=\"none\"",
-    "-c",
-    "otel.log_user_prompt=false",
     // Managed container tools must retain the runtime PATH, including Skill dependencies.
     // Login profiles otherwise replace it with the image's system-only PATH.
     "-c",
@@ -4383,7 +4442,7 @@ function agentWithNodeEntrypoint(entrypoint: string): string {
   return String.raw`
 const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
-const { execFile, spawn, spawnSync } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
@@ -4474,15 +4533,14 @@ function withoutOpenClawCommandHints(text) {
 }
 // What a failed native setup reported: its message on one line of at most 400
 // characters, and up to five invalid setting paths (names, never values).
+${OPENCLAW_CONFIG_ISSUE_HELPER}
 function workspaceBaselineReport(path) {
   let reported;
   try {
     reported = JSON.parse(workspaceBaselineOutput(path));
   } catch {}
   const message = reported?.error?.message;
-  const settings = [...new Set((Array.isArray(reported?.issues) ? reported.issues : [])
-    .map((issue) => issue?.path)
-    .filter((setting) => typeof setting === "string" && setting.length <= 64 && /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(setting)))].slice(0, 5);
+  const settings = openClawConfigIssues(reported?.issues).map((issue) => issue.path);
   // A message that is only a hint is still what OpenClaw reported: keep it whole.
   const collapsed = typeof message === "string"
     ? message.replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, " ").trim()
@@ -4503,11 +4561,12 @@ if (outdatedDatabases.length > 0 && !(await migrateOpenClawState(state, outdated
 }
 // The workspace belongs to the Harness. Native setup creates missing defaults
 // without replacing owner edits; neither child may serve an uninitialized workspace.
-// Its JSON result goes to a file: spawnSync kills a child whose output outgrows a
-// pipe's buffer, which would fail a setup that succeeded. The result is a multi-line
-// document that runtime logs withhold as a possible payload, so a failure names only
-// its message and invalid setting paths, on one bounded line. A failure holds the
-// Harness: a restart would run the same setup on the same configuration.
+// Its JSON result goes to a file: a pipe would need the whole result buffered, and
+// spawnSync killed a child whose output outgrew it, failing a setup that succeeded.
+// The result is a multi-line document that runtime logs withhold as a possible
+// payload, so a failure names only its message and invalid setting paths, on one
+// bounded line. A failure holds the Harness: a restart would run the same setup on
+// the same configuration.
 const baselineStartedAt = Date.now();
 const baselineResultPath = join(state, "workspace-baseline.json");
 const baselineResult = openSync(baselineResultPath, "w", 0o600);
@@ -4517,13 +4576,19 @@ const baselineOutputPath = join(state, "workspace-baseline.log");
 const baselineOutput = openSync(baselineOutputPath, "w", 0o600);
 let baseline;
 try {
-  baseline = spawnSync(process.execPath, [
-    "/app/openclaw.mjs", "setup", "--baseline", "--workspace", workspaceDirectory, "--json",
-  ], { env: nodeEnv, stdio: ["inherit", baselineResult, baselineOutput] });
+  // Setup holds the node state's owner lock on the workspace claim, which every
+  // later revision's Harness opens. A Pod stopped during setup lets it finish and
+  // release the lock before the container ends.
+  baseline = await runOpenClawStateOwner(
+    ["setup", "--baseline", "--workspace", workspaceDirectory, "--json"],
+    { env: nodeEnv, stdio: ["inherit", baselineResult, baselineOutput] },
+    { forwardStop: false },
+  );
 } finally {
   closeSync(baselineResult);
   closeSync(baselineOutput);
 }
+if (baseline.terminating) process.exit(0);
 try {
   for (const line of workspaceBaselineOutput(baselineOutputPath, true).split("\n")) {
     const kept = withoutOpenClawCommandHints(line);
@@ -4730,11 +4795,33 @@ function start(slot) {
       slot.timer = setTimeout(() => start(slot), 1_000);
     }
   }
-  child.on("error", () => {
+  child.on("error", (error) => {
+    try {
+      const codes = ["ENOENT", "EACCES", "ENOMEM", "E2BIG", "EMFILE", "ENFILE"];
+      console.error(JSON.stringify({ event: "runtime.process_error", component: slot.name === "Codex" ? "codex-wrapper" : "workspace-node", code: codes.includes(error?.code) ? error.code : "OTHER" }));
+    } catch {
+      // A diagnostic failure cannot change the existing start-error recovery.
+    }
     console.error(slot.name + " failed to start.");
     finish();
   });
-  child.on("exit", () => {
+  child.on("exit", (code, signal) => {
+    try {
+      const signals = ["SIGINT", "SIGTERM", "SIGKILL", "SIGSEGV", "SIGABRT", "SIGHUP", "SIGBUS", "SIGPIPE"];
+      let observedSignal = null;
+      if (signal !== null) {
+        observedSignal = signals.includes(signal) ? signal : "OTHER";
+      }
+      console.error(JSON.stringify({
+        event: "runtime.process_exit",
+        component: slot.name === "Codex" ? "codex-wrapper" : "workspace-node",
+        exitCode: Number.isInteger(code) && code >= 0 && code <= 255 ? code : null,
+        signal: observedSignal,
+        stopping,
+      }));
+    } catch {
+      // Reporting must not change the existing group retirement or restart schedule.
+    }
     // The Codex wrapper may exit after plugin failure while its app-server is
     // still shutting down. Retire that group before starting another wrapper.
     killGroup(child, "SIGKILL");

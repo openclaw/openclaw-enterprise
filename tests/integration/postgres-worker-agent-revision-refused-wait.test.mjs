@@ -449,9 +449,13 @@ test(
     stop.succeed();
     await assertWorkEnds(fixture, replacement, "succeeded", "REVISION_SUPERSEDED", due);
     assert.ok(!driver.running.has(replacement.id), "the refused candidate was stopped");
+    // The refused stop counts as the superseded version's own stop (finding 3075), which it
+    // does not repeat, and the newer sweep skips it within the lease.
+    assert.equal(driver.count(replacement), 1);
     // Its sweep retried on the queue's growing backoff while the stop failed. Each failed sweep
     // spent an attempt, so its retry is made due only now that the stop succeeds.
     await waitForWorkStateDue(fixture, newer, "succeeded");
+    assert.equal(driver.count(replacement), 1);
   },
 );
 

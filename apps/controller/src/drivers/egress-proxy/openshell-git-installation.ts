@@ -92,6 +92,13 @@ interface OpenShellGitObservationOptions {
   };
   readonly verifyFence: () => Promise<void>;
   readonly reportEnvironmentLag: () => void;
+  readonly reportExecutionChange?: (
+    observation: Readonly<{
+      restartCount: number | undefined;
+      neverRestartPolicy: boolean;
+      sandboxIdChanged: boolean;
+    }>,
+  ) => void;
 }
 
 // A supervisor installs a moved provider environment on its next settings poll, seconds later.
@@ -290,6 +297,7 @@ export async function observeOpenShellGitInstallation(
     configuration,
     verifyFence,
     reportEnvironmentLag,
+    reportExecutionChange,
   }: OpenShellGitObservationOptions,
 ): Promise<OpenShellPreparedGitInstalled | undefined> {
   await readOpenShellGitEvidence(
@@ -332,6 +340,18 @@ export async function observeOpenShellGitInstallation(
     ) ||
     (entry.sandboxId && entry.sandboxId !== sandbox.id)
   ) {
+    try {
+      const count = sandbox.restartCount ?? 0;
+      reportExecutionChange?.({
+        restartCount: Number.isSafeInteger(count) && count >= 0 ? count : undefined,
+        neverRestartPolicy: [1, "SANDBOX_RESTART_POLICY_NEVER"].includes(
+          sandbox.spec?.restart_policy as string | number,
+        ),
+        sandboxIdChanged: Boolean(entry.sandboxId && entry.sandboxId !== sandbox.id),
+      });
+    } catch {
+      // Diagnostics cannot alter the original continuity refusal.
+    }
     throw new OpenShellGitRouteError("execution_replaced", "OpenShell Git execution was replaced.");
   }
   entry.sandboxId = sandbox.id;

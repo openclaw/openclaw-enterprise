@@ -113,6 +113,15 @@ and set a reachable resolver for a fresh start. That recovery changes only the
 owned node's resolver. If startup rolls the cluster back, wait until that
 command exits before starting again.
 
+## Local Agent Sandbox controller image pull fails
+
+Inspect controller Pod events in `agent-sandbox-system` with the
+[startup kubeconfig and context](#local-startup-stalls-on-cert-manager).
+`ImagePullBackOff` with resets from `cdn.registry.k8s.io` indicates failed image
+delivery. Verify node access to registry and redirected blob hosts. Local manifest
+overrides do not preload images. Use a [verified image cache](../deploy/local-openshell-images.md#preload-the-agent-sandbox-controller-from-a-verified-cache),
+or restore registry connectivity. Preserve image versions and TLS verification.
+
 ## Local Codex sandbox check fails
 
 Kubernetes Compute startup with `OCC_DEVELOPMENT_SANDBOX_DRIVER=none` verifies the

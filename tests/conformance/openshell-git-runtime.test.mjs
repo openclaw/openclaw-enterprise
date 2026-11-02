@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import {
@@ -611,6 +611,54 @@ test("the Git route tombstone stays for a replaced execution, an unknown write a
   f.sandbox.restartCount = 1;
   await f.reconcile();
   await expectBlocked(f, "execution_replaced");
+  assert.deepEqual(
+    f.events
+      .filter((e) => e.event === "worker.openshell-git-continuity-refused")
+      .map(({ check, result }) => ({ check, result })),
+    [
+      { check: "sandbox-restart-count", result: 1 },
+      { check: "sandbox-restart-policy-never", result: true },
+      { check: "sandbox-id-changed", result: false },
+    ],
+  );
+  // A failed diagnostic sink must leave the same terminal refusal and deny further use.
+  f = fixture({
+    onEvent(event) {
+      if (event.event === "worker.openshell-git-continuity-refused") {
+        throw new Error("sentinel-private-diagnostic-sink");
+      }
+    },
+  });
+  await f.reconcile();
+  f.sandbox.restartCount = 1;
+  await f.reconcile();
+  await expectBlocked(f, "execution_replaced");
+  assert.equal(JSON.stringify(f.events).includes("sentinel-private-diagnostic-sink"), false);
+  for (const [change, expected] of [
+    [
+      (sandbox) => {
+        sandbox.spec.restart_policy = "SANDBOX_RESTART_POLICY_ON_FAILURE";
+      },
+      [0, false, false],
+    ],
+    [
+      (sandbox) => {
+        sandbox.id = "replacement-sandbox";
+      },
+      [0, true, true],
+    ],
+  ]) {
+    f = await reconciledFixture();
+    change(f.sandbox);
+    await f.reconcile();
+    await expectBlocked(f, "execution_replaced");
+    assert.deepEqual(
+      f.events
+        .filter((e) => e.event === "worker.openshell-git-continuity-refused")
+        .map((e) => e.result),
+      expected,
+    );
+  }
 
   for (const supervisorChange of [
     // A new session with a different process or network instance.
@@ -2222,7 +2270,12 @@ const legacyRegistrationBytes = Buffer.from(
   "hex",
 );
 
-async function observedGitRoute(mandatoryPolicy, legacy = false, removeBinding = false) {
+async function observedGitRoute(
+  mandatoryPolicy,
+  legacy = false,
+  removeBinding = false,
+  changedStartup = false,
+) {
   const previewRegistry = validateGitHubRepositoryRegistry(
     {
       version: 1,
@@ -2434,6 +2487,35 @@ async function observedGitRoute(mandatoryPolicy, legacy = false, removeBinding =
     ),
   });
   assert.equal(await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe), "held");
+  if (changedStartup) {
+    const replacementStartup = randomUUID();
+    const before = { material: f.calls.material, rotate: f.calls.rotate };
+    await f.runtime.observeHeldPreview(revision.id, replacementStartup, signal, () => {
+      assert.fail("a changed startup must not replay the one-use challenge");
+    });
+    assert.deepEqual(f.runtime.route(revision.id), {
+      state: "blocked",
+      reason: "execution_replaced",
+    });
+    assert.deepEqual({ material: f.calls.material, rotate: f.calls.rotate }, before);
+    const checks = f.events.filter((e) => e.event === "worker.openshell-git-continuity-refused");
+    assert.deepEqual(
+      checks.map(({ check, keyHash }) => ({ check, keyHash })),
+      [
+        {
+          check: "held-startup-recorded",
+          keyHash: createHash("sha256").update(startupId).digest("hex"),
+        },
+        {
+          check: "held-startup-observed",
+          keyHash: createHash("sha256").update(replacementStartup).digest("hex"),
+        },
+      ],
+    );
+    assert.equal(JSON.stringify(checks).includes(startupId), false);
+    assert.equal(JSON.stringify(checks).includes(replacementStartup), false);
+    return;
+  }
   if (removeBinding) {
     // Losing explicit mandatory fields after qualification changes the recipient fingerprint.
     // Observed-only mode must not reinterpret this established recipient as a legacy one.
@@ -2556,5 +2638,6 @@ for (const policy of [undefined, 2, 3]) {
     }
     await observedGitRoute(policy);
     await observedGitRoute(policy, false, true);
+    await observedGitRoute(policy, false, false, true);
   });
 }

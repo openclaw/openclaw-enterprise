@@ -193,18 +193,19 @@ Keep the App key there and retain the existing approval scope. The development
 
 ## Token Service lifecycle
 
-The worker signs a short-lived JSON Web Token (JWT) with the App key. For
-repository-scoped Git, it requests the numeric repository ID and approved
-permissions from GitHub. It verifies the returned scope and expiry, encrypts
-the token and commits it to PostgreSQL. Renewal and retirement belong to the
-worker. Renewal cannot extend the session.
+The worker signs an App JSON Web Token (JWT), requests approved repository IDs
+and permissions, verifies scope and expiry, and saves the encrypted token in
+PostgreSQL. It owns renewal and retirement; renewal cannot extend the session.
+See [token preparation and withdrawal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token).
+Protected metadata reads use `metadata: read`; OCC separately authorizes the
+sender's exact GET.
 
-For a protected metadata read, the worker prepares the repository's
-`metadata: read` grant. OCC must separately authorize the sender's exact GET.
-See [token preparation, expiry and withdrawal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token).
-If the worker reports `PREPARED_GITHUB_RECOVERY_REQUIRED` (`quarantined` or
-`blocked`), [recover on the issuing owner](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
-An uncertain issuance blocks automatic minting.
+`PREPARED_GITHUB_RECOVERY_REQUIRED` (`quarantined` or `blocked`) stops automatic
+minting. [Recover on the issuing owner](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key),
+preserving the original attempt and custody. Preserve its original bound:
+72 minutes after starting, or known provider expiry plus clock skew, whichever
+is later. A GET does not settle it. Never replay, reset custody, or
+change profiles, families or clusters to bypass recovery.
 
 ## Sessions and closure
 

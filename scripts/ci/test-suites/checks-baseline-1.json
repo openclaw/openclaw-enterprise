@@ -12,6 +12,8 @@
     "tests/integration/route-header-names.test.ts",
     "tests/integration/list-summaries.test.mjs",
     "tests/conformance/plugin-compute.test.mjs",
+    "tests/conformance/protected-codex-artifact-policy.test.ts",
+    "tests/integration/openshell-quickstart-policy.test.ts",
     "tests/conformance/codex-native-startup.test.mjs",
     "tests/conformance/occ-api-security.test.mjs",
     "tests/integration/configuration-startup.test.mjs",
@@ -472,6 +474,12 @@
       "path": "tests/conformance/plugin-compute.test.mjs"
     },
     {
+      "path": "tests/conformance/protected-codex-artifact-policy.test.ts"
+    },
+    {
+      "path": "tests/integration/openshell-quickstart-policy.test.ts"
+    },
+    {
       "path": "tests/conformance/codex-native-startup.test.mjs"
     },
     {
@@ -514,7 +522,8 @@
         "credential exchange cuts a cached stream lease after provider replacement",
         "an unbound source update keeps its admitted provider when same-type providers reorder",
         "a source update withholds resolved material after its provider or injector changes",
-        "live static registration does not require Gateway placement",
+        "live static registration does not require Compute placement",
+        "live static source validation does not consult backend Gateway placement",
         "live static registration losing to DELETE preserves its deleting row without Gateway cleanup"
       ]
     },

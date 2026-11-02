@@ -56,6 +56,8 @@ export interface ConsolePageContext extends Pick<Navigation, "navigate" | "pageU
   setWriteInFlight(check: () => boolean): void;
   /** The Namespace permission answer's secrets.create; undefined when it is unknown. */
   secretsCreateAllowed?(): Promise<boolean | undefined>;
+  /** The Namespace permission answer's agents.create; undefined when it is unknown. */
+  agentsCreateAllowed?(): Promise<boolean | undefined>;
   /** Run after an Agent detail page that loaded behind a stand-in is visible. */
   revealed?(then?: () => void): void;
 }

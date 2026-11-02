@@ -880,8 +880,7 @@ test("runtime credential driver and audit failures stay sanitized and recoverabl
   const failed = await driverFailureFixture.request("POST", failedPath, {
     body: {},
   });
-  assert.equal(failed.status, 503);
-  assert.equal(failed.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assertApiError(failed, 503, "DEPENDENCY_UNAVAILABLE");
   assert.equal(JSON.stringify(failed.body).includes(leakedDriverValue), false);
   assert.equal(
     JSON.stringify(driverFailureFixture.auditSink.events).includes(leakedDriverValue),
@@ -907,8 +906,7 @@ test("runtime credential driver and audit failures stay sanitized and recoverabl
   const auditFailed = await auditFailureFixture.request("POST", auditPath, {
     body: {},
   });
-  assert.equal(auditFailed.status, 503);
-  assert.equal(auditFailed.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assertApiError(auditFailed, 503, "DEPENDENCY_UNAVAILABLE");
   assert.equal(JSON.stringify(auditFailed.body).includes(leakedAuditValue), false);
   assert.equal(
     JSON.stringify(auditFailureFixture.auditSink.events).includes(leakedAuditValue),
@@ -1002,8 +1000,7 @@ for (const [name, diagnostics] of [
       "POST",
       `${agentPath}/deployments/${revision.data.id}/diagnostics`,
     );
-    assert.equal(result.status, 503);
-    assert.equal(result.body.error.code, "DEPENDENCY_UNAVAILABLE");
+    assertApiError(result, 503, "DEPENDENCY_UNAVAILABLE");
     assert.equal(JSON.stringify(result.body).includes(marker), false);
     assert.equal(JSON.stringify(fixture.auditSink.events).includes(marker), false);
   });
@@ -1063,8 +1060,7 @@ test("deployment diagnostics reject invalid Driver evidence", async () => {
   ]) {
     diagnosticOptions.diagnosticsResult = diagnosticsResult;
     const result = await fixture.request("POST", path);
-    assert.equal(result.status, 503, name);
-    assert.equal(result.body.error.code, "DEPENDENCY_UNAVAILABLE", name);
+    assertApiError(result, 503, "DEPENDENCY_UNAVAILABLE", name);
     assert.equal(JSON.stringify(result.body).includes("private token value"), false, name);
   }
 });

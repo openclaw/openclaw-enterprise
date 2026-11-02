@@ -1,7 +1,11 @@
 import type { Clock } from "../../credentials/backend-contracts.ts";
 import type { GitHubKeyOwner } from "./types.ts";
 import type { GitHubPreparationAdmission, GitHubPreparationStore } from "./prepared-contracts.ts";
-import { createTokenPreparation } from "../../../../backends/token-service/preparation.ts";
+import {
+  createTokenPreparation,
+  type TokenPreparationObservation,
+} from "../../../../backends/token-service/preparation.ts";
+import type { GitHubPreparationDiagnostic, ProviderObservation } from "./provider-diagnostics.ts";
 import {
   parseInstallationTokenResponse,
   validateInstallationTokenResponse,
@@ -20,6 +24,7 @@ interface PreparationOptions {
   readonly ca?: Uint8Array;
   readonly renewBeforeMs: number;
   readonly minimumValidityMs: number;
+  readonly observe?: (diagnostic: GitHubPreparationDiagnostic) => void;
 }
 
 /**
@@ -44,13 +49,31 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
             permissions: permissionsForProfile(grant.profile),
           };
 
-  return createTokenPreparation({
+  type Observation = Omit<TokenPreparationObservation, "attemptId"> | ProviderObservation;
+  type Snapshot = Partial<Omit<GitHubPreparationDiagnostic, "attemptId" | "outcome">>;
+  const snapshots = new Map<string, Snapshot>();
+  const observe = (attemptId: string, observation: Observation) => {
+    const snapshot = snapshots.get(attemptId);
+    if (!snapshot) {
+      return;
+    }
+    const { error, ...fields } = observation;
+    Object.assign(snapshot, fields);
+    if (observation.stage === "request-end-called") {
+      Object.assign(snapshot, { requestEndCalled: true });
+    }
+    if (error && snapshot.firstFailureStage === undefined) {
+      Object.assign(snapshot, { firstFailureStage: observation.stage, error });
+    }
+  };
+  const preparation = createTokenPreparation({
     admission,
     store,
     clock,
     renewBeforeMs,
     minimumValidityMs,
-    async issue({ bounds, assertIssuing, capture, refused }) {
+    observe: ({ attemptId, ...observation }) => observe(attemptId, observation),
+    async issue({ attemptId, bounds, assertIssuing, capture, refused }) {
       let verified: { providerExpiresAt: number; usableUntil: number } | undefined;
       const key = await getKey(structuredClone(admission));
       const assertAdmitted = () => {
@@ -87,6 +110,13 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
                 minimumValidityMs,
               },
             );
+            observe(attemptId, {
+              stage: "validation",
+              candidateIdentified: candidate !== undefined,
+              validationKind: result.kind,
+              ...("code" in result ? { validationCode: result.code } : {}),
+              ...(result.kind !== "validated" ? { error: "validation-failed" } : {}),
+            });
             if (result.kind === "validated") {
               verified = result;
             } else if (
@@ -99,12 +129,38 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
               refused();
             }
           },
+          (observation) => observe(attemptId, observation),
         );
         response.body.fill(0);
         assertCurrent();
         assertAdmitted();
       });
       return verified;
+    },
+  });
+  return Object.freeze({
+    async run(attemptId: string, bounds: Parameters<typeof preparation.run>[1]) {
+      const snapshot: Snapshot = { stage: "intent", requestEndCalled: false };
+      snapshots.set(attemptId, snapshot);
+      try {
+        const outcome = await preparation.run(attemptId, bounds);
+        try {
+          // Readiness/blocked checks have no new durable attempt to diagnose.
+          if (snapshot.stage !== "intent" || snapshot.error !== undefined) {
+            options.observe?.({
+              ...snapshot,
+              stage: snapshot.stage ?? "intent",
+              attemptId,
+              outcome,
+            });
+          }
+        } catch {
+          // Logging failures cannot alter the original result or token custody.
+        }
+        return outcome;
+      } finally {
+        snapshots.delete(attemptId);
+      }
     },
   });
 }

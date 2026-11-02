@@ -8,6 +8,7 @@
     "tests/integration/runtime-image-model-probe.test.mjs",
     "tests/integration/runtime-image-native-worker.test.mjs",
     "tests/integration/runtime-image-node-state-permissions.test.ts",
+    "tests/integration/runtime-image-node-state-lock.test.ts",
     "tests/integration/runtime-image-state-migration.test.mjs",
     "tests/integration/runtime-image-native-listener.test.mjs",
     "tests/integration/runtime-image-codex-local-plugins.test.ts"
@@ -34,6 +35,13 @@
       "path": "tests/integration/runtime-image-node-state-permissions.test.ts",
       "expectedTests": [
         "runtime image initializes and restarts private node state below a setgid parent"
+      ]
+    },
+    {
+      "path": "tests/integration/runtime-image-node-state-lock.test.ts",
+      "expectedTests": [
+        "a Harness Pod stopped during native setup leaves the node state to the next Pod",
+        "a Harness Pod whose native setup still holds the node state keeps the next Pod out"
       ]
     },
     {

@@ -33,6 +33,7 @@ import {
   waitForCondition,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
+import { responseTo } from "./console-action-helpers.mjs";
 import {
   expectCreateAccess,
   expectCreateRefused,
@@ -156,10 +157,10 @@ test("a member with Agent create completes the default Preset path without Insta
   // Create is enabled with no unexplained refusal, and the real API creates the Agent.
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   assert.equal(await submit.isEnabled(), true);
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
+  const createdResponse = responseTo(
+    page,
+    "POST",
+    `${fixture.origin}/namespaces/${namespace.id}/agents`,
   );
   await submit.click();
   const response = await createdResponse;
@@ -610,10 +611,10 @@ test("a member's refused Configuration create and empty Secret list name the acc
     noConfiguration.credentials,
   );
   await fillDefaultPreset(page, secret, "Member Agent");
-  const configurationCreated = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/configurations` &&
-      response.request().method() === "POST",
+  const configurationCreated = responseTo(
+    page,
+    "POST",
+    `${fixture.origin}/namespaces/${namespace.id}/configurations`,
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   assert.equal((await configurationCreated).status(), 403);
@@ -912,10 +913,10 @@ test("a refused Create reads the Secret answer again", async (t) => {
   // Configuration create and operate on the chosen key are revoked after it is staged.
   revokeMemberGrant(fixture, "member-operate-some", ["create", "configuration"]);
   operate.revoke(secret.id);
-  const refused = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/configurations` &&
-      response.request().method() === "POST",
+  const refused = responseTo(
+    page,
+    "POST",
+    `${fixture.origin}/namespaces/${namespace.id}/configurations`,
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   assert.equal((await refused).status(), 403);
@@ -1056,10 +1057,10 @@ test("a member whose Secret operate covers only some Secrets cannot save a typed
   await botToken.press("Escape");
   await dialog.getByRole("button", { name: "Cancel" }).click();
   // The retry reads the answer again, saves the key as a Secret, and Agent create binds it.
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
+  const createdResponse = responseTo(
+    page,
+    "POST",
+    `${fixture.origin}/namespaces/${namespace.id}/agents`,
   );
   await waitForEnabled(submit);
   await submit.click();

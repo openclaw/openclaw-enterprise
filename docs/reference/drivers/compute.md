@@ -215,11 +215,12 @@ sequenceDiagram
 The diagram shows ordinary production deployment. The worker checks the selected
 Compute identity and current credential references before calling the Driver.
 Activation must be safe to repeat. A failed activation after selection resumes
-at finalization. One [protected Git startup mode](../repository-credentials/protected-openshell-git.md)
-has a separate selection step. With version 6 `request-hook-observed`, Compute
-can report `heldForRepositoryGitMaterial` and `REPOSITORY_GIT_ROUTE_PENDING`
-without a runtime failure. The worker can then record the selection while
-preparation is pending. Activation, retirement, and completion still wait for readiness.
+at finalization. In [protected Git startup](../repository-credentials/protected-openshell-git.md),
+both version 5 `online-request` and version 6 `request-hook-observed` support
+selection before readiness. When Compute reports `heldForRepositoryGitMaterial`
+and `REPOSITORY_GIT_ROUTE_PENDING` without a runtime failure, the worker can
+record the selection. The original work stays queued until that revision is ready;
+only then does the worker activate it, retire its predecessor, and complete the work.
 
 Exclusive replacement closes earlier credential sessions and stops each earlier
 revision, including failed candidates, before preparation. A failed stop blocks

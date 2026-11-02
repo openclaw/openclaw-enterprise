@@ -105,13 +105,16 @@ Use the Markdown frontmatter field `kind` to select a template from the
 [documentation taxonomy](../../../docs/taxonomy.md). Copy the template for a new
 page. When updating an existing page, preserve its links and heading anchors.
 
-| Kind | Use it for | Template |
-| --- | --- | --- |
-| `reference/driver` | The shared contract for one Driver capability | [Driver contract Markdown](./assets/reference-driver.md) |
+| Kind                    | Use it for                                                                    | Template                                                            |
+| ----------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `reference/driver`      | The shared contract for one Driver capability                                 | [Driver contract Markdown](./assets/reference-driver.md)            |
+| `reference/driver/impl` | One Driver implementation's provisioning, configuration, and operating limits | [Driver implementation Markdown](./assets/reference-driver-impl.md) |
 
-For a Driver contract, keep the template's eight sections in order and use the
+For a Driver contract, keep the template's sections in order and use the
 [Driver authoring guidance](./references/driver-contracts.md) to check coverage.
-Put implementation setup in the linked implementation page.
+Put implementation-specific setup and settings in the linked implementation page.
+When adding a template, add its kind, selection criteria, and asset link to this
+table and the documentation taxonomy in the same change.
 
 ## Make examples usable
 

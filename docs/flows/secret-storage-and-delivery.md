@@ -101,23 +101,29 @@ its stored object was rewritten deletes it, pinned to the answered UID and
 resourceVersion. There is no value journal or automatic replay; a create still in
 flight can require operator recovery.
 
+Secret create, update and delete share the 12-second Kubernetes budget of
+[Configuration writes](configuration-driver/persistence-and-revisions.md). A Kubernetes
+write is sent only with at least 2 seconds of it left; otherwise the request fails with
+`503` and the write is not sent. A create that was sent and failed is cleaned up after
+the budget; a create that was not sent stored nothing and gets no cleanup read.
+
 `apps/controller/src/drivers/secret/aws-secrets-manager/index.ts:AwsSecretsManagerSecretDriver.create`
 
 The AWS selection captures credentials and qualifies their account with STS before
-sending material to the pinned regional HTTPS endpoint. Both calls use the same
-captured signing identity. Credential acquisition rejects on cancellation or deadline
-without waiting for the provider; late credentials cannot advance to STS or creation.
-After ownership checks, update and delete also resolve and validate signing credentials
-before entering the mutation boundary. Each mutation uses a fixed credential snapshot
+sending material to the pinned regional HTTPS endpoint. Both calls use the same signing
+identity. Credential acquisition rejects on cancellation or deadline without
+awaiting the provider; late credentials cannot advance to STS or creation.
+After ownership checks, update and delete resolve and validate signing credentials
+before mutation. Each mutation uses a fixed credential snapshot
 and a pinned regional client, so provider refresh cannot fail inside the mutating send.
-Provider, STS, and read-only failures report that no mutation was submitted. Once a
+Provider, STS, and read-only failures report no submitted mutation. Once a
 mutation is submitted, failures through response and post-create ownership/version
-verification require reconciliation, with no returned reference or automatic cleanup.
-The resource name and creation token derive from the
+verification require reconciliation, without returning a reference.
+Resource names and creation tokens derive from the
 OCC Secret ID; unknown effects are not automatically replayed. A separate HTTP
-create request generates a new ID and still requires operator reconciliation
-after an unknown outcome. The Driver stores tagged material under a Namespace-specific prefix and
-returns an encoded complete-ARN binding that fits OCC's existing reference format.
+create request generates a new ID; unknown outcomes still require operator
+reconciliation. The Driver stores tagged material under a Namespace-specific
+prefix and returns an encoded complete-ARN binding in OCC's reference format.
 `owned` verifies that binding and live tags before operations. Updates use
 `PutSecretValue`; trusted reads use an exact VersionId with `AWSCURRENT` and
 recheck ownership/version before returning. Deletion schedules 30-day recovery.
@@ -336,6 +342,10 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-01: A Secret create refused as not sent runs no cleanup read and keeps its `503`. (fix-3108, finding 3108)
+
+- 2026-11-01 08:10: Secret create, update and delete send no Kubernetes call after the 12-second write budget. (fix-3106b, finding 3106)
 
 - 2026-10-29 23:30: Resolve and validate signing credentials before every AWS mutation. (authoring-run/9757ef0b-8f07-4e22-8913-5c4db71a4b97 - 07cfbf06dbb0a71eaba2ebc09785de0db3bbc0d9)
 

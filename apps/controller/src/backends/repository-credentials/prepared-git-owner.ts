@@ -64,8 +64,10 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
       | "PREPARED_GITHUB_RECOVERY_REQUIRED"
       | "PREPARED_GITHUB_MAINTENANCE_FAILED"
       | "PREPARED_GITHUB_APP_KEY_INVALID"
+      | "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC"
       | "PREPARED_GITHUB_RETIRED_UNREVOKED",
-    context?: Readonly<Record<string, string>>,
+    context?: Readonly<Record<string, string | number | boolean | undefined>>,
+    severity?: "info" | "error",
   ) => void;
   startWorker?: boolean;
   /** The installation-selected Sandbox and Credential Proxy, not the repository issuer or a request field. */
@@ -385,6 +387,16 @@ export async function startPreparedGitHubGitOwner(
             ...(ca ? { ca } : {}),
             renewBeforeMs: 600_000,
             minimumValidityMs: 60_000,
+            observe: ({ error, ...diagnostic }) =>
+              options.report?.(
+                "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
+                {
+                  ...diagnostic,
+                  ...(error ? { errorClass: error } : {}),
+                  revisionId: source.session.revisionId,
+                },
+                "info",
+              ),
           });
           const outcome = await run(owner);
           if (outcome === "quarantined" || outcome === "blocked") {
