@@ -63,4 +63,4 @@ Use ordinary `git clone`, `git fetch` and `git push` to the approved ref. With a
 profile can also use `gh api` for permitted REST routes; it does not establish production GitHub
 App behavior.
 
-For Agent setup, use the [team runbook](../../guides/repository-credentials/team-runbook.md).
+For Agent setup, use the [repository access guide](../../guides/repository-credentials.md#create-and-deploy-an-agent).

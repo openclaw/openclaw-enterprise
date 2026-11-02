@@ -41,8 +41,9 @@ Check these before qualifying a protected release; each one can stop Git or the 
 <a id="install-without-the-repository-broker"></a>
 
 Select Kubernetes Compute, dedicated Codex, and Sandbox and Credential Proxy
-from the same Driver registration. Use the
-[OpenShell Installation fragment](../../../deploy/examples/repository-credentials/openshell.fragment.yaml).
+from one Driver registration. Use
+[Installation configuration](../../../deploy/examples/repository-credentials/openshell.fragment.yaml);
+declare [artifact rules](../drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 Keep `repository.preparedGitHub`, `repository.openShell`, the session duration,
 and the GitHub Backend registry at `/etc/openclaw/repository-registry/registry.json`.
 Omit `controlSocket`, `publicCaPath`, and `repository.nativeSender`. Remove
@@ -166,18 +167,18 @@ Retain HTTPS, hostname verification and authenticated Gateway JWTs; do not enabl
 
 ## Grant access to a GitHub App installation
 
-Use [GitHub App setup](../../guides/repository-credentials/team-runbook.md#register-and-install-the-github-app)
-for permissions and the
+Use the [GitHub App installation guide](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app)
+for membership and permissions, and the
 [registry reference](../repository-credentials.md#canonical-platform-registry)
 for policy. Prefer repository scope. To expose an
 installation scope, set a distinct `installationAccess.repositoryRef`, allow the
 Namespace with `accessMode: installation`, and select that reference with
 `profile: github-installation` in the Agent's `repositoryBindings`, as its only
 binding (Agent save and deploy refuse it next to another). No default or wildcard selects this scope; the sender must confirm
-`github_installation` support. With the bundled OpenShell Credential Proxy, that
-needs its `observedHookPreviewWorkspace` setting: without it, deploy answers
-`409 RESOURCE_CONFLICT`. Missing or incompatible gateway registration returns
-`503 DEPENDENCY_UNAVAILABLE`.
+`github_installation` support. The bundled OpenShell Credential Proxy requires
+`observedHookPreviewWorkspace`; otherwise deploy answers
+`409 RESOURCE_CONFLICT`. Missing or incompatible registration returns
+`503 DEPENDENCY_UNAVAILABLE`. Use 0.1.6 for incident key distrust; 0.1.5 remains affected.
 
 Repository grants require authenticated `allowlist`/`exact` with only `pre_credentials`.
 Opted-in installation preview also accepts both binding fields absent; partial,

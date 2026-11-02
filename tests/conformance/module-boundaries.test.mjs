@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire, stripTypeScriptTypes } from "node:module";
-import { availableParallelism, tmpdir } from "node:os";
+import { availableParallelism } from "node:os";
 import { dirname, join, relative, win32 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -101,8 +101,7 @@ const noPrivate = (sources, extra = {}) => ({
 });
 
 async function workspace(t, overrides = {}) {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "module-boundaries-")));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await realpath(await temporaryDirectory(t, "module-boundaries-"));
   await cp(fixture, root, { recursive: true });
   const config = { ...policy, ...overrides };
   const write = async (path, content) => {

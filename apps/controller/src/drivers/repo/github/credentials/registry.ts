@@ -324,6 +324,19 @@ export function validateGitHubRepositoryRegistry(
   });
 }
 
+function repositoryTransportPermissions(
+  transport: GitHubRepositoryRegistration["namespaces"][number]["transport"],
+  profile: GitHubProfile,
+): Readonly<Record<string, string>> {
+  if (transport === "git-only") {
+    return permissionsForProfile("git-ref-write");
+  }
+  if (transport === "git-and-draft-pr") {
+    return permissionsForProfile("git-ref-draft-pr");
+  }
+  return permissionsForProfile(profile);
+}
+
 /** Changing how the sender may use an installation credential changes the grant and its approval. */
 const installationGrantPolicy = Object.freeze({
   repositorySelection: "installation",
@@ -415,13 +428,7 @@ export function resolveGitHubRepositoryBinding(
         permissions:
           selectedProfile === "github-repository"
             ? policy.permissions
-            : permissionsForProfile(
-                policy.transport === "git-only"
-                  ? "git-ref-write"
-                  : policy.transport === "git-and-draft-pr"
-                    ? "git-ref-draft-pr"
-                    : selectedProfile,
-              ),
+            : repositoryTransportPermissions(policy.transport, selectedProfile),
         capabilityPolicy:
           policy.transport === "git-only"
             ? gitOnlyCapabilityPolicy
@@ -516,12 +523,9 @@ function standingApprovalScope(
     pullRequestBase: policy.pullRequestBase ?? null,
     draftPullLimit:
       policy.transport === "git-and-draft-pr" ? (policy.draftPullLimit ?? "one-per-grant") : null,
-    apiPermissions: permissionsForProfile(
-      policy.transport === "git-only"
-        ? "git-ref-write"
-        : policy.transport === "git-and-draft-pr"
-          ? "git-ref-draft-pr"
-          : (input.binding.profile as GitHubProfile),
+    apiPermissions: repositoryTransportPermissions(
+      policy.transport,
+      input.binding.profile as GitHubProfile,
     ),
     maximumSessionDurationSeconds: registry.maximumDurationSeconds,
     installationPolicyAllowsStanding: true,
@@ -603,13 +607,30 @@ export function createGitHubRepositoryDeliveryResolver(
   };
 }
 
-/** Resolve every admitted member; neither registry inventory nor installation membership grants access. */
 export function resolveSelectedRepositoryGrant(
   registry: GitHubRepositoryRegistry,
   namespaceId: string,
   revisionId: string,
   bindings: readonly AdmittedRepositoryBinding[],
 ): GitHubRepositoryGrant {
+  const scope = resolveSelectedRepositoryScope(registry, namespaceId, bindings);
+  return Object.freeze({
+    id: bindings[0]!.grant.grantId,
+    isolationId: revisionId,
+    appId: registry.appId,
+    installationId: registry.githubInstallationId,
+    profile: "github-repository",
+    repositories: scope.repositories,
+    permissions: scope.permissions,
+  });
+}
+
+/** Resolve every admitted member; neither registry inventory nor installation membership grants access. */
+export function resolveSelectedRepositoryScope(
+  registry: GitHubRepositoryRegistry,
+  namespaceId: string,
+  bindings: readonly AdmittedRepositoryBinding[],
+): Pick<GitHubRepositoryGrant, "repositories" | "permissions"> {
   if (
     !bindings.length ||
     bindings.length > 16 ||
@@ -646,11 +667,6 @@ export function resolveSelectedRepositoryGrant(
     })
     .sort((a, b) => Number(a.repositoryId) - Number(b.repositoryId));
   return Object.freeze({
-    id: bindings[0]!.grant.grantId,
-    isolationId: revisionId,
-    appId: registry.appId,
-    installationId: registry.githubInstallationId,
-    profile: "github-repository",
     repositories: Object.freeze(repositories),
     permissions: permissions!,
   });

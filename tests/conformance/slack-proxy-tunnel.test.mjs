@@ -8,24 +8,14 @@ import { createSlackProxyServer } from "../../apps/controller/src/slack-proxy.mj
 import { refusingPort } from "../helpers/available-port.mjs";
 import { listen as listenServer } from "../helpers/listen.mjs";
 import { connectThroughProxy, startSlackProxy } from "../helpers/slack-proxy.mjs";
+import { within } from "../helpers/wait-for.mjs";
 
 // The bundled Slack proxy (apps/controller/src/slack-proxy.mjs) relays CONNECT tunnels only.
 // These tests drive the real proxy process against loopback upstreams: startSlackProxy
 // redirects its slack.com:443 connections to a local port, so nothing leaves the host.
-
-// Bounds every wait, so a proxy that stops relaying fails the test instead of hanging it.
-const WAIT_MS = 10_000;
+// Every wait is bounded (within's 10 s default), so a proxy that stops relaying fails the
+// test instead of hanging it.
 const testOptions = { timeout: 60_000 };
-
-function bound(promise, what, ms = WAIT_MS) {
-  let timer;
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`${what} within ${ms} ms`)), ms);
-    }),
-  ]).finally(() => clearTimeout(timer));
-}
 
 async function listen(t, onConnection, options = {}) {
   const server = net.createServer(options, onConnection);
@@ -56,11 +46,11 @@ async function openTunnel(t, proxyPort, target, early = Buffer.alloc(0)) {
   socket.on("error", () => {});
   t.after(() => socket.destroy());
   const received = record(socket);
-  await bound(new Promise((resolve) => socket.once("connect", resolve)), "proxy connect");
+  await within(new Promise((resolve) => socket.once("connect", resolve)), "proxy connect");
   socket.write(
     Buffer.concat([Buffer.from(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`), early]),
   );
-  const headEnd = await bound(
+  const headEnd = await within(
     new Promise((resolve, reject) => {
       const check = () => {
         const index = received.bytes().indexOf("\r\n\r\n");
@@ -113,13 +103,13 @@ test("a CONNECT tunnel relays bytes both ways and both ends see EOF", testOption
   assert.match(tunnel.head, established);
   tunnel.socket.end(payload);
 
-  await bound(tunnel.ended, "client EOF");
+  await within(tunnel.ended, "client EOF");
   assert.equal(upstreamSeen.length, 1);
-  await bound(upstreamSeen[0].ended, "upstream EOF");
+  await within(upstreamSeen[0].ended, "upstream EOF");
   assert.ok(upstreamSeen[0].bytes().equals(sent), "the upstream received every byte in order");
   assert.ok(tunnel.body().equals(sent), "the client received every echoed byte in order");
-  await bound(tunnel.closed, "client close");
-  await bound(upstreamSeen[0].closed, "upstream close");
+  await within(tunnel.closed, "client close");
+  await within(upstreamSeen[0].closed, "upstream close");
 });
 
 test(
@@ -140,7 +130,7 @@ test(
     tunnel.socket.pause();
     await new Promise((resolve) => setTimeout(resolve, 500));
     tunnel.socket.resume();
-    await bound(tunnel.closed, "client close");
+    await within(tunnel.closed, "client close");
     assert.equal(tunnel.body().length, reply.length, "the client received the whole reply");
     assert.ok(tunnel.body().equals(reply), "the client received the reply in order");
     assert.ok(tunnel.sawEnd(), "the client saw a clean EOF");
@@ -208,7 +198,7 @@ test(
     });
     const tunnel = heldClientTunnel(t, upstream.address().port);
 
-    await bound(
+    await within(
       new Promise((resolve) => tunnel.upstreamSocket().once("close", resolve)),
       "upstream close",
     );
@@ -228,7 +218,7 @@ test(
     assert.match(tunnel.bytes().toString("latin1"), established);
     assert.ok(body.equals(reply), "the client received the whole reply");
     tunnel.client.push(null);
-    await bound(tunnel.closed, "client close");
+    await within(tunnel.closed, "client close");
     assert.equal(tunnel.reset(), false, "a drained client gets a clean close");
   },
 );
@@ -249,7 +239,7 @@ test(
     tunnel.upstreamSocket().once("error", (error) => upstreamErrors.push(error.code));
     tunnel.upstreamSocket().once("finish", () => tunnel.client.push("late-client-byte"));
 
-    await bound(
+    await within(
       new Promise((resolve) => tunnel.upstreamSocket().once("close", resolve)),
       "upstream close",
     );
@@ -265,7 +255,7 @@ test(
     const body = tunnel.bytes().subarray(tunnel.bytes().indexOf("\r\n\r\n") + 4);
     assert.ok(body.equals(reply), "the client received the whole reply");
     tunnel.client.push(null);
-    await bound(tunnel.closed, "client close");
+    await within(tunnel.closed, "client close");
     assert.equal(tunnel.reset(), false, "a complete reply gets a clean close");
   },
 );
@@ -280,13 +270,13 @@ test(
     });
     const tunnel = heldClientTunnel(t, upstream.address().port, { clientDrainTimeoutMs: 1_000 });
 
-    await bound(
+    await within(
       new Promise((resolve) => tunnel.upstreamSocket().once("close", resolve)),
       "upstream close",
     );
     await nextTurn();
     assert.equal(tunnel.client.destroyed, false, "the client gets time to read");
-    await bound(tunnel.closed, "client close after the drain timeout");
+    await within(tunnel.closed, "client close after the drain timeout");
     assert.equal(tunnel.finished(), false, "the stuck client never got a clean EOF");
     assert.ok(tunnel.reset(), "a cut reply ends in a reset, not a clean close");
   },
@@ -301,11 +291,11 @@ test("an unreachable upstream gets 502 and the proxy keeps serving", testOptions
   const { child, port: proxyPort, stderr } = await startSlackProxy(t, { upstreamPort });
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const response = await bound(connectThroughProxy(proxyPort, "slack.com:443"), "502 response");
+    const response = await within(connectThroughProxy(proxyPort, "slack.com:443"), "502 response");
     assert.match(response, /^HTTP\/1\.1 502 Bad Gateway\r\n/);
   }
   assert.match(
-    await bound(connectThroughProxy(proxyPort, "example.com:443"), "403 response"),
+    await within(connectThroughProxy(proxyPort, "example.com:443"), "403 response"),
     /^HTTP\/1\.1 403 Forbidden\r\n/,
   );
 
@@ -338,7 +328,7 @@ test("an unreachable upstream gets 502 and the proxy keeps serving", testOptions
   await refusing.release();
   const tunnel = await openTunnel(t, proxyPort, "slack.com:443");
   assert.match(tunnel.head, established);
-  await bound(tunnel.closed, "client close");
+  await within(tunnel.closed, "client close");
   assert.equal(tunnel.body().toString(), "upstream-ready");
   assert.equal(child.exitCode, null, stderr());
 });
@@ -370,7 +360,7 @@ test(
     const errors = [];
     reset.socket.on("error", (error) => errors.push(error.code));
     reset.socket.write("ping");
-    await bound(reset.closed, "client close after the upstream reset");
+    await within(reset.closed, "client close after the upstream reset");
     // Once the tunnel is open, a failure only closes it: no status line goes into the stream.
     assert.equal(reset.body().length, 0, `unexpected bytes after the reset: ${reset.body()}`);
     // A reset, not a clean EOF, so the client cannot take a cut reply as whole.
@@ -379,7 +369,7 @@ test(
 
     const next = await openTunnel(t, proxyPort, "slack.com:443");
     assert.match(next.head, established);
-    await bound(next.closed, "second tunnel close");
+    await within(next.closed, "second tunnel close");
     assert.equal(next.body().toString(), "second-tunnel");
     assert.equal(child.exitCode, null, stderr());
   },
@@ -416,7 +406,7 @@ test("the CONNECT allowlist matches whole Slack host names on port 443", testOpt
   ]) {
     const tunnel = await openTunnel(t, proxyPort, target);
     assert.match(tunnel.head, established, target);
-    await bound(tunnel.closed, `${target} close`);
+    await within(tunnel.closed, `${target} close`);
     assert.equal(tunnel.body().toString(), "fixture-upstream", target);
   }
 
@@ -436,7 +426,7 @@ test("the CONNECT allowlist matches whole Slack host names on port 443", testOpt
     "slack.com:443x",
   ]) {
     assert.match(
-      await bound(connectThroughProxy(proxyPort, target), `${target} response`),
+      await within(connectThroughProxy(proxyPort, target), `${target} response`),
       /^HTTP\/1\.1 403 Forbidden\r\n/,
       target,
     );

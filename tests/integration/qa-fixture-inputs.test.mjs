@@ -13,6 +13,7 @@ import {
   registerQaSecret,
   redactQaError,
 } from "../helpers/qa-secrets.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test("QA Agent reads the selected Preset in its Namespace", async (t) => {
   const { createQaAgent } = await import("../helpers/qa-installation.mjs");
@@ -67,8 +68,7 @@ test("QA Agent reads the selected Preset in its Namespace", async (t) => {
 });
 
 test("QA credentials require a private regular file and reject symlink substitution", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "qa-credential-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-credential-");
   const credential = join(directory, "credential");
   await writeFile(credential, " test-only-credential\n", { mode: 0o600 });
   assert.equal(await protectedText(credential, "test credential"), "test-only-credential");
@@ -116,8 +116,7 @@ test(
   "parallel QA stages publish complete outcomes, failures and timings",
   { timeout: 30_000 },
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "qa-report-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "qa-report-");
     const output = join(directory, "matrix.json");
     const reportModule = new URL("../helpers/qa-report.mjs", import.meta.url).href;
     const secretsModule = new URL("../helpers/qa-secrets.mjs", import.meta.url).href;
@@ -321,8 +320,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
 test("hosted QA materializes only selected credentials and rejects missing selected inputs", async (t) => {
   const { spawnSync } = await import("node:child_process");
   const script = new URL("../../scripts/ci/qa-matrix-credentials.mjs", import.meta.url);
-  const directory = await mkdtemp(join(tmpdir(), "qa-hosted-inputs-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-hosted-inputs-");
   const githubEnv = join(directory, "github-env");
   const result = spawnSync(process.execPath, [script.pathname], {
     encoding: "utf8",
@@ -476,8 +474,7 @@ test("a failed image build keeps its failed step's output as redacted QA evidenc
 test("the QA command runner records a failed image build step as redacted evidence", async (t) => {
   const { runQaCommand } = await import("../helpers/qa-installation.mjs");
   const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
-  const directory = await mkdtemp(join(tmpdir(), "qa-run-evidence-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-run-evidence-");
   const artifacts = await mkdtemp(join(directory, "artifacts-"));
   registerQaSecret("registered-private-2025");
   const f = {
@@ -759,8 +756,7 @@ test("a QA Agent deployment timeout names its last status, attempt and Pods", as
     ],
   };
   // Through the real report stage, which redacts before it saves the reason.
-  const directory = await mkdtemp(join(tmpdir(), "qa-deploy-timeout-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-deploy-timeout-");
   const reportPath = join(directory, "matrix.json");
   const report = createQaReport(reportPath, {});
   const parent = { test: async (_name, _options, run) => run() };
@@ -1673,8 +1669,7 @@ test(
   async (t) => {
     const { qaSecretVariants } = await import("../helpers/qa-secrets.mjs");
     const value = "synthetic-qa-reporter-secret-2026";
-    const directory = await mkdtemp(join(tmpdir(), "qa-reporter-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "qa-reporter-");
     const secretsModule = new URL("../helpers/qa-secrets.mjs", import.meta.url).href;
     const file = join(directory, "redacted.test.mjs");
     await writeFile(
@@ -1967,8 +1962,7 @@ test("native tool evidence reads compressed rows, prompt snapshots and command e
   const { DatabaseSync } = await import("node:sqlite");
   const { zstdCompressSync } = await import("node:zlib");
   const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
-  const directory = await mkdtemp(join(tmpdir(), "oce-tool-evidence-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-tool-evidence-");
   const databasePath = join(directory, "transcript.sqlite");
   const db = new DatabaseSync(databasePath);
   db.exec(`CREATE TABLE session_nodes(session_key TEXT, current_session_id TEXT, entry_json TEXT);

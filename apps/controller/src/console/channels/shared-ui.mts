@@ -19,6 +19,7 @@ import {
   withRequestId,
 } from "../dom.mjs";
 import { renderSecretReference } from "../agents/secret-picker.mjs";
+import { pluginPolicyId } from "../environment-references.mjs";
 import { carryList, carryValue } from "../carry.mjs";
 
 export type ChannelValues = Record<string, unknown>;
@@ -180,6 +181,19 @@ function statusOf(config: unknown) {
   return { label: "Configured (enabled)", enabled: true };
 }
 
+// OpenClaw matches plugins.allow, plugins.deny and plugins.entries keys by policy ID
+// (pluginPolicyId), so ` Slack` in plugins.deny blocks the slack plugin, and the entries keyed
+// `Slack` and `slack` merge into its one entry in key order (finding 3082).
+function namesPlugin(list: unknown[], plugin: string) {
+  const id = pluginPolicyId(plugin);
+  return list.some((name) => pluginPolicyId(name) === id);
+}
+
+function pluginEntryKeys(entries: Record<string, unknown>, plugin: string) {
+  const id = pluginPolicyId(plugin);
+  return Object.keys(entries).filter((key) => pluginPolicyId(key) === id);
+}
+
 function pluginBlockReason(values: ChannelValues, provider: ChannelProvider) {
   const plugins = values?.plugins;
   if (plugins === undefined) {
@@ -191,7 +205,7 @@ function pluginBlockReason(values: ChannelValues, provider: ChannelProvider) {
   if (plugins.enabled === false) {
     return "Native plugins are disabled. Enable them through the Configuration API before configuring channels.";
   }
-  if (Array.isArray(plugins.deny) && plugins.deny.includes(provider.plugin)) {
+  if (Array.isArray(plugins.deny) && namesPlugin(plugins.deny, provider.plugin)) {
     return `${provider.name} is explicitly blocked in native plugin configuration.`;
   }
   if (plugins.allow !== undefined && !Array.isArray(plugins.allow)) {
@@ -200,8 +214,8 @@ function pluginBlockReason(values: ChannelValues, provider: ChannelProvider) {
   if (plugins.entries !== undefined && !isRecord(plugins.entries)) {
     return "Plugin entries configuration is not an object.";
   }
-  const entry = plugins.entries?.[provider.plugin];
-  if (entry !== undefined && !isRecord(entry)) {
+  const entries = isRecord(plugins.entries) ? plugins.entries : {};
+  if (pluginEntryKeys(entries, provider.plugin).some((key) => !isRecord(entries[key]))) {
     return `${provider.name} plugin entry is not an object.`;
   }
   return null;
@@ -230,8 +244,16 @@ function withPlugin(values: ChannelValues, provider: ChannelProvider) {
   const entries = isRecord(plugins.entries) ? { ...plugins.entries } : {};
   const entry = isRecord(entries[plugin]) ? { ...entries[plugin] } : {};
   // An omitted allowlist must stay omitted; introducing one can exclude another Harness plugin.
-  if (Array.isArray(plugins.allow)) {
-    plugins.allow = [...new Set([...plugins.allow, plugin])];
+  if (Array.isArray(plugins.allow) && !namesPlugin(plugins.allow, plugin)) {
+    plugins.allow = [...plugins.allow, plugin];
+  }
+  // OpenClaw merges the entries of every spelling, and the last boolean `enabled` wins. The stored
+  // key order is not the order the client wrote, so enable every spelling's `enabled: false`.
+  for (const key of pluginEntryKeys(entries, plugin)) {
+    const variant = entries[key];
+    if (key !== plugin && isRecord(variant) && variant.enabled === false) {
+      entries[key] = { ...variant, enabled: true };
+    }
   }
   entries[plugin] = { ...entry, enabled: true };
   plugins.entries = entries;

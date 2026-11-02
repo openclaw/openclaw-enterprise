@@ -270,6 +270,7 @@ ${NATIVE_WORKER_ENTRYPOINT}`;
         "apps/controller/src/drivers/compute/gateway-tool-policy.ts",
         "apps/controller/src/drivers/compute/harness-egress-enrollment.ts",
         "apps/controller/src/drivers/compute/node-program.ts",
+        "apps/controller/src/drivers/compute/openclaw-config-issues.ts",
         "apps/controller/src/drivers/compute/runtime-startup.ts",
         "apps/controller/src/drivers/plugin/runtime-translator.ts",
         "packages/contracts/src/runtime-failure.mjs",

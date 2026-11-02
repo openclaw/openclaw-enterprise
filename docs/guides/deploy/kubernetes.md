@@ -78,6 +78,12 @@ API router both keep `%2F` inside one path segment, so a route match cannot
 differ between them. If a ClientTrafficPolicy already targets that Gateway or
 listener, add `path` to it.
 
+Keep the console route's request timeout at 15 seconds or more; Envoy Gateway's
+default is 15 seconds. Configuration and Secret create, update and delete send no
+Kubernetes call later than 12 seconds after the API starts the request, so on a slow
+cluster they fail with `503` instead of saving after the ingress answered `504`. The
+database commit is not bounded by them.
+
 Follow the [storage contract](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 when choosing disks. A NetworkPolicy object alone is not proof of enforcement:
 verify allowed and denied traffic with your CNI before placing tenant workloads.

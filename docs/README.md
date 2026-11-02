@@ -11,7 +11,7 @@ The OpenClaw Control Plane (OCC) adds multi-tenancy, governance, and hard securi
 
 Choose where to install:
 
-- [Local Setup](guides/quickstart.md): run the platform on your machine, then [deploy your first Agent](guides/first-agent.md). You need an OpenAI API key for that walkthrough.
+- **Local k3d:** [Set up OCE with OpenShell and Codex](guides/deploy/local-openshell-setup.md). Then [add Git support](guides/repository-credentials/openshell-git-push.md), [add Codex plugins](guides/integrations/codex-plugins.md), or do both on the same Agent. For a local installation without OpenShell, follow the [Kubernetes-only quickstart](guides/quickstart.md).
 - [Kubernetes Setup](guides/kubernetes-setup.md): install the control plane on a cluster you already operate, then [deploy and verify an Agent on that installation](guides/deploy/production-agents.md).
 
 If you are still learning the product, start with [Concepts](guides/concepts.md).

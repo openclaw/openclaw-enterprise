@@ -106,7 +106,9 @@ uses the authenticated app server and fail-closed HTTP; see [Harness execution](
 
 ## Private routing
 
-`gatewayRouting` is optional. When supplied, omit `network.gatewayClients`;
+With `runtime` configured, dedicated Harnesses require `gatewayRouting` and
+node enrollment. Direct gateway clients cannot satisfy this requirement.
+When using private routing, omit `network.gatewayClients`;
 Compute derives the Envoy peer. See [private routes](networking-and-isolation.md)
 for deployment and authentication requirements.
 
@@ -138,6 +140,7 @@ Omit `executionCluster` for a single cluster. Two-cluster execution requires
 
 ## Example
 
+This example uses direct gateway clients and supports only embedded Harnesses.
 Replace the illustrative image digests, StorageClass, node labels, and proxy
 source CIDR with verified values for your cluster:
 

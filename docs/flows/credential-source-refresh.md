@@ -1,22 +1,20 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-30
-last_updated_session: authoring-run/264fbe79-1af9-492d-aa8b-c020cde317f2
+updated: 2026-10-31
+last_updated_session: authoring-run/c776b2a1-dee6-4ade-a44e-145f1b37f57f
 ---
 
 # Credential source refresh Flow
 
 ## Overview
 
-For an OAuth2 source, the API registers an empty provider. The paired Refresh
-Driver configures the issuer and requests the first token. The gateway renews it
-before expiry while the Agent keeps one placeholder. See the
+The API registers an OAuth2 source; its Refresh Driver requests the first token.
+The gateway renews it while the Agent keeps one placeholder. See the
 [credential source lifecycle](credential-source-lifecycle.md) for binding and withdrawal.
 
-In the [Codex device flow](#device-authorization-and-configuration), OpenShell keeps
-the refresh grant. The Harness receives a placeholder and account metadata. An
-operator connection can retrieve an access token for authorized discovery.
-These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
+In [Codex device flow](#device-authorization-and-configuration), OpenShell keeps
+the refresh grant; the Harness gets a placeholder and account metadata.
+Authorized discovery can retrieve an access token. These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
 
 For [GitHub access](#6-issue-and-renew-a-github-installation-token), the OCE worker owns issuance.
 [Git and draft pull requests](../reference/repository-credentials/prepared-native-git.md)
@@ -30,10 +28,9 @@ can use committed tokens but cannot trigger issuance.
 - Source: `packages/occ/src/index.ts:createCredentialSource`
 - Source: `packages/occ/src/index.ts:rotateCredentialSource`
 - Source: `apps/controller/src/drivers/credential-refresh/openshell.ts:OpenShellCredentialRefreshDriver`
-- Assumptions: the OpenShell Backend declares both `credential_gateway` and
-  `credential_refresh`, and both Drivers are selected; the gateway's
-  `toolBinaries` are configured, so the catalog lists the OAuth2 types; the
-  OpenShell gateway trusts and reaches the issuer's `token_url`.
+- Assumptions: the OpenShell Backend declares `credential_gateway` and
+  `credential_refresh`; the Installation selects both Drivers. Gateway
+  `toolBinaries` expose OAuth2 types; the gateway trusts and reaches `token_url`.
 
 ## Flow
 
@@ -240,6 +237,10 @@ The worker records `issuing`, signs a five-minute JWT with the App key and reche
 ownership before `POST /app/installations/{installation_id}/access_tokens`.
 The Installation selects the HTTPS issuer and trust roots.
 
+The worker logs `PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC` with the first failure
+stage, fixed enums and status/booleans. `requestEndCalled` means possible send,
+not delivery. Reporting cannot change custody or retries.
+
 ```mermaid
 graph TD
   W["<b>Worker</b><br/>Holds App key"] -->|Signed JWT| G["<b>GitHub</b><br/>Issues token"]
@@ -256,7 +257,7 @@ graph TD
   linkStyle default stroke:#89919a
 ```
 
-The worker prepares tokens in the background. PostgreSQL custody requires a
+PostgreSQL custody requires a
 persistent 32-byte encryption key. Cold or expired reads return `not_ready`.
 Native Git uses a [private broker request](../reference/repository-credentials.md#native-git-from-the-agent-to-github).
 
@@ -337,6 +338,8 @@ detached reads. Clearing bytes cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31 01:04: Trace safe issuer diagnostics without changing custody. (authoring-run/c776b2a1-dee6-4ade-a44e-145f1b37f57f - 39399f5bf4bc9a07b33c03a405e44d0614ffe9d5)
 
 - 2026-10-30 12:27: Record late starts. (authoring-run/264fbe79-1af9-492d-aa8b-c020cde317f2 - cd2a58116a69f1a6d68a572a226ef8945408ef54)
 

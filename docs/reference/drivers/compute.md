@@ -141,10 +141,9 @@ uses a 10-second timeout and accepts up to 4 MiB per response, ten pages, and
 
 ### Namespace and gateway results
 
-Each Namespace result must carry the requested `namespaceId`. It can report a
-`retryable` or `permanent` failure. A true ready
-or deleted flag succeeds only without a failure. A failure reason for the worker
-log may contain up to 256 characters using letters, digits, spaces, and
+Return the requested `namespaceId`. Failures are `retryable` or `permanent`;
+a true ready or deleted flag succeeds only without a failure. Worker-log
+failure reasons allow up to 256 characters: letters, digits, spaces, and
 `. _ : / @ -`. Exclude provider output and other tenants' values.
 
 Derive a [gateway endpoint](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
@@ -268,11 +267,12 @@ sequenceDiagram
 Before calling Compute, the worker checks its selected identity and current
 credential references.
 Activation must be safe to repeat. A failed activation after selection resumes
-at finalization. One [protected Git startup mode](../repository-credentials/protected-openshell-git.md)
-has a separate selection step. With version 6 `request-hook-observed`, Compute
-can report `heldForRepositoryGitMaterial` and `REPOSITORY_GIT_ROUTE_PENDING`
-without a runtime failure. The worker can then record the selection while
-preparation is pending. Activation, retirement, and completion still wait for readiness.
+at finalization. In [protected Git startup](../repository-credentials/protected-openshell-git.md),
+both version 5 `online-request` and version 6 `request-hook-observed` support
+selection before readiness. When Compute reports `heldForRepositoryGitMaterial`
+and `REPOSITORY_GIT_ROUTE_PENDING` without a runtime failure, the worker can
+record the selection. The original work stays queued until that revision is ready;
+only then does the worker activate it, retire its predecessor, and complete the work.
 
 Exclusive replacement closes earlier credential sessions and stops each earlier
 revision, including failed candidates, before preparation. A failed stop blocks
@@ -330,9 +330,8 @@ separate inputs saved with each revision.
 
 ## Limits
 
-Compute operates on the revision's recorded identity. Selecting another Driver
-does not migrate that revision. Completion of a stop, retirement, or deletion
-requires confirming the cleanup the Driver owns. Check the [feature matrix](compute-matrix.md)
+Compute uses the revision's recorded identity. Changing Drivers does not migrate it.
+Stop, retirement, and deletion require confirmation of Driver-owned cleanup. Check the [feature matrix](compute-matrix.md)
 for topology, deletion support, and private gateway access.
 
 ## Troubleshooting

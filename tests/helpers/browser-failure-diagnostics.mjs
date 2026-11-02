@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { within } from "./wait-for.mjs";
 
 // CI sets this only for lanes whose browser tests use disposable fixtures. When
 // it is unset, nothing is tracked.
@@ -123,15 +124,6 @@ export function noteBrowserEvent(page, text) {
   }
 }
 
-function withTimeout(promise, timeoutMs, label) {
-  let timer;
-  const deadline = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} exceeded ${timeoutMs}ms`)), timeoutMs);
-    timer.unref?.();
-  });
-  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
-}
-
 function describeError(error, depth = 0) {
   if (error === undefined || error === null) {
     return undefined;
@@ -227,14 +219,14 @@ export async function watchBrowserContext(t, context) {
           if (!closed) {
             const screenshot = `page-${index}.png`;
             try {
-              await withTimeout(
+              await within(
                 page.screenshot({
                   path: join(directory, screenshot),
                   fullPage: true,
                   timeout: screenshotTimeoutMs,
                 }),
-                screenshotTimeoutMs + 1_000,
                 "screenshot",
+                screenshotTimeoutMs + 1_000,
               );
               entry.screenshot = screenshot;
             } catch (error) {
@@ -245,10 +237,10 @@ export async function watchBrowserContext(t, context) {
         }
         if (tracing) {
           try {
-            await withTimeout(
+            await within(
               context.tracing.stop({ path: join(directory, "trace.zip") }),
-              traceTimeoutMs,
               "trace export",
+              traceTimeoutMs,
             );
             summary.trace = "trace.zip";
           } catch (error) {

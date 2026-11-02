@@ -308,7 +308,8 @@ The worker commits activation and next maintenance together, preserving the acto
 30 seconds, the native sender interval or a shorter Compute interval. After restart, the worker invalidates missing known sessions without reminting. Users can deploy during cleanup.
 
 [Preview, save and deploy](../../packages/occ/src/index.ts) require explicit repository policy
-permission and current scope for standing approval. The
+permission and current scope for standing approval. Deploy rechecks the binding; mismatches prevent revision creation.
+The
 [worker](../../apps/controller/src/worker/repository-credentials.ts) rechecks
 [eligibility](../../packages/occ/src/repository-approval.ts) under Namespace then Agent locks.
 Withdrawal or a changed scope fingerprint raises `REPOSITORY_STANDING_POLICY_CHANGED` before successor release.
