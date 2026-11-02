@@ -31,12 +31,11 @@ jobs:
         with:
           package_json_file: source/package.json
       - name: Provision baseline from empty task cache
-        run: time npm install --prefix "$RUNNER_TEMP/formatter-tools" --cache "$RUNNER_TEMP/formatter-npm-cache" --ignore-scripts --no-audit --no-fund --save-exact prettier@3.9.10
+        working-directory: source
+        run: time pnpm install --frozen-lockfile --ignore-scripts --store-dir "$RUNNER_TEMP/formatter-pnpm-store"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version-file: source/.bun-version
-      - name: Expose exact baseline formatter
-        run: echo "$RUNNER_TEMP/formatter-tools/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Actual formatter entrypoint parity and interleaved timings
         id: proof
         continue-on-error: true
@@ -45,8 +44,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
-            ${{ runner.temp }}/formatter-tools
-            ${{ runner.temp }}/formatter-npm-cache
+            ${{ runner.temp }}/formatter-pnpm-store
             ${{ runner.temp }}/formatter-content-cache
           key: bun-format-write-${{ github.sha }}
       - name: Require parity proof
@@ -81,8 +79,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
-            ${{ runner.temp }}/formatter-tools
-            ${{ runner.temp }}/formatter-npm-cache
+            ${{ runner.temp }}/formatter-pnpm-store
             ${{ runner.temp }}/formatter-content-cache
           key: bun-format-write-${{ github.sha }}
           fail-on-cache-miss: true
@@ -90,10 +87,11 @@ jobs:
         env:
           CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
         run: test "$CACHE_HIT" = true
+      - name: Install frozen dependencies in fresh workspace
+        working-directory: source
+        run: time pnpm install --frozen-lockfile --ignore-scripts --store-dir "$RUNNER_TEMP/formatter-pnpm-store"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version-file: source/.bun-version
-      - name: Expose exact baseline formatter
-        run: echo "$RUNNER_TEMP/formatter-tools/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Actual formatter entrypoint parity and interleaved timings
         run: node harness/.github/bun-format-write-proof.mjs

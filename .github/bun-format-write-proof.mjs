@@ -45,7 +45,7 @@ if (baselineRead.status !== 0) throw new Error("baseline manifest lookup failed"
 const baselineManifest = JSON.parse(baselineRead.stdout);
 const baselineWrite = baselineManifest.scripts["format:fix"];
 const globs = [...manifest.scripts["format:check"].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
-const prettier = path.join(process.env.RUNNER_TEMP, "formatter-tools/node_modules/.bin/prettier");
+const prettier = path.resolve("node_modules/.bin/prettier");
 const cache = path.join(process.env.RUNNER_TEMP, "formatter-content-cache");
 const cacheWasPresent = fs.existsSync(cache);
 if (process.env.PROOF_MODE === "cold" && cacheWasPresent)
@@ -151,7 +151,7 @@ const report = {
     "actual pnpm format:fix entrypoint on both sides; temporary baseline script restored after every call",
     "full corpus stays byte-identical after every clean write; source control is restored after repair/syntax negatives",
     "Prettier cached checking is reference context, not a proposed checking migration; CI content-cache behavior remains unchanged",
-    "standalone exact formatter dependency; no platform service, project runtime, emitter or package-manager migration",
+    "frozen project dependencies installed with lifecycle scripts disabled; no platform service, emitter or package-manager migration",
   ],
 };
 console.log(`BUN_FORMAT_WRITE_JSON=${JSON.stringify(report)}`);
