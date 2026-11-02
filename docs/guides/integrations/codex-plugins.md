@@ -68,6 +68,8 @@ Prepare one marked prompt so the result can be found in this Agent's transcript:
 
 ```bash
 linear_marker="linear-$(openssl rand -hex 8)"
+printf '%s\n' "$linear_marker" > "$RUN_DIR/linear-marker"
+: > "$RUN_DIR/linear-run-id"
 printf 'Use the Linear plugin to list teams with limit 3. Make no changes. Return the tool name, team IDs and result, and include marker %s in your reply.\n' \
   "$linear_marker" > "$RUN_DIR/linear-prompt"
 ```
@@ -85,13 +87,17 @@ Select **Open Agent UI** for the same Agent. Paste the contents of `$RUN_DIR/lin
 ```bash
 # chat.send over wss://<private-gateway-host>/namespaces/$namespace/agents/$agent.
 turn "$RUN_DIR/linear-prompt" > "$RUN_DIR/linear-result"
+jq -er .runId "$RUN_DIR/linear-result" > "$RUN_DIR/linear-run-id"
 
 # Check chat.history for the actual successful tool call, then compare it with the reply.
-jq -e '.outcome.status=="ok" and
-  any(.history.messages[]; .role=="toolResult" and
-      .toolName=="codex_apps.linear.list_teams" and .isError==false)' "$RUN_DIR/linear-result"
-jq '.history.messages[]|select(.toolName=="codex_apps.linear.list_teams")|.content' "$RUN_DIR/linear-result"
-jq -r '.outcome.terminalReply.text' "$RUN_DIR/linear-result"
+if jq -e '.outcome.status=="ok" and
+  any(.history.messages[]?; .role=="toolResult" and
+      .toolName=="codex_apps.linear.list_teams" and .isError!=true)' "$RUN_DIR/linear-result" > /dev/null; then
+  jq '.history.messages[]|select(.toolName=="codex_apps.linear.list_teams")|.content' "$RUN_DIR/linear-result"
+  jq -r '.outcome.terminalReply.text' "$RUN_DIR/linear-result"
+else
+  printf 'Read the existing run using the native transcript procedure below. Do not resend the prompt.\n'
+fi
 ```
 
 </Accordion>
@@ -99,12 +105,11 @@ jq -r '.outcome.terminalReply.text' "$RUN_DIR/linear-result"
 
 ### Read the existing run's native transcript
 
-If display history omits the tool result, read this Agent's existing Gateway transcript. This requires operator Kubernetes read and exec access. Use the transcript reader saved during setup and the same `$linear_marker`. For a CLI turn, retain its exact run ID; for a Console turn, the unique prompt marker identifies it.
+If display history omits the direct tool result or uses a dispatch envelope, read this Agent's existing Gateway transcript. This requires operator Kubernetes read and exec access. Use the transcript reader saved during setup and the saved marker. The CLI saves its exact run ID; the Console leaves that file empty and the unique prompt marker identifies the run. After opening a new shell, resume `session.sh` before running this block.
 
 ```bash
-linear_run_id='' # Console turn: the transcript reader finds the marked run.
-# For a CLI turn, use this instead:
-# linear_run_id=$(jq -er .runId "$RUN_DIR/linear-result")
+linear_marker=$(cat "$RUN_DIR/linear-marker")
+linear_run_id=$(cat "$RUN_DIR/linear-run-id")
 
 read -r gateway_ns gateway_pod < <(
   kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get pods -A \

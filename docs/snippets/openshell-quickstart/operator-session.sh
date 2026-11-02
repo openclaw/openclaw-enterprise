@@ -124,7 +124,7 @@ save_session() {
     for variable in RUN_DIR PLATFORM KUBECONFIG CONTEXT PLATFORM_NS RELEASE OCE_CHART \
       INSTALLATION_FILE VALUES_FILE OCC_SERVICE_KEY_FILE CONSOLE_ORIGIN NATIVE_ADMIN_DOMAIN \
       namespace base agent principal modelSource name role MODEL TENANT_NAMESPACE \
-      OCC_DEVELOPMENT_STATE_DIRECTORY ENVOY_IMAGE EKS_CLUSTER AWS_REGION \
+      OCC_DEVELOPMENT_STATE_DIRECTORY CLUSTER_DOMAIN ENVOY_IMAGE EKS_CLUSTER AWS_REGION \
       repo repo_id ref READ_REGISTRY WRITE_REGISTRY branch first_sha BOT_NAME BOT_EMAIL; do
       if declare -p "$variable" >/dev/null 2>&1; then declare -p "$variable"; fi
     done

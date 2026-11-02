@@ -22,7 +22,7 @@ The operator needs Pod read and `pods/exec` access in `PLATFORM_NS` for the API 
 | `name`, `role`                          | Setup's resource-name prefix and exact model-access role ID.                                                                                                 |
 | `TENANT_NAMESPACE`                      | Backing Kubernetes namespace, needed by existing-cluster network preparation.                                                                                |
 
-Platform-only inputs remain in setup: local `OCC_DEVELOPMENT_STATE_DIRECTORY`; cluster `ENVOY_IMAGE`; and EKS `EKS_CLUSTER` and `AWS_REGION`. Git adds `BOT_NAME`, `BOT_EMAIL`, `repo`, `repo_id`, `ref`, `READ_REGISTRY`, `WRITE_REGISTRY`, `branch` and `first_sha`. Run `save_session` after changing retained values.
+Platform-only inputs remain in setup: local `OCC_DEVELOPMENT_STATE_DIRECTORY`; cluster `CLUSTER_DOMAIN` and `ENVOY_IMAGE`; and EKS `EKS_CLUSTER` and `AWS_REGION`. `CLUSTER_DOMAIN` is the verified Kubernetes DNS suffix used by the OpenShell certificate and private Gateway route, not the cluster name. Git adds `BOT_NAME`, `BOT_EMAIL`, `repo`, `repo_id`, `ref`, `READ_REGISTRY`, `WRITE_REGISTRY`, `branch` and `first_sha`. Run `save_session` after changing retained values.
 
 ## Files and helpers
 

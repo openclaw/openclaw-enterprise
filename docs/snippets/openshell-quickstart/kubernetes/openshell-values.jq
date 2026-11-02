@@ -48,7 +48,7 @@
     "enabled": true,
     "serverDnsNames": [
       "openshell-gateway.oce-system.svc",
-      "openshell-gateway.oce-system.svc.cluster.local",
+      ("openshell-gateway.oce-system.svc." + $clusterDomain),
       "openshell.localhost",
       "*.openshell.localhost"
     ]

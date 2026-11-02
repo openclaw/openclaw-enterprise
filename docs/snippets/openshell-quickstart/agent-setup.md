@@ -27,9 +27,9 @@ modelSource=$(jq -er '.data|select(.state=="ready")|.id' "$RUN_DIR/model-source"
 
 ## 5. Create the Configuration and Agent
 
-Register the model with a fail-closed loopback URL. The Gateway uses authenticated WebSocket transport to the dedicated Codex Harness, which runs inside OpenShell. Give the Agent's own principal `operate` on its exact model source.
+Register the model with a fail-closed loopback URL. The Gateway uses authenticated WebSocket transport to the dedicated Codex Harness inside OpenShell.
 
-The [Codex configuration template](../../snippets/openshell-quickstart/codex-configuration.jq) takes the model ID from `MODEL`. The command below renders the template as JSON and posts it to OCE.
+Render the [Codex configuration template](../../snippets/openshell-quickstart/codex-configuration.jq) with `MODEL` and post its JSON to OCE.
 
 <Snippet file="./codex-configuration.jq" lang="jq" />
 

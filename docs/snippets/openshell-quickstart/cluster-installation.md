@@ -6,16 +6,26 @@ published: false
 
 The templates use release `oce`, OpenShell release `openshell-gateway`, namespace `oce-system`, GatewayClass `eg`, and Envoy namespace `envoy-gateway-system`. Keep these names; they match the staged policies.
 
+For CoreDNS, read the Kubernetes DNS zone below. For other DNS servers, get `CLUSTER_DOMAIN` from your cluster administrator. Confirm this DNS suffix before continuing.
+
+```bash
+CLUSTER_DOMAIN=$(kubectl -n kube-system get configmap coredns -o json |
+  jq -er '.data.Corefile | capture("(?m)^\\s*kubernetes\\s+(?<domain>[^\\s{]+)").domain')
+export CLUSTER_DOMAIN
+printf 'Cluster DNS domain: %s\n' "$CLUSTER_DOMAIN"
+```
+
 ```bash
 assets="$RUN_DIR/kubernetes"
 jq -n --arg registry "${SANDBOX_REGISTRY:?}" \
   --arg storageClass "${STORAGE_CLASS:?}" \
+  --arg clusterDomain "${CLUSTER_DOMAIN:?}" \
   --arg repository "${SANDBOX_REPOSITORY:?}" -f "$assets/openshell-values.jq" \
   > "$RUN_DIR/openshell.json"
 helm upgrade --install openshell-gateway "${OPENSHELL_CHART:?}" \
   -n "$PLATFORM_NS" -f "$RUN_DIR/openshell.json" --wait
 os_ip=$(kubectl -n "$PLATFORM_NS" get svc openshell-gateway -o jsonpath='{.spec.clusterIP}')
-route_host=occ-gateway-362888b35fce.envoy-gateway-system.svc.cluster.local
+route_host="occ-gateway-362888b35fce.envoy-gateway-system.svc.${CLUSTER_DOMAIN:?}"
 
 # Bootstrap has no Agents. Replace the loopback placeholder with the exact Envoy peers before deployment.
 # API_CIDRS includes the API Service and endpoint /32s.
@@ -36,9 +46,9 @@ jq -e --arg d "$CLUSTER_NAME.oce.localhost" '
   and .agentNativeAdmin.domain==("agents."+$d) and .agentNativeAdmin.sharedCookieDomain==$d' "$RUN_DIR/values.json"
 ```
 
-Use the full cluster DNS suffix in the route hostname and certificate. Keep mTLS enabled and preserve OpenShell PKI and JWT signing material through upgrades.
+The templates use `CLUSTER_DOMAIN` for route and certificate names; the browser listener uses namespace-relative Service DNS. Preserve mTLS, OpenShell PKI and JWT signing material through upgrades.
 
-Use separate `occ_migrator` and `occ_app` logins without superuser, role/database creation, replication or row-security bypass. As the database administrator, prepare the fresh **application database**:
+Create `occ_migrator` and `occ_app` logins without superuser, role/database creation, replication or row-security bypass. As administrator, prepare the fresh **application database**:
 
 ```sql
 -- Run in psql connected to the fresh database as an administrator allowed to assign these owners.
@@ -59,7 +69,7 @@ for role in occ_migrator occ_app; do
 done
 ```
 
-Expect the target database, named login and `t` for both connections.
+Expect the target database, login and `t` for each connection.
 
 Provision the other rendered Secret references: distinct OCE authentication/private-routing keys and OpenShell client TLS. The routing key is named `occ`. Prepare the bootstrap PVC once with UID/GID 1000 and mode 0700. Follow [system Secret and bootstrap preparation](production-installation.md#provision-system-secrets-and-install) using namespace `oce-system` and your selected storage class.
 
@@ -88,11 +98,11 @@ kubectl -n envoy-gateway-system get svc occ-gateway-362888b35fce -o json |
     .metadata.labels["gateway.envoyproxy.io/owning-gateway-namespace"]=="oce-system"'
 ```
 
-The worker starts at zero. Helm runs the installation check, migration and bootstrap hooks. [Read the owner password and service key from the protected claim](eks-openshell-browser.md#read-the-protected-initial-owner-files), then [install the private TLS listener and start the laptop forward](eks-openshell-browser.md#install-the-loopback-tls-listener). Keep the same session directory and kubeconfig.
+Helm bootstraps OCC with zero workers. [Read the owner password and service key](eks-openshell-browser.md#read-the-protected-initial-owner-files), then [install the TLS listener and laptop forward](eks-openshell-browser.md#install-the-loopback-tls-listener). Keep the same session directory and kubeconfig.
 
 ## 3. Authenticate and prepare the Namespace
 
-Initialize the common operator session before selecting the Namespace. The REST helper calls the API Pod over the selected Kubernetes exec connection.
+Initialize the operator session. Its REST helper uses Kubernetes exec into the API Pod.
 
 ```bash
 INSTALLATION_FILE="$RUN_DIR/installation.yaml"
