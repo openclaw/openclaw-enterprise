@@ -38,6 +38,10 @@
                     "label": "Setup OCE"
                   },
                   {
+                    "page": "guides/deploy/local-openshell-browser",
+                    "label": "OpenShell Agent in a Browser"
+                  },
+                  {
                     "page": "guides/repository-credentials/openshell-git-push",
                     "label": "Add Git Support"
                   },
@@ -538,6 +542,18 @@
                   {
                     "page": "guides/deploy/eks",
                     "label": "Amazon EKS"
+                  },
+                  {
+                    "page": "guides/deploy/eks-openshell-setup",
+                    "label": "OpenShell on EKS"
+                  },
+                  {
+                    "page": "guides/deploy/eks-openshell-browser",
+                    "label": "EKS Browser Access"
+                  },
+                  {
+                    "page": "guides/deploy/eks-openshell-owner-session",
+                    "label": "EKS Owner Session"
                   },
                   {
                     "page": "guides/quickstart",
