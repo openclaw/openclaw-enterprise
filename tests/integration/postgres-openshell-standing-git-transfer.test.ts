@@ -49,16 +49,23 @@ import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/co
 
 // Reduce reader results before assertions: diagnostics must never retain credential material.
 function materialClass(value: unknown): string {
-  if (value === undefined) return "no-result";
-  if (value === null || typeof value !== "object") return "unexpected";
-  if ("value" in value) return "material";
+  if (value === undefined) {
+    return "no-result";
+  }
+  if (value === null || typeof value !== "object") {
+    return "unexpected";
+  }
+  if ("value" in value) {
+    return "material";
+  }
   if (
     Reflect.ownKeys(value).length === 1 &&
     Object.hasOwn(value, "absent") &&
     "absent" in value &&
     (value.absent === "withdrawn" || value.absent === "unprepared")
-  )
+  ) {
     return value.absent;
+  }
   return "unexpected";
 }
 
@@ -165,7 +172,7 @@ test(
       signal: AbortSignal,
     ) => {
       const selected = authority.online.githubInstallation;
-      assert.equal(typeof selected?.readMaterial === "function", true, "selected reader exists");
+      assert.ok(typeof selected?.readMaterial === "function", "selected reader exists");
       let completions = 0;
       let matched = false;
       let selectedResult: unknown;
@@ -174,9 +181,9 @@ test(
         online: {
           ...authority.online,
           githubInstallation: {
-            ...selected!,
+            ...selected,
             async readMaterial(receivedRoute, receivedSignal) {
-              const result = await selected!.readMaterial(receivedRoute, receivedSignal);
+              const result = await selected.readMaterial(receivedRoute, receivedSignal);
               completions++;
               matched = receivedRoute === route && receivedSignal === signal;
               selectedResult = result;
@@ -191,8 +198,9 @@ test(
         route,
         "github-installation",
       );
-      assert.equal(completions === 1 && matched, true, "selected probe completed exactly once");
-      assert.equal(Object.is(result, selectedResult), true, "adapter preserves selected response");
+      assert.equal(completions, 1, "selected probe completed exactly once");
+      assert.ok(matched, "selected reader received the original route and signal");
+      assert.ok(Object.is(result, selectedResult), "adapter preserves selected response");
       return result;
     };
     await protectedGit.owner.requireRepositoryGitTransport()(authority);
