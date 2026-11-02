@@ -373,11 +373,11 @@ test(
       previousClient.data["ca.crt"],
       "the observer must load the newly generated trust",
     );
-    await kubectl("rollout", "restart", "deployment/openshell-gateway", "--namespace=oce-system");
+    await kubectl("rollout", "restart", "statefulset/openshell-gateway", "--namespace=oce-system");
     await kubectl(
       "rollout",
       "status",
-      "deployment/openshell-gateway",
+      "statefulset/openshell-gateway",
       "--namespace=oce-system",
       "--timeout=120s",
     );
