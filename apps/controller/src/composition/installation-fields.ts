@@ -288,22 +288,3 @@ export function requireChartListener(
     }
   }
 }
-
-export function openShellRepositoryConfiguration(
-  input: unknown,
-  mode: "development" | "production",
-) {
-  if (input === undefined) {
-    return undefined;
-  }
-  const value = object(input, "repository.openShell");
-  closed(value, ["registrationName", "authority"], "repository.openShell");
-  return {
-    registrationName: nonempty(value.registrationName, "repository.openShell.registrationName"),
-    authority: egressAuthorityConfiguration(
-      value.authority,
-      mode,
-      "repository.openShell.authority",
-    ),
-  };
-}
