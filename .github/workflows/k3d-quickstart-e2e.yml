@@ -97,14 +97,14 @@ jobs:
         id: setup
         timeout-minutes: 105
         run: bash scripts/ci/k3d-quickstart/private-step.sh setup
-      - name: Push one empty commit to the fixture and restore read-only access
-        id: git
-        timeout-minutes: 45
-        run: bash scripts/ci/k3d-quickstart/private-step.sh git
       - name: Add the Linear plugin and read the configured team
         id: linear
         timeout-minutes: 35
         run: bash scripts/ci/k3d-quickstart/private-step.sh linear
+      - name: Push one empty commit to the fixture and restore read-only access
+        id: git
+        timeout-minutes: 45
+        run: bash scripts/ci/k3d-quickstart/private-step.sh git
       - name: Reopen the original Control UI conversation after redeployment
         id: recall
         timeout-minutes: 12

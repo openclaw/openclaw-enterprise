@@ -34,6 +34,6 @@ if [[ "$SETUP/$GIT/$LINEAR/$RECALL/$GIT_CLEANUP/$TEARDOWN" == success/success/su
       and $onboard[0].sessionId==$recall[0].sessionId
       and $git[0].repository=="oce-test/oce-app-test" and $git[0].pushAuthorized and $git[0].writeRetired and $git[0].readVerified
       and $linear[0].tool=="codex_apps.linear.list_teams" and $linear[0].teamMatched
-      and $recall[0].revisionId==$linear[0].revisionId
+      and $recall[0].revisionId==$git[0].readRevision
       and $cleanup[0].writeRetired and $cleanup[0].readRetired and $cleanup[0].branchRemoved' >/dev/null
 fi

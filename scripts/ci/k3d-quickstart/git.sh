@@ -96,6 +96,13 @@ jq -e --arg sha "$first_sha" '.outcome.status=="ok" and (.outcome.terminalReply.
 git_audit "$read_revision" > "$RUN_DIR/git-read-uses.json"
 jq -e 'any(.uses[];.operation=="upload-pack" or .operation=="advertise-upload-pack") and all(.uses[];.operation!="receive-pack")' \
   "$RUN_DIR/git-read-uses.json" >/dev/null
+# The final Git revision must retain the Linear configuration that passed its live read.
+request GET "$base/agents/$agent" | jq -e --arg revision "$read_revision" \
+  --slurpfile previous "$RUN_DIR/linear-agent-after.json" '
+  .data | .activeRevisionId==$revision and .id==$previous[0].data.id and
+  .plugins==$previous[0].data.plugins and .credentialSources==$previous[0].data.credentialSources' >/dev/null
+request GET "$base/agents/$agent/deployments/$read_revision" |
+  jq -e '.data.status=="succeeded" and (.data.warnings // [])==[]' > /dev/null
 save_session
 run_id() { jq -er '.runId|select(test("^[a-zA-Z0-9_-]{1,80}$"))' "$1"; }
 push_run=$(run_id "$RUN_DIR/first-result")

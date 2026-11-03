@@ -26,10 +26,9 @@ stage_file="$RUN_DIR/linear-stage"
 evidence=scripts/ci/k3d-quickstart/linear-evidence.mjs
 printf '%s\n' before > "$stage_file"
 request GET "$base/agents/$agent" > "$RUN_DIR/linear-agent-before.json"
-jq -e --arg agent "$agent" --arg ref "$ref" --slurpfile git "$RUN_DIR/git-receipt.json" '
-  .data | .id==$agent and .activeRevisionId==$git[0].readRevision and
-  .repositoryBindings==[{repositoryRef:$ref,profile:"github-repository"}]' \
-  "$RUN_DIR/linear-agent-before.json" > /dev/null
+jq -e --arg agent "$agent" --slurpfile onboard "$RUN_DIR/receipt-browser-onboard.json" '
+  .data | .id==$agent and .id==$onboard[0].agentId and .activeRevisionId==$onboard[0].revisionId and
+  ((.repositoryBindings // [])|length)==0' "$RUN_DIR/linear-agent-before.json" > /dev/null
 for stage in catalog deploy prompt send; do
   printf '%s\n' "$stage" > "$stage_file"
   if [[ $stage == send ]]; then

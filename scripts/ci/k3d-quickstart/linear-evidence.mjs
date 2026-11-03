@@ -117,14 +117,6 @@ if (mode === "history") {
   }
   const before = readJson("linear-agent-before.json")?.data;
   const after = readJson("linear-agent-after.json")?.data;
-  const git = readJson("git-receipt.json");
-  if (before && git) {
-    console.log(
-      "Linear Git revision:",
-      before.activeRevisionId === git.readRevision ? "matched" : "different",
-    );
-    if (!before.repositoryBindings?.length) console.log("Linear cause: missing-git-binding");
-  }
   if (
     before &&
     after &&

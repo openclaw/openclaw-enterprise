@@ -444,10 +444,11 @@ gh workflow run k3d-quickstart-e2e.yml --ref main
 ```
 
 The workflow creates a fresh local installation, onboards a model-only Agent in the
-Control UI, and reopens the original conversation. It adds Git to that Agent,
-pushes an empty commit to a unique test branch, checks the remote commit, and
-restores read-only access. It then enables the connected Linear account, checks
-a real team read, and verifies conversation recall after redeployment.
+Control UI, and reopens the original conversation. It enables Linear and reads
+a known team through the Agent. It then adds Git to the same Agent, pushes one
+empty commit to a unique test branch, verifies the remote commit, and restores
+read-only access. It verifies that the final deployment retains Linear and that
+the Agent recalls the preference from its original conversation.
 
 Configure these inputs at the **repository** level:
 
