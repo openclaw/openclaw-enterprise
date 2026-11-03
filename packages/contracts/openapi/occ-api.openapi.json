@@ -18602,22 +18602,27 @@
                         ]
                       },
                       {
-                        "additionalProperties": false,
-                        "properties": {
-                          "authorizedEndpoint": {
-                            "format": "uri",
-                            "maxLength": 2048,
-                            "type": "string"
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "authorizedEndpoint": {
+                                "format": "uri",
+                                "maxLength": 2048,
+                                "type": "string"
+                              },
+                              "method": { "const": "api_key", "type": "string" }
+                            },
+                            "required": ["method"],
+                            "type": "object"
                           },
-                          "method": {
-                            "anyOf": [
-                              { "const": "api_key", "type": "string" },
-                              { "const": "codex_pat", "type": "string" }
-                            ]
+                          {
+                            "additionalProperties": false,
+                            "properties": { "method": { "const": "codex_pat", "type": "string" } },
+                            "required": ["method"],
+                            "type": "object"
                           }
-                        },
-                        "required": ["method"],
-                        "type": "object"
+                        ]
                       },
                       { "type": "null" }
                     ],

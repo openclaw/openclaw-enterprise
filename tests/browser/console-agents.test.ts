@@ -156,6 +156,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.deepEqual(await optionValues(page.getByLabel("Provider", { exact: true })), [
     { value: "openai", text: "OpenAI" },
     { value: "anthropic", text: "Anthropic" },
+    { value: "custom", text: "Custom (Responses API)" },
   ]);
   const harness = page.getByLabel("Harness", { exact: true });
   assert.deepEqual(await optionValues(harness), [
