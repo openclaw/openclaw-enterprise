@@ -112,7 +112,7 @@ linear_marker=$(cat "$RUN_DIR/linear-marker")
 linear_run_id=$(cat "$RUN_DIR/linear-run-id")
 
 read -r gateway_ns gateway_pod < <(
-  kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get pods -A \
+  kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get pods -n "${TENANT_NAMESPACE:?Resume the operator session}" \
     -l "openclaw.dev/agent=$agent" -o json |
     jq -er '[.items[] | select(.metadata.deletionTimestamp==null and
       (.metadata.name|startswith("gateway-")) and

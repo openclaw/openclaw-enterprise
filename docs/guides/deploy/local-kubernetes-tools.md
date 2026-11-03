@@ -46,8 +46,8 @@ done
 for command in go gofmt; do
   sudo ln -sfn "$install_root/go1.27.3/bin/$command" "/usr/local/bin/$command"
 done
-export PATH="/usr/local/bin:/usr/bin:/bin"
-sudo env PATH="$PATH" corepack enable --install-directory /usr/local/bin pnpm
+export PATH="/usr/local/bin:$PATH"
+sudo env PATH="/usr/local/bin:/usr/bin:/bin" corepack enable --install-directory /usr/local/bin pnpm
 ```
 
 Use the repository's k3d tool installer. It checks the Docker daemon and downloads checksum-verified kubectl, k3d, Helm and yq when the pinned versions are not already on `PATH`. Copy the selected binaries into `/usr/local/bin`. Corepack reads the pnpm version and integrity hash from the checkout's `package.json`; run pnpm as your operator account so its cache remains user-owned.
@@ -55,14 +55,12 @@ Use the repository's k3d tool installer. It checks the Docker daemon and downloa
 ```bash
 # Stage the pinned tools, then install them globally.
 RUNNER_TEMP="$tools" bash scripts/ci/setup-tools.sh k3d
-export PATH="$tools/bin:$PATH"
 for command in kubectl k3d helm yq; do
-  binary=$(command -v "$command")
+  binary=$(PATH="$tools/bin:$PATH" command -v "$command")
   if [[ $binary != "/usr/local/bin/$command" ]]; then
     sudo install -m 755 "$binary" "/usr/local/bin/$command"
   fi
 done
-export PATH="/usr/local/bin:/usr/bin:/bin"
 rm -rf -- "$tools"
 
 # Verify without shell startup files or the temporary download directory.
