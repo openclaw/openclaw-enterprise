@@ -1186,7 +1186,9 @@ async function main(options) {
       revisionId: record.revisionId,
       prompt: options.prompt,
       apiKey: suppliedKey,
-      expectProviderKey: record.sandboxDriver !== "openshell",
+      // Only embedded OpenClaw calls the model from the Gateway. Dedicated Codex keeps the
+      // model credential in its Codex Pod or OpenShell Sandbox, never in the Gateway.
+      expectProviderKey: record.harness === "openclaw",
     });
     const consoleUrl = new URL(
       `/console/agents/${agent.id}`,
