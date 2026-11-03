@@ -15,6 +15,7 @@ import {
   redactLogLine,
   redactOutputLines,
 } from "./failure-redaction.mjs";
+import { qualifySkipperRelease } from "./skipper-release.ts";
 import { loadTestSuites } from "./test-suites.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -28,7 +29,7 @@ function usage() {
     "  node scripts/ci/run-tests.mjs audit [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path>] [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--release-selection <file>] [--manifest <file>] [--root <dir>]",
   ].join("\n");
 }
 
@@ -1674,7 +1675,16 @@ function selectedLaneNames(groupLanes, selection, issues) {
   return groupLanes.filter((lane) => lanes.includes(lane));
 }
 
-async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath, selection) {
+async function aggregateGroup(
+  root,
+  manifest,
+  groupName,
+  resultsDir,
+  needsPath,
+  selection,
+  releaseSelection,
+) {
+  let releaseQualification;
   const source = sourceEvidence(root);
   const issues = [...manifest.issues, ...source.issues];
   let laneNames = laneNamesForTarget(manifest, groupName);
@@ -1691,6 +1701,14 @@ async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath, 
     laneNames = selectedLaneNames(laneNames, selection, issues);
   }
 
+  if (releaseSelection && !laneNames?.includes("skipper-prepared-git-installed")) {
+    issues.push(
+      issue(
+        "release-selection-lane-missing",
+        "release selection requires installed Skipper evidence",
+      ),
+    );
+  }
   let needs = null;
   if (needsPath) {
     try {
@@ -1771,6 +1789,23 @@ async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath, 
       }
       if (lane && summary.status === "passed") {
         validateLaneEvidence(summary, laneName, lane, issues);
+        if (releaseSelection && laneName === "skipper-prepared-git-installed") {
+          try {
+            releaseQualification = qualifySkipperRelease(
+              await readJson(releaseSelection),
+              summary,
+              currentSha,
+            );
+          } catch {
+            issues.push(
+              issue(
+                "skipper-release-mismatch",
+                "installed Skipper evidence does not qualify the selected release",
+                { lane: laneName },
+              ),
+            );
+          }
+        }
       }
     } catch (error) {
       issues.push(
@@ -1787,6 +1822,7 @@ async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath, 
     command: "aggregate",
     sourceSha: currentSha,
     group: groupName,
+    ...(releaseQualification && issues.length === 0 ? { releaseQualification } : {}),
     status: issues.length === 0 ? "passed" : "failed",
     lanes,
     issues,
@@ -1845,6 +1881,7 @@ async function main() {
     resolve(root, options["results-dir"]),
     options.needs ? resolve(root, options.needs) : null,
     options.lanes,
+    options["release-selection"] ? resolve(root, options["release-selection"]) : null,
   );
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   return summary.status === "passed" ? 0 : 1;
