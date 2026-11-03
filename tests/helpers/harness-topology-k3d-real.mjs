@@ -4671,10 +4671,14 @@ async function assertCrossNamespaceSecretBindingDenied(context, topology) {
     topology.secretApi.assignmentPrincipalId,
     crossSecret.id,
   );
+  const agentPath = `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`;
+  const before = await topology.request("GET", agentPath);
+  assert.equal(before.status, 200, JSON.stringify(before.error));
+  assert.deepEqual(before.data.harnessAuth, topology.agent.harnessAuth);
   const denied = await expectApiFailureWithoutSecret(
     topology.request,
     "PATCH",
-    `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
+    agentPath,
     {
       configurationId: topology.agent.configurationId,
       harnessAuth: { method: "api_key", source: crossSecret.ref },
@@ -4682,17 +4686,20 @@ async function assertCrossNamespaceSecretBindingDenied(context, topology) {
     secretApiProtectedValues(topology, [crossValue]),
     "cross-Namespace Secret binding",
   );
-  assert.equal(denied.status, 404, `unexpected cross-Namespace denial ${denied.status}`);
-  const observed = await topology.request(
-    "GET",
-    `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
-  );
+  assert.equal(denied.status, 400, "an explicit foreign Namespace is an invalid binding");
+  assert.deepEqual(denied.error, {
+    code: "INVALID_REQUEST",
+    message: "Secret references cannot cross Namespaces.",
+  });
+  assert.equal(denied.data, undefined);
+  const observed = await topology.request("GET", agentPath);
   assert.equal(observed.status, 200, JSON.stringify(observed.error));
   assert.deepEqual(
     observed.data.harnessAuth,
-    topology.agent.harnessAuth,
+    before.data.harnessAuth,
     "cross-Namespace denial must preserve the valid same-Namespace bindings",
   );
+  assert.equal(observed.data.activeRevisionId, before.data.activeRevisionId);
   context.diagnostic(`secret-api cross-namespace: denied with HTTP ${denied.status}`);
 }
 
