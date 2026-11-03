@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-29
-last_updated_session: authoring-run/85796888-a7be-4de9-bdcb-ca8f7ef74264
+updated: 2026-11-03
+last_updated_session: 01a12074-7896-7f63-99fe-9f42e9041d02
 ---
 
 # Controller Worker Flow
@@ -132,9 +132,9 @@ Empty queues wait for the configured delay. After each pass, `health()` queries 
 calls `onHealthy`, and emits `worker.health`; both are required. Serialized
 failures emit `HEALTH_UNAVAILABLE`, consuming no retries.
 
-Each pass start and claim renewal calls `onProgress`; the liveness probe
-restarts a worker with a stale marker. A client `query_timeout` usually
-frees a stuck pass. See
+At pass start and claim renewal, `onProgress` updates liveness. Packaged probes
+require regular marker files; liveness restarts stale workers. Client
+`query_timeout` usually frees stuck passes. See
 [worker settings](../reference/settings/operations.md#controller-worker-environment).
 
 ### 4. Reload ownership and reauthorize before infrastructure effects
@@ -423,6 +423,8 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 21:08: Require regular files for worker probe markers. (01a12074-7896-7f63-99fe-9f42e9041d02 - b627f0997c12d10aaa87f764eac1019c67199d2f)
 
 - 2026-10-30 17:22: Shutdown stops the loop before readiness and parts close. (fix-2997)
 
