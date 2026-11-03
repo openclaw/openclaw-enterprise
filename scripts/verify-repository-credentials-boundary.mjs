@@ -58,15 +58,7 @@ const reviewedImports = {
     "../../../../composition/installation-fields.ts": ["object", "closed", "nonempty"],
   },
   "drivers/repo/github/installation.ts": {
-    "../../../composition/installation-fields.ts": [
-      "object",
-      "closed",
-      "nonempty",
-      "openShellRepositoryConfiguration",
-    ],
-    // Hash selected configuration without loading mounted key bytes.
-    "node:crypto": ["createHash"],
-    "@openclaw-enterprise/occ": ["SandboxRepositoryRecipientUnverifiedError"],
+    "../../../composition/installation-fields.ts": ["object", "closed", "nonempty"],
   },
   "drivers/repo/github/credentials/material.ts": {
     "node:crypto": ["KeyObject", "constants", "sign"],
