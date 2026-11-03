@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-02
-last_updated_session: authoring-run/69a634bd-8971-4b09-8874-c449a237d117
+last_updated_session: authoring-run/a92e60d3-d308-4086-8b46-76307e117964
 ---
 
 # GitHub Actions testing flow
@@ -121,6 +121,13 @@ The provider job uses the shared `blacksmith-8vcpu-ubuntu-2404` runner for image
 
 [CI resource preparation](github-actions-testing/preparation.md) traces tool setup, image and cluster preparation, protected credentials, and resource ownership. Continue below when preparation has produced the lane state.
 
+OpenShell jobs select Ubuntu 24.04 for Landlock and packaged Google Chrome through
+`OCC_TEST_BROWSER_EXECUTABLE`. `scripts/ci/setup-tools.sh:install_browser_dependencies`
+checks its headless sandboxed renderer before image builds, logs its version, and
+fails setup on error. The browser inherits only `PATH`, with private `HOME` and
+`TMPDIR`. Ubuntu's existing AppArmor profile permits its user namespaces. Without
+an override, Playwright uses its default headless shell.
+
 For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls the pinned Collector, Node, Prometheus and Grafana images before publishing lane inputs. The metrics test and preparation share the digests in `scripts/ci/metrics-monitoring-images.mjs:metricsMonitoringImages`. `scripts/ci/prepare.mjs:ensureDockerSourceImage` reuses a verified local repository digest or pulls through `scripts/ci/image-pull.mjs:pullImage`, then verifies that digest before tests start containers. Registry 5xx and rate limits retry within the shared pull budget; missing manifests and authorization refusals fail preparation immediately. Explicit unpinned Node overrides keep the existing test-owned pull behavior.
 
 `checks-browser`, `checks-browser-2`, `postgres-auth`, `postgres-platform`, `images-runtime-startup`, `images-runtime-startup-2` and `images-runtime-startup-3` use separate runners and required artifacts. `scripts/ci/prepare.mjs:imageBuildArgs` enables scoped BuildKit caches for hosted image jobs: packaging exports; runtime startup restores. Images load into the job's Docker engine; cache credentials stay in preparation.
@@ -158,7 +165,11 @@ manual profile. Production node provisioning remains outside CI ownership; see
 
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
-The runner discovers active test files and verifies one lane assignment per file. Different prerequisites require separate files. It invokes whole files with invocation-scoped environment inputs. A custom Node reporter publishes case names, locations and outcomes, excluding arbitrary output. The runner also keeps each failure's error message (at most 600 characters) and top stack frame (240), with the repository path stripped, every nonpublic environment value of eight or more characters (from the job and from the test process) replaced by `[env:NAME]`, and common token, key, URL-password and `password=`-style values replaced by `[redacted]`; the runner prints the same line per failed case to the job log. Values a test generates at run time are redacted only when they match those shapes. Failed provider-test HTTP assertions also retain numeric actual and expected status codes, an allowlisted OCC error code, and the upstream ChatGPT operation and status when available. Denied-traffic failures retain only an allowlisted traffic category, without target addresses or response data. Plugin-status fixture failures retain an allowlisted readiness or rollout stage. Rollout diagnostics include allowed Pod phases, readiness and scheduling flags, container restart counts and exit codes, and allowlisted reasons. These structured diagnostics exclude response bodies, credentials, and identities.
+The runner assigns each active file to one lane and invokes whole files with
+invocation-scoped environment inputs. Different prerequisites require separate
+files. The reporter publishes case names, locations and outcomes, excluding
+arbitrary output. [Failure diagnostics](../testing/ci.md#failure-diagnostics)
+add sanitized errors and structured observations to results and job logs.
 
 Required cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
 
@@ -259,6 +270,8 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-02 22:01: Use the packaged sandboxed browser for OpenShell and verify its launch before resource preparation. (authoring-run/a92e60d3-d308-4086-8b46-76307e117964 - a013e9381a166024d749fd45d06fdd53106edcfc)
 
 - 2026-11-02 18:03: Allow branch dispatch. (authoring-run/69a634bd-8971-4b09-8874-c449a237d117 - d415b949e58f9def9824188f17313c925d5a270e)
 

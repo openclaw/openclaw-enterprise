@@ -432,6 +432,19 @@ Then prepare the lane and pass the same `--file` argument to `run`. Omit `--file
 for the complete lane. The composite action validates focused selection before
 tool setup or preparation; an unknown path, path alias, or another lane's file fails.
 
+### Failure diagnostics
+
+Each failure retains an error message of up to 600 characters and a top stack frame of up to 240 characters. The runner removes the repository path. It replaces nonpublic environment values of eight or more characters from the job and test process with `[env:NAME]`. Common token, key, URL-password, and `password=`-style values become `[redacted]`. The same failure line appears in the job log. Values generated during a test are redacted only when they match these shapes.
+
+Structured observations include:
+
+- Provider HTTP assertions: numeric actual and expected status codes, an allowlisted OCC error code, and the upstream ChatGPT operation and status when available.
+- Denied traffic: an allowlisted traffic category, without target addresses or response data.
+- Plugin-status fixtures: an allowlisted readiness or rollout stage.
+- Rollouts: allowed Pod phases, readiness and scheduling flags, container restart counts, exit codes, and allowlisted reasons.
+
+These structured fields exclude response bodies, credentials, and identities.
+
 ## Guides
 
 ### Run a protected integration lane

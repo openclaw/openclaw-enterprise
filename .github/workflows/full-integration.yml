@@ -379,13 +379,15 @@ jobs:
 
   openshell:
     name: OpenShell
-    # Match the advisory runner for k3d NetworkPolicy and browser sandbox checks.
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    # Match the advisory runner's required Landlock support.
+    runs-on: ubuntu-24.04
     needs: preflight
     if: inputs.lane == 'all' || inputs.lane == 'openshell'
     timeout-minutes: 120
     environment: integration
     env:
+      # The packaged browser has Ubuntu's AppArmor user-namespace permission.
+      OCC_TEST_BROWSER_EXECUTABLE: /usr/bin/google-chrome
       NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
