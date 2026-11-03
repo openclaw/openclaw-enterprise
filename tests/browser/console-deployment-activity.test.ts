@@ -464,8 +464,8 @@ for (const viewport of [
       // Distinguishes the old collision: both 503 and 404 used to stamp "///false".
       // Start with the first folded reader position, before later phases can scroll.
       const original = await focusDiagnostics(true);
-      async function readerPosition() {
-        return original.evaluate((node) => {
+      async function readerPosition(control = original) {
+        return control.evaluate((node) => {
           const box = node.getBoundingClientRect();
           return {
             focused: node.isConnected && node === document.activeElement,
@@ -550,6 +550,24 @@ for (const viewport of [
       // An explicit refresh is not an instruction to expand unchanged healthy evidence.
       // Reuse the same controller and page, including a completed terminal record.
       for (const outcome of ["running", "succeeded"] as const) {
+        if (outcome === "succeeded") {
+          // Before an explicit Refresh, let the existing running poll discover completion.
+          const focused = await focusDiagnostics(true);
+          assert.equal(await isOpen(), false);
+          const before = await readerPosition(focused);
+          assert.ok(
+            before.focused && before.hit && before.top >= 0 && before.bottom <= before.viewport,
+          );
+          control.succeeded = true;
+          await poll("succeeded");
+          assert.equal(await isOpen(), true, "terminal evidence still opens automatically");
+          const after = await readerPosition(focused);
+          assert.equal(after.focused, true, "the original diagnostics button retains focus");
+          assert.ok(
+            after.hit && after.top >= 0 && after.bottom <= after.viewport,
+            "the original diagnostics button stays visible when terminal evidence opens",
+          );
+        }
         await t.test(`unchanged ${outcome} refresh respects a manual fold`, async () => {
           control.succeeded = outcome === "succeeded";
           const established = next();
