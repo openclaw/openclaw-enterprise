@@ -90,6 +90,8 @@ else
 fi
 ```
 
+If a runtime build fails certificate verification when downloading a package behind an HTTPS proxy, add `--secret "id=build-ca,src=$CA_BUNDLE"` to the runtime `docker buildx build` command above. Set `CA_BUNDLE` to a PEM file with the public trust roots and the approved proxy CA certificate. The runtime Dockerfile mounts this file only during the download steps. Image registry TLS uses the builder's own trust configuration.
+
 Before installation, [check each digest](../../testing/docker.md#check-published-images)
 on native hosts for every target architecture, without skips. Configure pull
 credentials only when the selected registry requires them.
