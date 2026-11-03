@@ -426,7 +426,15 @@ function installationDrivers({
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
-    ...(repoDriver === undefined ? {} : { repositoryPolicy: repoDriver }),
+    ...(repoDriver === undefined
+      ? {}
+      : {
+          repositoryPolicy: repoDriver,
+          repositoryAdmission: {
+            policy: repoDriver,
+            backendId: "provisioning-repositories",
+          },
+        }),
     ...(pluginDriver === undefined ? {} : { pluginDriver }),
     createIAMDriver: (state) =>
       new NativeIAMDriver(state, { id: "native-iam", implementation: "native" }),

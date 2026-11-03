@@ -6,11 +6,15 @@ import type {
   ConfigurationDriver,
   SecretDriver,
   RepositoryApprovalScope,
+  RepositoryRevisionState,
+  RepositoryPolicyDriver,
+  GitHubRepositoryCredentialBackendDefinition,
 } from "../../packages/contracts/src/index.ts";
 import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import { composeRepositoryPolicy } from "../../apps/controller/src/composition/repository-credentials/policy.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
@@ -37,7 +41,8 @@ import {
 } from "../helpers/refusal-text.mjs";
 
 const authSecret = "standing-approval-source-test-auth-secret-32";
-// Proves registered HTTP/IAM/State behavior. No Compute operation or provider call is executed.
+// Proves registered HTTP/IAM/State behavior with controlled Compute credential preparation.
+// No external provider or runtime operation is executed.
 test(
   "registered standing approval persists exact scope and fences removed generations",
   requiresPostgres,
@@ -94,36 +99,54 @@ test(
       repositoryId: "790",
       repository: "example/another",
     });
-    let selectedPolicy!: GitHubRepositoryPolicy;
+    let selectedPolicy!: RepositoryPolicyDriver;
     let app!: ReturnType<typeof createFastifyApp>;
     let controllerTime: number | undefined;
     async function selectRepo(
       input: unknown,
       eligibility: boolean | "absent" | "registry" = "registry",
+      setup: {
+        bundled?: boolean;
+        adaptPolicy?: ((policy: GitHubRepositoryPolicy) => RepositoryPolicyDriver) | undefined;
+        runtimeCredentials?: Pick<
+          ComputeDriver,
+          | "requiresAgentRuntimeCredentials"
+          | "getAgentRuntimeCredentialStatus"
+          | "provisionAgentRuntimeCredentials"
+        >;
+      } = {},
     ) {
       if (app) {
         await app.close();
       }
-      const controller = new OpenClawController(installation!, {
-        state,
-        now: () => new Date(controllerTime ?? Date.now()),
-        backends: [
-          {
-            id: backendId,
-            type: "github",
-            configuration: { registryPath: "/unused/standing.json" },
-            drivers: { repo: "standing-repo-driver" },
-          },
-        ],
-      });
-      const driver = new GitHubRepositoryPolicy(
+      const backend: GitHubRepositoryCredentialBackendDefinition = {
+        id: backendId,
+        type: "github",
+        configuration: { registryPath: "/unused/standing.json" },
+        drivers: { repo: "standing-repo-driver" },
+      };
+      const composed = composeRepositoryPolicy(
         {
-          driverId: "standing-repo-driver",
-          backendId,
+          backend,
+          selection: {
+            id: "standing-repo-driver",
+            implementation: "github",
+            configuration: {},
+            definition: GitHubRepositoryPolicy,
+          },
+          policyConfiguration: { sessionDurationSeconds: 3600 },
         },
         validateGitHubRepositoryRegistry(input),
-        { sessionDurationSeconds: 3600 },
       );
+      const options = {
+        state,
+        now: () => new Date(controllerTime ?? Date.now()),
+        backends: [backend],
+      };
+      const controller = setup.bundled
+        ? OpenClawController.forInstallation(installation!, options, composed.repositoryAdmission)
+        : new OpenClawController(installation!, options);
+      const driver = setup.adaptPolicy?.(composed.repositoryPolicy) ?? composed.repositoryPolicy;
       selectedPolicy = driver;
       // Keep scope resolution unchanged while varying the independent policy permission.
       if (eligibility !== "registry") {
@@ -133,6 +156,7 @@ test(
       }
       const computeDriver = {
         ...compute,
+        ...setup.runtimeCredentials,
         capability: "compute" as const,
         async stopRevision() {},
       } satisfies ComputeDriver;
@@ -156,6 +180,7 @@ test(
         auth,
         development: { enabled: false },
       });
+      return { controller, options, repositoryAdmission: composed.repositoryAdmission };
     }
     await selectRepo(registry);
     t.after(() => app.close());
@@ -198,6 +223,173 @@ test(
     });
     assert.equal(secret.statusCode, 201, secret.body);
     const secretRef = secret.json().data.ref;
+
+    await t.test(
+      "fresh Installation admission bypasses the legacy resolver and preserves finite grants",
+      async (t) => {
+        controllerTime = Date.now();
+        let baseline: RepositoryRevisionState | undefined;
+        for (const route of ["legacy", "bundled", "custom"] as const) {
+          let calls = 0;
+          let refuse = false;
+          const { controller, options, repositoryAdmission } = await selectRepo(
+            registry,
+            "registry",
+            {
+              bundled: route === "bundled",
+              adaptPolicy:
+                route === "custom"
+                  ? (policy) => ({
+                      id: policy.id,
+                      capability: "repo",
+                      implementation: "custom-finite-policy",
+                      listOptions: (input) => policy.listOptions(input),
+                      resolve(input) {
+                        calls++;
+                        if (refuse) {
+                          throw new Error("custom policy refusal");
+                        }
+                        const result = policy.resolve(input);
+                        return {
+                          ...result,
+                          sessionDurationSeconds: 47,
+                          bindings: result.bindings.map((binding) => ({
+                            ...binding,
+                            grant: { ...binding.grant, grantId: "custom-finite-grant" },
+                          })),
+                        };
+                      },
+                    })
+                  : undefined,
+            },
+          );
+          if (route === "bundled") {
+            assert.throws(
+              () => OpenClawController.forInstallation(installation!, options, undefined),
+              /explicit repository admission owner/,
+            );
+            assert.throws(
+              () =>
+                OpenClawController.forInstallation(installation!, options, {
+                  ...repositoryAdmission,
+                  backendId: "unconfigured-backend",
+                }),
+              /exact owning Backend/,
+            );
+          }
+          const created = await request("POST", `/namespaces/${namespaceId}/agents`, {
+            name: `Finite ${route}`,
+            harnessAuth: { method: "api_key", source: secretRef },
+            configurationId,
+            repositoryBindings: [{ repositoryRef: "project", profile: "git-write" }],
+          });
+          assert.equal(created.statusCode, 201, created.body);
+          const finiteAgent = created.json().data;
+          await grantAgentSecretOperate(pool, finiteAgent, secretRef.id);
+          const finitePath = `/namespaces/${namespaceId}/agents/${finiteAgent.id}`;
+          assert.deepEqual(
+            await state.read((v) =>
+              v.repositorySessions.listStandingApprovals(namespaceId, finiteAgent.id),
+            ),
+            [],
+          );
+          const policy = selectedPolicy;
+          const original = policy.resolve.bind(policy);
+          const spy =
+            route === "custom"
+              ? undefined
+              : t.mock.method(policy, "resolve", (input: Parameters<typeof policy.resolve>[0]) => {
+                  calls++;
+                  return original(input);
+                });
+          const boundResolver =
+            route === "bundled" && policy instanceof GitHubRepositoryPolicy
+              ? t.mock.method(policy, "resolveBindings")
+              : undefined;
+          calls = 0;
+          // Count only admission, after Agent save has used its unchanged policy route.
+          const deployed = await request("POST", finitePath + "/deploy");
+          assert.equal(deployed.statusCode, 202, deployed.body);
+          const revision = await state.read((v) =>
+            v.revisions.findRevision(namespaceId, finiteAgent.id, deployed.json().data.id),
+          );
+          const snapshot = revision?.repositoryCredentials;
+          assert.ok(snapshot);
+          assert.equal(calls, route === "bundled" ? 0 : 1);
+          assert.equal(snapshot.standingApprovalId, undefined);
+          if (route === "legacy") {
+            baseline = snapshot;
+            assert.equal(snapshot.deadlineWallMs, controllerTime + 3600_000);
+            assert.deepEqual(snapshot.driver, { id: policy.id, implementation: "github" });
+          } else if (route === "bundled") {
+            assert.deepEqual(snapshot, baseline, "same exact owner, finite grant and deadline");
+            assert.ok(boundResolver);
+            assert.equal(
+              boundResolver.mock.callCount(),
+              1,
+              "bound resolver admits the finite Agent",
+            );
+            let replacementCalls = 0;
+            const replacement: RepositoryPolicyDriver = {
+              id: "unbound-repo",
+              capability: "repo",
+              implementation: "unbound-policy",
+              async listOptions() {
+                return { options: [] };
+              },
+              resolve() {
+                replacementCalls++;
+                throw new Error("unbound owner must not run");
+              },
+            };
+            controller.registerDriver(replacement);
+            controller.selectDriver("repo", replacement.id);
+            const deploy = t.mock.method(controller, "deployAgentWithAuthorization");
+            const denied = await request("POST", finitePath + "/deploy");
+            assert.equal(denied.statusCode, 503, denied.body);
+            assert.equal(denied.json().error.code, "DEPENDENCY_UNAVAILABLE");
+            assert.equal(deploy.mock.callCount(), 1);
+            const deployment = deploy.mock.calls[0]?.result;
+            assert.ok(deployment);
+            await assert.rejects(deployment, {
+              name: "DependencyUnavailableError",
+              message: "The bound repository admission owner is not selected.",
+            });
+            assert.equal(
+              boundResolver.mock.callCount(),
+              1,
+              "wrong owner cannot invoke the bound resolver",
+            );
+            assert.equal(
+              replacementCalls,
+              0,
+              "a different selection cannot replace the bound owner",
+            );
+            assert.equal(
+              (await state.read((v) => v.revisions.listRevisions(namespaceId, finiteAgent.id)))
+                .length,
+              1,
+            );
+          } else {
+            assert.equal(snapshot.bindings[0]?.grant.grantId, "custom-finite-grant");
+            assert.equal(snapshot.deadlineWallMs, controllerTime + 47_000);
+            refuse = true;
+            const denied = await request("POST", finitePath + "/deploy");
+            assert.equal(denied.statusCode, 409, denied.body);
+            assert.equal(calls, 2, "the in-process extension still decides refusal");
+            assert.equal(
+              (await state.read((v) => v.revisions.listRevisions(namespaceId, finiteAgent.id)))
+                .length,
+              1,
+            );
+          }
+          boundResolver?.mock.restore();
+          spy?.mock.restore();
+        }
+      },
+    );
+    controllerTime = undefined;
+    await selectRepo(registry);
     const created = await request("POST", `/namespaces/${namespaceId}/agents`, {
       name: "Approval source",
       harnessAuth: { method: "api_key", source: secretRef },
@@ -519,6 +711,109 @@ test(
         assert.deepEqual(await approvals(), beforeApprovals, "approval remains intact");
       },
     );
+    await t.test("bundled admission retains the late standing veto", async (t) => {
+      // Only this new Agent starts without transport credentials. Historical Agents
+      // remain configured so the control does not invent a credential-loss refusal.
+      let unconfiguredAgentId: string | undefined;
+      const statusCalls: string[] = [];
+      const provisionCalls: string[] = [];
+      await selectRepo(registry, "registry", {
+        bundled: true,
+        runtimeCredentials: {
+          requiresAgentRuntimeCredentials: true,
+          async getAgentRuntimeCredentialStatus({ agent }) {
+            statusCalls.push(agent.id);
+            return { transportConfigured: agent.id !== unconfiguredAgentId };
+          },
+          async provisionAgentRuntimeCredentials({ agent }) {
+            provisionCalls.push(agent.id);
+            unconfiguredAgentId = undefined;
+            return { transportConfigured: true };
+          },
+        },
+      });
+      const positive = await request("POST", `/namespaces/${namespaceId}/agents`, {
+        name: "Finite preparation control",
+        harnessAuth: { method: "api_key", source: secretRef },
+        configurationId,
+        repositoryBindings: [{ repositoryRef: "project", profile: "git-write" }],
+      });
+      assert.equal(positive.statusCode, 201, positive.body);
+      const finiteAgent = positive.json().data;
+      await grantAgentSecretOperate(pool, finiteAgent, secretRef.id);
+      unconfiguredAgentId = finiteAgent.id;
+      statusCalls.length = 0;
+      provisionCalls.length = 0;
+      const deployed = await request(
+        "POST",
+        `/namespaces/${namespaceId}/agents/${finiteAgent.id}/deploy`,
+      );
+      assert.equal(deployed.statusCode, 202, deployed.body);
+      assert.deepEqual(statusCalls, [finiteAgent.id]);
+      assert.deepEqual(provisionCalls, [finiteAgent.id]);
+      const workKey = `agent_revision:${deployed.json().data.id}:reconcile`;
+      const positiveWork = await state.read((v) => v.operations.findWork(workKey));
+      assert.ok(positiveWork, "successful admission enqueues real PostgreSQL reconcile work");
+      const operations = () =>
+        state.read(async (v) =>
+          (await v.operations.list()).filter((operation) => operation.namespaceId === namespaceId),
+        );
+      const beforeOperations = await operations();
+      assert.ok(
+        beforeOperations.some(
+          (operation) =>
+            operation.kind === "agent_revision" && operation.resourceId === deployed.json().data.id,
+        ),
+      );
+      const policy = selectedPolicy;
+      const original = policy.resolve.bind(policy);
+      let rechecks = 0;
+      let permitted = true;
+      assert.ok(policy instanceof GitHubRepositoryPolicy);
+      t.mock.method(policy, "allowsStandingApproval", () => permitted);
+      t.mock.method(policy, "resolve", (input: Parameters<typeof policy.resolve>[0]) => {
+        // This legacy call occurs only after OCC reads the stored approval. Initial
+        // admission has already succeeded through the bound provider resolver.
+        rechecks++;
+        permitted = false;
+        return original(input);
+      });
+      const before = await state.read((v) => v.revisions.listRevisions(namespaceId, agent.id));
+      const beforeWork = await state.read((v) =>
+        Promise.all(
+          before.map((revision) =>
+            v.operations.findWork(`agent_revision:${revision.id}:reconcile`),
+          ),
+        ),
+      );
+      statusCalls.length = 0;
+      provisionCalls.length = 0;
+      const denied = await request("POST", path + "/deploy");
+      assert.equal(rechecks, 1);
+      assert.deepEqual(statusCalls, [], "late veto precedes credential status inspection");
+      assert.deepEqual(provisionCalls, [], "late veto precedes credential provisioning");
+      assert.deepEqual(await operations(), beforeOperations, "no work added in this Namespace");
+      assert.deepEqual(
+        await state.read((v) =>
+          Promise.all(
+            before.map((revision) =>
+              v.operations.findWork(`agent_revision:${revision.id}:reconcile`),
+            ),
+          ),
+        ),
+        beforeWork,
+        "existing Agent work is unchanged",
+      );
+      assert.deepEqual(await state.read((v) => v.operations.findWork(workKey)), positiveWork);
+      assert.equal(denied.statusCode, 409, denied.body);
+      assert.equal(denied.json().error.message, STANDING_APPROVAL_POLICY_CHANGED);
+      assert.deepEqual(
+        await state.read((v) => v.revisions.listRevisions(namespaceId, agent.id)),
+        before,
+      );
+      assert.deepEqual(await read(), [first]);
+    });
+    await selectRepo(registry, true);
     const currentGeneration = async () =>
       (
         await pool.query(

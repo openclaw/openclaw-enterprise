@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-10-30"
-last_updated_session: authoring-run/58b286d1-0e1a-4666-b77e-e8da815c7d88
+updated: "2026-11-03"
+last_updated_session: authoring-run/91f06442-80cf-47b7-9473-cc87a5256fc7
 ---
 
 # Agent repository credential flow
@@ -95,63 +95,66 @@ graph TD
 ### 1. Project choices and resolve Namespace policy during Agent admission
 
 `OpenClawController.listRepositoryOptions` authorizes Namespace Agent creation or
-exact-Agent update, checks Compute-owned availability, then projects opaque references, names and
-profiles through `GitHubRepositoryPolicy.listOptions`. Exact Harness validation remains at
-deployment. No approvals yields `[]`, and no `repository` settings `[]` with `meta.notConfigured`;
-closed Namespaces conflict. Classified optional discovery failures map to
-`503 REPOSITORY_OPTIONS_UNAVAILABLE`.
+exact-Agent update, checks Compute availability, then calls
+`GitHubRepositoryPolicy.listOptions` for refs, names and profiles. Deploy validates
+the exact Harness. No approvals returns `[]`; missing `repository` returns `[]`
+with `meta.notConfigured`. Closed Namespaces conflict. Classified discovery
+failures return `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
 `createRepositoryFields` searches up to 1,000 choices with 16 attachments.
-`repositorySettings` resolves inheritance through RepositoryPolicyDriver; the database
-checks bindings. Only fresh, empty drafts permit the classified outage. The approved
-registry supplies GitHub choices; the native sender does not issue metadata credentials
-or enrich choices with provider descriptions.
+`repositorySettings` resolves inheritance through RepositoryPolicyDriver; the
+database checks bindings. Only fresh, empty drafts allow the classified outage.
+The registry supplies choices; the native sender issues no metadata credentials
+and adds no provider descriptions.
 
-The form saves Configuration first and preserves it after known Agent rejections.
-Retries reuse it; repository retries require a successful reload and nonempty reselection.
-Failed reloads block creation; obsolete completions cannot change the view. Unknown
-outcomes require stored Agent and Configuration reads.
+The form saves Configuration first and reuses it after known Agent rejections.
+Repository retries require reload and nonempty reselection. Failed reloads block
+creation; stale completions cannot change the view. For unknown outcomes, read
+the stored Agent and Configuration.
 
 `packages/occ/src/index.ts:OpenClawController.repositoryBindingSelections`
-uses `resolveRepositoryBindings` after authorization. Without a repository Driver, save answers
-`409 RESOURCE_CONFLICT`. Inputs contain distinct opaque
-references and optional profiles, never provider tokens or caller-selected grant identities;
-selections keep request order. The
+resolves authorized selections. Save without a Repo Driver returns
+`409 RESOURCE_CONFLICT`. Requests supply distinct opaque refs and optional
+profiles, with no tokens or grant IDs. OCC saves normalized selections in request order.
 `apps/controller/src/drivers/repo/github/policy.ts:GitHubRepositoryPolicy.resolve`
-uses local registry policy, defaults omitted legacy profiles to `git-write`, and
+uses the local registry, defaults omitted legacy profiles to `git-write`, and
 makes no control-socket or GitHub calls.
 
 `apps/controller/src/drivers/repo/github/credentials/registry.ts:resolveGitHubRepositoryBinding`
-requires the exact Namespace/reference/profile combination. Its fingerprint binds provider,
-App, installation, repository, duration policy, complete Namespace profile policy, exact permissions
-and optional normalized push-ref allowlist. Each binding has one grant; installations can
-supply several repositories. OCC stores normalized selections; an omitted update array
-preserves them and an empty array clears them.
+requires an exact Namespace/ref/profile. Its fingerprint binds provider, App,
+installation, repository, duration, full Namespace profile policy, exact
+permissions and optional normalized push-ref allowlist. Each binding has one
+grant; installations can supply several repositories. Omitted updates preserve
+selections; an empty array clears them.
 
 <a id="2-freeze-a-deployable-revision" class="anchor-alias"></a>
 
 ### 2. Freeze a deployable version
 
-`packages/occ/src/index.ts:OpenClawController.admitRepositoryCredentials`
-re-resolves the draft, validates Compute topology and freezes Driver identity,
-grants and an absolute deadline unaffected by renewal or recovery.
-`validateRepositoryBrokerNetworkProxy` then refuses a Codex proxy setting that
-blocks the broker, as Agent save does.
-
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
-selects `GitHubRepositoryPolicy` from the Backend's `repo`.
-`apps/controller/src/composition/repository-credentials/policy.ts:composeRepositoryPolicy`
-passes the selected owner to policy. Its Driver ID identifies the policy; its Backend ID must match the registry.
+selects the Backend's GitHub policy. Its Backend ID must match the registry.
+`packages/occ/src/index.ts:OpenClawController.forInstallation` binds that owner
+and rejects missing or mismatched ownership for configured repository access.
+Startup rejects `drivers.repo` in every mode before worker or attempt creation.
+
+Bundled deploy calls `resolveBindings` in `OpenClawController.admitRepositoryCredentials`;
+a deselected policy fails. Programmatic controllers call `RepositoryPolicyDriver.resolve`.
+OCC checks Compute topology and freezes Driver identity, grants and an absolute
+deadline that renewal and recovery cannot extend. `validateRepositoryBrokerNetworkProxy`
+refuses Codex proxy settings that block the broker.
+
+Deploy resolves through the current Repo Driver again after reading standing
+approval. Denial or a changed binding or scope blocks revision creation.
+
 Protected `repository.preparedGitHub` uses the installed Sandbox/Credential Proxy
-Driver. Its finite sessions need no native sender, control socket, broker CA or
+Driver. Finite sessions need no native sender, control socket, broker CA or
 session files.
 
-`repository.nativeSender` selects `GitHubNativeRepositorySender` for prepared
-GitHub custody. It owns sessions and files, excludes protected delivery, and
-receives no App key. Startup rejects `drivers.repo` in every mode before worker or attempt
-creation. Drain accepted work on its original owner before cutover. Cleanup matches
-recorded identity without policy resolution or authority restoration. The
-worker's prepared provider owns issuance and custody.
+`repository.nativeSender` selects `GitHubNativeRepositorySender` for native
+GitHub custody. It owns sessions and files without an App key. Drain accepted
+work on its original owner before cutover. Cleanup uses recorded identity
+without resolving policy or restoring authority. The worker's prepared provider
+issues and holds credentials.
 
 ### 3. Record ownership before opening a session
 
@@ -308,7 +311,7 @@ The worker commits activation and next maintenance together, preserving the acto
 30 seconds, the native sender interval or a shorter Compute interval. After restart, the worker invalidates missing known sessions without reminting. Users can deploy during cleanup.
 
 [Preview, save and deploy](../../packages/occ/src/index.ts) require explicit repository policy
-permission and current scope for standing approval. Deploy rechecks the binding; mismatches prevent revision creation.
+permission and current scope for standing approval.
 The
 [worker](../../apps/controller/src/worker/repository-credentials.ts) rechecks
 [eligibility](../../packages/occ/src/repository-approval.ts) under Namespace then Agent locks.
@@ -397,6 +400,8 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 16:24: Document bound repository admission. (authoring-run/91f06442-80cf-47b7-9473-cc87a5256fc7 - 47a126079e6037a1ad1d27db1b514fde1cde345c)
 
 - 2026-10-30 15:01: Reuse validated policy owner identity. (authoring-run/58b286d1-0e1a-4666-b77e-e8da815c7d88 - 5b20ec5b1501bf1c6c2254ec36d9dc1e0e0bd730)
 
