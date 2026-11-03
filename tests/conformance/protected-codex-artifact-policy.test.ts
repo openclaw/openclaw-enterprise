@@ -513,3 +513,160 @@ test("paired OpenShell compilers compose inspected public reads separately from 
     ConfigurationValidationError,
   );
 });
+
+function serviceOnlyRevision(snapshot: SandboxPolicySnapshot): AgentRevision {
+  const { repositoryCredentials: _credentials, ...revision } = protectedRevision(snapshot);
+  const {
+    repositoryGit: _repository,
+    repositoryGitAuthorization: _authorization,
+    ...plan
+  } = revision.egressPlan!;
+  return { ...revision, egressPlan: plan };
+}
+
+test("protected public-reader-only compilation preserves default deny and independently governed routes", async (t) => {
+  const tls = await harnessTlsFixture(t);
+  const service: ComputeServiceAccess = {
+    id: "public-github-read",
+    driverId: "kubernetes",
+    implementation: "kubernetes",
+    endpoint: "https://10.96.0.55:8080",
+    configuration: {
+      policy: { mode: "all" },
+      peer: { namespace: "reader", podLabels: { app: "reader" } },
+      authorizationConfigMapName: "reader-authorizations",
+      installationId: "ins_artifact",
+      caBundle: tls.caBundle,
+    },
+  };
+  const driver = sandbox(t, [artifact()], []);
+  const snapshot = driver.admitProtectedNetworkPolicy(4, [service]).snapshot;
+  const revision = serviceOnlyRevision(snapshot);
+  const options = { middlewareName: "service-exchange", authorityScope: "execution" as const };
+  const compile = (candidate: AgentRevision) =>
+    openShellEgressConfiguration(candidate.egressPlan!, options, candidate);
+  assert.deepEqual(openShellProtectedCodexArtifacts(revision), {});
+  const compiled = compile(revision);
+  const networks = compiled.network_policies as Record<
+    string,
+    { endpoints: Record<string, unknown>[] }
+  >;
+  assert.deepEqual(Object.keys(networks), ["public-github-read"]);
+  assert.deepEqual(networks["public-github-read"]!.endpoints, [
+    {
+      host: "10.96.0.55",
+      ports: [8080],
+      allowed_ips: ["10.96.0.55"],
+      protocol: "rest",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      credential_binding: { provider: "oce-runtime-8774ba4feb359bde" },
+      rules: [
+        { allow: { method: "GET", path: "/repos/**" } },
+        { allow: { method: "GET", path: "/git/**/info/refs" } },
+        { allow: { method: "POST", path: "/git/**/git-upload-pack" } },
+      ],
+    },
+  ]);
+  assert.deepEqual(compiled.network_middlewares, {
+    "oce-egress": {
+      name: "oce-egress",
+      middleware: "service-exchange",
+      on_error: "fail_closed",
+      endpoints: { include: ["deny-egress.invalid"] },
+      credential_authority: true,
+      execution_authority: true,
+    },
+  });
+  const ref = { id: "governed", generation: 1 };
+  const route = {
+    route: ref,
+    binding: {
+      binding: ref,
+      execution: revision.egressPlan!.execution,
+      source: {
+        installationId: "ins_artifact",
+        namespaceId: revision.namespaceId,
+        source: ref,
+        backend: ref,
+        provider: ref,
+      },
+      grant: { kind: "inference" as const, models: ["fixture"], providerTools: "none" as const },
+      grantHash: "a".repeat(64),
+      isolationId: "isolated",
+    },
+    origin: "https://model.example.test",
+    path: "/v1/responses",
+    method: "POST" as const,
+    operationPolicy: ref,
+    responsePolicy: ref,
+    deadlineMs: 30000,
+  };
+  const governed = compile({
+    ...revision,
+    egressPlan: { ...revision.egressPlan!, routes: [route] },
+  });
+  assert.deepEqual((governed.network_policies as Record<string, unknown>)["oce-egress-0"], {
+    name: "oce-egress-0",
+    endpoints: [
+      {
+        host: "model.example.test",
+        ports: [443],
+        protocol: "rest",
+        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+        access: "NETWORK_ACCESS_PRESET_FULL",
+        path: "/v1/responses",
+      },
+    ],
+  });
+  assert.deepEqual(
+    (governed.network_middlewares as Record<string, { endpoints: unknown }>)["oce-egress"]!
+      .endpoints,
+    { include: ["model.example.test"] },
+  );
+  assert.throws(
+    () =>
+      compile({
+        ...revision,
+        egressPlan: { ...revision.egressPlan!, routes: [{ ...route, origin: service.endpoint }] },
+      }),
+    /overlap/,
+  );
+  for (const candidate of [
+    {
+      ...revision,
+      sandboxPolicy: {
+        ...snapshot,
+        defaults: {},
+        additions: [
+          {
+            id: "free",
+            binary: "/usr/bin/node",
+            host: "elsewhere.test",
+            ports: [{ from: 443, to: 443 }],
+          },
+        ],
+      },
+    },
+    {
+      ...revision,
+      sandboxPolicy: {
+        ...snapshot,
+        defaults: sandbox(t, [artifact()], [artifact().name]).admitProtectedCodexArtifactPolicy(4)
+          .snapshot.defaults,
+      },
+    },
+    { ...revision, compute: { ...revision.compute, serviceAccess: undefined } },
+    {
+      ...revision,
+      egressPlan: {
+        ...revision.egressPlan!,
+        execution: { ...revision.egressPlan!.execution, installationId: "ins_other" },
+      },
+    },
+    { ...revision, sandboxPolicy: { ...snapshot, driverId: "foreign" } },
+  ]) {
+    assert.throws(() => compile(candidate as AgentRevision), ConfigurationValidationError);
+  }
+  const old = serviceOnlyRevision(driver.admitProtectedCodexArtifactPolicy(4).snapshot);
+  assert.throws(() => compile(old), ConfigurationValidationError);
+});

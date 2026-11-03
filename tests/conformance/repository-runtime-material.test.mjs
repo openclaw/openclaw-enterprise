@@ -3004,3 +3004,153 @@ for (const mode of ["embedded", "dedicated"]) {
     );
   });
 }
+
+test("public Git read admission freezes the authored Agent scope and exact service before normalization", async () => {
+  const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+  const reader = f.driver.options.network.publicGithubRead;
+  Object.assign(reader, {
+    installationId: "installation-test",
+    authorizationConfigMapName: "public-github-authorizations",
+    caBundle: "public-ca",
+  });
+  const source = structuredClone(f.revision.configuration);
+  const input = { configuration: source, harness: f.revision.harness };
+  assert.deepEqual(
+    f.driver.admitServiceAccess(input),
+    [],
+    "enabling the service grants no Agent access",
+  );
+  source.plugins.entries.codex.config.publicGithubRead = {
+    mode: "repositories",
+    repositories: ["Example/Project", "example/project"],
+  };
+  const selected = f.driver.admitServiceAccess(input);
+  assert.deepEqual(selected, [
+    {
+      id: "public-github-read",
+      driverId: f.driver.id,
+      implementation: f.driver.implementation,
+      endpoint: `https://${reader.address}:8080`,
+      configuration: {
+        policy: { mode: "repositories", repositories: ["example/project"] },
+        peer: { namespace: reader.namespace, podLabels: reader.podLabels },
+        installationId: "installation-test",
+        authorizationConfigMapName: "public-github-authorizations",
+        caBundle: "public-ca",
+      },
+    },
+  ]);
+  source.plugins.entries.codex.config.publicGithubRead.repositories = [];
+  assert.deepEqual(f.driver.admitServiceAccess(input), []);
+  source.plugins.entries.codex.config.publicGithubRead = { mode: "all" };
+  source.plugins.entries.codex.config.appServer.networkProxy = {
+    enabled: true,
+    domains: { [reader.address]: "deny" },
+  };
+  assert.deepEqual(
+    f.driver.admitServiceAccess(input),
+    [],
+    "a native deny cannot become a service grant",
+  );
+  assert.deepEqual(
+    f.driver.admitServiceAccess({ ...input, harness: { ...input.harness, mode: "embedded" } }),
+    [],
+  );
+});
+
+test("admitted public Git runtime carries only nonsecret configuration and a distinct launcher", async () => {
+  const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+  const originalLauncher = f.driver.pluginRuntimeSnapshot(f.revision).entrypoint;
+  Object.assign(f.driver.options.network.publicGithubRead, {
+    installationId: "installation-test",
+    authorizationConfigMapName: "public-github-authorizations",
+    caBundle: "public-ca",
+  });
+  f.revision.configuration.plugins.entries.codex.config.publicGithubRead = { mode: "all" };
+  const services = f.driver.admitServiceAccess({
+    configuration: f.revision.configuration,
+    harness: f.revision.harness,
+  });
+  f.revision.compute.serviceAccess = services;
+  f.revision.compute.admission = f.driver.admitRevision(f.revision);
+  const snapshot = f.driver.pluginRuntimeSnapshot(f.revision);
+  assert.equal(snapshot.runtime.publicGithubRead.endpoint, `https://${publicReader.address}:8080`);
+  assert.notEqual(
+    snapshot.entrypoint,
+    originalLauncher,
+    "new service access requires a separately admitted launcher",
+  );
+  const files = f.driver.sandboxWorkloadFiles(snapshot);
+  const config = JSON.parse(files.find(({ name }) => name === "public-github-read.json").content);
+  assert.deepEqual(config, {
+    endpoint: `https://${publicReader.address}:8080`,
+    caBundle: "public-ca",
+    authenticatedRepositories: [],
+  });
+  assert.ok(files.some(({ name }) => name === "public-github-read.md"));
+  assert.equal(
+    JSON.stringify(files).includes("capability"),
+    false,
+    "the public runtime projection must contain no service credential",
+  );
+  // Persisted JSON documents preserve values, not object property insertion order.
+  const rehydrated = JSON.parse(JSON.stringify(f.revision), (_key, value) =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).reverse())
+      : value,
+  );
+  assert.deepEqual(f.driver.pluginRuntimeSnapshot(rehydrated), snapshot);
+});
+
+for (const operation of ["stopRevision", "retireRevision"]) {
+  test(`${operation} fences the owned runtime even when the public authorization registry is unavailable`, async () => {
+    const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+    delete f.revision.repositoryCredentials;
+    await f.driver.prepareRevision(f.revision, f.context());
+    assert.ok(f.deployments().some((deployment) => deployment.metadata.name.startsWith("agent-")));
+    // Resume the owned runtime with its service admission, after its external
+    // authorization registry has disappeared. Shutdown must still fence it.
+    Object.assign(f.driver.options.network.publicGithubRead, {
+      installationId: "installation-test",
+      authorizationConfigMapName: "unavailable-authorizations",
+      caBundle: "public-ca",
+    });
+    f.revision.configuration.plugins.entries.codex.config.publicGithubRead = { mode: "all" };
+    f.revision.compute.serviceAccess = f.driver.admitServiceAccess({
+      configuration: f.revision.configuration,
+      harness: f.revision.harness,
+    });
+    f.revision.compute.admission = f.driver.admitRevision(f.revision);
+    await assert.rejects(f.driver[operation](f.revision), /404|authorization|registry/);
+    assert.equal(
+      f.deployments().filter((deployment) => deployment.metadata.name.startsWith("agent-")).length,
+      0,
+    );
+  });
+}
+
+test("service maintenance fences the owned runtime when its admitted reader peer changes", async () => {
+  const f = await fixture("dedicated", undefined, { publicGithubRead: { ...publicReader } });
+  delete f.revision.repositoryCredentials;
+  await f.driver.prepareRevision(f.revision, f.context());
+  Object.assign(f.driver.options.network.publicGithubRead, {
+    installationId: "installation-test",
+    authorizationConfigMapName: "unavailable-authorizations",
+    caBundle: "public-ca",
+  });
+  f.revision.configuration.plugins.entries.codex.config.publicGithubRead = { mode: "all" };
+  f.revision.compute.serviceAccess = f.driver.admitServiceAccess({
+    configuration: f.revision.configuration,
+    harness: f.revision.harness,
+  });
+  f.revision.compute.admission = f.driver.admitRevision(f.revision);
+  f.driver.options.network.publicGithubRead.address = "10.43.0.249";
+  await assert.rejects(
+    f.driver.maintainServiceAccess(f.revision, new AbortController().signal),
+    /404|reader|registry/,
+  );
+  assert.equal(
+    f.deployments().filter((deployment) => deployment.metadata.name.startsWith("agent-")).length,
+    0,
+  );
+});

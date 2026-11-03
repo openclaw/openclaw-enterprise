@@ -232,6 +232,10 @@ export interface ComputeDriver extends Driver {
     readonly harness: Readonly<RevisionHarnessDescriptor>;
   }): readonly ComputeServiceAccess[];
 
+  /** Maintain only existing frozen services after the worker verifies the running revision's
+   * independent authority. Never prepare or activate a runtime or renew repository grants. */
+  maintainServiceAccess?(revision: Readonly<AgentRevision>, signal: AbortSignal): Promise<void>;
+
   /**
    * Read only the selected revision's existing Harness. Never prepare, adopt, attach,
    * repair, release or authorize an execution. Missing support provides no assurance.

@@ -2559,6 +2559,10 @@ export class ControllerWorker {
       // Expiry recovery observes the original operation; it must not replay source detaches.
       signal.throwIfAborted();
       try {
+        // Frozen services retain their own authority after Git expires. Renew them without
+        // preparing or activating the runtime, or admitting another repository session.
+        await compute.maintainServiceAccess?.(revision, signal);
+        signal.throwIfAborted();
         const result =
           revision.egressPlan?.policyReductionVersion === 2
             ? await reduceCredentialPolicy(

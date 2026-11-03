@@ -89,6 +89,11 @@ Credential Proxy admission restrictions remain unchanged.
 
 ### Ownership and admission
 
+The [shared protected-network contract](0023-egress-proxy-credential-lifecycle/contracts.md#qualified-service-access-under-protection)
+owns service acknowledgement and the frozen snapshot. This RFC owns public-reader
+scope, capability handling and Git routing. A qualified external-destination
+catalog can reuse that contract with separate destination and IAM qualification.
+
 Kubernetes Compute owns the reader's configured peer, Agent selection, managed
 runtime files and Kubernetes policy. Extend its Driver contract with a pure
 service-access contribution derived from the original source Configuration,

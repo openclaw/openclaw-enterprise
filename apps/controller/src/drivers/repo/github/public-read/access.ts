@@ -126,6 +126,15 @@ export async function authorizationSnapshot(
   };
 }
 
+/** A revision observation is stable while unrelated reader leases change. */
+export function publicGithubReadAuthorizationDigest(
+  authorization: PublicGithubReadAuthorization | undefined,
+): string {
+  return createHash("sha256")
+    .update(JSON.stringify(authorization ?? null))
+    .digest("hex");
+}
+
 // Every caller is checked before joining shared API work. Neither addresses nor
 // request identity headers grant authority; only the current mounted verifier does.
 export async function authorizePublicGithubRead(
@@ -165,14 +174,10 @@ export async function authorizePublicGithubRead(
   }
 }
 
-// The descriptor is opened afresh on every read, including after an atomic
-// Kubernetes volume projection replacement. Bound bytes before parsing JSON.
-export async function loadPublicGithubReadJson(
-  path: string,
-): Promise<{ value: unknown; digest: string }> {
+// The descriptor is opened afresh, including after an atomic volume replacement.
+async function readPublicGithubReadBytes(path: string, limit: number): Promise<Buffer> {
   const file = await open(path, "r");
   try {
-    const limit = 1024 * 1024;
     const bytes = Buffer.alloc(limit + 1);
     let length = 0;
     while (length <= limit) {
@@ -185,12 +190,29 @@ export async function loadPublicGithubReadJson(
     if (length > limit) {
       throw new Error("Public GitHub read configuration exceeds its byte limit.");
     }
-    const content = bytes.subarray(0, length);
-    return {
-      value: JSON.parse(content.toString("utf8")),
-      digest: createHash("sha256").update(content).digest("hex"),
-    };
+    return bytes.subarray(0, length);
   } finally {
     await file.close();
   }
+}
+
+export async function loadPublicGithubReadTls(
+  certPath: string,
+  keyPath: string,
+): Promise<NonNullable<ReaderOptions["tls"]>> {
+  const [cert, key] = await Promise.all([
+    readPublicGithubReadBytes(certPath, 64 * 1024),
+    readPublicGithubReadBytes(keyPath, 64 * 1024),
+  ]);
+  return { cert, key };
+}
+
+export async function loadPublicGithubReadJson(
+  path: string,
+): Promise<{ value: unknown; digest: string }> {
+  const content = await readPublicGithubReadBytes(path, 1024 * 1024);
+  return {
+    value: JSON.parse(content.toString("utf8")),
+    digest: createHash("sha256").update(content).digest("hex"),
+  };
 }

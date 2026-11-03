@@ -202,6 +202,14 @@ export function openShellEgressConfiguration(
   if (Object.keys(services).some((name) => Object.hasOwn(artifacts, name))) {
     throw new Error("Service rules conflict with artifact declarations.");
   }
+  const serviceHosts = new Set(
+    (revision?.sandboxPolicy?.serviceAccess ?? []).map(
+      (service) => new URL(service.endpoint).hostname,
+    ),
+  );
+  if (plan.routes.some((route) => serviceHosts.has(new URL(route.origin).hostname))) {
+    throw new Error("Protected service and governed egress routes overlap.");
+  }
   if (new Set(plan.routes.map((route) => route.binding.binding.id)).size > 1) {
     throw new Error("The protected execution permits at most one binding.");
   }
@@ -232,27 +240,30 @@ export function openShellEgressConfiguration(
     });
   }
   return immutableCopy({
-    network_policies: Object.fromEntries(
-      plan.routes.map((route, index) => {
-        const origin = new URL(route.origin);
-        return [
-          `oce-egress-${index}`,
-          {
-            name: `oce-egress-${index}`,
-            endpoints: [
-              {
-                host: origin.hostname,
-                ports: [Number(origin.port || 443)],
-                protocol: "rest",
-                enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-                access: "NETWORK_ACCESS_PRESET_FULL",
-                path: route.path,
-              },
-            ],
-          },
-        ];
-      }),
-    ),
+    network_policies: {
+      ...Object.fromEntries(
+        plan.routes.map((route, index) => {
+          const origin = new URL(route.origin);
+          return [
+            `oce-egress-${index}`,
+            {
+              name: `oce-egress-${index}`,
+              endpoints: [
+                {
+                  host: origin.hostname,
+                  ports: [Number(origin.port || 443)],
+                  protocol: "rest",
+                  enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+                  access: "NETWORK_ACCESS_PRESET_FULL",
+                  path: route.path,
+                },
+              ],
+            },
+          ];
+        }),
+      ),
+      ...services,
+    },
     network_middlewares: {
       "oce-egress": {
         name: "oce-egress",

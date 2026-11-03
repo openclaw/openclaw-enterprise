@@ -7,7 +7,7 @@ import http from "node:http";
 import https from "node:https";
 import { connect as connectTcp, createServer as createTcpServer } from "node:net";
 import test from "node:test";
-import { loadPublicGithubReadJson } from "../../apps/controller/src/drivers/repo/github/public-read/access.ts";
+import { loadPublicGithubReadJson, loadPublicGithubReadTls } from "../../apps/controller/src/drivers/repo/github/public-read/access.ts";
 import { createPublicGithubReadServer } from "../../apps/controller/src/drivers/repo/github/public-read/server.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { listen } from "../helpers/listen.mjs";
@@ -776,11 +776,18 @@ test("reader capabilities enforce revision scope, current ceiling and withdrawal
 test("verified reader TLS, exact mounted registry bytes and restart preserve withdrawal", async (t) => {
   const directory = await temporaryDirectory(t, "public-github-mounted-registry-");
   const tls = await selfSigned(directory);
+  const loadedTls = await loadPublicGithubReadTls(tls.certPath, tls.keyPath);
+  assert.equal(loadedTls.cert.toString(), tls.cert);
+  assert.equal(loadedTls.key.toString(), tls.key);
+  const oversizedTls = join(directory, "oversized-tls.pem");
+  await writeFile(oversizedTls, Buffer.alloc(64 * 1024 + 1));
+  await assert.rejects(loadPublicGithubReadTls(oversizedTls, tls.keyPath), /byte limit/);
+  await assert.rejects(loadPublicGithubReadTls(tls.certPath, oversizedTls), /byte limit/);
   const file = join(directory, "authorizations.json");
   const initial = JSON.stringify({ "revision-http": authorization }, null, 2) + "\n";
   await writeFile(file, initial);
   const options = {
-    tls,
+    tls: loadedTls,
     policy: { mode: "all" },
     loadAuthorizations: async () => {
       const loaded = await loadPublicGithubReadJson(file);
@@ -835,4 +842,43 @@ test("verified reader TLS, exact mounted registry bytes and restart preserve wit
   await writeFile(file, "invalid registry");
   assert.equal((await get("/healthz")).status, 503);
   assert.equal((await get("/repos/example/project")).status, 503);
+});
+
+test("reader revision readiness stays stable while other Agent leases change", async (t) => {
+  const identity = (revisionId) => ({
+    installationId: "installation-test",
+    namespaceId: "namespace-test",
+    agentId: "agent-test",
+    revisionId,
+    tokenSha256: "a".repeat(64),
+    policy: { mode: "all" },
+    validUntil: "2099-01-01T00:00:00.000Z",
+  });
+  const registry = { first: identity("first"), second: identity("second") };
+  const server = createPublicGithubReadServer({
+    policy: { mode: "all" },
+    loadAuthorizations: () => registry,
+  });
+  const port = await listen(t, server);
+  const observe = async () => {
+    const response = await globalThis.fetch(`http://127.0.0.1:${port}/healthz?revision=first`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.match(body.revisionAuthorizationDigest, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.stringify(body).includes("installation-test"), false);
+    return body.revisionAuthorizationDigest;
+  };
+  const before = await observe();
+  registry.second.validUntil = "2099-02-01T00:00:00.000Z";
+  assert.equal(
+    await observe(),
+    before,
+    "an unrelated lease update must not delay this revision's readiness",
+  );
+  registry.first.validUntil = "1970-01-01T00:00:00.000Z";
+  assert.notEqual(
+    await observe(),
+    before,
+    "withdrawal must change the selected revision's observation",
+  );
 });

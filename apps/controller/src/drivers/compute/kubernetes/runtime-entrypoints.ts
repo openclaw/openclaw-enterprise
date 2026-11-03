@@ -5589,3 +5589,38 @@ if (
   checkPluginStatus((status) => checkWebSocket(derivedToken(status.startupId)));
 }
 `;
+
+// New admitted launches get the public transport; preserve legacy command bytes.
+function publicGithubReadEntrypoint(entrypoint: string): string {
+  const helper = readFileSync(
+    new URL("../../repo/github/public-read/transport.mjs", import.meta.url),
+    "utf8",
+  );
+  const setup = `
+if (pluginRuntime?.manifest?.publicGithubRead?.endpoint) {
+  const publicFs = require("node:fs");
+  const publicDirectory = publicFs.mkdtempSync(require("node:path").join(require("node:os").tmpdir(), "oce-public-git-runtime-"));
+  publicFs.chmodSync(publicDirectory, 0o700);
+  const publicHelper = publicDirectory + "/transport.mjs";
+  publicFs.writeFileSync(publicHelper, ${JSON.stringify(helper)}, {mode:0o400});
+  const publicSetup = spawnSync(process.execPath, [publicHelper, "--install-material", process.env.OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE], {encoding:"utf8"});
+  if (publicSetup.status !== 0) throw new Error("Public Git transport initialization failed.");
+  Object.assign(process.env, JSON.parse(publicSetup.stdout));
+}
+`;
+  return entrypoint.replace(
+    'const pluginRuntime = readPluginRuntime("codex");',
+    'const pluginRuntime = readPluginRuntime("codex");' + setup,
+  );
+}
+export const PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT =
+  publicGithubReadEntrypoint(AGENT_RUNTIME_ENTRYPOINT);
+export const PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT = publicGithubReadEntrypoint(
+  PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+);
+export const PUBLIC_GITHUB_READ_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT,
+);
+export const PUBLIC_GITHUB_READ_PROTECTED_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  PUBLIC_GITHUB_READ_PROTECTED_AGENT_ENTRYPOINT,
+);

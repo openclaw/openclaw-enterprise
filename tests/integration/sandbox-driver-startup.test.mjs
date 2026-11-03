@@ -8443,7 +8443,7 @@ test(
   },
 );
 
-test("OpenShell public-reader material stays in endpoint-bound provider credentials across renewal and rejects ambient delivery", async (t) => {
+async function publicReaderMaterialDelivery(t, protectedReader) {
   const tls = await harnessTlsFixture(t);
   const gateway = workspaceGatewayClient();
   let created;
@@ -8458,7 +8458,11 @@ test("OpenShell public-reader material stays in endpoint-bound provider credenti
     advertisedUrl: "http://codex.example.test:8080/",
     url: "http://codex.example.test:8080/",
   });
-  const driver = openShellDriver(gateway);
+  const options = sandboxInstallation().drivers.sandbox.configuration;
+  if (protectedReader) {
+    options.egress = { middlewareName: "service-exchange", authorityScope: "execution" };
+  }
+  const driver = openShellDriver(gateway, options);
   const { context, revision, requirements } = runtimeSandboxFixture(driver);
   const descriptor = {
     id: "public-github-read",
@@ -8478,10 +8482,38 @@ test("OpenShell public-reader material stays in endpoint-bound provider credenti
     implementation: "kubernetes",
     serviceAccess: [descriptor],
   };
-  revision.sandboxPolicy = driver.admitNetworkPolicy([], 1, undefined, {
-    serviceAccess: [descriptor],
-  });
+  revision.sandboxPolicy = protectedReader
+    ? driver.admitProtectedNetworkPolicy(1, [descriptor]).snapshot
+    : driver.admitNetworkPolicy([], 1, undefined, { serviceAccess: [descriptor] });
   const runtime = JSON.parse(requirements.files[0].content);
+  if (protectedReader) {
+    revision.executionAdmission = { version: 3, mode: "protected" };
+    const plan = {
+      id: "service-plan",
+      generation: 1,
+      execution: {
+        installationId: "ins_reader",
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        executionId: revision.id,
+        servicePrincipalId: "spr_reader",
+      },
+      sandboxDriverId: driver.id,
+      egressDriverId: driver.id,
+      routes: [],
+    };
+    revision.egressPlan = plan;
+    requirements.credentialAttachments = [];
+    requirements.proxyWiring = {
+      plan,
+      configuration: openShellEgressConfiguration(plan, options.egress, revision),
+    };
+    const { harnessEgressEnrollment } =
+      await import("../../apps/controller/src/drivers/compute/egress-enrollment.ts");
+    runtime.egressEnrollment = harnessEgressEnrollment(plan);
+    runtime.providerTools = "none";
+  }
   runtime.publicGithubRead = {
     endpoint: descriptor.endpoint,
     materialPath: "/runtime/public-github-read.json",
@@ -8528,8 +8560,18 @@ test("OpenShell public-reader material stays in endpoint-bound provider credenti
     },
   ]);
   assert.equal(profile.files.length, 6);
+  if (protectedReader) {
+    assert.deepEqual(Object.keys(created.spec.policy.network_policies).sort(), [
+      "public-github-read",
+      "workspace-node-enrollment",
+    ]);
+    assert.deepEqual(created.spec.providers, [providerCreate.name]);
+    assert.equal(revision.repositoryCredentials, undefined);
+  }
   const serviceRule = created.spec.policy.network_policies["public-github-read"];
-  assert.deepEqual(serviceRule.endpoints[0].credential_binding, { provider: providerCreate.name });
+  assert.deepEqual(serviceRule.endpoints[0].credential_binding, {
+    provider: providerCreate.name,
+  });
   for (const [name, rule] of Object.entries(created.spec.policy.network_policies)) {
     if (name !== "public-github-read") {
       assert.ok(rule.endpoints.every((endpoint) => endpoint.credential_binding === undefined));
@@ -8561,4 +8603,9 @@ test("OpenShell public-reader material stays in endpoint-bound provider credenti
     authenticatedRepositories: [],
   });
   await assert.rejects(provision, /public-reader runtime files/);
-});
+}
+
+for (const protectedReader of [false, true]) {
+  test(`OpenShell public-reader material stays in endpoint-bound provider credentials across renewal and rejects ambient delivery (${protectedReader ? "protected service only" : "ordinary"})`, (t) =>
+    publicReaderMaterialDelivery(t, protectedReader));
+}

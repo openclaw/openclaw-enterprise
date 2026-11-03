@@ -2331,6 +2331,9 @@ test("protected Agent admission requires exact protected-network acknowledgement
   };
   let services = [service];
   f.compute.admitServiceAccess = () => services;
+  // This case proves OCC acknowledgement with a synthetic descriptor, independently of
+  // Kubernetes' configured reader installation and its separate admission fingerprint.
+  f.compute.admitRevision = undefined;
   const agent = await f.createAgent({ executionMode: "dedicated", repositoryBindings: bindings });
   await f.prepareDeployment(agent);
   const path = `${f.collection}/${agent.id}`;
@@ -2403,4 +2406,65 @@ test("Compute-only ordinary Agent revisions freeze service facts without requiri
   );
   assert.equal(oldRevision.compute.serviceAccess, undefined);
   assert.deepEqual(stored.compute.serviceAccess, [service]);
+});
+
+test("a protected Codex Agent without repository bindings admits only its exactly acknowledged service", async (t) => {
+  const f = await protectedOpenShellComposition(t, { advertised: true });
+  const tls = await harnessTlsFixture(t);
+  const service = {
+    id: "public-github-read",
+    driverId: f.compute.id,
+    implementation: f.compute.implementation,
+    endpoint: "https://10.96.0.55:8080",
+    configuration: {
+      policy: { mode: "all" },
+      peer: { namespace: "reader", podLabels: { app: "reader" } },
+      authorizationConfigMapName: "reader-authorizations",
+      installationId: f.installation.id,
+      caBundle: tls.caBundle,
+    },
+  };
+  let services = [service];
+  f.compute.admitServiceAccess = () => services;
+  // This case proves OCC's generic acknowledgement, without a configured reader installation.
+  f.compute.admitRevision = undefined;
+  const agent = await f.createAgent({ executionMode: "dedicated" });
+  await f.prepareDeployment(agent);
+  const path = `${f.collection}/${agent.id}`;
+  const admitted = await f.request("POST", `${path}/deploy`);
+  assert.equal(admitted.status, 202, JSON.stringify(admitted));
+  const frozen = await f.state.read((view) =>
+    view.revisions.findRevision(f.namespace.id, agent.id, admitted.data.id),
+  );
+  assert.equal(frozen.executionAdmission.mode, "protected");
+  assert.equal(frozen.repositoryCredentials, undefined);
+  assert.equal(frozen.egressPlan.repositoryGit, undefined);
+  assert.deepEqual(frozen.egressPlan.routes, []);
+  assert.deepEqual(frozen.sandboxPolicy, {
+    driverId: f.sandbox.id,
+    implementation: f.sandbox.implementation,
+    version: 1,
+    defaults: {},
+    additions: [],
+    serviceAccess: [service],
+  });
+  const original = f.sandbox.admitProtectedNetworkPolicy.bind(f.sandbox);
+  for (const producer of [
+    undefined,
+    (version, descriptors) => ({
+      ...original(version, descriptors),
+      snapshot: { ...original(version, descriptors).snapshot, serviceAccess: [] },
+    }),
+  ]) {
+    f.sandbox.admitProtectedNetworkPolicy = producer;
+    const denied = await f.request("POST", `${path}/deploy`);
+    assert.equal(denied.status, 409, JSON.stringify(denied));
+  }
+  services = [];
+  const old = await f.request("POST", `${path}/deploy`);
+  assert.equal(old.status, 202, JSON.stringify(old));
+  const oldRevision = await f.state.read((view) =>
+    view.revisions.findRevision(f.namespace.id, agent.id, old.data.id),
+  );
+  assert.equal(oldRevision.sandboxPolicy, undefined);
 });

@@ -1,39 +1,42 @@
 ---
 created: "2026-10-15"
-updated: "2026-10-15"
-last_updated_session: authoring-run/ea23f0cb-8736-4898-b5fc-92737486fb72
+updated: "2026-11-03"
+last_updated_session: authoring-run/36a8f335-4206-49ad-bc39-1ec044ec81d9
 ---
 
 # Public GitHub read flow
 
 ## Overview
 
-An Installation can let a dedicated Codex Agent inspect a known public GitHub
-repository. Compute owns the Agent revision's skill and exact network peer. The separate
-reader knows no credentials; GitHub owns visibility at the time of the read.
+A dedicated Codex Agent can clone and fetch public repositories with ordinary
+GitHub HTTPS URLs alongside its protected repository bindings. The Installation
+ceiling intersects the Agent revision's selected public-read policy. Compute
+publishes revision authorization to a private reader, which sends anonymous
+requests to fixed GitHub origins. This flow ends at the Git/API response or
+completed authorization withdrawal; installed-runtime qualification is separate.
 
 ## Entry Points
 
-- `scripts/render-installation-profile.mjs:buildRendered` pairs Helm and Compute configuration.
-- `apps/controller/src/drivers/compute/kubernetes/index.ts:pluginRuntimeSnapshot` prepares the Agent revision.
-- A user asks the deployed Agent to read a known public repository.
+- `scripts/render-installation-profile.mjs:buildRendered` pairs Helm and Compute inputs.
+- `packages/occ/src/index.ts` freezes selected Compute services during authorized Agent deployment.
+- `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision` prepares the selected runtime and reader authorization.
 
 ## Flow
 
 ```mermaid
 graph TD
-  Profile["Operator enables reader"] --> Service["Private Service and reader policy"]
-  Profile --> Compute["Freeze eligible reader peer at Agent revision admission"]
-  Compute -->|not selected or denied| Ordinary["Agent revision without reader grant or skill"]
-  Compute -->|exact reader IP allowed by Agent revision| Revision["Mount managed skill and allow exact peer"]
-  Revision --> Proxy["Agent reads through its limited native proxy"]
-  Proxy --> Service
-  Service --> Github["Anonymous HTTPS GET to api.github.com"]
-  Github --> Result["Data within response size limits, opaque 404, or explicit failure"]
-  Revision -->|Agent revision stopped or retired| Retire["Remove only its policy and skill snapshot"]
-  Revision -->|peer changed and Agent revision reobserved| Narrow["Remove Agent revision policy"]
-  Narrow --> Stop["Stop exact Harness and wait for Pods"]
-  Stop --> Withdraw["Verify withdrawal and fail preparation"]
+  Selection["Installation ceiling<br/>Agent selection"] --> Admission["OCC freezes service<br/>Sandbox acknowledges"]
+  Admission -->|unselected| Deny["No reader capability"]
+  Admission --> Lease["Compute publishes verifier<br/>Reader observes projection"]
+  Lease --> Runtime["Project public files<br/>Deliver private capability"]
+  Runtime --> Git["Ordinary GitHub URL"]
+  Git -->|bound repository| Protected["Original authenticated Git"]
+  Git -->|public candidate| Reader["Reader authenticates revision<br/>Checks both scopes"]
+  Reader -->|denied| Failure["No provider request"]
+  Reader -->|allowed and public| Github["Anonymous GitHub request<br/>Stream result within limits"]
+  Lease -->|authorized maintenance| Lease
+  Lease -->|stop or retirement| Withdraw["Expire authorization<br/>Stop owning runtime"]
+  Withdraw --> Ack["Observe revision digest<br/>Or leave cleanup pending"]
 ```
 
 ## Execution Trace
@@ -42,81 +45,103 @@ graph TD
 
 ### 1. Compose a private Service and an eligible Agent revision
 
-`packages/occ/src/index.ts` asks the selected Compute Driver for side-effect-free
-admission facts before storing the Agent revision. Kubernetes Compute freezes a digest of
-the configured reader peer only for a dedicated Codex Agent revision with an explicit
-IP allow in its authored proxy. A deny that might match withholds the capability.
-`apps/controller/src/drivers/compute/kubernetes/index.ts:publicGithubReadForRevision`
-requires the stored fact to match the current peer. An older version without the
-fact does not gain reader access, including when its runtime projection is rebuilt. For an eligible Agent revision,
-Compute creates the managed skill's parent as the runtime user in both Gateway
-and Harness, then projects the same read-only file from the immutable plugin-runtime
-snapshot. It also writes an egress policy for that Agent revision to the exact reader Pod
-peer and port.
+`apps/controller/src/drivers/compute/kubernetes/index.ts:admitServiceAccess` reads the original Driver-owned
+Configuration before Sandbox normalization. Omitted or empty selection grants
+nothing; a covering authored deny also withholds the service. OCC saves the
+nonsecret descriptor under `AgentRevision.compute.serviceAccess`. A selected
+Sandbox must acknowledge the exact descriptor in `SandboxPolicySnapshot`.
+Protected execution uses `admitProtectedNetworkPolicy`; both paired OpenShell
+compilers consume the frozen facts, rather than importing new Installation rules.
 
-### 2. Resolve the skill and use the actual tool network
+`publicGithubReadService` checks the saved endpoint, peer, Installation identity,
+registry and public CA against current configuration. The `public-github-read:v2`
+admission digest selects a distinct launcher; rebuilding an older revision does
+not implicitly enable it. Existing `v1` ordinary API-reader revisions retain
+their earlier admission and ownership checks.
 
-`apps/controller/src/drivers/plugin/runtime-translator.ts:codexOpenClawConfiguration`
-adds the skill file to native read paths and preserves the authored Service IP allow.
-The Gateway discovers its managed copy, and native Codex reads the Harness copy.
-The skill asks the Harness to use its proxy even if a shell client normally
-bypasses private addresses.
+The chart mounts operator-created TLS and authorization resources into a
+reader without a service-account token. Helm owns public policy and trust files;
+it never renders mutable authorization data. Compute needs network reachability
+to the reader's verified HTTPS Service for readiness and withdrawal observation.
 
-### 3. Recheck public visibility and bound the result
+### 2. Publish authorization and project runtime material
+
+`apps/controller/src/drivers/compute/kubernetes/public-github-read-authorizations.ts`
+creates or verifies an immutable revision Secret containing a random capability.
+It updates the verifier-only registry with Kubernetes `resourceVersion` checks.
+The row identifies the Installation, Namespace, Agent, revision and frozen scope,
+with a ten-minute lease. Preparation and activation wait for the reader's
+`/healthz?revision=...` digest to match the projected row. Unrelated Agent renewals
+do not change this acknowledgement.
+
+`apps/controller/src/drivers/compute/plugin-runtime.ts:pluginRuntimeConfigMapData`
+projects only endpoint, public CA, authenticated repository names and the managed
+skill. An ordinary Harness mounts its capability Secret. OpenShell delivers the
+capability through its existing endpointless runtime provider; the workload sees
+an identity-bound placeholder. Only the selected reader endpoint binds that
+provider. The supervisor needs the reader CA in its own native TLS trust store.
+Compute's NetworkPolicy grants reader egress to the selected ordinary Harness or
+the exact trusted supervisor peer; a protected workload receives no direct grant.
+
+### 3. Route ordinary Git URLs and enforce public scope
+
+`apps/controller/src/drivers/repo/github/public-read/transport.mjs` installs a
+private `git-remote-https` helper from the new launcher. It preserves stored
+remotes and the image's other Git helpers. Exact authenticated repository names
+retain the original URL, helper and credentials. Other canonical GitHub HTTPS
+repositories use the reader's `/git/OWNER/REPOSITORY.git` route. A reader denial
+never falls back to GitHub.
+
+For public requests, the child clears inherited command-line Git configuration
+and applies settings for the exact rewritten URL. It resets headers, cookies,
+credential helpers and Git-configured proxies; verifies TLS with combined reader
+and inherited trust; disables redirects and interactive credentials; and preserves
+the environment proxy route used by OpenShell. An inherited client TLS identity
+causes refusal before contact. Configuration and public material files contain
+no capability value.
 
 `apps/controller/src/drivers/repo/github/public-read/server.ts:createPublicGithubReadServer`
-accepts only approved GET paths. The fixed anonymous provider request carries
-neither caller headers nor credentials. Each caller Pod address gets one read in flight,
-so one Agent cannot hold every provider slot. Each address also gets at most four of the
-reader's 48 connections; a fifth is normally answered 429 with `Retry-After: 1` and closed.
-Node checks the 6 s header timeout every second, so idle sockets from one Agent cannot
-lock other callers out for more than a few seconds. A GitHub rate limit parks every caller; an
-exhausted quota parks until the later of GitHub's retry and reset times. In-flight work and
-rate-limit backoff are process-local;
-no completed representation, bearer, repository session or durable state is kept.
-List links retain the original local path and filters; issue links carry a validated
-provider cursor. An unsafe or out-of-range next link reports an incomplete listing.
+authenticates before quota admission, deduplication or provider requests. API and
+Git reads apply the current ceiling and revision scope. The reader checks current
+public visibility and uses only fixed `api.github.com` and `github.com` HTTPS
+origins, without caller credentials, cookies or redirects. `git.ts` permits only
+Git upload-pack discovery and requests. It streams with backpressure and cancels
+upstream work on failure or disconnect; size and deadline limits fail explicitly.
+Quota and in-flight state remain process-local. Address-based limits do not prove
+per-Agent fairness when Agents share a supervisor address.
 
 <span id="4-retire-the-revisions-access" class="anchor-alias"></span>
 
-### 4. Retire the Agent revision's access
+### 4. Maintain or withdraw the revision's access
 
-`apps/controller/src/drivers/compute/kubernetes/index.ts:deleteRetiredRevisionArtifacts`
-removes the Agent revision's reader policy and skill snapshot after its Pods have
-terminated. Preparing or activating a successor does not change that grant.
-If preparation or activation observes that the operator disabled or changed the
-admitted peer, `revokeUnavailablePublicGithubRead` removes the Agent revision policy to
-narrow new connections. The immutable reader admission identifies a Compute-owned
-Harness even if its pinned Sandbox is now unavailable or has changed. Compute
-checks the exact Deployment ownership and ordinary workload profile, then
-foreground-deletes it with its UID, waits for the Deployment and its Pods to terminate, and verifies that
-the policy and Deployment have not reappeared before failing with a configuration
-error. An incomplete observation leaves withdrawal unfinished. Policy deletion
-alone does not guarantee existing connections close; an in-flight GET may drain
-before Pod termination completes. Reconfiguring the peer
-alone does not schedule a reconciliation; the operator can stop the Agent or deploy
-an unselected successor and retire the old version. Stop and retirement fence
-the admitted Compute-owned Harness before resolving the current Sandbox; an
-unavailable or changed Sandbox still leaves ancillary cleanup unfinished and
-reports an error. A new Agent revision is needed to select a replacement peer.
+Kubernetes Compute renews only the frozen policy. After repository Git expires,
+`apps/controller/src/worker.ts:withdrawExpiredRepositoryAccess` verifies independent IAM, model, Secret/admission
+and Backend obligations before calling `ComputeDriver.maintainServiceAccess`
+under the claim heartbeat. This does not prepare or activate a runtime or issue
+another Git session. Loss of independent authority prevents renewal.
 
-When the installation selects protected Credential Proxy, the active revision's own authorized
-reconcile or maintenance claim may find that Compute refuses release before preparation.
-For a revision with durable unprotected execution admission and this reader grant,
-`rejectedExecutionWithdrawal` lets that claim close the same policy and observe the
-same workload stopped. An incomplete observation remains pending beyond the convergence
-deadline. Completion fails the old release with `EXECUTION_ADMISSION_WITHDRAWN`, even if
-the reader peer returned meanwhile. Historical rows admitted before execution admission
-existed did not use Credential Proxy, so migration `0060_credential_proxy_admission`
-records the unprotected decision on them; the upgrade then closes their access through
-this same path instead of leaving them unreadable.
+`beginPublicGithubReadWithdrawal` expires authorization before runtime shutdown,
+then observes the reader's revision digest. A registry write or reader failure
+cannot prevent the shutdown attempt; cleanup reports failure and retries rather
+than claiming withdrawal complete. User stop can suspend and later resume the
+same immutable capability. Retirement and an observed peer change permanently
+withdraw the saved authorization; it cannot be restored by preparing that revision.
+An expired or unreadable row denies future reads even if maintenance is unavailable.
+
+For legacy `v1` reader revisions, `revokeUnavailablePublicGithubRead` removes the
+revision policy, foreground-deletes the owned Compute Deployment and waits for
+its Pods before reporting withdrawal. Policy deletion alone does not close
+existing connections. The owning active claim's `rejectedExecutionWithdrawal`
+also fences those revisions when an Installation switches to protected execution.
+Current Sandbox failure can leave ancillary cleanup pending; it is not evidence
+that the owning runtime has stopped.
 
 ## Debugging and Verification
 
-- Inspect the Agent revision's skill mount, proxy domain and egress policy, then the reader's policy and Service IP.
-- Reader readiness checks `/healthz` locally; a successful Agent read must also reach GitHub.
-- Ordinary Image Runtime Startup requires stock Codex to read the projected skill and recover a title present only at its TLS provider.
-- The gateway-routing integration uses a public pull title absent from its prompt and substitutes only the external provider.
+- Compare the saved service descriptor, reader policy, public trust and exact peer before checking runtime files. Never print capability Secrets or provider values.
+- `/healthz` proves readable input; the revision digest proves the mounted authorization row. Neither proves GitHub reachability or a successful Agent clone.
+- Controlled native Git/TLS tests prove clone, fetch, scope denial, withdrawal and transport isolation. Kubernetes store tests prove Secret ownership, restart and permanent withdrawal.
+- PostgreSQL worker tests prove independent maintenance after Git expiry and refusal after IAM loss. Installed Podman/k3d/OpenShell Agent proof remains required before deployment qualification.
 
 ## Related docs
 
@@ -128,6 +153,8 @@ this same path instead of leaving them unreadable.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 18:09: Describe scoped API and Git reads, transport isolation, leased authorization and withdrawal (accompanying implementation; authoring-run/36a8f335-4206-49ad-bc39-1ec044ec81d9 - 83a17289139a58b8adcb605e8b484c47b257dcdb)
 
 - 2026-10-15 11:05: Project the managed reader skill to Gateway and Harness (authoring-run/ea23f0cb-8736-4898-b5fc-92737486fb72 - 87e12a1169a997a99fec7de261b43a0ea2255f54)
 

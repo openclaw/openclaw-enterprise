@@ -180,3 +180,13 @@ Collector or local Docker log forwarding. See [Observability](../../guides/obser
 - `OCC_DOCKER_LOGGING_ADDRESS` — Docker Compute log destination; local override default: `127.0.0.1:24224`.
 - `OCE_WORKER_OBSERVATIONS_FILE` — Exact private JSONL input read by the worker termination Collector; required. See [Worker termination observations](../../guides/observability/worker-terminations.md).
 - `OCE_WORKER_STATE_DIR` — Private persistent directory for worker termination Collector offsets and export queue; required. See [Worker termination observations](../../guides/observability/worker-terminations.md).
+
+## Public GitHub reader
+
+The chart sets these required file paths for the HTTPS reader. See
+[public GitHub reads](../public-github-reads.md#enable-the-reader) for TLS, public
+trust, Installation scope and per-Agent selection.
+
+- `PUBLIC_GITHUB_READ_TLS_CERT_FILE`, `PUBLIC_GITHUB_READ_TLS_KEY_FILE` — Reader leaf certificate and key files. Production startup requires both.
+- `PUBLIC_GITHUB_READ_POLICY_FILE` — Current Installation all/list ceiling JSON file.
+- `PUBLIC_GITHUB_READ_AUTHORIZATIONS_FILE` — Compute-managed authorization registry JSON file, mounted as an updating directory.

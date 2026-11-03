@@ -6,13 +6,14 @@ import {
   type RequestListener,
 } from "node:http";
 import { Agent, get, createServer as createSecureServer } from "node:https";
-import { readFile } from "node:fs/promises";
 import type { Socket } from "node:net";
 import { URL, URLSearchParams } from "node:url";
 import {
   authorizationSnapshot,
+  publicGithubReadAuthorizationDigest,
   authorizePublicGithubRead,
   loadPublicGithubReadJson,
+  loadPublicGithubReadTls,
   publicGithubReadPolicy,
   type ReaderOptions,
   type PublicGithubReadAuthorizationRegistry,
@@ -419,12 +420,22 @@ export function createPublicGithubReadServer(options: ReaderOptions = {}) {
         Number(req.headers["content-length"] ?? 0) !== 0
       ) {
         result = message(400, "GET must have no request body.");
-      } else if (target === "/healthz") {
+      } else if (/^\/healthz(?:\?revision=[a-z\d_-]{1,128})?$/i.test(target)) {
         try {
           const snapshot = await authorizationSnapshot(options);
           result = {
             status: 200,
-            body: JSON.stringify({ message: "ready", authorizationDigest: snapshot.digest }),
+            body: JSON.stringify({
+              message: "ready",
+              authorizationDigest: snapshot.digest,
+              ...(target === "/healthz"
+                ? {}
+                : {
+                    revisionAuthorizationDigest: publicGithubReadAuthorizationDigest(
+                      snapshot.authorizations[target.slice("/healthz?revision=".length)],
+                    ),
+                  }),
+            }),
           };
         } catch {
           result = message(503, "Public GitHub read authorization is unavailable.");
@@ -571,7 +582,7 @@ if (import.meta.main) {
   const policyFile = required("PUBLIC_GITHUB_READ_POLICY_FILE");
   const authorizationFile = required("PUBLIC_GITHUB_READ_AUTHORIZATIONS_FILE");
   const options: ReaderOptions = {
-    tls: { cert: await readFile(certFile), key: await readFile(keyFile) },
+    tls: await loadPublicGithubReadTls(certFile, keyFile),
     policy: async () => publicGithubReadPolicy((await loadPublicGithubReadJson(policyFile)).value),
     loadAuthorizations: async () => {
       const loaded = await loadPublicGithubReadJson(authorizationFile);

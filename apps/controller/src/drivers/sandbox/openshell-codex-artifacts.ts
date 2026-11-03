@@ -158,7 +158,7 @@ export function openShellProtectedCodexArtifacts(
   if (snapshot === undefined) {
     return {};
   }
-  openShellRevisionServiceRules(revision);
+  const services = openShellRevisionServiceRules(revision);
   exactKeys(snapshot, [
     "driverId",
     "implementation",
@@ -171,14 +171,10 @@ export function openShellProtectedCodexArtifacts(
     revision?.executionAdmission.mode !== "protected" ||
     revision.harness.id !== "codex" ||
     revision.harness.mode !== "dedicated" ||
-    !revision.egressPlan?.repositoryGit ||
-    revision.repositoryCredentials === undefined ||
-    !Array.isArray(revision.repositoryCredentials.bindings) ||
-    revision.repositoryCredentials.bindings.length === 0 ||
     typeof snapshot.driverId !== "string" ||
     snapshot.driverId.length === 0 ||
     snapshot.driverId !== revision.sandboxDriverId ||
-    snapshot.driverId !== revision.egressPlan.sandboxDriverId ||
+    snapshot.driverId !== revision.egressPlan?.sandboxDriverId ||
     snapshot.implementation !== "openshell" ||
     !Number.isSafeInteger(snapshot.version) ||
     snapshot.version < 1 ||
@@ -187,5 +183,19 @@ export function openShellProtectedCodexArtifacts(
   ) {
     refuse();
   }
-  return qualifiedMap(snapshot.defaults);
+  const defaults = qualifiedMap(snapshot.defaults);
+  const repositoryScope =
+    revision.egressPlan?.repositoryGit &&
+    revision.repositoryCredentials !== undefined &&
+    Array.isArray(revision.repositoryCredentials.bindings) &&
+    revision.repositoryCredentials.bindings.length > 0;
+  const serviceOnlyScope =
+    Object.keys(services).length > 0 &&
+    Object.keys(defaults).length === 0 &&
+    revision.repositoryCredentials === undefined &&
+    revision.egressPlan?.repositoryGit === undefined;
+  if (!repositoryScope && !serviceOnlyScope) {
+    refuse();
+  }
+  return defaults;
 }

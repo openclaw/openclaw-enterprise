@@ -12915,7 +12915,7 @@ export class OpenClawController {
         if (
           revisionHarness.id === "codex" &&
           revisionHarness.mode === "dedicated" &&
-          repositoryCredentials !== undefined
+          (repositoryCredentials !== undefined || serviceAccess.length > 0)
         ) {
           sandboxPolicy =
             serviceAccess.length === 0

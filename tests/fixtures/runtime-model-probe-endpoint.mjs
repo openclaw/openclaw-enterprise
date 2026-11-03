@@ -199,8 +199,8 @@ function publicReadEvents(model, request) {
     "set -eu",
     'test "$CODEX_NETWORK_PROXY_ACTIVE" = 1',
     'test "$CODEX_NETWORK_ALLOW_LOCAL_BINDING" = 0',
-    'origin=$(grep -Eo "http://[0-9.]+:8080" /home/node/.openclaw/skills/public-github-read/SKILL.md | head -1)',
-    'curl -q --proxy "$HTTP_PROXY" --noproxy "" --fail-with-body -sS --max-time 15 "$origin/repos/example/public-project/pulls/27"',
+    'origin=$(grep -Eo "https://[0-9.]+:8080" /home/node/.openclaw/skills/public-github-read/SKILL.md | head -1)',
+    'curl -q --proxy "$HTTP_PROXY" --noproxy "" --cacert "$OCE_PUBLIC_GITHUB_READ_CA_FILE" -H "Authorization: Bearer $OCE_PUBLIC_GITHUB_READ_CAPABILITY" --fail-with-body -sS --max-time 15 "$origin/repos/example/public-project/pulls/27"',
   ].join("\n");
   const item = {
     type: "function_call",

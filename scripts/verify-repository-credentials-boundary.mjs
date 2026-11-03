@@ -66,11 +66,20 @@ const reviewedImports = {
   "drivers/repo/github/credentials/provider-transport/request.ts": {
     "node:https": ["request"],
   },
-  // Separate tokenless listener and fixed-origin anonymous GET; this owner and
-  // the credential owners cannot import one another, in either direction.
+  // The separately reviewed public reader authenticates its internal caller but
+  // sends fixed-origin anonymous provider reads. Credential owners remain separate.
   "drivers/repo/github/public-read/server.ts": {
     "node:http": ["createServer"],
-    "node:https": ["Agent", "get"],
+    "node:https": ["Agent", "get", "createServer"],
+  },
+  "drivers/repo/github/public-read/access.ts": {
+    "node:crypto": ["createHash", "timingSafeEqual"],
+    "node:fs/promises": ["open"],
+  },
+  "drivers/repo/github/public-read/git.ts": { "node:https": ["request"] },
+  "drivers/repo/github/public-read/transport.mjs": {
+    "node:child_process": ["spawn", "spawnSync"],
+    "node:fs": ["chmodSync", "mkdtempSync", "readFileSync", "realpathSync", "writeFileSync"],
   },
   // The image draft helper uses only its selected broker, session bearer and operator-projected public CA.
   "drivers/repo/github/credentials/client/draft-pr.ts": {
@@ -338,6 +347,19 @@ const rawGlobals = new Set([
   "module",
 ]);
 const reviewedProcessMembers = {
+  "drivers/repo/github/public-read/server.ts": ["env"],
+  "drivers/repo/github/public-read/transport.mjs": [
+    "argv",
+    "env",
+    "execPath",
+    "stdout",
+    "stderr",
+    "exitCode",
+    "on",
+    "off",
+    "kill",
+    "pid",
+  ],
   "composition/repository-credentials/check-config.ts": ["argv", "exitCode", "stderr", "stdout"],
   "drivers/repo/github/credentials/client/environment.ts": ["env"],
   "drivers/repo/github/credentials/client/git-helper.ts": [

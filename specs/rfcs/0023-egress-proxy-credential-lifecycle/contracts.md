@@ -57,6 +57,30 @@ action, exact target generations, audience, input digest and expiry.
 Compute builds the `ProxyPlan` from admitted routes, bindings and source projections. A Sandbox receipt records what was applied;
 wiring and receipts do not authorize requests.
 
+### Qualified service access under protection
+
+Proposed amendment for [public Git reads](../0020-anonymous-public-github-reads.md),
+submitted in [PR #4505](https://github.com/openclaw/openclaw-enterprise/pull/4505).
+This section owns the shared admission contract; service-specific policy remains
+in its owning RFC. It does not qualify an installed runtime.
+
+Compute can contribute nonsecret service descriptors from original Configuration
+before Sandbox normalization. OCC freezes them on the Agent revision. General
+`admitProtectedNetworkPolicy` admission must acknowledge the exact descriptors
+and qualified defaults in the same `SandboxPolicySnapshot`; artifact-only
+admission below remains available when no services are selected. Both paired
+compilers consume and recheck this frozen authority. Missing acknowledgement,
+unknown services, extra rules or governed-route overlap refuse release.
+
+Internal managed services and external catalog destinations require their own
+qualification. The public reader uses a revision capability solely for the OCE
+service and sends no GitHub credentials upstream. It requires verified inspected
+TLS and narrowly selected Git read methods, including POST upload-pack. Its
+independent authorization can survive Git credential expiry. Execution retirement
+or withdrawal of that service authorization must still close its access.
+Per-Agent selection requires explicit authorization; a future catalog must define
+its IAM requirements without creating a second policy producer or snapshot.
+
 ### Protected Codex artifact downloads
 
 Proposed amendment, submitted for review in [PR #4160](https://github.com/openclaw/openclaw-enterprise/pull/4160).
