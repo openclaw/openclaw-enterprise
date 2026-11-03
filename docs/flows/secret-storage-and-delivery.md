@@ -193,7 +193,8 @@ tenant namespace through `openclaw.dev/namespace`. The supported local setup is
 single-cluster, so embedded and dedicated Gateways share that physical namespace
 with the provider-owned Harness. The verifier requires the exact Agent labels,
 Agent revision ConfigMap mount, and a Running, Ready Gateway Pod before it sends the
-prompt. Kubernetes Compute owns any experimental two-cluster placement; this
+prompt. It requires the OpenAI key in the Gateway container only for embedded
+OpenClaw; dedicated Codex keeps the key in its Codex Pod or Sandbox. Kubernetes Compute owns any experimental two-cluster placement; this
 local helper does not infer physical placement from the Agent execution mode.
 The tool retains installation resources on exit.
 
