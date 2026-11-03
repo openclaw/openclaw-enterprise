@@ -58,18 +58,26 @@ async function openAgent(consolePage, origin, route) {
       messages.push({ text, sessionKey });
     });
   });
-  // Reload after attaching the listener so it observes the new socket.
-  await page.goto(new URL("/new", origin).href);
+  // Reopen the captured chat permalink through the fresh Agent UI tab. The
+  // sidebar can filter or collapse history, so its visible rows are not a
+  // stable index into an Agent's conversations.
+  if (route) {
+    assert.match(route.path, /^\/chat\/main\/[^/?#]+$/);
+  }
+  const destination = new URL(route?.path ?? "/new", origin);
+  assert.equal(destination.origin, origin);
+  const response = await page.goto(destination.href);
+  assert.ok(response?.ok());
   await waitForStockUi(page);
   if (route) {
-    const historyLink = page
-      .locator(`[data-session-key="${route.sessionKey}"] a[href^="/chat/"]`)
-      .first();
-    await historyLink.waitFor({ state: "visible" });
-    const destination = new URL(await historyLink.getAttribute("href"), origin);
-    assert.equal(destination.origin, origin);
-    await historyLink.click();
-    await page.waitForURL((url) => url.origin === origin && url.pathname === destination.pathname);
+    // The app may change the title slug during navigation. Prove it loaded
+    // this conversation before sending to it, then require the full session
+    // key on the newly submitted recall turn's terminal reply below.
+    await page.waitForURL((url) => url.origin === origin && url.pathname.startsWith("/chat/main/"));
+    await page
+      .getByText("OCE_READY", { exact: true })
+      .first()
+      .waitFor({ state: "attached", timeout: 60_000 });
   }
   async function send(prompt, expected, newChat = false) {
     const editor = page.locator(".agent-chat__composer-combobox > textarea").first();
@@ -174,7 +182,6 @@ try {
       namespace,
       sessionKey,
       sessionId,
-      path: new URL(ui.page.url()).pathname,
       preference,
     };
     stage = "verify Workspace identity and preference";
@@ -190,6 +197,7 @@ try {
     }
     stage = "verify ready reply";
     assert.equal(await ui.send("Reply with OCE_READY.", "OCE_READY"), sessionKey);
+    history.path = new URL(ui.page.url()).pathname;
     await ui.page.close();
   } else {
     history = JSON.parse(await readFile(historyFile, "utf8"));
