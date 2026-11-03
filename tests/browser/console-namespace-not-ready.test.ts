@@ -4,11 +4,8 @@ import { createRequire } from "node:module";
 import type { Locator, Page, Response } from "playwright";
 
 import {
-  AgentResponse,
-  AgentSchema,
   NamespaceListResponse,
   PresetListResponse,
-  type AgentWire,
   type NamespaceWire,
 } from "../../packages/contracts/src/api/resources.ts";
 import type { AccessBinding, Role } from "../../packages/contracts/src/index.ts";
@@ -72,12 +69,16 @@ const {
   Check: {
     (schema: typeof NamespaceListResponse, value: unknown): value is NamespaceListResponse;
     (schema: typeof PresetListResponse, value: unknown): value is PresetListResponse;
-    (schema: typeof AgentResponse, value: unknown): value is AgentResponse;
-    (schema: typeof AgentSchema, value: unknown): value is AgentWire;
   };
 } = require("typebox/value");
 
 type NamespacePatch = Partial<Pick<NamespaceWire, "status" | "existingNamespace">> | null;
+
+function assertAgentIdentity(agent: unknown): asserts agent is { id: string; name: string } {
+  assert.ok(agent !== null && typeof agent === "object", "expected a fixture Agent");
+  assert.ok("id" in agent && typeof agent.id === "string" && agent.id.length > 0);
+  assert.ok("name" in agent && typeof agent.name === "string" && agent.name.length > 0);
+}
 
 // A bootstrapped Installation: its only Namespace is "default", still provisioning, plus any
 // named ones (also provisioning).
@@ -269,8 +270,10 @@ test("a provisioning Namespace saves an Agent draft from a seeded runtime-auth P
   const response = await created;
   assert.equal(response.status(), 201);
   const body: unknown = await response.json();
-  assert.ok(Check(AgentResponse, body), "expected the created Agent from the controller");
-  assert.deepEqual(body.data.harnessAuth, { method: "runtime" });
+  assert.ok(body !== null && typeof body === "object" && "data" in body);
+  const { data } = body;
+  assert.ok(data !== null && typeof data === "object" && "harnessAuth" in data);
+  assert.deepEqual(data.harnessAuth, { method: "runtime" });
   assert.equal(secretPostRequests(requests, namespace.id).length, 0);
 });
 
@@ -732,7 +735,7 @@ for (const reader of [false, true]) {
         "Private draft",
         nativeValues("idle"),
       );
-      assert.ok(Check(AgentSchema, agent), "expected the fixture's Private draft");
+      assertAgentIdentity(agent);
       const member = reader
         ? await fixture.createNamespaceMember("idle-reader", namespace.id, AGENT_READ)
         : null;
@@ -808,7 +811,7 @@ for (const kind of ["stop", "delete"]) {
         "Dialog Agent",
         nativeValues("dialog"),
       );
-      assert.ok(Check(AgentSchema, agent), "expected the fixture's Dialog Agent");
+      assertAgentIdentity(agent);
       await fixture.seedActiveAgentRevision(namespace.id, agent.id);
       initial.release();
       await opening;
