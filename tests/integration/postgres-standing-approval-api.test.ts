@@ -354,6 +354,63 @@ test(
       },
     );
 
+    await t.test("bundled repository saves resolve once through the bound owner", async (t) => {
+      await selectRepo(registry, "registry", { bundled: true });
+      const policy = selectedPolicy;
+      assert.ok(policy instanceof GitHubRepositoryPolicy);
+      const bound = t.mock.method(policy, "resolveBindings");
+      const legacy = t.mock.method(policy, "resolve");
+      const bindings = [{ repositoryRef: "project", profile: "git-write" }];
+      const created = await request("POST", `/namespaces/${namespaceId}/agents`, {
+        name: "Bound repository save",
+        harnessAuth: { method: "api_key", source: secretRef },
+        configurationId,
+        repositoryBindings: bindings,
+      });
+      assert.equal(created.statusCode, 201, created.body);
+      const savePath = `/namespaces/${namespaceId}/agents/${created.json().data.id}`;
+      assert.equal(bound.mock.callCount(), 1);
+      assert.equal(legacy.mock.callCount(), 0);
+      assert.deepEqual(bound.mock.calls[0]?.arguments, [{ namespaceId, bindings }]);
+      assert.deepEqual((await request("GET", savePath)).json().data.repositoryBindings, bindings);
+
+      const access = {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: "project-two" }],
+      };
+      const patched = await request("PATCH", savePath, {
+        configurationId,
+        repositoryAccess: access,
+      });
+      assert.equal(patched.statusCode, 200, patched.body);
+      const inherited = [{ repositoryRef: "project-two", profile: "git-write" }];
+      assert.equal(bound.mock.callCount(), 2);
+      assert.equal(legacy.mock.callCount(), 0);
+      assert.deepEqual(bound.mock.calls[1]?.arguments, [{ namespaceId, bindings: inherited }]);
+      const saved = (await request("GET", savePath)).json().data;
+      assert.deepEqual(saved.repositoryBindings, inherited);
+      assert.deepEqual(saved.repositoryAccess, access);
+
+      const unchanged = await request("PATCH", savePath, { configurationId });
+      assert.equal(unchanged.statusCode, 200, unchanged.body);
+      assert.equal(bound.mock.callCount(), 2, "PATCH without repository fields does not resolve");
+      assert.equal(legacy.mock.callCount(), 0);
+
+      const beforeRefusal = (await request("GET", savePath)).json().data;
+      // The actual bound policy refuses an unapproved profile; do not synthesize its error.
+      const denied = await request("PATCH", savePath, {
+        configurationId,
+        repositoryBindings: [{ repositoryRef: "project-two", profile: "git-read" }],
+      });
+      assert.equal(denied.statusCode, 400, denied.body);
+      assert.equal(bound.mock.callCount(), 3);
+      assert.equal(legacy.mock.callCount(), 0);
+      const afterRefusal = (await request("GET", savePath)).json().data;
+      assert.deepEqual(afterRefusal, beforeRefusal, "policy refusal persists no Agent change");
+      bound.mock.restore();
+      legacy.mock.restore();
+    });
+
     await t.test(
       "fresh Installation admission bypasses the legacy resolver and preserves finite grants",
       async (t) => {
@@ -437,7 +494,7 @@ test(
               ? t.mock.method(policy, "resolveBindings")
               : undefined;
           calls = 0;
-          // Count only admission, after Agent save has used its unchanged policy route.
+          // Count only deployment admission; Agent save is checked separately above.
           const deployed = await request("POST", finitePath + "/deploy");
           assert.equal(deployed.statusCode, 202, deployed.body);
           const revision = await state.read((v) =>

@@ -102,28 +102,25 @@ absent `repository` adds `meta.notConfigured`. Closed Namespaces conflict.
 Classified discovery failures return `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
 `createRepositoryFields` searches up to 1,000 choices with 16 attachments.
-`repositorySettings` uses RepositoryPolicyDriver for inheritance; the database
-checks bindings. Only fresh, empty drafts tolerate a classified outage. The registry
-supplies choices without native sender metadata credentials or provider descriptions.
+`repositorySettings` requires the bound Installation policy for explicit and
+inherited saves, refusing mismatches. Without that binding it uses the registered
+Repo Driver. The database checks bindings. Only fresh, empty drafts tolerate a
+classified outage. The catalog omits sender metadata, credentials and provider descriptions.
 
-The form saves Configuration first, reusing it after known Agent rejections.
+Save Configuration first; reuse it after known Agent rejections.
 Repository retries require reload and nonempty reselection. Failed reloads block
-creation; ignore stale results. For unknown outcomes, read stored Agent and Configuration.
+creation; ignore stale results. After unknown outcomes, read stored Agent and Configuration.
 
-`packages/occ/src/index.ts:OpenClawController.repositoryBindingSelections`
-resolves authorized selections. Save without a Repo Driver returns
-`409 RESOURCE_CONFLICT`. Requests supply distinct opaque refs and optional
-profiles, with no tokens or grant IDs. OCC saves normalized selections in request order.
-`apps/controller/src/drivers/repo/github/policy.ts:GitHubRepositoryPolicy.resolve`
-uses the local registry, defaults omitted legacy profiles to `git-write`, and
-makes no control-socket or GitHub calls.
+Requests carry distinct opaque refs and optional profiles, never tokens or grant IDs.
+Nonempty selections without a configured Repo Driver return `409 RESOURCE_CONFLICT`.
+OCC saves normalized selections in request order. GitHub’s registry defaults legacy profiles to
+`git-write` without GitHub or control-socket calls.
 
 `apps/controller/src/drivers/repo/github/credentials/registry.ts:resolveGitHubRepositoryBinding`
-requires an exact Namespace/ref/profile. Its fingerprint binds provider, App,
-installation, repository, duration, full Namespace profile policy, exact
-permissions and optional normalized push-ref allowlist. Each binding has one
-grant; installations can supply several repositories. Omitted updates preserve
-selections; an empty array clears them.
+requires an exact Namespace/ref/profile. The fingerprint binds provider, App,
+installation, repository, duration, full Namespace profile policy, exact permissions
+and optional normalized push-ref allowlist. One grant per binding; installations
+can supply several repositories. Omitted updates preserve selections; `[]` clears them.
 
 <a id="2-freeze-a-deployable-revision" class="anchor-alias"></a>
 
