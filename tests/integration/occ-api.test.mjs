@@ -9348,9 +9348,9 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
   assert.equal(offered.details.data.id, packageId);
   assert.equal(offered.save.status, 200, JSON.stringify(offered.save.body));
   // Finding 2790: an ID the catalog does not offer is the caller's error, not a catalog
-  // failure to retry. The unversioned package ID names the versioned one.
+  // failure to retry. The unversioned package ID names its versioned one.
   for (const [pluginId, advice] of [
-    ["occ-plugin:google", `Use ${packageId}.`],
+    ["occ-plugin:google", "Use occ-plugin:google@1.0.0."],
     [
       "occ-plugin:nope@1.0.0",
       "Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.",
