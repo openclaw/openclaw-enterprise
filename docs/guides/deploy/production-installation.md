@@ -431,9 +431,40 @@ deployment, or a model turn.
 
 ## Authenticate to the production API
 
-Retrieve and privately retain `initial-admin-service-key.json` from the
-protected bootstrap PVC through approved storage access. This example works on
-a session copy:
+Read the protected bootstrap files before you authenticate. The claim holds
+`initial-admin-service-key.json` and `initial-admin-password`, owned by UID 1000
+with mode 0700. A one-use reader Pod must run as UID 1000 on the claim's control
+nodes and mount the claim read-only. If admission refuses UID 1000, have the
+cluster administrator allow it for this Pod. Permission to read this claim is
+privileged.
+
+```bash
+umask 077
+export READER_DIRECTORY="${READER_DIRECTORY:-/secure/occ}"
+jq -n --arg image "$CONTROLLER_IMAGE" --arg namespace openclaw-system \
+  --arg claim "$BOOTSTRAP_CLAIM" \
+  --argjson nodeSelector "$(yq e -o=json -I=0 '.controlPlane.nodeSelector' "$OCC_INPUT_DIRECTORY/values.yaml")" \
+  -f docs/snippets/openshell-quickstart/kubernetes/bootstrap-reader.jq |
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create -f -
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  wait --for=condition=Ready pod/oce-owner-bootstrap-reader --timeout=3m
+for file in initial-admin-password initial-admin-service-key.json; do
+  test ! -e "$READER_DIRECTORY/$file"
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+    exec oce-owner-bootstrap-reader -- \
+    node -e 'process.stdout.write(require("node:fs").readFileSync(process.argv[1]))' \
+    "/bootstrap/$file" > "$READER_DIRECTORY/$file.tmp"
+  test -s "$READER_DIRECTORY/$file.tmp"
+  mv "$READER_DIRECTORY/$file.tmp" "$READER_DIRECTORY/$file"
+done
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  delete pod oce-owner-bootstrap-reader
+```
+
+The files use the default names; `bootstrap.password.fileName` and
+`bootstrap.serviceKey.fileName` override them. Sign in to the Console with
+`bootstrap.adminEmail` and `initial-admin-password`. The service key file
+authenticates the CLI and REST calls below. This example works on a session copy:
 
 ```bash
 export OCC_URL="${OCC_URL:-https://<internal-occ-host>}"
