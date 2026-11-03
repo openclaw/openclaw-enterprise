@@ -242,6 +242,7 @@ test("OpenAPI check rejects unexpected generated API child pages in an isolated 
     "generate-occ-api-reference.mjs",
     "document-api-examples.mjs",
     "api-examples.mjs",
+    "api-examples.ts",
   ]) {
     await copyFile(join(repositoryRoot, "scripts", file), join(fixture, "scripts", file));
   }
