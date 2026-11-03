@@ -86,10 +86,7 @@ type HarnessAuthBinding =
   | {
       readonly mode: "credential";
       readonly credentialType: "service_account_token";
-      readonly source:
-        | SecretReference
-        | CredentialSourceReference
-        | ServiceAccountReference;
+      readonly source: SecretReference | CredentialSourceReference | ServiceAccountReference;
     }
   | {
       readonly mode: "credential";
