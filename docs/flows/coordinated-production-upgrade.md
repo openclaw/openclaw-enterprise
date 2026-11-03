@@ -68,8 +68,8 @@ Local edits and image provenance remain unverified.
 
 Evidence I/O retains the supplied path. Python records its canonical path,
 `st_dev` and `st_ino` in `parameters.json`; resume rejects mismatches before
-cluster/OCC access. Relative and parent-symlink aliases share the lock; leaf symlinks remain refused.
-Copies, moves and replacements cannot replay stale dispatch evidence.
+cluster/OCC access. Accepted aliases share the original directory and lock.
+Copies, moves and replacements fail the identity check.
 
 It checks protected files, cluster, deployed Helm release and matching OCC/Secret
 Installation IDs. Reviewed candidates must match the [configuration baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)

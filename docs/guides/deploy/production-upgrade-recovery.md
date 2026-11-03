@@ -3,8 +3,9 @@
 Preserve original [upgrade](production-upgrade.md) evidence privately, including Secrets.
 
 Resume requires the original canonical path, device and inode in `parameters.json`.
-Relative and parent-symlink aliases share its lock; leaf symlinks remain refused. Copies, moves, replacements and missing identity are refused
-before live access. Copies may omit later intents or responses: inspect only.
+Use the original location. Accepted aliases reach the same directory and lock.
+Copies, moves, replacements and missing identity are refused before live access.
+Copies may omit later intents or responses: inspect only.
 Do not reconstruct evidence or change identity; stop if custody is uncertain.
 
 `--preflight-only` leaves writers serving without a freeze. It cannot resume;
