@@ -58,6 +58,10 @@ after submission, implementation and RFC revision can proceed in parallel.
 Follow the [RFC process](docs/contributing/rfcs.md).
 New contributors wait for maintainer feedback.
 
+## GitHub secrets
+
+- Store all GitHub Actions secrets at the repository level. Never store secrets at the environment level.
+
 ## Development style
 
 Follow these rules when developing or changing code.
