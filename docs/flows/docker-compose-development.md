@@ -233,12 +233,12 @@ Any presence of `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP`, including an empty
 value, is rejected. Unset, empty and `0` protected-egress selections retain ordinary
 startup; malformed values still fail validation. Refusal does not select a fallback.
 
-The authority provisioning and release ordering remain for already recorded state
-and historical packaging checks. They do not admit new local protected launches.
-Recorded protected state retains its authority TLS and public trust, OpenShell's
-native PKI, and paired Backend and authority configuration. Its retained release
-path waits for the Gateway after the API authority starts, before starting workers.
-Failures retain the existing owned-cluster rollback and recovery path.
+The retained packaging fixtures still exercise authority provisioning and release
+ordering: the Gateway becomes ready after the API authority starts and before
+workers start. Recorded protected state retains its authority TLS and public trust,
+OpenShell's native PKI, and paired Backend and authority configuration. For an
+existing installation, keep that state and its ownership evidence for cleanup
+and rollback.
 
 The chart projects the administrative client certificate into API and worker
 only. The Backend supplies it to verified gRPC TLS for DNS or exact-IP server
