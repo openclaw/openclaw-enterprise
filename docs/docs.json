@@ -1144,6 +1144,7 @@
               "testing/docker",
               "testing/ssh",
               "testing/kubernetes",
+              "testing/populated-controller-return",
               "testing/slack",
               "testing/plugins",
               "testing/openshell",

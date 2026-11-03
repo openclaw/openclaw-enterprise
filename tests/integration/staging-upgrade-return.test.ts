@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { inspect } from "node:util";
 import {
   bindLocalRehearsalCluster,
   createRehearsalCustody,
@@ -19,6 +20,7 @@ import {
   assertRunningController,
   returnedDatabaseConnections,
   selectRehearsalControllers,
+  verifyCompletedMigrationHistory,
 } from "../helpers/staging-upgrade-return.ts";
 
 const controller = (digest: string, config: string, commit: string) => ({
@@ -92,6 +94,59 @@ async function scratch(t: TestContext) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
+
+test("migration check reports protected log failures without printing fixture credentials", async (t) => {
+  const directory = await scratch(t);
+  await writeFile(
+    join(directory, "kubectl"),
+    [
+      "#!/bin/sh",
+      'printf "%s\\n" "$FIXTURE_STDOUT"',
+      'printf "%s\\n" "$FIXTURE_STDERR" >&2',
+      'exit "$FIXTURE_EXIT"',
+    ].join("\n") + "\n",
+    { mode: 0o700 },
+  );
+  const marker = `key${randomUUID().slice(0, 6)}`;
+  const url = `postgresql://migrator:${marker}@fixture/occ_return`;
+  const check = (stdout: string, stderr = "", exit = "0") => {
+    const run: FixtureRun = (command, args, options) =>
+      runFixtureCommand(command, args, {
+        ...options,
+        env: {
+          PATH: [directory, process.env.PATH].join(delimiter),
+          FIXTURE_STDOUT: stdout,
+          FIXTURE_STDERR: stderr,
+          FIXTURE_EXIT: exit,
+        },
+      });
+    return verifyCompletedMigrationHistory(run, [], "return-compatibility");
+  };
+  const receipt = JSON.stringify({ event: "migration.checked", history: "completed", url });
+  const rejectWithoutMarker = (diagnostic: RegExp) => (error: Error) => {
+    const rendered = inspect(error);
+    assert.ok(!rendered.includes(marker), "the failure printed a protected fixture marker");
+    assert.match(rendered, diagnostic);
+    return true;
+  };
+  const missingOrConflicting = /migration check requires exactly one completed history receipt/u;
+
+  await check(`{"event":"migration.checked"}\n${receipt}`, marker);
+  await assert.rejects(
+    check(url, marker, "17"),
+    rejectWithoutMarker(/kubectl failed \(17\) during a protected fixture operation/u),
+  );
+  await assert.rejects(
+    check(`${marker}!`),
+    rejectWithoutMarker(/migration check returned invalid protected log records/u),
+  );
+  await assert.rejects(check(""), rejectWithoutMarker(missingOrConflicting));
+  await assert.rejects(check(`${receipt}\n${receipt}`), rejectWithoutMarker(missingOrConflicting));
+  await assert.rejects(
+    check(`${receipt}\n${JSON.stringify({ event: "migration.checked", history: marker })}`),
+    rejectWithoutMarker(missingOrConflicting),
+  );
+});
 
 test("rehearsal admission binds the direct local Docker port and Kubernetes identity before writes", async (t) => {
   const directory = await scratch(t);

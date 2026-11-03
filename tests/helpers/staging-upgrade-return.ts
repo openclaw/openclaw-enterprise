@@ -307,6 +307,42 @@ export function returnedDatabaseConnections(active: readonly string[], podIPs: r
   return podIPs.every((ip) => active.includes(`${restoredDatabase}:${ip}`));
 }
 
+export async function verifyCompletedMigrationHistory(
+  run: FixtureRun,
+  kubeArgs: string[],
+  podName: string,
+) {
+  const output = await run("kubectl", [...kubeArgs, "logs", `pod/${podName}`, "-c", "migration"], {
+    protectedInput: true,
+  });
+  let receiptCount = 0;
+  let completedReceiptCount = 0;
+  try {
+    for (const line of output.split("\n")) {
+      if (line.trim() === "") {
+        continue;
+      }
+      const entry = protectedJSON<unknown>(line);
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+        throw new Error("invalid log record");
+      }
+      // The structured companion event carries no history. Count receipts only.
+      if ("event" in entry && entry.event === "migration.checked" && "history" in entry) {
+        receiptCount++;
+        if (entry.history === "completed") {
+          completedReceiptCount++;
+        }
+      }
+    }
+  } catch {
+    throw new Error("previous controller migration check returned invalid protected log records");
+  }
+  assert.ok(
+    receiptCount === 1 && completedReceiptCount === 1,
+    "previous controller migration check requires exactly one completed history receipt",
+  );
+}
+
 export async function rehearsePopulatedReturn({
   controllers,
   kubeconfig,
@@ -335,6 +371,11 @@ export async function rehearsePopulatedReturn({
     `--namespace=${namespace}`,
   ];
   const helm = (...args: string[]) => run("helm", [...args, ...helmArgs], { timeout: 330_000 });
+  const kubeArgs = [
+    `--kubeconfig=${kubeconfig}`,
+    `--context=${context}`,
+    `--namespace=${namespace}`,
+  ];
   const kube = (...args: string[]) => kubectl("--namespace", namespace, ...args);
   const get = async (resource: string) => JSON.parse(await kube("get", resource, "-o", "json"));
   const startupSecret = async () =>
@@ -342,19 +383,9 @@ export async function rehearsePopulatedReturn({
       metadata: { uid: string; annotations: Record<string, string> };
       data: { "installation.yaml": string };
     }>(
-      await run(
-        "kubectl",
-        [
-          `--kubeconfig=${kubeconfig}`,
-          `--context=${context}`,
-          `--namespace=${namespace}`,
-          "get",
-          "secret/occ-installation-startup",
-          "-o",
-          "json",
-        ],
-        { protectedInput: true },
-      ),
+      await run("kubectl", [...kubeArgs, "get", "secret/occ-installation-startup", "-o", "json"], {
+        protectedInput: true,
+      }),
     );
   const installationPath = "/installation";
   const namespacePath = `/namespaces/${encodeURIComponent(namespaceId)}`;
@@ -757,22 +788,12 @@ export async function rehearsePopulatedReturn({
       completed,
       completed.status.containerStatuses?.find(({ name }) => name === "migration"),
     );
-    const output = await kube("logs", `pod/${probeName}`, "-c", "migration");
     assert.equal(
       completed.status.phase,
       "Succeeded",
       "previous image cannot use the restored database",
     );
-    const history = output
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as { event: string; history?: string });
-    assert.deepEqual(
-      history.filter(
-        (entry) => entry.event === "migration.checked" && Object.hasOwn(entry, "history"),
-      ),
-      [{ event: "migration.checked", history: "completed" }],
-    );
+    await verifyCompletedMigrationHistory(run, kubeArgs, probeName);
   });
 
   await phase("Return to the previous Helm revision on the restored database", async () => {
