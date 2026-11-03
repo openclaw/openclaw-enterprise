@@ -974,7 +974,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
             ...(endpoints.length > 1
               ? { additionalEndpoints: Object.freeze(endpoints.slice(1)) }
               : {}),
-            isDefault: false,
+            isDefault: input.type === "codex-pat",
           }),
         ]),
       ),

@@ -4808,7 +4808,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           custom &&
           (endpoint === undefined ||
             provider?.baseUrl !== endpoint ||
-            provider?.api !== "openai-responses")
+            (authentication.providerId === "custom" && provider?.api !== "openai-responses"))
         ) {
           throw callerSettingError(
             "harnessAuth.authorizedEndpoint",
@@ -4836,14 +4836,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
           }
         }
         if (
-          custom &&
+          authentication.providerId === "custom" &&
           Array.isArray(provider?.models) &&
           provider.models.some(
             (entry) => asRecord(entry)?.baseUrl !== undefined || asRecord(entry)?.api !== undefined,
           )
         ) {
           throw callerSettingError(
-            `${keyedSettingPath("models.providers", authentication.providerId)}.models`,
+            "models.providers.custom.models",
             "must inherit the authorized endpoint and Responses API",
           );
         }
