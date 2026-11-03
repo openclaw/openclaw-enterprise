@@ -57,10 +57,20 @@ const scenarios = [
     changed: ["scripts/console-storybook/.storybook/main.mjs"],
     builds: true,
   },
+  {
+    name: "typed preview consumer",
+    changed: ["scripts/console-storybook/flows.stories.ts"],
+    builds: true,
+  },
+  {
+    name: "unrelated OCC source",
+    changed: ["packages/occ/src/deployment-diagnostics.ts"],
+    builds: false,
+  },
 ];
 
 for (const event of ["pull_request", "push"] as const) {
-  test(`${event} builds Storybook only for changes that alter its output`, async () => {
+  test(`${event} selects Console Storybook build paths`, async () => {
     const workflow = loadYaml(await readFile(workflowFile, "utf8"));
     // The workflow starts when at least one changed file survives the whole list.
     for (const { name, changed, builds } of scenarios) {
@@ -69,3 +79,23 @@ for (const event of ["pull_request", "push"] as const) {
     }
   });
 }
+
+test("shared preview inputs select the Storybook build only on pushes to main", async (t) => {
+  const workflow = loadYaml(await readFile(workflowFile, "utf8"));
+  assert.deepEqual(workflow.on.push.branches, ["main"]);
+  for (const path of [
+    "apps/controller/src/console-theme.ts",
+    "apps/controller/src/composition/console-theme.ts",
+    "packages/contracts/src/workspace-defaults.mjs",
+    "packages/occ/src/environment-references.ts",
+    "packages/occ/src/gateway-security-defaults.ts",
+    "packages/occ/src/stored-configuration-rules.ts",
+    "packages/occ/src/retired-openclaw-settings.ts",
+    "packages/occ/src/deployment-failure-steps.ts",
+  ]) {
+    await t.test(path, () => {
+      assert.equal(selects(path, workflow.on.pull_request.paths), false, "pull_request");
+      assert.equal(selects(path, workflow.on.push.paths), true, "push to main");
+    });
+  }
+});
