@@ -2714,7 +2714,13 @@ for (const viewport of consoleViewports) {
       t,
       "Preset variable refusal",
       viewport,
-      humanAllowlistVariable,
+      (template) => {
+        humanAllowlistVariable(template);
+        // Human is the first variable: at 390 px its field then returns across the fold, where
+        // focus alone scrolls only the field into view and leaves its refusal below it.
+        const { human, ...others } = template.variables;
+        template.variables = { human, ...others };
+      },
       { modelSecretVariable: true },
     );
     const human = page.getByLabel("Human", { exact: true });
@@ -2735,7 +2741,7 @@ for (const viewport of consoleViewports) {
     await feedback.getByRole("button", { name: "Change Human", exact: true }).click();
 
     // The Preset step again, with the entered variables kept (never the password): Human holds
-    // the refusal under it and has focus.
+    // the refusal under it and has focus, and both are in view.
     await page.locator("#preset-variable-human[aria-invalid=true]").waitFor();
     const error = await human.evaluate((input) => {
       const doc = globalThis.document;
@@ -2743,12 +2749,19 @@ for (const viewport of consoleViewports) {
         .getAttribute("aria-describedby")
         ?.split(/\s+/)
         .find((id) => id.endsWith("-error"));
+      const errorNode = errorId ? doc.getElementById(errorId) : null;
+      const errorBottom = errorNode?.getBoundingClientRect().bottom ?? Infinity;
       return {
         focused: doc.activeElement === input,
-        text: errorId ? doc.getElementById(errorId)?.textContent : undefined,
+        text: errorNode?.textContent,
+        inView: input.getBoundingClientRect().top >= 0 && errorBottom <= globalThis.innerHeight,
       };
     });
-    assert.deepEqual(error, { focused: true, text: KUBERNETES_ALLOW_USERS_REFUSAL });
+    assert.deepEqual(error, {
+      focused: true,
+      text: KUBERNETES_ALLOW_USERS_REFUSAL,
+      inView: true,
+    });
     assert.equal(await human.inputValue(), "OCC-Workspace-Files");
     assert.equal(await page.getByLabel("Name", { exact: true }).inputValue(), "Variable Agent");
     assert.equal(await password.inputValue(), "");
