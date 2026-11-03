@@ -157,6 +157,8 @@ export function openShellServiceNetworkRules(
       name: PUBLIC_GITHUB_READ_SERVICE,
       binaries: [
         "/usr/bin/node",
+        "/usr/local/bin/node",
+        "/usr/bin/curl",
         "/usr/bin/git",
         "/usr/lib/git-core/git-remote-https",
         "/usr/lib/git-core/git-remote-http",

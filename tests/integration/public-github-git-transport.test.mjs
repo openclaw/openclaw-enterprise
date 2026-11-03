@@ -642,3 +642,25 @@ test("public Git refuses inherited client TLS identities instead of disclosing t
     "client identity settings must fail closed before contacting the reader",
   );
 });
+
+test("launcher accepts the supported CA bundle and routing-list sizes while bounding material input", async (t) => {
+  const fixture = await materialFixture(t);
+  const material = JSON.parse(await readFile(fixture.materialPath, "utf8"));
+  material.caBundle = fixture.serviceTls.cert.repeat(
+    Math.floor((65 * 1024) / Buffer.byteLength(fixture.serviceTls.cert)),
+  );
+  material.authenticatedRepositories = Array.from(
+    { length: 256 },
+    (_, index) => `other-owner/repository-${index}`,
+  );
+  const bytes = JSON.stringify(material);
+  assert.ok(Buffer.byteLength(material.caBundle) <= 65 * 1024);
+  assert.ok(Buffer.byteLength(bytes) > 64 * 1024);
+  await writeFile(fixture.materialPath, bytes);
+  const env = await fixture.install();
+  await fixture.git(env, "ls-remote", "https://github.com/example/project.git");
+  const before = fixture.requests.length;
+  await writeFile(fixture.materialPath, Buffer.alloc(1024 * 1024 + 1, 32));
+  await assert.rejects(fixture.install(), /refused/);
+  assert.equal(fixture.requests.length, before);
+});

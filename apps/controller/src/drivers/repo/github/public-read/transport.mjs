@@ -252,7 +252,7 @@ function remoteHelper(remote, originalUrl) {
 
 function installMaterial(materialPath) {
   const bytes = readFileSync(materialPath);
-  if (bytes.length > 64 * 1024) {
+  if (bytes.length > 1024 * 1024) {
     throw new Error("Public reader material exceeds its bound.");
   }
   const material = JSON.parse(bytes.toString("utf8"));

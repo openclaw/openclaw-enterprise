@@ -438,6 +438,8 @@ test("paired OpenShell compilers compose inspected public reads separately from 
     name: "public-github-read",
     binaries: [
       "/usr/bin/node",
+      "/usr/local/bin/node",
+      "/usr/bin/curl",
       "/usr/bin/git",
       "/usr/lib/git-core/git-remote-https",
       "/usr/lib/git-core/git-remote-http",
