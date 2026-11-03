@@ -22,6 +22,7 @@ export function bindPlatformUnitOfWork(
       "createInstallation",
       "holdPrincipalAccount",
       "holdAuthenticationSession",
+      "holdPrincipalIdentity",
     ]),
     namespaces: bindRepository(repositories.namespaces, lifetime, [
       "findNamespace",

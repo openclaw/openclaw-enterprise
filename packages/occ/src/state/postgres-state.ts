@@ -1217,6 +1217,11 @@ function permissions(value: unknown): readonly Permission[] {
   );
 }
 
+/** The advisory lock key that serializes a Principal's durable authority writes and removals. */
+function principalAuthorityLockKey(principalId: string): string {
+  return `occ:principal-authority:${principalId}`;
+}
+
 export class PostgresPlatformState implements PlatformStateStore {
   readonly auditSink: PlatformAuditSink;
   private readonly pool: PostgresPool;
@@ -2022,6 +2027,13 @@ export class PostgresPlatformState implements PlatformStateStore {
           [sessionId, userId],
         );
         return session.rowCount === 1;
+      },
+      holdPrincipalIdentity: async (principalId) => {
+        // A transaction-scoped advisory lock, shared here and exclusive in a Default users
+        // removal; identities are immutable, so the application role cannot lock their rows.
+        await client.query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))", [
+          principalAuthorityLockKey(principalId),
+        ]);
       },
     };
 
@@ -4292,6 +4304,11 @@ export class PostgresPlatformState implements PlatformStateStore {
         return inserted.rowCount === 1;
       },
       deleteGroupMembership: async (groupId, principalId) => {
+        // A transaction writing durable authority holds this Principal's authority lock, shared,
+        // before it authorizes, so the removal commits before it or after its COMMIT.
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+          principalAuthorityLockKey(principalId),
+        ]);
         const deleted = await client.query(
           `DELETE FROM occ.iam_group_memberships
            WHERE group_id = $1 AND principal_id = $2 AND namespace_id IS NULL`,

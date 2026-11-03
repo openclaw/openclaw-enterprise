@@ -208,14 +208,20 @@ selected account, session, and policy writers join the same protocol.
 behavior; this phase traces the writes.
 
 - **Membership.** `apps/controller/src/index.ts:createFastifyApp` handles
-  `addDefaultUser` and `removeDefaultUser` inside `controller.transact`.
-  `setDefaultUser` holds the acting account, authorizes Installation
+  `addDefaultUser` and `removeDefaultUser` inside `transactHoldingSession`, so
+  like the Namespace policy writes above they hold the human session through
+  COMMIT. `setDefaultUser` holds the acting account, authorizes Installation
   `administer`, and calls the Driver's `addGroupMember` or `removeGroupMember`
   for `group_builtin_default_users`. PostgreSQL State refuses a member that is
-  not an Installation Principal. The route appends the
-  `openclaw.iam.default_users.*` event with `changed` in the same unit. Unlike
-  the Namespace policy writes above, these routes do not hold the human session
-  through COMMIT.
+  not an Installation Principal, and `deleteGroupMembership` takes the member's
+  authority advisory lock exclusively. The route appends the
+  `openclaw.iam.default_users.*` event with `changed` in the same unit.
+- **Authority fence.** `performFenced` runs each session request inside
+  `controller.withAuthorityFence`. The create paths below and
+  `deployAgentWithAuthorization` call `holdAuthority` first: it holds the
+  session through COMMIT, takes the Principal's authority lock shared, then
+  authorizes. A sign-out, disable, or removal commits before the authorization,
+  which refuses, or after this COMMIT.
 - **Owner bindings.** Each create path calls `bindCreator` after it inserts the
   resource row, in the same unit: `createNamespace`, `createAgent`,
   `createConfiguration`, `createSecret`, `createCredentialSource`,
@@ -299,6 +305,7 @@ behavior; this phase traces the writes.
 
 - 2026-11-02 10:00: Trace Owner bindings for every create, the default Namespace binding, and the Namespace Creator setting; drop the Namespace limit. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - aba993606)
 - 2026-11-02 16:00: Trace parent checks that apply an exact Agent binding to the Agent's revisions and sandbox policy. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
+- 2026-11-02 18:00: Trace the authority fence; correct the membership session hold. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-10-30 09:02: Trace Default users membership, the Namespace owner binding, and deploy-time Agent grants; working tree changes uncommitted. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - a382326dde18057a250e93a222aa8f4000477166)
 - 2026-10-15 13:28: Retain assigning sessions through policy COMMIT, require transactional IAM writes, and preserve caller limits with shared guarded-session holds. (authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851 - a302a3e2061575b64dcc37e212c55075d5c74b9a)
 - 2026-10-14 11:00: Read, validate and index native policy once per State unit of work instead of once per decision. (fix-1322)

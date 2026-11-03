@@ -130,6 +130,11 @@ the Namespace policy API and grants the new owner. An administrator's Owner
 bindings add nothing to the administrator binding, but they stay if that binding
 is removed.
 
+Each create or deploy that writes an Owner binding or a deploy-time grant
+holds the caller's session until COMMIT and authorizes only after that. A
+sign-out, account disable, or removal from Default users commits either before
+it, so the request is refused and writes nothing, or after its COMMIT.
+
 OCC writes no Owner binding when the selected IAM Driver has no
 `createOwnerBinding` member. A Driver that has it but does not join the platform
 transaction makes every create return `503` and write nothing.

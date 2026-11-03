@@ -125,6 +125,11 @@ export interface InstallationRepository extends InstallationReadRepository {
   holdPrincipalAccount(principalId: string): Promise<boolean>;
   /** Holds the user/session through COMMIT and validates expiry at commit; authentication validates its profile. */
   holdAuthenticationSession(sessionId: string, userId: string): Promise<boolean>;
+  /**
+   * Holds a Principal's authority lock, shared, until COMMIT before a write of durable authority,
+   * so a Default users membership removal, which takes it exclusively, serializes with it.
+   */
+  holdPrincipalIdentity(principalId: string): Promise<void>;
 }
 
 export interface NamespaceReadRepository {
@@ -1642,6 +1647,8 @@ function repositories(
     holdPrincipalAccount: async () => true,
     // Memory authentication owns its sessions outside platform State.
     holdAuthenticationSession: async () => false,
+    // One in-process State applies each unit of work alone; there is nothing to serialize with.
+    holdPrincipalIdentity: async () => undefined,
   };
 
   const namespaces: NamespaceRepository = {

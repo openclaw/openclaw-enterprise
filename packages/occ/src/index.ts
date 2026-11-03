@@ -775,6 +775,9 @@ export interface RuntimeLogReadGrant {
  */
 export type RuntimeLogReadAdmission = <T>(read: () => Promise<T>) => Promise<T>;
 
+/** Holds the caller's authority in a unit of work; throws when it is no longer current. */
+export type AuthorityFence = (state: PlatformUnitOfWork) => Promise<void>;
+
 export interface ControllerOptions {
   readonly preparedTokens?: PreparedTokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
@@ -1999,6 +2002,7 @@ export class OpenClawController {
   private readonly identifier?: ControllerOptions["createId"];
   private readonly state: PlatformStateStore;
   private readonly transactionContext = new AsyncLocalStorage<PlatformUnitOfWork>();
+  private readonly authorityFence = new AsyncLocalStorage<AuthorityFence>();
   private readonly provisioningContext = new AsyncLocalStorage<ClaimedWork>();
   private readonly mutationRollbacks = new AsyncLocalStorage<(() => Promise<void>)[]>();
   private readonly shouldRecordOperations: boolean;
@@ -4847,6 +4851,7 @@ export class OpenClawController {
       throw new ScopeViolationError("The Namespace name is invalid.");
     }
     return this.mutate(async (state) => {
+      await this.holdAuthority(state, principalId);
       const target: ResourceRef = {
         kind: "namespace",
         id: this.installation.id,
@@ -4938,6 +4943,27 @@ export class OpenClawController {
    * The creator of a resource gets the built-in Owner Role on it, in the creating unit
    * (RFC-0026): Namespace-wide for a Namespace, exact for anything else.
    */
+  /**
+   * Runs `work` with a fence that each transaction writing durable authority applies first: the
+   * HTTP layer holds the caller's session through COMMIT, as Namespace policy writes do, so a
+   * sign-out or account disable cannot commit in between (#2311).
+   */
+  withAuthorityFence<T>(fence: AuthorityFence, work: () => Promise<T>): Promise<T> {
+    return this.authorityFence.run(fence, work);
+  }
+
+  /**
+   * Fences a transaction that writes durable authority (an Owner binding or deploy-time grants)
+   * before it authorizes. It applies the caller's session fence, if any, then holds the
+   * Principal's authority lock, which a Default users removal takes exclusively, so the removal either
+   * commits first and the authorization below sees it, or waits for this COMMIT. Session, then
+   * identity: the order a removal takes them too.
+   */
+  private async holdAuthority(state: PlatformUnitOfWork, principalId: string): Promise<void> {
+    await this.authorityFence.getStore()?.(state);
+    await state.installations.holdPrincipalIdentity(principalId);
+  }
+
   private async bindCreator(
     state: PlatformUnitOfWork,
     principalId: string,
@@ -5279,6 +5305,7 @@ export class OpenClawController {
     }
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
+      await this.holdAuthority(state, principalId);
       await this.authorize(principalId, "create", {
         kind: "preset",
         id: input.namespaceId,
@@ -5637,6 +5664,7 @@ export class OpenClawController {
     }
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
+      await this.holdAuthority(state, principalId);
       await this.authorize(principalId, "create", {
         kind: "secret",
         id: input.namespaceId,
@@ -6786,6 +6814,7 @@ export class OpenClawController {
     const secretRefs = Object.freeze({ ...(input.secrets ?? {}) });
     this.namespaceIdentity(input.namespaceId);
     const registration = await this.mutate(async (state) => {
+      await this.holdAuthority(state, principalId);
       await this.authorize(principalId, "create", {
         kind: "credential_source",
         id: input.namespaceId,
@@ -7542,6 +7571,7 @@ export class OpenClawController {
     const values = frozenValues(input.values);
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
+      await this.holdAuthority(state, principalId);
       await this.authorize(principalId, "create", {
         kind: "configuration",
         id: input.namespaceId,
@@ -7619,6 +7649,7 @@ export class OpenClawController {
     }
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
+      await this.holdAuthority(state, principalId);
       await this.authorize(principalId, "create", {
         kind: "service_account",
         id: input.namespaceId,
@@ -9931,6 +9962,7 @@ export class OpenClawController {
     const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
+      await this.holdAuthority(state, principalId);
       const target: ResourceRef = {
         kind: "agent",
         id: input.namespaceId,
@@ -10660,6 +10692,7 @@ export class OpenClawController {
     await this.validateDeploymentChannels(principalId, input);
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
+      await this.holdAuthority(state, principalId);
       const authorization = await this.authorize(principalId, "deploy", {
         kind: "agent",
         id: input.agentId,

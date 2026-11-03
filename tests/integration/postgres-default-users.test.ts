@@ -64,6 +64,7 @@ async function defaultUsersApp(
     );
     assert.ok(identity);
     return {
+      email: credentials.email,
       principalId: identity.id,
       request: await createAuthenticatedControllerRequest(app, credentials),
     };
@@ -402,5 +403,168 @@ test(
     );
     await controller.handleNamespaceLifecycle(principal.id, namespace.id, "ready");
     assert.equal((await alice.request("GET", `/namespaces/${namespace.id}`)).status, 200);
+  },
+);
+
+/** Resolves once `count` app sessions in this database wait on a lock the test holds. */
+async function lockWaiters(pool: AgentApp["pool"], count: number) {
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    const waiting = await pool.query(
+      `SELECT count(*)::int AS waiting FROM pg_stat_activity
+       WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+    );
+    if (waiting.rows[0].waiting >= count) {
+      return;
+    }
+    assert.ok(Date.now() < deadline, `timed out waiting for ${count} blocked transactions`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+/** The Default user's Secret, Configuration, and Agent in default, ready to deploy. */
+async function ownedAgent(
+  base: string,
+  owner: { request: Awaited<ReturnType<typeof createAuthenticatedControllerRequest>> },
+) {
+  const configuration = await owner.request("POST", `${base}/configurations`, {
+    kind: "agent",
+    values: createHarnessConfiguration("openclaw", "gpt-4.1"),
+  });
+  assert.equal(configuration.status, 201);
+  const secret = await owner.request("POST", `${base}/secrets`, {
+    name: `owned key ${randomUUID()}`,
+    value: `test-key-${randomUUID()}`,
+  });
+  assert.equal(secret.status, 201);
+  const agent = await owner.request("POST", `${base}/agents`, {
+    name: `owned agent ${randomUUID()}`,
+    configurationId: configuration.data.id,
+    harnessAuth: { method: "api_key", source: secret.data.ref },
+  });
+  assert.equal(agent.status, 201);
+  return { secretId: secret.data.ref.id as string, agent: agent.data };
+}
+
+test(
+  "a session revoked while a Default user's deploy waits commits no Agent grant",
+  requiresPostgres,
+  async (t) => {
+    const agentApp = await defaultUsersApp(t, "default-users-session-fence");
+    const { pool, account, addDefaultUser } = agentApp;
+    const base = `/namespaces/${await defaultNamespace(agentApp)}`;
+    const alice = await account("alice");
+    await addDefaultUser(alice.principalId);
+    const { secretId, agent } = await ownedAgent(base, alice);
+    const user = await pool.query('SELECT id FROM occ."user" WHERE email = $1', [alice.email]);
+    const userId = user.rows[0].id;
+
+    // An account disable or sign-out elsewhere locks Alice's user row first. While it holds the
+    // row, her deploy, already admitted with a valid session, waits at its authority fence.
+    const revoker = await pool.connect();
+    await revoker.query("BEGIN");
+    await revoker.query('SELECT id FROM occ."user" WHERE id = $1 FOR UPDATE', [userId]);
+    const deploying = alice.request("POST", `${base}/agents/${agent.id}/deploy`);
+    await lockWaiters(pool, 1);
+    await revoker.query("DELETE FROM occ.session WHERE user_id = $1", [userId]);
+    await revoker.query("COMMIT");
+    revoker.release();
+
+    // The deploy then finds its session gone: it is refused, and neither a revision nor the
+    // Agent's Secret grant, which would outlive the session, is written.
+    const deployed = await deploying;
+    assert.equal(deployed.status, 403, JSON.stringify(deployed.error));
+    const grants = await pool.query(
+      "SELECT 1 FROM occ.iam_access_bindings WHERE identity_subject_id = $1 AND resource_id = $2",
+      [agent.servicePrincipalId, secretId],
+    );
+    assert.equal(grants.rowCount, 0);
+    const revisions = await pool.query("SELECT 1 FROM occ.agent_revisions WHERE agent_id = $1", [
+      agent.id,
+    ]);
+    assert.equal(revisions.rowCount, 0);
+  },
+);
+
+test(
+  "a Default users removal and a member's create commit one after the other",
+  requiresPostgres,
+  async (t) => {
+    const agentApp = await defaultUsersApp(t, "default-users-membership-fence");
+    const { pool, inject, account, addDefaultUser } = agentApp;
+    const namespaceId = await defaultNamespace(agentApp);
+    const base = `/namespaces/${namespaceId}`;
+    const alice = await account("alice");
+    await addDefaultUser(alice.principalId);
+    const user = await pool.query('SELECT id FROM occ."user" WHERE email = $1', [alice.email]);
+    const secretCount = async () =>
+      (
+        await pool.query("SELECT count(*)::int AS n FROM occ.secrets WHERE namespace_id = $1", [
+          namespaceId,
+        ])
+      ).rows[0].n as number;
+
+    // Removal first: Alice's create waits at its authority fence while the administrator's
+    // removal commits. The create then authorizes against the committed removal and writes
+    // nothing, so no Owner binding is created from a membership that no longer exists.
+    const before = await secretCount();
+    const userLock = await pool.connect();
+    await userLock.query("BEGIN");
+    await userLock.query('SELECT id FROM occ."user" WHERE id = $1 FOR UPDATE', [user.rows[0].id]);
+    const refusedCreate = alice.request("POST", `${base}/secrets`, {
+      name: `alice after removal ${randomUUID()}`,
+      value: `test-key-${randomUUID()}`,
+    });
+    await lockWaiters(pool, 1);
+    const removed = await inject("DELETE", `/iam/default-users/${alice.principalId}`);
+    assert.equal(removed.statusCode, 204, removed.body);
+    await userLock.query("COMMIT");
+    userLock.release();
+    assert.equal((await refusedCreate).status, 403);
+    assert.equal(await secretCount(), before);
+
+    // Create first: Alice's create has authorized and holds her identity, then waits on the
+    // Namespace lock. The removal waits for that create to COMMIT, so the create keeps its Owner
+    // binding, as revocation keeps what people created, and her next create is refused.
+    await addDefaultUser(alice.principalId);
+    const namespaceLock = await pool.connect();
+    await namespaceLock.query("BEGIN");
+    await namespaceLock.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE", [
+      namespaceId,
+    ]);
+    const settled: string[] = [];
+    const creating = alice
+      .request("POST", `${base}/secrets`, {
+        name: `alice before removal ${randomUUID()}`,
+        value: `test-key-${randomUUID()}`,
+      })
+      .then((response) => {
+        settled.push("create");
+        return response;
+      });
+    await lockWaiters(pool, 1);
+    const removing = inject("DELETE", `/iam/default-users/${alice.principalId}`).then(
+      (response) => {
+        settled.push("removal");
+        return response;
+      },
+    );
+    await lockWaiters(pool, 2);
+    await namespaceLock.query("COMMIT");
+    namespaceLock.release();
+    const [created, removedAfter] = await Promise.all([creating, removing]);
+    assert.equal(created.status, 201, JSON.stringify(created.error));
+    assert.equal(removedAfter.statusCode, 204, removedAfter.body);
+    assert.deepEqual(settled, ["create", "removal"]);
+    const owner = await pool.query(
+      "SELECT 1 FROM occ.iam_access_bindings WHERE id = $1 AND identity_subject_id = $2",
+      [`binding_owner_${created.data.ref.id}`, alice.principalId],
+    );
+    assert.equal(owner.rowCount, 1);
+    const later = await alice.request("POST", `${base}/secrets`, {
+      name: `alice later ${randomUUID()}`,
+      value: `test-key-${randomUUID()}`,
+    });
+    assert.equal(later.status, 403);
   },
 );

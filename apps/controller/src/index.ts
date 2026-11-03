@@ -2105,6 +2105,25 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     );
   }
 
+  // Each OCC transaction that writes durable authority (an Owner binding or deploy-time grants)
+  // holds a session caller's session through COMMIT, as Namespace policy writes do (#2311), so a
+  // sign-out or account disable cannot commit in between. Other work runs unchanged.
+  function performFenced(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    operation: OccApiRoute,
+  ): Promise<void> {
+    const admitted = admissions.get(request);
+    if (controller === undefined || admitted?.method !== "session") {
+      return perform(request, reply, operation);
+    }
+    const { session } = admitted;
+    return controller.withAuthorityFence(
+      (unit) => options.auth.holdSession(unit, session, request),
+      () => perform(request, reply, operation),
+    );
+  }
+
   async function perform(
     request: FastifyRequest,
     reply: FastifyReply,
@@ -4501,7 +4520,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...(authorizesBeforeBody(operation)
           ? {}
           : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
-        handler: async (request, reply) => perform(request, reply, operation),
+        handler: async (request, reply) => performFenced(request, reply, operation),
       });
     }
   });
