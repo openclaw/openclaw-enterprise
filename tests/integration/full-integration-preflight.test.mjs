@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 import { join } from "node:path";
@@ -67,7 +67,7 @@ test("qa-matrix repository fixture dispatch keeps default and isolated credentia
   );
   assert.match(
     defaultStep,
-    /REPOSITORY_REGISTRY_JSON: \$\{\{ secrets\.REPOSITORY_REGISTRY_JSON \}\}/,
+    /REPOSITORY_REGISTRY_FILE: scripts\/ci\/qa-repositories\/default\.json/,
   );
   assert.match(defaultStep, /REPOSITORY_APP_KEY: \$\{\{ secrets\.REPOSITORY_APP_KEY \}\}/);
 
@@ -85,7 +85,7 @@ test("qa-matrix repository fixture dispatch keeps default and isolated credentia
   assert.doesNotMatch(isolatedStep, /QA_ISOLATED_REPOSITORY_OBSERVER_TOKEN/);
   assert.match(
     isolatedStep,
-    /REPOSITORY_REGISTRY_JSON: \$\{\{ secrets\.QA_ISOLATED_REPOSITORY_REGISTRY_JSON \}\}/,
+    /REPOSITORY_REGISTRY_FILE: scripts\/ci\/qa-repositories\/isolated\.json/,
   );
   assert.match(
     isolatedStep,
@@ -121,9 +121,15 @@ function qaRegistry(repositories) {
   });
 }
 
-async function runQaCredentialMaterializer(t, overrides = {}) {
+async function runQaCredentialMaterializer(
+  t,
+  overrides = {},
+  registry = qaRegistry(["openclaw/openclaw-enterprise"]),
+) {
   const directory = await temporaryDirectory(t, "qa-credentials-");
   const githubEnv = join(directory, "github-env");
+  const registryFile = join(directory, "reviewed-registry.json");
+  await writeFile(registryFile, registry, { mode: 0o600 });
   const env = {
     RUNNER_TEMP: directory,
     GITHUB_ENV: githubEnv,
@@ -138,7 +144,7 @@ async function runQaCredentialMaterializer(t, overrides = {}) {
     OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: "Synthetic calendar result",
     OCC_TEST_QA_REPOSITORY_AUTHORIZED: "1",
     REPOSITORY_OBSERVER_TOKEN: "synthetic-observer-token",
-    REPOSITORY_REGISTRY_JSON: qaRegistry(["openclaw/openclaw-enterprise"]),
+    REPOSITORY_REGISTRY_FILE: registryFile,
     REPOSITORY_APP_KEY: "synthetic-private-key",
     REPOSITORY_UPSTREAM_CIDRS_JSON: "[]",
     ...overrides,
@@ -148,29 +154,81 @@ async function runQaCredentialMaterializer(t, overrides = {}) {
     encoding: "utf8",
     env,
   });
-  return { ...result, directory, githubEnv };
+  return { ...result, directory, githubEnv, registryFile };
 }
 
-test("QA credential materializer preserves the default repository fixture", async (t) => {
-  const result = await runQaCredentialMaterializer(t);
+test("QA credential materializer reads reviewed registry files only for repository scenarios", async (t) => {
+  const registryFile = "scripts/ci/qa-repositories/default.json";
+  const registry = await readFile(join(repositoryRoot, registryFile), "utf8");
+  const result = await runQaCredentialMaterializer(t, { REPOSITORY_REGISTRY_FILE: registryFile });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(await readFile(result.githubEnv, "utf8"), /OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY=/);
+  const exported = await readFile(result.githubEnv, "utf8");
+  assert.match(exported, /OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY=/);
+  const repository = join(result.directory, "qa-matrix-credentials", "repository");
+  assert.equal(await readFile(join(repository, "registry.json"), "utf8"), registry);
+  assert.equal(
+    await readFile(join(repository, "private-key.pem"), "utf8"),
+    "synthetic-private-key",
+  );
+  assert.equal((await stat(join(repository, "registry.json"))).mode & 0o777, 0o600);
+  assert.equal((await stat(join(repository, "private-key.pem"))).mode & 0o777, 0o600);
+  assert.doesNotMatch(exported, /synthetic-private-key|fixture-owner/);
+
+  // Invalid inputs stop materialization without copying their contents into errors.
+  for (const [overrides, contents, error] of [
+    [{ REPOSITORY_REGISTRY_FILE: undefined }, registry, /REPOSITORY_REGISTRY_FILE is required/],
+    [
+      { REPOSITORY_REGISTRY_FILE: join(result.directory, "missing.json") },
+      registry,
+      /REPOSITORY_REGISTRY_FILE must be readable/,
+    ],
+    [{}, "{synthetic-private-key", /REPOSITORY_REGISTRY_FILE must contain valid JSON/],
+    [{}, "[]", /repository registry must be an object/],
+    [{}, "{}", /repository registry must contain repositories/],
+  ]) {
+    const failure = await runQaCredentialMaterializer(t, overrides, contents);
+    assert.notEqual(failure.status, 0);
+    assert.match(failure.stderr, error);
+    assert.doesNotMatch(failure.stderr, /synthetic-private-key/);
+  }
+
+  // Calendar/model-only advisory runs need no repository metadata or App key.
+  const noRepository = await runQaCredentialMaterializer(t, {
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_SCENARIOS: "model-ui",
+    REPOSITORY_REGISTRY_FILE: undefined,
+    REPOSITORY_APP_KEY: undefined,
+  });
+  assert.equal(noRepository.status, 0, noRepository.stderr);
+  assert.doesNotMatch(
+    await readFile(noRepository.githubEnv, "utf8"),
+    /OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY/,
+  );
 });
 
 test("QA credential materializer validates isolated repository fixture target", async (t) => {
-  const target = "fixture-owner/fixture-repo";
+  const registryFile = "scripts/ci/qa-repositories/isolated.json";
+  const registry = await readFile(join(repositoryRoot, registryFile), "utf8");
+  const target = JSON.parse(registry).repositories[0].repository;
   const success = await runQaCredentialMaterializer(t, {
     QA_REPOSITORY_FIXTURE: "isolated",
     QA_ISOLATED_REPOSITORY_FULL_NAME: target,
-    REPOSITORY_REGISTRY_JSON: qaRegistry([target]),
+    REPOSITORY_REGISTRY_FILE: registryFile,
+    REPOSITORY_APP_KEY: "synthetic-isolated-private-key",
   });
   assert.equal(success.status, 0, success.stderr);
+  const repository = join(success.directory, "qa-matrix-credentials", "repository");
+  assert.equal(await readFile(join(repository, "registry.json"), "utf8"), registry);
+  assert.equal(
+    await readFile(join(repository, "private-key.pem"), "utf8"),
+    "synthetic-isolated-private-key",
+  );
   const exported = await readFile(success.githubEnv, "utf8");
   assert.match(exported, /OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY=/);
   assert.match(exported, /OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY=/);
   assert.match(exported, /QA_REPOSITORY_FIXTURE=isolated/);
   assert.doesNotMatch(exported, /OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE=/);
-  assert.doesNotMatch(exported, /synthetic-observer-token/);
+  assert.doesNotMatch(exported, /synthetic-observer-token|synthetic-isolated-private-key/);
   const runnerEnv = Object.fromEntries(
     exported
       .trim()
@@ -195,33 +253,42 @@ test("QA credential materializer validates isolated repository fixture target", 
     }),
   );
 
-  const missingTarget = await runQaCredentialMaterializer(t, {
-    QA_REPOSITORY_FIXTURE: "isolated",
-    REPOSITORY_REGISTRY_JSON: qaRegistry([target]),
-  });
+  const missingTarget = await runQaCredentialMaterializer(
+    t,
+    {
+      QA_REPOSITORY_FIXTURE: "isolated",
+    },
+    qaRegistry([target]),
+  );
   assert.notEqual(missingTarget.status, 0);
   assert.match(missingTarget.stderr, /QA_ISOLATED_REPOSITORY_FULL_NAME is required/);
 
-  const wrongTarget = await runQaCredentialMaterializer(t, {
-    QA_REPOSITORY_FIXTURE: "isolated",
-    QA_ISOLATED_REPOSITORY_FULL_NAME: target,
-    REPOSITORY_REGISTRY_JSON: qaRegistry(["fixture-owner/other-repo"]),
-  });
+  const wrongTarget = await runQaCredentialMaterializer(
+    t,
+    {
+      QA_REPOSITORY_FIXTURE: "isolated",
+      QA_ISOLATED_REPOSITORY_FULL_NAME: target,
+    },
+    qaRegistry(["fixture-owner/other-repo"]),
+  );
   assert.notEqual(wrongTarget.status, 0);
   assert.match(wrongTarget.stderr, /must match QA_ISOLATED_REPOSITORY_FULL_NAME/);
 
-  const multipleRepositories = await runQaCredentialMaterializer(t, {
-    QA_REPOSITORY_FIXTURE: "isolated",
-    QA_ISOLATED_REPOSITORY_FULL_NAME: target,
-    REPOSITORY_REGISTRY_JSON: qaRegistry([target, "fixture-owner/other-repo"]),
-  });
+  const multipleRepositories = await runQaCredentialMaterializer(
+    t,
+    {
+      QA_REPOSITORY_FIXTURE: "isolated",
+      QA_ISOLATED_REPOSITORY_FULL_NAME: target,
+    },
+    qaRegistry([target, "fixture-owner/other-repo"]),
+  );
   assert.notEqual(multipleRepositories.status, 0);
   assert.match(multipleRepositories.stderr, /exactly one repository/);
 
   const workflowRepository = await runQaCredentialMaterializer(t, {
     QA_REPOSITORY_FIXTURE: "isolated",
     QA_ISOLATED_REPOSITORY_FULL_NAME: "openclaw/openclaw-enterprise",
-    REPOSITORY_REGISTRY_JSON: qaRegistry(["openclaw/openclaw-enterprise"]),
+    REPOSITORY_REGISTRY_FILE: registryFile,
   });
   assert.notEqual(workflowRepository.status, 0);
   assert.match(workflowRepository.stderr, /must not target this workflow repository/);

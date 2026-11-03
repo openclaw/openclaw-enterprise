@@ -1,20 +1,20 @@
 ---
 created: 2026-09-04
 updated: 2026-11-02
-last_updated_session: authoring-run/bb0f8642-6ddd-45dd-b762-a4775812d9c5
+last_updated_session: authoring-run/af85064b-4dc8-4fc5-b59d-b55efb3321a5
 ---
 
 # GitHub Actions testing flow
 
 ## Overview
 
-The [ordinary CI lanes](../testing/ci.md#ci) reject missing or skipped coverage. Docs-only runs check documentation and Suite Audit. Neither proves credentialed integrations.
+[Ordinary CI](../testing/ci.md#ci) rejects missing or skipped coverage. Docs-only checks do not prove credentialed integrations.
 
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
 - `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci.md#qa-matrix).
-- `.github/workflows/full-integration.yml:jobs`: manual credentialed integrations from `main`, or environment-free installation lanes from reviewed branches, pinned to the dispatched commit.
+- `.github/workflows/full-integration.yml:jobs`: manual credentialed integrations from `main`, or environment-free installation lanes from reviewed branches.
 
 ## Flow
 
@@ -93,22 +93,23 @@ A PR can change the workflow loaded from its merge checkout despite base-loaded
 policy. Separately trusted enforcement is a deployment decision, not an
 established source property.
 
-Full Integration pins `github.sha`; `all` selects every dispatch lane and CI suite.
-Credentialed jobs require `integration` on `main`. Preflight rejects reviewers and
-any policy except one custom branch rule for `main`. QA waits for Slack regardless
-of success; cancellation stops QA. Aggregation requires QA and installation results.
+Full Integration pins `github.sha`; `all` selects every lane. Credentialed jobs
+use `integration` on `main`; preflight requires one custom `main` branch rule
+without reviewers. QA waits for Slack; cancellation stops QA. Aggregation requires
+QA and installation results.
 
 Environment-free `dev-up-k3d` and `skipper-prepared-git-installed` accept reviewed
-branches. `dev-up-k3d` prepares Go, CLI, Chromium and k3d on Ubuntu 22.04, with
-150/180-minute file/job deadlines. Installation lanes serialize by branch;
-others share `full-integration`, without cancellation. PR advisory retains
-`integration-qa-pr` and separate credentials.
+branches and serialize per branch. Others share `full-integration`; none cancel.
+`dev-up-k3d` uses Ubuntu 22.04, Go, CLI, Chromium and k3d; file/job deadlines are
+150/180 minutes. PR advisory keeps separate `integration-qa-pr` credentials.
 
 PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns a separate cluster and PostgreSQL server. Before creating k3d nodes that share the runner kernel, the shared action enables bridge netfilter; missing filtering fails setup rather than leaving Pod network policies unenforced. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay on each runner; within a lane, `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 
 The application lane gives the native IAM barrier test its own migrated PostgreSQL database; only that test receives its application and migrator connection details, which the CLI keeps out of `GITHUB_ENV`. Its unregistered supplier stays in that disposable database. This fixture does not establish production writer participation in the barrier.
 
-Full CI and Full Integration call the [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) for setup, selected baseline checks, preparation, execution, unconditional cleanup, and sanitized result upload. Callers own the commit, protected environment, explicit credentials and timeout; tests stop five minutes earlier.
+The [shared action](../../.github/actions/run-ci-lane/action.yml) sets up, prepares, tests, cleans up and uploads sanitized results. Callers set commit, environment, credentials and timeout; tests stop five minutes earlier.
+
+`scripts/ci/qa-matrix-credentials.mjs` materializes `REPOSITORY_REGISTRY_FILE` beside the secret App key; missing or mismatched inputs fail. QA restricts Agent Git to one branch; the isolated observer has repository-level write access.
 
 PR dependency caches stay within GitHub's PR merge-ref scope; main caches stay main-scoped. Results and credential-bearing state are not caches; protected jobs do not promote PR artifacts.
 
@@ -258,6 +259,8 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-02 17:43: Load QA registries from files. (authoring-run/af85064b-4dc8-4fc5-b59d-b55efb3321a5 - f1c4746031c95fb863f02e17537e67c09d0d1ba3)
 
 - 2026-11-02 16:59: Consolidate integration environments; preserve PR credentials and credential-free branch dispatch. (authoring-run/bb0f8642-6ddd-45dd-b762-a4775812d9c5 - a5748f8bd30d17524e6e4b73c683e279b64c7c8c)
 

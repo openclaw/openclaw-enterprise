@@ -122,15 +122,26 @@ Calendar requires variables `OCC_TEST_CODEX_CALENDAR_TOOL_NAME` and
 `OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`; `OCC_TEST_CODEX_CALENDAR_PROMPT` is
 optional. QA model overrides default to `gpt-6-luna`.
 
-In `integration`, the default repository fixture needs secrets
-`REPOSITORY_OBSERVER_TOKEN`, `REPOSITORY_REGISTRY_JSON`, and `REPOSITORY_APP_KEY`.
-For `qa_repository_fixture: isolated`, replace those with secrets
-`QA_ISOLATED_REPOSITORY_REGISTRY_JSON`, `QA_ISOLATED_REPOSITORY_APP_KEY`, and
-variable `QA_ISOLATED_REPOSITORY_FULL_NAME`. The registry must contain exactly
-that lowercase `owner/repository`, different from this workflow repository.
-Isolated runs mint short-lived observer tokens from the App; no static observer
-token is needed. Both fixtures use approved IPv4 `/32` endpoints in
-`REPOSITORY_UPSTREAM_CIDRS_JSON`. Missing or mismatched inputs fail without fallback.
+The QA registry files are checked-in configuration:
+[default](../../scripts/ci/qa-repositories/default.json) and
+[isolated](../../scripts/ci/qa-repositories/isolated.json). The workflow passes
+`REPOSITORY_REGISTRY_FILE`; it no longer reads registry JSON from secrets.
+Each file selects one repository and App installation, with a 3,600-second token
+limit. QA narrows the `git-write` seed to `git-only` access on its exact run
+branch before deployment and substitutes the new Namespace. Do not deploy a seed
+directly.
+
+The default fixture needs secrets `REPOSITORY_OBSERVER_TOKEN` and
+`REPOSITORY_APP_KEY`. For `qa_repository_fixture: isolated`, use secret
+`QA_ISOLATED_REPOSITORY_APP_KEY` and variable
+`QA_ISOLATED_REPOSITORY_FULL_NAME`, which must match the isolated file's repository
+and differ from the workflow repository. The isolated observer uses the App to
+mint one-repository tokens with contents and pull-request write access for
+verification and cleanup; the Agent's branch restriction does not limit this
+separate observer. Keep private keys and observer tokens in secret storage.
+Both fixtures use approved IPv4 `/32` endpoints in
+`REPOSITORY_UPSTREAM_CIDRS_JSON`. Missing files, mismatched targets, or required
+credentials fail without fallback.
 
 <a id="cleanup-command-deadlines"></a>
 <a id="select-immutable-images-for-local-preparation"></a>
