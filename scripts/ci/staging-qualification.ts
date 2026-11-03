@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { validatePublicationRun, validateReceipt } from "./container-promote.mjs";
 import {
   github,
@@ -11,10 +12,14 @@ import {
   verifyCi,
   verifyMainSource,
 } from "./container-release.mjs";
-import { prepareRuntimeImageSmoke } from "./prepare.mjs";
+import { loadTestSuites } from "./test-suites.mjs";
 
 const env = process.env;
 const workflow = ".github/workflows/staging-qualification.yml";
+const startupFiles = [
+  ["images-packaging", "tests/integration/production-image-startup.test.mjs"],
+  ["images-runtime-startup", "tests/integration/runtime-image-startup.test.mjs"],
+] as const;
 
 async function producer() {
   assert.match(env.STAGING_INSTALLATION ?? "", /^[a-z][a-z0-9-]{0,62}$/);
@@ -50,17 +55,77 @@ async function producer() {
   return String(artifact.id);
 }
 
-async function qualify(path: string) {
+async function releaseSource() {
+  assert.ok(env.GITHUB_WORKSPACE, "GITHUB_WORKSPACE is required.");
+  const root = await realpath(join(env.GITHUB_WORKSPACE, "release-source"));
+  const [top, head] = execFileSync("git", ["rev-parse", "--show-toplevel", "HEAD"], {
+    cwd: root,
+    encoding: "utf8",
+  })
+    .trim()
+    .split("\n");
+  assert.equal(top, root, "The release source needs its own checkout.");
+  assert.equal(head, env.SOURCE_SHA, "Release checkout differs from the verified source.");
+  assert.equal(
+    execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], {
+      cwd: root,
+      encoding: "utf8",
+    }),
+    "",
+    "Release checkout has tracked changes.",
+  );
+  return root;
+}
+
+async function releaseNodeBase(root: string) {
+  try {
+    // The credentialed step reads release inputs as data. Release scripts run in later steps.
+    const prepare = await readFile(join(root, "scripts/ci/prepare.mjs"), "utf8");
+    assert.match(prepare, /^export async function prepareRuntimeImageSmoke\(/m);
+    await access(join(root, "scripts/ci/setup-tools.sh"));
+    await access(join(root, "scripts/ci/cleanup.mjs"));
+    for (const [lane, file] of startupFiles) {
+      await access(join(root, file));
+      execFileSync(process.execPath, [
+        "scripts/ci/run-tests.mjs",
+        "check-selection",
+        lane,
+        "--file",
+        file,
+        "--root",
+        root,
+      ]);
+    }
+    const suites = loadTestSuites(join(root, "scripts/ci/test-suites.json"));
+    const nodeBase = suites.lanes["images-packaging"].prepare.defaultEnv.NODE_BASE_IMAGE;
+    const recipe = await readFile(join(root, "deploy/runtime/Dockerfile"), "utf8");
+    assert.ok(typeof nodeBase === "string");
+    assert.equal(recipe.match(/^ARG NODE_BASE_IMAGE=(.+)$/m)?.[1], nodeBase);
+    return nodeBase;
+  } catch (error) {
+    throw new Error(`Release ${env.SOURCE_SHA} does not support this startup verifier.`, {
+      cause: error,
+    });
+  }
+}
+
+async function pull(path: string, directory: string) {
   assert.equal(await producer(), env.ARTIFACT_ID, "Publication artifact identity changed.");
   const receipt = JSON.parse(await readFile(path, "utf8"));
-  validateReceipt(receipt, env);
+  validateReceipt(receipt, { ...env, NODE_BASE_IMAGE: receipt?.[0]?.nodeBaseImage });
   await verifyCi({ ...env, CI_RUN_ID: receipt[0].ciRunId, CI_ATTEMPT: receipt[0].ciAttempt });
   const actor = env.GITHUB_ACTOR;
   const token = env.GH_TOKEN;
   delete env.GH_TOKEN;
+  delete env.GITHUB_TOKEN;
   assert.ok(actor, "GITHUB_ACTOR is required for GHCR package read access.");
   assert.ok(token, "GH_TOKEN is required for GHCR package read access.");
-  assert.ok(env.RUNNER_TEMP, "RUNNER_TEMP is required.");
+  const nodeBaseImage = await releaseNodeBase(await releaseSource());
+  assert.equal(
+    receipt[0].nodeBaseImage,
+    nodeBaseImage,
+    "Publication Node base differs from the release source.",
+  );
   const selected: Record<string, string> = {};
   // Validate both destinations before pulling either. No receipt-selected registry or tag.
   for (const image of receipt) {
@@ -73,7 +138,7 @@ async function qualify(path: string) {
     );
     selected[image.image] = `${configured}@${image.digest}`;
   }
-  const dockerConfig = await mkdtemp(join(env.RUNNER_TEMP, "staging-docker-"));
+  const dockerConfig = await mkdtemp(join(directory, "staging-docker-"));
   try {
     await writeFile(
       join(dockerConfig, "config.json"),
@@ -118,13 +183,41 @@ async function qualify(path: string) {
     assert.match(image.Id, /^sha256:[a-f0-9]{64}$/);
     ids[name] = image.Id;
   }
-  const state = join(env.RUNNER_TEMP, "staging-runtime-state.json");
-  const prepared = await prepareRuntimeImageSmoke({ image: ids.runtime, statePath: state });
+  await writeFile(
+    join(directory, "staging-pulled-images.json"),
+    JSON.stringify({
+      qualification: "container-startup",
+      installation: env.STAGING_INSTALLATION,
+      sourceSha: env.SOURCE_SHA,
+      workflowSha: env.GITHUB_WORKFLOW_SHA,
+      publicationRunId: env.PUBLICATION_RUN_ID,
+      publicationAttempt: env.PUBLICATION_ATTEMPT,
+      artifactId: env.ARTIFACT_ID,
+      nodeBaseImage,
+      selected,
+      imageIds: ids,
+      liveInstall: false,
+    }),
+    { flag: "wx", mode: 0o600 },
+  );
+}
+
+async function smoke(directory: string) {
+  assert.ok(!env.GH_TOKEN && !env.GITHUB_TOKEN, "Startup must run without the GitHub token.");
+  const proof = JSON.parse(await readFile(join(directory, "staging-pulled-images.json"), "utf8"));
+  assert.equal(proof.sourceSha, env.SOURCE_SHA);
+  assert.equal(proof.workflowSha, env.GITHUB_WORKFLOW_SHA);
+  const root = await releaseSource();
+  const state = join(directory, "staging-runtime-state.json");
+  const { prepareRuntimeImageSmoke } = await import(
+    pathToFileURL(join(root, "scripts/ci/prepare.mjs")).href
+  );
+  const prepared = await prepareRuntimeImageSmoke({
+    image: proof.imageIds.runtime,
+    statePath: state,
+  });
   try {
-    for (const [lane, file] of [
-      ["images-packaging", "production-image-startup"],
-      ["images-runtime-startup", "runtime-image-startup"],
-    ] as const) {
+    for (const [lane, file] of startupFiles) {
       execFileSync(
         process.execPath,
         [
@@ -132,21 +225,26 @@ async function qualify(path: string) {
           "run",
           lane,
           "--file",
-          `tests/integration/${file}.test.mjs`,
+          file,
+          "--root",
+          root,
           "--state",
           state,
           "--results",
-          join(env.RUNNER_TEMP, `staging-${lane}.json`),
+          join(directory, `staging-${lane}.json`),
         ],
         {
           stdio: "inherit",
           env: {
             ...env,
             ...prepared.env,
-            OCC_TEST_PRODUCTION_IMAGE: ids.controller,
-            OCC_TEST_RUNTIME_IMAGE: ids.runtime,
-            OCC_TEST_CODEX_PROBE_IMAGE: env.NODE_BASE_IMAGE,
-            EXPECTED_OCC_REVISION: env.SOURCE_SHA,
+            // The CI runner binds test evidence to the checkout it executes.
+            GITHUB_SHA: proof.sourceSha,
+            NODE_BASE_IMAGE: proof.nodeBaseImage,
+            OCC_TEST_PRODUCTION_IMAGE: proof.imageIds.controller,
+            OCC_TEST_RUNTIME_IMAGE: proof.imageIds.runtime,
+            OCC_TEST_CODEX_PROBE_IMAGE: proof.nodeBaseImage,
+            EXPECTED_OCC_REVISION: proof.sourceSha,
           },
         },
       );
@@ -155,23 +253,8 @@ async function qualify(path: string) {
     await prepared.cleanup();
   }
   await writeFile(
-    join(env.RUNNER_TEMP, "staging-qualification.json"),
-    JSON.stringify(
-      {
-        qualification: "container-startup",
-        installation: env.STAGING_INSTALLATION,
-        sourceSha: env.SOURCE_SHA,
-        workflowSha: env.GITHUB_WORKFLOW_SHA,
-        publicationRunId: env.PUBLICATION_RUN_ID,
-        publicationAttempt: env.PUBLICATION_ATTEMPT,
-        artifactId: env.ARTIFACT_ID,
-        selected,
-        imageIds: ids,
-        liveInstall: false,
-      },
-      null,
-      2,
-    ) + "\n",
+    join(directory, "staging-qualification.json"),
+    `${JSON.stringify(proof, null, 2)}\n`,
   );
 }
 
@@ -179,11 +262,19 @@ try {
   const [command, path] = process.argv.slice(2);
   if (command === "validate") {
     assert.ok(env.GITHUB_OUTPUT);
-    await appendFile(env.GITHUB_OUTPUT, `artifact_id=${await producer()}\n`);
+    await appendFile(
+      env.GITHUB_OUTPUT,
+      `artifact_id=${await producer()}\nsource_sha=${env.SOURCE_SHA}\n`,
+    );
   } else {
-    assert.equal(command, "qualify");
-    assert.ok(path, "Publication receipt path is required.");
-    await qualify(path);
+    assert.ok(env.RUNNER_TEMP, "RUNNER_TEMP is required.");
+    if (command === "pull") {
+      assert.ok(path, "Publication receipt path is required.");
+      await pull(path, env.RUNNER_TEMP);
+    } else {
+      assert.equal(command, "smoke");
+      await smoke(env.RUNNER_TEMP);
+    }
   }
 } catch (error) {
   console.error(error instanceof Error ? error.message : "Staging qualification failed.");

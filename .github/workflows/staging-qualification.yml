@@ -30,6 +30,7 @@ concurrency:
 
 jobs:
   qualify:
+    if: github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       actions: read
@@ -44,7 +45,6 @@ jobs:
       SOURCE_SHA: ${{ inputs.source_sha }}
       PUBLICATION_RUN_ID: ${{ inputs.publication_run_id }}
       PUBLICATION_ATTEMPT: ${{ inputs.publication_attempt }}
-      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       GHCR_CONTROLLER_IMAGE: ${{ vars.GHCR_CONTROLLER_IMAGE }}
       GHCR_RUNTIME_IMAGE: ${{ vars.GHCR_RUNTIME_IMAGE }}
     steps:
@@ -68,19 +68,28 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/publication
           merge-multiple: true
-      - uses: ./.github/actions/setup-pnpm-store-cache
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          node-version: "24.22.1"
-      - name: Set up test tools and dependencies
-        run: |
-          bash scripts/ci/setup-tools.sh baseline
-          pnpm install --frozen-lockfile
-          pnpm build
-      - name: Qualify immutable release images
+          ref: ${{ steps.producer.outputs.source_sha }}
+          path: release-source
+          persist-credentials: false
+      - name: Verify release inputs and pull immutable images
         env:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_ID: ${{ steps.producer.outputs.artifact_id }}
-        run: node scripts/ci/staging-qualification.ts qualify "$RUNNER_TEMP/publication/publication.json"
+        run: node scripts/ci/staging-qualification.ts pull "$RUNNER_TEMP/publication/publication.json"
+      - name: Install release smoke test prerequisites
+        working-directory: release-source
+        run: |
+          bash scripts/ci/setup-tools.sh k3d
+          corepack pnpm install --frozen-lockfile --ignore-scripts
+      - name: Run the release startup tests
+        id: smoke
+        run: node scripts/ci/staging-qualification.ts smoke
+      - name: Clean up runtime smoke resources
+        if: always() && steps.smoke.outcome && steps.smoke.outcome != 'skipped'
+        working-directory: release-source
+        run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/staging-runtime-state.json"
       - name: Retain qualification evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

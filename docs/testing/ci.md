@@ -46,21 +46,23 @@ Runs for the same installation share a concurrency group and do not cancel an
 active qualification.
 
 Configure the `staging-qualification` environment with `STAGING_INSTALLATION`,
-`GHCR_CONTROLLER_IMAGE`, `GHCR_RUNTIME_IMAGE`, and `CONTAINER_NODE_BASE_IMAGE`.
+`GHCR_CONTROLLER_IMAGE`, and `GHCR_RUNTIME_IMAGE`.
 The installation input must equal the configured ID. Use an ID of 1–63 lowercase
 letters, digits, or hyphens, starting with a letter. GHCR values are explicit
-`ghcr.io/openclaw/` repositories without tags or digests. The Node base value must
-match the publication receipt, including its digest. Restrict this environment
+`ghcr.io/openclaw/` repositories without tags or digests. Restrict this environment
 to `main`. The qualification job authenticates the two image pulls with its
-workflow token, which has `packages: read`. The job uses no provider credentials
-or cluster configuration.
+workflow token, which has `packages: read`. The job uses a disposable runner-local
+k3d fixture and needs no staging cluster configuration or provider credentials.
 
 The [workflow command](../../scripts/ci/staging-qualification.ts) checks the
 trusted workflow context, source ancestry, producer workflow ID, successful run
 and attempt, and unique unexpired publication artifact. It repeats these checks
 after download, validates the receipt with the promotion validator, and verifies
-the receipt's exact successful CI run and attempt. Missing or conflicting
-configuration stops qualification.
+the receipt's exact successful CI run and attempt. The source can precede the
+workflow commit. Qualification checks out the verified release commit separately
+and requires its registered startup files, native smoke helper, and matching
+Node base digest in the receipt, test manifest, and runtime Dockerfile. An
+unsupported release or conflicting evidence stops the job before either image pull.
 
 After checking GitHub metadata, the command removes `GH_TOKEN` from the
 environment before starting child processes. It stores the GHCR credential in a
@@ -72,13 +74,14 @@ The command pulls each configured repository at the receipt's digest, verifies
 its digest, Linux amd64 platform and source label, and passes its immutable local
 image ID to the tests. It does not build release images or fall back to a tag.
 Runtime preparation reuses the existing smoke helper to prepare seccomp and an
-Envoy fixture; its local tag refers to the verified image ID. The command selects
-the existing controller and runtime startup files from `images-packaging` and
-`images-runtime-startup` through the regular CI runner. A failed,
-missing, or skipped selected test fails the lane. Cleanup must succeed before
-the command writes `staging-qualification.json`. The uploaded evidence includes
-selected digests, local image IDs, source and workflow SHAs, publication identity,
-and the test runner's result.
+Envoy fixture when the release requires it. The release checkout supplies the
+pinned k3d tools, dependencies, smoke helper, test files, and expected cases.
+Setup and tests run in steps without the GitHub token. The CI runner selects the
+controller and runtime startup files from `images-packaging` and
+`images-runtime-startup`. A failed, missing, or skipped selected test fails the
+lane. Cleanup must succeed before the command writes `staging-qualification.json`.
+The uploaded evidence includes selected digests, local image IDs, source and
+workflow SHAs, publication identity, and the test runner's results.
 
 This is **container startup qualification on amd64**, not an installation or
 rollout. The installed prepared-Git lane builds a separate repository-service
@@ -96,10 +99,10 @@ node --test tests/integration/staging-qualification.test.ts
 node scripts/ci/run-tests.mjs audit
 ```
 
-The command tests replace GitHub and Docker transport and the expensive smoke
-boundary with local fixtures. They cover digest handoff, credential isolation,
-output suppression, cleanup, and rejection behavior. Hosted token permissions,
-registry pulls, container startup, and live installations need separate proof.
+The command test uses GitHub and Docker transport fixtures. It checks the source
+checkout, test selection, digest handoff, credential isolation, output suppression,
+and rejection before pulls. Hosted token permissions, registry pulls, container
+startup, and live installations need separate proof.
 
 <a id="ci-configuration"></a>
 
