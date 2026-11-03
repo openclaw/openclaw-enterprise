@@ -14,10 +14,10 @@ import type {
 import {
   element,
   button,
-  describeDisabled,
   dismissOnBackdrop,
   mayReturnFocus,
   setText,
+  setUnavailable,
 } from "../dom.mjs";
 
 export type CatalogDirection = "search" | "refresh" | "next" | "previous";
@@ -251,12 +251,14 @@ export function createPluginFields({
   const pagination = element("div", { className: "plugin-pagination" }, previous, next);
   // While the catalog cannot load, Load plugins and the pager are disabled and the status line
   // says why, such as "Plugin browsing is unavailable with API-key authentication.": each is
-  // described by it (finding D796). Called wherever the status line or the controls change.
+  // described by it (finding D796) and stays in the Tab order (finding 2899). Called wherever the
+  // status line or the controls change.
   function describeCatalogControls() {
     const reason = configuredOnly || catalog?.canLoad ? null : status;
-    for (const control of [loadPlugins, previous, next]) {
-      describeDisabled(control, reason);
-    }
+    const blocked = disabled || !catalog?.canLoad || catalog?.status === "loading";
+    setUnavailable(loadPlugins, blocked, reason);
+    setUnavailable(previous, blocked || !catalog?.hasPrevious, reason);
+    setUnavailable(next, blocked || !catalog?.nextCursor, reason);
   }
   const available = button("Available plugins", () => showConfigured(false));
   const configured = button("Configured plugins", () => showConfigured(true));
@@ -768,13 +770,8 @@ export function createPluginFields({
       statusText = `Page ${catalog.pageNumber ?? 1} · ${catalog.entries.length} plugins`;
     }
     loadPlugins.textContent = catalog?.status === "loading" ? "Loading plugins…" : "Load plugins";
-    loadPlugins.disabled = disabled || !catalog?.canLoad || catalog?.status === "loading";
     loadPlugins.hidden = configuredOnly || !onLoadPlugins;
     pagination.hidden = configuredOnly || !onLoadPlugins;
-    previous.disabled =
-      disabled || !catalog?.canLoad || !catalog?.hasPrevious || catalog?.status === "loading";
-    next.disabled =
-      disabled || !catalog?.canLoad || !catalog?.nextCursor || catalog?.status === "loading";
     available.setAttribute("aria-pressed", String(!configuredOnly));
     configured.setAttribute("aria-pressed", String(configuredOnly));
     const count = Object.keys(values ?? {}).length;
@@ -1329,11 +1326,6 @@ export function createPluginFields({
       }
       input.readOnly = value;
       configure.disabled = value;
-      loadPlugins.disabled = value || !catalog?.canLoad || catalog?.status === "loading";
-      previous.disabled =
-        value || !catalog?.canLoad || !catalog?.hasPrevious || catalog?.status === "loading";
-      next.disabled =
-        value || !catalog?.canLoad || !catalog?.nextCursor || catalog?.status === "loading";
       describeCatalogControls();
       updateDetailDisabled(selections() === null);
     },

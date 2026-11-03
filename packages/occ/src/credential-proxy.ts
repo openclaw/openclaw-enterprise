@@ -453,14 +453,12 @@ export class CredentialProxy implements CredentialProxyExchange {
     this.releaseCharge(record.charge);
   }
 
-  private prune(): void {
-    const now = this.ports.now();
+  private pruneOperations(now = this.ports.now()): void {
     for (const [handle, record] of this.records) {
       if (record.expiresAt <= now) {
         this.discard(handle, record);
       }
     }
-    this.pruneReplay(now);
   }
 
   private pruneReplay(now: number): void {
@@ -509,7 +507,9 @@ export class CredentialProxy implements CredentialProxyExchange {
     if (input.body.byteLength > 1024 * 1024) {
       return refuse("unsupported_operation");
     }
-    this.prune();
+    const now = this.ports.now();
+    this.pruneOperations(now);
+    this.pruneReplay(now);
     // Reserve before authentication or any other await. Pending Secret/policy I/O
     // consumes the same capacity as an outstanding material handle.
     if (
@@ -908,7 +908,7 @@ export class CredentialProxy implements CredentialProxyExchange {
     deadlineAt: string,
     signal: AbortSignal,
   ): Promise<EgressSendDecision> {
-    this.prune();
+    this.pruneOperations();
     const record = this.records.get(handle);
     if (record) {
       record.charge.holds += 1;
@@ -1107,7 +1107,7 @@ export class CredentialProxy implements CredentialProxyExchange {
     sandboxId: string,
     requestId: string,
   ): { peer: EgressPeer; handle: string; record: OperationRecord } | undefined {
-    this.prune();
+    this.pruneOperations();
     if (!peer || peer.sandboxId !== sandboxId || !(Date.parse(peer.expiresAt) > this.ports.now())) {
       return undefined;
     }

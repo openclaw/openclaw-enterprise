@@ -1,3 +1,4 @@
+import { selectBundledRepositoryGitCustody } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
@@ -9,7 +10,6 @@ import {
   repositoryApprovalFingerprint,
 } from "../../packages/occ/src/index.ts";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
-import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts";
 import {
   validateGitHubRepositoryRegistry,
   resolveGitHubRepositoryBinding,
@@ -339,8 +339,7 @@ export const controlledProtectedDriver = Object.freeze({
 export function startProtectedOwner(f, overrides = {}) {
   return f.startOwner({
     controlSocket: undefined,
-    protectedGitDriver: controlledProtectedDriver,
-    protectedGitEvidence: openShellGitRecipientEvidence,
+    repositoryGitCustody: selectBundledRepositoryGitCustody(controlledProtectedDriver),
     ...overrides,
   });
 }

@@ -1,6 +1,12 @@
+---
+searchable: false
+---
+
 # Set up repository access for a team
 
-Connect one team repository to an organization-owned GitHub App, then ask an
+**Deprecated.** For new installations, use [OpenShell Git push](openshell-git-push.md) for a sandboxed Agent or [repository access](../repository-credentials.md) for the Kubernetes worker Token Service.
+
+Connect one team repository to an organization-owned GitHub App, then ask a
 dedicated Codex Agent to push a branch and open a draft PR. Start with an
 existing [Kubernetes installation](../deploy/production-installation.md), an OCC
 Namespace, and a repository approved for this exercise.
@@ -218,14 +224,20 @@ Rotate in this order:
 Check the worker's `PREPARED_GITHUB_RECOVERY_REQUIRED` reason (`quarantined`, then
 `blocked`) for the affected revision and repository. That version has no usable
 Git token and the worker does not retry it. An active Agent or a working model
-reply does not prove Git access. On the OpenShell route, a new deployment can
+reply does not prove Git access. On the native broker route, a new deployment
+fails with `REPOSITORY_GIT_TOKEN_QUARANTINED`. A new Agent then stops until a
+deployment succeeds; an Agent that ran an earlier version keeps the failed
+version running without Git. If the worker cannot read the key, the deployment
+fails at its convergence deadline instead, with `REPOSITORY_GIT_TOKEN_PENDING`
+for an Agent that ran an earlier version. On the OpenShell route, it can
 wait at `REPOSITORY_GIT_MATERIAL_PENDING` and fail at its convergence deadline.
 
 Put a key GitHub accepts in `private-key.pem` of the Secret selected by
 `repositoryCredentials.appKeySecretName`, using the protected-input procedure in
 [installation](installation.md#prepare-the-registry-and-protected-inputs).
-Keep it worker-only. Allow the mounted Secret to update, then deploy a new
-revision of each affected Agent and verify a fresh fetch. The worker re-reads the
+Keep it worker-only. Wait about two minutes for the mounted Secret to update: a
+version deployed before then can still be signed with the rejected key and fail
+again. Then deploy a new revision of each affected Agent and verify a fresh fetch. The worker re-reads the
 key; restoring it alone does not reopen a quarantined preparation. The new revision
 gets material at once when GitHub refused the old attempt. If GitHub's answer was
 lost, it waits until no token from that attempt can be valid, 72 minutes after the

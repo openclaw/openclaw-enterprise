@@ -82,11 +82,19 @@ Configuration in an explicitly selected external Namespace returns
 OCC Namespace leaves its tenant markers on the Kubernetes namespace, so
 selecting that namespace again ends `failed` until an operator clears them; see
 [Namespace admission](security.md#namespace-admission-and-resource-isolation).
-A `failed` Namespace does not say why in the API. The worker's
-`worker.completed` line for `namespace.ensure` carries the Kubernetes Compute
-Driver's `reason`, such as `Existing Kubernetes namespace customer-support
-belongs to another tenant: its openclaw.dev/namespace label names a different
-Namespace.` It names the blocking marker's key, never another tenant's value.
+
+The API reports `failed` without a cause. Check the worker's `worker.completed`
+line for `namespace.ensure`. It includes a `reason` when the Kubernetes Compute
+Driver supplies one. For example, `Existing Kubernetes namespace customer-support belongs to another tenant: its openclaw.dev/namespace label names a different Namespace.`
+The message identifies the blocking marker's key and keeps the other tenant's value private.
+
+A provisioning timeout alone does not identify the cause. See
+[Kubernetes troubleshooting](drivers/kubernetes-compute.md#failure-conditions).
+If the worker service account lacks its tenant runtime RoleBinding, restore it in
+the backing Kubernetes namespace while the Namespace is still `provisioning`.
+A later pass can then check readiness. Once the Namespace reaches `failed`,
+there is no supported way to retry provisioning for that Namespace. Rechecking
+in the Console reads its current status.
 
 ## Lifecycle
 

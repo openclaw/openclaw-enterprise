@@ -22,7 +22,7 @@ are not selectable. See [Driver selection](selection.md) and the
 
 ### Selection and catalogs
 
-The [shared interface](../../../packages/contracts/src/plugin.ts) exposes:
+The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) exposes:
 
 - `policyCapabilities`: supported default/tool enablement, approval modes, and
   reviewer arrays per scope, plus the JSON Schema for `driverPolicy` fields.

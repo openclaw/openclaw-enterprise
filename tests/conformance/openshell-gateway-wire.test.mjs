@@ -22,11 +22,15 @@ import {
   openShellProviderName,
   openShellWorkspaceName,
 } from "../../apps/controller/src/backends/openshell.ts";
-import { TransientDependencyError } from "../../packages/occ/src/index.ts";
+import {
+  SandboxRevisionUnsupportedError,
+  TransientDependencyError,
+} from "../../packages/occ/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
 import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
 import { agentClients } from "../helpers/egress-custody-observations.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { relaySockets } from "../helpers/socket-relay.mjs";
 
@@ -1120,6 +1124,65 @@ test("OpenShell client holds only the durable admission limit as a transient dep
   }
 });
 
+test("OpenShell client fails a Harness Pod label refusal permanently", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    // The pinned gateway's Kubernetes driver refuses template label keys missing from its
+    // allowed_pod_labels with INVALID_ARGUMENT, naming the sorted keys.
+    CreateSandbox: (call, callback) =>
+      callback({ code: grpc.status.INVALID_ARGUMENT, details: call.request.name }),
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  const create = (details) =>
+    client.createSandbox(
+      {
+        name: details,
+        workspace: "tenant-workspace",
+        requestId: "0b3a6f52-6c8e-4d55-9a3c-4b8f2a1d7e90",
+        labels: {},
+        annotations: {},
+        spec: {},
+        serviceExposures: [],
+      },
+      AbortSignal.timeout(2_000),
+    );
+  try {
+    // The gateway configuration refuses the same keys on every create, so the worker must fail
+    // the deployment at once with a named code instead of retrying it as an outage.
+    await assert.rejects(
+      create(
+        "pod labels not permitted by the gateway's allowed_pod_labels: app.kubernetes.io/managed-by, openclaw.dev/agent",
+      ),
+      (error) => {
+        assert.ok(error instanceof SandboxRevisionUnsupportedError, String(error));
+        assert.ok(!(error instanceof DependencyUnavailableError));
+        assert.equal(error.code, "SANDBOX_POD_LABELS_NOT_PERMITTED");
+        assert.match(
+          error.message,
+          /Harness Pod labels app\.kubernetes\.io\/managed-by, openclaw\.dev\/agent; add them to the gateway's Kubernetes driver allowed_pod_labels/,
+        );
+        return true;
+      },
+    );
+    // Other create-time validation stays an ordinary retryable gateway failure.
+    await assert.rejects(create("driver_config.kubernetes: unknown field `env`"), (error) => {
+      assert.ok(!(error instanceof SandboxRevisionUnsupportedError), String(error));
+      assert.ok(error instanceof DependencyUnavailableError);
+      assert.match(error.message, /CreateSandbox failed with gRPC status 3/);
+      return true;
+    });
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  }
+});
+
 test("OpenShell client serializes v0.1.5 credential providers, profiles, and attachment status", async () => {
   const proto = await loader.load(
     join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
@@ -1736,35 +1799,8 @@ test("OpenShell client names only an unanswered gateway request a Sandbox gatewa
   outage(closed);
 });
 
-function selfSignedCertificate(directory, name, subjectAltName) {
-  const keyPath = join(directory, `${name}.key`);
-  const certPath = join(directory, `${name}.crt`);
-  const generated = spawnSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "ec",
-      "-pkeyopt",
-      "ec_paramgen_curve:prime256v1",
-      "-nodes",
-      "-days",
-      "1",
-      "-keyout",
-      keyPath,
-      "-out",
-      certPath,
-      "-subj",
-      "/CN=openshell-gateway",
-      "-addext",
-      `subjectAltName=${subjectAltName}`,
-    ],
-    { encoding: "utf8" },
-  );
-  assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
-  return { keyPath, certPath };
-}
+const selfSignedCertificate = (directory, name, subjectAltName) =>
+  selfSigned(directory, { name, commonName: "openshell-gateway", subjectAltName });
 
 // A TLS gRPC listener that answers Health and records the SNI of every connection
 // and the path of every request it receives.
@@ -1841,13 +1877,13 @@ test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP 
     assert.equal(error.grpcStatus, grpc.status.UNAVAILABLE);
     return true;
   };
-  const otherAuthority = selfSignedCertificate(directory, "other-authority", "DNS:localhost");
+  const otherAuthority = await selfSignedCertificate(directory, "other-authority", "DNS:localhost");
   for (const { name, san, bind, host, sni, needsIpv6, untrusted: distrusted } of cases) {
     await t.test(
       name,
       { skip: needsIpv6 && !ipv6 && "IPv6 loopback ::1 is unavailable" },
       async (t) => {
-        const { keyPath, certPath } = selfSignedCertificate(directory, name, san);
+        const { keyPath, certPath } = await selfSignedCertificate(directory, name, san);
         const seen = [];
         const gateway = await tlsHealthGateway(keyPath, certPath, bind, seen);
         t.after(() => new Promise((resolve) => gateway.close(resolve)));
@@ -1875,8 +1911,8 @@ test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP 
   // Clients of one IP endpoint never share a verified connection: a client that does not
   // trust the gateway's certificate still fails while a trusting client is connected.
   await t.test("untrusted-beside-trusted", async (t) => {
-    const { keyPath, certPath } = selfSignedCertificate(directory, "shared", "IP:127.0.0.1");
-    const other = selfSignedCertificate(directory, "other", "IP:127.0.0.1");
+    const { keyPath, certPath } = await selfSignedCertificate(directory, "shared", "IP:127.0.0.1");
+    const other = await selfSignedCertificate(directory, "other", "IP:127.0.0.1");
     const seen = [];
     const gateway = await tlsHealthGateway(keyPath, certPath, "127.0.0.1", seen);
     t.after(() => new Promise((resolve) => gateway.close(resolve)));
@@ -1947,8 +1983,8 @@ function signedClientCertificate(directory, name, ca) {
 
 async function mutualTls(t) {
   const directory = await temporaryDirectory(t, "openshell-mtls-");
-  const identity = selfSignedCertificate(directory, "server", "DNS:localhost,IP:127.0.0.1");
-  const authority = selfSignedCertificate(directory, "client-ca", "DNS:client-ca.invalid");
+  const identity = await selfSignedCertificate(directory, "server", "DNS:localhost,IP:127.0.0.1");
+  const authority = await selfSignedCertificate(directory, "client-ca", "DNS:client-ca.invalid");
   const auth = signedClientCertificate(directory, "client", authority);
   const tls = {
     key: readFileSync(identity.keyPath),
@@ -1961,7 +1997,7 @@ async function mutualTls(t) {
 test("OpenShell mTLS authenticates DNS and IP channels and refuses missing or foreign identities", async (t) => {
   const { SandboxGatewayUnavailableError } = await import("../../packages/occ/src/index.ts");
   const { tls, auth, rootCertificatePath, directory } = await mutualTls(t);
-  const foreignCA = selfSignedCertificate(directory, "foreign-ca", "DNS:foreign.invalid");
+  const foreignCA = await selfSignedCertificate(directory, "foreign-ca", "DNS:foreign.invalid");
   const foreign = signedClientCertificate(directory, "foreign", foreignCA);
   const seen = [];
   const server = createSecureServer({

@@ -5,7 +5,7 @@ Kubernetes-only profile runs PostgreSQL, the OpenClaw Control Plane (OCC), and A
 
 ## Start the profile
 
-Install Node.js 24.22.1+, repository-pinned pnpm, the Go version from `go.mod`, k3d,
+[Install Linux tools](local-kubernetes-tools.md): Node.js 24.22.1+, repository-pinned pnpm, the Go version from `go.mod`, k3d,
 kubectl, Helm, and Docker or Podman. Kubernetes-only mode uses the engine for
 k3d and images, not OCE services.
 
@@ -48,7 +48,7 @@ machine-backed installation that path exists only inside the virtual machine.
 Build the CLI and start the Kubernetes profile:
 
 ```bash
-pnpm cli:build
+go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
@@ -59,7 +59,7 @@ This profile uses the pinned K3s image, installs PostgreSQL and OCE (not
 OpenShell) in `oce-system`, and writes a generated administrator password and
 service key to the private state directory.
 
-Before bootstrapping, startup checks the Codex `0.163.0-alpha.2` sandbox with
+Before bootstrapping, startup checks the Codex `0.164.0` sandbox with
 its exact imported runtime image. If the node's `RuntimeDefault` blocks it, the
 launcher derives a [reviewed profile](codex-sandbox.md) from the node's actual
 policy and installs it only on the owned k3d node. Only dedicated Codex
@@ -124,14 +124,14 @@ If the K3s channel lookup fails or times out, follow
 For OpenShell, use the owned launcher:
 
 ```bash
-pnpm cli:build
+go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-The CLI creates one k3d cluster with pinned OpenShell `v0.1.5`, Agent
+The CLI creates one k3d cluster with pinned OpenShell `v0.1.6`, Agent
 Sandbox, cert-manager, and Envoy Gateway assets and digest-resolved images.
 PostgreSQL, the central OpenShell Gateway, and OCE run in `oce-system`; the
 Agent Sandbox controller stays in `agent-sandbox-system`. Tenant Workspaces,
@@ -152,8 +152,8 @@ for console and Agent hosts, and prints the browser CA path.
 `OCC_DEVELOPMENT_BROWSER_PORT` must differ from Compose and k3d API ports.
 Skip manual hybrid routing.
 
-First startup requires network access. To use reviewed local assets instead,
-set
+First startup requires [node registry access](../operate/troubleshooting.md#local-agent-sandbox-controller-image-pull-fails).
+For reviewed local charts and manifests, set
 `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART`,
 `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART`, and
 `OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` to absolute paths.
@@ -184,8 +184,8 @@ For separate stacks, select distinct state directories, cluster names, bridge
 subnets and published ports. Compose also needs a distinct `OCC_POSTGRES_PORT`;
 changing the API port alone leaves PostgreSQL on port 55432. Each Agent Gateway
 requests 2560 MiB with a 4 GiB limit, and each dedicated Codex Harness requests
-768 MiB with a 6 GiB limit, so a dedicated Codex Agent reserves 3.25 GiB; size
-the local engine VM for OCC plus the Agents you run
+768 MiB with a 6 GiB limit, so a dedicated Codex Agent reserves 3.25 GiB, or
+5 GiB with initial workspace files; size the local engine VM for OCC plus the Agents you run
 ([measurements](installation-profiles.md)). Keep each stack's resources under the helper's lifecycle until cleanup.
 
 ## Require both proxies before enabling Slack
@@ -261,11 +261,7 @@ Verify directory search and gateway Socket Mode using the
 
 ## Verify the local boundary
 
-Startup prints API and Kubernetes access paths. Sandbox Driver `none` and
-Compose-backed OpenShell also print the HTTPS Console URL and browser CA; follow
-[Local Setup](../quickstart.md#open-the-platform-console) and its
-[shared session boundary](../../reference/agent-native-admin.md#shared-session-boundary).
-Kubernetes-only OpenShell does not configure that browser endpoint.
+Startup prints the API, kubeconfig, HTTPS Console URL and public browser CA. See [Local Setup](../quickstart.md#open-the-platform-console), the [shared session boundary](../../reference/agent-native-admin.md#shared-session-boundary) and [OpenShell browser access](local-setup.md).
 
 Use the printed paths with other tools:
 
@@ -300,10 +296,14 @@ must authenticate through a [credential source](../../reference/credential-sourc
 to register a key and bind it to an Agent, follow
 [Use a credential source on the local OpenShell profile](openshell-credential-sources.md).
 
-The OpenShell Gateway permits unauthenticated users, a development setting safe
-only inside this disposable, loopback-owned cluster. Tenant egress selects only
-OpenShell supervisor Pods for Gateway callbacks. Do not use this profile, or
-carry that setting, into a shared cluster or container network.
+The profile also selects the curated Codex Plugin Driver for managed Codex
+plugin selections. See [Agent plugins](../../reference/agent-plugins.md).
+
+The Kubernetes-only OpenShell Gateway requires TLS, mTLS and authentication.
+Static-inference enforcement is separate and off by default; it is not required
+for model access or protected Git. The Compose-backed profile still permits
+unauthenticated Gateway users inside its disposable, loopback-owned cluster.
+Do not carry that setting into a shared cluster or container network.
 
 Because this cluster is disposable and single-profile, the helper binds the chart's tenant worker, configuration, and Secret ClusterRoles
 to the OCE service accounts cluster-wide. This is not a production RBAC pattern:
@@ -314,9 +314,11 @@ To verify a fresh Kubernetes-only installation without OpenShell, use the
 [real local installation test](../../testing/kubernetes.md#local-kubernetes-installation).
 
 To prove OpenShell setup and cleanup in a separate fresh cluster, stop the
-reusable environment and run:
+reusable environment, install the test dependencies from the trusted repository
+root, and run:
 
 ```bash
+pnpm install --frozen-lockfile
 OCC_TEST_DEV_UP_OPENSHELL_REAL=1 \
   node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
 ```
@@ -430,6 +432,6 @@ data-plane pools. See [production Namespace preparation](production-agents.md#pr
 for the scoped RoleBindings.
 
 - This is a development environment, not a production deployment recipe.
-- Stock OpenShell `v0.1.5` remains fail-closed for unsupported Secret and
+- Stock OpenShell `v0.1.6` remains fail-closed for unsupported Secret and
   workload-identity projections, so Workspace readiness does not prove that an
   Agent Sandbox can start or complete a model turn.

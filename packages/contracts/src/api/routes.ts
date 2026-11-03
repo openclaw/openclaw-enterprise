@@ -1482,7 +1482,7 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Inspect selected Driver startup configuration schemas",
+    summary: "Inspect selected Driver accepted startup values and configuration schemas",
     tags: ["Installation"],
     schema: {
       querystring: EmptyQuery,

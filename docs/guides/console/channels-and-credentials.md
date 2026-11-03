@@ -98,6 +98,8 @@ cannot use the Secret, ask an Installation administrator to give the Agent
 `operate` on it, for example by opening the Agent's Credentials and selecting
 **Save authentication source**. **Deploy new version** stays available. When an administrator opens Credentials, the tab reads Namespace IAM, says
 when that grant is missing and holds **Deploy new version** until it is granted.
+When your access no longer includes updating this Agent, the warning asks an
+Installation administrator to grant it.
 If the grant was already in place, **Reload authentication source** clears the
 warning. If a grant request is refused or its outcome is lost, the console says
 so and offers **Retry credential access**.
@@ -135,10 +137,15 @@ accounts, other `${NAME}` references or each other's key, the section lists each
 secret's, below the pickers. Bind them through the Configuration API; **Deploy new version** waits
 until each is bound and the Agent can use its Secret. Deployment checks the Agent's access to every
 bound Secret, so a bound key no Slack setting reads, such as `SLACK_APP_TOKEN` left from Socket
-Mode, shows as **Bound · not read by the Slack settings** and needs that access too. While an
+Mode, shows as **Bound · not read by the Slack settings** and needs that access too. **Disable
+Slack** keeps the bindings, so with Slack off the section still lists each bound Secret whose
+access is not confirmed. While an
 Installation administrator's console reads that access, **Deploy new version** waits, and the save
-message names deployment as the next step only after the Agent's access is confirmed. **Retry Secret
-access** stays available for all of them. If the API refuses a save for a channel setting, the panel
+message names deployment as the next step only after the Agent's access is confirmed. Until then,
+**Deploy new version** names the token or key whose Secret waits and says to select **Retry Secret
+access** in Credentials. **Retry Secret access** stays available for all of them. When your access no longer includes editing this
+Configuration, the panel offers no Retry and the warning asks an Installation administrator to
+grant or confirm the access. If the API refuses a save for a channel setting, the panel
 shows the API's message, which names the setting. Fix that setting in the Configuration JSON on the
 Configuration tab. If the message asks for a Secret binding of another name, bind that name through
 the Configuration API.

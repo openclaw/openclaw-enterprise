@@ -11,7 +11,7 @@ import {
   redactLogLine,
   redactOutputLine,
 } from "./failure-redaction.mjs";
-import { compareEventTimes, eventObservedTime } from "./kubernetes-event-time.mjs";
+import { compareEventTimes, eventObservedTime } from "./kubernetes-event-time.ts";
 
 export async function k3dHostMetrics(directory) {
   const disk = await statfs(directory).catch(() => undefined);

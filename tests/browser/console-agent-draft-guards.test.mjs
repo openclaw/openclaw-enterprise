@@ -11,6 +11,7 @@ import {
   accessBindingPostRequests,
   AGENT_READ,
   apiRequests,
+  CHANNEL_SECRETS_SAVED_DEPLOY,
   detailUrl,
   expectNoText,
   grantMember,
@@ -36,6 +37,7 @@ import {
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import {
+  LIVE_BUTTON,
   createRepositoryLaunchFixture,
   focusedDescription,
   focusedText,
@@ -59,6 +61,7 @@ import {
   notIncluded,
   POLICY_EDITING_SETTING_REFUSED,
   GRANT_EXCEEDS_CEILING,
+  MODEL_CREDENTIAL_REJECTED_RECORDED,
   NO_SANDBOX_DRIVER_NETWORK_POLICY,
 } from "../helpers/refusal-text.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
@@ -1140,7 +1143,7 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
   await movedOn.requested;
   await page.evaluate(() => globalThis.document.activeElement?.blur());
   movedOn.release();
-  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
   assert.equal(await page.evaluate(() => globalThis.document.activeElement?.tagName), "BODY");
 
   // A stale draft keeps Deploy disabled, so the refusal itself takes focus.
@@ -1352,7 +1355,7 @@ for (const [field, change] of [
     );
     const ready = () =>
       kubernetes
-        ? page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor()
+        ? page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor()
         : page.getByText("Configured on the runtime host", { exact: false }).waitFor();
     const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
     const { page } = await newPage(t, fixture);
@@ -1986,7 +1989,10 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     await page.getByText("Ready to deploy.", { exact: true }).waitFor();
     await page.waitForFunction(() =>
       [...globalThis.document.querySelectorAll("button")].some(
-        (button) => button.textContent === "Deploy new version" && !button.disabled,
+        (button) =>
+          button.textContent === "Deploy new version" &&
+          !button.disabled &&
+          button.getAttribute("aria-disabled") !== "true",
       ),
     );
     assert.equal(await deploy.isEnabled(), true);
@@ -2260,7 +2266,7 @@ for (const action of ["disable", "drawer"]) {
     });
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
     await login(page, fixture, url);
-    await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+    await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
     assert.equal(
       await page
         .locator(".channels-section")
@@ -2475,9 +2481,7 @@ test("Agent credentials block tab changes until Slack Secret grants finish", asy
     () => accessBindingPostRequests(requests, namespace.id).length === 2,
     "expected saved Slack Secret grants to finish",
   );
-  await page
-    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
-    .waitFor();
+  await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
   await channelsTab.click();
   await page.getByRole("button", { name: "Edit Slack", exact: true }).waitFor();
 
@@ -2515,10 +2519,7 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   // The API's message carries the next step, so occ and HTTP clients get it too (finding
   // 1393); the console shows it once, in the failure's card, and adds only the link to
   // Credentials. The card folds Deployment details, which repeat it (finding 2094).
-  assert.match(
-    failure.message,
-    /^The model provider rejected this version's credential \(HTTP 401 or 403\)\. .*update or replace the Agent's model credential, then deploy a new version\.$/,
-  );
+  assert.equal(failure.message, MODEL_CREDENTIAL_REJECTED_RECORDED);
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.getByText(failure.message, { exact: false }).waitFor();
   assert.equal(
@@ -2623,4 +2624,71 @@ test("a reload asks first while an Agent editor holds unsaved work", async (t) =
   await page.reload();
   await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
   assert.deepEqual(dialogs, ["beforeunload"]);
+});
+
+// A refocus recheck reads the caller's permission answer again, so the controls that follow it
+// pick up a Secret operate grant: Disable Slack on the Channels tab did. The Deploy note above
+// kept naming the Secret until header Refresh, so the page gave two answers about the same
+// Secrets (finding 2977). The permission reread now refreshes the Secret operate answer too.
+test("a refocus after a Secret operate grant updates the Deploy note", async (t) => {
+  const { fixture, namespace, agent, path } = await deployableRepositoryAgent(
+    t,
+    "Regranted Secret Agent",
+  );
+  const operator = await fixture.createNamespaceMember("regranted-operator", namespace.id, [
+    ...AGENT_READ,
+    ["read_logs", "agent"],
+    ["deploy", "agent"],
+    ["operate", "agent"],
+    ["read", "secret"],
+  ]);
+  const reason =
+    "Deploying needs Secret operate on Demo model credential, which your access does not include. Ask an Installation administrator to grant it.";
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "channels"),
+    operator.credentials,
+  );
+  await page.getByRole("heading", { name: "Regranted Secret Agent" }).waitFor();
+  const note = page.getByText(reason, { exact: true });
+  await note.waitFor();
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  assert.equal(await deploy.isDisabled(), true);
+  await settlePageRequests(page);
+  const refocus = async () => {
+    const answered = page.waitForResponse(
+      (reply) =>
+        reply.url() === `${fixture.origin}${path}/permissions/secrets` &&
+        reply.request().method() === "GET" &&
+        reply.status() === 200,
+    );
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await answered;
+    await settlePageRequests(page);
+  };
+
+  // Without a grant, the recheck keeps the note and Deploy stays refused, also while it reads the
+  // Secret operate answer again: the last answer stands until the fresh one lands. The recheck
+  // cleared it first, so each refocus enabled Deploy and said "Ready to deploy." until the
+  // answer came back (finding 2987).
+  const recheck = await holdRequests(t, page, `${fixture.origin}${path}/permissions/secrets`, {
+    once: true,
+    method: "GET",
+  });
+  const rechecked = refocus();
+  await recheck.requested;
+  assert.equal(await note.isVisible(), true);
+  assert.equal(await deploy.isDisabled(), true);
+  recheck.release();
+  await rechecked;
+  await note.waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+
+  grantSecretOperate(fixture, namespace.id, operator.principal, [agent.harnessAuth.source.id]);
+  await refocus();
+  // Without Refresh, the note drops the Secret the operator may now operate, and Deploy follows.
+  await note.waitFor({ state: "detached" });
+  await waitForEnabled(deploy);
 });

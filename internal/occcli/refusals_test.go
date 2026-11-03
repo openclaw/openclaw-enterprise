@@ -141,7 +141,7 @@ func TestRefusedCommandsNameTheGrantTheyNeed(t *testing.T) {
 		texts = append(texts, err.Error())
 	}
 	want := "FORBIDDEN: " + denied + "\n" +
-		grantHint("agent deploy", "Agent deploy and Configuration read, plus access to the ServiceAccount, Secrets and credential sources it binds, and Agent read and operate for a first deploy", true)
+		grantHint("agent deploy", "Agent deploy and Configuration read, plus access to the ServiceAccount, Secrets and credential sources it binds, Agent read and operate for a first deploy, and SandboxPolicy read when the Agent has saved network policy additions", true)
 	if !strings.HasSuffix(texts[0], want) || texts[0] != texts[1] {
 		t.Fatalf("refusals = %q, want both to end with %q", texts, want)
 	}

@@ -27,7 +27,7 @@ This checks status transport and restart behavior with controlled producers. It 
 
 ## Native startup metadata reads
 
-After credential authorization under the [contribution policy](../../CONTRIBUTING.md), inject `CODEX_ACCESS_TOKEN` without printing it. Set `OCC_TEST_KUBERNETES_AGENT_IMAGE` to an available immutable image containing Codex `0.163.0-alpha.2`, and start Docker.
+After credential authorization under the [contribution policy](../../CONTRIBUTING.md), inject `CODEX_ACCESS_TOKEN` without printing it. Set `OCC_TEST_KUBERNETES_AGENT_IMAGE` to an available immutable image containing Codex `0.164.0`, and start Docker.
 
 ```sh
 OCC_TEST_CODEX_STARTUP_READS_REAL=1 node --test \
@@ -39,7 +39,7 @@ The test removes its container. It checks the authenticated metadata protocol, n
 
 ### Offline native local plugins
 
-With a qualified image containing stock Codex `0.163.0-alpha.2`, Node, and `ws`, run:
+With a qualified image containing stock Codex `0.164.0`, Node, and `ws`, run:
 
 ```sh
 OCC_TEST_RUNTIME_IMAGE=<qualified-image> node --test \
@@ -75,6 +75,15 @@ the remaining protected plugin acceptance requirements are unchanged.
 ## Native runtime prerequisites
 
 Prepare the [Kubernetes runtime setup](kubernetes.md#kubernetes-model-turns-and-secrets), including immutable gateway and Agent images, an authorized model, a disposable cluster, and the proxy CIDRs above. For one scenario, set its database URL below or use `OCC_TEST_DATABASE_URL`. Set one scenario flag:
+
+Dedicated Codex cases also require the real Envoy Gateway and cert-manager
+controllers from [Gateway routing setup](kubernetes.md#private-gateway-routing). Provide
+`OCC_TEST_GATEWAY_CA_CERT_PATH` and `OCC_TEST_GATEWAY_CA_KEY_PATH` for that fixture.
+The test creates an owned Gateway; Kubernetes Compute creates each Agent route.
+Set `OCC_DOCKER_RUNTIME_IMAGE` to the qualified runtime for the fixture's
+TLS-preserving host relay. This fixture runs its controller on the host; the
+[OpenShell Linear case](openshell.md#linear-tool-use-qualification) instead starts
+the shipped control plane and uses its configured OCE Gateway route directly.
 
 | Scenario                                | Flag                                        | Database variable                                   |
 | --------------------------------------- | ------------------------------------------- | --------------------------------------------------- |

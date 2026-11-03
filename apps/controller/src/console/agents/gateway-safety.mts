@@ -1,4 +1,4 @@
-import { describeDisabled, element } from "../dom.mjs";
+import { element, setUnavailable } from "../dom.mjs";
 import { admitGatewaySecurityDefaults } from "../gateway-security-defaults.mjs";
 
 type ConfigurationDocument = Readonly<Record<string, unknown>>;
@@ -213,7 +213,7 @@ export function gatewaySafetyControls({
       element("label", { className: "gateway-safety-toggle" }, input, label),
       hint,
     );
-    return { input, source, help, node };
+    return { input, source, help, hint, node };
   };
   const stage = (next: ConfigurationDocument) => {
     if (current !== undefined && next !== current) {
@@ -248,7 +248,7 @@ export function gatewaySafetyControls({
     reason.hidden = !unavailable;
     reason.textContent = unavailable ?? "";
     let anyBlocked = false;
-    for (const { setting, input, source, help } of rows) {
+    for (const { setting, input, source, help, hint } of rows) {
       const value = values === undefined ? undefined : gatewaySafetyValue(values, setting);
       const invalid = value?.kind === "invalid";
       // A non-object on the path: only the JSON editor can correct it.
@@ -257,18 +257,28 @@ export function gatewaySafetyControls({
       anyBlocked ||= blocked;
       input.checked = value?.kind === "value" && value.value;
       input.indeterminate = invalid;
-      input.disabled = Boolean(unavailable) || values === undefined || blocked;
       source.textContent = value === undefined ? "" : `${sourceText(value)} `;
       // Unreadable JSON keeps the last help shown.
       if (values !== undefined) {
         help.textContent = setting.help(values);
       }
-      describeDisabled(input, reason);
+      // An unavailable toggle stays in the Tab order, described by why (finding 2878): the
+      // section's reason, or its own help when the JSON holds a value only the editor can fix.
+      setUnavailable(
+        input,
+        Boolean(unavailable) || values === undefined || blocked,
+        unavailable || values === undefined ? reason : hint,
+      );
     }
     strict.input.checked = values !== undefined && gatewaySafetyStrict(values);
-    strict.input.disabled = Boolean(unavailable) || values === undefined || anyBlocked;
     strict.source.textContent = "";
-    describeDisabled(strict.input, reason);
+    // A blocked setting below names its own reason; Strict mode then has none to read and is
+    // natively disabled.
+    setUnavailable(
+      strict.input,
+      Boolean(unavailable) || values === undefined || anyBlocked,
+      unavailable || values === undefined ? reason : null,
+    );
   }
 
   return { node, update };

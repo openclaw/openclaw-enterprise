@@ -113,6 +113,9 @@ export function renderNativeAdminAccess(
     // aria-disabled, not disabled: disabling the focused button drops keyboard focus to the page.
     // load() already ignores activation while a read is pending.
     reload.setAttribute("aria-disabled", String(pending));
+    // The launch link and the unavailable button take turns in one place. A swap would hide the
+    // one with focus and drop focus to the page, so the other takes it (finding 2880).
+    const focused = [launch, unavailable].find((control) => control === document.activeElement);
     const url = !pending && current?.status === "available" ? current.url : undefined;
     launch.hidden = url === undefined;
     if (url === undefined) {
@@ -127,6 +130,10 @@ export function renderNativeAdminAccess(
       !failed &&
       (current === undefined || current.status === "disabled" || current.status === "denied");
     unavailable.hidden = section.hidden || !launch.hidden;
+    const replacement = focused === launch ? unavailable : launch;
+    if (focused?.hidden && !replacement.hidden) {
+      replacement.focus({ preventScroll: true });
+    }
     target.hidden = launch.hidden;
     updateTarget();
     const nextRecovery = current && launch.hidden ? options?.recovery(current.status) : null;
