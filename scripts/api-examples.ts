@@ -605,5 +605,5 @@ export const errorExamples = {
   501: ["NOT_IMPLEMENTED", "The selected Driver does not support this operation."],
   503: ["DEPENDENCY_UNAVAILABLE", "A required dependency is unavailable."],
   504: ["GATEWAY_TIMEOUT", "The runtime request timed out."],
-};
+} satisfies Record<number, readonly [string, string]>;
 export const meta = { requestId: id("req") };

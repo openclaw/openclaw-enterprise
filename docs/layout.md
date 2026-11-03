@@ -18,8 +18,8 @@ The configuration excludes `legacy/`; do not import archived implementations.
 The Go CLI uses the root [Go module](../go.mod). The documentation renderer in
 `scripts/docs-site/` has its own package manifest, pnpm workspace, and lockfile;
 keep its dependency installation separate from the root workspace.
-API example metadata and export enrichment live in `scripts/api-examples.mjs`
-and `scripts/document-api-examples.mjs`; `scripts/docs-site/` owns the explorer
+API example metadata and export enrichment live in `scripts/api-examples.ts`
+and `scripts/document-api-examples.ts`; `scripts/docs-site/` owns the explorer
 and OpenAPI lint configuration. The controller route schemas remain the source
 of truth for HTTP behavior.
 
