@@ -2,11 +2,11 @@
 tags: [human_verified, nolimit]
 ---
 
-# Run a dedicated OpenShell Agent on EKS
+# Set up OCE on Amazon EKS
 
-Install OpenClaw Enterprise (OCE), configure browser access, and onboard a dedicated OpenShell Codex Agent on Amazon Elastic Kubernetes Service (EKS). Start in the matching OCE checkout on the operator’s laptop. Use Bash, AWS CLI, version-compatible kubectl, Helm, OpenSSL, jq, Node.js 24.22.1 or newer, Python 3, yq v4, PostgreSQL client tools and the [OCC CLI](../cli.md). Image selection needs Git and Docker; builds also need Buildx. Select compatible source, chart and image revisions.
+Install OpenClaw Enterprise (OCE), configure browser access, on Amazon Elastic Kubernetes Service (EKS). Start in the matching OCE checkout on the operator’s laptop. Use Bash, AWS CLI, version-compatible kubectl, Helm, OpenSSL, jq, Node.js 24.22.1 or newer, Python 3, yq v4, PostgreSQL client tools and the [OCC CLI](../cli.md). Image selection needs Git and Docker; builds also need Buildx. Select compatible source, chart and image revisions.
 
-[Create your first Agent](#5-create-the-configuration-and-agent) after installation. Git and plugins are optional.
+After installation, [deploy your first Agent](deploy-first-agent.md). Git and plugins are optional.
 
 ## Before you start
 
@@ -156,17 +156,15 @@ Confirm the database endpoint from your infrastructure outputs; EKS does not sel
 <a id="4-enroll-linear-and-protected-git"></a>
 <a id="5-deploy-and-open-the-owners-agent"></a>
 
-## 4. Connect to the API and register the model credential
+## 4. Prepare the operator session
 
-Set `CODEX_TOKEN_FILE` to the private service-account PAT file and `MODEL` to the authorized native model ID. A Linear connection and GitHub App are not needed for installation setup. The [operator session reference](quickstart-session.md) defines the shared inputs and helpers.
+Set `MODEL` to a model your credential can use. Choose the credential when you deploy the Agent. A Linear connection and GitHub App are not needed for installation setup. The [operator session reference](quickstart-session.md) defines the shared inputs and helpers.
 
 ```bash
-export CODEX_TOKEN_FILE=/secure/oce/codex-token
 export MODEL=gpt-5.4
-test -r "$CODEX_TOKEN_FILE" && test -s "$CODEX_TOKEN_FILE"
 ```
 
-<Snippet file="../../snippets/openshell-quickstart/agent-setup.md" />
+Continue in the same Bash shell to [Deploy your first Agent](deploy-first-agent.md).
 
 ## Verify workspace routing
 
@@ -176,4 +174,4 @@ In the Console **Workspace files** tab, read all four paths, save and reload a h
 
 For later upgrades, use [Upgrade production images](production-upgrade.md), its [checklist](upgrade-checklist.md) and [baseline](upgrade-baseline.md). Helm rollback does not undo committed migrations or restore Agent-volume data; use [upgrade recovery](production-upgrade-recovery.md) after a failure.
 
-Continue to [Add Git](../repository-credentials/openshell-git-push.md) or [Add Plugin](../integrations/codex-plugins.md). To finish, [delete the Agent](quickstart-delete-agent.md), then clean up the installation with [Amazon EKS cleanup](eks-cleanup.md).
+To finish, [delete the Agent](quickstart-delete-agent.md), then clean up the installation with [Amazon EKS cleanup](eks-cleanup.md).

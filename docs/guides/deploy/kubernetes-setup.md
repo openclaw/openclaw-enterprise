@@ -2,11 +2,11 @@
 tags: [human_verified, nolimit]
 ---
 
-# Set up an OpenShell Codex Agent on Kubernetes
+# Set up OCE on Kubernetes
 
-Install OpenClaw Enterprise (OCE) and onboard a dedicated OpenShell Codex Agent on an existing Kubernetes cluster.
+Install OpenClaw Enterprise (OCE) on an existing Kubernetes cluster.
 
-[Create your first Agent](#5-create-the-configuration-and-agent) after installation.
+After installation, [deploy your first Agent](deploy-first-agent.md).
 
 ## Before you start
 
@@ -72,16 +72,14 @@ kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" wait gatewayclass/eg --f
 
 <Snippet file="../../snippets/openshell-quickstart/cluster-installation.md" />
 
-## 4. Connect to the API and register the model credential
+## 4. Prepare the operator session
 
-Set `CODEX_TOKEN_FILE` to the private service-account PAT file and `MODEL` to the authorized native model ID. A Linear connection and GitHub App are not needed for installation setup. See the [operator session](quickstart-session.md).
+Set `MODEL` to a model your credential can use. Choose the credential when you deploy the Agent. A Linear connection and GitHub App are not needed for installation setup. See the [operator session](quickstart-session.md).
 
 ```bash
-export CODEX_TOKEN_FILE=/secure/oce/codex-token
 export MODEL=gpt-5.4
-test -r "$CODEX_TOKEN_FILE" && test -s "$CODEX_TOKEN_FILE"
 ```
 
-<Snippet file="../../snippets/openshell-quickstart/agent-setup.md" />
+Continue in the same Bash shell to [Deploy your first Agent](deploy-first-agent.md).
 
-Continue to [Add Git](../repository-credentials/openshell-git-push.md) or [Add Plugin](../integrations/codex-plugins.md). To finish, [delete the Agent](quickstart-delete-agent.md), then clean up the installation with [Kubernetes cleanup](kubernetes-cleanup.md).
+To finish, [delete the Agent](quickstart-delete-agent.md), then clean up the installation with [Kubernetes cleanup](kubernetes-cleanup.md).
