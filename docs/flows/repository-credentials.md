@@ -139,7 +139,9 @@ the configured session capacity until callbacks settle and bytes are disposed.
 
 `apps/controller/src/drivers/repo/github/credentials/client/config.ts:writeClientConfiguration`
 sets files `0600` and directories `0700` before writing despite umask. CLI output
-reports status and location. After a write failure, the CLI attempts closure and
+reports status and location. Before admission, `operator open` refuses an
+`--output` path whose parent is missing or not private, or that already exists,
+and names the rule. After a write failure, the CLI attempts closure and
 reports the admitted session ID for operator follow-up.
 
 ### 3. Authenticate the selected client
