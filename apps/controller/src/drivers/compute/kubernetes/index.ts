@@ -4776,8 +4776,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     if (auth.method === "api_key") {
       const endpoint = auth.authorizedEndpoint;
+      const requiresOpenAiEndpointShape = authentication.providerId !== "anthropic";
       if (
         endpoint !== undefined &&
+        requiresOpenAiEndpointShape &&
         (normalizeOpenAiBaseUrl(endpoint) !== endpoint || openAiBaseUrlRewritesIpv4(endpoint))
       ) {
         throw callerSettingError(
@@ -4831,12 +4833,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
               "requires an endpoint-authorized custom provider for a different destination",
             );
           }
-        }
-        if (endpoint !== undefined && !custom) {
-          throw callerSettingError(
-            "harnessAuth.authorizedEndpoint",
-            "requires a custom provider for Embedded OpenClaw",
-          );
         }
         if (
           custom &&

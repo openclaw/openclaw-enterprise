@@ -13373,6 +13373,32 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
   );
 });
 
+test("Anthropic endpoint authorization preserves the canonical Messages endpoint", () => {
+  const driver = createKubernetesComputeDriver(options());
+  const configuration = {
+    agents: { defaults: { model: "anthropic/claude-sonnet-4-5" } },
+    models: {
+      providers: {
+        anthropic: {
+          baseUrl: "https://api.anthropic.com",
+          api: "anthropic-messages",
+          apiKey: "${ANTHROPIC_API_KEY}",
+          models: [{ id: "claude-sonnet-4-5", name: "Claude Sonnet" }],
+        },
+      },
+    },
+  };
+
+  assert.doesNotThrow(() =>
+    driver.validateHarnessAuth(
+      { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      { ...apiKeyAuth, authorizedEndpoint: "https://api.anthropic.com" },
+      configuration,
+      {},
+    ),
+  );
+});
+
 test("a Preset header name that waits on a variable is checked once filled", () => {
   const driver = createKubernetesComputeDriver(options());
   const binding = "model credentials come from the Agent's Harness authentication binding";
