@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-11-03
-last_updated_session: authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7
+last_updated_session: authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8
 ---
 
 # Agent Plugin Deployment Flow
@@ -44,8 +44,8 @@ graph TD
   A["Authorize and validate policy"] -->|valid| S["Save Agent selections"]
   A -->|unsupported| Y["Reject write"]
   S --> B["Revalidate and snapshot version"]
-  B -->|managed Slack| K["Project worker MCP and Gateway tool selections"]
-  K --> L["Apply OpenShell rules for the selected account and MCP tool names"]
+  B -->|managed MCP| K["Project worker MCP and Gateway tool selections"]
+  K --> L["Sandbox applies account and tool request policy"]
   L --> I
   B --> C["Validate native metadata; grant selected plugins"]
   C --> D["Attempt selected installs"]
@@ -118,10 +118,10 @@ Installation uses `GET /installation`; Agent editors use
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC snapshots the validated Configuration, Driver and plugin selections in the queued Agent revision.
+OCC snapshots the validated Configuration, Driver and plugin selections in the queued Agent revision. Compute projects one package descriptor; shared startup verifies its release and CLI or MCP assets.
 
 - **CLI packages.** The Gateway loads skill instructions. The Harness runs its image’s pinned executable. The shared guard checks operation and credential restrictions before injection.
-- **Hosted MCP packages.** Compute gives the worker the pinned server descriptor, credential placeholder and selected upstream tool names. The worker advertises that subset and the Gateway admits those tools. The Credential Gateway supplies the bearer. The Sandbox installs exact OpenShell rules for worker and script calls and rejects overlapping routes. An account and nonempty tool selection enable the server.
+- **Hosted MCP packages.** Compute gives the worker the pinned descriptor and selected upstream tool names. The worker advertises that subset and the Gateway admits it. The credential driver attaches the source. The Sandbox delivers its placeholder and translates the selection into request policy for worker and script calls. The bundled OpenShell implementation enforces exact MCP names and rejects overlapping routes. An account and nonempty selection enable the server.
 - **Native runtime plugins.** Startup installs packages and verifies native tool policy.
 
 Credential withdrawal removes injection. Recovery preserves other attachments.
@@ -352,6 +352,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 01:10: Describe hosted MCP packages and Driver-owned request policy. (authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8 - 4178b555ac5dc711c818055bd7fe34c3e4d4943b)
 
 - 2026-11-03 00:16: Describe plugin types. (authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7 - e1a6ce75ac414131e759b985d280833b3b26b90e)
 

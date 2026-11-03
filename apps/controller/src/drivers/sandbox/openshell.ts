@@ -1,3 +1,4 @@
+import { managedCredentialEnvironment } from "./openshell-plugin-runtime.ts";
 import {
   openShellRepositoryAccess,
   type OpenShellGitPolicyOverlap,
@@ -24,7 +25,6 @@ import {
   assertPluginNetworkInspection,
   assertPluginRequestPolicy,
   googleRequestPolicyFromSandbox,
-  managedGoogleCredentialEnvironment,
   openShellPluginPolicy,
   verifyPluginRequestGuard,
   verifyManagedPluginRegistration,
@@ -37,9 +37,9 @@ import {
 } from "./openshell-managed-mcp-policy.ts";
 import {
   managedCredentialBinding,
-  managedGoogleInstall,
   managedMcpCredentialBinding,
   managedMcpInstalls,
+  managedInstalls,
 } from "../plugin/managed-catalog.ts";
 import { openShellLogDecisions } from "./openshell-log-decisions.ts";
 import { qualifyOpenShellCodexArtifactRules } from "./openshell-codex-artifacts.ts";
@@ -2296,7 +2296,7 @@ function sandboxSpec(
         dataMount.mount_path,
         workspace.workspaceMountPaths,
       ),
-      ...(plugin && { [managedGoogleCredentialEnvironment]: plugin.environment }),
+      ...(plugin && { [managedCredentialEnvironment]: plugin.environment }),
     },
     template: {
       image: requirements.image,
@@ -3418,12 +3418,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         new Set([
           WORKSPACE_NODE_SETUP_ENVIRONMENT,
           WORKSPACE_NODE_CA_ENVIRONMENT,
-          managedGoogleCredentialEnvironment,
+          managedCredentialEnvironment,
           ...(!codex
-            ? managedMcpInstalls.map(({ credentialEnvironment }) => credentialEnvironment)
-            : []),
-          ...(!codex
-            ? Object.values(managedGoogleInstall.credentials).map((slot) => slot.delivery.env)
+            ? managedInstalls.flatMap(({ credentials }) =>
+                Object.values(credentials).map((slot) => slot.delivery.env),
+              )
             : []),
           // Only the attached provider supplies its identity-bound credential alias.
           // A static placeholder would survive withdrawal and shadow its absence.
@@ -3607,7 +3606,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           ...expectedSpec,
           environment: {
             ...expectedSpec.environment,
-            [managedGoogleCredentialEnvironment]: previous.environment,
+            [managedCredentialEnvironment]: previous.environment,
           },
           policy: {
             ...expectedSpec.policy,

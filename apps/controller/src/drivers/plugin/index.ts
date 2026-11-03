@@ -1,3 +1,4 @@
+import { requireManagedCredentialRuntime } from "./managed-runtime.ts";
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import {
   CODEX_PLUGIN_DRIVER_IMPLEMENTATION,
@@ -10,7 +11,6 @@ import {
   managedInstalls,
   managedPluginCredentials,
   managedMcpCredentialBinding,
-  requireManagedCredentialRuntime,
 } from "./managed-catalog.ts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
 import {

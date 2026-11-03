@@ -23,7 +23,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { startupPhaseHelper } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import {
   PLUGIN_RUNTIME_CODEX_CONFIG,
   PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT,
@@ -2562,7 +2562,12 @@ test("every Configuration save refuses the non-text plugins.allow and deny items
       runOpenClawRuntimeHelper({ manifest: googleOnly }, [], {
         baseConfig: configuration,
         env: {
-          OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID: managedGoogleInstall.id,
+          OPENCLAW_MANAGED_PLUGIN_JSON: JSON.stringify({
+            kind: "cli",
+            id: managedGoogleInstall.id,
+            packageName: managedGoogleInstall.packageName,
+            slotId: "account",
+          }),
           OPENCLAW_PLUGIN_RUNTIME_JSON: JSON.stringify({ manifest: googleOnly }),
         },
         workspaceNodeBindingPath: true,

@@ -21,10 +21,8 @@ import {
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import {
-  managedGoogleInstall,
-  managedMcpInstalls,
-} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
   commandOutput,
@@ -50,8 +48,14 @@ async function startGoogleGateway(t, enabled, workspaceNodeId) {
     extraEnvironment: [
       ...(workspaceNodeId ? ["OPENCLAW_WORKSPACE_NODE_ID=" + workspaceNodeId] : []),
       "OPENCLAW_PLUGIN_RUNTIME_JSON=" + JSON.stringify({ manifest }),
-      "OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID=" + id,
-      ...(enabled ? ["OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256=" + releaseSha256] : []),
+      "OPENCLAW_MANAGED_PLUGIN_JSON=" +
+        JSON.stringify({
+          kind: "cli",
+          id,
+          packageName: managedGoogleInstall.packageName,
+          slotId: "account",
+          ...(enabled && { releaseSha256 }),
+        }),
     ],
   });
 }
@@ -125,7 +129,17 @@ process.exit(r.error ? 0 : r.status);`;
       const worker = (digest, mounts, environment = []) =>
         runManagedWorker(["-e", probe], mounts, [
           ...environment,
-          ...(digest === undefined ? [] : ["OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256=" + digest]),
+          ...(digest === undefined
+            ? []
+            : [
+                "OPENCLAW_MANAGED_PLUGIN_JSON=" +
+                  JSON.stringify({
+                    kind: "cli",
+                    packageName: managedGoogleInstall.packageName,
+                    slotId: "account",
+                    releaseSha256: digest,
+                  }),
+              ]),
         ]);
       const marker =
         "GOG_ACCESS_TOKEN=openshell:resolve:env:s" + "a".repeat(64) + "_GOG_ACCESS_TOKEN";
@@ -136,7 +150,7 @@ process.exit(r.error ? 0 : r.status);`;
       assert.deepEqual(JSON.parse((await worker(expected)).stdout.trim()), {
         version: "v" + version,
       });
-      const bound = "OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV=GOG_ACCESS_TOKEN";
+      const bound = "OPENCLAW_MANAGED_CREDENTIAL_ENV=GOG_ACCESS_TOKEN";
       assert.deepEqual(JSON.parse((await worker(expected, [], [marker])).stdout), {
         version: "v" + version,
         markerVisible: "present",
@@ -153,10 +167,10 @@ process.exit(r.error ? 0 : r.status);`;
       });
       await assert.rejects(
         worker(expected, [], [bound, "GOG_ACCESS_TOKEN=not-an-issued-placeholder"]),
-        (error) => /requires its scoped OpenShell credential placeholder/.test(error.stderr),
+        (error) => /requires its issued credential placeholder/.test(error.stderr),
       );
       await assert.rejects(worker("0".repeat(64)), (error) =>
-        /image integrity check: \/usr\/local\/lib\/oce\/plugins\/google\/release\.json/.test(
+        /image integrity check: \/usr\/local\/lib\/oce\/plugin-catalog\/oce-google-workspace\/ai\.openclaw\.oce\/release\.json/.test(
           error.stderr,
         ),
       );
@@ -174,6 +188,76 @@ process.exit(r.error ? 0 : r.status);`;
   );
 
   test(
+    "the dedicated worker loads a different CLI package with its declared credential slot",
+    imageTestOptions,
+    async (t) => {
+      const directory = await mkdtemp(join(tmpdir(), "oce-managed-cli-"));
+      t.after(() => rm(directory, { recursive: true, force: true }));
+      await mkdir(join(directory, "ai.openclaw.oce"));
+      const { version, artifacts } = managedGoogleInstall.release;
+      const runtimeDirectory = "/usr/local/lib/oce/plugins/documents";
+      const executable = "documents";
+      await mkdir(join(directory, "bin"));
+      // Use the pinned executable bytes under a different command name and installation
+      // path. A bootstrap that hardcodes Google's location must not satisfy this case.
+      const source = (
+        await runDocker(["create", "--network", "none", "--entrypoint", "true", image])
+      ).stdout.trim();
+      try {
+        await runDocker([
+          "cp",
+          source + ":" + managedGoogleInstall.binaryPath,
+          join(directory, "bin", executable),
+        ]);
+      } finally {
+        await runDocker(["rm", "-f", source]);
+      }
+      const release = JSON.stringify({
+        capabilities: { gateway: [], harness: ["cli"] },
+        runtimeDirectory,
+        executable,
+        version,
+        artifacts,
+        credentials: {
+          workspace: {
+            delivery: { role: "harness", env: "DOCUMENTS_ACCESS_TOKEN", presentation: "bearer" },
+          },
+        },
+      });
+      await writeFile(join(directory, "ai.openclaw.oce/release.json"), release);
+      const settings =
+        "OPENCLAW_MANAGED_PLUGIN_JSON=" +
+        JSON.stringify({
+          kind: "cli",
+          packageName: "oce-documents-cli",
+          slotId: "workspace",
+          releaseSha256: createHash("sha256").update(release).digest("hex"),
+        });
+      const marker = "openshell:resolve:env:s" + "b".repeat(64) + "_DOCUMENTS_ACCESS_TOKEN";
+      const result = await runManagedWorker(
+        [
+          "-e",
+          `const r = require("node:child_process").spawnSync("documents", ["--version"], {encoding:"utf8"});
+console.log(JSON.stringify({version:r.stdout.trim().split(" ")[0], marker:process.env.DOCUMENTS_ACCESS_TOKEN}));
+process.exit(r.status);`,
+        ],
+        [
+          "-v",
+          directory + ":/usr/local/lib/oce/plugin-catalog/oce-documents-cli:ro",
+          "-v",
+          directory + ":" + runtimeDirectory + ":ro",
+        ],
+        [
+          settings,
+          "OPENCLAW_MANAGED_CREDENTIAL_ENV=DOCUMENTS_ACCESS_TOKEN",
+          "DOCUMENTS_ACCESS_TOKEN=" + marker,
+        ],
+      );
+      assert.deepEqual(JSON.parse(result.stdout), { version: "v" + version, marker });
+    },
+  );
+
+  test(
     "the dedicated worker configures Slack's hosted MCP server only for the selected release",
     imageTestOptions,
     async (t) => {
@@ -186,8 +270,8 @@ process.exit(r.error ? 0 : r.status);`;
         ({ id }) => id === "occ-plugin:slack@1.0.0",
       );
       const settings = (digest, toolNames) =>
-        "OPENCLAW_MANAGED_MCP_JSON=" +
-        JSON.stringify({ packageName, slotId, releaseSha256: digest, toolNames });
+        "OPENCLAW_MANAGED_PLUGIN_JSON=" +
+        JSON.stringify({ kind: "mcp", packageName, slotId, releaseSha256: digest, toolNames });
       const inspect = async (digest, mounts = [], toolNames) => {
         const result = await runManagedWorker(
           ["/app/openclaw.mjs", "config", "get", "nodeHost", "--json"],
@@ -283,8 +367,9 @@ process.exit(r.error ? 0 : r.status);`;
           ],
           ["-v", directory + ":/usr/local/lib/oce/plugin-catalog/oce-documents:ro"],
           [
-            "OPENCLAW_MANAGED_MCP_JSON=" +
+            "OPENCLAW_MANAGED_PLUGIN_JSON=" +
               JSON.stringify({
+                kind: "mcp",
                 packageName: "oce-documents",
                 slotId: "workspace",
                 releaseSha256: digest(release),
@@ -335,7 +420,7 @@ process.exit(r.error ? 0 : r.status);`;
       ]);
       assert.equal(
         JSON.parse(stdout).filePath,
-        "/usr/local/lib/oce/plugins/google/skills/oce-google/SKILL.md",
+        "/usr/local/lib/oce/plugin-catalog/oce-google-workspace/skills/oce-google/SKILL.md",
       );
     },
   );
