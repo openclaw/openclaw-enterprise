@@ -45,6 +45,16 @@ Before accessing a credential store or entering values in Console, follow
 [Supply credentials](./credentials.md) for field selection, protected retrieval,
 and the supported binding steps.
 
+## Dedicated Codex setup
+
+Use the selected platform reference below to follow the current installation
+quickstart for the dedicated OpenShell Codex baseline. Reuse its saved operator
+session and shared capability guides for applicable Git and Linear checks. The
+quickstart's one approved push is distinct from main's write-denial and
+contributor-access cases. Preserve main's original permissions, presets and
+assertions; do not count the quickstart as completion of this scenario. Use a
+separate supported installation for Standard OpenClaw or a different Driver.
+
 ## Installation acceptance
 
 Record a separate result for each selected topology and follow its setup:

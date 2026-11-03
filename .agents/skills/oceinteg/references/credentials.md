@@ -1,6 +1,6 @@
-# Supply credentials for the main scenario
+# Supply integration credentials
 
-Read this before retrieving credentials for `oceinteg main`. Reuse the user's
+Read this before retrieving credentials for `oceinteg main` or `oceinteg quickstart`. Reuse the user's
 named credential items or protected files. Ask for missing references and field
 names, never for secret values in chat. Do not access credentials merely to edit
 or validate this skill.
@@ -16,13 +16,25 @@ completion status in shared reports.
 | Agent model       | Existing runtime-compatible model credential and selected model; Codex service-account tokens are not OpenClaw credentials | Namespace Secret bound through the matching runtime authentication control   |
 | Slack Socket Mode | App-level token (`xapp-` prefix)                                                                                           | Namespace Secret selected as **Slack app token**                             |
 | Slack bot         | Bot token (`xoxb-` prefix) from the same Slack app/workspace                                                               | Namespace Secret selected as **Slack bot token**                             |
-| GitHub broker     | App ID, installation ID, both numeric repository IDs, and RSA private-key reference/file                                   | Operator-owned broker registry and Kubernetes input Secrets                  |
+| GitHub broker     | App ID, installation ID, numeric IDs for the selected repositories, and RSA private-key reference/file                     | Operator-owned broker registry and Kubernetes input Secrets                  |
 | Linear            | Selected Agent/Codex account with Linear already connected for the workspace, plus a known readable issue                  | Preexisting account connection; never raw credentials in Agent Configuration |
 
 An item name alone does not identify which field to use. A Slack item may contain
 both tokens; do not use its app-level token for the bot field. Do not confuse an
 OCC operator service key, a 1Password service-account token, or a refresh token
 with the Agent's Codex service-account token.
+
+For `quickstart`, Git needs one explicitly authorized repository and test branch;
+Slack is needed only when separately selected. Linear requires the selected
+Codex account's existing connection. Keep any operator-local runbook, credential
+paths, secret-manager item names and environment-specific inventory outside
+this public repository. Confirm that each protected source still belongs to the
+selected account; an old staged copy does not establish current validity.
+
+For a dedicated OpenShell Agent, follow [Add Git](../../../../docs/guides/repository-credentials/openshell-git-push.md)
+to bind GitHub App credentials through the worker and the selected OpenShell
+Credential Proxy. Use the broker steps below only for the separate broker case
+in the main scenario.
 
 ## Retrieve without exposing values
 
@@ -63,6 +75,61 @@ op read "$GITHUB_APP_KEY_REF" --file-mode 0600 \
 
 An existing protected file can be used directly; do not overwrite or rotate it.
 Do not export model or Slack values to a file just to read them back into chat.
+
+## Stage files on an authorized remote host
+
+Use the lease's verified SSH host and the operator's normal host-key checks.
+Confirm each input belongs to this run, is readable only by its owner, and may
+be sent to that host. Use SSH standard input without a terminal. Keep remote
+copies under the operator's account, outside the checkout and Agent workspace.
+
+Run the following commands in Bash on the source machine. `REMOTE_HOST` is
+the approved SSH alias. `CODEX_TOKEN_FILE` and `GITHUB_APP_KEY_FILE` are the
+operator's existing protected files. Use `sha256sum` on Linux or `shasum` on
+macOS to compare the files without printing their contents or digests.
+
+```bash
+set -euo pipefail
+set +x
+umask 077
+remote_dir=$(ssh -T "$REMOTE_HOST" \
+  'umask 077; mkdir -p "$HOME/.cache/oceinteg" && cd "$HOME/.cache/oceinteg" && mktemp -d run.XXXXXXXX')
+[[ $remote_dir =~ ^run[.][a-zA-Z0-9]{8}$ ]]
+
+stage_file() {
+  local source=$1 name=$2 local_sum remote_sum
+  [[ $name =~ ^[a-z0-9.-]+$ && -f $source && ! -L $source && -s $source ]] || return 1
+  if command -v sha256sum >/dev/null; then
+    local_sum=$(sha256sum < "$source") || return 1
+  else
+    local_sum=$(shasum -a 256 < "$source") || return 1
+  fi
+  remote_sum=$(ssh -T "$REMOTE_HOST" \
+    "cd ~/.cache/oceinteg/$remote_dir && umask 077 && set -C && cat > './$name' && sha256sum < './$name'" \
+    < "$source") || return 1
+  [[ ${local_sum%% *} == "${remote_sum%% *}" ]]
+}
+
+stage_file "$CODEX_TOKEN_FILE" codex-pat
+stage_file "$GITHUB_APP_KEY_FILE" github-app.pem
+```
+
+Use a fresh directory if a transfer fails. Set the guide's input variables on
+the remote host to the corresponding files under
+`$HOME/.cache/oceinteg/<run-directory>`. Confirm mode 700 on the run directory
+and 600 on the files. Keep the SSH destination, run-directory name and ownership
+record privately for cleanup. Do not transfer the local credential store,
+Codex login directory or refresh tokens.
+
+For EKS, prefer an approved identity already available on the remote host.
+If a temporary AWS session must be transferred, export only the selected
+account and role's short-lived credentials with the supported AWS provider.
+Stage the run-specific shared credentials file through the same function. Bind
+`AWS_SHARED_CREDENTIALS_FILE`, `AWS_PROFILE` and region to that run on the
+remote operator host. Verify the account and role with
+`aws sts get-caller-identity` and check the source session's expiration before
+starting work. Use the normal authentication provider to renew an expired
+session. Remove only this run's staged copies after their consumers finish.
 
 ## Bind model and Slack credentials through Console
 

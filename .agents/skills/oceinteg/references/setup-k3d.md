@@ -1,50 +1,40 @@
-# Set up local k3d with Helm OCC
+# Set up local k3d with OpenShell
 
-Use this setup for main's Kubernetes-only local target. Start with
-[Local Setup](../../../../docs/guides/quickstart.md) and follow the
-[local Kubernetes guide](../../../../docs/guides/deploy/local-kubernetes-development.md)
-for prerequisites, isolation, optional capabilities, and lifecycle. PostgreSQL,
-OCC, its worker, and Agent workloads run in the disposable cluster; Docker or
-Podman hosts k3d rather than OCC application containers.
+Use [Set up OCE locally with OpenShell and Codex](../../../../docs/guides/deploy/local-setup.md)
+for `quickstart` and the dedicated OpenShell Codex baseline of `main`. Its guide
+owns tool installation, compatible image selection, gateway bootstrap,
+installation settings, model authentication, Agent creation, onboarding and
+session persistence. Follow the guide in order from its matching checkout.
 
 ## Follow the guides in order
 
-1. Resolve a fresh private state directory, cluster name, bridge subnet, free
-   API/browser/Kubernetes ports, immutable images, and retention choice. Use the
-   guide's engine and cgroup prerequisites. Preserve unrelated clusters, engine
-   state, and default kubeconfig/context.
-2. Select the documented Kubernetes-only profile explicitly:
-   `OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes`,
-   `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, and
-   `OCC_DEVELOPMENT_SANDBOX_DRIVER=none`. Run the guide's CLI build and startup
-   procedure. The sandbox setting does not disable the dedicated Codex workspace
-   sandbox. Retain the launcher's same-image sandbox proof and rollback evidence.
-3. For main's broker-omitted case, supply no broker inputs. For its configured
-   fresh case, prepare [local repository credentials](../../../../docs/guides/deploy/local-repository-credentials.md)
-   before startup. Do not retrofit undocumented flags into an existing release.
-4. Import only the generated public browser CA as described by Local Setup.
-   Use the printed HTTPS Console address and protected administrator credentials;
-   retain the printed release, namespace, kubeconfig, and context identities.
-5. Complete the local guide's
-   [Slack proxy procedure](../../../../docs/guides/deploy/local-kubernetes-development.md#require-both-proxies-before-enabling-slack).
-   Apply both protected inputs to the correct release and verify API directory
-   lookup and gateway messaging separately. Do not rerun fresh startup to update
-   an existing installation.
+1. Resolve a fresh run directory, cluster name, unused API/browser/Kubernetes
+   ports, immutable images and retention choice. Preserve unrelated clusters,
+   engine state and the default kubeconfig/context.
+2. Use the guide's Kubernetes control plane and OpenShell sandbox selection.
+   Do not replace it with `OCC_DEVELOPMENT_SANDBOX_DRIVER=none` for this baseline.
+   Wait for the launcher to complete Gateway TLS, mTLS and authentication
+   bootstrap and print the ready message before continuing.
+3. Register the Gateway-owned Codex model source before enabling repository
+   credentials. Complete first-Agent creation and Control UI onboarding. Trust
+   only the generated public browser CA and keep its private key on the host.
+4. Save and resume the private [operator session](../../../../docs/guides/deploy/quickstart-session.md)
+   in a fresh Bash shell, then follow the shared Git and plugin guides selected
+   by the scenario. Keep the same Agent and installation throughout.
 
-## Hand off and clean up
+For `main`, this establishes only its dedicated Codex baseline. Continue with
+main's additional preset, Slack, approval, permission and lifecycle cases.
+Its separate Standard OpenClaw branch needs a fresh installation using the
+supported [Kubernetes-only local profile](../../../../docs/guides/deploy/local-kubernetes-development.md)
+and matching runtime/Plugin Driver. A profile without OpenShell is a separate
+runtime result. A Codex quickstart pass does not prove that branch.
 
-Verify actual Helm workloads, Console access, presets, routing, database readiness,
-NetworkPolicy enforcement, and image provenance. Then execute main through the
-Console, using separate fresh Installations where runtime Driver selection differs.
-No EKS result may be inferred from this local proof.
+## Retain or dispose
 
-Apply [main's retention decision](./runtime-acceptance.md#completion) first.
-Preserve requested running Agents and their dependencies; the shutdown steps
-below apply only to resources selected for disposal.
-
-Stop run-owned Agents and resolve broker disposal before following
-[local shutdown](../../../../docs/guides/deploy/local-operations.md#stop-development-safely).
-Use the original state directory and engine selection. Verify only the owned
-cluster was removed; remove its public browser trust entry when discarding it.
-If retention was requested, record the cluster, claims, state directory, and
-remaining processes instead of deleting them.
+Honor [the selected scenario's retention](./runtime-acceptance.md#completion).
+Keep running Agents and their required claims, forwards and services when
+requested. For disposal, follow [Delete Agent](../../../../docs/guides/deploy/quickstart-delete-agent.md)
+then [local cleanup](../../../../docs/guides/deploy/local-cleanup.md) with the
+original state directory and engine. Verify only owned resources were removed.
+Record any retained credentials, public browser trust entry, state directory
+and remaining access processes. No EKS result may be inferred from this proof.

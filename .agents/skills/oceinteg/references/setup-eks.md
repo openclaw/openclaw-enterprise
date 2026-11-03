@@ -1,56 +1,48 @@
-# Set up EKS with Helm OCC
+# Set up OpenShell on Amazon EKS
 
-Use this setup for the EKS target of [main](./main.md). Follow the user-facing
-[EKS guide](../../../../docs/guides/deploy/eks.md), then the
-[shared production installation](../../../../docs/guides/deploy/production-installation.md).
-The guides own commands and configuration; record any missing step or workaround
-in main's deviation log instead of creating an undocumented parallel installer.
+Use [Run a dedicated OpenShell Agent on EKS](../../../../docs/guides/deploy/eks-openshell-setup.md)
+for `quickstart` and the dedicated OpenShell Codex baseline of `main`. The guide
+owns AWS prerequisites, images, OpenShell, Helm, private browser access,
+Namespace preparation, model authentication and onboarding. Record instruction
+gaps and workarounds in the scenario's deviation log.
 
 ## Resolve the target
 
-Record the authorized AWS account, region, fresh cluster/VPC and database,
-control-plane and Agent node groups, exact kubeconfig/context, release names,
-source/chart/image identities, and retention decision. Cloud resource creation
-or deletion requires explicit scope. Helm does not create the AWS foundation.
-Use a separate release and fresh database for a different Plugin Driver; record
-which runtime branch belongs to each Installation.
+Record the authorized AWS account/role, region, fresh cluster/VPC and database,
+node pools, private kubeconfig/context, release names, source/chart/image
+versions, cost scope and retention decision. Cloud creation and deletion require
+explicit scope. Helm does not create the AWS foundation. Transfer only the
+approved short-lived AWS session using [Supply credentials](./credentials.md);
+confirm account/role and expiry on the execution host before cloud operations.
 
-## Follow the guides in order
+## Follow the guide in order
 
-1. Complete the EKS guide's infrastructure, cluster selection, registry access,
-   network enforcement, and storage sections. Verify the reviewed Codex sandbox
-   profile on every eligible Agent node before deployment. Confirm CSI readiness
-   and the selected storage configuration rather than inheriting an old cluster's
-   working state.
-2. For a private API, use [private EKS access](../../../../docs/guides/deploy/eks-private-access.md).
-   Preserve TLS/SNI verification and the default kubeconfig. Record run-owned
-   tunnels and their cleanup. An API tunnel does not provide general VPC DNS.
-3. Configure [workspace routing](../../../../docs/guides/deploy/workspace-routing.md)
-   and [native administration](../../../../docs/guides/deploy/native-admin.md).
-   Verify private HTTPS, DNS, certificates, exact proxy sources, and tenant-local
-   permissions before creating Agents.
-4. Follow the production guide's configuration, database, bootstrap-volume,
-   Secret, Helm-installation, and authentication steps. If using
-   [installation profiles](../../../../docs/guides/deploy/installation-profiles.md),
-   inspect the rendered values and protected Installation together before applying.
-5. Exercise main's broker-omitted baseline, then its configured case using
-   [repository installation](../../../../docs/guides/repository-credentials/installation.md).
-   Configure and verify [both Slack proxies](../../../../docs/guides/integrations/slack.md#configure-both-slack-proxies)
-   before Slack Agent admission.
+1. Complete the EKS infrastructure, registry, network and storage prerequisites.
+   Verify eligible nodes, sandbox requirements, CSI readiness, encrypted storage
+   and reviewed network rules. Do not inherit an earlier installation's proof.
+2. Follow [private EKS access](../../../../docs/guides/deploy/eks-private-access.md)
+   if required. Preserve TLS/SNI checks and the default kubeconfig. Record owned
+   tunnels. An API tunnel does not provide general VPC DNS.
+3. Complete the setup guide's shared OpenShell and OCC installation, browser TLS
+   access, Namespace bindings and exact Agent model grant. Its deployment
+   helpers must retain the Gateway Service wait and network-policy application;
+   a renamed local helper is not equivalent network preparation.
+4. Complete Control UI onboarding, reopen the same conversation, and save the
+   private [operator session](../../../../docs/guides/deploy/quickstart-session.md).
+   Use that session for shared [Add Git](../../../../docs/guides/repository-credentials/openshell-git-push.md)
+   and [Add Plugin](../../../../docs/guides/integrations/codex-plugins.md).
 
-## Hand off and clean up
+For `main`, continue its additional preset, Slack, approval, permission and
+lifecycle cases. Prepare a separate fresh installation through the
+[production installation guide](../../../../docs/guides/deploy/production-installation.md)
+and matching Driver configuration for its Standard OpenClaw branch. The
+OpenShell Codex quickstart alone does not satisfy that broader scenario.
 
-Require a converged Helm release, migrated database with the limited application
-role, authenticated Console, and the required presets. Continue with main's
-baseline Agent and runtime/isolation checks; healthy infrastructure is not Agent
-acceptance. Record actual image IDs and resulting claim identities.
+## Retain or dispose
 
-Apply [main's retention decision](./runtime-acceptance.md#completion) first.
-Preserve requested running Agents and their dependencies; the shutdown steps
-below apply only to resources selected for disposal.
-
-Stop run-owned Agents before closing access. Follow the recorded retention
-choice for the exact cluster, database, volumes, registry artifacts, and network
-resources. Verify deletion when authorized; otherwise inventory retained resources
-and ongoing charges. Never delete an existing cluster merely because its name
-resembles a previous run.
+Honor the selected scenario's retention decision. Leave requested Agents,
+claims and required services running, with Git read-only after the push.
+For disposal, follow [Delete Agent](../../../../docs/guides/deploy/quickstart-delete-agent.md)
+then [EKS cleanup](../../../../docs/guides/deploy/eks-cleanup.md). Verify owned
+AWS resource deletion or intentional retention and ongoing charges. Preserve
+shared clusters, database resources, credentials and other installations.
