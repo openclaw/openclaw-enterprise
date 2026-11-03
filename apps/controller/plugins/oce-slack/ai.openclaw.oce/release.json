@@ -1,5 +1,5 @@
 {
-  "release": "slack-mcp-search-v1",
+  "release": "slack-mcp-v1",
   "placement": {
     "harnessId": "openclaw",
     "mode": "dedicated",
@@ -15,8 +15,7 @@
       "mcp": {
         "server": "slack",
         "resource": "https://mcp.slack.com",
-        "versions": ["2025-03-26", "2025-06-18", "2025-11-25"],
-        "tools": ["slack_search_public"]
+        "versions": ["2025-03-26", "2025-06-18", "2025-11-25"]
       }
     }
   }

@@ -151,10 +151,6 @@ const mcpSlot = Type.Object(
         minItems: 1,
         uniqueItems: true,
       }),
-      tools: Type.Array(
-        Type.String({ pattern: "^[a-zA-Z](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$", maxLength: 62 }),
-        { minItems: 1, uniqueItems: true },
-      ),
     }),
   },
   { additionalProperties: false },
@@ -181,7 +177,7 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
     throw invalid();
   }
   const [slotId, slot] = Object.entries(slots)[0]!;
-  const { server, resource, versions, tools } = slot.mcp;
+  const { server, resource, versions } = slot.mcp;
   const bytes = readFileSync(new URL("mcp.json", install.directory));
   if (createHash("sha256").update(bytes).digest("hex") !== release?.mcpServersSha256) {
     throw invalid();
@@ -202,13 +198,10 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
     !isAllowedSecretBindingDestination(slot.delivery.env) ||
     !exactDnsName(url.hostname) ||
     !url.hostname.includes(".") ||
-    (resource !== url.origin && resource !== url.href) ||
-    tools.some((tool) => `oce_mcp_${server}_${tool}`.length > 64) ||
-    new Set(tools.map((tool) => tool.toLowerCase())).size !== tools.length
+    (resource !== url.origin && resource !== url.href)
   ) {
     throw invalid();
   }
-  // Literal names also keep the OpenClaw alias stable and the OpenShell glob exact.
   return {
     ...install,
     server,
@@ -219,7 +212,6 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
     credentialLabel: slot.label,
     binaryPath: "/usr/local/bin/node",
     mcpVersions: Object.freeze(versions),
-    toolNames: Object.freeze(tools),
   } as const;
 }
 
@@ -301,20 +293,23 @@ export function managedMcpCredentialBinding(
       `Enable ${install.entry.name} and select exactly one credential, or clear its credential policy.`,
     );
   }
-  const reviewed = install.toolNames;
-  const selected = policy.toolNames;
+  const selected = policy.toolNames === undefined ? [] : policy.toolNames;
+  // Literal names keep the OpenClaw alias stable and the OpenShell glob exact.
   if (
-    selected !== undefined &&
-    (!Array.isArray(selected) ||
-      !selected.every((name) => typeof name === "string" && reviewed.includes(name)) ||
-      new Set(selected).size !== selected.length)
+    !Array.isArray(selected) ||
+    !selected.every(
+      (name) =>
+        typeof name === "string" &&
+        /^[a-zA-Z](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(name) &&
+        `oce_mcp_${install.server}_${name}`.length <= 64,
+    ) ||
+    new Set(selected.map((name) => name.toLowerCase())).size !== selected.length
   ) {
     throw new ConfigurationHarnessError(
-      `Select ${install.entry.name} tools from the reviewed plugin release.`,
+      `Select distinct literal ${install.entry.name} tool names whose OpenClaw aliases fit within 64 characters.`,
     );
   }
-  const toolNames = reviewed.filter((name) => selected?.includes(name));
-  return { install, sourceId, toolNames };
+  return { install, sourceId, toolNames: selected as string[] };
 }
 
 export function requireManagedCredentialRuntime(

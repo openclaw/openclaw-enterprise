@@ -1367,7 +1367,7 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
     driverPolicy: {
       releaseSha256: install.releaseSha256,
       credentials: { account: sourceId },
-      toolNames: ["slack_search_public"],
+      toolNames: ["slack_search_public", "slack_search_emojis"],
     },
   };
   revision.plugins = {
@@ -1472,6 +1472,7 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
     { allow: { method: "notifications/initialized" } },
     { allow: { method: "tools/list" } },
     { allow: { method: "tools/call", params: { name: { glob: "slack_search_public" } } } },
+    { allow: { method: "tools/call", params: { name: { glob: "slack_search_emojis" } } } },
   ]);
   assert.equal(created.spec.environment.SLACK_MCP_TOKEN, undefined);
   assert.equal(created.spec.policy.network_middlewares, undefined);
