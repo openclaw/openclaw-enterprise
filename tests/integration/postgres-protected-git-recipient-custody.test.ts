@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
-import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts";
+import {
+  selectBundledRepositoryGitCustody,
+  selectRegisteredRepositoryGitCustody,
+} from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
+import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/egress-proxy/openshell-repository-git-evidence.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import { postgresRepositorySessions } from "../../packages/occ/src/state/postgres-repository-sessions.ts";
 import { CredentialDeliveries } from "../../packages/occ/src/index.ts";
@@ -30,10 +34,16 @@ test(
       configurationId: "b".repeat(64),
     };
     const protectedOwner = (extra = {}) =>
-      f.startOwner({ controlSocket: undefined, protectedGitDriver: driver, ...extra });
+      f.startOwner({
+        controlSocket: undefined,
+        repositoryGitCustody: selectRegisteredRepositoryGitCustody(driver),
+        ...extra,
+      });
     const owner = await protectedOwner();
     const otherDriver = { ...driver, configurationId: "a".repeat(64) };
-    const other = await protectedOwner({ protectedGitDriver: otherDriver });
+    const other = await protectedOwner({
+      repositoryGitCustody: selectRegisteredRepositoryGitCustody(otherDriver),
+    });
     const legacy = await f.startOwner({ controlSocket: undefined });
     const mine = owner.protectedGit!;
     const notMine = other.protectedGit!;
@@ -287,7 +297,10 @@ test(
       implementation: "custody-fixture",
       configurationId: "a".repeat(64),
     };
-    const owner = await f.startOwner({ controlSocket: undefined, protectedGitDriver: driver });
+    const owner = await f.startOwner({
+      controlSocket: undefined,
+      repositoryGitCustody: selectRegisteredRepositoryGitCustody(driver),
+    });
     const host = owner.protectedGit!;
     const { installation, admissionId, revisionId } = await admitProtectedSession(
       f,
@@ -478,8 +491,7 @@ test(
     };
     const owner = await f.startOwner({
       controlSocket: undefined,
-      protectedGitDriver: driver,
-      protectedGitEvidence: openShellGitRecipientEvidence,
+      repositoryGitCustody: selectBundledRepositoryGitCustody(driver),
     });
     await owner.maintain();
     const selectedRoute = { revisionId, fence: 1, observed };
@@ -596,8 +608,7 @@ async function assertTerminalRetirement(
     f.startOwner({
       controlSocket: undefined,
       registry,
-      protectedGitDriver,
-      protectedGitEvidence: openShellGitRecipientEvidence,
+      repositoryGitCustody: selectBundledRepositoryGitCustody(protectedGitDriver),
       privateKeyPath: peer.privateKeyPath,
       custodyKeyPath: peer.custodyKeyPath,
       apiOrigin: peer.gh.origin,
@@ -985,7 +996,7 @@ for (const removal of [
         f.startOwner({
           controlSocket: undefined,
           registry,
-          protectedGitDriver: driver,
+          repositoryGitCustody: selectRegisteredRepositoryGitCustody(driver),
           privateKeyPath: peer.privateKeyPath,
           custodyKeyPath: peer.custodyKeyPath,
           apiOrigin: peer.gh.origin,
