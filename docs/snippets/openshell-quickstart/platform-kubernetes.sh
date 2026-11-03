@@ -1,7 +1,7 @@
 # Cluster setup records a pinned Envoy peer set and stages these helpers privately.
 deployment_preflight() {
   local peers
-  peers=$(bash "$RUN_DIR/kubernetes/trusted-envoy-peers.sh") || return 1
+  peers=$(bash "$RUN_DIR/kubernetes/trusted-envoy-peers.sh" "$RUN_DIR/kubeconfig") || return 1
   jq -e --argjson actual "$peers" '.==$actual' "$RUN_DIR/trusted-peers.json" >/dev/null
 }
 deployment_network() {

@@ -119,7 +119,7 @@ source "$RUN_DIR/platform.sh"
 namespace=$(request GET /namespaces | jq -er '[.data[]|select(.name=="default")]|select(length==1)|first.id')
 base="/namespaces/$namespace"
 export ENVOY_IMAGE
-bash "$assets/trusted-envoy-peers.sh" > "$RUN_DIR/trusted-peers.json"
+bash "$assets/trusted-envoy-peers.sh" "$RUN_DIR/kubeconfig" > "$RUN_DIR/trusted-peers.json"
 jq --slurpfile peers "$RUN_DIR/trusted-peers.json" \
   '.drivers.compute.configuration.network.gatewayTrustedProxyCidrs=$peers[0]' \
   "$RUN_DIR/installation.json" > "$RUN_DIR/installation-with-peers.json"
@@ -128,6 +128,21 @@ kubectl -n "$PLATFORM_NS" create secret generic "$peer_secret" \
   --from-file="installation.yaml=$RUN_DIR/installation-with-peers.json"
 jq --arg secret "$peer_secret" '.installation.secretName=$secret | .worker.replicaCount=1' \
   "$RUN_DIR/values.json" > "$RUN_DIR/worker.json"
+# Permit the worker to reach only this OpenShell management Service and its Pods.
+kube -n "$PLATFORM_NS" get service openshell-gateway -o json |
+  jq -e --arg ns "$PLATFORM_NS" --arg release "$RELEASE" '
+    .spec as $svc | select($svc.type=="ClusterIP" and ($svc.selector|length)>0
+      and ($svc.clusterIP|test("^[0-9]+(\\.[0-9]+){3}$"))) |
+    [$svc.ports[] | select(.protocol=="TCP" and .port==8080)] | select(length==1) | first as $port |
+    {apiVersion:"networking.k8s.io/v1", kind:"NetworkPolicy",
+     metadata:{namespace:$ns,name:"oce-worker-openshell-management"},
+     spec:{podSelector:{matchLabels:{"app.kubernetes.io/name":"openclaw-enterprise",
+       "app.kubernetes.io/instance":$release,"app.kubernetes.io/component":"worker"}},
+       policyTypes:["Egress"],egress:[
+         {to:[{ipBlock:{cidr:($svc.clusterIP+"/32")}}],ports:[{protocol:"TCP",port:8080}]},
+         {to:[{podSelector:{matchLabels:$svc.selector}}],ports:[{protocol:"TCP",port:$port.targetPort}]}
+       ]}}' > "$RUN_DIR/worker-management-policy.json"
+kube create -f "$RUN_DIR/worker-management-policy.json"
 helm upgrade oce "$OCE_CHART" -n "$PLATFORM_NS" -f "$RUN_DIR/worker.json" --wait
 cp "$RUN_DIR/installation-with-peers.json" "$INSTALLATION_FILE"
 cp "$RUN_DIR/worker.json" "$VALUES_FILE"

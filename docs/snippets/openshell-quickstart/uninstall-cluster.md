@@ -22,7 +22,7 @@ Stop the laptop port-forward. Remove the quickstart network policies recorded by
 for policy_file in "$RUN_DIR/agent-service-peers.json" "$RUN_DIR/protected-service-peers.json" "$RUN_DIR/listener.json"; do
   if [[ -f $policy_file ]]; then kube delete -f "$policy_file" --ignore-not-found; fi
 done
-kube -n "$PLATFORM_NS" delete networkpolicy oce-initialization-dns-vip --ignore-not-found
+kube -n "$PLATFORM_NS" delete networkpolicy oce-initialization-dns-vip oce-worker-openshell-management --ignore-not-found
 ```
 
 | Created or used during setup                                                                                                    | Cleanup outcome                                                                                            |
