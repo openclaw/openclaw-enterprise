@@ -70,7 +70,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/plugins.mts",
       "agents/repositories.mts",
       "agents/repository-profiles.mts",
-      "agents/starter-model.mjs",
+      "agents/starter-model.mts",
       "agents/workspace.mts",
       "agents/access.mts",
       "agents/detail.mts",
