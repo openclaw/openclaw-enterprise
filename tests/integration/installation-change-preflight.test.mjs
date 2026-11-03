@@ -467,7 +467,7 @@ test("the upgrade hook check refuses the remote Provider Harness until the cross
   assert.equal(refused.stdout, "");
   assert.equal(
     refused.stderr,
-    'installation-check: API and worker startup would refuse the Installation: DRIVER_CONFIGURATION_INVALID: [{"path":"/drivers/compute/configuration/network/providerHarness","code":"INVALID_VALUE","message":"drivers.compute.configuration.network.providerHarness remote form requires the cross-cluster callback and workspace-storage contract; it is not supported until that contract lands in an RFC."}]\n',
+    'installation-check: API and worker startup would refuse the Installation: DRIVER_CONFIGURATION_INVALID: [{"path":"/network/providerHarness","code":"INVALID_FORMAT","message":"Remote Provider Harness requires the cross-cluster callback and workspace-storage contract (RFC-0027, #4464); it is not supported yet."}]\n',
   );
   // The documented recovery removes only the remote form; the rest of the
   // Installation is unchanged and the local Pod-peer form stays accepted.

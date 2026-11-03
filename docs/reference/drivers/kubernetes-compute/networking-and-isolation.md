@@ -30,18 +30,13 @@ This ClusterIP bridge supports only owned k3d profiles advertising
 `*.openshell.localhost`; production cannot use it. Drivers without
 the endpoint capability retain ordinary Service or private routing.
 
-When the provider serves Harness endpoints from a cluster Compute cannot
-reach with Pod selection, the `providerHarness` remote form (`{ remote: true,
-address, port }`, one exact IP, WSS endpoint) is **refused at startup**: no
-supported topology can activate an Agent with it yet, because the Sandbox
-supervisor cannot call back to the Agent Gateway across clusters and the
-workspace claim cannot be placed in the provider cluster. The refusal names
-the missing cross-cluster callback and workspace-storage contract; the
-remote form is accepted only when that contract lands in an RFC. The exact-IP
-and WSS validation and the Gateway egress and hostname rendering for the
-remote form are implemented and covered by tests, so the RFC can enable them
-without rework. Gateway callback admission stays with the revision-scoped
-workspace-node relay policy in every form.
+A provider that serves Harness endpoints from a cluster Compute cannot reach
+with Pod selection is **not supported**: the `providerHarness` remote form
+(`{ remote: true, address, port }`) is refused at Driver construction and
+startup with an error naming the missing cross-cluster callback and
+workspace-storage contract. The contract is proposed in RFC-0027; until it
+lands, only the local Pod-peer form is accepted. Gateway callback admission
+stays with the revision-scoped workspace-node relay policy in every form.
 
 For startup, plugin and deployment diagnostics, set
 `network.pluginStatusProxySourceCidrs` to the API server's Pod-proxy source

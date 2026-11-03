@@ -131,251 +131,29 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const { kubeconfigPath, context: contextName } = conformanceKubeconfig;
 
-test("Kubernetes Compute rejects a remote provider Harness address that is not one exact IP", () => {
-  // A wider prefix would turn the exact egress grant into a range grant and leave
-  // the host alias without a real endpoint, so the address admits exactly one
-  // host. All-address, unspecified and IPv4-mapped forms are refused like every
-  // other reach-granting address.
-  const invalid = [
-    "not-an-address",
-    "0.0.0.0/0",
-    "::/0",
-    "203.0.113.0/24",
-    "192.0.2.10/31",
-    "2001:db8::/64",
-    "192.0.2.10/33",
-    "192.0.2.10/128",
-  ];
-  for (const address of invalid) {
-    const configured = options();
-    configured.network.providerHarness = {
-      remote: true,
-      address,
-      port: 8443,
-    };
-
-    assert.throws(
-      () => createKubernetesComputeDriver(configured),
-      (error) => {
-        assert.ok(error instanceof SharedConfigurationValidationError);
-        assert.ok(
-          JSON.stringify(error.error?.details ?? []).includes(
-            "Remote Provider Harness address must be one exact IP address",
-          ),
-          address,
-        );
-        return true;
-      },
-      address,
-    );
-  }
-  for (const address of ["0.0.0.0", "::", "::ffff:192.0.2.10"]) {
-    const configured = options();
-    configured.network.providerHarness = {
-      remote: true,
-      address,
-      port: 8443,
-    };
-    assert.throws(
-      () => createKubernetesComputeDriver(configured),
-      (error) => {
-        assert.ok(error instanceof SharedConfigurationValidationError);
-        assert.ok(
-          JSON.stringify(error.error?.details ?? []).includes(
-            "Remote Provider Harness address cannot be an unspecified or IPv4-mapped address",
-          ),
-          address,
-        );
-        return true;
-      },
-      address,
-    );
-  }
-  for (const address of ["192.0.2.10", "192.0.2.10/32", "2001:db8::1", "2001:db8::1/128"]) {
-    const configured = options();
-    configured.network.providerHarness = {
-      remote: true,
-      address,
-      port: 8443,
-    };
-    assert.doesNotThrow(() => createKubernetesComputeDriver(configured), address);
-  }
-});
-
-test("a remote provider Harness route renders exact egress, ingress and a bare host alias", async () => {
-  const sandboxDriver = {
-    id: "sandbox-provider",
-    implementation: "openshell",
-    async provisionHarness() {
-      assert.fail("rendering policies must not provision a Harness");
-    },
-    async harnessEndpoint() {
-      return { url: "wss://tenant--sandbox.openshell.localhost:8443/" };
-    },
-    async workspaceNodePeerLabels() {
-      return {
-        "openshell.ai/sandbox-id": "sandbox-remote",
-        "openshell.ai/boundary-role": "supervisor",
-      };
-    },
-    async cleanup() {},
+test("Kubernetes Compute refuses the remote Provider Harness form until its contract lands", () => {
+  // The remote form's routing (exact-IP egress, host alias, WSS endpoint) is
+  // deferred to the RFC-0027 implementation (#4464). Until it has a supported
+  // caller, the Driver refuses construction with the contract error rather than
+  // carrying dormant rendering; startup admission refuses the same form earlier
+  // with the same message (installation-change-preflight integration test).
+  const configured = options();
+  configured.network.providerHarness = {
+    remote: true,
+    address: "192.0.2.10",
+    port: 8443,
   };
-  const driverFor = (address) => {
-    const configured = routedOptions({
-      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
-    });
-    configured.network.providerHarness = { remote: true, address, port: 8443 };
-    return new KubernetesComputeDriver(configured, { sandboxDriver });
-  };
-  const driver = driverFor("192.0.2.10");
-  driver.apiClients = Promise.resolve({ objects: {} });
-  const revision = routedRevision(driver, { sandboxDriverId: "sandbox-provider" });
-  const target = { name: kubernetesNamespaceName(revision.namespaceId), plane: "execution" };
-  const suffix = digest(revision.agentId);
-
-  // The gateway egress admits exactly the configured address as an ipBlock with
-  // the host prefix the NetworkPolicy API requires, on only the provider port.
-  const policies = (await driver.agentNetworkPoliciesWithPeers(revision, target)).map(
-    ({ resource }) => resource,
-  );
-  const gatewayAgent = policies.find(
-    ({ metadata }) => metadata.name === `allow-gateway-agent-${suffix}`,
-  );
-  assert.deepEqual(gatewayAgent.spec.egress, [
-    {
-      to: [{ ipBlock: { cidr: "192.0.2.10/32" } }],
-      ports: [{ protocol: "TCP", port: 8443 }],
-    },
-  ]);
-  // The supervisor relay keeps its exact per-revision peer: the remote form
-  // must not replace it with a broader grant.
-  const relay = policies.find(
-    ({ metadata }) => metadata.name === `allow-gateway-workspace-node-${suffix}`,
-  );
-  assert.deepEqual(relay.spec.ingress, [
-    {
-      from: [
-        {
-          namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": target.name } },
-          podSelector: {
-            matchLabels: {
-              "openshell.ai/sandbox-id": "sandbox-remote",
-              "openshell.ai/boundary-role": "supervisor",
-            },
-          },
-        },
-      ],
-      ports: [{ protocol: "TCP", port: options().network.gatewayPort }],
-    },
-  ]);
-
-  // Neither form adds any OpenShell sandbox namespace admission to the tenant
-  // gateway ingress: callback admission stays with the revision-scoped
-  // workspace-node relay policy (#2183 isolation), which admits nothing
-  // cross-cluster — fail-closed while the remote form is refused at startup.
-  const remoteIngress = driver
-    .networkPolicies({ namespaceId: revision.namespaceId }, target)
-    .find(({ metadata }) => metadata.name === "allow-gateway-ingress");
-  assert.equal(
-    JSON.stringify(remoteIngress.spec.ingress).includes("openshell.ai/managed-by"),
-    false,
-    "the remote form must not admit OpenShell-managed namespaces",
-  );
-  // The tenant gateway ingress keeps exactly the routed Envoy peer rule.
-  assert.equal(remoteIngress.spec.ingress.length, 1);
-  assert.deepEqual(remoteIngress.spec.ingress[0].ports, [
-    { protocol: "TCP", port: options().network.gatewayPort },
-  ]);
-  const local = new KubernetesComputeDriver(
-    routedOptions({
-      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
-      network: {
-        providerHarness: {
-          namespace: "openshell-system",
-          podLabels: { app: "openshell-gateway" },
-          address: "10.43.0.50",
-          port: 8080,
-        },
-      },
-    }),
-    { sandboxDriver },
-  );
-  const localIngress = local
-    .networkPolicies({ namespaceId: revision.namespaceId }, target)
-    .find(({ metadata }) => metadata.name === "allow-gateway-ingress");
-  assert.equal(
-    JSON.stringify(localIngress.spec.ingress).includes("openshell.ai/managed-by"),
-    false,
-  );
-
-  // The gateway Deployment maps the advertised provider hostname to the bare
-  // address, never to a prefix-stripped network address or the raw configured
-  // value when an explicit /32 or /128 prefix is set.
-  const renderFor = (owner) => {
-    const configuration = owner.gatewayConfiguration(revision, "node", target);
-    return (endpoint) =>
-      owner.deployment(
-        `gateway-${suffix}`,
-        { namespaceId: revision.namespaceId, agentId: revision.agentId },
-        target,
-        owner.options.images.gateway,
-        "gateway-account",
-        "gateway",
-        {},
-        "info",
-        configuration,
-        false,
-        undefined,
-        undefined,
-        [],
-        [],
-        undefined,
-        [],
-        undefined,
-        undefined,
-        undefined,
-        endpoint,
-      );
-  };
-  const render = renderFor(driver);
-  const expectedAlias = [{ ip: "192.0.2.10", hostnames: ["tenant--sandbox.openshell.localhost"] }];
-  assert.deepEqual(
-    render(await sandboxDriver.harnessEndpoint()).spec.template.spec.hostAliases,
-    expectedAlias,
-  );
-  // An explicit /32 and an IPv6 address normalize to the same exact forms.
-  const explicit = driverFor("192.0.2.10/32");
-  explicit.apiClients = Promise.resolve({ objects: {} });
-  const explicitPolicies = (await explicit.agentNetworkPoliciesWithPeers(revision, target)).map(
-    ({ resource }) => resource,
-  );
-  assert.deepEqual(
-    explicitPolicies.find(({ metadata }) => metadata.name === `allow-gateway-agent-${suffix}`).spec
-      .egress[0].to,
-    [{ ipBlock: { cidr: "192.0.2.10/32" } }],
-  );
-  assert.deepEqual(
-    renderFor(explicit)(await sandboxDriver.harnessEndpoint()).spec.template.spec.hostAliases,
-    expectedAlias,
-  );
-  const v6 = driverFor("2001:db8::1");
-  v6.apiClients = Promise.resolve({ objects: {} });
-  const v6Policies = (await v6.agentNetworkPoliciesWithPeers(revision, target)).map(
-    ({ resource }) => resource,
-  );
-  assert.deepEqual(
-    v6Policies.find(({ metadata }) => metadata.name === `allow-gateway-agent-${suffix}`).spec
-      .egress[0].to,
-    [{ ipBlock: { cidr: "2001:db8::1/128" } }],
-  );
-  assert.deepEqual(
-    renderFor(v6)(await sandboxDriver.harnessEndpoint()).spec.template.spec.hostAliases,
-    [{ ip: "2001:db8::1", hostnames: ["tenant--sandbox.openshell.localhost"] }],
-  );
-  // The remote endpoint must use WSS: its transport and token cross a network.
   assert.throws(
-    () => render({ url: "ws://tenant--sandbox.openshell.localhost:8443/" }),
-    /A remote Provider Harness endpoint must use WSS/,
+    () => createKubernetesComputeDriver(configured),
+    (error) => {
+      assert.ok(error instanceof SharedConfigurationValidationError);
+      assert.ok(
+        JSON.stringify(error.error?.details ?? []).includes(
+          "Remote Provider Harness requires the cross-cluster callback and workspace-storage contract",
+        ),
+      );
+      return true;
+    },
   );
 });
 
