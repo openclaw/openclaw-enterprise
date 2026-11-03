@@ -52,7 +52,7 @@ func (r *runner) protectedEgressSelection(controlPlane, sandbox string) (bool, e
 		return false, fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP is retired; remove this setting")
 	}
 	if value == "1" {
-		return false, fmt.Errorf("OCC_DEVELOPMENT_PROTECTED_EGRESS=1 is retired; protected static inference cannot be launched")
+		return false, fmt.Errorf("OCC_DEVELOPMENT_PROTECTED_EGRESS=1 is retired; unset it or set it to 0 for ordinary development. This does not convert an existing installation; use occ dev down for cleanup.")
 	}
 	return false, nil
 }

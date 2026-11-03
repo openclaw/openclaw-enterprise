@@ -105,7 +105,7 @@ func TestDevUpProtectedProfileEntrypoints(t *testing.T) {
 		{"unset", nil, ""},
 		{"empty", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS="}, ""},
 		{"disabled", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS=0"}, ""},
-		{"enabled", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS=1"}, "OCC_DEVELOPMENT_PROTECTED_EGRESS=1 is retired; protected static inference cannot be launched"},
+		{"enabled", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS=1"}, "OCC_DEVELOPMENT_PROTECTED_EGRESS=1 is retired; unset it or set it to 0 for ordinary development. This does not convert an existing installation; use occ dev down for cleanup."},
 		{"invalid", []string{"OCC_DEVELOPMENT_PROTECTED_EGRESS=true"}, "OCC_DEVELOPMENT_PROTECTED_EGRESS must be 0 or 1"},
 		{"database", []string{"OCC_DEVELOPMENT_DATABASE_NAME=openclaw_k8s_owned"}, "OCC_DEVELOPMENT_DATABASE_NAME requires"},
 		{"empty-database", []string{"OCC_DEVELOPMENT_DATABASE_NAME="}, "OCC_DEVELOPMENT_DATABASE_NAME requires"},

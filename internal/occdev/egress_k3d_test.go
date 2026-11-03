@@ -19,7 +19,7 @@ import (
 )
 
 func TestProtectedEgressSelectionFailsBeforeEffects(t *testing.T) {
-	const retired = "OCC_DEVELOPMENT_PROTECTED_EGRESS=1 is retired; protected static inference cannot be launched"
+	const retired = "OCC_DEVELOPMENT_PROTECTED_EGRESS=1 is retired; unset it or set it to 0 for ordinary development. This does not convert an existing installation; use occ dev down for cleanup."
 	const hostRetired = "OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP is retired; remove this setting"
 	r := &runner{env: candidateOpenShellEnvironment()}
 	r.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] = "kubernetes"
