@@ -397,17 +397,123 @@ if ((${#timeout_seconds} > 5 || timeout_seconds > 86400)); then
 fi
 full_commit_sha "$source_revision" ||
   die "--source-revision must be a full lowercase Git commit SHA."
-checkout_revision=$(
+checkout_git=(git --no-optional-locks --no-replace-objects --git-dir=.git)
+read_checkout() (
   unset GIT_DIR GIT_COMMON_DIR
+  export GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=
+  "$@" 2>/dev/null
+)
+checkout_revision=$(
   # Matching HEAD is insufficient when Git assigns this metadata another worktree.
   # Compare directory identity so symlinked paths still name the physical root.
-  checkout_root=$(git --git-dir=.git rev-parse --show-toplevel 2>/dev/null) || exit 1
+  checkout_root=$(read_checkout "${checkout_git[@]}" rev-parse --show-toplevel) || exit 1
   [[ "$checkout_root" -ef . ]] || exit 1
-  git --git-dir=.git rev-parse --verify 'HEAD^{commit}' 2>/dev/null
+  read_checkout "${checkout_git[@]}" rev-parse --verify 'HEAD^{commit}'
 ) ||
   die "could not verify the checkout commit; run this command from the release repository root with Git available."
 [[ "$checkout_revision" == "$source_revision" ]] ||
   die "checkout commit does not match --source-revision; use the reviewed release checkout."
+require_command python3
+chart=deploy/helm/openclaw-enterprise
+# Helm reads this physical directory. Check it before reading protected inputs.
+# The operator must keep this checkout unchanged while the helper uses it.
+chart_sha256=$(read_checkout python3 - "$chart" "$checkout_revision" "$evidence_dir" "$values" "$installation" "${checkout_git[@]}" <<'PYTHON'
+import hashlib, os, stat, subprocess, sys
+from pathlib import Path
+
+chart_path, revision, evidence, values, installation, *git = sys.argv[1:]
+chart = os.fsencode(chart_path)
+
+def git_output(*args):
+    return subprocess.check_output([*git, *args])
+
+# NUL-delimited paths preserve literal names, including hidden files and case.
+expected = {}
+tree = git_output("ls-tree", "-rtz", f"{revision}:{chart_path}")
+for record in tree.split(b"\0")[:-1]:
+    metadata, path = record.split(b"\t", 1)
+    mode, kind, oid = metadata.split()
+    if mode == b"040000" and kind == b"tree":
+        expected[path] = None
+    elif mode in (b"100644", b"100755") and kind == b"blob":
+        expected[path] = oid
+    else:
+        sys.exit(1)
+if expected.get(b"Chart.yaml") is None:
+    sys.exit(1)
+
+directory = b"."
+for component in chart.split(b"/"):
+    directory = os.path.join(directory, component)
+    directory_info = os.lstat(directory)
+    if not stat.S_ISDIR(directory_info.st_mode):
+        sys.exit(1)
+chart_directories = {(directory_info.st_dev, directory_info.st_ino)}
+
+digest = hashlib.sha256()
+
+def verify_directory(directory, prefix):
+    directories = []
+    with os.scandir(directory) as entries:
+        for entry in sorted(entries, key=lambda entry: entry.name):
+            relative = os.path.join(prefix, entry.name)
+            oid = expected.pop(relative)
+            info = entry.stat(follow_symlinks=False)
+            if oid is None and stat.S_ISDIR(info.st_mode):
+                chart_directories.add((info.st_dev, info.st_ino))
+                directories.append((entry.path, relative))
+            elif oid is not None and stat.S_ISREG(info.st_mode):
+                contents = git_output("cat-file", "blob", oid)
+                with open(entry.path, "rb") as source:
+                    if source.read(len(contents) + 1) != contents:
+                        sys.exit(1)
+                digest.update(entry.path + b"\0" + contents + b"\0")
+            else:
+                sys.exit(1)
+    # Keep the evidence digest's order: sorted files first, then sorted directories.
+    for path, relative in directories:
+        verify_directory(path, relative)
+
+verify_directory(chart, b"")
+if expected:
+    sys.exit(1)
+
+def existing_output(path):
+    # A new evidence directory has no identity yet. Resolve its nearest
+    # existing ancestor, and do not treat other lookup errors as missing.
+    while True:
+        try:
+            os.stat(path)
+        except FileNotFoundError:
+            parent = os.path.dirname(path) or "."
+            if parent == path:
+                raise
+            path = parent
+        else:
+            return Path(path).resolve(strict=True)
+
+# A mount can expose a verified directory under a different physical path.
+chart_root = os.path.abspath(chart_path)
+for path in (evidence, values, installation):
+    try:
+        if os.path.commonpath((chart_root, os.path.realpath(path))) == chart_root:
+            sys.exit(2)
+        physical = existing_output(path)
+        for ancestor in (physical, *physical.parents):
+            info = ancestor.stat()
+            if (info.st_dev, info.st_ino) in chart_directories:
+                sys.exit(2)
+    except OSError:
+        sys.exit(3)
+print(digest.hexdigest())
+PYTHON
+) || {
+  case $? in
+    2) die "keep the evidence directory and baseline files outside the stock Helm chart." ;;
+    3) die "could not verify the evidence directory and baseline file paths." ;;
+  esac
+  die "the stock Helm chart must match the selected commit. Use a complete release checkout with the original chart files."
+}
 positive_integer "$doctor_heap_mib" || die "--doctor-heap-mib must be positive."
 # Leave room for both margins in signed 64-bit shell arithmetic; compare decimal
 # strings before evaluating the untrusted value as an arithmetic expression.
@@ -449,7 +555,7 @@ require_private_file "$OCC_SERVICE_KEY_FILE"
 if [[ -n "${OCC_CA_BUNDLE:-}" ]]; then
   require_regular_file "$OCC_CA_BUNDLE"
 fi
-for command in cmp helm jq kubectl mktemp node python3 yq; do
+for command in cmp helm jq kubectl mktemp node yq; do
   require_command "$command"
 done
 [[ -x "$occ" ]] || command -v "$occ" >/dev/null 2>&1 || die "the OCC CLI is unavailable."
@@ -475,20 +581,13 @@ trap 'interrupted_upgrade 143' TERM
 # Bind resume to the original physical directory, inputs and chart. The
 # separate dispatch journal protects against restoring stale evidence in place.
 # Kubeconfig bytes bind the context to the same cluster if the file is replaced.
-parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$OCC_URL" "$occ" "${OCC_CA_BUNDLE:-}" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" <<'PYTHON'
+parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$OCC_URL" "$occ" "${OCC_CA_BUNDLE:-}" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" <<'PYTHON'
 import hashlib, json, os, sys
-chart = "deploy/helm/openclaw-enterprise"
-h = hashlib.sha256()
-for root, dirs, files in os.walk(chart):
-    dirs.sort()
-    for name in sorted(files):
-        path = os.path.join(root, name)
-        h.update(path.encode() + b"\0" + open(path, "rb").read() + b"\0")
 def digest(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
 evidence = os.stat(sys.argv[16])
-print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": h.hexdigest(), "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.mjs"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.mjs"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
 PYTHON
 )
 if ((resume)); then
@@ -1107,9 +1206,9 @@ if ! matches_yaml "$candidate_installation" "$evidence_dir/before-live-installat
 fi
 
 rendered="$evidence_dir/rendered.yaml"
-helm template "$release" deploy/helm/openclaw-enterprise "${helm_args[@]}" \
+helm template "$release" "$chart" "${helm_args[@]}" \
   --values "$candidate_values" >"$rendered"
-helm upgrade --install "$release" deploy/helm/openclaw-enterprise "${helm_args[@]}" \
+helm upgrade --install "$release" "$chart" "${helm_args[@]}" \
   --values "$candidate_values" --dry-run=server --hide-secret \
   >"$evidence_dir/server-dry-run.txt"
 preflight_startup
@@ -1337,7 +1436,7 @@ PYTHON
   touch "$evidence_dir/helm-started"
   # Open stdout before entering the native failure handler.
   {
-    helm upgrade --install "$release" deploy/helm/openclaw-enterprise "${helm_args[@]}" \
+    helm upgrade --install "$release" "$chart" "${helm_args[@]}" \
       --values "$values" --wait --timeout 5m ||
       native_command_failed "$?" helm-upgrade release
   } >"$evidence_dir/helm-upgrade.txt"

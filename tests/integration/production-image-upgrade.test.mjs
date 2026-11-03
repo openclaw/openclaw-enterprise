@@ -105,7 +105,8 @@ esac
     bin,
     "python3",
     `if [[ "$1" == scripts/upgrade-dispatch-state.py ||
-      ( "$1" == - && ( "$2" == "$UPGRADE_TEST_KUBECONFIG" || "$2" == */parameters.json ) ) ]]; then
+      ( "$1" == - && ( "$2" == deploy/helm/openclaw-enterprise ||
+        "$2" == "$UPGRADE_TEST_KUBECONFIG" || "$2" == */parameters.json ) ) ]]; then
   command -p python3 "$@"
 elif (($# == 3)); then
   printf '%s\\n' '${"e".repeat(64)}'
@@ -628,6 +629,13 @@ test("production image upgrades bind the source revision before private inputs",
         };
         await execute("git", ["init", standalone], { env: gitEnvironment });
         const git = (args) => execute("git", args, { cwd: standalone, env: gitEnvironment });
+        const chart = join(standalone, "deploy/helm/openclaw-enterprise");
+        await mkdir(chart, { recursive: true });
+        await writeFile(
+          join(chart, "Chart.yaml"),
+          "apiVersion: v2\nname: fixture\nversion: 0.1.0\n",
+        );
+        await git(["add", "deploy/helm/openclaw-enterprise/Chart.yaml"]);
         await git([
           "-c",
           "user.name=Fixture",
@@ -636,7 +644,6 @@ test("production image upgrades bind the source revision before private inputs",
           "-c",
           "commit.gpgsign=false",
           "commit",
-          "--allow-empty",
           "-m",
           "Fixture",
         ]);
