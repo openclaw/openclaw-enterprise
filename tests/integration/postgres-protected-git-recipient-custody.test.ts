@@ -422,6 +422,99 @@ test(
 );
 
 test(
+  "v7 reduction selects registered Git material before the absent-mode v4 default",
+  requiresPostgres,
+  async (t) => {
+    const f = await fixture(t);
+    await disposeNativeSession(f);
+    const driver = {
+      id: "v7-custody",
+      implementation: "custody-fixture",
+      configurationId: "c".repeat(64),
+    };
+    const owner = await f.startOwner({
+      controlSocket: undefined,
+      repositoryGitCustody: selectRegisteredRepositoryGitCustody(driver),
+    });
+    const { installation } = await admitProtectedSession(
+      f,
+      driver,
+      f.binding,
+      undefined,
+      undefined,
+      undefined,
+      7,
+    );
+    assert.equal(installation.plan.policyReductionVersion, 2);
+    assert.equal(installation.plan.repositoryGitAuthorization, undefined);
+    const selected = owner.protectedGit!;
+    const route = await selected.recipients.observe(installation);
+    assert.ok(route);
+    assert.deepEqual(await selected.readMaterial(route, t.signal), { absent: "unprepared" });
+    await owner.maintain();
+    const material = await selected.readMaterial(route, t.signal);
+    assert.ok(material && "value" in material);
+    assert.equal(f.gh.issuesOfTokens.length, 1);
+  },
+);
+
+test(
+  "v6 observed-hook installation material requires OpenShell custody",
+  requiresPostgres,
+  async (t) => {
+    const f = await fixture(t, { installationAccess: true });
+    await disposeNativeSession(f);
+    const binding = resolveGitHubRepositoryBinding(f.registry, {
+      namespaceId: f.revision.namespaceId,
+      repositoryRef: "team-install",
+      profile: "github-installation",
+    });
+    const driver = {
+      id: "v6-custody",
+      implementation: "openshell",
+      configurationId: "c".repeat(64),
+    };
+    const owner = await f.startOwner({
+      controlSocket: undefined,
+      repositoryGitCustody: selectBundledRepositoryGitCustody(driver),
+    });
+    const registered = await f.startOwner({
+      controlSocket: undefined,
+      repositoryGitCustody: selectRegisteredRepositoryGitCustody(driver),
+    });
+    const { installation, revisionId } = await admitProtectedSession(
+      f,
+      driver,
+      binding,
+      undefined,
+      undefined,
+      undefined,
+      6,
+    );
+    const routes = new PostgresOpenShellGitRouteStore(f.pool);
+    const { observed } = await recordBootstrapRoute(f, routes, installation, revisionId);
+    const route = { revisionId, fence: 1, observed };
+    const selected = owner.protectedGit!.observedHook!;
+    assert.ok(selected);
+    assert.equal(registered.protectedGit!.observedHook, undefined);
+    assert.equal(
+      await registered.protectedGit!.recipients.observe(installation),
+      undefined,
+      "the same Driver cannot obtain an exact registered witness for observed-hook custody",
+    );
+    assert.deepEqual(await selected.readMaterial(route, t.signal), { absent: "unprepared" });
+    await owner.maintain();
+    const material = await selected.readMaterial(route, t.signal);
+    assert.ok(material && "value" in material);
+    assert.deepEqual(
+      await registered.protectedGit!.githubInstallation!.readMaterial(route, t.signal),
+      { absent: "unprepared" },
+    );
+    assert.equal(f.gh.issuesOfTokens.length, 1);
+  },
+);
+
+test(
   "OpenShell custody requires the current fence and the actually observed material generation",
   requiresPostgres,
   async (t) => {
@@ -434,42 +527,11 @@ test(
     };
     const { installation, revisionId } = await admitProtectedSession(f, driver, f.binding);
     const routes = new PostgresOpenShellGitRouteStore(f.pool);
-    await routes.open(
-      {
-        revisionId,
-        namespaceId: f.revision.namespaceId,
-        agentId: f.revision.agentId,
-        bindingId: installation.plan.execution.executionId,
-        workspace: "team",
-        sandbox: "git",
-      },
-      randomUUID(),
-    );
-    const observed = {
-      ...installation.enforcement.repositoryGitRecipient,
-      workspace: "team",
-      sandbox: "git",
-      sandboxId: installation.sandboxId,
-      executionId: revisionId,
-      provider: "oce-git-" + "a".repeat(32),
-      providerResourceVersion: "1",
-      profileVersion: "1",
-      credentialState: "bootstrap" as const,
-      providerEnvRevision: "1",
-      configRevision: "1",
-      policyHash: installation.enforcement.policyHash,
-      supervisorSessionId: "session",
-    };
-    const generation = {
-      providerId: observed.providerId,
-      resourceVersion: "1",
-      profileVersion: "1",
-      credentialState: "bootstrap" as const,
-      expiresAt: "",
-    };
-    assert.equal(
-      await routes.record(revisionId, 1, { generation, observed, material: undefined }),
-      true,
+    const { observed, generation } = await recordBootstrapRoute(
+      f,
+      routes,
+      installation,
+      revisionId,
     );
     const eligible = async (
       kind: "observed" | "installed",
@@ -841,6 +903,62 @@ async function disposeNativeSession(f: Fixture) {
   });
 }
 
+async function recordBootstrapRoute(
+  f: Fixture,
+  routes: PostgresOpenShellGitRouteStore,
+  installation: Awaited<ReturnType<typeof admitProtectedSession>>["installation"],
+  revisionId: string,
+) {
+  await routes.open(
+    {
+      revisionId,
+      namespaceId: f.revision.namespaceId,
+      agentId: f.revision.agentId,
+      bindingId: installation.plan.execution.executionId,
+      workspace: "team",
+      sandbox: "git",
+    },
+    randomUUID(),
+  );
+  const recipient = installation.enforcement.repositoryGitRecipient;
+  const { providerId, attachmentEpoch, processInstanceId, networkInstanceId, observedHook } =
+    recipient;
+  const observed = {
+    providerId,
+    attachmentEpoch,
+    processInstanceId,
+    networkInstanceId,
+    ...(observedHook === undefined ? {} : { observedHook }),
+    workspace: "team",
+    sandbox: "git",
+    sandboxId: installation.sandboxId,
+    executionId: revisionId,
+    provider:
+      (recipient.deliveryProfile === "github_installation"
+        ? "oce-github-installation-"
+        : "oce-git-") + "a".repeat(32),
+    providerResourceVersion: "1",
+    profileVersion: "1",
+    credentialState: "bootstrap" as const,
+    providerEnvRevision: "1",
+    configRevision: "1",
+    policyHash: installation.enforcement.policyHash,
+    supervisorSessionId: "session",
+  };
+  const generation = {
+    providerId: observed.providerId,
+    resourceVersion: "1",
+    profileVersion: "1",
+    credentialState: "bootstrap" as const,
+    expiresAt: "",
+  };
+  assert.equal(
+    await routes.record(revisionId, 1, { generation, observed, material: undefined }),
+    true,
+  );
+  return { observed, generation };
+}
+
 async function admitProtectedSession(
   f: Fixture,
   driver: DriverRegistrationRef,
@@ -848,7 +966,16 @@ async function admitProtectedSession(
   bindings: readonly AdmittedRepositoryBinding[] = [binding],
   deadlineWallMs = f.deadlineWallMs,
   pendingMember?: string,
+  mode?: 6 | 7,
 ) {
+  if (mode === 6) {
+    assert.equal(binding.profile, "github-installation");
+    assert.deepEqual(bindings, [binding]);
+  }
+  if (mode === 7) {
+    assert.equal(binding.profile, "git-write");
+    assert.deepEqual(bindings, [binding]);
+  }
   const { namespaceId, agentId, servicePrincipalId, repositoryCredentials } =
     f.revision as AgentRevision;
   const admissionId = randomUUID();
@@ -871,6 +998,8 @@ async function admitProtectedSession(
     sandboxDriverId: driver.id,
     egressDriverId: driver.id,
     repositoryGit: { ...repositoryCredentials!, bindings, deadlineWallMs },
+    ...(mode === 7 && { policyReductionVersion: 2 as const }),
+    ...(mode === 6 && { repositoryGitAuthorization: "request-hook-observed" as const }),
     ...(binding.profile === "github-repository" && {
       repositoryGitAuthorization: "online-request" as const,
     }),
@@ -886,7 +1015,8 @@ async function admitProtectedSession(
       configurationId: "one-config",
       policyHash: "one-policy",
       authorityScope: "execution" as const,
-      ...(binding.profile !== "github-repository" && { peerKeyId: "authenticated-test-peer" }),
+      ...(mode !== 6 &&
+        binding.profile !== "github-repository" && { peerKeyId: "authenticated-test-peer" }),
       repositoryGitRecipient: {
         providerId: "provider",
         attachmentEpoch: "epoch",
@@ -895,6 +1025,10 @@ async function admitProtectedSession(
         ...(binding.profile === "github-repository" && {
           deliveryProfile: "github_repository" as const,
           authorization: "online-request" as const,
+        }),
+        ...(mode === 6 && {
+          authorization: "request-hook-observed" as const,
+          observedHook: { startupId: randomUUID(), observationId: "d".repeat(64) },
         }),
         ...(binding.profile === "github-installation" && {
           deliveryProfile: "github_installation" as const,
@@ -919,7 +1053,7 @@ async function admitProtectedSession(
       id: revisionId,
       revision: f.revision.revision + 1,
       executionAdmission: {
-        version: binding.profile === "github-repository" ? 5 : 4,
+        version: mode ?? (binding.profile === "github-repository" ? 5 : 4),
         mode: "protected",
       },
       egressPlan: plan,
