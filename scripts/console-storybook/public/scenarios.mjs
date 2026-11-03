@@ -156,6 +156,19 @@ const presetQuotedSettingRefused = [
   click("Create Agent"),
 ];
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
+const repositorySearchOptions = [
+  "alpha/application-api",
+  "beta/my-application",
+  "omega/application",
+  "zeta/application",
+  "tools/cli",
+  "docs/handbook",
+  "ops/infrastructure",
+].map((displayName, index) => ({
+  repositoryRef: `catalog-${index}`,
+  displayName,
+  allowedProfiles: ["git-read", "git-write", "git-full"],
+}));
 // A plugin tool-deny refusal as the API words it, naming the selected plugin.
 const pluginToolRefusal =
   'Configuration setting agents.entries.research_assistant.tools.deny denies every tool, so every turn of that Agent fails with plugin codex-plugin:calendar@openai-curated-remote selected; remove "*" or move the Agent to a Configuration without plugins.';
@@ -3613,21 +3626,18 @@ export const scenarios = {
     name: "Exact repository names before prefix matches",
     path: create,
     actions: [...repositoryForm, { selector: "#repository-search", value: "application" }],
-    repositoryOptions: [
-      "alpha/application-api",
-      "beta/my-application",
-      "omega/application",
-      "zeta/application",
-      "tools/cli",
-      "docs/handbook",
-      "ops/infrastructure",
-    ].map((displayName, index) => ({
-      repositoryRef: `catalog-${index}`,
-      displayName,
-      allowedProfiles: ["git-read", "git-write", "git-full"],
-    })),
+    repositoryOptions: repositorySearchOptions,
     description:
       "Search a short repository name. Exact names appear first with their owners visible, followed by prefixes and substrings. Press Enter to add the first match; the query stays available for another addition.",
+  },
+  createRepositoriesNoMatches: {
+    group: "Pages/Create Agent",
+    name: "Repository search with no matches",
+    path: create,
+    actions: [...repositoryForm, { selector: "#repository-search", value: "unknown/repository" }],
+    repositoryOptions: repositorySearchOptions,
+    description:
+      "An approved catalog search with no matches directs users to their Namespace operator. Search for application to return to matching repositories.",
   },
   createRepositoriesLocaleSearch: {
     group: "Pages/Create Agent",
@@ -3691,7 +3701,8 @@ export const scenarios = {
     path: create,
     actions: repositoryForm,
     repositoryOptions: [],
-    description: "Successful empty discovery permits an ordinary Agent without repository access.",
+    description:
+      "An empty approved catalog directs users to their Namespace operator and permits a draft without repositories.",
   },
   createRepositoriesLoading: {
     group: "Pages/Create Agent",
@@ -10354,7 +10365,7 @@ export const scenarios = {
       "Refresh again, then press Tab while Checking is visible. Focus stays on the control you moved to.",
     ],
     description:
-      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested, and the Stop row offers only Request Stop again and Refresh; shutdown completion is not exposed here.",
+      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested. The Stop row replaces its action description with the result and restart guidance; shutdown completion is not verified here.",
   },
   stopReadDiscoversDeletion: {
     group: "Components/Stop Agent",
@@ -10395,7 +10406,7 @@ export const scenarios = {
     deployed: true,
     firstDeploymentFailed: true,
     description:
-      "A failed first deployment leaves the Agent requested to run with no selected version, so the danger zone has no Stop row.",
+      "A failed readable deployment leaves the Agent requested to run with no selected version. Stop stays available because a newer queued deployment may be unreadable.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopFirstDeploymentQueued: {
@@ -10406,7 +10417,7 @@ export const scenarios = {
     firstDeploymentQueued: true,
     actions: [click("Stop Agent")],
     description:
-      "A queued first deployment has no selected version yet. Stop stays, and its row and confirmation say it cancels the deployment in progress instead of interrupting a gateway.",
+      "A queued first deployment has no selected version yet. Stop stays, and its row and confirmation say it cancels the deployment in progress instead of interrupting a gateway. Confirming reports cancellation requested, not completed; later lifecycle reads retire that local result.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopNeverDeployed: {

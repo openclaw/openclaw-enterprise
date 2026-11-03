@@ -14,7 +14,7 @@ import {
   cpuScaledImageTimeoutMs,
   imageSmokeTimeoutMultiplier,
 } from "../helpers/image-smoke-timeout.mjs";
-import { assertAllPassed } from "../helpers/node-test-summary.mjs";
+import { assertAllPassed } from "../helpers/node-test-summary.ts";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import {
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
