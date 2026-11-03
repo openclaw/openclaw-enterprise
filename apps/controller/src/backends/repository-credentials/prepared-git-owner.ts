@@ -21,10 +21,7 @@ import {
 import { createGitHubKeyOwner } from "../../drivers/repo/github/credentials/material.ts";
 import { createGitHubPreparationOwner } from "../../drivers/repo/github/credentials/prepared-owner.ts";
 import { retirePreparedGitHubToken } from "../../drivers/repo/github/credentials/prepared-retirement.ts";
-import {
-  PreparedRepositoryGitStore,
-  type InstalledGitMaterial,
-} from "../../drivers/repo/github/credentials/prepared-repository-git.ts";
+import { PreparedRepositoryGitStore } from "../../drivers/repo/github/credentials/prepared-repository-git.ts";
 import {
   validateGitHubRepositoryRegistry,
   resolveGitHubRepositoryBinding,
@@ -443,18 +440,6 @@ export async function startPreparedGitHubGitOwner(
         revisionId,
         AbortSignal.any([signal, stop.signal]),
         install,
-      );
-    },
-    // Internal authority callback only. Never expose it as a workload or token-disclosure RPC.
-    authorizeOpenShellRequest(
-      request: PreparedGitHubUseRequest,
-      installed: InstalledGitMaterial,
-      signal: AbortSignal,
-    ) {
-      return store.authorizeOpenShellRequest(
-        useRequest(request),
-        installed,
-        AbortSignal.any([signal, stop.signal]),
       );
     },
     maintain: () => maintenance.maintain(),

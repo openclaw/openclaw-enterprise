@@ -212,14 +212,6 @@ export interface InstalledGitMaterial {
   readonly route?: RepositoryGitInstallationFence;
 }
 
-/** Compatibility with the broker-backed OpenShell trial only. Never use at a protected sender. */
-function openShellOnlineGitDecision(result: RepositoryGitSendDecision) {
-  if (result.kind === "denied") {
-    return result.reason === "unavailable" ? false : result.reason;
-  }
-  return result.kind === "permit" && Date.now() < Date.parse(result.sendStartBy);
-}
-
 /**
  * Match standing removal's lock order. The session ID or revision locates the Namespace;
  * it is not authority. Keep the Namespace, Agent and exact approval locked while taking
@@ -829,20 +821,6 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     } finally {
       bytes?.fill(0);
     }
-  }
-
-  /** Only the protocol-1 broker trial may use a decision that omits the send-start deadline. */
-  async authorizeOpenShellRequest(
-    q: PreparedGitHubUseRequest,
-    installed: InstalledGitMaterial,
-    signal: AbortSignal,
-  ): Promise<boolean | "draft_already_opened" | "access_withdrawn"> {
-    if (this.proxy) {
-      return false;
-    }
-    return openShellOnlineGitDecision(
-      await this.authorizeProtectedRequest(q, installed, signal, null, sendPermit),
-    );
   }
 
   /** Only a confirmed commit can return an allow or send permit. The authenticated recipient already
