@@ -18,17 +18,11 @@ let stage = "initialize";
 let browser;
 
 async function openAgent(consolePage, origin, route) {
-  // A saved permalink opens in a new tab in the authenticated owner's context.
-  // The initial visit uses the visible Console launch control.
-  const page = route ? await consolePage.context().newPage() : await launchFromConsole();
-  async function launchFromConsole() {
-    const [popup] = await Promise.all([
-      consolePage.waitForEvent("popup"),
-      consolePage.getByRole("link", { name: "Open Agent UI", exact: true }).click(),
-    ]);
-    await popup.waitForURL((url) => url.origin === origin);
-    return popup;
-  }
+  const [page] = await Promise.all([
+    consolePage.waitForEvent("popup", { timeout: 60_000 }),
+    consolePage.getByRole("link", { name: "Open Agent UI", exact: true }).click(),
+  ]);
+  await page.waitForURL((url) => url.origin === origin, { timeout: 60_000 });
   const messages = [];
   page.on("websocket", (ws) => {
     if (new URL(ws.url()).origin !== origin.replace("https:", "wss:")) {
@@ -64,24 +58,47 @@ async function openAgent(consolePage, origin, route) {
       messages.push({ text, sessionKey });
     });
   });
-  // Reopen the captured chat permalink through the fresh Agent UI tab. The
-  // sidebar can filter or collapse history, so its visible rows are not a
-  // stable index into an Agent's conversations.
-  if (route) {
-    assert.ok(route.path.startsWith("/chat/main/"));
-  }
-  const destination = new URL(route?.path ?? "/new", origin);
-  assert.equal(destination.origin, origin);
-  const response = await page.goto(destination.href);
+  // A document request for a chat permalink reads public chat publications.
+  // Load the signed-in UI first, then open the private chat from its history.
+  const response = await page.goto(new URL("/new", origin).href);
   if (!response?.ok()) {
     console.error("Control UI navigation HTTP " + (response?.status() ?? 0));
     throw new Error("Control UI navigation failed");
   }
   await waitForStockUi(page);
   if (route) {
-    // The UI can change the title slug. Check the route here and the full
-    // original session key on the new terminal recall reply.
-    await page.waitForURL((url) => url.origin === origin && url.pathname.startsWith("/chat/main/"));
+    stage = "search signed-in session history";
+    await page.evaluate((sessionKey) => {
+      const app = globalThis.openclawControlUi;
+      app.navigate("sessions", {
+        pathname: app.snapshot().basePath + "/sessions",
+        search: "?" + new URLSearchParams({ session: sessionKey, status: "all" }),
+      });
+    }, route.sessionKey);
+    await page.waitForURL((url) => url.origin === origin && url.pathname === "/sessions", {
+      timeout: 60_000,
+    });
+
+    // The displayed title may change. The Sessions table labels its selection
+    // control with the full key and links to that same row's private chat.
+    stage = "open matching session history row";
+    const row = page.getByRole("row").filter({
+      has: page.getByRole("checkbox", { name: "Select session: " + route.sessionKey, exact: true }),
+    });
+    const chatLink = row.locator("a.session-link");
+    await chatLink.waitFor({ state: "visible", timeout: 60_000 });
+    await chatLink.click();
+
+    stage = "verify original session selected";
+    await page.waitForFunction(
+      (sessionKey) => {
+        const state = globalThis.openclawControlUi.snapshot();
+        return state.routeReady === true && state.sessionKey === sessionKey;
+      },
+      route.sessionKey,
+      { timeout: 90_000 },
+    );
+    assert.equal(new URL(page.url()).origin, origin);
   }
   async function send(prompt, expected, newChat = false) {
     const editor = page.locator(".agent-chat__composer-combobox > textarea").first();
