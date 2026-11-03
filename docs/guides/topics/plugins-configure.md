@@ -54,8 +54,8 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
 
 ## Configure Slack search
 
-Slack public search is the first bundled managed MCP release. The release pins
-its endpoint and reviewed upstream tool names.
+The Slack package pins its MCP endpoint and credential binding. The operator
+selects upstream tool names in the Agent configuration. This example enables public search.
 
 Register a `bearer-token` credential source that references the saved Slack
 OAuth access token as its `token` Secret. Use

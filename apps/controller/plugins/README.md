@@ -5,9 +5,9 @@ Each package has a [plugin.json](./oce-google-workspace/plugin.json) at its root
 `ai.openclaw.oce` extension points to the release that OCE deploys.
 
 - [Google Workspace](./oce-google-workspace/ai.openclaw.oce/release.json) pins the ClawHub skill and Linux `gog` binaries.
-- [Slack](./oce-slack/mcp.json) is the first example of a managed MCP package. OCE discovers the account's available tools from [Slack MCP](https://docs.slack.dev/ai/slack-mcp-server/).
+- [Slack](./oce-slack/mcp.json) is the first example of a managed MCP package. It declares the hosted server for [Slack MCP](https://docs.slack.dev/ai/slack-mcp-server/).
 
-To bundle another managed MCP server, add its package to the marketplace index. Its `mcp.json` declares one Streamable HTTP server with a fixed HTTPS endpoint. Its [release](./oce-slack/ai.openclaw.oce/release.json) pins the descriptor hash and declares the credential slot, bearer placeholder, and MCP protocol versions. The controller and runtime images ship the reviewed package together. OCE discovers tools with the selected account. The operator selects tools in the Agent configuration, and OpenShell enforces those exact names at the declared endpoint. Newly discovered tools require selection and deployment before calls are allowed.
+To bundle another managed MCP server, add its package to the marketplace index. Its `mcp.json` declares one Streamable HTTP server with a fixed HTTPS endpoint. Its [release](./oce-slack/ai.openclaw.oce/release.json) pins the descriptor hash and declares the credential slot, bearer placeholder, and MCP protocol versions. The controller and runtime images ship the reviewed package together. The operator selects tools in the Agent configuration, and OpenShell enforces those exact names at the declared endpoint. Additional tools require selection and deployment before calls are allowed.
 
 The Plugin Driver registers each package by version. Publish changed release bytes under a new version so existing Agent selections continue to identify the reviewed release.
 
