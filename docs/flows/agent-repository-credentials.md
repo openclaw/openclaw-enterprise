@@ -400,7 +400,7 @@ denied before reaching the provider, and chat continues.
 
 ## Changelog
 
-- 2026-11-03 14:40: Clarify validation and recovery. (01a1a347-0985-76c2-8271-9a448c4224d5 - 54f83409c8ee37fcd54f00d09e57898021f7e812)
+- 2026-11-03 13:50: Clarify validation and recovery. (01a1a347-0985-76c2-8271-9a448c4224d5 - 54f83409c8ee37fcd54f00d09e57898021f7e812)
 
 - 2026-11-03 16:24: Document bound repository admission. (authoring-run/91f06442-80cf-47b7-9473-cc87a5256fc7 - 47a126079e6037a1ad1d27db1b514fde1cde345c)
 

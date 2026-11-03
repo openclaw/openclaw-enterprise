@@ -2755,7 +2755,7 @@ for (const collection of ["secrets", "configurations", "agents"]) {
     await page.getByRole("button", { name: "Create Agent" }).click();
     await page
       .getByRole("alert")
-      .filter({ hasText: /Outcome unknown/ })
+      .filter({ hasText: "We couldn't confirm whether your change was saved." })
       .waitFor();
     assert.ok(committed?.id);
     assert.equal((await fixture.request("GET", `${path}/${committed.id}`)).status, 200);

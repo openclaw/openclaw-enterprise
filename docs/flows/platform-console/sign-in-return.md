@@ -133,7 +133,7 @@ native-gateway integration.
 
 ## Changelog
 
-- 2026-11-03 14:40: Explain recovery from an untrusted sign-in origin. (01a1a347-0985-76c2-8271-9a448c4224d5 - 54f83409c8ee37fcd54f00d09e57898021f7e812)
+- 2026-11-03 13:50: Explain recovery from an untrusted sign-in origin. (01a1a347-0985-76c2-8271-9a448c4224d5 - 54f83409c8ee37fcd54f00d09e57898021f7e812)
 
 - 2026-10-26 18:00: A Secrets page link's Secret ID survives sign-in. (2645)
 

@@ -1715,7 +1715,9 @@ test("Create Agent's harness hint holds while Create is pending and drops the Co
       route.request().method() === "POST" ? route.abort("failed") : route.fallback(),
     );
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-    await page.getByText(/^Outcome unknown\./).waitFor();
+    await page
+      .getByText("We couldn't confirm whether your change was saved.", { exact: false })
+      .waitFor();
     assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
     assert.equal(await hint.textContent(), locked);
   });
