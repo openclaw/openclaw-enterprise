@@ -2089,7 +2089,13 @@ test("Agent creation recognizes its saved Configuration when JSON serializes neg
     name: "Viewing version",
     exact: true,
   });
-  await details.or(page.getByRole("alert").filter({ hasText: "Outcome unknown" })).waitFor();
+  await details
+    .or(
+      page
+        .getByRole("alert")
+        .filter({ hasText: "We couldn't confirm whether your change was saved." }),
+    )
+    .waitFor();
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   assert.equal(
     agentPostRequests(requests, namespace.id).length,
@@ -2657,7 +2663,10 @@ for (const swapped of ["Agent", "service principal"]) {
     const secret = await enterManualModel(page, "test-create-response-key");
     await page.getByRole("button", { name: "Create Agent" }).click();
     const warning = page.getByRole("alert").filter({
-      hasText: swapped === "Agent" ? "Outcome unknown" : "service principal could not be confirmed",
+      hasText:
+        swapped === "Agent"
+          ? "We couldn't confirm whether your change was saved."
+          : "service principal could not be confirmed",
     });
     // If creation incorrectly continues to Agent details, inspect the actual grant before failing.
     await warning
