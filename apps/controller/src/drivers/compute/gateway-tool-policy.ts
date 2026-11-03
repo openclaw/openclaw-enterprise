@@ -294,8 +294,11 @@ export function managedGatewayConfiguration(
   if (pluginGrants.length && (tools.alsoAllow === undefined || Array.isArray(tools.alsoAllow))) {
     // Native allow and alsoAllow are mutually exclusive. Extend the configured
     // form without changing the operator's deny list.
-    const grantKey = Array.isArray(tools.allow) && tools.allow.length > 0 ? "allow" : "alsoAllow";
-    tools[grantKey] = [...new Set([...(tools[grantKey] ?? []), ...pluginGrants])];
+    if (Array.isArray(tools.allow) && tools.allow.length > 0) {
+      tools.allow = [...new Set([...tools.allow, ...pluginGrants])];
+    } else {
+      tools.alsoAllow = [...new Set([...(tools.alsoAllow ?? []), ...pluginGrants])];
+    }
   }
   tools.gatewayPolicy = {
     allow,
