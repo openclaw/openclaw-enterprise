@@ -233,8 +233,8 @@ flowchart TB
 
 ### Delivery and required evidence
 
-Submit this amendment before changing the Driver contracts. An implementation
-plan must connect the contract, paired Drivers, reader, runtime adapter, Helm and
+Submit this amendment before changing the Driver contracts. The
+[implementation plan](../plans/0051-protected-public-github-git.md) must connect the contract, paired Drivers, reader, runtime adapter, Helm and
 profile inputs, current references and the existing public-read flow. Preserve
 the original plan's ordinary-reader qualification record.
 
