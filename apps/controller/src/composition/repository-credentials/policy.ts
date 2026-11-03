@@ -1,7 +1,4 @@
-import {
-  requireConfiguration,
-  type GitHubRepositoryCredentialBackendDefinition,
-} from "@openclaw-enterprise/contracts";
+import type { GitHubRepositoryCredentialBackendDefinition } from "@openclaw-enterprise/contracts";
 import { GitHubRepositoryPolicy } from "../../drivers/repo/github/policy.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
@@ -9,12 +6,12 @@ import {
 } from "../../drivers/repo/github/credentials/registry.ts";
 import { loadGitHubRepositoryRegistry } from "./registry.ts";
 
-export type RepositoryPolicyInput = {
+export type RepositoryPolicyInput<Configuration = Readonly<Record<string, unknown>>> = {
   readonly backend: GitHubRepositoryCredentialBackendDefinition;
   readonly selection: {
     readonly id: string;
     readonly implementation: string;
-    readonly configuration: Readonly<Record<string, unknown>>;
+    readonly configuration: Configuration;
   };
 };
 
@@ -32,11 +29,11 @@ export function repositoryPolicyOwner(input: RepositoryPolicyInput) {
   });
 }
 
-export async function loadRepositoryPolicy(input: RepositoryPolicyInput) {
+export async function loadRepositoryPolicy(
+  input: RepositoryPolicyInput<Readonly<{ sessionDurationSeconds: number }>>,
+) {
   const repositoryOwner = repositoryPolicyOwner(input);
-  const { sessionDurationSeconds } = requireConfiguration<{
-    readonly sessionDurationSeconds: number;
-  }>(GitHubRepositoryPolicy, input.selection.configuration);
+  const { sessionDurationSeconds } = input.selection.configuration;
   const registry = await loadGitHubRepositoryRegistry(
     input.backend.configuration.registryPath,
     input.backend.id,
