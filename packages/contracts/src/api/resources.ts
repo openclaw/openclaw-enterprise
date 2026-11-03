@@ -4,6 +4,7 @@ import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.
 
 import {
   AgentId,
+  AgentOperatorProfileGeneration,
   AgentProvisioningWorkId,
   PresetId,
   PresetTemplateSchema,
@@ -17,6 +18,7 @@ import {
   CredentialSourceSecrets,
   CredentialSourceType,
   GatewayManagedModeSchema,
+  GitHubTeamIdentityId,
   HarnessExecutionModeSchema,
   HarnessAuthBindingSchema,
   AgentCredentialSourcesSchema,
@@ -972,6 +974,34 @@ export const IAMRoleSchema = Type.Object(
     name: Type.Optional(Name),
     permissions: Type.Array(IAMPermissionSchema, { minItems: 1, maxItems: 64 }),
   },
+  { additionalProperties: false },
+);
+
+const NamespaceAgentOperatorProfileSchema = Type.Union([
+  Type.Object(
+    { namespaceId: NamespaceId, status: Type.Literal("off"), generation: Type.Null() },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      namespaceId: NamespaceId,
+      status: Type.Union([Type.Literal("staged"), Type.Literal("withdrawn")]),
+      generation: AgentOperatorProfileGeneration,
+      team: Type.Object(
+        {
+          providerId: Type.String({ pattern: "^github:[0-9a-f]{64}$" }),
+          organizationId: GitHubTeamIdentityId,
+          teamId: GitHubTeamIdentityId,
+        },
+        { additionalProperties: false },
+      ),
+    },
+    { additionalProperties: false },
+  ),
+]);
+
+export const NamespaceAgentOperatorProfileResponse = Type.Object(
+  { data: NamespaceAgentOperatorProfileSchema, meta: Meta },
   { additionalProperties: false },
 );
 

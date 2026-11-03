@@ -1,11 +1,21 @@
 import type {
   AccessBinding,
+  NamespaceAgentOperatorProfile,
   ResourceKind,
   ResourceRef,
   Role,
   ServicePrincipal,
+  StageNamespaceAgentOperatorProfileBody,
 } from "@openclaw-enterprise/contracts";
-import type { ResourceHandlers } from "./types.ts";
+import type { RequestContext, ResourceHandlers } from "./types.ts";
+
+function policyActor(context: RequestContext) {
+  return { id: context.actorId, issuer: context.issuer, subject: context.subject };
+}
+
+function profileAuditDetails(profile: Readonly<NamespaceAgentOperatorProfile>) {
+  return { generation: profile.generation, status: profile.status, team: profile.team };
+}
 
 // Audit details name what a policy mutation granted or removed, by identifier.
 function roleAuditDetails(role: Readonly<Role>): Record<string, unknown> {
@@ -56,6 +66,73 @@ function clientIAMServicePrincipal(
 }
 
 export const iamHandlers = {
+  async getNamespaceAgentOperatorProfile({ controller, context, request, reply, namespaceId }) {
+    const profile = await controller.getNamespaceAgentOperatorProfile(
+      policyActor(context),
+      namespaceId,
+    );
+    reply.header("cache-control", "no-store");
+    reply.send({
+      data: profile ?? { namespaceId, status: "off", generation: null },
+      meta: { requestId: request.id },
+    });
+  },
+  async stageNamespaceAgentOperatorProfile({
+    controller,
+    context,
+    request,
+    reply,
+    body,
+    namespaceId,
+    configuredGithubProviderId,
+    mutationEvent,
+    transactIAM,
+  }) {
+    const profile = await transactIAM(async (unit) => {
+      const staged = await controller.stageNamespaceAgentOperatorProfile(
+        policyActor(context),
+        namespaceId,
+        body as StageNamespaceAgentOperatorProfileBody,
+        configuredGithubProviderId,
+      );
+      await unit.audit.append(
+        mutationEvent(
+          { kind: "namespace", id: namespaceId, namespaceId },
+          profileAuditDetails(staged),
+        ),
+      );
+      return staged;
+    });
+    reply.header("cache-control", "no-store");
+    reply.send({ data: profile, meta: { requestId: request.id } });
+  },
+  async withdrawNamespaceAgentOperatorProfile({
+    controller,
+    context,
+    request,
+    reply,
+    body,
+    namespaceId,
+    mutationEvent,
+    transactIAM,
+  }) {
+    const profile = await transactIAM(async (unit) => {
+      const withdrawn = await controller.withdrawNamespaceAgentOperatorProfile(
+        policyActor(context),
+        namespaceId,
+        body?.expectedGeneration as string,
+      );
+      await unit.audit.append(
+        mutationEvent(
+          { kind: "namespace", id: namespaceId, namespaceId },
+          profileAuditDetails(withdrawn),
+        ),
+      );
+      return withdrawn;
+    });
+    reply.header("cache-control", "no-store");
+    reply.send({ data: profile, meta: { requestId: request.id } });
+  },
   async listIAMRoles({ controller, context, request, reply, namespaceId }) {
     const roles = await controller.listIAMRoles(context.actorId, namespaceId);
     reply.send({ data: roles.map(clientIAMRole), meta: { requestId: request.id } });

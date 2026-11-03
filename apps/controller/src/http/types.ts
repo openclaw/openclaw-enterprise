@@ -29,6 +29,7 @@ export type ResourceHandler = (input: {
   readonly params: Record<string, string>;
   readonly body: Record<string, unknown> | undefined;
   readonly namespaceId: string;
+  readonly configuredGithubProviderId: string | undefined;
   // Whether the caller may take `action` on `resource` now. Nothing is audited: advisory answers
   // only, which the operation's own authorization still decides.
   readonly callerMay: (action: PermissionAction, resource: ResourceRef) => Promise<boolean>;

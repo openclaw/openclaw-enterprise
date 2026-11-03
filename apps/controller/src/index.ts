@@ -53,6 +53,7 @@ import {
 import {
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
+  CallerStateDeniedError,
   DeletionRetryOwnedError,
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   ComputeProvisioningRefusedError,
@@ -748,18 +749,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     ];
   }
 
-  if (
-    operation.operationId === "listIAMRoles" ||
-    operation.operationId === "createIAMRole" ||
-    operation.operationId === "getIAMRole" ||
-    operation.operationId === "deleteIAMRole" ||
-    operation.operationId === "listIAMAccessBindings" ||
-    operation.operationId === "getIAMAccessBinding" ||
-    operation.operationId === "deleteIAMAccessBinding" ||
-    operation.operationId === "listIAMServicePrincipals" ||
-    operation.operationId === "createIAMServicePrincipal" ||
-    operation.operationId === "getIAMServicePrincipal"
-  ) {
+  if (operation.authorizationTarget === "namespace_iam") {
     return [
       { action: "administer", resourceKind: "installation", scope: "requested" },
       { action: "read", resourceKind: "namespace", scope: "requested" },
@@ -2055,6 +2045,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     };
     contexts.set(request, context);
     if (
+      "humanSessionOnly" in operation &&
+      operation.humanSessionOnly &&
+      admitted.method !== "session"
+    ) {
+      throw new CallerStateDeniedError("A current human session is required for this operation.");
+    }
+    if (
       admitted.method === "api_key" &&
       admitted.admittedScope.namespaceId !== undefined &&
       admitted.admittedScope.namespaceId !== (request.params as Record<string, unknown>).namespaceId
@@ -2545,6 +2542,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params,
         body,
         namespaceId,
+        configuredGithubProviderId: options.auth.githubProviderId,
         callerMay: (action, resource) => callerMay(context.actorId, action, resource),
         transactIAM: async (work) => {
           const admitted = admissions.get(request);
@@ -4403,6 +4401,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     });
     for (const operation of occApiRoutes) {
       const permissions = requiredPermissions(operation);
+      const humanSessionOnly =
+        operation.operationId === "bootstrapInstallation" ||
+        ("humanSessionOnly" in operation && operation.humanSessionOnly);
       const schema: DocumentedFastifySchema = {
         ...operation.schema,
         operationId: operation.operationId,
@@ -4410,9 +4411,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         description: permissionDescription(permissions, operation),
         tags: [...operation.tags],
         "x-openclaw-permissions": permissions,
-        ...(operation.operationId === "bootstrapInstallation"
-          ? { security: [{ sessionCookie: [] }] }
-          : {}),
+        ...(humanSessionOnly ? { security: [{ sessionCookie: [] }] } : {}),
       } as DocumentedFastifySchema;
       routes.route({
         method: operation.method as HTTPMethods,

@@ -42,6 +42,29 @@ current identity, scope, grant, or a Restriction did not permit the operation.
 Have an administrator check the exact resource and action; access to a Namespace
 does not give access to every resource in it.
 
+## Stage an Agent Operator team
+
+A human administrator can record the team intended to manage all Agents in a
+ready Namespace. A staged assignment grants no access. It records the selected
+GitHub sign-in provider instance and exact organization and team IDs. Granting
+access requires a separate membership verifier and IAM policy.
+
+Use a [human administrator session](../../reference/authentication/service-api-keys.md#sign-in-as-a-human-administrator)
+with Installation `administer` and exact Namespace `read`. Send requests to
+`/namespaces/:namespaceId/iam/agent-operator`.
+
+| Request               | What to send                                                                                                                           | Result                                                                                                                            |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`                 | The exact Namespace ID in the path.                                                                                                    | Returns `off` with a null generation before the first assignment, or the team, generation, and status of the existing assignment. |
+| `PUT`                 | `organizationId` and `teamId` as decimal strings, `acknowledgeAllAgents: true`, and the generation from `GET` in `expectedGeneration`. | Stages the team when the profile is off or withdrawn. OCC selects the configured GitHub provider.                                 |
+| `POST` to `/withdraw` | `expectedGeneration` from the staged profile.                                                                                          | Marks the assignment `withdrawn` and returns its new generation. Any supported human sign-in method can inspect and withdraw.     |
+
+Read the current profile after a `409` before deciding whether to send a new
+request. To replace a staged team, withdraw it and use the returned generation
+to stage the new one. An administrator can inspect the retained team after
+withdrawal. Staging a ready Namespace without a configured GitHub sign-in
+provider returns `503`.
+
 ## Add a person
 
 A new account starts with no access. As a human Installation administrator:

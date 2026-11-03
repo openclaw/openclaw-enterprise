@@ -22,6 +22,8 @@ import {
   type IdentityLookup,
   type JSONSchema,
   type ManagedIAMResourceKind,
+  type NamespaceAgentOperatorProfile,
+  type NamespaceAgentOperatorProfileChange,
   type Permission,
   type PermissionAction,
   type Principal,
@@ -1188,6 +1190,62 @@ export class NativeIAMDriver implements IAMDriver {
       return false;
     }
     return identityAccessCovered(request, policy);
+  }
+
+  async getNamespaceAgentOperatorProfile(
+    context: IAMPolicyReadContext,
+    namespaceId: string,
+  ): Promise<Readonly<NamespaceAgentOperatorProfile> | undefined> {
+    const repository = this.policyRepository(context, ["getAgentOperatorProfile"]);
+    this.assertNamespace(namespaceId);
+    return repository.getAgentOperatorProfile(namespaceId);
+  }
+
+  async changeNamespaceAgentOperatorProfile(
+    context: IAMPolicyManagementContext,
+    namespaceId: string,
+    change: NamespaceAgentOperatorProfileChange,
+  ): Promise<Readonly<NamespaceAgentOperatorProfile> | undefined> {
+    const repository = this.policyRepository(context, [
+      "getAgentOperatorProfile",
+      "saveAgentOperatorProfile",
+    ]);
+    this.assertNamespace(namespaceId);
+    const current = await repository.getAgentOperatorProfile(namespaceId);
+    if ((current?.generation ?? null) !== change.expectedGeneration) {
+      return undefined;
+    }
+
+    let profile: Readonly<NamespaceAgentOperatorProfile>;
+    if (change.action === "stage") {
+      const { providerId, organizationId, teamId } = change.team;
+      assertCondition(
+        change.acknowledgeAllAgents === true &&
+          typeof providerId === "string" &&
+          /^github:[0-9a-f]{64}$/.test(providerId) &&
+          typeof organizationId === "string" &&
+          /^[1-9][0-9]{0,19}$/.test(organizationId) &&
+          typeof teamId === "string" &&
+          /^[1-9][0-9]{0,19}$/.test(teamId),
+        "Staging Agent Operator requires an exact GitHub team and acknowledgement of all Agents.",
+      );
+      if (current?.status === "staged") {
+        return undefined;
+      }
+      profile = Object.freeze({
+        namespaceId,
+        generation: randomUUID(),
+        status: "staged",
+        team: Object.freeze({ providerId, organizationId, teamId }),
+      });
+    } else if (change.action === "withdraw" && current?.status === "staged") {
+      profile = Object.freeze({ ...current, generation: randomUUID(), status: "withdrawn" });
+    } else {
+      return undefined;
+    }
+    return (await repository.saveAgentOperatorProfile(profile, change.expectedGeneration))
+      ? profile
+      : undefined;
   }
 
   async listNamespaceRoles(

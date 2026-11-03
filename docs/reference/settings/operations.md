@@ -82,10 +82,10 @@ has 46 through `0046_model_probe_failure_cause`;
 `0047_provisioning_configuration_release`; `preCodexPatSources` has 48 through
 `0048_administrator_credential_source_grants`; `preAgentCredentialSources` has 49
 through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
-through `0050_agent_credential_sources`; later `pre*` shapes add one each, through
-`preCredentialProxy` (59) and `prePreparedAttemptSettlement` (62, through
-`0062_credential_delivery_custody`). After `0063_prepared_attempt_settlement`,
-63 receipts mean `preGatewayManagedMode`; `0064_gateway_managed_mode` is pending.
+through `0050_agent_credential_sources`. Later prefixes include
+`preCredentialProxy` (59), `prePreparedAttemptSettlement` (62),
+`preGatewayManagedMode` (63), `preSelectedRepositorySet` (64), and
+`preNamespaceAgentOperatorProfiles` (65).
 Rerun `--check` after migration and require `completed` from the same release.
 The [canonical manifest](../../../migrations/meta/_canonical-history.json) records
 accepted source and catalog hashes. Never delete or relabel unsupported preview

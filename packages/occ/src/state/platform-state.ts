@@ -50,6 +50,7 @@ import type {
   Identity,
   Installation,
   Namespace,
+  NamespaceAgentOperatorProfile,
   NamespaceStatus,
   PluginDesiredState,
   PluginApprovers,
@@ -1114,6 +1115,7 @@ interface PlatformSnapshot {
   readonly workspaceSetups: Map<string, Readonly<WorkspaceSetup>>;
   readonly revisions: Map<string, readonly Readonly<AgentRevision>[]>;
   readonly roles: Map<string, Readonly<Role>>;
+  readonly agentOperatorProfiles: Map<string, Readonly<NamespaceAgentOperatorProfile>>;
   readonly bindings: Map<string, Readonly<AccessBinding>>;
   readonly servicePrincipals: Map<string, Readonly<ServicePrincipal>>;
   readonly repositoryStandingExecutions: Map<
@@ -1252,6 +1254,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     // A separate Map isolates this snapshot's future appends without copying history.
     revisions: new Map(snapshot.revisions),
     roles: new Map(Array.from(snapshot.roles, ([key, role]) => [key, storedCopy(role)])),
+    agentOperatorProfiles: new Map(snapshot.agentOperatorProfiles),
     bindings: new Map(
       Array.from(snapshot.bindings, ([key, binding]) => [key, storedCopy(binding)]),
     ),
@@ -3327,6 +3330,15 @@ function repositories(
   };
 
   const iamPolicy: IAMPolicyRepository = {
+    getAgentOperatorProfile: async (namespaceId) => snapshot.agentOperatorProfiles.get(namespaceId),
+    saveAgentOperatorProfile: async (profile, expectedGeneration) => {
+      const current = snapshot.agentOperatorProfiles.get(profile.namespaceId);
+      if ((current?.generation ?? null) !== expectedGeneration) {
+        return false;
+      }
+      snapshot.agentOperatorProfiles.set(profile.namespaceId, immutableCopy(profile));
+      return true;
+    },
     listRoles: async (namespaceId) =>
       Object.freeze(
         Array.from(snapshot.roles.values())
@@ -3834,6 +3846,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     workspaceSetups: new Map(),
     revisions: new Map(),
     roles: new Map(),
+    agentOperatorProfiles: new Map(),
     bindings: new Map(),
     servicePrincipals: new Map(),
     repositoryStandingExecutions: new Map(),

@@ -132,6 +132,8 @@ export function bindPlatformUnitOfWork(
       "createRevision",
     ]),
     iamPolicy: bindRepository(repositories.iamPolicy, lifetime, [
+      "getAgentOperatorProfile",
+      "saveAgentOperatorProfile",
       "listRoles",
       "getRole",
       "createRole",

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: 2026-10-15
-last_updated_session: "authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851"
+updated: "2026-11-03"
+last_updated_session: "authoring-run/246c37a9-436f-40a8-9dec-11037acf0603"
 ---
 
 # Namespace IAM Policy Flow
@@ -10,14 +10,16 @@ last_updated_session: "authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851"
 
 Namespace IAM policy management begins when an authenticated caller uses the OCC
 API or CLI to list, create, read, or delete a Namespace Role or exact
-AccessBinding, or to list, create, or read a Namespace ServicePrincipal. OCC authorizes the administrator, validates that the policy entry
+AccessBinding, or to list, create, or read a Namespace ServicePrincipal. A human
+administrator can also inspect, stage, or withdraw the Agent Operator team
+assignment for one Namespace. OCC authorizes the administrator, validates that the policy entry
 belongs to the requested Namespace, and delegates the policy mutation to the
 selected IAM Driver. The flow stops after the policy and audit event commit
 together in the platform state transaction.
 
 ## Entry Points
 
-- Trigger: `GET`, `POST`, or `DELETE` under `/namespaces/:namespaceId/iam/*`
+- Trigger: `GET`, `PUT`, `POST`, or `DELETE` under `/namespaces/:namespaceId/iam/*`
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`
 - Source: `apps/controller/src/index.ts:requiredPermissions`
 - Source: `apps/controller/src/http/iam.ts:iamHandlers`
@@ -32,11 +34,12 @@ graph TD
   A["Caller invokes Namespace IAM route"] --> B["OCC admits identity and required permissions"]
   B --> C{"Read or mutation?"}
   C -->|read| D["Controller asks selected IAM Driver to read Namespace policy"]
-  C -->|create/delete| S{"Human-session caller?"}
+  C -->|mutation| S{"Human-session caller?"}
   S -->|yes| L{"Assigning session current?"}
-  L -->|yes, held through transaction| E["Controller validates Role, subject, and exact target"]
-  L -->|revoked or expired| X["Roll back and deny"]
-  S -->|no| E
+  L -->|yes, held through transaction| E["Controller checks the exact target and policy change"]
+  L -->|revoked or expired| X["Deny before policy commits"]
+  S -->|no, Agent Operator| X
+  S -->|no, other policy routes| E
   E --> T{"IAM Driver joins transaction?"}
   T -->|yes| F["Selected IAM Driver mutates platform IAM policy"]
   T -->|no| U["Reject with 503 before policy write"]
@@ -93,6 +96,14 @@ fixed to the Namespace, holds no grant until an AccessBinding names it, and is
 listed only in that Namespace. No route deletes it yet; the [service key flow](service-api-keys.md)
 issues and revokes its keys.
 
+The Agent Operator routes accept only a current human session.
+`packages/occ/src/index.ts:stageNamespaceAgentOperatorProfile` holds the exact
+Namespace and checks that it is ready. The HTTP handler supplies the configured
+GitHub sign-in provider instance. The caller supplies the organization and team
+IDs, confirms that the scope includes all Agents, and sends the generation from
+the profile read. Inspect and withdraw work independently of GitHub provider
+availability. Writes audit the Namespace, team, resulting status, and generation.
+
 ### 3. OCC validates policy ownership
 
 `packages/occ/src/index.ts:createIAMAccessBinding`
@@ -127,6 +138,14 @@ maps to `400 INVALID_REQUEST` with the offending field as the detail path.
 Referenced Role deletion raises `IAMRoleInUseError` (`409 RESOURCE_CONFLICT`).
 Existing human Principals can receive bindings without a Namespace service
 identity. ServicePrincipal subjects must belong to that exact Namespace.
+
+`packages/iam/src/index.ts:NativeIAMDriver.changeNamespaceAgentOperatorProfile`
+compares the expected generation and current status before changing the
+assignment. Staging requires an absent or withdrawn profile. Withdrawal keeps
+the record and changes its generation, so a request from before withdrawal
+cannot restore it. PostgreSQL stores one record per Namespace ID and commits it
+with the mutation audit. The evaluator reads its existing policy collections
+and does not use the staged assignment to grant permissions.
 
 When the selected native Driver reloads policy during a PostgreSQL State callback,
 `PostgresPlatformState.loadNativeIAMState` reads through that State instance's
@@ -200,6 +219,10 @@ selected account, session, and policy writers join the same protocol.
   responses expose `servicePrincipalId` without accepting caller-supplied values.
 - `node --test tests/integration/postgres-namespace-iam-policy.test.mjs` checks
   PostgreSQL persistence, audit atomicity, and deletion behavior with real state.
+- `node --test tests/integration/postgres-namespace-agent-operator.test.ts`
+  checks staging and withdrawal through the production HTTP routes with the
+  restricted PostgreSQL role. It covers stale generations, session expiry
+  during a write, and draft creation denials for two attached accounts.
 - `node --test tests/conformance/postgres-transaction-unknown-commit.test.mjs`
   checks that an unknown commit does not wait for a later rollback query.
 - The production bootstrap Sharing case in
@@ -230,6 +253,7 @@ selected account, session, and policy writers join the same protocol.
 
 ## Changelog
 
+- 2026-11-03 22:39: Document the human administrator's conditional Agent Operator profile staging and withdrawal. (authoring-run/246c37a9-436f-40a8-9dec-11037acf0603 - 5dd837eb2b4452f69230e3f80e637592459e362f)
 - 2026-10-15 13:28: Retain assigning sessions through policy COMMIT, require transactional IAM writes, and preserve caller limits with shared guarded-session holds. (authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851 - a302a3e2061575b64dcc37e212c55075d5c74b9a)
 - 2026-10-14 11:00: Read, validate and index native policy once per State unit of work instead of once per decision. (fix-1322)
 - 2026-10-01 20:30: Refuse AccessBindings whose Role cannot apply to the target. (fix-d93-d100)

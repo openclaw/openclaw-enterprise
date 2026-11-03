@@ -2272,6 +2272,38 @@ export const credentialDeliveryReductions = occSchema.table(
   ],
 );
 
+export const namespaceAgentOperatorProfiles = occSchema.table(
+  "namespace_agent_operator_profiles",
+  {
+    namespaceId: text("namespace_id")
+      .primaryKey()
+      .references(() => namespaces.id, { onUpdate: "restrict", onDelete: "restrict" }),
+    generation: uuid("generation").notNull(),
+    status: text("status").notNull(),
+    providerId: text("provider_id").notNull(),
+    organizationId: text("organization_id").notNull(),
+    teamId: text("team_id").notNull(),
+  },
+  (table) => [
+    check(
+      "namespace_agent_operator_profiles_status_check",
+      sql`${table.status} IN ('staged', 'withdrawn')`,
+    ),
+    check(
+      "namespace_agent_operator_profiles_provider_id_check",
+      sql`${table.providerId} ~ '^github:[0-9a-f]{64}$'`,
+    ),
+    check(
+      "namespace_agent_operator_profiles_organization_id_check",
+      sql`${table.organizationId} ~ '^[1-9][0-9]{0,19}$'`,
+    ),
+    check(
+      "namespace_agent_operator_profiles_team_id_check",
+      sql`${table.teamId} ~ '^[1-9][0-9]{0,19}$'`,
+    ),
+  ],
+);
+
 export const sandboxPolicies = occSchema.table(
   "sandbox_policies",
   {

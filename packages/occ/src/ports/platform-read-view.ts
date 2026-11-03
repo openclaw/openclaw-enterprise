@@ -67,6 +67,7 @@ export function createPlatformReadView(
       "pageRevisionSummaries",
     ]),
     iamPolicy: bindRepository(repositories.iamPolicy, lifetime, [
+      "getAgentOperatorProfile",
       "listRoles",
       "getRole",
       "listAccessBindings",
