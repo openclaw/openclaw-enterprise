@@ -582,9 +582,7 @@ for (const pending of [
   });
 }
 
-// A plugin save keeps its editor locked until the tab rebuilds. After Delete there is no tab to
-// rebuild, so the settled save held ← Agents, the sidebar and a reload for good (finding 2125).
-test("a plugin save that settles after Delete lets the page go", async (t) => {
+test("a pending plugin save blocks navigation to the deletion controls", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const driver = new CodexPluginDriver();
@@ -595,7 +593,7 @@ test("a plugin save that settles after Delete lets the page go", async (t) => {
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
   await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
-  // The controller applies the save; its answer waits until after Delete.
+  // Hold the response while the reader tries to leave Plugins for Configuration.
   const held = await holdRequests(t, page, `**/namespaces/${namespace.id}/agents/${agent.id}`, {
     method: "PATCH",
     once: true,
@@ -608,25 +606,12 @@ test("a plugin save that settles after Delete lets the page go", async (t) => {
   await page.getByRole("button", { name: "Save plugin selections" }).click();
   await held.requested;
 
-  await page.getByRole("button", { name: "Delete Agent" }).click();
-  await page
-    .getByRole("dialog", { name: "Delete Plugin Delete Agent?" })
-    .getByRole("button", { name: "Permanently delete Agent" })
-    .click();
-  await page.getByRole("status").getByText("Deletion was requested").waitFor();
-  const reason = page.getByText(
-    "Wait for plugin selections to finish saving before leaving this tab.",
-    { exact: true },
-  );
-  await page.getByRole("link", { name: "← Agents" }).click();
-  await reason.waitFor();
-  assert.equal(await asksBeforeUnload(page), true);
-
+  const configuration = page.getByRole("tab", { name: "Configuration", exact: true });
+  assert.equal(await configuration.isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Delete Agent" }).count(), 0);
   held.release();
-  await reason.waitFor({ state: "detached" });
-  assert.equal(await asksBeforeUnload(page), false);
-  await page.getByRole("link", { name: "← Agents" }).click();
-  await heading(page, "Agents").waitFor();
+  await configuration.click();
+  await page.getByRole("button", { name: "Delete Agent", exact: true }).waitFor();
 });
 
 test("Back during a Configuration save preserves the previous Agent tab", async (t) => {

@@ -106,6 +106,18 @@ export const CredentialsSlackLeftoverGrantMissing = {
   ...story("credentialsSlackLeftoverGrantMissing"),
   name: "Slack key left bound without an Agent grant",
 };
+export const CredentialsSlackOffGrantMissing = {
+  ...story("credentialsSlackOffGrantMissing"),
+  name: "Slack off with a bound Secret without an Agent grant",
+};
+export const CredentialsSlackOffRetryUnconfirmed = {
+  ...story("credentialsSlackOffRetryUnconfirmed"),
+  name: "Slack off Retry with an unconfirmed grant",
+};
+export const CredentialsSlackOffRetryAnswerLost = {
+  ...story("credentialsSlackOffRetryAnswerLost"),
+  name: "Slack off Retry whose answer is lost",
+};
 export const CredentialsSlackGrantReadPending = {
   ...story("credentialsSlackGrantReadPending"),
   name: "Slack grant read in progress",
@@ -178,3 +190,9 @@ export const CredentialsSavedRetryReadDenied = {
 };
 
 export const AuthOAuthStartNavigation = story("authOAuthStartNavigation");
+
+export const AuthOAuthStartTabSwitch = story("authOAuthStartTabSwitch");
+
+export const AuthOAuthStartTabSwitchRefused = story("authOAuthStartTabSwitchRefused");
+
+export const AuthOAuthRestartTabSwitch = story("authOAuthRestartTabSwitch");

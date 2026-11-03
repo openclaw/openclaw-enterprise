@@ -141,6 +141,14 @@ and Agent state stay unchanged.
   stop cleanly, and the restarted container cannot verify that the lock holder
   stopped. The log line quotes OpenClaw's holder description. Follow
   [unverifiable state owner recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
+- A `gateway` `gateway-config` check with code `UNAVAILABLE` is a Kubernetes
+  Gateway that exited before it served, and `openclaw config validate` reports
+  its configuration invalid. A plugin entry whose `config` fails the plugin's
+  schema causes this even when the plugin is disabled or denied. The log line
+  names up to five setting paths, with the schema message where OpenClaw gives
+  one, and never a value. Fix or remove those settings, then deploy again.
+  A dedicated Gateway's tool policy step holds the same check before OpenClaw
+  starts when no invalid setting belongs to the tool policy.
 - A dedicated Codex model check cause whose detail ends `-attempt2`, such as
   `turn-failed-attempt2`, means the check was retried once, after a timeout, a
   transient failure or a network or 5xx exit, and the second attempt failed that
@@ -182,6 +190,10 @@ and Agent state stay unchanged.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31 15:00: Hold a dedicated Gateway's invalid settings outside its tool policy as check `gateway-config` instead of `gateway-tool-policy`. (fix-3045, finding 3045)
+
+- 2026-10-31 13:00: Hold a Kubernetes Gateway whose configuration OpenClaw refuses at startup as check `gateway-config`. (fix-3043b, finding 3043)
 
 - 2026-10-29 15:00: Hold a dedicated Gateway's unverifiable Gateway state lock as check `gateway-state-lock` instead of `gateway-tool-policy`. (fix-2864, finding 2864)
 

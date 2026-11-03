@@ -84,8 +84,16 @@ async function fixture(t: TestContext) {
     ],
   });
   const client = new UnixRepositoryCredentialControlClient({ controlSocket: socket });
-  const backend = { id: registry.backendId, drivers: { repo: "repository-credentials" }, client };
-  const policy = new GitHubRepositoryPolicy(backend, registry, { sessionDurationSeconds: 600 });
+  const backend = {
+    id: "repository-provider",
+    drivers: { repo: "repository-credentials" },
+    client,
+  };
+  const policy = new GitHubRepositoryPolicy(
+    { driverId: backend.drivers.repo, backendId: backend.id },
+    registry,
+    { sessionDurationSeconds: 600 },
+  );
   const binding = policy.resolve({
     namespaceId,
     bindings: [{ repositoryRef: "project", profile: "git-write" }],

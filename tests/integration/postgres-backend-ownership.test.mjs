@@ -8,6 +8,7 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { jsonRequestInit } from "../helpers/inject-json.mjs";
 import {
   alternateWorkspaceId,
   createAccessTokenServiceAccount,
@@ -28,18 +29,14 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.mjs";
 import { claimIsolatedWork } from "../helpers/postgres-work-claim.mjs";
 import {
+  EMBEDDED_API_KEY_REQUIRED,
   SERVICE_ACCOUNT_BACKEND_MISMATCH,
   SERVICE_ACCOUNT_NO_BACKEND_BINDING,
 } from "../helpers/refusal-text.mjs";
 
 async function request(origin, session, method, path, body) {
   const response = await fetch(`${origin}${path}`, {
-    method,
-    headers: {
-      ...authenticatedHeaders(session),
-      ...(body === undefined ? {} : { "content-type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    ...jsonRequestInit(method, body, authenticatedHeaders(session)),
     signal: AbortSignal.timeout(5_000),
   });
   return { response, payload: await response.json() };
@@ -355,7 +352,7 @@ test(
           { namespaceId: exactNamespace.id, agentId: embedded.id },
           resolveApprovedHarness,
         ),
-      /^Agent setting harnessAuth\.method must be api_key for embedded OpenClaw on Kubernetes Compute/,
+      EMBEDDED_API_KEY_REQUIRED,
       "ConfigurationHarnessError",
     );
     await assertNoRevision(

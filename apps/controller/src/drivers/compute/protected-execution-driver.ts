@@ -116,7 +116,11 @@ export class ProtectedExecutionDriver {
     sign: (startupId: string, installed: EgressInstallation) => Readonly<Record<string, unknown>>,
   ): Promise<boolean | "held"> {
     const preview = context.plan.repositoryGitAuthorization === "request-hook-observed";
-    const launch = preview ? await harness() : undefined;
+    const observeHeld =
+      preview ||
+      (context.plan.repositoryGitAuthorization === "online-request" &&
+        !!this.sandbox.observeHeldRepositoryGitPreview);
+    const launch = observeHeld ? await harness() : undefined;
     const stage = launch && (await this.sandbox.observeHeldRepositoryGitPreview?.(launch));
     if (preview && !stage) {
       return false;

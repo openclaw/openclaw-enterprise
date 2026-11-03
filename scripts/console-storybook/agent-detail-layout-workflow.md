@@ -71,3 +71,18 @@ simulated API state; they do not prove persistence or live runtime behavior.
 
 These two previews require an owner build and walkthrough. Fixture permission
 answers are not IAM enforcement; saved feedback is not backend persistence proof.
+
+Open **Pages / Agent detail / Danger zone on Configuration** on desktop and phone.
+Switch from Workspace files to Configuration to see stop status and deletion controls.
+Switch back to verify the entire card disappears.
+
+11. Open **Components / Stop Agent / First Deployment Failed**. The Agent has no
+    selected version and its latest readable deployment failed. Check that **Stop
+    Agent** remains enabled: a newer queued deployment can be unreadable. Open the
+    confirmation, then Cancel. Check **Denied** still offers no Stop control.
+    These stories do not prove revision filtering or Stop authorization; the mixed-history
+    browser regression exercises those through the Controller and Native IAM.
+    Confirm Stop: its result replaces the action description, without repeating it.
+    In **First deployment queued**, confirm Stop and check **Deployment cancellation
+    requested**, not a claim that cleanup finished. The lifecycle browser regression
+    covers another actor deploying and stopping later; that read must remove the old result.

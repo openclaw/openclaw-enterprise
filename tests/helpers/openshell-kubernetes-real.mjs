@@ -1,3 +1,4 @@
+import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -39,8 +40,8 @@ function safeKubectlFailure(error, signal) {
 
 // The pinned Kubernetes driver, not policy.process, owns workload identity.
 // This k3d fixture leaves sandbox_uid/gid and OpenShift namespace ranges unset:
-// NVIDIA/OpenShell bdb956f2cd65a635f1294fccf1d138d263bf650f
-// crates/openshell-driver-kubernetes/src/config.rs:335,569-602.
+// NVIDIA/OpenShell ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47
+// crates/openshell-driver-kubernetes/src/config.rs:425-455,731-758.
 export const OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY = Object.freeze({ uid: 10001, gid: 10001 });
 
 // Compute's dedicated Codex Harness categories: the workspace, generated images, and Codex
@@ -408,8 +409,8 @@ export async function assertExposedCodexInitializes(serviceUrl, appServerToken, 
 // Model egress comes only from the credential source's profile, bound to native Codex.
 // Match either architecture of the pinned image, independent of the test runner's host.
 const openshellCodexBinaries = Object.freeze([
-  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
-  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
 ]);
 
 export function createOpenShellInstallationConfiguration({
@@ -614,7 +615,7 @@ function openShellGatewayServiceName(namespace) {
   return `openshell-${openshellHash(namespace, 10)}`;
 }
 
-// OpenShell v0.1.5 runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
+// OpenShell v0.1.6 runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
 // the gateway back. Mirrors internal/occdev/kubernetes.go and OpenShell sandbox_runtime.rs labels.
 export const openShellSupervisorLabels = Object.freeze({
   "openshell.ai/managed-by": "openshell",
@@ -738,7 +739,7 @@ export function createOpenShellKubernetesFixture({
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
-  openShellChartVersion = "0.1.5",
+  openShellChartVersion = "0.1.6",
   commandTimeoutMs,
   signal,
 }) {
@@ -1029,7 +1030,7 @@ export function createOpenShellKubernetesFixture({
       "--set=server.drivers.kubernetes.allowDriverConfig=true",
       // The gateway rejects every Sandbox template label it does not allow; Harness
       // Pods carry the OCE selector labels that NetworkPolicies and Services match.
-      '--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]',
+      `--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=${JSON.stringify(OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST)}`,
       "--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
       "--set-string=server.drivers.kubernetes.workspaceMode=operator",
       "--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
@@ -1354,7 +1355,7 @@ export function createOpenShellKubernetesFixture({
     assert.deepEqual(
       [...initCapabilities],
       [],
-      "OpenShell v0.1.5 must not add capabilities to workload Pod init containers.",
+      "OpenShell v0.1.6 must not add capabilities to workload Pod init containers.",
     );
     const networkSidecar = pod.spec.containers.find(({ name }) =>
       ["openshell-network", "openshell-supervisor-network"].includes(name),
@@ -1362,7 +1363,7 @@ export function createOpenShellKubernetesFixture({
     assert.equal(
       networkSidecar,
       undefined,
-      "OpenShell v0.1.5 must keep its network supervisor outside the workload Pod.",
+      "OpenShell v0.1.6 must keep its network supervisor outside the workload Pod.",
     );
     const container = pod.spec.containers.find(({ name }) => name === "agent");
     assert.ok(container, "the provider-owned Pod must contain its Agent container.");
@@ -1439,6 +1440,9 @@ export function createOpenShellKubernetesFixture({
       let nextId = 1;
       let assistant = "";
       let finished = false;
+      let phase = "connect";
+      let receivedMessages = 0;
+      let completedCommands = 0;
       let failedCommands = 0;
       let approvalRequests = 0;
       // Whether the turn began anything that can act: a command, file change, tool call or
@@ -1499,6 +1503,9 @@ export function createOpenShellKubernetesFixture({
             : (error?.stack || String(error)));
         process.stderr.write("\nNative execution summary: " + JSON.stringify({
           failedCommands, approvalRequests, sandboxSignals: [...sandboxSignals],
+          // These method names come only from this client, never server payloads or prompts.
+          phase, pendingRequests: [...pending.values()].map(({ method }) => method),
+          receivedMessages, completedCommands, actionSeen,
           commandGraceMs: ${codexCommandGraceMs},
           sinceTurnEndMs: turnCompletedAt === undefined ? null : Math.floor(performance.now() - turnCompletedAt),
           retrySafe,
@@ -1547,6 +1554,7 @@ export function createOpenShellKubernetesFixture({
 
       function request(method, params = {}) {
         const id = nextId++;
+        phase = method;
         return new Promise((resolve, reject) => {
           pending.set(id, { method, resolve, reject });
           socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
@@ -1601,6 +1609,7 @@ export function createOpenShellKubernetesFixture({
 
       socket.addEventListener("message", ({ data }) => {
         if (finished) return;
+        receivedMessages += 1;
         const message = JSON.parse(String(data));
         if (${JSON.stringify(readThreadId)} !== undefined && message.id === undefined) return;
         const { method, params } = message;
@@ -1646,6 +1655,7 @@ export function createOpenShellKubernetesFixture({
           commandTimes.set(item.id, { startedAt: performance.now(), deltas: 0, bytes: 0 });
         }
         if (ending) {
+          completedCommands += 1;
           pendingCommands.delete(item.id);
           if (commandDeadline && !pendingCommands.size) finish();
           return;
@@ -1665,6 +1675,7 @@ export function createOpenShellKubernetesFixture({
               const id = message.result?.turn?.id;
               if (typeof id !== "string" || !id) return fail(new Error("Codex turn/start returned no turn ID"));
               turnId = id;
+              phase = "turn";
             }
             entry.resolve(message.result);
           }

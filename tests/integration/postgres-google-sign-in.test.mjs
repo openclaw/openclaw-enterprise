@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  accountPrincipalId,
   assertConsoleSignIn,
   assertExternalSignInRefused,
   assertProviderAttached,
@@ -249,12 +250,7 @@ test(
       const replay = await result({ cookie, origin }, signIn.attemptId);
       assert.equal(replay.statusCode, 401, "the receipt is one-use");
 
-      const principalId = (
-        await pool.query(
-          "SELECT principal_id FROM occ.human_authentication_accounts WHERE user_id = $1",
-          [member.id],
-        )
-      ).rows[0].principal_id;
+      const principalId = await accountPrincipalId(pool, member.id);
       const audits = (await state.transact((unit) => unit.audit.list()))
         .filter(
           ({ action, outcome, details }) =>
@@ -264,7 +260,7 @@ test(
         )
         .map(({ action, actorId }) => [action, actorId]);
       assert.deepEqual(audits, [
-        ["authentication.method.attach", (await readRecoveryPrincipal()).principalId],
+        ["authentication.method.attach", await accountPrincipalId(pool, admin.id)],
         ["authentication.login", principalId],
       ]);
       // No Google token, code or email reaches storage or audit.
@@ -281,15 +277,6 @@ test(
       assert.equal(stored.includes("ya29."), false);
       assert.equal(stored.includes(`${memberSubject}@${hostedDomain}`), false);
     });
-
-    async function readRecoveryPrincipal() {
-      return (
-        await pool.query(
-          'SELECT principal_id AS "principalId" FROM occ.human_authentication_accounts WHERE user_id = $1',
-          [admin.id],
-        )
-      ).rows[0];
-    }
 
     await t.test(
       "an unattached Google identity is refused even with an existing account's email",

@@ -34,7 +34,10 @@
   ],
   "files": [
     {
-      "path": "tests/browser/console-agent-repositories.test.ts"
+      "path": "tests/browser/console-agent-repositories.test.ts",
+      "expectedTests": [
+        "selected repository collaborators never override an explicit Read-only Agent default"
+      ]
     },
     {
       "path": "tests/browser/console-agent-detail.test.mjs"

@@ -63,7 +63,7 @@ type Material = {
 type Owner = {
   material: Material;
   readOpenShellMaterial: () => Promise<Material>;
-  authorizeOpenShellRequest: () => Promise<boolean>;
+  authorizeOnlineRequest: Parameters<OpenShellGitRuntime["start"]>[0]["authorizeOnlineRequest"];
 };
 interface World {
   sandbox: {
@@ -130,10 +130,12 @@ export function openShellGitRuntimeFixture({
   store,
   world,
   resolveDelivery = createGitHubRepositoryDeliveryResolver(registry),
+  onEvent,
 }: {
   store?: ReturnType<typeof routeStore>;
   world?: World;
   resolveDelivery?: ReturnType<typeof createGitHubRepositoryDeliveryResolver>;
+  onEvent?: (event: Readonly<Record<string, unknown>>) => void;
 } = {}) {
   const revision = Object.freeze({
     id: "rev-one",
@@ -337,7 +339,7 @@ export function openShellGitRuntimeFixture({
       return owner.material;
     },
     material,
-    authorizeOpenShellRequest: async () => true,
+    authorizeOnlineRequest: async () => ({ kind: "denied", reason: "unavailable" }),
   };
   const entry: Entry = {
     revision,
@@ -376,6 +378,7 @@ export function openShellGitRuntimeFixture({
   runtime["emit"] = (event: Readonly<Record<string, unknown>>) => {
     events.push(event);
     logRuntimeEvent(event);
+    onEvent?.(event);
   };
   runtime["routes"] = store as unknown as OpenShellGitRuntime["routes"];
   if (store !== undefined && !store.rows.has(revision.id)) {
