@@ -232,7 +232,9 @@ func TestExternalOpenShellInstallationAuthenticatesWithOidc(t *testing.T) {
 		"rootCertificatePath: " + openShellExternalCAKubernetesPath,
 	} {
 		if !strings.Contains(text, required) {
-			t.Fatalf("installation.yaml is missing %q", required)
+			// The whole rendered file: the failure names the branch that rendered
+			// instead of the external OIDC Backend.
+			t.Fatalf("installation.yaml is missing %q in:\n%s", required, text)
 		}
 	}
 	// The external connection is TLS with authentication, so the development-only
