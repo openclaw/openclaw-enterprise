@@ -26,7 +26,6 @@ reaches exact IAM authorization. The
   and [`apps/controller/src/index.ts:createFastifyApp`](../../apps/controller/src/index.ts).
 - Assumptions: Migrated PostgreSQL, configured Better Auth, native IAM bootstrap,
   protected output storage, disabled public signup, and exact IAM authorization.
-  Production and development differ only in password output placement.
 
 ## Flow
 
@@ -106,15 +105,15 @@ Any error ends the single attempt with `installation.bootstrap-failed`,
 available non-secret IDs and paths, and a nonzero exit; the Helm initialization
 Job uses `backoffLimit: 0`. Completed tracked accounts, keys, and files,
 including partial output, remain for inspection. One pre-return Better
-Auth failure is narrower: a failed password `linkAccount` inside
-`createAccount` deletes the just-created user before rethrowing; the
-initializer otherwise never revokes, retries, or repairs committed or uncertain
-state.
+Auth failure is narrower: if password `linkAccount` fails inside
+`createAccount`, the helper attempts to delete the just-created user before
+rethrowing; a failed deletion is suppressed, so an orphaned account can remain
+to inspect. The initializer otherwise never revokes, retries, or
+repairs committed or uncertain state.
 
 An uncertain commit may already have persisted the seed; the
 [recovery procedure](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap)
-owns confirming the finished attempt and identifying the disposable Installation
-before repair.
+owns confirming the finished attempt and identifying the disposable Installation.
 
 After confirmed success, the operator imports the file and retains its
 non-secret IDs. Lost output is never regenerated;
@@ -220,14 +219,14 @@ allowed domains are set), and returns only `sub`. Tokens and email are discarded
 With the experimental OIDC trust claim configured
 ([settings](../reference/settings/oidc.md)),
 `apps/controller/src/auth/oidc.ts:exchangeOidcSubject` also compares the verified
-ID token's named claim for the exact value; only a match returns `trusted` with
-the token's email claim. An unattached matched subject falls back to
+ID token's named claim for the exact value; only a match returns `trusted` and
+the token's email claim. An unattached match falls back to
 `packages/occ/src/state/human-authentication.ts:provisionTrustedExternalAccount`:
 one transaction writes the user, identity-only method, grantless Principal, and
 enrolment, auditing `authentication.account.self-enrol` before
-`authentication.login`. A savepoint wraps the writes, so a uniqueness conflict —
+`authentication.login`. A savepoint wraps the writes: a uniqueness conflict —
 a concurrent enrolment or a held email — rolls back and fails
-closed; locks are user-first, matching session issuance, and the attempt's
+closed; locks are user-first, and the attempt's
 creation time travels in, so an identity that appeared or changed after the
 attempt began refuses like an attached one.
 
