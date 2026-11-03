@@ -1,20 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  NAME_MAX_CHARACTERS,
-  NAME_PATTERN,
-  namespaceNameProblem,
-} from "../../apps/controller/src/console/namespaces.mts";
-import {
-  SECRET_NAME_MAX_CHARACTERS,
-  suggestedSecretName,
-} from "../../apps/controller/src/console/agents/secret-picker.mts";
-import {
-  SECRET_VALUE_MAX_BYTES,
-  secretValueProblem,
-} from "../../apps/controller/src/console/secrets.mts";
-import { workspaceFileProblem } from "../../apps/controller/src/console/agents/workspace.mjs";
 import { SecretValue } from "../../packages/contracts/src/api/common.ts";
 import { normalizeInitialWorkspaceFiles } from "../../packages/contracts/src/workspace-setup.ts";
 import {
@@ -22,6 +8,15 @@ import {
   PLAIN_TEXT_PATTERN,
   isName,
 } from "../../packages/contracts/src/api/plain-text.ts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { NAME_MAX_CHARACTERS, NAME_PATTERN, namespaceNameProblem } =
+  await importConsoleModule("namespaces.mjs");
+const { SECRET_NAME_MAX_CHARACTERS, suggestedSecretName } = await importConsoleModule(
+  "agents/secret-picker.mjs",
+);
+const { SECRET_VALUE_MAX_BYTES, secretValueProblem } = await importConsoleModule("secrets.mjs");
+const { workspaceFileProblem } = await importConsoleModule("agents/workspace.mjs");
 
 test("the console's Namespace name rule is the API's Name rule", () => {
   assert.equal(NAME_PATTERN.source, PLAIN_TEXT_PATTERN);

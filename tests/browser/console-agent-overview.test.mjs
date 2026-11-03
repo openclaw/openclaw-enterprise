@@ -3,13 +3,10 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
-import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import {
   DEPLOYMENT_FAILURE_STEPS,
   deploymentFailureStep,
-} from "../../apps/controller/src/console/deployment-failure-steps.mjs";
+} from "../../packages/occ/src/deployment-failure-steps.ts";
 import { AgentProvisioningStatusSchema } from "../../packages/contracts/src/api/resources.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { fileConsoleApp } from "../helpers/console-app.mjs";
@@ -71,6 +68,11 @@ import {
   STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION,
   NO_TEST_REQUEST,
 } from "../helpers/refusal-text.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
+const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
+const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
 
 // The Agent page's first screen while its reads settle and its polls run: loading cues, quiet
 // polls, a steady layout, and failed-version recovery scoped to the caller.

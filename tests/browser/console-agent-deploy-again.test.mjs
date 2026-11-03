@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
@@ -34,6 +33,9 @@ import {
   OVERVIEW_REFRESH_FAILED,
   READ_OUTAGE_REASON,
 } from "../helpers/refusal-text.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
 
 // Failed-version recovery's Deploy again: the API's DEPENDENCY_UNAVAILABLE message says to deploy
 // again, and the link opens the draft at its Deploy new version. That button is built only from a

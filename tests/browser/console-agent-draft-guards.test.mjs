@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { NAMESPACE_NOT_READY_MESSAGE } from "../../apps/controller/src/console/agents/list.mts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
@@ -65,6 +64,9 @@ import {
   NO_SANDBOX_DRIVER_NETWORK_POLICY,
 } from "../helpers/refusal-text.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { NAMESPACE_NOT_READY_MESSAGE } = await importConsoleModule("agents/list.mjs");
 
 test("Agent policy ceiling rejection is announced in view and preserves unsaved additions", async (t) => {
   const { fixture, namespace, agent, base } = await createPolicyConsole(t);

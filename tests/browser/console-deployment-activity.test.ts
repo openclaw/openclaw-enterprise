@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test, { type TestContext } from "node:test";
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import type {
   PlatformReadView,
   PlatformStateStore,
@@ -22,6 +21,9 @@ import {
   trackSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { responseTo } from "./console-action-helpers.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
 
 // The real controller admits and authorizes the deployment. The fixture has no
 // worker: change only its exact work lookup/lease, then its revision lookup.

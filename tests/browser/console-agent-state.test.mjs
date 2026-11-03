@@ -4,7 +4,6 @@ import test from "node:test";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, memberRole } from "../helpers/console-app.mjs";
 import {
@@ -74,6 +73,9 @@ import {
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
 
 function deploymentBody(
   namespaceId,

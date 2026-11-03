@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { slack } from "../../apps/controller/src/console/channels/slack.mts";
-import { missingChannelCredentialGroups } from "../../apps/controller/src/console/agents/credentials.mjs";
 import {
   enabledChannelEntries,
   requireChannelSecretBindings,
 } from "../../packages/occ/src/channel-secret-bindings.ts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { slack } = await importConsoleModule("channels/slack.mjs");
+const { missingChannelCredentialGroups } = await importConsoleModule("agents/credentials.mjs");
 
 // These are form inputs, not a replacement for configuration or threading logic.
 const fields = {

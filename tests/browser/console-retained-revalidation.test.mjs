@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 
-import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { listen } from "../helpers/listen.mjs";
@@ -28,6 +27,9 @@ import {
   viewTag,
 } from "./console-refocus-helpers.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
 
 const SESSION = "**/api/auth/session";
 const activeView = '.content [aria-live="polite"]:not([inert])';

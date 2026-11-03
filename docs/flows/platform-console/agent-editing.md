@@ -14,7 +14,7 @@ Related flows: [parent](../platform-console.md),
 ## Entry Points
 
 - `apps/controller/src/console/agents/detail.mts:renderAgentDetail` loads the exact Agent and composes the detail actions.
-- `apps/controller/src/console/agents/credentials.mjs:createChannelSecretsPanel` saves channel Secret bindings.
+- `apps/controller/src/console/agents/credentials.mts:createChannelSecretsPanel` saves channel Secret bindings.
 - `packages/occ/src/index.ts:OpenClawController.deployAgent` admits a version after first-deployment credential setup.
 - Each action requires permission for its exact resource.
 
@@ -164,7 +164,7 @@ clear captures; pending saves retain recovery guards.
 Like Escape, cancellation discards channel drafts, clears Secret inputs, and
 retains plugin selections. Pending channel saves and Secret creation prevent dismissal.
 
-`apps/controller/src/console/channels.mjs:renderChannels` renders Slack settings;
+`apps/controller/src/console/channels.mts:renderChannels` renders Slack settings;
 only **Open draft** permits editing. The
 [console reference](../../reference/console/versions-and-channel-drafts.md)
 owns Slack requirements and rejected native shapes; Teams remains native JSON.
@@ -184,7 +184,7 @@ absent, loading, and unavailable states remain distinct. Failures retain IDs;
 stale responses are ignored and current 401s expire the session. Summaries need
 neither collection permission nor Secret values.
 
-`apps/controller/src/console/channels/slack.mjs:appendFields` separates channel
+`apps/controller/src/console/channels/slack.mts:appendFields` separates channel
 senders from DMs. Wildcard, empty, or omitted channel `users` selects **Allow
 everyone**; explicit IDs fill the mutually exclusive input. Mention
 requirements remain independent. `updatedSlack` replaces selected channels'
@@ -215,7 +215,7 @@ reasons, never staged. Refused binding saves reread it; inline creation rereads 
 Any listed denial means per-Secret operate: new Secrets have none, disabling picker/Preset
 creation with reasons and existing-only hints. Failed rereads keep prior answers.
 
-`apps/controller/src/console/agents/secret-picker.mjs:openCreateSecretDialog` shows
+`apps/controller/src/console/agents/secret-picker.mts:openCreateSecretDialog` shows
 an editable Agent-prefixed Name, the Secrets page's `secretValueControl` (CRLF becomes LF),
 and optional fixed Slack key. Both meet the API's rules before POST, which stores the Secret
 and stages returned metadata; cancellation never deletes it. Conflicts retain inputs.
@@ -233,7 +233,7 @@ the caller cannot `operate` is refused before the PATCH, so **Disable** is offer
 A save that rebinds such a Secret rereads the permission answer; Plugins, Repositories and the
 authentication source follow it without a reload.
 
-After PATCH, `apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
+After PATCH, `apps/controller/src/console/agents/credential-access.mts:ensureCredentialOperateBinding`
 grants the Agent service principal access to selected Secrets through Namespace IAM. A failed
 grant leaves Configuration saved; a 403 names the Installation administrator, who selects
 **Retry Secret access**; a timeout or 5xx stays unknown. A member's session sends no grant and
@@ -261,7 +261,7 @@ but does not stop a running Agent.
 Agent and rejects changed bindings before saving authentication. PATCH replaces
 the prior Harness `credentialSources` entry, preserving unrelated entries without
 deleting the old source or revoking grants. After PATCH,
-`apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
+`apps/controller/src/console/agents/credential-access.mts:ensureCredentialOperateBinding`
 grants the Agent service principal exact Secret (`api_key` or imported `codex_pat`)
 or CredentialSource `operate` through the actor's IAM authority. Managed
 ServiceAccount PATs and runtime authentication skip this grant.
@@ -315,7 +315,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#7-request-a-stop-a
 
 ### 8. Confirm deletion and read back the Agent
 
-`apps/controller/src/console/agents/deletion.mjs:createAgentDeletion`.
+`apps/controller/src/console/agents/deletion.mts:createAgentDeletion`.
 Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion-and-read-back-the-agent).
 
 ## Debugging and Verification

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
-import { message } from "../../apps/controller/src/console/agents/list.mts";
-import { createApiClient } from "../../apps/controller/src/console/api-client.mts";
 import { createViewLifetime } from "../../apps/controller/src/console/view-lifetime.mts";
 import { listen } from "../helpers/listen.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { message } = await importConsoleModule("agents/list.mjs");
+const { createApiClient } = await importConsoleModule("api-client.mjs");
 
 async function interruptedResponse(t, interrupt, responseType = "json") {
   const controller = new AbortController();

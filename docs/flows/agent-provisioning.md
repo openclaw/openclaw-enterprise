@@ -16,7 +16,7 @@ See [worker reconciliation](controller-worker.md) and [Harness topology](harness
 
 ## Entry Points
 
-- Console: `apps/controller/src/console/agents/create.mts`, with the shared Slack Secret select/create modal in `apps/controller/src/console/channels/slack.mjs`.
+- Console: `apps/controller/src/console/agents/create.mts`, with the shared Slack Secret select/create modal in `apps/controller/src/console/channels/slack.mts`.
 - API: `packages/contracts/src/api/routes.ts:provisionAgent`, `apps/controller/src/http/agents.ts:createAgentHandlers`, and `packages/occ/src/index.ts:OpenClawController.provisionAgent`.
 - Preconditions: a ready Namespace, Dedicated runtime and selected Drivers, PostgreSQL-backed work storage, required Agent/Configuration/deploy permissions, exact Secret access and existing transactional IAM authority. No provisioning-input keyring is required.
 
@@ -58,7 +58,7 @@ graph TD
 Console keeps the configured Harness separate from execution mode: dedicated
 OpenClaw uses the same provisioning, retry, and deployment navigation as
 dedicated Codex. Preset restoration and Credentials read native model runtime
-policy through `apps/controller/src/console/agents/harness-auth.mjs:configuredHarnessId`.
+policy through `apps/controller/src/console/agents/harness-auth.mts:configuredHarnessId`.
 
 The Slack modal immediately saves new tokens through `POST /namespaces/:namespaceId/secrets`, before an Agent exists, then clears entered values. Apply stages references and environment bindings; Cancel discards selections but retains created Secrets. Model discovery uses an API key or service account token without saving it. Create Agent runs its preflight, then saves it as a Namespace Secret, clears the input, and reuses the reference on retries. Bound Presets retain their credential/provider. A lost Secret-save response requires recovery, not automatic repetition.
 

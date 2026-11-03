@@ -18,7 +18,7 @@ user-visible behavior.
 
 - `apps/controller/src/console/agents/create.mts:renderCreateAgent` renders the
   form (`renderAgentForm`) and submits it.
-- `apps/controller/src/console/agents/plugin-fields.mjs:createPluginFields` and
+- `apps/controller/src/console/agents/plugin-fields.mts:createPluginFields` and
   `agents/repositories.mts:createRepositoryFields` supply the plugin and repository fields.
 - A signed-in caller with Namespace Agent `create`; each write is authorized again.
 

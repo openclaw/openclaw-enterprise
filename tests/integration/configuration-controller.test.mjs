@@ -73,7 +73,7 @@ import {
   withGatewaySecurityDefaults,
   withSetting,
 } from "../helpers/admitted-configuration.mjs";
-import { storedConfigurationProblem } from "../../apps/controller/src/console/stored-configuration-rules.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 function createConfigurationBackend() {
   // This deliberately simple substrate exercises the real Fastify, IAM, OCC, and audit paths.
@@ -2181,6 +2181,9 @@ test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE
 });
 
 test("Agent save, deployment and the Console's draft hold name the same first stored-row refusal", async () => {
+  const { storedConfigurationProblem } = await importConsoleModule(
+    "stored-configuration-rules.mjs",
+  );
   // Finding 3093. A row saved before a rule existed, or written past OCC, can fail several
   // stored-row rules. Agent save and deploy admission name the first in their order; the Console
   // holds a draft's Deploy with the module it serves (stored-configuration-rules.mjs), which

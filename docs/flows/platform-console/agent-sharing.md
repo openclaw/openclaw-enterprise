@@ -17,7 +17,7 @@ See the [parent flow](../platform-console.md) and the
 
 ## Entry Points
 
-- `apps/controller/src/console/agents/access.mjs:renderAgentAccess` renders the
+- `apps/controller/src/console/agents/access.mts:renderAgentAccess` renders the
   sharing panel on Agent detail's Access tab.
 - `apps/controller/src/console/agents/detail.mts:renderAgentDetail` mounts it when
   that tab first opens.
@@ -46,7 +46,7 @@ graph TD
 
 ### 1. Mount the panel and read policy
 
-`apps/controller/src/console/agents/access.mjs:renderAgentAccess`
+`apps/controller/src/console/agents/access.mts:renderAgentAccess`
 
 The Access tab mounts sharing independently of version/configuration reads and
 native admission. Agent detail leaves the tab out when the console's Installation-access
@@ -67,7 +67,7 @@ page reload; otherwise the tab gives way to Configuration with no audited read.
 
 ### 2. Serialize Role and binding writes
 
-`apps/controller/src/console/agents/access.mjs:matchesRole`
+`apps/controller/src/console/agents/access.mts:matchesRole`
 
 Submission rereads policy, finds or creates an immutable Role by exact Namespace
 and permissions, then binds Namespace read to the exact Namespace. Only after
@@ -97,7 +97,7 @@ five requests of up to 15 s each, about 75 s. Session expiry and sign-out still 
 
 ### 4. Remove one explicit binding
 
-`apps/controller/src/console/agents/access.mjs:renderAgentAccess`
+`apps/controller/src/console/agents/access.mts:renderAgentAccess`
 
 Removal addresses only the selected Agent binding. The request client's existing
 success envelope handling also accepts the API's empty `204` deletion response.

@@ -21,7 +21,7 @@ actionable error.
   authorized caller posts to the Namespace channel directory route.
 - Assumptions: the caller can create an Agent or update the exact Agent or
   Configuration, and can operate the selected same-Namespace Secret.
-- Source: `apps/controller/src/console/agents/slack-directory.mjs:createSlackDirectoryField`,
+- Source: `apps/controller/src/console/agents/slack-directory.mts:createSlackDirectoryField`,
   `packages/occ/src/index.ts:OpenClawController.lookupChannelDirectory`,
   and `apps/controller/src/drivers/channel/slack.ts:SlackChannelDriver.lookupDirectory`.
 
@@ -97,8 +97,8 @@ existing limit of 2,000,000 UTF-16 code units. Overflow cancels the body read an
 
 ### 3. Display names and save IDs
 
-`apps/controller/src/console/channels/slack.mjs:appendFields`,
-`apps/controller/src/console/agents/slack-directory.mjs:createSlackDirectoryField`
+`apps/controller/src/console/channels/slack.mts:appendFields`,
+`apps/controller/src/console/agents/slack-directory.mts:createSlackDirectoryField`
 
 The Console presents bot-token selection before channel access and explains that
 name lookup needs that token. It debounces typing and shows each candidate's name,

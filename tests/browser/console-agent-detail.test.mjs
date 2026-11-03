@@ -64,7 +64,6 @@ import {
   waitForInputValue,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
-import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
   deploymentRecordUrl,
@@ -134,6 +133,9 @@ import {
   OPENCLAW_SANDBOX_SETTINGS,
   openClawSandboxRefusal,
 } from "../helpers/admitted-configuration.mjs";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
 
 test("Deployment shows a historical version's snapshot read failure and Retry recovers", async (t) => {
   const fixture = await createConsoleAppFixture(t);
