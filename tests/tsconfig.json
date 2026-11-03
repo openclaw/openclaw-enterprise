@@ -21,6 +21,7 @@
     "../packages/contracts/prepack.ts",
     "../packages/utils/prepack.ts",
     "helpers/credential-source-owner-upgrade.ts",
+    "helpers/populated-upgrade-return.ts",
     "helpers/deployed-repository-capability.ts",
     "helpers/compute-credential-catalog.ts",
     "helpers/provisioning-repository-status.ts",
