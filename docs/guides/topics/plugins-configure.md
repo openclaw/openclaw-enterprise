@@ -58,6 +58,22 @@ check the effective policy and a normal Agent turn; a saved selection alone does
 not prove approval routing. See the [approval policy](../../reference/agent-plugins.md#approval-policy)
 and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
 
+## Prepare a Slack MCP credential
+
+Register a `bearer-token` credential source that references the saved Slack
+OAuth access token as its `token` Secret. Use
+`protocol: mcp`, `host: mcp.slack.com`, `port: "443"`, `path: /mcp`,
+`env_var: SLACK_MCP_TOKEN`. OCE stores the token through the Secret Driver
+and supplies the access token to OpenShell for injection.
+
+Use the OpenShell Sandbox and Credential Gateway Drivers. Add
+`/usr/local/bin/node` to `toolBinaries`. Attach the source to the Agent draft
+and grant the operator and Agent service principal `credential_source:operate`
+on it. [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
+· [Bind a source to an Agent](../../reference/credential-sources.md#bind-a-source-to-an-agent)
+
+A standalone Slack source permits MCP `ping`.
+
 ## Before you start
 
 - [Connect the OCC CLI](../cli.md#connect-to-your-installation) to your

@@ -74,7 +74,7 @@ import {
 import { normalizeSecretBindings } from "../../packages/contracts/src/index.ts";
 import {
   managedGoogleInstall,
-  managedSlackInstall,
+  managedMcpInstalls,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -1729,7 +1729,9 @@ test("standalone Codex search requires an explicit model endpoint and a boolean 
 
 test("dedicated OpenClaw delivers the selected managed release digest without a Sandbox provider file", async () => {
   await verifyManagedRelease("GOOGLE", managedGoogleInstall);
-  await verifyManagedRelease("SLACK", managedSlackInstall);
+  const slack = managedMcpInstalls.find(({ id }) => id === "occ-plugin:slack@1.0.0");
+  assert.ok(slack);
+  await verifyManagedRelease("SLACK", slack);
 });
 
 async function verifyManagedRelease(prefix, { id, releaseSha256 }) {
