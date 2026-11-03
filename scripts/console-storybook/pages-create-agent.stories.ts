@@ -369,3 +369,10 @@ export const PasswordSecretConflictPat = story("createPasswordSecretConflictPat"
 export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOAuth");
 
 export const CreateOAuthStartNavigation = story("createOAuthStartNavigation");
+
+export const CustomResponses = story("createCustomResponses");
+export const CustomResponsesEmpty = story("createCustomResponsesEmpty");
+export const CustomResponsesInvalid = story("createCustomResponsesInvalid");
+export const CustomResponsesSource = story("createCustomResponsesSource");
+export const CustomResponsesSourcesEmpty = story("createCustomResponsesSourcesEmpty");
+export const CustomResponsesSourcesDenied = story("createCustomResponsesSourcesDenied");

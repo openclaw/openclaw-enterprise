@@ -2865,3 +2865,184 @@ test("the Agents list does not move when failed deployments land", async (t) => 
     }
   }
 });
+
+test("Custom Responses clears endpoint credentials and saves an authorized Embedded configuration", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Custom endpoint authoring", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await page.getByLabel("Provider", { exact: true }).selectOption("custom");
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await page.getByLabel("Agent name").fill("Custom Responses Agent");
+  const endpoint = page.getByLabel("Responses API endpoint", { exact: true });
+  const model = page.getByLabel("Model ID", { exact: true });
+  const key = page.getByLabel("Provider API key", { exact: true });
+  assert.equal(await page.getByLabel("Model", { exact: true }).isVisible(), false);
+  await endpoint.fill("https://first.example.test/v1");
+  await model.fill("first-model");
+  await key.fill("synthetic-first-endpoint-key");
+  // A destination edit removes the previous key and model before either can be saved.
+  await endpoint.fill("https://MODELS.example.test:443/v1/");
+  assert.equal(await key.inputValue(), "");
+  assert.equal(await model.inputValue(), "");
+  await model.fill("provider-model");
+  await model.blur();
+  await key.fill("synthetic-custom-endpoint-key");
+  await openAdvancedSettings(page);
+  const values = JSON.parse(await page.getByLabel("Configuration JSON").inputValue());
+  assert.equal(values.agents.defaults.model, "custom/provider-model");
+  assert.deepEqual(values.models.providers.custom, {
+    baseUrl: "https://models.example.test/v1",
+    api: "openai-responses",
+    apiKey: "${OCE_MODEL_API_KEY}",
+    models: [{ id: "provider-model", name: "provider-model" }],
+  });
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.waitForURL((url) => /\/agents\/agt_/.test(url.pathname));
+  const secrets = secretPostRequests(requests, namespace.id).map(
+    (entry) => entry.body,
+  ) as CreateSecretBody[];
+  assert.equal(secrets.length, 1);
+  assert.equal(secrets[0]!.authorizedEndpoint, "https://models.example.test/v1");
+  const agents = agentPostRequests(requests, namespace.id).map(
+    (entry) => entry.body,
+  ) as CreateAgentBody[];
+  assert.equal(agents.length, 1);
+  assert.equal(agents[0]!.harnessAuth?.method, "api_key");
+  assert.equal(
+    (agents[0]!.harnessAuth as { authorizedEndpoint?: string }).authorizedEndpoint,
+    "https://models.example.test/v1",
+  );
+});
+
+test("Custom Responses validates the endpoint before writes and restores standard credential choices", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Custom endpoint validation", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await page.getByLabel("Provider", { exact: true }).selectOption("custom");
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await page.getByLabel("Agent name").fill("Invalid endpoint");
+  await page
+    .getByLabel("Responses API endpoint", { exact: true })
+    .fill("http://models.example.test/v1");
+  await page.getByLabel("Model ID", { exact: true }).fill("provider-model");
+  await page.getByLabel("Provider API key", { exact: true }).fill("synthetic-endpoint-key");
+  const writes = nonAuthWriteRequests(requests).length;
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.locator("#provider-endpoint-error").waitFor({ state: "visible" });
+  assert.match(await page.locator("#provider-endpoint-error").innerText(), /HTTPS/);
+  assert.equal(nonAuthWriteRequests(requests).length, writes);
+  await page.getByLabel("Provider", { exact: true }).selectOption("openai");
+  assert.equal(await page.getByLabel("Responses API endpoint", { exact: true }).isVisible(), false);
+  assert.equal(await page.getByLabel("API key Secret", { exact: true }).isVisible(), true);
+});
+
+test("Custom native source selection shows its immutable endpoint and requires explicit model metadata", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Source endpoint projection", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const installation = await fixture.request("GET", "/installation");
+  // Simulated external source availability proves only the Console projection. Source
+  // authorization and registration are exercised separately through the production Gateway.
+  await page.route("**/installation", (route) =>
+    route.fulfill({
+      json: {
+        ...installation.body,
+        data: {
+          ...installation.data,
+          capabilities: {
+            ...installation.data.capabilities,
+            agentProvisioning: { executionModes: ["dedicated"] },
+            nativeWorkers: { support: "pinned-runtime" },
+            openclaw: { executionModes: ["dedicated"] },
+            credentialSources: {
+              types: [
+                {
+                  type: "openai",
+                  config: [{ name: "base_url", required: false }],
+                  secrets: [{ name: "api_key", required: true }],
+                  rotation: "none",
+                  harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+                },
+              ],
+            },
+          },
+        },
+      },
+    }),
+  );
+  const sourceId = `cs_${randomUUID()}`;
+  const endpoint = "https://models.example.test/v1";
+  const sourceSecret = await fixture.request("POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "Source model key", value: "synthetic-source-key", authorizedEndpoint: endpoint },
+  });
+  assert.equal(sourceSecret.status, 201);
+  await page.route(`**/namespaces/${namespace.id}/credential-sources`, (route) =>
+    route.fulfill({
+      json: {
+        data: [
+          {
+            id: sourceId,
+            namespaceId: namespace.id,
+            name: "Authorized endpoint",
+            type: "openai",
+            config: { base_url: endpoint },
+            state: "ready",
+            secrets: { api_key: sourceSecret.data.ref },
+            ref: { kind: "credential_source", namespaceId: namespace.id, id: sourceId },
+          },
+        ],
+        meta: { requestId: `req_${randomUUID()}` },
+      },
+    }),
+  );
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await page.getByLabel("Provider", { exact: true }).selectOption("custom");
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await page.getByLabel("Custom credential", { exact: true }).selectOption("source");
+  await page.getByLabel("Credential Source", { exact: true }).selectOption(sourceId);
+  const field = page.getByLabel("Responses API endpoint", { exact: true });
+  assert.equal(await field.inputValue(), endpoint);
+  assert.equal(await field.evaluate((node: HTMLInputElement) => node.readOnly), true);
+  assert.equal(
+    await page
+      .getByLabel("Context window (tokens)")
+      .evaluate((node: HTMLInputElement) => node.required),
+    true,
+  );
+  await page.getByLabel("Model ID", { exact: true }).fill("provider-model");
+  await page.getByLabel("Model ID", { exact: true }).blur();
+  for (const [id, value] of Object.entries({
+    contextWindow: "32000",
+    maxTokens: "2000",
+    input: "1",
+    output: "2",
+    cacheRead: "0",
+    cacheWrite: "0",
+  })) {
+    await page.locator(`#custom-model-${id}`).fill(value);
+  }
+  await openAdvancedSettings(page);
+  const values = JSON.parse(await page.getByLabel("Configuration JSON").inputValue());
+  assert.equal(values.agents.defaults.model, "openai/provider-model");
+  assert.equal(values.models.providers.openai.baseUrl, endpoint);
+  assert.equal(values.models.providers.openai.apiKey, undefined);
+  assert.deepEqual(values.models.providers.openai.models, [
+    {
+      id: "provider-model",
+      name: "provider-model",
+      contextWindow: 32000,
+      maxTokens: 2000,
+      cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+    },
+  ]);
+});

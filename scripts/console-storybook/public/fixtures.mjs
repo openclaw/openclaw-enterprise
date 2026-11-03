@@ -323,11 +323,32 @@ export function installFixture(scenario, evidence) {
   const deployments = new Map();
   const provisioning = new Map();
   const credentials = new Map();
-  const credentialSources = new Map();
+  const credentialSources = new Map(
+    (scenario.existingModelSources ?? []).map((source) => [
+      source.id,
+      {
+        ...source,
+        namespaceId,
+        state: "ready",
+        ref: { kind: "credential_source", namespaceId, id: source.id },
+      },
+    ]),
+  );
   let credentialRegistrationFailed = false;
   const deviceLogins = new Map();
   const files = new Map();
   const secrets = new Map();
+  for (const source of scenario.existingModelSources ?? []) {
+    for (const ref of Object.values(source.secrets ?? {})) {
+      secrets.set(ref.id, {
+        id: ref.id,
+        namespaceId,
+        name: `${source.name} key`,
+        ref,
+        authorizedEndpoint: source.config.base_url,
+      });
+    }
+  }
   const stagedWorkspaceFiles = new Map();
   const roles = [];
   const bindings = [];
