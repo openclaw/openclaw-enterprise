@@ -2089,7 +2089,9 @@ function renderAgentForm(
   let credentialSourceTypes: readonly CredentialSourceType[] | undefined;
   const modelSourceEndpoint = () =>
     authorizedEndpoint() ??
-    (nativeProvider.value === "openai" && authMethod.value === "api_key"
+    (nativeProvider.value === "openai" &&
+    harness.value === "codex" &&
+    authMethod.value === "api_key"
       ? codexApiKeyBaseUrl
       : undefined);
   // A draft kept after a refused Create resumes the resources that attempt saved (finding 1934).
@@ -3820,7 +3822,10 @@ function renderAgentForm(
     }
     if (credentialSourceTypes !== undefined) {
       const method = binding?.method ?? authMethod.value;
-      return method === "api_key" || method === "codex_pat" ? { method } : undefined;
+      const endpoint = authorizedEndpoint();
+      return method === "api_key" || method === "codex_pat"
+        ? { method, ...(endpoint === undefined ? {} : { authorizedEndpoint: endpoint }) }
+        : undefined;
     }
     if (binding) {
       return binding;
