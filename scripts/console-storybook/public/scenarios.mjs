@@ -10552,6 +10552,12 @@ for (const [id, state, name] of [
     "Policy logs unavailable without runtime credentials",
   ],
   ["policyDenialsProtected", "protected", "Protected execution refuses network policy additions"],
+  ["policyDenialsWithheldOne", "withheldOne", "One policy record withheld since the last refresh"],
+  [
+    "policyDenialsWithheldMany",
+    "withheldMany",
+    "Multiple policy records withheld since the last refresh",
+  ],
 ]) {
   scenarios[id] = {
     group: "Pages/Agent detail",
@@ -10563,6 +10569,8 @@ for (const [id, state, name] of [
     ...(["many", "populated"].includes(state)
       ? { policyDenialCount: 200, policyRuleCount: 10, policyNewDenials: 12 }
       : {}),
+    ...(state === "withheldOne" ? { policyWithheld: 1 } : {}),
+    ...(state === "withheldMany" ? { policyWithheld: 2 } : {}),
     ...(state === "discoveryLoading"
       ? { rules: [{ suffix: "/driver-configurations", hold: true }] }
       : {}),
@@ -10687,6 +10695,23 @@ for (const [id, state, name] of [
     ...(state === "loading" ? { rules: [{ suffix: "/runtime/logs", hold: true }] } : {}),
     ...(state === "noCredential"
       ? { rules: [{ suffix: "/runtime/logs", status: 503, code: "DEPENDENCY_UNAVAILABLE" }] }
+      : {}),
+    ...(state === "withheldOne"
+      ? {
+          description:
+            'The Denials tab shows a warning banner when sandbox records are withheld. One withheld record uses the singular "record".',
+          steps: [
+            'Check the warning banner above the denial list. It reads "1 record withheld since the last refresh." Confirm the singular form.',
+          ],
+        }
+      : {}),
+    ...(state === "withheldMany"
+      ? {
+          description: 'Two withheld records: the warning banner uses the plural "records".',
+          steps: [
+            'Check the warning banner above the denial list. It reads "2 records withheld since the last refresh." Confirm the plural form.',
+          ],
+        }
       : {}),
   };
 }
