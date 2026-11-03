@@ -38,12 +38,11 @@ drivers:
 
 The curated catalog includes Linear, Slack, GitHub, Notion, Figma, Canva,
 Datadog, Sentry, Adobe, Coursera Learning, and Google Contacts. Their recorded
-identities and presentation metadata omit tool inventory and account-specific
-availability. Notion, Figma, Canva, and Adobe include supported
-hosted apps with skills. Sentry remains unavailable because its recorded release
-has no concrete hosted app. Select a plugin and set its default policy; per-tool controls are
-unavailable until the catalog supplies tool details. Curated details accept an
-entry's `remoteId` or its listed `id`.
+entries omit tool inventory and account-specific availability, so set a default
+policy per plugin; per-tool controls need tool details. Notion, Figma, Canva, and
+Adobe include supported hosted apps with skills. Sentry is unavailable: its
+recorded release has no concrete hosted app. Details accept an entry's `remoteId`
+or `id`.
 
 An optional controller-side native `listCatalog` reader for hosted mode uses a
 separate Codex profile:
