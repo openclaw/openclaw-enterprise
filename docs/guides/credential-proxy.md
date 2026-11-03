@@ -19,11 +19,11 @@ the delivery contracts.
 
 ## Choose the path before changing an installation
 
-| Intended use               | Requirement and limit                                                                                                                                                                                           |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Protected static inference | Kubernetes Compute and the same installed Driver for Sandbox and Credential Proxy; explicit whole-execution authority. The bundled legacy OpenShell release cannot enforce it.                                  |
-| Prepared GitHub App access | Worker Token Service prepares credentials; OCC authorizes scope and lifetime; Credential Proxy installs and fences delivery. Protected delivery requires a qualified sender.                                    |
-| Native prepared Git        | A separate explicit Kubernetes/dedicated Codex path without Sandbox or Credential Proxy; it does not provide OpenShell isolation. See [native Git](../reference/repository-credentials/prepared-native-git.md). |
+| Intended use               | Requirement and limit                                                                                                                                                                                                                                                                              |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Protected static inference | New local launches are retired; the following controller requirements remain for existing installations and owners. Kubernetes Compute and the same installed Driver for Sandbox and Credential Proxy; explicit whole-execution authority. The bundled legacy OpenShell release cannot enforce it. |
+| Prepared GitHub App access | Worker Token Service prepares credentials; OCC authorizes scope and lifetime; Credential Proxy installs and fences delivery. Protected delivery requires a qualified sender.                                                                                                                       |
+| Native prepared Git        | A separate explicit Kubernetes/dedicated Codex path without Sandbox or Credential Proxy; it does not provide OpenShell isolation. See [native Git](../reference/repository-credentials/prepared-native-git.md).                                                                                    |
 
 For a packaged Driver, select its Sandbox and Credential Proxy capabilities
 from the same registration. The [Driver selection guide](../reference/drivers/selection.md#select-a-protected-sender)
@@ -39,9 +39,14 @@ installation, including when a Gateway source or its owner must remain.
 For a reviewed development candidate, follow
 [local candidate image selection](deploy/local-openshell-images.md), including
 all three immutable OpenShell images, their source commit, and matching charts.
-Use its protected launch procedure only for the profile it prepares. It creates
-a development installation; production still requires its own trust and network setup.
+New local protected static-inference launches are retired. The launcher rejects
+`OCC_DEVELOPMENT_PROTECTED_EGRESS=1` and any presence of
+`OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` before effects, including with
+Kubernetes/OpenShell. Unset, empty or `0` protected-egress selections retain ordinary
+Gateway authentication. See the [retirement notice](deploy/local-openshell-images.md#select-the-protected-profile).
 
+The following static authority configuration is retained for existing controller
+installations and source owners; it is not a local launch recipe.
 For protected static inference, the Installation selects the same Driver ID in
 `backend[].drivers.credential_proxy` and `drivers.credential_proxy`. A bundled
 OpenShell authority selection has this shape:
@@ -159,6 +164,8 @@ by the running version.
 
 ## Register, authorize, and deploy an OpenAI static inference source
 
+This retained controller procedure applies to existing qualified installations and
+source owners. It does not provide a new local protected launch.
 These steps require qualified static enforcement. Use the built CLI from the
 repository root with `jq`, a ready Namespace, `OCC_URL`, `OCC_NAMESPACE`, and a
 private `OCC_SERVICE_KEY_FILE` for an authorized operator.
