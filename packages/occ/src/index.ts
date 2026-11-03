@@ -123,7 +123,7 @@ import {
   removedPolicyDetails,
   type RemovedAccessBinding,
 } from "./iam-policy-cleanup.ts";
-import { deploymentDiagnostics } from "./deployment-diagnostics.ts";
+import { deploymentDiagnostics, withHarnessDiagnostic } from "./deployment-diagnostics.ts";
 import {
   deviceAuthorizationSession,
   type DeviceAuthorizationSession,
@@ -208,7 +208,6 @@ import type {
   RevisionHarnessDescriptor,
   ResourceKind,
   ResourceRef,
-  RuntimeDiagnosticCheck,
   Role,
   SandboxDriver,
   SandboxHarnessLostCode,
@@ -1150,27 +1149,6 @@ const HARNESS_LOST_CODES: ReadonlySet<string> = new Set<SandboxHarnessLostCode>(
   "SANDBOX_FAILED",
   "HARNESS_EXITED",
 ]);
-/** The Harness Sandbox record as the leading `agent` `sandbox` diagnostic check. */
-function harnessDiagnosticCheck(
-  observed: AgentRuntimeHarnessStatus,
-  checkedAt: string,
-): RuntimeDiagnosticCheck {
-  // A Harness process that exited has failed even while its provider restarts it.
-  const state =
-    observed.state === "running"
-      ? "succeeded"
-      : observed.state === "lost" || observed.code === "HARNESS_RESTARTING"
-        ? "failed"
-        : "unknown";
-  const code = observed.code ?? (observed.state === "starting" ? "STARTING" : undefined);
-  return Object.freeze({
-    component: "agent",
-    check: "sandbox",
-    state,
-    checkedAt,
-    ...(code === undefined ? {} : { code }),
-  });
-}
 
 /**
  * A Credential Gateway must finish any effect of an aborted registration within
@@ -3883,16 +3861,7 @@ export class OpenClawController {
     if (observed === undefined) {
       return diagnostics;
     }
-    // A lost Sandbox explains every other agent check, so it leads and the cap never drops it.
-    return Object.freeze({
-      ...diagnostics,
-      checks: Object.freeze(
-        [harnessDiagnosticCheck(observed, this.clock().toISOString()), ...diagnostics.checks].slice(
-          0,
-          32,
-        ),
-      ),
-    });
+    return withHarnessDiagnostic(diagnostics, observed, this.clock().toISOString());
   }
 
   /**
