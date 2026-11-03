@@ -213,7 +213,7 @@ jobs:
     needs: preflight
     if: inputs.lane == 'all' || inputs.lane == 'docker-model'
     timeout-minutes: 40
-    environment: integration-model
+    environment: integration
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
@@ -238,7 +238,7 @@ jobs:
     needs: preflight
     if: inputs.lane == 'all' || inputs.lane == 'k3d-model'
     timeout-minutes: 120
-    environment: integration-model
+    environment: integration
     env:
       CI_RUNNER_TEST_TIMEOUT_MS: "5400000"
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -265,7 +265,7 @@ jobs:
     needs: preflight
     if: inputs.lane == 'all' || inputs.lane == 'gateway-routing'
     timeout-minutes: 35
-    environment: integration-routing
+    environment: integration
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
@@ -291,7 +291,7 @@ jobs:
     needs: preflight
     if: inputs.lane == 'all' || inputs.lane == 'production-tui'
     timeout-minutes: 50
-    environment: integration-model
+    environment: integration
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
@@ -319,7 +319,7 @@ jobs:
     needs: preflight
     if: inputs.lane == 'all' || inputs.lane == 'slack'
     timeout-minutes: 35
-    environment: integration-slack
+    environment: integration
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
@@ -350,7 +350,7 @@ jobs:
     needs: preflight
     if: inputs.lane == 'all' || inputs.lane == 'provider-account'
     timeout-minutes: 25
-    environment: integration-provider-account
+    environment: integration
     env:
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
       OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
@@ -383,7 +383,7 @@ jobs:
     needs: preflight
     if: inputs.lane == 'all' || inputs.lane == 'openshell'
     timeout-minutes: 120
-    environment: integration-openshell
+    environment: integration
     env:
       NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
@@ -414,7 +414,7 @@ jobs:
     needs: preflight
     if: inputs.lane == 'all' || inputs.lane == 'k3d-otel'
     timeout-minutes: 65
-    environment: integration-otel
+    environment: integration
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
@@ -656,7 +656,7 @@ jobs:
     needs: [preflight, slack]
     if: ${{ !cancelled() && needs.preflight.result == 'success' && (inputs.lane == 'all' || inputs.lane == 'qa-matrix') }}
     timeout-minutes: 240
-    environment: integration-qa
+    environment: integration
     env:
       # The Compose launcher otherwise resolves the +v1.35 K3s channel online (update.k3s.io).
       # Keep in step with defaultK3sImage in scripts/ci/prepare.mjs. Job-scoped: dev-up.test.mjs

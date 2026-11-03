@@ -1241,17 +1241,15 @@ test("CI Required always reports and fails at once when a dependency was cancell
 });
 
 test("full-integration lanes read NODE_BASE_IMAGE from a variable their environment has", () => {
-  // Only the integration-model and integration-otel environments define NODE_BASE_IMAGE; every
-  // other lane reads the repository variable, or it can never start (finding 662).
+  // The shared integration environment defines NODE_BASE_IMAGE. Jobs without that environment
+  // must use the repository variable, or they can never start (finding 662).
   const path = ".github/workflows/full-integration.yml";
   const lanes = Object.entries(loadYaml(path).jobs).filter(([, job]) => job.env?.NODE_BASE_IMAGE);
   const repository = "${{ vars.CONTAINER_NODE_BASE_IMAGE }}";
   const environment = "${{ vars.NODE_BASE_IMAGE }}";
   for (const [lane, job] of lanes) {
     const name = job.environment?.name ?? job.environment;
-    const allowed = ["integration-model", "integration-otel"].includes(name)
-      ? [repository, environment]
-      : [repository];
+    const allowed = name === "integration" ? [repository, environment] : [repository];
     assert.ok(allowed.includes(job.env.NODE_BASE_IMAGE), lane);
   }
   // No workflow- or step-level read escapes the job check.

@@ -18,24 +18,18 @@ export const fullIntegrationLanes = Object.freeze([
 ]);
 
 const lanes = new Set(fullIntegrationLanes);
-const branchEligibleLanes = new Set([
+const branchEligibleLanes = new Set(["dev-up-k3d", "skipper-prepared-git-installed"]);
+const credentialedLanes = new Set([
+  "qa-matrix",
+  "docker-model",
   "k3d-model",
+  "production-tui",
+  "k3d-otel",
+  "gateway-routing",
+  "slack",
+  "provider-account",
   "openshell",
-  "dev-up-k3d",
-  "skipper-prepared-git-installed",
 ]);
-const providerAccountEnvironment = "integration-provider-account";
-const laneEnvironments = Object.freeze({
-  "qa-matrix": "integration-qa",
-  "docker-model": "integration-model",
-  "k3d-model": "integration-model",
-  "production-tui": "integration-model",
-  "k3d-otel": "integration-otel",
-  "gateway-routing": "integration-routing",
-  slack: "integration-slack",
-  "provider-account": providerAccountEnvironment,
-  openshell: "integration-openshell",
-});
 
 export function selectLane({ eventName, inputLane }) {
   if (eventName === "workflow_dispatch") {
@@ -57,13 +51,7 @@ export function requiredEnvironmentsForLane(selected) {
   if (!lanes.has(selected)) {
     throw new Error(`Unknown lane: ${selected}`);
   }
-  return [
-    ...new Set(
-      Object.entries(laneEnvironments)
-        .filter(([lane]) => selected === "all" || selected === lane)
-        .map(([, environment]) => environment),
-    ),
-  ];
+  return selected === "all" || credentialedLanes.has(selected) ? ["integration"] : [];
 }
 
 function requiredReviewersRule(environment) {
@@ -72,10 +60,6 @@ function requiredReviewersRule(environment) {
 
 function branchPolicies(policies) {
   return policies?.branch_policies ?? [];
-}
-
-function hasMainBranchPolicy(policies) {
-  return branchPolicies(policies).some((branch) => branch.name === "main");
 }
 
 function assertCustomMainOnlyPolicy(environmentName, environment, policies) {
@@ -99,32 +83,7 @@ export function validateEnvironmentPolicy(environmentName, environment, policies
   if ((reviewers?.reviewers ?? []).length > 0) {
     throw new Error(`Protected environment ${environmentName} must not require reviewers.`);
   }
-  if (environmentName === providerAccountEnvironment) {
-    assertCustomMainOnlyPolicy(environmentName, environment, policies);
-    return;
-  }
-
-  const policy = environment.deployment_branch_policy;
-  if (policy?.protected_branches === true) {
-    return;
-  }
-  if (policy?.custom_branch_policies !== true) {
-    throw new Error(
-      `Protected environment ${environmentName} is not restricted to protected branches or main.`,
-    );
-  }
-  if (!hasMainBranchPolicy(policies)) {
-    throw new Error(
-      `Protected environment ${environmentName} has no main deployment branch policy.`,
-    );
-  }
-}
-
-function needsBranchPolicies(environmentName, environment) {
-  return (
-    environmentName === providerAccountEnvironment ||
-    environment.deployment_branch_policy?.custom_branch_policies === true
-  );
+  assertCustomMainOnlyPolicy(environmentName, environment, policies);
 }
 
 async function fetchGithubJson({ repository, token, path }) {
@@ -155,24 +114,12 @@ export async function validateFullIntegrationPreflight({
       token: env.GITHUB_TOKEN,
       path: `/environments/${environmentName}`,
     });
-    const policies = needsBranchPolicies(environmentName, environment)
-      ? await github({
-          repository: env.GITHUB_REPOSITORY,
-          token: env.GITHUB_TOKEN,
-          path: `/environments/${environmentName}/deployment-branch-policies`,
-        })
-      : undefined;
+    const policies = await github({
+      repository: env.GITHUB_REPOSITORY,
+      token: env.GITHUB_TOKEN,
+      path: `/environments/${environmentName}/deployment-branch-policies`,
+    });
     validateEnvironmentPolicy(environmentName, environment, policies);
-    if (
-      env.GITHUB_REF !== "refs/heads/main" &&
-      (environment.deployment_branch_policy?.custom_branch_policies !== true ||
-        !branchPolicies(policies).some(
-          (branch) =>
-            branch.type === "branch" && branch.name === env.GITHUB_REF.slice("refs/heads/".length),
-        ))
-    ) {
-      throw new Error(`Protected environment ${environmentName} must allow this exact branch.`);
-    }
   }
   return { selectedLane: selected, runAll: selected === "all" };
 }

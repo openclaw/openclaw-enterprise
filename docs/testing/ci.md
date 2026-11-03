@@ -60,20 +60,21 @@ permissions are set in the [workflow files](../../.github/workflows);
 
 ### Environments
 
-Create only environments needed by selected jobs. Full Integration preflight
-requires no required reviewers. Its environments allow protected branches or a
-custom policy containing `main`; `integration-provider-account` instead requires
-exactly one custom rule: branch `main`. The advisory `integration-qa-pr` environment
-permits `main` and GitHub's `refs/pull/*/merge` branches. The `full-qa` and `qa-openshell-compose` labels select runs within
-that policy. Full Integration preflight does not govern this environment.
+All credentialed Full Integration jobs use `integration`. Its custom deployment
+policy must contain exactly one rule: branch `main`. Disable admin bypass and do
+not configure required reviewers. Preflight rejects protected-branches mode,
+additional branches, wildcard grants, and tags, including a tag named `main`.
 
-Full Integration rejects tags. Before dispatch, confirm the branch points
-to the reviewed commit; rely on the run only if its `headSha` matches that commit. Four
-lanes accept branches other than `main`.
-For `k3d-model` (`integration-model`) and `openshell` (`integration-openshell`),
-the custom environment policy must allow both `main` and the exact reviewed
-branch. A wildcard alone does not authorize the branch. Remove the temporary
-branch exception afterward.
+QA Matrix Advisory uses the separate `integration-qa-pr` environment, which
+permits `main` and GitHub's `refs/pull/*/merge` branches. Keep its
+`CODEX_ACCESS_TOKEN` and `OPENAI_API_KEY` separate from the credentials in
+`integration`. The `full-qa` and `qa-openshell-compose` labels select runs within
+that policy; they do not establish an independent trust check. Full Integration
+preflight does not govern this environment.
+
+Full Integration rejects tags. Before dispatch, confirm the branch points to
+the reviewed commit; rely on the run only if its `headSha` matches that commit.
+Credentialed lanes, including `k3d-model` and `openshell`, require `main`.
 
 `dev-up-k3d` and `skipper-prepared-git-installed` accept branches without a
 GitHub environment. The Skipper job uses synthetic, job-local model and Git credentials for the
@@ -86,16 +87,31 @@ image variables are optional `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and
 `OCC_TEST_KUBERNETES_AGENT_IMAGE`; unset values use preparation's builds/defaults.
 `CONTAINER_NODE_BASE_IMAGE` remains a shared repository setting.
 
-| GitHub environment             | Used by                                                                                      | Secrets                                                                                                                                   | Variables                                                                                                                                                                                                                                                             |
-| ------------------------------ | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `integration-model`            | Full Integration: Docker Model Runtime, k3d Model Runtime, Production TUI                    | `OPENAI_API_KEY`                                                                                                                          | `OCC_TEST_OPENAI_MODEL`, `NODE_BASE_IMAGE`; Docker: `OCC_DOCKER_RUNTIME_IMAGE`; k3d: common runtime images; TUI: `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE`, `OCC_TEST_KUBERNETES_RUNTIME_IMAGE`, `OCC_TEST_PRODUCTION_POSTGRES_IMAGE`, `OCC_TEST_PRODUCTION_NODE_IMAGE`. |
-| `integration-routing`          | Full Integration: Gateway Routing                                                            | `OPENAI_API_KEY`                                                                                                                          | `OCC_TEST_OPENAI_MODEL`, common runtime images.                                                                                                                                                                                                                       |
-| `integration-otel`             | Full Integration: k3d OTEL                                                                   | `OPENAI_API_KEY`                                                                                                                          | `OCC_TEST_OPENAI_MODEL`, `NODE_BASE_IMAGE`, common runtime images.                                                                                                                                                                                                    |
-| `integration-slack`            | Full Integration: Slack Live                                                                 | `OPENAI_API_KEY`, `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `OCC_TEST_SLACK_SENDER_BOT_TOKEN`                                                 | `OCC_TEST_OPENAI_MODEL`, common runtime images, `OCC_TEST_SLACK_PROXY_URL`, `OCC_TEST_SLACK_CHANNEL_ID`.                                                                                                                                                              |
-| `integration-provider-account` | Full Integration: Provider Account                                                           | `OCC_TEST_CHATGPT_ADMIN_KEY_JSON`                                                                                                         | `OCC_TEST_CHATGPT_WORKSPACE_ID`, `OCC_TEST_OPENAI_MODEL`, common runtime images.                                                                                                                                                                                      |
-| `integration-openshell`        | Full Integration: OpenShell                                                                  | `CODEX_ACCESS_TOKEN`                                                                                                                      | `OCC_TEST_OPENAI_MODEL`, common runtime images, `OCC_TEST_OPENSHELL_GATEWAY_IMAGE`, `OCC_TEST_OPENSHELL_SANDBOX_IMAGE`, `OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE`, `OCC_TEST_OPENSHELL_SECRET_PROJECTION` (default `1`).                                                  |
-| `integration-qa-pr`            | QA Matrix Advisory: QA advisory (compose), QA advisory (kubernetes), QA advisory (OpenShell) | `CODEX_ACCESS_TOKEN`                                                                                                                      | `OCC_TEST_QA_CODEX_MODEL`, `OCC_TEST_OPENAI_MODEL`, and Calendar settings below. Code on `main` and selected trusted PRs receives these credentials.                                                                                                                  |
-| `integration-qa`               | Full Integration: Shipped Installation QA Matrix                                             | `OPENAI_API_KEY`, `CODEX_ACCESS_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_SENDER_TOKEN`, plus repository fixture secrets below | `OCC_TEST_QA_OPENAI_MODEL`, `OCC_TEST_QA_CODEX_MODEL`, `OCC_TEST_QA_SLACK_CHANNEL_ID`, Calendar settings, `REPOSITORY_UPSTREAM_CIDRS_JSON`.                                                                                                                           |
+Every lane in this table uses `integration`. Each job receives only its explicit
+workflow inputs, but code in that environment can reference the combined secret
+set, including the provider admin key and repository App keys.
+
+| Full Integration jobs                                   | Secrets                                                                                                                                   | Variables                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Docker Model Runtime, k3d Model Runtime, Production TUI | `OPENAI_API_KEY`                                                                                                                          | `OCC_TEST_OPENAI_MODEL`, `NODE_BASE_IMAGE`; Docker: `OCC_DOCKER_RUNTIME_IMAGE`; k3d: common runtime images; TUI: `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE`, `OCC_TEST_KUBERNETES_RUNTIME_IMAGE`, `OCC_TEST_PRODUCTION_POSTGRES_IMAGE`, `OCC_TEST_PRODUCTION_NODE_IMAGE`. |
+| Gateway Routing                                         | `OPENAI_API_KEY`                                                                                                                          | `OCC_TEST_OPENAI_MODEL`, common runtime images.                                                                                                                                                                                                                       |
+| k3d OTEL                                                | `OPENAI_API_KEY`                                                                                                                          | `OCC_TEST_OPENAI_MODEL`, `NODE_BASE_IMAGE`, common runtime images.                                                                                                                                                                                                    |
+| Slack Live                                              | `OPENAI_API_KEY`, `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `OCC_TEST_SLACK_SENDER_BOT_TOKEN`                                                 | `OCC_TEST_OPENAI_MODEL`, common runtime images, `OCC_TEST_SLACK_PROXY_URL`, `OCC_TEST_SLACK_CHANNEL_ID`.                                                                                                                                                              |
+| Provider Account                                        | `OCC_TEST_CHATGPT_ADMIN_KEY_JSON`                                                                                                         | `OCC_TEST_CHATGPT_WORKSPACE_ID`, `OCC_TEST_OPENAI_MODEL`, common runtime images.                                                                                                                                                                                      |
+| OpenShell                                               | `CODEX_ACCESS_TOKEN`, `OPENAI_API_KEY`                                                                                                    | `OCC_TEST_OPENAI_MODEL`, common runtime images, `OCC_TEST_OPENSHELL_GATEWAY_IMAGE`, `OCC_TEST_OPENSHELL_SANDBOX_IMAGE`, `OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE`, `OCC_TEST_OPENSHELL_SECRET_PROJECTION` (default `1`).                                                  |
+| Shipped Installation QA Matrix                          | `OPENAI_API_KEY`, `CODEX_ACCESS_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_SENDER_TOKEN`, plus repository fixture secrets below | `OCC_TEST_QA_OPENAI_MODEL`, `OCC_TEST_QA_CODEX_MODEL`, `OCC_TEST_QA_SLACK_CHANNEL_ID`, Calendar settings, `REPOSITORY_UPSTREAM_CIDRS_JSON`.                                                                                                                           |
+
+The advisory Compose and Kubernetes QA jobs use `CODEX_ACCESS_TOKEN` from
+`integration-qa-pr`; its OpenShell job also uses `OPENAI_API_KEY`. Advisory
+variables are `OCC_TEST_QA_CODEX_MODEL`, `OCC_TEST_OPENAI_MODEL`, and the Calendar
+settings below. Keep provider admin, repository App, and Slack credentials out
+of this PR environment.
+
+When replacing environments, load secrets from their original approved sources;
+GitHub returns stored secret names, not values. Resolve repeated
+`OPENAI_API_KEY` names explicitly rather than assuming the old credentials
+match. Preserve the old environments until credentials are populated and the
+new setup is verified with the selected main-only lanes.
 
 `NODE_BASE_IMAGE` is a separate variable consumed by older Full Integration
 jobs; it is not an alias for `CONTAINER_NODE_BASE_IMAGE`. Model/image requirements
@@ -106,7 +122,7 @@ Calendar requires variables `OCC_TEST_CODEX_CALENDAR_TOOL_NAME` and
 `OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`; `OCC_TEST_CODEX_CALENDAR_PROMPT` is
 optional. QA model overrides default to `gpt-6-luna`.
 
-In `integration-qa`, the default repository fixture needs secrets
+In `integration`, the default repository fixture needs secrets
 `REPOSITORY_OBSERVER_TOKEN`, `REPOSITORY_REGISTRY_JSON`, and `REPOSITORY_APP_KEY`.
 For `qa_repository_fixture: isolated`, replace those with secrets
 `QA_ISOLATED_REPOSITORY_REGISTRY_JSON`, `QA_ISOLATED_REPOSITORY_APP_KEY`, and
