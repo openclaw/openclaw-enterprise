@@ -1,3 +1,4 @@
+import { googleWorkspaceCredentialPolicy } from "../plugin/google-workspace/credential-policy.ts";
 import { ConfigurationValidationError, type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
@@ -27,14 +28,12 @@ import { isAbsolute } from "node:path";
 import { verifyManagedPluginRegistration } from "../sandbox/openshell-plugin-policy.ts";
 import { managedMcpProviderEndpoint } from "../sandbox/openshell-managed-mcp-policy.ts";
 import {
-  googleAttachmentConflict,
   managedCredentialBinding,
-  managedGoogleInstall,
   managedMcpCredentialBinding,
   managedMcpInstallForSourceConfig,
   managedMcpSlotAcceptsSource,
-  managedSlotAcceptsSource,
 } from "../plugin/managed-catalog.ts";
+import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
 
 import { nativeOpenAiModelSelections } from "../native-openai-catalog.ts";
 import { exactDnsName, validateOpenAiSourceBaseUrl } from "../credential-source-endpoint.ts";
@@ -1207,12 +1206,14 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     }
     const selected = context.sources.find(({ id }) => id === binding?.sourceId);
     if (binding && selected) {
-      if (!managedSlotAcceptsSource(binding.credential, selected)) {
+      if (
+        !googleWorkspaceCredentialPolicy.accepts(managedGoogleInstall, binding.credential, selected)
+      ) {
         throw new ScopeViolationError(
           "The attached Google account does not match the reviewed credential slot.",
         );
       }
-      const conflict = googleAttachmentConflict(selected, context.sources);
+      const conflict = googleWorkspaceCredentialPolicy.conflict(selected, context.sources);
       if (conflict) {
         throw new ScopeViolationError(conflict);
       }

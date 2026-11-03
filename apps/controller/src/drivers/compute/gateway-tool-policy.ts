@@ -4,8 +4,8 @@ import type {
   OpenClawConfigurationValue,
 } from "@openclaw-enterprise/contracts";
 
-// Concrete reviewed tools/actions. Plugin selection and ordinary tool grants do
-// not extend this list. Keep native Codex capability policy separate.
+// Reviewed Gateway tools and actions. Dedicated deployments can add reviewed
+// managed plugin tools. Ordinary tool grants remain subject to this policy.
 const GATEWAY_TOOL_BASELINE = {
   allow: [
     "sessions",
@@ -171,6 +171,7 @@ export function managedGatewayConfiguration(
   codex = false,
   createError: SettingError = (setting, requirement) =>
     new Error(`Configuration setting ${setting} ${requirement}.`),
+  managedPluginTools: readonly string[] = [],
 ): OpenClawConfigurationDocument {
   const object = (value: unknown, path: string): Record<string, unknown> => {
     if (value === undefined) {
@@ -245,15 +246,22 @@ export function managedGatewayConfiguration(
     "gateway_exec",
     "gateway_process",
   ];
-  if (approved.allow.some((tool) => administrativeTools.includes(tool))) {
+  const reviewedPluginTools = names(managedPluginTools, "tools.gatewayPolicy.allow", true);
+  if (
+    [...approved.allow, ...reviewedPluginTools].some((tool) => administrativeTools.includes(tool))
+  ) {
     throw createError("tools.gatewayPolicy.allow", "must not grant Gateway administrative tools");
   }
   const effective = object(configuration.tools ?? undefined, "tools").gatewayPolicy;
   const existing = effective === undefined ? undefined : parsePolicy(effective);
+  const admittedAllow =
+    supplied === undefined
+      ? [...new Set([...approved.allow, ...reviewedPluginTools])]
+      : approved.allow;
   const allow =
     existing === undefined
-      ? approved.allow
-      : approved.allow.filter((tool) => existing.allow.includes(tool));
+      ? admittedAllow
+      : admittedAllow.filter((tool) => existing.allow.includes(tool));
   const actions: Record<string, string[]> = {};
   for (const tool of allow) {
     const requested = approved.actions[tool];
@@ -282,6 +290,10 @@ export function managedGatewayConfiguration(
   const next: Record<string, OpenClawConfigurationDocument[string]> =
     structuredClone(configuration);
   const tools = object(next.tools ?? undefined, "tools");
+  const pluginGrants = reviewedPluginTools.filter((tool) => allow.includes(tool));
+  if (pluginGrants.length && (tools.alsoAllow === undefined || Array.isArray(tools.alsoAllow))) {
+    tools.alsoAllow = [...new Set([...(tools.alsoAllow ?? []), ...pluginGrants])];
+  }
   tools.gatewayPolicy = {
     allow,
     actions,
@@ -455,10 +467,12 @@ function invalidGatewayConfiguration(stdout) {
   if (report?.valid !== false || !Array.isArray(report.issues) || report.issues.length === 0) return undefined;
   return report.issues.some(concernsGatewayToolPolicy) ? undefined : new GatewayConfigurationError(report.issues);
 }
-function configureManagedGatewayTools(admitted) {
+function configureManagedGatewayTools(admitted, managedPluginTools) {
   let refusal;
   try {
-    const config = managedGatewayConfiguration(readOpenClawConfig(), admitted, Boolean(process.env.APP_SERVER_URL));
+    const config = managedGatewayConfiguration(
+      readOpenClawConfig(), admitted, Boolean(process.env.APP_SERVER_URL), undefined, managedPluginTools,
+    );
     writeOpenClawConfig(config);
     const validation = pluginSpawnSync("node", ["/app/openclaw.mjs", "config", "validate", "--json"], {
       env: { ...process.env, OPENCLAW_CONFIG_READONLY: "1" },

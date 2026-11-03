@@ -7,6 +7,7 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import {
   codexCatalogEntries,
   codexOpenClawConfiguration,
@@ -183,7 +184,7 @@ test("OpenClaw Plugin Driver lists the vetted Diffs catalog entry", async () => 
   });
 });
 
-test("dedicated OpenClaw admits one managed package and keeps Slack installation-only", async () => {
+test("dedicated OpenClaw admits one managed package and validates Slack's reviewed account binding", async () => {
   const driver = new OCCPluginDriver();
   const dedicated = context("dedicated");
   const [google, slack] = await driver.listCatalog({
@@ -195,12 +196,64 @@ test("dedicated OpenClaw admits one managed package and keeps Slack installation
   assert.equal(driver.policyCapabilities.policyScopeByPlugin[slack.id], "enablement_only");
   assert.deepEqual((await driver.discoverCatalog({ q: "SLACK" })).plugins, [slack]);
   driver.validatePolicies({ [slack.id]: { enabled: false } });
+  const slackPolicy = {
+    releaseSha256: managedMcpInstalls.find(({ id }) => id === slack.id).releaseSha256,
+    credentials: { account: "cs_slack" },
+  };
+  const selections = { [slack.id]: { enabled: true, driverPolicy: slackPolicy } };
+  driver.validatePolicies(selections);
   assert.throws(
     () =>
       driver.validatePolicies({
         [slack.id]: { enabled: true, driverPolicy: { credentials: { account: "cs_slack" } } },
       }),
-    /Slack supports plugin enablement only/,
+    /Slack release has changed/,
+  );
+  driver.validatePolicies({
+    [slack.id]: {
+      enabled: true,
+      driverPolicy: { ...slackPolicy, toolNames: ["slack_search_public", "slack_send_message"] },
+    },
+  });
+  // Selections are literal upstream names. Globs and colliding aliases would broaden access.
+  for (const toolNames of [["slack_*"], ["Search", "search"], ["x".repeat(64)], null]) {
+    assert.throws(
+      () =>
+        driver.validatePolicies({
+          [slack.id]: { enabled: true, driverPolicy: { ...slackPolicy, toolNames } },
+        }),
+      /Select distinct literal Slack tool names/,
+    );
+  }
+  const source = {
+    id: "cs_slack",
+    name: "Slack test account",
+    namespaceId: "ns_test",
+    type: "bearer-token",
+    ownerCapability: "credential_gateway",
+    state: "ready",
+    secrets: { token: { kind: "secret", id: "sec_slack", namespaceId: "ns_test" } },
+    config: {
+      protocol: "mcp",
+      host: "mcp.slack.com",
+      port: "443",
+      path: "/mcp",
+      env_var: "SLACK_MCP_TOKEN",
+    },
+  };
+  const broaderRestSource = {
+    ...source,
+    id: "cs_rest",
+    config: { ...source.config, protocol: "rest" },
+  };
+  const slots = driver.credentials.choices([source, broaderRestSource]);
+  assert.deepEqual(slots.find(({ pluginId }) => pluginId === slack.id).sources, [
+    { id: source.id, name: source.name },
+  ]);
+  driver.credentials.validate(selections, [source]);
+  assert.throws(
+    () => driver.credentials.validate(selections, [{ ...broaderRestSource, id: source.id }]),
+    /Select a ready Slack account/,
   );
   assert.throws(
     () =>

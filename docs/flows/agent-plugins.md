@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-11-03
-last_updated_session: authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7
+last_updated_session: authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8
 ---
 
 # Agent Plugin Deployment Flow
@@ -44,6 +44,9 @@ graph TD
   A["Authorize and validate policy"] -->|valid| S["Save Agent selections"]
   A -->|unsupported| Y["Reject write"]
   S --> B["Revalidate and snapshot version"]
+  B -->|managed MCP| K["Project worker MCP and Gateway tool selections"]
+  K --> L["Sandbox applies account and tool request policy"]
+  L --> I
   B --> C["Validate native metadata; grant selected plugins"]
   C --> D["Attempt selected installs"]
   D -->|install rejection or auth required| E["Disable failed selections; collect warnings"]
@@ -65,50 +68,27 @@ graph TD
 
 ### Credential-scoped discovery
 
-[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) accepts
-transient PATs, same-Namespace Secrets/CredentialSources, or no credential.
-OCC checks Agent `create`. For stored sources, it checks source `operate` and
-rechecks both before Driver use. Cross-Namespace references return
-`400 INVALID_REQUEST`. After caller authorization, missing Secrets return `404`.
-Missing or non-ready explicitly selected CredentialSources return `409 RESOURCE_CONFLICT`.
-Unsupported discovery reads no credential.
+[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) checks
+Agent `create`. Stored credentials must share the Namespace. OCC checks caller
+source `operate` before use. Cross-Namespace references return `400`, missing
+Secrets `404`, and unavailable explicit CredentialSources `409`. Unsupported
+discovery reads no credential.
 
-Saved-Agent discovery requires an active dedicated Agent and caller `read` and
-`update`. It lists only plugins that Agent save admits for this Agent; details for
-others return the save refusal. Bound Secrets use [`SecretDriver.withValue`](../reference/drivers/secret.md).
-Bound and explicitly supplied CredentialSources use Credential Gateway `withSourceToken`,
-which may refresh tokens and return account metadata. Bound credential callbacks
-recheck binding and caller and Agent `operate` grants. Missing or non-ready
-Agent-bound CredentialSources return `404` at binding lookup.
-For a caller-specified `credentialSource`, OCC rechecks Agent scope and caller
-source `operate` before the Driver call.
-Stored sources outlive [login sessions](credential-source-lifecycle.md#device-authorization-and-configuration).
-Curated reads need no credential. Source failures stop discovery. Reads may
-precede rotation. Discovery stores no catalog results. Authorization denials
-emit `authorization_denial` audit events.
+Saved discovery requires a dedicated Agent and caller `read` and `update`. OCC
+offers only plugins it would admit on save. For bound credentials OCC rechecks
+the attachment and both caller and Agent `operate`. For explicit sources it
+rechecks caller `operate`. Missing or non-ready bound sources return `404`.
+Credential Gateway supplies the current bearer. Curated discovery uses no credential.
 
-The [Codex Driver](../../apps/controller/src/drivers/plugin/index.ts) hydrates
-identity, searches `q`, and pages GLOBAL entries with opaque cursors.
-[Console discovery](../../apps/controller/src/console/agents/plugin-discovery.mjs)
-prefetches catalogs on create or edit. Closing the picker or changing views cancels reads.
-Changing credentials clears results and preserves selections.
-A hidden tab cancels deferred prefetch before sending; reopening its picker can load again.
+Console cancels hosted reads when a picker or view closes. Changing the account
+clears results. Hosted reads reject redirects and credential echoes, bound
+response size and time, and return safe metadata with `Cache-Control: no-store`.
 See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
-for search, paging and tool loading.
+for search, paging, and safe presentation fields.
 
-Disconnects during IAM lookup abort the Driver signal before hosted reads start.
-Hosted reads forbid redirects, with a 15-second timeout and 4 MiB response limit.
-Responses use `Cache-Control: no-store`, reject credential echoes, and omit raw
-upstream errors and private artifact URLs. HTTP retains the hosted Driver’s safe
-setup guidance, links, public HTTPS presentation URLs, and availability help. See
-[catalog metadata](../reference/drivers/plugin.md#selection-and-catalogs).
-Connections remain unverified. HTTPS logos omit referrers. Initials are the default.
-
-Optional `CodexPluginDriver.listCatalog` uses
-[`NativeCodexPluginCatalogReader`](../../apps/controller/src/drivers/plugin/stdio-catalog-reader.ts)
-with a configured executable and Codex home. It reads app-server JSON-RPC stdout.
-Invalid JSON-RPC envelopes or `plugin/list` results reject with `NotImplementedError`;
-teardown sends `SIGTERM`, then `SIGKILL` after one second if needed. HTTP discovery does not call this reader.
+The optional `NativeCodexPluginCatalogReader` reads `plugin/list` over app-server
+stdio. It rejects invalid results and stops the child on teardown. HTTP discovery
+uses the hosted reader.
 
 ### 1. Validate desired state under exact-Agent authority
 
@@ -138,10 +118,10 @@ Installation uses `GET /installation`; Agent editors use
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC validates selections and queues the Agent revision.
+OCC snapshots the validated Configuration, Driver and plugin selections in the queued Agent revision. Compute projects one package descriptor; shared startup verifies its release and CLI or MCP assets.
 
 - **CLI packages.** The Gateway loads skill instructions. The Harness runs its image’s pinned executable. The shared guard checks operation and credential restrictions before injection.
-- **Hosted MCP packages.** The Credential Gateway matches the endpoint and placeholder. The Sandbox translates selected tool names into OpenShell rules and rejects overlapping routes.
+- **Hosted MCP packages.** Compute gives the worker the pinned descriptor and selected upstream tool names. The worker advertises that subset and the Gateway admits it. The credential driver attaches the source. The Sandbox delivers its placeholder and translates the selection into request policy for worker and script calls. The bundled OpenShell implementation enforces exact MCP names and rejects overlapping routes. An account and nonempty selection enable the server.
 - **Native runtime plugins.** Startup installs packages and verifies native tool policy.
 
 Credential withdrawal removes injection. Recovery preserves other attachments.
@@ -373,9 +353,11 @@ establish starvation.
 
 ## Changelog
 
+- 2026-11-03 01:10: Describe hosted MCP packages and Driver-owned request policy. (authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8 - 4178b555ac5dc711c818055bd7fe34c3e4d4943b)
+
 - 2026-11-03 00:16: Describe plugin types. (authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7 - e1a6ce75ac414131e759b985d280833b3b26b90e)
 
-- 2026-11-02 22:29: Trace Slack credential policy. (authoring-run/84451153-a081-4e74-aa29-e1a4acecddad - 5c0623f136d881356cec3c104b8657c761c14782)
+- 2026-11-02 22:29: Trace the Slack account and tool selection through dedicated Agent deployment. (authoring-run/84451153-a081-4e74-aa29-e1a4acecddad - 5c0623f136d881356cec3c104b8657c761c14782)
 
 - 2026-10-31 05:52: Classify native install failures. (authoring-run/86b48c89-0c80-493f-b48a-6999988d4766 - 6d941c15081e95ef36b4ba1ffbbbc0b117972c0a)
 - 2026-10-31 03:36: Restore experimental plugin search with the upstream Codex version. (authoring-run/dc99918c-2f5c-4141-bffd-b216830017d0 - 25364fcfdc905e95b5a813a6cd7b2de47b66ca71)
