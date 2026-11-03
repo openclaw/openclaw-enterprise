@@ -151,10 +151,10 @@ that state is not CI proof; the standalone fallback remains the pinned reviewed
 manual profile. Production node provisioning remains outside CI ownership; see
 [Codex sandbox setup](../guides/deploy/codex-sandbox.md).
 
-`scripts/ci/staging-qualification.ts:pull` verifies release inputs and
+`scripts/ci/staging-qualification.ts:pull` verifies release metadata and
 [isolates pull credentials](../testing/ci.md#qualify-a-published-release-for-staging).
-`smoke` uses the verified release checkout and pinned k3d tools without the GitHub
-token. Results identify both commits.
+`smoke` runs trusted workflow code against the release images. Results identify
+both commits.
 
 ### 3. Execute and account for actual cases
 

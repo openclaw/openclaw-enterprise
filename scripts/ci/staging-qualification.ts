@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { access, appendFile, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { validatePublicationRun, validateReceipt } from "./container-promote.mjs";
@@ -9,34 +10,136 @@ import {
   githubPages,
   ghcrPackageName,
   repository,
-  verifyCi,
-  verifyMainSource,
+  validateCi,
+  validateContext,
 } from "./container-release.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
 
 const env = process.env;
+// Staging communicates through receipt files, never Actions command files.
+delete env.GITHUB_OUTPUT;
 const workflow = ".github/workflows/staging-qualification.yml";
 const startupFiles = [
   ["images-packaging", "tests/integration/production-image-startup.test.mjs"],
   ["images-runtime-startup", "tests/integration/runtime-image-startup.test.mjs"],
 ] as const;
 
+function decimal(value: unknown): string {
+  assert.ok(typeof value === "string" && /^[1-9][0-9]*$/.test(value));
+  const id = Number(value);
+  assert.ok(Number.isSafeInteger(id), "Require a positive safe decimal ID.");
+  const canonical = id.toString(10);
+  assert.equal(canonical, value, "Require a canonical decimal ID.");
+  return canonical;
+}
+
+function subprocessEnv() {
+  const clean = { ...env };
+  delete clean.GH_TOKEN;
+  delete clean.GITHUB_TOKEN;
+  delete clean.GITHUB_OUTPUT;
+  return clean;
+}
+
+function git(root: string, args: string[]) {
+  return execFileSync("git", args, {
+    cwd: root,
+    env: subprocessEnv(),
+    encoding: "utf8",
+    maxBuffer: 128 * 1024,
+    timeout: 30_000,
+  });
+}
+
+async function trustedSource() {
+  assert.match(env.SOURCE_SHA ?? "", /^[a-f0-9]{40}$/);
+  assert.equal(env.SOURCE_SHA?.length, 40);
+  assert.match(env.GITHUB_WORKFLOW_SHA ?? "", /^[a-f0-9]{40}$/);
+  assert.equal(env.GITHUB_WORKFLOW_SHA?.length, 40);
+  assert.ok(env.GITHUB_WORKSPACE);
+  const root = await realpath(env.GITHUB_WORKSPACE);
+  assert.equal(await realpath(process.cwd()), root);
+  assert.equal(git(root, ["rev-parse", "--show-toplevel"]).trim(), root);
+  assert.equal(git(root, ["rev-parse", "HEAD"]).trim(), env.GITHUB_WORKFLOW_SHA);
+  assert.equal(
+    git(root, ["status", "--porcelain", "--untracked-files=no"]),
+    "",
+    "Trusted checkout has tracked changes.",
+  );
+  git(root, ["merge-base", "--is-ancestor", env.GITHUB_WORKFLOW_SHA!, "refs/remotes/origin/main"]);
+  git(root, ["merge-base", "--is-ancestor", env.SOURCE_SHA!, env.GITHUB_WORKFLOW_SHA!]);
+  return root;
+}
+
+async function releaseProfile(root: string) {
+  // Historical objects are data only. Never check out or import release code.
+  const entry = git(root, ["ls-tree", env.SOURCE_SHA!, "--", "deploy/runtime/Dockerfile"]);
+  const match = /^100644 blob ([a-f0-9]{40})\tdeploy\/runtime\/Dockerfile\n$/.exec(entry);
+  const blob = match?.[1];
+  assert.ok(blob && match?.[0] === entry, "Require one ordinary runtime Dockerfile blob.");
+  assert.equal(git(root, ["cat-file", "-t", blob]), "blob\n");
+  const size = Number(decimal(git(root, ["cat-file", "-s", blob]).trim()));
+  assert.ok(size <= 64 * 1024, "Runtime recipe exceeds 64 KiB.");
+  const recipe = git(root, ["cat-file", "blob", blob]);
+  assert.equal(Buffer.byteLength(recipe), size);
+  const field = (name: string) => {
+    const values = [...recipe.matchAll(new RegExp(`^(?:ARG|ENV) ${name}=(.*)$`, "gm"))];
+    const value = values[0]?.[1];
+    assert.ok(values.length === 1 && value, `Require one literal ${name}.`);
+    return value;
+  };
+  const nodeBaseImage = field("NODE_BASE_IMAGE");
+  const codexVersion = field("OPENAI_CODEX_VERSION");
+  assert.match(nodeBaseImage, /^docker\.io\/library\/node:24[.-][a-z0-9.-]+@sha256:[a-f0-9]{64}$/);
+  const hash = createHash("sha256").update(recipe).digest("hex");
+  if (codexVersion === "0.163.0-alpha.2") {
+    assert.equal(env.SOURCE_SHA, "54bfa7fc1b99e362450beb5f9211e164991fa7b4");
+    assert.equal(hash, "12d579bc223c90d7b3392651b986ed0ac33b5f7e1954bc2344a38190a2f9a8b5");
+  } else {
+    assert.equal(codexVersion, "0.164.0", "Unsupported release profile; refuse before pull.");
+    assert.equal(
+      recipe,
+      await readFile(join(root, "deploy/runtime/Dockerfile"), "utf8"),
+      "Unreviewed historical runtime recipe.",
+    );
+  }
+  const suites = loadTestSuites(join(root, "scripts/ci/test-suites.json"));
+  assert.equal(nodeBaseImage, suites.lanes["images-packaging"].prepare.defaultEnv.NODE_BASE_IMAGE);
+  return { nodeBaseImage, codexVersion };
+}
+
 async function producer() {
+  decimal(env.PUBLICATION_RUN_ID);
+  decimal(env.PUBLICATION_ATTEMPT);
+  const root = await trustedSource();
   assert.match(env.STAGING_INSTALLATION ?? "", /^[a-z][a-z0-9-]{0,62}$/);
   assert.equal(
     env.STAGING_INSTALLATION,
     env.CONFIGURED_STAGING_INSTALLATION,
     "Select the configured staging installation.",
   );
-  await verifyMainSource(env, workflow);
-  const comparison = await github(
-    `repos/${repository}/compare/${env.SOURCE_SHA}...${env.GITHUB_WORKFLOW_SHA}`,
-  );
-  assert.ok(["ahead", "identical"].includes(comparison.status));
-  assert.match(env.PUBLICATION_RUN_ID ?? "", /^[1-9][0-9]*$/);
+  validateContext(env, await github(`repos/${repository}`), workflow);
+  const main = await github(`repos/${repository}/branches/main`);
+  assert.equal(main.name, "main");
+  assert.equal(main.protected, true, "Main must be protected.");
+  assert.match(main.commit?.sha ?? "", /^[a-f0-9]{40}$/);
+  assert.equal(main.commit.sha.length, 40);
+  git(root, ["merge-base", "--is-ancestor", env.GITHUB_WORKFLOW_SHA!, main.commit.sha]);
+  const profile = await releaseProfile(root);
   const run = await github(`repos/${repository}/actions/runs/${env.PUBLICATION_RUN_ID}`);
   const definition = await github(`repos/${repository}/actions/workflows/container-publish.yml`);
   validatePublicationRun(run, definition, env);
+  const jobs = await githubPages(
+    `repos/${repository}/actions/runs/${env.PUBLICATION_RUN_ID}/attempts/${env.PUBLICATION_ATTEMPT}/jobs`,
+    "jobs",
+  );
+  const publish = jobs.filter(
+    (job: { name: string }) => job.name === "Publish exact OCI digests to public GHCR",
+  );
+  assert.equal(publish.length, 1, "Require the exact image publication job.");
+  assert.equal(publish[0].head_sha, env.SOURCE_SHA);
+  assert.equal(publish[0].status, "completed");
+  assert.equal(publish[0].conclusion, "success", "The image publication job must succeed.");
   const artifacts = await githubPages(
     `repos/${repository}/actions/runs/${env.PUBLICATION_RUN_ID}/artifacts`,
     "artifacts",
@@ -51,81 +154,99 @@ async function producer() {
   assert.equal(artifact.expired, false);
   assert.equal(String(artifact.workflow_run?.id), env.PUBLICATION_RUN_ID);
   assert.equal(artifact.workflow_run?.head_sha, env.SOURCE_SHA);
-  assert.match(String(artifact.id), /^[1-9][0-9]*$/);
-  return String(artifact.id);
-}
-
-async function releaseSource() {
-  assert.ok(env.GITHUB_WORKSPACE, "GITHUB_WORKSPACE is required.");
-  const root = await realpath(join(env.GITHUB_WORKSPACE, "release-source"));
-  const [top, head] = execFileSync("git", ["rev-parse", "--show-toplevel", "HEAD"], {
-    cwd: root,
-    encoding: "utf8",
-  })
-    .trim()
-    .split("\n");
-  assert.equal(top, root, "The release source needs its own checkout.");
-  assert.equal(head, env.SOURCE_SHA, "Release checkout differs from the verified source.");
-  assert.equal(
-    execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], {
-      cwd: root,
-      encoding: "utf8",
-    }),
-    "",
-    "Release checkout has tracked changes.",
+  assert.ok(Number.isSafeInteger(artifact.id) && artifact.id > 0, "Require a numeric artifact ID.");
+  const artifactId = Number(artifact.id).toString(10);
+  assert.match(artifact.digest ?? "", /^sha256:[a-f0-9]{64}$/);
+  assert.ok(
+    Number.isSafeInteger(artifact.size_in_bytes) &&
+      artifact.size_in_bytes > 0 &&
+      artifact.size_in_bytes <= 1024 * 1024,
+    "Publication archive exceeds 1 MiB.",
   );
-  return root;
+  return {
+    artifact: { digest: artifact.digest, size_in_bytes: artifact.size_in_bytes },
+    artifactId,
+    profile,
+  };
 }
 
-async function releaseNodeBase(root: string) {
-  try {
-    // The credentialed step reads release inputs as data. Release scripts run in later steps.
-    const prepare = await readFile(join(root, "scripts/ci/prepare.mjs"), "utf8");
-    assert.match(prepare, /^export async function prepareRuntimeImageSmoke\(/m);
-    await access(join(root, "scripts/ci/setup-tools.sh"));
-    await access(join(root, "scripts/ci/cleanup.mjs"));
-    for (const [lane, file] of startupFiles) {
-      await access(join(root, file));
-      execFileSync(process.execPath, [
-        "scripts/ci/run-tests.mjs",
-        "check-selection",
-        lane,
-        "--file",
-        file,
-        "--root",
-        root,
-      ]);
-    }
-    const suites = loadTestSuites(join(root, "scripts/ci/test-suites.json"));
-    const nodeBase = suites.lanes["images-packaging"].prepare.defaultEnv.NODE_BASE_IMAGE;
-    const recipe = await readFile(join(root, "deploy/runtime/Dockerfile"), "utf8");
-    assert.ok(typeof nodeBase === "string");
-    assert.equal(recipe.match(/^ARG NODE_BASE_IMAGE=(.+)$/m)?.[1], nodeBase);
-    return nodeBase;
-  } catch (error) {
-    throw new Error(`Release ${env.SOURCE_SHA} does not support this startup verifier.`, {
-      cause: error,
-    });
-  }
+async function publicationReceipt(
+  directory: string,
+  artifact: { digest: string; size_in_bytes: number },
+) {
+  assert.ok((await lstat(directory)).isDirectory());
+  const entries = await readdir(directory);
+  const [name] = entries;
+  assert.ok(entries.length === 1 && name, "Require exactly one publication archive.");
+  assert.match(name, /^[a-zA-Z0-9._-]{1,128}$/, "Require a plain publication archive name.");
+  const path = join(directory, name);
+  const stat = await lstat(path);
+  assert.ok(stat.isFile(), "Publication archive must be a regular file.");
+  assert.equal(stat.size, artifact.size_in_bytes);
+  assert.equal(
+    `sha256:${createHash("sha256")
+      .update(await readFile(path))
+      .digest("hex")}`,
+    artifact.digest,
+    "Publication archive digest mismatch.",
+  );
+  const options = {
+    env: subprocessEnv(),
+    encoding: "utf8" as const,
+    maxBuffer: 64 * 1024,
+    timeout: 10_000,
+  };
+  assert.equal(
+    execFileSync("unzip", ["-Z1", path], options),
+    "publication.json\n",
+    "Publication archive must contain only publication.json.",
+  );
+  return JSON.parse(execFileSync("unzip", ["-p", path, "publication.json"], options));
+}
+
+async function receiptCi({ ciRunId, ciAttempt }: { ciRunId: string; ciAttempt: string }) {
+  // The receipt can match service identities, but cannot select an API path.
+  const runs = await githubPages(
+    `repos/${repository}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha=${env.SOURCE_SHA}`,
+    "workflow_runs",
+  );
+  const matches = runs.filter(
+    (run: { id: number; run_attempt: number }) =>
+      String(run.id) === ciRunId && String(run.run_attempt) === ciAttempt,
+  );
+  assert.equal(matches.length, 1, "Receipt CI identity is not bound to a service run.");
+  const candidate = matches[0];
+  const id = decimal(String(candidate.id));
+  const attempt = decimal(String(candidate.run_attempt));
+  const definition = await github(`repos/${repository}/actions/workflows/ci.yml`);
+  assert.equal(candidate.repository?.full_name, repository);
+  assert.equal(candidate.head_repository?.full_name, repository);
+  assert.equal(candidate.head_branch, "main");
+  assert.equal(candidate.head_sha, env.SOURCE_SHA);
+  assert.equal(candidate.event, "push");
+  assert.equal(candidate.status, "completed");
+  assert.equal(candidate.conclusion, "success");
+  assert.equal(candidate.workflow_id, definition.id);
+  assert.equal(candidate.path, ".github/workflows/ci.yml");
+  const run = await github(`repos/${repository}/actions/runs/${id}`);
+  const jobs = await githubPages(
+    `repos/${repository}/actions/runs/${id}/attempts/${attempt}/jobs`,
+    "jobs",
+  );
+  validateCi(run, definition, jobs, env.SOURCE_SHA, id, attempt);
 }
 
 async function pull(path: string, directory: string) {
-  assert.equal(await producer(), env.ARTIFACT_ID, "Publication artifact identity changed.");
-  const receipt = JSON.parse(await readFile(path, "utf8"));
-  validateReceipt(receipt, { ...env, NODE_BASE_IMAGE: receipt?.[0]?.nodeBaseImage });
-  await verifyCi({ ...env, CI_RUN_ID: receipt[0].ciRunId, CI_ATTEMPT: receipt[0].ciAttempt });
+  const { artifact, artifactId, profile } = await producer();
+  const receipt = await publicationReceipt(path, artifact);
+  validateReceipt(receipt, { ...env, NODE_BASE_IMAGE: profile.nodeBaseImage });
+  await receiptCi(receipt[0]);
   const actor = env.GITHUB_ACTOR;
   const token = env.GH_TOKEN;
   delete env.GH_TOKEN;
   delete env.GITHUB_TOKEN;
   assert.ok(actor, "GITHUB_ACTOR is required for GHCR package read access.");
   assert.ok(token, "GH_TOKEN is required for GHCR package read access.");
-  const nodeBaseImage = await releaseNodeBase(await releaseSource());
-  assert.equal(
-    receipt[0].nodeBaseImage,
-    nodeBaseImage,
-    "Publication Node base differs from the release source.",
-  );
   const selected: Record<string, string> = {};
   // Validate both destinations before pulling either. No receipt-selected registry or tag.
   for (const image of receipt) {
@@ -192,8 +313,8 @@ async function pull(path: string, directory: string) {
       workflowSha: env.GITHUB_WORKFLOW_SHA,
       publicationRunId: env.PUBLICATION_RUN_ID,
       publicationAttempt: env.PUBLICATION_ATTEMPT,
-      artifactId: env.ARTIFACT_ID,
-      nodeBaseImage,
+      artifactId,
+      ...profile,
       selected,
       imageIds: ids,
       liveInstall: false,
@@ -204,10 +325,26 @@ async function pull(path: string, directory: string) {
 
 async function smoke(directory: string) {
   assert.ok(!env.GH_TOKEN && !env.GITHUB_TOKEN, "Startup must run without the GitHub token.");
+  delete env.GH_TOKEN;
+  delete env.GITHUB_TOKEN;
   const proof = JSON.parse(await readFile(join(directory, "staging-pulled-images.json"), "utf8"));
   assert.equal(proof.sourceSha, env.SOURCE_SHA);
   assert.equal(proof.workflowSha, env.GITHUB_WORKFLOW_SHA);
-  const root = await releaseSource();
+  const root = await trustedSource();
+  const profile = await releaseProfile(root);
+  assert.equal(proof.codexVersion, profile.codexVersion);
+  assert.equal(proof.nodeBaseImage, profile.nodeBaseImage);
+  for (const id of Object.values(proof.imageIds)) {
+    assert.match(String(id), /^sha256:[a-f0-9]{64}$/);
+    const [image] = JSON.parse(
+      execFileSync("docker", ["image", "inspect", String(id)], {
+        encoding: "utf8",
+        env: subprocessEnv(),
+      }),
+    );
+    assert.equal(image.Id, id);
+    assert.equal(image.Config.Labels["org.opencontainers.image.revision"], env.SOURCE_SHA);
+  }
   const state = join(directory, "staging-runtime-state.json");
   const { prepareRuntimeImageSmoke } = await import(
     pathToFileURL(join(root, "scripts/ci/prepare.mjs")).href
@@ -215,6 +352,7 @@ async function smoke(directory: string) {
   const prepared = await prepareRuntimeImageSmoke({
     image: proof.imageIds.runtime,
     statePath: state,
+    codexVersion: profile.codexVersion,
   });
   try {
     for (const [lane, file] of startupFiles) {
@@ -234,12 +372,14 @@ async function smoke(directory: string) {
           join(directory, `staging-${lane}.json`),
         ],
         {
+          cwd: root,
           stdio: "inherit",
           env: {
             ...env,
             ...prepared.env,
             // The CI runner binds test evidence to the checkout it executes.
-            GITHUB_SHA: proof.sourceSha,
+            GITHUB_SHA: env.GITHUB_WORKFLOW_SHA,
+            OCC_TEST_STAGING_CODEX_VERSION: profile.codexVersion,
             NODE_BASE_IMAGE: proof.nodeBaseImage,
             OCC_TEST_PRODUCTION_IMAGE: proof.imageIds.controller,
             OCC_TEST_RUNTIME_IMAGE: proof.imageIds.runtime,
@@ -261,11 +401,7 @@ async function smoke(directory: string) {
 try {
   const [command, path] = process.argv.slice(2);
   if (command === "validate") {
-    assert.ok(env.GITHUB_OUTPUT);
-    await appendFile(
-      env.GITHUB_OUTPUT,
-      `artifact_id=${await producer()}\nsource_sha=${env.SOURCE_SHA}\n`,
-    );
+    await producer();
   } else {
     assert.ok(env.RUNNER_TEMP, "RUNNER_TEMP is required.");
     if (command === "pull") {

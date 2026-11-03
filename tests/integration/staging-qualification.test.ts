@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
@@ -11,9 +11,9 @@ const digest = `sha256:${"b".repeat(64)}`;
 const repository = "openclaw/openclaw-enterprise";
 
 test("staging workflow command consumes bound digests and refuses invalid release evidence", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "staging-command-"));
+  const directory = await mkdtemp(join(process.cwd(), ".staging-command-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const root = join(directory, "release-source");
+  const root = join(directory, "trusted-source");
   const hostEnv = { HOME: directory, PATH: process.env.PATH };
   const git = (args: string[]) => execute("git", ["-C", root, ...args], { env: hostEnv });
   const commit = async () => {
@@ -27,50 +27,76 @@ test("staging workflow command consumes bound digests and refuses invalid releas
       "--quiet",
       "--no-gpg-sign",
       "-m",
-      "Add release inputs",
+      "Fixture inputs",
     ]);
     return (await git(["rev-parse", "HEAD"])).stdout.trim();
   };
-  for (const input of [
-    "deploy/runtime/Dockerfile",
-    "scripts/ci/prepare.mjs",
-    "scripts/ci/cleanup.mjs",
-    "scripts/ci/setup-tools.sh",
-    "scripts/ci/test-suites.json",
-    "scripts/ci/test-suites",
-    "tests/integration/production-image-startup.test.mjs",
-    "tests/integration/runtime-image-startup.test.mjs",
-  ]) {
-    await mkdir(dirname(join(root, input)), { recursive: true });
-    await cp(input, join(root, input), { recursive: true });
-  }
-  await git(["init", "--quiet"]);
-  const source = await commit();
-  const recipe = await readFile(join(root, "deploy/runtime/Dockerfile"), "utf8");
+  const recipePath = join(root, "deploy/runtime/Dockerfile");
+  await mkdir(dirname(recipePath), { recursive: true });
+  const recipe = await readFile("deploy/runtime/Dockerfile", "utf8");
   const nodeBaseImage = recipe.match(/^ARG NODE_BASE_IMAGE=(.+)$/m)?.[1];
   assert.ok(nodeBaseImage);
+  // All executable files remain the current trusted implementation. Only the
+  // literal Dockerfile has fixture history; none of that history is executed.
+  await symlink(resolve("scripts"), join(root, "scripts"), "dir");
+  await symlink(resolve("tests"), join(root, "tests"), "dir");
+  await writeFile(
+    recipePath,
+    recipe.replace("OPENAI_CODEX_VERSION=0.164.0", "OPENAI_CODEX_VERSION=0.160.0"),
+  );
+  await git(["init", "--quiet"]);
+  const unsupported = await commit();
+  await writeFile(recipePath, recipe + "\nENV OPENAI_CODEX_VERSION=0.164.0\n");
+  const duplicateField = await commit();
+  await writeFile(
+    recipePath,
+    recipe.replace("OPENAI_CODEX_VERSION=0.164.0", "OPENAI_CODEX_VERSION=unreviewed"),
+  );
+  const malformedField = await commit();
+  await rm(recipePath);
+  await symlink("missing-recipe", recipePath);
+  const symlinkSource = await commit();
+  await rm(recipePath);
+  await writeFile(recipePath, recipe);
+  const source = await commit();
+  const unrelated = (
+    await git([
+      "-c",
+      "user.name=CI Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit-tree",
+      "HEAD^{tree}",
+      "-m",
+      "Unrelated fixture history",
+    ])
+  ).stdout.trim();
+  await writeFile(join(root, "workflow-marker"), "Trusted workflow revision\n");
+  const workflowSha = await commit();
+  await git(["update-ref", "refs/remotes/origin/main", workflowSha]);
   const env = {
     ...hostEnv,
     RUNNER_TEMP: directory,
-    GH_TOKEN: "fixture",
+    GH_TOKEN: "invented-workflow-token",
     GITHUB_ACTOR: "fixture-actor",
     SOURCE_SHA: source,
-    GITHUB_SHA: "a".repeat(40),
-    GITHUB_WORKFLOW_SHA: "a".repeat(40),
-    GITHUB_WORKSPACE: directory,
+    GITHUB_SHA: workflowSha,
+    GITHUB_WORKFLOW_SHA: workflowSha,
+    GITHUB_WORKSPACE: root,
     GITHUB_REPOSITORY: repository,
     GITHUB_REF: "refs/heads/main",
     GITHUB_EVENT_NAME: "workflow_dispatch",
     GITHUB_WORKFLOW_REF: `${repository}/.github/workflows/staging-qualification.yml@refs/heads/main`,
     PUBLICATION_RUN_ID: "123",
     PUBLICATION_ATTEMPT: "2",
-    ARTIFACT_ID: "789",
     STAGING_INSTALLATION: "test-staging",
     CONFIGURED_STAGING_INSTALLATION: "test-staging",
     GHCR_CONTROLLER_IMAGE: "ghcr.io/openclaw/controller",
     GHCR_RUNTIME_IMAGE: "ghcr.io/openclaw/runtime",
-    GITHUB_OUTPUT: join(directory, "output"),
+    GITHUB_OUTPUT: join(directory, "hostile-output"),
   };
+  // A writable hostile output path must remain untouched even on success.
+  await writeFile(env.GITHUB_OUTPUT, "owner data\n");
   const receipt = ["controller", "runtime"].map((image) => ({
     image,
     sourceSha: source,
@@ -86,12 +112,26 @@ test("staging workflow command consumes bound digests and refuses invalid releas
     destination: `ghcr.io/openclaw/${image}`,
     tag: `sha-${source}`,
   }));
-  await mkdir(join(directory, "publication"));
-  const path = join(directory, "publication/publication.json");
-  await writeFile(path, JSON.stringify(receipt));
-  // The real workflow CLI verifies Git and test selection. Only the GitHub API
-  // and Docker transport are replaced for the pull step.
-  const preload = join(directory, "transport.ts");
+  const archiveDirectory = join(directory, "publication");
+  await mkdir(archiveDirectory);
+  const archive = join(archiveDirectory, "response-header-filename.zip");
+  const metadata = join(directory, "artifact.json");
+  const receiptPath = join(directory, "publication.json");
+  const pack = async (value: unknown) => {
+    await writeFile(receiptPath, JSON.stringify(value));
+    await rm(archive, { force: true });
+    await execute("zip", ["-q", archive, "publication.json"], { cwd: directory, env: hostEnv });
+    const bytes = await readFile(archive);
+    await writeFile(
+      metadata,
+      JSON.stringify({
+        digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+        size_in_bytes: bytes.length,
+      }),
+    );
+  };
+  await pack(receipt);
+  const preload = join(directory, "transport.mjs");
   await writeFile(
     preload,
     `
@@ -100,40 +140,60 @@ import child from 'node:child_process';
 import { appendFileSync, readFileSync, statSync, readdirSync } from 'node:fs';
 import assert from 'node:assert/strict';
 const env = process.env;
-const source = env.SOURCE_SHA;
-const token = env.GH_TOKEN;
-const auth = Buffer.from(env.GITHUB_ACTOR + ':' + token).toString('base64');
+// Service identities are fixed independently of dispatched inputs and receipts.
+const source = ${JSON.stringify(source)};
+const workflowSha = ${JSON.stringify(workflowSha)};
+const token = 'invented-workflow-token';
+const auth = Buffer.from('fixture-actor:' + token).toString('base64');
 const repo = '${repository}';
 const publication = '.github/workflows/container-publish.yml';
+const log = value => appendFileSync(env.RUNNER_TEMP + '/calls.jsonl', JSON.stringify(value) + '\\n');
+const run = (id, workflow, event, attempt) => ({id, run_attempt: attempt, workflow_id: id,
+  path: workflow, repository: {full_name: repo}, head_repository: {full_name: repo},
+  head_branch: 'main', head_sha: source, event, status: 'completed', conclusion: 'success'});
 globalThis.fetch = async (url, options) => {
-  assert.equal(process.env.GH_TOKEN, token);
-  assert.ok(options.headers.Authorization.includes(token));
+  assert.equal(options.headers.Authorization, 'Bearer ' + token);
   const path = new URL(url).pathname;
+  log({api: path});
   let body;
-  const run = (id, workflow, event, attempt) => ({id, run_attempt: attempt, workflow_id: id,
-    path: workflow, repository: {full_name: repo}, head_repository: {full_name: repo},
-    head_branch: 'main', head_sha: source, event, status: 'completed', conclusion: 'success'});
   if (path === '/repos/' + repo) body = {full_name: repo, private: false, default_branch: 'main'};
-  else if (path.includes('/compare/')) body = {status: env.FORK_SOURCE ? 'diverged' : 'ahead'};
+  else if (path.endsWith('/branches/main')) body = {name: 'main', protected: !env.UNPROTECTED, commit: {sha: workflowSha}};
   else if (path.endsWith('/workflows/container-publish.yml')) body = {id: 123, path: publication, state: 'active'};
   else if (path.endsWith('/workflows/ci.yml')) body = {id: 456, path: '.github/workflows/ci.yml', state: 'active'};
-  else if (path.endsWith('/runs/123')) body = run(123, publication, 'workflow_dispatch', env.BAD_ATTEMPT ? 3 : 2);
+  else if (path.endsWith('/workflows/ci.yml/runs')) {
+    assert.equal(new URL(url).searchParams.get('head_sha'), source);
+    const ci = run(456, '.github/workflows/ci.yml', 'push', 1);
+    if (env.FOREIGN_CI) ci.head_repository.full_name = 'other/repository';
+    body = {workflow_runs: [ci]};
+  }
+  else if (path.endsWith('/runs/123')) {
+    body = run(123, publication, 'workflow_dispatch', env.BAD_ATTEMPT ? 3 : 2);
+    if (env.FOREIGN_PRODUCER) body.head_repository.full_name = 'other/repository';
+  }
   else if (path.endsWith('/runs/456')) body = run(456, '.github/workflows/ci.yml', 'push', 1);
-  else if (path.endsWith('/artifacts')) body = {artifacts: [{id: 789, name: 'container-publication-123-2',
-    expired: !!env.EXPIRED, workflow_run: {id: 123, head_sha: source}}]};
-  else if (path.endsWith('/jobs')) body = {jobs: [{name: 'CI Required', status: 'completed', conclusion: 'success', head_sha: source}]};
+  else if (path.endsWith('/runs/123/attempts/2/jobs')) body = {jobs: [{name: 'Publish exact OCI digests to public GHCR',
+    status: 'completed', conclusion: env.SKIP_PUBLISH ? 'skipped' : 'success', head_sha: source}]};
+  else if (path.endsWith('/artifacts')) {
+    const artifact = {id: env.BAD_ARTIFACT_ID ? '789\\nsource_sha=bad' : 789, name: 'container-publication-123-2',
+      ...JSON.parse(readFileSync(${JSON.stringify(metadata)}, 'utf8')),
+      expired: !!env.EXPIRED, workflow_run: {id: 123, head_sha: source}};
+    body = {artifacts: env.DUPLICATE ? [artifact, artifact] : [artifact]};
+  }
+  else if (path.endsWith('/runs/456/attempts/1/jobs')) body = {jobs: [{name: 'CI Required', status: 'completed', conclusion: 'success', head_sha: source}]};
   else throw new Error('Unexpected network request: ' + url);
   return new Response(JSON.stringify(body), {status: 200});
 };
 const executeSync = child.execFileSync;
 child.execFileSync = (command, args, options) => {
-  assert.equal(process.env.GH_TOKEN, undefined);
-  assert.equal(process.env.GITHUB_TOKEN, undefined);
-  assert.equal(options?.env?.GH_TOKEN, undefined);
-  if (command === 'git' || (command === process.execPath && args[0] === 'scripts/ci/run-tests.mjs' && args[1] === 'check-selection')) {
+  if (command === 'git' || command === 'unzip') {
+    assert.equal(options.env.GH_TOKEN, undefined);
+    assert.equal(options.env.GITHUB_TOKEN, undefined);
+    assert.equal(options.env.GITHUB_OUTPUT, undefined);
     return executeSync(command, args, options);
   }
-  appendFileSync(env.RUNNER_TEMP + '/calls.jsonl', JSON.stringify({command, args}) + '\\n');
+  assert.equal(process.env.GH_TOKEN, undefined);
+  assert.equal(process.env.GITHUB_TOKEN, undefined);
+  log({command, args});
   if (command === 'docker' && args[0] === '--config') {
     assert.equal(args[2], '--host=unix:///var/run/docker.sock');
     assert.equal(args[3], 'pull');
@@ -142,24 +202,41 @@ child.execFileSync = (command, args, options) => {
     assert.equal(statSync(config).mode & 0o777, 0o600);
     assert.equal(statSync(args[1]).mode & 0o777, 0o700);
     assert.deepEqual(JSON.parse(readFileSync(config, 'utf8')), {auths: {'ghcr.io': {auth}}});
-    if (env.FAIL_PULL === args.at(-1)) {
-      throw Object.assign(new Error('denied ' + token + ' ' + auth), {
-        stdout: Buffer.from('stdout-secret ' + token), stderr: Buffer.from('stderr-secret ' + auth)
-      });
-    }
-    return 'untrusted-success-output ' + token + ' ' + auth;
+    if (env.FAIL_PULL === args.at(-1)) throw new Error('denied ' + token + ' ' + auth);
+    return 'untrusted-output ' + token;
   }
   assert.ok(!readdirSync(env.RUNNER_TEMP).some(name => name.startsWith('staging-docker-')));
   if (command === 'docker' && args[0] === 'image') return JSON.stringify([{
-    RepoDigests: [env.BAD_DIGEST ? 'wrong' : args[2]], Id: 'sha256:' + (args[2].includes('controller') ? 'c' : 'd').repeat(64),
-    Os: 'linux', Architecture: 'amd64', Config: {Labels: {'org.opencontainers.image.revision': source}}
+    RepoDigests: [env.BAD_DIGEST ? 'wrong' : args[2]],
+    Id: args[2].startsWith('sha256:') ? args[2] : 'sha256:' + (args[2].includes('controller') ? 'c' : 'd').repeat(64),
+    Os: 'linux', Architecture: 'amd64', Config: {Labels: {'org.opencontainers.image.revision': env.BAD_LABEL ? workflowSha : source}}
   }]);
   throw Error('Unexpected subprocess: ' + command + ' ' + args.join(' '));
+};
+// Fail the real preparer's first Docker command. No helper or state outcome is
+// replaced: the preparer must record its resource, fail, and execute cleanup.
+const spawn = child.spawn;
+child.spawn = (command, args, options) => {
+  assert.equal(options?.env?.GH_TOKEN, undefined);
+  log({spawn: command, args});
+  if (command === 'docker' && args[0] === 'tag') {
+    return spawn(process.execPath, ['-e', 'process.exit(1)'], options);
+  }
+  if (command === 'docker' && args[0] === 'image' && args[1] === 'rm') {
+    return spawn(process.execPath, ['-e', 'process.exit(0)'], options);
+  }
+  throw Error('Unexpected asynchronous subprocess: ' + command + ' ' + args.join(' '));
 };
 syncBuiltinESMExports();
 `,
   );
   const workflow = await readFile(".github/workflows/staging-qualification.yml", "utf8");
+  assert.equal((workflow.match(/uses: actions\/checkout@/g) ?? []).length, 1);
+  assert.ok(workflow.includes("ref: ${{ github.workflow_sha }}"));
+  assert.ok(workflow.includes("persist-credentials: false"));
+  assert.ok(workflow.includes("package-manager-cache: false"));
+  assert.ok(workflow.includes("skip-decompress: true"));
+  assert.ok(workflow.includes("digest-mismatch: error"));
   const commands = [
     ...workflow.matchAll(
       /^ {8}run: (node scripts\/ci\/staging-qualification\.ts (validate|pull|smoke).*?)$/gm,
@@ -170,145 +247,157 @@ syncBuiltinESMExports();
     const selected = commands.find((match) => match[2] === command)?.[1];
     assert.ok(selected);
     return execute("bash", ["-e", "-c", selected], {
+      cwd: root,
+      timeout: 30_000,
       env: { ...env, NODE_OPTIONS: `--import=${preload}`, ...patch },
     });
   };
+  const calls = async () =>
+    (await readFile(join(directory, "calls.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+  const containerCalls = async () => (await calls()).filter((call) => call.command || call.spawn);
   await run("validate");
-  assert.equal(
-    await readFile(env.GITHUB_OUTPUT, "utf8"),
-    `artifact_id=789\nsource_sha=${source}\n`,
-  );
+  assert.equal(await readFile(env.GITHUB_OUTPUT, "utf8"), "owner data\n");
   const success = await run("pull");
   assert.equal(success.stdout, "");
   assert.equal(success.stderr, "");
-  assert.ok(!(await readdir(directory)).some((name) => name.startsWith("staging-docker-")));
   const pulled = join(directory, "staging-pulled-images.json");
   const proof = JSON.parse(await readFile(pulled, "utf8"));
   assert.equal(proof.liveInstall, false);
   assert.equal(proof.sourceSha, source);
-  assert.equal(proof.workflowSha, env.GITHUB_WORKFLOW_SHA);
+  assert.equal(proof.workflowSha, workflowSha);
+  assert.equal(proof.codexVersion, "0.164.0");
   assert.equal(proof.nodeBaseImage, nodeBaseImage);
   assert.equal(proof.selected.runtime, `${env.GHCR_RUNTIME_IMAGE}@${digest}`);
-  await assert.rejects(run("smoke"), /Startup must run without the GitHub token/);
-  await assert.rejects(readFile(join(directory, "staging-qualification.json")), { code: "ENOENT" });
-  await rm(pulled);
-  const calls = (await readFile(join(directory, "calls.jsonl"), "utf8"))
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
+  assert.equal(proof.imageIds.controller, `sha256:${"c".repeat(64)}`);
+  assert.equal(proof.imageIds.runtime, `sha256:${"d".repeat(64)}`);
   assert.deepEqual(
-    calls.filter((call) => call.args[3] === "pull").map((call) => call.args.slice(3)),
+    (await containerCalls())
+      .filter((call) => call.args[3] === "pull")
+      .map((call) => call.args.slice(3)),
     [
       ["pull", "--platform", "linux/amd64", `${env.GHCR_CONTROLLER_IMAGE}@${digest}`],
       ["pull", "--platform", "linux/amd64", `${env.GHCR_RUNTIME_IMAGE}@${digest}`],
     ],
   );
-  assert.equal(proof.imageIds.controller, `sha256:${"c".repeat(64)}`);
-  assert.equal(proof.imageIds.runtime, `sha256:${"d".repeat(64)}`);
-  // Both first- and second-pull failures must erase credentials and stop before preparation.
+  await assert.rejects(run("smoke"), /Startup must run without the GitHub token/);
+  await assert.rejects(run("smoke", { GH_TOKEN: "" }), /failed|exited|exit code/i);
+  assert.ok((await calls()).some((call) => call.spawn === "docker" && call.args[0] === "tag"));
+  assert.ok(
+    (await calls()).some(
+      (call) => call.spawn === "docker" && call.args[0] === "image" && call.args[1] === "rm",
+    ),
+  );
+  for (const lane of ["packaging", "runtime-startup"]) {
+    await assert.rejects(readFile(join(directory, `staging-images-${lane}.json`)), {
+      code: "ENOENT",
+    });
+  }
+  assert.equal(await readFile(pulled, "utf8"), JSON.stringify(proof));
+  await assert.rejects(readFile(join(directory, "staging-qualification.json")), { code: "ENOENT" });
+  const upload = workflow
+    .split(/^ {6}- /m)
+    .find((step) => step.includes("uses: actions/upload-artifact@"));
+  assert.ok(upload);
+  assert.match(upload, /^ {8}if: always\(\)$/m);
+  const uploads = [...upload.matchAll(/^ {12}\$\{\{ runner\.temp \}\}\/([^\n]+)$/gm)].map(
+    (entry) => entry[1],
+  );
+  assert.deepEqual(uploads, [
+    "staging-pulled-images.json",
+    "staging-images-packaging.json",
+    "staging-images-runtime-startup.json",
+    "staging-qualification.json",
+  ]);
+  const produced = await readdir(directory);
+  assert.deepEqual(
+    uploads.filter((name) => produced.includes(name)),
+    ["staging-pulled-images.json"],
+  );
+  assert.equal(await readFile(env.GITHUB_OUTPUT, "utf8"), "owner data\n");
+  await rm(pulled);
+  // Both partial and initial pull failure must erase credentials and suppress
+  // subprocess output. Neither can create a success or pull receipt.
   for (const reference of [proof.selected.controller, proof.selected.runtime]) {
-    await rm(join(directory, "calls.jsonl"));
     await assert.rejects(run("pull", { FAIL_PULL: reference }), (error: unknown) => {
       assert.ok(error instanceof Error && "stdout" in error && "stderr" in error);
-      assert.equal(typeof error.stdout, "string");
-      assert.equal(typeof error.stderr, "string");
-      const stdout = String(error.stdout);
-      const stderr = String(error.stderr);
-      assert.ok(stderr.includes(`Unable to pull ${reference}. Check GHCR package read access`));
+      assert.match(String(error.stderr), /Unable to pull/);
       for (const secret of [
         env.GH_TOKEN,
         Buffer.from(`${env.GITHUB_ACTOR}:${env.GH_TOKEN}`).toString("base64"),
-        "stdout-secret",
-        "stderr-secret",
       ]) {
-        assert.ok(!stdout.includes(secret));
-        assert.ok(!stderr.includes(secret));
+        assert.ok(!String(error.stdout).includes(secret));
+        assert.ok(!String(error.stderr).includes(secret));
       }
       return true;
     });
     assert.ok(!(await readdir(directory)).some((name) => name.startsWith("staging-docker-")));
-    const failedCalls = (await readFile(join(directory, "calls.jsonl"), "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    assert.ok(failedCalls.every((call) => call.command === "docker" && call.args[3] === "pull"));
     await assert.rejects(readFile(pulled), { code: "ENOENT" });
   }
   for (const patch of [
-    { GITHUB_ACTOR: "" },
-    { GH_TOKEN: "" },
-    { GHCR_RUNTIME_IMAGE: "ghcr.io/other/runtime" },
-    { GHCR_RUNTIME_IMAGE: "example.com/openclaw/runtime" },
-    { GHCR_RUNTIME_IMAGE: "ghcr.io/openclaw/runtime:latest" },
-    { CONFIGURED_STAGING_INSTALLATION: "" },
-    { CONFIGURED_STAGING_INSTALLATION: "other" },
+    { PUBLICATION_RUN_ID: "01" },
+    { PUBLICATION_RUN_ID: "123\n" },
+    { PUBLICATION_RUN_ID: "9007199254740992" },
+    { PUBLICATION_ATTEMPT: "2\nartifact_id=999" },
+    { PUBLICATION_ATTEMPT: "0" },
+    { SOURCE_SHA: "../other" },
+    { SOURCE_SHA: "e".repeat(40) },
+    { GITHUB_WORKFLOW_SHA: source },
+    { UNPROTECTED: "1" },
+    { FOREIGN_PRODUCER: "1" },
+    { FOREIGN_CI: "1" },
     { BAD_ATTEMPT: "1" },
+    { SKIP_PUBLISH: "1" },
     { EXPIRED: "1" },
-    { ARTIFACT_ID: "999" },
-    { GHCR_RUNTIME_IMAGE: "" },
-    { GHCR_RUNTIME_IMAGE: "ghcr.io/openclaw/other" },
-    { BAD_DIGEST: "1" },
-    { FORK_SOURCE: "1" },
+    { DUPLICATE: "1" },
+    { BAD_ARTIFACT_ID: "1" },
+    { SOURCE_SHA: unsupported },
+    { SOURCE_SHA: symlinkSource },
+    { SOURCE_SHA: unrelated },
+    { SOURCE_SHA: duplicateField },
+    { SOURCE_SHA: malformedField },
+    { GITHUB_ACTOR: "" },
+    { GHCR_RUNTIME_IMAGE: "ghcr.io/other/runtime" },
+    { CONFIGURED_STAGING_INSTALLATION: "other" },
   ]) {
-    const before = await readFile(join(directory, "calls.jsonl"), "utf8");
+    const before = await containerCalls();
     await assert.rejects(run("pull", patch), { code: 1 });
-    if (!("BAD_DIGEST" in patch)) {
-      assert.equal(
-        await readFile(join(directory, "calls.jsonl"), "utf8"),
-        before,
-        "Invalid release evidence must stop before any container command.",
-      );
-    }
+    assert.deepEqual(await containerCalls(), before, "Invalid evidence must stop before Docker");
+  }
+  for (const patch of [{ BAD_DIGEST: "1" }, { BAD_LABEL: "1" }]) {
+    await assert.rejects(run("pull", patch), { code: 1 });
     await assert.rejects(readFile(pulled), { code: "ENOENT" });
   }
-  // Even a receipt matching an unsafe configured destination must fail before Docker.
-  for (const destination of [
-    "ghcr.io/other/runtime",
-    "example.com/openclaw/runtime",
-    "ghcr.io/openclaw/runtime:latest",
-  ]) {
-    const before = await readFile(join(directory, "calls.jsonl"), "utf8");
-    await writeFile(path, JSON.stringify([receipt[0], { ...receipt[1], destination }]));
-    await assert.rejects(run("pull", { GHCR_RUNTIME_IMAGE: destination }), { code: 1 });
-    assert.equal(await readFile(join(directory, "calls.jsonl"), "utf8"), before);
-    assert.ok(!(await readdir(directory)).some((name) => name.startsWith("staging-docker-")));
+  const before = await containerCalls();
+  const bytes = await readFile(archive);
+  const firstByte = bytes[0];
+  assert.ok(firstByte !== undefined);
+  bytes[0] = firstByte ^ 1;
+  await writeFile(archive, bytes);
+  await assert.rejects(run("pull"), /Publication archive digest mismatch/);
+  await pack(receipt);
+  await cp(archive, join(archiveDirectory, "extra.zip"));
+  await assert.rejects(run("pull"), /exactly one publication archive/);
+  await rm(join(archiveDirectory, "extra.zip"));
+  await writeFile(join(directory, "unexpected.txt"), "not a receipt");
+  await execute("zip", ["-q", archive, "unexpected.txt"], { cwd: directory, env: hostEnv });
+  const extraBytes = await readFile(archive);
+  await writeFile(
+    metadata,
+    JSON.stringify({
+      digest: `sha256:${createHash("sha256").update(extraBytes).digest("hex")}`,
+      size_in_bytes: extraBytes.length,
+    }),
+  );
+  await assert.rejects(run("pull"), /only publication.json/);
+  // A receipt cannot redirect the exact CI lookup, including to another valid ID.
+  for (const ciRunId of ["999", "456/../../other"]) {
+    await pack(receipt.map((image) => ({ ...image, ciRunId })));
+    await assert.rejects(run("pull"), { code: 1 });
+    assert.ok(!(await calls()).some((call) => call.api?.includes("/runs/999")));
   }
-  const beforeInvalidDigest = await readFile(join(directory, "calls.jsonl"), "utf8");
-  await writeFile(path, JSON.stringify([receipt[0], { ...receipt[1], digest: "latest" }]));
-  await assert.rejects(run("pull"), { code: 1 });
-  assert.equal(await readFile(join(directory, "calls.jsonl"), "utf8"), beforeInvalidDigest);
-  await writeFile(path, JSON.stringify([receipt[0], { ...receipt[1], sourceSha: "e".repeat(40) }]));
-  await assert.rejects(run("pull"), /Prepared image sourceSha does not match/);
-
-  await writeFile(
-    path,
-    JSON.stringify(
-      receipt.map((image) => ({
-        ...image,
-        nodeBaseImage: `docker.io/library/node:24-bookworm@${digest}`,
-      })),
-    ),
-  );
-  await assert.rejects(run("pull"), /Publication Node base differs from the release source/);
-  await rm(join(root, "scripts/ci/prepare.mjs"));
-  await writeFile(path, JSON.stringify(receipt));
-  await assert.rejects(run("pull"), /Release checkout has tracked changes/);
-
-  const unsupported = await commit();
-  await writeFile(
-    path,
-    JSON.stringify(
-      receipt.map((image) => ({
-        ...image,
-        sourceSha: unsupported,
-        workflowSha: unsupported,
-        tag: `sha-${unsupported}`,
-      })),
-    ),
-  );
-  await assert.rejects(
-    run("pull", { SOURCE_SHA: unsupported }),
-    /does not support this startup verifier/,
-  );
-  await assert.equal(await readFile(join(directory, "calls.jsonl"), "utf8"), beforeInvalidDigest);
+  assert.deepEqual(await containerCalls(), before);
+  assert.equal(await readFile(env.GITHUB_OUTPUT, "utf8"), "owner data\n");
 });

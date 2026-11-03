@@ -2538,7 +2538,8 @@ async function prepareNativeWorkspaceEnvoyImage(state, env) {
   env.OCC_TEST_WORKSPACE_ENVOY_IMAGE = image;
 }
 
-export async function prepareRuntimeImageSmoke({ image, statePath }) {
+/** @param {{ image: string, statePath: string, codexVersion?: string }} options */
+export async function prepareRuntimeImageSmoke({ image, statePath, codexVersion }) {
   assertDockerImageId(image, "Runtime smoke image");
   const path = normalizeStatePath(statePath);
   if (await readState(path)) {
@@ -2547,6 +2548,9 @@ export async function prepareRuntimeImageSmoke({ image, statePath }) {
   const state = baseState("images-packaging", path);
   const tag = `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}/runtime-smoke:local`;
   const env = { ...baseEnv(path, state), OCC_TEST_KUBERNETES_RUNTIME_IMAGE: tag };
+  if (codexVersion !== undefined) {
+    env.OCC_TEST_KUBERNETES_CODEX_VERSION = codexVersion;
+  }
   const resource = addResource(state, "image-tag", { name: tag });
   await writeState(path, state);
   try {

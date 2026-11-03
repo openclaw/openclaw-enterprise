@@ -55,33 +55,55 @@ workflow token, which has `packages: read`. The job uses a disposable runner-loc
 k3d fixture and needs no staging cluster configuration or provider credentials.
 
 The [workflow command](../../scripts/ci/staging-qualification.ts) checks the
-trusted workflow context, source ancestry, producer workflow ID, successful run
-and attempt, and unique unexpired publication artifact. It repeats these checks
-after download, validates the receipt with the promotion validator, and verifies
-the receipt's exact successful CI run and attempt. The source can precede the
-workflow commit. Qualification checks out the verified release commit separately
-and requires its registered startup files, native smoke helper, and matching
-Node base digest in the receipt, test manifest, and runtime Dockerfile. An
-unsupported release or conflicting evidence stops the job before either image pull.
+trusted checkout against the workflow SHA, protected same-repository `main`,
+local workflow ancestry in `main`, and release ancestry in the workflow commit.
+It requires the exact successful Enterprise Containers run and attempt, a
+successful image publication job for that source, and one unexpired publication
+artifact. Dispatch IDs must be positive safe decimal integers. Source IDs must
+be full lowercase Git SHAs.
 
-After checking GitHub metadata, the command removes `GH_TOKEN` from the
-environment before starting child processes. It stores the GHCR credential in a
-private Docker config for the two digest pulls on the runner's local Docker
-socket. A failed pull reports the selected reference and how to check access.
-The command removes the config before inspection, preparation, or startup.
+The named artifact download retains an archive. Before reading it, the command
+repeats producer checks and compares its size and SHA-256 with GitHub metadata.
+The archive directory must contain exactly one regular file, at most 1 MiB.
+The archive must contain only `publication.json`; `unzip -p` reads at most 64 KiB
+without extraction or a GitHub token. The receipt must match a successful
+same-repository `main` push returned by the CI workflow's source-SHA query.
+Only service-derived run IDs and attempts select the exact CI run and job checks.
+The script does not write Actions outputs.
 
-The command pulls each configured repository at the receipt's digest, verifies
-its digest, Linux amd64 platform and source label, and passes its immutable local
-image ID to the tests. It does not build release images or fall back to a tag.
-Runtime preparation reuses the existing smoke helper to prepare seccomp and an
-Envoy fixture when the release requires it. The release checkout supplies the
-pinned k3d tools, dependencies, smoke helper, test files, and expected cases.
-Setup and tests run in steps without the GitHub token. The CI runner selects the
-controller and runtime startup files from `images-packaging` and
-`images-runtime-startup`. A failed, missing, or skipped selected test fails the
-lane. Cleanup must succeed before the command writes `staging-qualification.json`.
-The uploaded evidence includes selected digests, local image IDs, source and
-workflow SHAs, publication identity, and the test runner's results.
+Only the workflow commit is checked out. Setup, dependencies, preparation,
+tests, manifests, and cleanup come from that checkout. Historical Git objects
+supply only the ordinary `deploy/runtime/Dockerfile` blob, at most 64 KiB, as
+inert data. The current 0.164.0 profile requires the current recipe. The reviewed
+0.163.0-alpha.2 profile requires source
+`54bfa7fc1b99e362450beb5f9211e164991fa7b4` and its pinned recipe hash.
+Other recipes, including the October 9 0.160.0 profile, fail before pulls.
+The receipt, recipe, and trusted packaging manifest must agree on the Node base.
+
+After checking GitHub metadata, the command removes GitHub tokens before image
+operations. Git and unzip subprocesses never receive those tokens. A private
+Docker config supplies GHCR authentication only for the two digest pulls on the
+runner's local Docker socket. The command removes that config before inspection
+or startup. A failed pull reports the reference and access guidance without
+printing subprocess output.
+
+The command verifies each pulled digest, Linux amd64 platform, and source label,
+then passes the exact local image IDs to trusted tests. It rechecks source labels
+before smoke preparation. The selected profile's Codex version controls the real
+seccomp probe and explicit runtime-suite expectations; normal CI retains 0.164.0
+assertions. The runner records the workflow SHA as its test source, while the
+pull receipt records the historical image source separately. No historical host
+code is built or executed. Historical images receive only the existing isolated
+fixture mounts, not the runner workspace, Docker socket, or Actions credentials.
+
+The runner selects the controller and runtime startup files from
+`images-packaging` and `images-runtime-startup`. Missing, failed, or skipped cases
+fail the lane. Preparation, tests, and cleanup must succeed before the command
+writes `staging-qualification.json`. The always-run upload explicitly retains
+`staging-pulled-images.json`, `staging-images-packaging.json`,
+`staging-images-runtime-startup.json`, and `staging-qualification.json` when
+produced. An early preparation failure retains the pull receipt without a
+success receipt or invented suite results.
 
 This is **container startup qualification on amd64**, not an installation or
 rollout. The installed prepared-Git lane builds a separate repository-service
@@ -99,10 +121,11 @@ node --test tests/integration/staging-qualification.test.ts
 node scripts/ci/run-tests.mjs audit
 ```
 
-The command test uses GitHub and Docker transport fixtures. It checks the source
-checkout, test selection, digest handoff, credential isolation, output suppression,
-and rejection before pulls. Hosted token permissions, registry pulls, container
-startup, and live installations need separate proof.
+The command test uses local Git history and independent GitHub and Docker
+transport fixtures. It checks digest handoff, credential isolation, hostile
+Actions output paths, archive tampering, rejection before pulls, and a real
+preparer failure before any suite. Hosted token permissions, registry pulls,
+container startup, and live installations need separate proof.
 
 <a id="ci-configuration"></a>
 

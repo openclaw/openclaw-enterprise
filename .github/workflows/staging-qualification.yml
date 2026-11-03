@@ -52,43 +52,37 @@ jobs:
         with:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "24.22.1"
+          package-manager-cache: false
       - name: Validate trusted publication producer
-        id: producer
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/ci/staging-qualification.ts validate
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          artifact-ids: ${{ steps.producer.outputs.artifact_id }}
+          name: container-publication-${{ inputs.publication_run_id }}-${{ inputs.publication_attempt }}
           repository: openclaw/openclaw-enterprise
           run-id: ${{ inputs.publication_run_id }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/publication
-          merge-multiple: true
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ steps.producer.outputs.source_sha }}
-          path: release-source
-          persist-credentials: false
+          skip-decompress: true
+          digest-mismatch: error
       - name: Verify release inputs and pull immutable images
         env:
           GH_TOKEN: ${{ github.token }}
-          ARTIFACT_ID: ${{ steps.producer.outputs.artifact_id }}
-        run: node scripts/ci/staging-qualification.ts pull "$RUNNER_TEMP/publication/publication.json"
-      - name: Install release smoke test prerequisites
-        working-directory: release-source
+        run: node scripts/ci/staging-qualification.ts pull "$RUNNER_TEMP/publication"
+      - name: Install trusted smoke test prerequisites
         run: |
           bash scripts/ci/setup-tools.sh k3d
           corepack pnpm install --frozen-lockfile --ignore-scripts
-      - name: Run the release startup tests
+      - name: Run trusted startup tests against the release images
         id: smoke
         run: node scripts/ci/staging-qualification.ts smoke
-      - name: Clean up runtime smoke resources
-        if: always() && steps.smoke.outcome && steps.smoke.outcome != 'skipped'
-        working-directory: release-source
+      - name: Clean up interrupted smoke resources
+        if: always() && steps.smoke.outcome && steps.smoke.outcome != 'success' && steps.smoke.outcome != 'skipped'
         run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/staging-runtime-state.json"
       - name: Retain qualification evidence
         if: always()
@@ -96,7 +90,9 @@ jobs:
         with:
           name: staging-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/staging-images-*.json
+            ${{ runner.temp }}/staging-pulled-images.json
+            ${{ runner.temp }}/staging-images-packaging.json
+            ${{ runner.temp }}/staging-images-runtime-startup.json
             ${{ runner.temp }}/staging-qualification.json
           if-no-files-found: error
           retention-days: 7
