@@ -122,9 +122,9 @@ Support lets teams keep GitLab as their source of truth and retain their review 
 
 - [Repository credentials team runbook](../../docs/guides/repository-credentials/team-runbook.md)
 - [Current repository credential reference](../../docs/reference/repository-credentials.md)
-- [Repository policy contract](../../packages/contracts/src/repo.ts)
+- [Repository policy contract](../../packages/contracts/src/drivers/repo/index.ts)
 - [Protected repository-delivery contract](../../packages/contracts/src/protected-repository-git.ts)
-- [Credential Proxy Driver contract](../../packages/contracts/src/credential-proxy.ts)
+- [Credential Proxy Driver contract](../../packages/contracts/src/drivers/credential-proxy/index.ts)
 - [Current provider composition](../../apps/controller/src/composition/repository-credentials/platform.ts)
 - [GitHub client router](../../apps/controller/src/drivers/repo/github/credentials/client/router.ts)
 - [GitHub draft-operation client](../../apps/controller/src/drivers/repo/github/credentials/client/draft-pr.ts)
