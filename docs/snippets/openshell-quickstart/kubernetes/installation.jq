@@ -121,7 +121,7 @@
           "mode": "disabled"
         },
         "runtime": {
-          "gatewayStorageClassName": "encrypted-gp3",
+          "gatewayStorageClassName": $storageClass,
           "nativeOpenClawSessionCapacity": 8,
           "nodeSelector": {
             "oce-role": "agents"
@@ -166,7 +166,7 @@
               "spec": {
                 "ingress": [
                   {
-                    "_from": [
+                    "from": [
                       {
                         "namespaceSelector": {
                           "matchLabels": {

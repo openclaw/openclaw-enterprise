@@ -223,9 +223,8 @@ access; qualify worker, Agent, repository, and provider behavior separately.
 
 ## Controller worker environment
 
-The [controller worker](../controller.md) runs separately from the HTTP API. It
-requires a bootstrapped Installation and the same migrated PostgreSQL database;
-it does not use the API's listener or authentication settings.
+The [controller worker](../controller.md) uses a bootstrapped Installation and
+the API's migrated PostgreSQL database, not its listener or authentication settings.
 
 | Variable                            | Requirement or default         | Behavior                                                                                                                                                                    |
 | ----------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -239,6 +238,8 @@ it does not use the API's listener or authentication settings.
 | `OCC_WORKER_DATABASE_TIMEOUT_MS`    | `60000`.                       | Client-side bound on each worker query and connection; a silent connection is dropped and retried, and longer lock waits fail the pass as an attempt; at most `2147483647`. |
 | `OCC_WORKER_READINESS_PATH`         | Optional absolute path.        | Writes a private freshness marker after real queue-health observations; required by packaged worker probes.                                                                 |
 | `OCC_WORKER_LIVENESS_PATH`          | Optional absolute path.        | Writes a private marker as the run loop makes progress, even through database outages; the packaged liveness probe restarts a worker whose marker is stale.                 |
+
+Packaged worker probes require regular marker files and refuse directory paths.
 
 The run loop writes the liveness marker at startup, at the start of every pass
 and on every claim renewal. A database outage keeps it moving; the packaged

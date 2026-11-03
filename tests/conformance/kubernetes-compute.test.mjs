@@ -47,6 +47,7 @@ import {
   resolveKubernetesControlNamespace,
   resolveKubernetesNamespace,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   ActivationFailedError,
   ActivationPendingError,
@@ -71,7 +72,10 @@ import {
   withYieldingGatewayDrain,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { normalizeSecretBindings } from "../../packages/contracts/src/index.ts";
-import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import {
+  managedGoogleInstall,
+  managedSlackInstall,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
@@ -1723,8 +1727,12 @@ test("standalone Codex search requires an explicit model endpoint and a boolean 
   }
 });
 
-test("dedicated OpenClaw delivers the selected Google release digest without a Sandbox provider file", async () => {
-  const { id, releaseSha256 } = managedGoogleInstall;
+test("dedicated OpenClaw delivers the selected managed release digest without a Sandbox provider file", async () => {
+  await verifyManagedRelease("GOOGLE", managedGoogleInstall);
+  await verifyManagedRelease("SLACK", managedSlackInstall);
+});
+
+async function verifyManagedRelease(prefix, { id, releaseSha256 }) {
   for (const enabled of [true, false]) {
     const selections = { [id]: { enabled } };
     let worker;
@@ -1766,7 +1774,7 @@ test("dedicated OpenClaw delivers the selected Google release digest without a S
     const gateway = fixture.read("Deployment", fixture.gatewayName).spec.template.spec;
     for (const environment of [worker.environment, gateway.containers[0].env]) {
       const digest = environment.find(
-        ({ name }) => name === "OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256",
+        ({ name }) => name === `OPENCLAW_MANAGED_${prefix}_RELEASE_SHA256`,
       );
       assert.equal(digest?.value, enabled ? releaseSha256 : undefined);
     }
@@ -1787,7 +1795,7 @@ test("dedicated OpenClaw delivers the selected Google release digest without a S
     const manifest = fixture.read("ConfigMap", volume.configMap.name).data["runtime.json"];
     assert.deepEqual(JSON.parse(manifest).selections, selections);
   }
-});
+}
 
 test("native OpenClaw preparation and activation use only outbound Sandbox enrollment", async () => {
   const provisions = [];
@@ -15144,6 +15152,67 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
       withoutProjection.harnessRequirementsFromDeployment(unexpectedProjection, "api_key", false),
     /credentials disabled must not project/i,
   );
+});
+
+// The pinned OpenShell gateway's allowed_pod_labels check, ported from NVIDIA/OpenShell
+// bdb956f2cd65a635f1294fccf1d138d263bf650f crates/openshell-driver-kubernetes/src/config.rs
+// (pod_metadata_key_allowed): an entry is an exact key or `<domain>/*`, and the openshell.ai
+// and agents.x-k8s.io domains (and their subdomains) are never admitted.
+function openShellPodLabelAllowed(allowlist, key) {
+  const domain = key.includes("/") ? key.slice(0, key.indexOf("/")) : undefined;
+  if (
+    domain !== undefined &&
+    ["openshell.ai", "agents.x-k8s.io"].some(
+      (reserved) => domain === reserved || domain.endsWith(`.${reserved}`),
+    )
+  ) {
+    return false;
+  }
+  return allowlist.some((entry) =>
+    entry.endsWith("/*") ? domain === entry.slice(0, -2) : entry === key,
+  );
+}
+
+test("the OpenShell gateway allowlist admits every label Compute puts on a Harness Pod", () => {
+  const driver = createKubernetesComputeDriver(
+    options({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      servicePrincipalCredentials: {
+        mode: "projectedServiceAccountToken",
+        audience: "openclaw-controller",
+        expirationSeconds: 900,
+      },
+    }),
+  );
+  // Every optional ownership field is set, so the Pod carries the widest label set Compute emits.
+  const workload = driver.deployment(
+    "agent-label-admission",
+    {
+      namespaceId: tenant.id,
+      agentId: "agt_00000000-0000-4000-8000-000000000002",
+      revisionId: "rev_00000000-0000-4000-8000-000000000002",
+      serviceAccountId: "sa_00000000-0000-4000-8000-000000000002",
+      servicePrincipalId: "service-agent-agt_00000000-0000-4000-8000-000000000002",
+    },
+    { name: kubernetesNamespaceName(tenant.id), plane: "execution" },
+    "agent:local",
+    "agent-label-admission",
+    "agent",
+    {},
+    "info",
+    undefined,
+    undefined,
+    undefined,
+    preparedAuth(driver, kubernetesNamespaceName(tenant.id), false),
+  );
+  const requirements = driver.harnessRequirementsFromDeployment(workload, "api_key");
+  // The OpenShell Sandbox Driver forwards these labels as CreateSandbox template.labels. A key
+  // the gateway does not admit fails every create, as app.kubernetes.io/managed-by once did.
+  const refused = Object.keys(requirements.labels).filter(
+    (key) => !openShellPodLabelAllowed(OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST, key),
+  );
+  assert.deepEqual(refused, []);
+  assert.ok(Object.keys(requirements.labels).includes("app.kubernetes.io/managed-by"));
 });
 
 test("provider Harness readiness requires exactly one live matching Pod", async (t) => {

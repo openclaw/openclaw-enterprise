@@ -339,7 +339,8 @@
         "selected repository set retires after B replacement across owner restart",
         "selected repository set retires after B deadline across owner restart",
         "selected repository set retires after NULL selection across owner restart",
-        "selected repository set retires after empty selection across owner restart"
+        "selected repository set retires after empty selection across owner restart",
+        "only matching terminal OpenShell evidence retires selected custody while OCC admission stays live"
       ]
     },
     {

@@ -1,31 +1,19 @@
 import type {
   Backend,
-  CredentialProxyBinding,
   CredentialProxyDriver,
   CredentialProviderDefinition,
   SandboxDriver,
-  ProtectedRepositoryGitAuthority,
 } from "@openclaw-enterprise/contracts";
-import type { PostgresPool } from "@openclaw-enterprise/occ";
 import type { OpenShellGateway } from "../../backends/openshell.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
+import type { RepositoryTransportBinding } from "../../composition/repository-credentials/contracts.ts";
 import type { RepositoryGitDeliveryResolver } from "../repo/credentials/delivery.ts";
 import type { OpenShellSandboxDriverSelection } from "../sandbox/openshell.ts";
-import { openShellGitRecipientEvidence } from "../repo/credentials/protected-repository-git-installation.ts";
 import { OpenShellCredentialProxyDriver, type OpenShellProxyOptions } from "./openshell.ts";
 import {
   OpenShellGitRuntime,
   type OpenShellGitRuntimeConfiguration,
 } from "./openshell-git-runtime.ts";
-
-export interface OpenShellRepositoryTransport {
-  readonly evidence: typeof openShellGitRecipientEvidence;
-  bind(
-    authority: ProtectedRepositoryGitAuthority,
-    pool: PostgresPool,
-    emit?: (event: Readonly<Record<string, unknown>>) => void,
-  ): Promise<CredentialProxyBinding>;
-}
 
 /** The installed OpenShell Driver owns its transport. Composition receives capability
  * views and one worker binding, not a separately managed Git lifecycle coordinator. */
@@ -88,8 +76,7 @@ export function createOpenShellCapabilities(input: {
         mandatoryEnforcement: git.mandatoryEnforcement.bind(git),
       }),
     });
-  const repositoryTransport: OpenShellRepositoryTransport | undefined = git && {
-    evidence: openShellGitRecipientEvidence,
+  const repositoryTransport: RepositoryTransportBinding | undefined = git && {
     async bind(authority, pool, emit) {
       if (!authority || !proxy?.bindRepositoryGit) {
         throw new Error("Missing the selected Driver's protected repository Git authority.");

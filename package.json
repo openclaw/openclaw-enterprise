@@ -48,7 +48,7 @@
     "test:standing-git-conversation": "OCC_TEST_REQUIRE_STANDING_GIT_CONVERSATION=1 node --test tests/integration/postgres-openshell-standing-git-transfer.test.ts",
     "test:postgres": "node scripts/verify-workspace-boundary.mjs && node --test --test-concurrency=1 'tests/integration/postgres-*.test.{mjs,ts}'",
     "docs:build": "node scripts/docs-site/build.mjs && scripts/docs-site/node_modules/.bin/pagefind --site dist/docs",
-    "docs:dev": "npm run docs:build && node scripts/docs-site/serve.mjs",
+    "docs:dev": "node scripts/docs-site/serve.mjs --watch",
     "docs:check-length": "node scripts/docs-site/word-count.mjs",
     "docs:check": "node scripts/docs-site/word-count.mjs && node scripts/docs-site/build.mjs --check && node scripts/check-specs.mjs",
     "docs:install": "pnpm --dir scripts/docs-site install --frozen-lockfile --ignore-scripts",
@@ -83,6 +83,6 @@
     "prettier": "3.9.10",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "typescript-compiler-api": "npm:typescript@6.0.3",
-    "typescript-eslint": "8.71.2"
+    "typescript-eslint": "8.72.0"
   }
 }

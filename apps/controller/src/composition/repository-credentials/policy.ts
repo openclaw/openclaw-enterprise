@@ -1,8 +1,4 @@
 import type { GitHubRepositoryCredentialBackendDefinition } from "@openclaw-enterprise/contracts";
-import {
-  githubRepositoryAuthorityIdentity,
-  type githubRepositoryConfiguration,
-} from "../../drivers/repo/github/installation.ts";
 import { GitHubRepositoryPolicy } from "../../drivers/repo/github/policy.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
@@ -15,7 +11,6 @@ type RepositoryPolicyInput = {
   readonly backend: GitHubRepositoryCredentialBackendDefinition;
   readonly selection: SelectedDriverConfiguration;
   readonly policyConfiguration: { readonly sessionDurationSeconds: number };
-  readonly configuration?: ReturnType<typeof githubRepositoryConfiguration>;
 };
 
 /** The caller validates the selected policy configuration before reading the registry. */
@@ -33,12 +28,6 @@ export async function loadRepositoryPolicy(input: RepositoryPolicyInput) {
   const policy = composeRepositoryPolicy(input, registry);
   return Object.freeze({
     ...policy,
-    authorityIdentity: githubRepositoryAuthorityIdentity(
-      input.selection,
-      input.backend,
-      registry,
-      input.configuration,
-    ),
     resolveRepositoryDelivery: createGitHubRepositoryDeliveryResolver(registry),
   });
 }
@@ -61,5 +50,9 @@ export function composeRepositoryPolicy(
     repositoryRegistry: registry,
     repositoryOwner,
     repositoryPolicy,
+    repositoryAdmission: Object.freeze({
+      policy: repositoryPolicy,
+      backendId: repositoryOwner.backendId,
+    }),
   });
 }

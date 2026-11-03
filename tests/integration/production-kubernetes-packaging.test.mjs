@@ -2329,6 +2329,7 @@ test(
       valuesFile,
       JSON.stringify({
         images: { controller: values["images.controller"] },
+        gatewayRouting: { enabled: false },
         auth: {
           baseUrl: values["auth.baseUrl"],
           secretName: values["auth.secretName"],
@@ -2418,7 +2419,7 @@ test(
     }
     await execute(process.env.OCC_YQ_BIN ?? "yq", [
       "-i",
-      ".repositoryCredentials.enabled = true | del(.repositoryCredentials.hostname, .repositoryCredentials.serviceName)",
+      ".gatewayRouting.enabled = false | .repositoryCredentials.enabled = true | del(.repositoryCredentials.hostname, .repositoryCredentials.serviceName)",
       liveValues,
     ]);
     const installation = join(directory, "installation.json");
@@ -2910,7 +2911,7 @@ test("the chart refuses installation names the bootstrap Job refuses", tooling, 
 });
 
 test(
-  "the production Helm chart renders private least-privilege runtime and ordered bootstrap",
+  "the production Helm chart supports explicit routing opt-out with ordered bootstrap",
   tooling,
   async () => {
     const { stdout } = await render(controlPlaneSelectorValues);
@@ -2960,7 +2961,18 @@ test(
       false,
     );
 
-    assert.ok(!objects.some(({ kind }) => ["Ingress", "Gateway"].includes(kind)));
+    assert.ok(
+      !objects.some(({ kind }) =>
+        ["Ingress", "Gateway", "EnvoyProxy", "SecurityPolicy", "Certificate", "Issuer"].includes(
+          kind,
+        ),
+      ),
+    );
+    for (const deployment of objects.filter(({ kind }) => kind === "Deployment")) {
+      for (const container of deployment.spec.template.spec.containers) {
+        assert.ok(!container.env.some(({ name }) => name === "OCC_GATEWAY_API_KEY_PATH"));
+      }
+    }
 
     // Initialization, API, and worker use distinct identities; database credentials remain isolated.
     for (const component of ["initialization", "api", "worker"]) {
@@ -5413,8 +5425,21 @@ test(
   },
 );
 
+test("default routing refuses missing operator configuration", tooling, async () => {
+  // Omitting the switch must still require both operator-owned prerequisite names.
+  const options = { omit: ["gatewayRouting.enabled"] };
+  await assert.rejects(
+    render({}, options),
+    /gatewayRouting\.gatewayClassName must reference an operator-created GatewayClass/,
+  );
+  await assert.rejects(
+    render({ "gatewayRouting.gatewayClassName": "eg" }, options),
+    /gatewayRouting\.apiKeySecretName must reference an operator-created Opaque Secret/,
+  );
+});
+
 test(
-  "private Envoy Gateway routing renders automatic CA and deterministic default hostnames",
+  "private Envoy Gateway routing defaults on with automatic CA and deterministic hostnames",
   tooling,
   async () => {
     const gatewayName = "oce-agent-gateways";
@@ -5425,7 +5450,12 @@ test(
     const hostname = defaultGatewayHostname(gatewayNamespace, gatewayName, envoyNamespace);
     const rootSecret = rootSecretName(gatewayNamespace, gatewayName);
     const configured = await resources(
-      (await render({ ...gatewayRoutingValues, ...controlPlaneSelectorValues })).stdout,
+      (
+        await render(
+          { ...gatewayRoutingValues, ...controlPlaneSelectorValues },
+          { omit: ["gatewayRouting.enabled"] },
+        )
+      ).stdout,
     );
     const alternateNamespace = "openclaw-alt";
     const alternateObjects = await resources(

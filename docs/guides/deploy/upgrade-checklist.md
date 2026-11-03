@@ -111,6 +111,36 @@ values when checking manually. Do not replay Helm or delete history or data.
 Follow [upgrade recovery](production-upgrade-recovery.md) and preserve any
 existing helper or rollback owner's control.
 
+### Check Job object capacity
+
+For releases that create Jobs, check capacity before Helm. Reuse the Bash
+`kube` array above with the reviewed context and each namespace that receives
+Jobs. Use these read-only commands.
+
+```bash
+"${kube[@]}" get resourcequota -o yaml
+"${kube[@]}" get jobs.batch
+"${kube[@]}" get events --sort-by=.metadata.creationTimestamp
+```
+
+Apply the quota rules above for failed reads, absent limits, missing or stale
+status, and multiple quotas. For each applicable `count/jobs.batch` quota,
+check `spec.hard`, `status.hard` and `status.used`. Add the release's peak number
+of additional Job objects that can exist at once to `status.used`. The sum must
+fit within `status.hard`. Existing usage includes retained completed and failed
+Jobs. Include new Jobs that remain after completion or failure in the peak.
+Plan without relying on cleanup before creation. For example, a quota with a hard limit of 12
+and a used count of 9 leaves room for 3 Jobs. A release that needs 4 additional
+Jobs at once exceeds that limit. Ask the namespace owner about insufficient
+capacity.
+See Kubernetes [object count quota](https://kubernetes.io/docs/concepts/policy/resource-quotas/#quota-on-object-count).
+
+A successful server dry run of one request reserves no capacity. Diagnose a
+quota refusal from the Kubernetes API's rejection of the Job creation request
+naming `count/jobs.batch`, or a corresponding controller event recording that
+rejection. Observing a full quota alone does not prove a creation request was
+refused. Events can expire, and other admission checks can still reject creation.
+
 ## Record the starting state
 
 Create a private evidence directory and record these values before mutation.

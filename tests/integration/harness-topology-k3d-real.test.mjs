@@ -172,7 +172,8 @@ test(
     assert.equal(topology.harnessPod, undefined, "embedded execution must not create a Codex Pod");
     assert.equal(topology.gatewayPod.spec.serviceAccountName, topology.agentServiceName);
     assert.equal((await resources("deployments", topology.placement)).length, 1);
-    assertPrivateStateInitContainer(topology.gatewayPod);
+    // This Agent binds no Secret into its environment, so the gateway records its owner key.
+    assertPrivateStateInitContainer(topology.gatewayPod, { embeddedGatewayOwner: true });
     await assertEmbeddedCreatesNoHarnessWorkspaceClaim(topology);
     const privateClaim = await assertGatewayPrivateResources(topology);
 

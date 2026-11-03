@@ -239,18 +239,19 @@ the original settlement receives `not-submitted`.
 Missing or uncertain material does not cause request-time issuance. The explicit
 development token factory instead borrows its process-owned static token.
 
-Handler and sender capture allowed origins independently.
+Handler and sender each capture allowed origins.
 `apps/controller/src/drivers/repo/credentials/transport/request-headers.ts:createUpstreamHeaders`
-validates adapter fields within byte and field-count limits, rejects case-insensitive
-duplicates, and removes reserved fields such as `Expect` before request construction.
-After verified TLS, owned exchanges recheck configured standing before first write.
-Prepared sends check their original one-use permit, cancellation and send deadline
-there. Gate denial or confirmed pre-write socket close prevents HTTP writes. The response-header timer starts
-after upload unless headers arrived. Connection, upload, stall and total deadlines
-apply. Upload-pack has separate response-byte, first-header, stall and total
-budgets; other requests retain ordinary limits. Every plan obeys `maxExchangeMs` and
-the session deadline; static-token upload-pack also obeys its lease. The byte counter
-applies backpressure without buffering the pack.
+enforces adapter header byte and count limits, rejects duplicates case-insensitively,
+and strips reserved fields such as `Expect` before request construction.
+After TLS, the first-write gate rechecks the owned lease or the original
+prepared permit, cancellation and deadline. Withdrawal blocks new permits;
+an issued permit allows one send before its deadline. Denial or confirmed
+pre-write closure sends no HTTP request. The response-header timer starts after
+upload unless headers arrived. Connection, upload, stall and total deadlines
+apply. Upload-pack uses separate response-byte, first-header, stall and total
+budgets. Plans obey `maxExchangeMs` and session deadlines; static-token
+upload-pack also obeys its lease. Byte counting applies backpressure without
+pack buffering.
 
 ### 5. Deliver an outcome and release ownership
 

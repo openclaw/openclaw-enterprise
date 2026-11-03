@@ -4,10 +4,14 @@ tags: [nolimit]
 
 # Install the production control plane
 
-Prepare [Kubernetes](kubernetes.md) or [EKS](eks.md), the
+Prepare [Kubernetes](kubernetes.md) or [EKS infrastructure](eks-openshell-setup.md#prepare-aws-infrastructure), the
 [prerequisites below](#before-you-start), and
 [workspace routing](workspace-routing.md#requirements), including a GatewayClass.
-Keep private routing enabled. Start with the password profile and
+Private routing is enabled by default. The chart does not install Envoy Gateway,
+Gateway API or Envoy CRDs, cert-manager, or the GatewayClass. Prepare those
+controllers first; create the service-key Secret and match Helm and Installation
+settings in [Prepare workspace access](#prepare-workspace-access) before Helm installation.
+Start with the password profile and
 [native Agent administration](native-admin.md#requirements); optional
 [GitHub](#enable-github-browser-sign-in) or [Google](google-sign-in.md) sign-in requires disabling native administration.
 
@@ -47,7 +51,7 @@ or build these images for your registry:
 Select your registry, repository, and platform. Buildx uses the [runtime recipe's](../../../deploy/runtime/README.md) reviewed CI base.
 
 Authenticate the builder with `docker login <registry-host>` and approved
-credentials; for private ECR, follow [ECR authentication](eks.md#authenticate-the-image-builder-to-ecr).
+credentials; for private ECR, follow [ECR authentication](eks-openshell-setup.md#authenticate-the-image-builder-to-ecr).
 
 In a fresh Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments).
 Stop on failure; retain metadata.
@@ -89,6 +93,8 @@ else
   false
 fi
 ```
+
+If a runtime build fails certificate verification when downloading a package behind an HTTPS proxy, add `--secret "id=build-ca,src=$CA_BUNDLE"` to the runtime `docker buildx build` command above. Set `CA_BUNDLE` to a PEM file with the public trust roots and the approved proxy CA certificate. The runtime Dockerfile mounts this file only during the download steps. Image registry TLS uses the builder's own trust configuration.
 
 Before installation, [check each digest](../../testing/docker.md#check-published-images)
 on native hosts for every target architecture, without skips. Configure pull

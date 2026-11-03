@@ -1235,9 +1235,10 @@ test(
       const appServerUrl = gateway.spec.template.spec.containers[0].env.find(
         ({ name: variable }) => variable === "APP_SERVER_URL",
       )?.value;
+      const appServerScheme = recorded.deploymentMode === "k3d" ? "wss" : "ws";
       assert.match(
         appServerUrl ?? "",
-        /^ws:\/\/[a-z0-9-]+--[a-z0-9-]+\.openshell\.localhost:8080\/$/,
+        new RegExp(`^${appServerScheme}://[a-z0-9-]+--[a-z0-9-]+\\.openshell\\.localhost:8080/$`),
       );
       const openShellNamespace =
         recorded.deploymentMode === "k3d" ? recorded.platformNamespace : "openshell-system";

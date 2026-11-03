@@ -398,8 +398,6 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 				"--set=supervisor.image.pullPolicy=Never",
 				"--set=workspaceResources.enabled=false",
 				"--set=server.drivers.kubernetes.allowDriverConfig=true",
-				// Harness labels must remain admitted for both image selections.
-				openShellAllowedPodLabelsValue,
 				"--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
 				"--set-string=server.drivers.kubernetes.workspaceMode=operator",
 				"--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
@@ -429,6 +427,23 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 			}
 			if strings.Contains(strings.Join(commands(), "\n"), "create secret generic openshell-gateway-jwt-keys") {
 				t.Fatal("native PKI must own Gateway signing keys")
+			}
+			// Without the full allowlist the gateway rejects every Harness Sandbox at create, for
+			// both image selections. Compare the recorded Helm argument with the Sandbox Driver's
+			// list, not with the Go constant that produced it, so dropping a key from either side
+			// fails here.
+			const allowedPodLabelsFlag = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=`
+			start := strings.Index(install, allowedPodLabelsFlag)
+			if start < 0 {
+				t.Fatalf("OpenShell gateway install does not set allowed_pod_labels: %s", install)
+			}
+			value, _, _ := strings.Cut(install[start+len(allowedPodLabelsFlag):], " ")
+			var allowed []string
+			if err := json.Unmarshal([]byte(value), &allowed); err != nil {
+				t.Fatalf("invalid allowed_pod_labels value %q: %v", value, err)
+			}
+			if want := sandboxDriverHarnessPodLabelAllowlist(t); !slices.Equal(allowed, want) {
+				t.Fatalf("development gateway allowed_pod_labels = %q, Sandbox Driver forwards %q", allowed, want)
 			}
 			// Check every image value: the chart must receive the
 			// exact imported digest for each component, never a source digest or fallback.
@@ -463,6 +478,33 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 			}
 		})
 	}
+}
+
+// sandboxDriverHarnessPodLabelAllowlist reads OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST from
+// the OpenShell Sandbox Driver source, which owns the labels it forwards to the gateway.
+func sandboxDriverHarnessPodLabelAllowlist(t *testing.T) []string {
+	t.Helper()
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "controller", "src", "drivers", "sandbox", "openshell.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const declaration = "export const OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST: readonly string[] = Object.freeze(["
+	_, rest, found := strings.Cut(string(source), declaration)
+	if !found {
+		t.Fatalf("the OpenShell Sandbox Driver no longer declares %s", declaration)
+	}
+	body, _, found := strings.Cut(rest, "]);")
+	if !found {
+		t.Fatal("unterminated OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST declaration")
+	}
+	var keys []string
+	if err := json.Unmarshal([]byte("["+strings.TrimSuffix(strings.TrimSpace(body), ",")+"]"), &keys); err != nil {
+		t.Fatalf("OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST is not a plain string list: %v", err)
+	}
+	if len(keys) == 0 {
+		t.Fatal("OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST is empty")
+	}
+	return keys
 }
 
 func TestOpenShellImageImportRegistersThePodmanRecordedName(t *testing.T) {
