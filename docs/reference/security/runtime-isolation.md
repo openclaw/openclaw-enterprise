@@ -41,8 +41,10 @@ There are two supported model-credential paths:
 - **Existing API key:** Agent `harnessAuth` references a same-Namespace OCC
   Secret. Admission requires the actor and Agent principal's exact Secret
   `operate`; dispatch rechecks both. The Secret Driver owns storage, and
-  Kubernetes supplies `OPENAI_API_KEY` only to dedicated Codex or the combined
-  embedded OpenClaw gateway/Harness through a runtime projection for that Agent revision.
+  Kubernetes supplies `OPENAI_API_KEY` only to the combined embedded OpenClaw
+  gateway/Harness or the selected dedicated Harness (Codex or experimental
+  [native OpenClaw](../harness-execution.md#native-worker-support)), through a
+  runtime projection for that Agent revision.
 
 - **Driver-issued access token:** After exact OCC and independent ChatGPT
   authorization, API-side Kubernetes Compute creates one account-owned Secret
@@ -57,8 +59,9 @@ There are two supported model-credential paths:
   reaches the runtime.
 
 A dedicated gateway never receives either model credential. Public OCC Agent
-and AgentRevision responses can include the configured provider ID, which is
-persisted on the mutable Agent row and immutable AgentRevision row. Credential
+and AgentRevision responses can include the configured provider ID, which OCC
+stores on the Agent and copies into each Agent revision at deployment. Later
+edits to the Agent leave that copy unchanged. Credential
 bytes stay out of OCC resources, AgentRevision snapshots, ConfigMaps, responses,
 and audit records. Upstream account, credential, and workspace identifiers remain
 private: the internal immutable auth snapshot retains verified Backend/workspace

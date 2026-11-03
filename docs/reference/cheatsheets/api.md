@@ -2,12 +2,37 @@
 
 <!-- Generated from packages/contracts/openapi/occ-api.openapi.json. Do not edit directly. -->
 
+## Table of contents
+
+- [Authentication accounts](#authentication-accounts)
+- [Authentication sessions](#authentication-sessions)
+- [Service API keys](#service-api-keys)
+- [Authentication](#authentication)
+- [Installation](#installation)
+- [Namespaces](#namespaces)
+- [Agents](#agents)
+- [Agent deployments](#agent-deployments)
+- [Agent revisions](#agent-revisions)
+- [Agent runtime credentials](#agent-runtime-credentials)
+- [Agent workspace files](#agent-workspace-files)
+- [Configurations](#configurations)
+- [IAM access bindings](#iam-access-bindings)
+- [IAM roles](#iam-roles)
+- [IAM service principals](#iam-service-principals)
+- [Secrets](#secrets)
+- [Service accounts](#service-accounts)
+- [Service account credentials](#service-account-credentials)
+- [Backends](#backends)
+- [Connections](#connections)
+- [Credential sources](#credential-sources)
+- [Presets](#presets)
+
 ## Operations
 
 ### Authentication accounts
 
 - [`getAuthAccount`](../api.md#get-apiauthaccountsuserid): Inspect current human account state.
-- [`createAuthAccount`](../api.md#post-apiauthaccounts): Create an administrator-controlled local auth account.
+- [`createAuthAccount`](../api.md#post-apiauthaccounts): Create a local auth account as an Installation administrator.
 - [`attachGitHubIdentity`](../api.md#post-apiauthaccountsuseridprovidersgithub): Attach an exact GitHub identity to an existing account.
 - [`attachGoogleIdentity`](../api.md#post-apiauthaccountsuseridprovidersgoogle): Attach an exact Google identity to an existing account.
 - [`attachOidcIdentity`](../api.md#post-apiauthaccountsuseridprovidersoidc): Attach an exact OIDC identity to an existing account.
@@ -38,13 +63,14 @@
 - [`confirmGitHubSignIn`](../api.md#post-apiauthprovidersgithubresult): Confirm which session a GitHub sign-in created.
 - [`confirmGoogleSignIn`](../api.md#post-apiauthprovidersgoogleresult): Confirm which session a Google sign-in created.
 - [`confirmOidcSignIn`](../api.md#post-apiauthprovidersoidcresult): Confirm which session an OIDC sign-in created.
-- [`replaceAuthRecovery`](../api.md#post-apiauthrecovery): Move the recovery designation to another administrator.
+- [`replaceAuthRecovery`](../api.md#post-apiauthrecovery): Move the recovery designation to another Installation administrator.
 - [`startGitHubSignIn`](../api.md#post-apiauthprovidersgithubstart): Start GitHub sign-in for an enrolled account.
 - [`startGoogleSignIn`](../api.md#post-apiauthprovidersgooglestart): Start Google sign-in for an enrolled account.
 - [`startOidcSignIn`](../api.md#post-apiauthprovidersoidcstart): Start OIDC sign-in for an enrolled account.
 
 ### Installation
 
+- [`discoverInstallationConfigurations`](../api.md#get-installationdriverconfigurations): Inspect selected Driver accepted startup values and configuration schemas.
 - [`getInstallation`](../api.md#get-installation): Get the singleton Installation.
 - [`getInstallationDeploymentInventory`](../api.md#get-installationdeploymentinventory): Get the complete authorized Agent deployment inventory.
 - [`getObservability`](../api.md#get-observability): Get the configured external observability destination.
@@ -55,6 +81,7 @@
 - [`listNamespaces`](../api.md#get-namespaces): List authorized Namespaces.
 - [`getNamespace`](../api.md#get-namespacesnamespaceid): Get an exact Installation-owned Namespace.
 - [`getNamespaceCallerPermissions`](../api.md#get-namespacesnamespaceidpermissions): Report advisory primary IAM permissions on a readable Namespace, not authorization for a later operation.
+- [`getNamespaceSecretPermissions`](../api.md#get-namespacesnamespaceidpermissionssecrets): Report the readable Secrets that the caller may not bind to a new Agent, not authorization for a later operation.
 - [`createNamespace`](../api.md#post-namespaces): Create an Installation-owned Namespace.
 - [`deleteNamespace`](../api.md#delete-namespacesnamespaceid): Begin or retry deletion of an empty Installation-owned Namespace.
 
@@ -62,14 +89,19 @@
 
 - [`listAgentRepositoryOptions`](../api.md#get-namespacesnamespaceidagentsagentidrepositoryoptions): List approved repository choices for updating one Agent.
 - [`listAgents`](../api.md#get-namespacesnamespaceidagents): List authorized Agents in one exact Namespace.
+- [`listAgentStandingApprovals`](../api.md#get-namespacesnamespaceidagentsagentidrepositoryapprovals): Read attributable repository approvals and removed generations for one Agent.
+- [`listAgentStandingApprovalScopes`](../api.md#get-namespacesnamespaceidagentsagentidrepositoryapprovalscopes): Review resolved repository scope before explicitly approving it.
 - [`listRepositoryOptions`](../api.md#get-namespacesnamespaceidagentsrepositoryoptions): List approved repository choices for Agent creation in one Namespace.
+- [`discoverAgentConfigurations`](../api.md#get-namespacesnamespaceidagentsagentiddriverconfigurations): Discover authorized Agent Driver configuration contributions.
 - [`getAgent`](../api.md#get-namespacesnamespaceidagentsagentid): Get an exact Namespace-owned Agent.
 - [`getAgentCallerPermissions`](../api.md#get-namespacesnamespaceidagentsagentidpermissions): Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation.
 - [`getAgentCredentialWithdrawal`](../api.md#get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal): Get the withdrawal state of a credential source for an Agent.
+- [`getAgentHarnessStatus`](../api.md#get-namespacesnamespaceidagentsagentidharnessstatus): Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox.
 - [`getAgentProvisioning`](../api.md#get-namespacesnamespaceidagentsprovisionworkid): Get first-time provisioning status for one exact work item.
 - [`getAgentRuntimeImages`](../api.md#get-namespacesnamespaceidagentsagentidruntimeimages): Read observed images and source commits for an Agent's active runtime.
 - [`getAgentSandboxPolicy`](../api.md#get-namespacesnamespaceidagentsagentidsandboxpolicyfacet): Read one Agent sandbox policy and delegation ceiling.
 - [`getAgentSandboxRecommendations`](../api.md#get-namespacesnamespaceidagentsagentidrevisionsrevisionidsandboxpolicyfacetrecommendations): Read policy suggestions for the requested Agent revision.
+- [`getAgentSecretPermissions`](../api.md#get-namespacesnamespaceidagentsagentidpermissionssecrets): Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation.
 - [`getSavedAgentPluginPolicyCapabilities`](../api.md#get-namespacesnamespaceidagentsagentidpluginscapabilities): Read selected Plugin Driver policy capabilities for an active Agent with caller Agent read/update permission.
 - [`resolveAgentNativeAdminReturn`](../api.md#get-nativeadminreturnagentkey): Resolve an authorized Agent from a copied native chat link.
 - [`createAgent`](../api.md#post-namespacesnamespaceidagents): Create a Namespace-owned Agent.
@@ -87,11 +119,13 @@
 - [`lookupChannelDirectory`](../api.md#post-namespacesnamespaceidchanneldirectorylookup): Search a channel directory using an authorized Namespace Secret.
 - [`pollAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsdeviceauthorizationssecretidpoll): Experimental: Complete device login without returning credential material.
 - [`pollSavedAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsagentiddeviceauthorizationssecretidpoll): Experimental: Complete device login without returning credential material.
+- [`removeAgentStandingApproval`](../api.md#post-namespacesnamespaceidagentsagentidrepositoryapprovalsapprovalidremove): Remove repository approval independently of configuration or runtime cleanup.
 - [`retryAgentProvisioning`](../api.md#post-namespacesnamespaceidagentsprovisionworkidretry): Retry failed first-time provisioning for one exact work item.
 - [`startAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsdeviceauthorizations): Experimental: Start a private device login for Agent configuration.
 - [`startSavedAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsagentiddeviceauthorizations): Experimental: Start a private device login for Agent configuration.
 - [`stopAgent`](../api.md#post-namespacesnamespaceidagentsagentidstop): Stop one Agent and keep its saved Agent revision and persistent state.
-- [`validateAgentCreate`](../api.md#post-namespacesnamespaceidagentsvalidate): Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything.
+- [`validateAgentCreate`](../api.md#post-namespacesnamespaceidagentsvalidate): Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything.
+- [`validateAgentSandboxPolicy`](../api.md#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetvalidate): Preview Agent network policy admission without saving or applying.
 - [`withdrawAgentCredentialSource`](../api.md#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw): Revoke one credential source from the selected Agent revision.
 - [`getAgentNativeAdmin`](../api.md#get-namespacesnamespaceidagentsagentidnativeadmin): Resolve native admin UI launch availability for one Agent.
 - [`cancelAgentDeviceAuthorization`](../api.md#delete-namespacesnamespaceidagentsdeviceauthorizationssecretid): Experimental: Discard a local device login without upstream revocation.
@@ -179,15 +213,19 @@
 
 - [`listAgentConnections`](../api.md#get-namespacesnamespaceidagentsagentidconnections): List an Agent's connected accounts.
 - [`listConnectionTemplates`](../api.md#get-connectiontemplates): List Installation connection templates.
+- [`listNamespaceConnections`](../api.md#get-namespacesnamespaceidconnections): List completed connections the caller owns or can use in this Namespace.
 - [`listUsableConnectionTemplates`](../api.md#get-namespacesnamespaceidconnectiontemplates): List connection templates the caller may connect in this Namespace.
 - [`completeAgentConnection`](../api.md#get-oauthcallback): Complete a browser connection for the signed-in person who started it.
 - [`getConnectionTemplate`](../api.md#get-connectiontemplatesconnectiontemplateid): Get one connection template.
 - [`createConnectionTemplate`](../api.md#post-connectiontemplates): Create an Installation connection template.
 - [`updateConnectionTemplate`](../api.md#patch-connectiontemplatesconnectiontemplateid): Rename a connection template, or create a version with new approved values.
+- [`attachAgentConnection`](../api.md#post-namespacesnamespaceidagentsagentidconnectionscredentialsourceid): Attach a completed account and grant this Agent access to its source.
 - [`rotateConnectionClientSecret`](../api.md#post-connectiontemplatesconnectiontemplateidrotateclientsecret): Replace the OAuth client secret used by new connections.
-- [`startAgentConnection`](../api.md#post-namespacesnamespaceidagentsagentidconnections): Start connecting the signed-in person's account to their personal Agent.
+- [`startAgentConnection`](../api.md#post-namespacesnamespaceidagentsagentidconnections): Start consent for a reusable account from this Agent.
+- [`startNamespaceConnection`](../api.md#post-namespacesnamespaceidconnections): Start consent for a reusable account in this Namespace.
 - [`deleteConnectionTemplate`](../api.md#delete-connectiontemplatesconnectiontemplateid): Delete a connection template that no connection uses.
-- [`disconnectAgentConnection`](../api.md#delete-namespacesnamespaceidagentsagentidconnectionscredentialsourceid): Remove a connected account from an Agent and request its withdrawal.
+- [`disconnectAgentConnection`](../api.md#delete-namespacesnamespaceidagentsagentidconnectionscredentialsourceid): Detach an account from this Agent and withdraw its access.
+- [`disconnectNamespaceConnection`](../api.md#delete-namespacesnamespaceidconnectionscredentialsourceid): Disconnect an unused saved account from this Namespace.
 
 ### Credential sources
 

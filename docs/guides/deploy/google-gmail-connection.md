@@ -1,10 +1,10 @@
-# Connect Google Gmail to a personal Agent
+# Connect Gmail and grant an Agent access
 
-Set up a Google Gmail read-only connection template so a person can connect
-their own Gmail account to their Agent, whose `gog` tool then reads mail. The
-refresh token stays in OpenShell; the Agent receives only a placeholder in
-`GOG_ACCESS_TOKEN`. The [connection template reference](../../reference/connection-templates.md)
-defines the behavior and limits.
+Use Google's `gmail.readonly` OAuth scope to connect a Gmail account once and
+grant selected Agents permission to read mail. Google enforces that scope.
+The template permits requests to `gmail.googleapis.com` through OpenShell, which
+keeps the refresh token and supplies a placeholder as `GOG_ACCESS_TOKEN`.
+See the [connection template reference](../../reference/connection-templates.md).
 
 The console has no connection controls yet, so these steps use the HTTP API.
 
@@ -15,8 +15,8 @@ The console has no connection controls yet, so these steps use the HTTP API.
   `operatorTls` on the Backend; see
   [browser connections](../../reference/drivers/openshell-credential-gateway.md#configure-the-driver).
 - A runtime image with `gog` installed, for example at `/usr/local/bin/gog`, and
-  that exact path in the Credential Gateway's `toolBinaries`. Every listed tool
-  binary receives the credential, so list only what you need.
+  that exact path in the Credential Gateway's Installation-wide `toolBinaries`.
+  OpenShell uses this list to admit tools to the protected route. The user's consent applies to the granted Agent and the approved requests.
 - The OCC public origin set. The callback URI is `<public origin>/oauth/callback`.
 - The OCC API and the OpenShell gateway Pod can reach `oauth2.googleapis.com`.
 - An Installation administrator session cookie in `OCC_SESSION_COOKIE_JAR`, with
@@ -87,22 +87,23 @@ owner: a connected Agent cannot have other people's grants.
 
 ## Connect an account
 
-The person connects from a browser tab signed in to the OCE console, because the
-callback must arrive in that session. In the tab's developer console, run:
+From a signed-in Console tab on the OCC origin, start consent for the Namespace.
 
-```js
-await fetch("/namespaces/<namespaceId>/agents/<agentId>/connections", {
+```javascript
+const namespaceId = "<namespaceId>";
+const response = await fetch(`/namespaces/${namespaceId}/connections`, {
   method: "POST",
-  credentials: "include",
-  headers: { "content-type": "application/json" },
+  headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ connectionTemplateId: "<templateId>" }),
-}).then((response) => response.json());
+});
+if (!response.ok) throw new Error(`OCC refused the connection (${response.status})`);
+const { data } = await response.json();
+location.assign(data.authorizationUrl);
 ```
 
-Open the returned `data.authorizationUrl` in the same browser within ten minutes,
-choose the Google account, and approve read-only Gmail access. Google redirects
-to OCC, which redirects to the Agent's console page with `connection=connected`.
-Then deploy a new version of the Agent.
+After Google redirects back, list `GET /namespaces/:namespaceId/connections` to
+find the completed source ID. A person who owns the connection or can operate its source and can update the target Agent sends `POST /namespaces/:namespaceId/agents/:agentId/connections/:credentialSourceId`
+for each Agent that should use the account. Deploy each Agent to pick up the source.
 
 ## Check the result
 
@@ -122,5 +123,5 @@ the variable: OpenShell refuses model requests that carry the placeholder.
 - **Other reasons:** see
   [callback failures](../../reference/connection-templates.md#callback-failures).
 
-To remove access, [disconnect](../../reference/connection-templates.md#disconnect)
+To remove access, [disconnect](../../reference/connection-templates.md#detach-or-disconnect)
 the connection. Revoking the app in the Google account also stops refresh.

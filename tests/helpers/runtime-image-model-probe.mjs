@@ -1,19 +1,22 @@
 // Shared by the runtime image model probe tests, which CI runs in two lanes:
-// the CPU contention case (Image Model Probes) and the other outcomes (Image
-// Runtime Startup 2). File names are left out so CI Impact can still select a
+// the CPU contention case (Image Runtime Startup 3) and the other outcomes
+// (Image Runtime Startup 2). File names are left out so CI Impact can still select a
 // test-only change to either file by its lane.
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { changeSignal, followContainer } from "./docker-follow.mjs";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
+import { gatewayMemoryArguments, runDockerCommand } from "./runtime-image-startup.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
 import { modelProbeDiagnostic } from "./runtime-model-probe-observation.mjs";
+import { jsonLines } from "./json-lines.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
@@ -36,45 +39,42 @@ export const imageTestOptions =
     : {};
 
 export const constrainedGatewayCpuLimit = "0.5";
-export const productionGatewayMemoryLimit = "2g";
 export const probeApiKey = "sk-openclaw-runtime-probe-synthetic";
 
+// Failures carry the exit code, signal, timeout and redacted output tails (finding 2184).
 export async function runDocker(args, options = {}) {
-  return execute(docker, args, {
+  return runDockerCommand(docker, args, {
     timeout: 60_000 * imageSmokeTimeoutMultiplier,
     maxBuffer: 4_000_000,
     ...options,
   });
 }
 
-export function jsonLines(output) {
-  return output
-    .split(/\r?\n/)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return undefined;
-      }
-    })
-    .filter((entry) => entry !== null && typeof entry === "object");
-}
-
 async function waitForLog(containerName, pattern) {
   const deadline = Date.now() + 20_000 * imageSmokeTimeoutMultiplier;
-  while (Date.now() < deadline) {
-    const { stdout } = await runDocker(["logs", containerName]);
-    if (pattern.test(stdout)) {
-      return;
+  const logs = followContainer(undefined, containerName, { docker, exit: false });
+  try {
+    for (;;) {
+      const seen = logs.changes.version;
+      const { stdout, following } = logs.read();
+      if (pattern.test(stdout)) {
+        return;
+      }
+      if (!following) {
+        throw new Error(`${containerName} stopped before ${pattern} appeared in its logs.`);
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for ${pattern} in ${containerName} logs.`);
+      }
+      await logs.changes.wait(seen, deadline - Date.now());
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+  } finally {
+    await logs.stop();
   }
-  throw new Error(`Timed out waiting for ${pattern} in ${containerName} logs.`);
 }
 
 async function createProbeMaterial(t, configuration) {
-  const directory = await mkdtemp(join(tmpdir(), "oce-runtime-model-probe-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-runtime-model-probe-");
   const file = (name) => join(directory, name);
   // Sign a leaf with a private CA, as a provider certificate would be.
   await createModelProbeCertificates({
@@ -176,7 +176,7 @@ function containerTime(value) {
 // "hang". Resolves once `until` accepts an observation snapshot.
 export async function runEmbeddedGatewayProbe(
   t,
-  { mode, delayMs = 0, cpus, memory, until, limitMs, stress, afterStop },
+  { mode, delayMs = 0, cpus, until, limitMs, stress, afterStop },
 ) {
   const scenarioStartedAt = Date.now();
   const gateway = embeddedGateway();
@@ -234,8 +234,7 @@ export async function runEmbeddedGatewayProbe(
     `container:${sidecar}`,
     "--cpus",
     cpus,
-    "--memory",
-    memory,
+    ...gatewayMemoryArguments,
     "--user",
     "1000:1000",
     "--read-only",
@@ -266,28 +265,42 @@ export async function runEmbeddedGatewayProbe(
   const startedAt = containerTime(
     (await runDocker(["inspect", containerName, "--format", "{{.State.StartedAt}}"])).stdout,
   );
+  // Both containers' logs and the Gateway's exit stream in; each check reads
+  // what arrived, and the loop sleeps until the next write.
+  const changes = changeSignal();
+  const endpointLogs = followContainer(t, sidecar, { docker, exit: false, changes });
+  const gatewayLogs = followContainer(t, containerName, {
+    docker,
+    changes,
+    inspectTimeoutMs: 20_000 * imageSmokeTimeoutMultiplier,
+  });
   const collect = async () => {
-    const [endpoint, wrapper, state] = await Promise.all([
-      runDocker(["logs", sidecar]),
-      runDocker(["logs", containerName]),
-      runDocker(["inspect", containerName, "--format", "{{.State.Running}} {{.State.ExitCode}}"]),
-    ]);
-    const [running, exitCode] = state.stdout.trim().split(/\s+/);
+    const endpoint = endpointLogs.read();
+    const wrapper = gatewayLogs.read();
     const output = `${wrapper.stdout}\n${wrapper.stderr}`;
     return {
-      events: jsonLines(endpoint.stdout).map((event) => ({ ...event, ms: event.at - startedAt })),
+      events: jsonLines(endpoint.stdout, { lenient: true }).map((event) => ({
+        ...event,
+        ms: event.at - startedAt,
+      })),
       output,
-      phases: jsonLines(output).filter(({ event }) => event === "runtime.startup_phase"),
-      probe: jsonLines(output).find(({ event }) => event === "openclaw.model_probe"),
-      probeStage: jsonLines(output)
+      phases: jsonLines(output, { lenient: true }).filter(
+        ({ event }) => event === "runtime.startup_phase",
+      ),
+      probe: jsonLines(output, { lenient: true }).find(
+        ({ event }) => event === "openclaw.model_probe",
+      ),
+      probeStage: jsonLines(output, { lenient: true })
         .filter(({ event }) => event === "openclaw.model_probe_stage")
         .at(-1)?.stage,
-      running: running === "true",
-      exitCode: Number(exitCode),
+      running: wrapper.running,
+      exitCode: wrapper.exitCode,
     };
   };
   const deadline = Date.now() + limitMs * imageSmokeTimeoutMultiplier;
   for (;;) {
+    const checkedAt = Date.now();
+    const seen = changes.version;
     const snapshot = await collect();
     if (until(snapshot, containerName)) {
       return { containerName, snapshot, setupMs: startedAt - scenarioStartedAt };
@@ -306,7 +319,10 @@ export async function runEmbeddedGatewayProbe(
       error.openclawCiDiagnostic = modelProbeDiagnostic(snapshot, stress, "outer-timeout");
       throw error;
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    // Check again on the next write or exit (at least 5 s apart without one,
+    // at most every 250 ms with them).
+    await changes.wait(seen, Math.min(5_000, deadline + 1 - Date.now()));
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, checkedAt + 250 - Date.now())));
   }
 }
 

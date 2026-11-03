@@ -16,11 +16,14 @@ export const ConnectionTemplateId = Type.String({
 const HttpsUrl = Type.String({ minLength: 9, maxLength: 2048, pattern: "^https://" });
 const Scope = Type.String({ minLength: 1, maxLength: 512, pattern: "^[!#-\\[\\]-~]+$" });
 
+const EndpointAccess = Type.Union([Type.Literal("read-only"), Type.Literal("full")]);
+
 const ConnectionEndpointSchema = Type.Object(
   {
     host: Type.String({ minLength: 1, maxLength: 253 }),
     port: Type.Optional(Type.Integer({ minimum: 1, maximum: 65535 })),
     path: Type.Optional(Type.String({ minLength: 1, maxLength: 512, pattern: "^/" })),
+    access: Type.Optional(EndpointAccess),
   },
   { additionalProperties: false },
 );
@@ -86,7 +89,7 @@ const ConnectionTemplateVersionSchema = Type.Object(
     scopes: Type.Array(Type.String()),
     authorizationParameters: Type.Record(Type.String(), Type.String()),
     endpoint: Type.Object(
-      { host: Type.String(), port: Type.Integer(), path: Type.String() },
+      { host: Type.String(), port: Type.Integer(), path: Type.String(), access: EndpointAccess },
       { additionalProperties: false },
     ),
     envVar: Type.String(),
@@ -208,7 +211,7 @@ const AgentConnectionSchema = Type.Object(
   {
     namespaceId: NamespaceId,
     credentialSourceId: CredentialSourceId,
-    agentId: AgentId,
+    agentId: Type.Optional(AgentId),
     ownerPrincipalId: Type.String(),
     connectionTemplateId: ConnectionTemplateId,
     connectionTemplateVersion: Type.Integer({ minimum: 1 }),

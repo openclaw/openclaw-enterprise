@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
+import type { CredentialReadLifetime, NamespaceEnsureResult } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
+import { MAX_TIMER_DELAY_MS } from "@openclaw-enterprise/utils";
 
 /**
  * Which optional wait asks whether other Work is waiting: an ordinary stop's Gateway drain, or any
@@ -8,8 +10,14 @@ import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
  */
 export type ComputeWorkWait = "gateway-drain" | "optional";
 
-const operationSignals = new AsyncLocalStorage<AbortSignal>();
+interface ComputeOperationLifetime {
+  readonly signal: AbortSignal;
+  readonly deadline?: number;
+}
+
+const operationLifetimes = new AsyncLocalStorage<ComputeOperationLifetime>();
 const workWaitingChecks = new AsyncLocalStorage<(wait: ComputeWorkWait) => Promise<boolean>>();
+
 /**
  * How a stop's termination waits may yield: every wait of a refused candidate's stop, or only the
  * Gateway drain of an ordinary stop.
@@ -17,16 +25,70 @@ const workWaitingChecks = new AsyncLocalStorage<(wait: ComputeWorkWait) => Promi
 type YieldingStop = "refused-candidate" | "gateway-drain";
 const yieldingStops = new AsyncLocalStorage<YieldingStop>();
 
+export type NamespaceEnsureHintCode = "KUBERNETES_TENANT_ACCESS_DENIED";
+
+const namespaceEnsureHints = new AsyncLocalStorage<{ hintCode?: NamespaceEnsureHintCode }>();
+
+/** Keep log fields alongside the observation so audit and queue evidence see only the Driver result. */
+export async function captureNamespaceEnsureHint(
+  operation: () => Promise<NamespaceEnsureResult>,
+): Promise<{ observation: NamespaceEnsureResult; hintCode?: NamespaceEnsureHintCode }> {
+  const evidence: { hintCode?: NamespaceEnsureHintCode } = {};
+  const observation = await namespaceEnsureHints.run(evidence, operation);
+  return { observation, ...evidence };
+}
+
+export function recordNamespaceEnsureHint(hintCode: NamespaceEnsureHintCode): void {
+  const evidence = namespaceEnsureHints.getStore();
+  if (evidence !== undefined) {
+    evidence.hintCode = hintCode;
+  }
+}
+
 export function currentComputeAbortSignal(): AbortSignal | undefined {
-  return operationSignals.getStore();
+  return currentComputeOperationLifetime()?.signal;
+}
+
+export function currentComputeOperationLifetime(): ComputeOperationLifetime | undefined {
+  return operationLifetimes.getStore();
+}
+
+/** Bound credential I/O by its caller, enclosing cancellation and earliest absolute deadline. */
+export async function withComputeOperationDeadline<Result>(
+  lifetime: CredentialReadLifetime,
+  operation: (effective: Required<ComputeOperationLifetime>) => Promise<Result>,
+): Promise<Result> {
+  const requestedDeadline = Date.parse(lifetime.deadlineAt);
+  if (!Number.isFinite(requestedDeadline)) {
+    throw new DOMException("The operation deadline is invalid.", "TimeoutError");
+  }
+  const parent = currentComputeOperationLifetime();
+  const deadline = Math.min(requestedDeadline, parent?.deadline ?? Infinity);
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) {
+    throw new DOMException("The operation deadline elapsed.", "TimeoutError");
+  }
+  const signal = AbortSignal.any([
+    lifetime.signal,
+    ...(parent ? [parent.signal] : []),
+    AbortSignal.timeout(Math.min(Math.ceil(remaining), MAX_TIMER_DELAY_MS)),
+  ]);
+  signal.throwIfAborted();
+  const effective = { signal, deadline };
+  return operationLifetimes.run(effective, () => operation(effective));
 }
 
 export async function withComputeAbortSignal<Result>(
   signal: AbortSignal,
   operation: () => Promise<Result>,
 ): Promise<Result> {
-  signal.throwIfAborted();
-  return operationSignals.run(signal, operation);
+  const parent = currentComputeOperationLifetime();
+  const effective = {
+    signal: parent ? AbortSignal.any([signal, parent.signal]) : signal,
+    ...(parent?.deadline !== undefined ? { deadline: parent.deadline } : {}),
+  };
+  effective.signal.throwIfAborted();
+  return operationLifetimes.run(effective, operation);
 }
 
 /**

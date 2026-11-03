@@ -1,8 +1,10 @@
 // Runtime wrapper SIGTERM in every startup phase, split from
 // runtime-image-startup-probe.test.mjs so CI runs it beside the startup model
-// probes. Both files start the wrapper through the same scenario helper.
+// probes. Both files start the wrapper through the same scenario helper. The
+// Gateway restart after an unclean stop is in
+// runtime-image-gateway-unclean-restart.test.mjs.
 import assert from "node:assert/strict";
-import test from "node:test";
+import { describe, test } from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { imageTestOptions, runDocker, failureTail } from "../helpers/runtime-image-startup.mjs";
 import {
@@ -25,18 +27,18 @@ import {
 const promptTerminationMs = 15_000;
 
 // Sends SIGTERM as the kubelet does and measures how long the container takes
-// to stop. Container exit ends its PID namespace, so no child outlives it.
-async function assertPromptTermination(t, { containerName, collect }, description, phase) {
+// to stop (the scenario follows its exit with `docker wait`). Container exit
+// ends its PID namespace, so no child outlives it.
+async function assertPromptTermination(t, { containerName, collect, exited }, description, phase) {
   const budgetMs = promptTerminationMs * imageSmokeTimeoutMultiplier;
   const signalledAt = Date.now();
   await runDocker(["kill", "--signal", "TERM", containerName]);
-  const deadline = signalledAt + budgetMs;
-  let state = await collect();
-  while (state.running && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    state = await collect();
-  }
-  const elapsedMs = Date.now() - signalledAt;
+  const exitedAt = await exited(signalledAt + budgetMs);
+  // An exit not seen by the deadline counts as the budget, not the inspect after it.
+  const elapsedMs = exitedAt === undefined ? budgetMs : exitedAt - signalledAt;
+  const state = await collect();
+  // An exit found later than the budget, or not at all by the deadline, is not prompt.
+  const stopped = exitedAt !== undefined && !state.running && elapsedMs <= budgetMs;
   t.diagnostic(
     `${description}: ${state.running ? "still running" : `exit ${state.exitCode}`} ` +
       `${elapsedMs} ms after SIGTERM`,
@@ -47,14 +49,15 @@ async function assertPromptTermination(t, { containerName, collect }, descriptio
     `openclaw-ci-measurement ${JSON.stringify({
       kind: "runtime-sigterm",
       case: phase,
-      stopped: !state.running,
+      stopped,
       elapsedMs,
       budgetMs,
     })}`,
   );
-  if (state.running) {
+  if (!stopped) {
     assert.fail(
-      `${description}: SIGTERM did not stop the wrapper in ${elapsedMs} ms.\n${failureTail(state.output)}`,
+      `${description}: SIGTERM did not stop the wrapper in ${budgetMs} ms` +
+        `${elapsedMs > budgetMs ? ` (it exited after ${elapsedMs} ms)` : ""}.\n${failureTail(state.output)}`,
     );
   }
   // A terminated wrapper exits cleanly in every phase, as it does once running.
@@ -114,35 +117,41 @@ async function assertWrapperTermination(t, kind) {
   });
 }
 
-test(
-  "runtime image Codex Harness exits promptly on SIGTERM in every startup phase",
-  { ...imageTestOptions, timeout: 900_000 },
-  async (t) => {
-    await assertWrapperTermination(t, "codex");
-  },
-);
+// Each case starts its own wrappers and stand-in providers through the scenario
+// helper: random container names, its own certificate directory and network
+// namespace, no shared volume or port, and CPU-limited wrappers. Two run at a
+// time, as in the startup probe file.
+describe("runtime image wrapper termination", { concurrency: 2 }, () => {
+  test(
+    "runtime image Codex Harness exits promptly on SIGTERM in every startup phase",
+    { ...imageTestOptions, timeout: 900_000 },
+    async (t) => {
+      await assertWrapperTermination(t, "codex");
+    },
+  );
 
-test(
-  "runtime image embedded Gateway exits promptly on SIGTERM in every startup phase",
-  { ...imageTestOptions, timeout: 900_000 },
-  async (t) => {
-    await assertWrapperTermination(t, "gateway");
-  },
-);
+  test(
+    "runtime image embedded Gateway exits promptly on SIGTERM in every startup phase",
+    { ...imageTestOptions, timeout: 900_000 },
+    async (t) => {
+      await assertWrapperTermination(t, "gateway");
+    },
+  );
 
-test(
-  "runtime image dedicated Gateway exits promptly on SIGTERM while it waits for its Harness",
-  { ...imageTestOptions, timeout: 600_000 },
-  async (t) => {
-    const waiting = await runTerminationScenario(t, {
-      kind: "dedicated-gateway",
-      mode: "answer",
-      until: ({ output }) => /Waiting for Harness plugin runtime status/.test(output),
-      description: "dedicated Gateway waiting for its Harness",
-      phase: "harness-wait",
-    });
-    await withStartupProbeEvidence(waiting, async () => {
-      assert.equal(waiting.snapshot.events.some(observedValue("native", true)), false);
-    });
-  },
-);
+  test(
+    "runtime image dedicated Gateway exits promptly on SIGTERM while it waits for its Harness",
+    { ...imageTestOptions, timeout: 600_000 },
+    async (t) => {
+      const waiting = await runTerminationScenario(t, {
+        kind: "dedicated-gateway",
+        mode: "answer",
+        until: ({ output }) => /Waiting for Harness plugin runtime status/.test(output),
+        description: "dedicated Gateway waiting for its Harness",
+        phase: "harness-wait",
+      });
+      await withStartupProbeEvidence(waiting, async () => {
+        assert.equal(waiting.snapshot.events.some(observedValue("native", true)), false);
+      });
+    },
+  );
+});

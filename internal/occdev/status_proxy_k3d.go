@@ -2,7 +2,6 @@ package occdev
 
 import (
 	"context"
-	"encoding/json/v2"
 	"fmt"
 	"net/netip"
 	"regexp"
@@ -26,21 +25,9 @@ var developmentStatusProxyWait = 2 * time.Minute
 
 func (r *runner) developmentStatusProxySource(ctx context.Context, state *developmentState) (string, error) {
 	server := "k3d-" + state.Cluster + "-server-0"
-	nodeData, err := r.output(ctx, "kubectl", "get", "node", server, "-o", "json")
+	prefix, err := r.developmentNodePodCIDR(ctx, server, 28)
 	if err != nil {
 		return "", err
-	}
-	var node struct {
-		Spec struct {
-			PodCIDR string `json:"podCIDR"`
-		} `json:"spec"`
-	}
-	if err := json.Unmarshal(nodeData, &node); err != nil {
-		return "", fmt.Errorf("invalid k3d node information")
-	}
-	prefix, err := netip.ParsePrefix(node.Spec.PodCIDR)
-	if err != nil || !prefix.Addr().Is4() || prefix.Bits() < 16 || prefix.Bits() > 28 || prefix != prefix.Masked() {
-		return "", fmt.Errorf("k3d node must have a canonical bounded IPv4 Pod CIDR")
 	}
 	// Any Pod address on this node routes through the bridge. Skip the network
 	// address and the bridge's own address, which the kernel reports as local.

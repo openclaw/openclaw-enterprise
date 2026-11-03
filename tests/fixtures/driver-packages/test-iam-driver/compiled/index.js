@@ -4,19 +4,11 @@ export const configurationSchema = Object.freeze({
   properties: {},
 });
 
-export function validateConfiguration(configuration) {
-  if (
-    typeof configuration !== "object" ||
-    configuration === null ||
-    Array.isArray(configuration) ||
-    Object.keys(configuration).length !== 0
-  ) {
-    throw new Error("The test IAM Driver requires an empty configuration object.");
-  }
+export function validateConfiguration() {
+  return [];
 }
 
-export function createDriver({ id, implementation, configuration, platformState }) {
-  validateConfiguration(configuration);
+export function createDriver({ id, implementation, platformState }) {
   if (typeof platformState?.loadNativeIAMState !== "function") {
     throw new Error("The test IAM Driver requires platform state.");
   }

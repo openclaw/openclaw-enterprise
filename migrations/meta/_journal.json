@@ -416,24 +416,66 @@
       "breakpoints": true
     },
     {
-      "idx": 59,
-      "version": "7",
-      "when": 1787000000060,
-      "tag": "0060_installation_access_bindings",
-      "breakpoints": true
-    },
-    {
       "idx": 60,
       "version": "7",
-      "when": 1787000000061,
-      "tag": "0061_connection_templates",
+      "when": 1787000000060,
+      "tag": "0060_credential_proxy_admission",
       "breakpoints": true
     },
     {
       "idx": 61,
       "version": "7",
+      "when": 1787000000061,
+      "tag": "0061_repository_credential_authority",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
       "when": 1787000000062,
-      "tag": "0062_agent_connections",
+      "tag": "0062_credential_delivery_custody",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1787000000063,
+      "tag": "0063_prepared_attempt_settlement",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1787000000064,
+      "tag": "0064_gateway_managed_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1787000000065,
+      "tag": "0065_selected_repository_set",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1787000000066,
+      "tag": "0066_installation_access_bindings",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1787000000067,
+      "tag": "0067_connection_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1787000000068,
+      "tag": "0068_agent_connections",
       "breakpoints": true
     }
   ]

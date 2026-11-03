@@ -53,6 +53,9 @@ export async function verifyRepositoryLifetime(t, store) {
       ),
       configuration,
     );
+    // The narrow proof capability must close with the rest of the unit, before
+    // it can inspect arguments or touch a connection returned to the pool.
+    await assert.rejects(escaped.preparedTokenProof.current(), ScopeViolationError);
     await assert.rejects(
       escaped.configurations.deleteConfiguration(namespace.id, configuration.id),
       ScopeViolationError,

@@ -1,0 +1,524 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { startPluginRequestGuard } from "../../apps/controller/src/plugin-request-guard.ts";
+import {
+  managedGoogleInstall,
+  managedPluginMiddleware,
+  managedPluginMiddlewareAudience,
+  managedPluginMiddlewareImplementation,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { bindReservedPortInProcess, reservePort } from "../helpers/available-port.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import {
+  grpc,
+  invoke,
+  openShellMiddlewareClient,
+  token,
+} from "../helpers/openshell-online-wire.mjs";
+
+test("the standalone guard refuses startup without supervisor trust settings", () => {
+  const entry = fileURLToPath(
+    new URL("../../apps/controller/src/plugin-request-guard.ts", import.meta.url),
+  );
+  const result = spawnSync(process.execPath, [entry], {
+    env: { OCC_PLUGIN_REQUEST_AUTHORITY_PORT: "9444" },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /pluginRequestGuard.issuer must be/);
+});
+
+test("the signed OpenShell request guard intersects the source envelope with the pinned gog operations", async (t) => {
+  const { directory, caBundle, certPath, keyPath } = await harnessTlsFixture(t);
+  const keys = generateKeyPairSync("ed25519");
+  const issuerPublicKeyPath = join(directory, "issuer.pub");
+  await writeFile(issuerPublicKeyPath, keys.publicKey.export({ type: "spki", format: "pem" }));
+  const reservation = await reservePort();
+  t.after(reservation.release);
+  await bindReservedPortInProcess(reservation);
+  const guard = await startPluginRequestGuard(
+    {
+      OCC_PLUGIN_REQUEST_AUTHORITY_PORT: String(reservation.port),
+      OCC_PLUGIN_REQUEST_AUTHORITY_ISSUER: "https://gateway.example.test",
+      OCC_PLUGIN_REQUEST_AUTHORITY_KEY_ID: "gateway-key",
+    },
+    {
+      certificatePath: certPath,
+      privateKeyPath: keyPath,
+      issuerPublicKeyPath,
+    },
+  );
+  t.after(guard.close);
+  await reservation.release();
+  const client = openShellMiddlewareClient(t, reservation.port, caBundle);
+  const sandbox = "fixture-runtime-1";
+  const signed = token(keys, "supervisor", sandbox, managedPluginMiddlewareAudience);
+  const gateway = token(keys, "gateway", undefined, managedPluginMiddlewareAudience);
+  const context = { sandbox_id: sandbox, workspace: "default", request_id: "gmail-request-1" };
+  const gmail = "https://www.googleapis.com/auth/gmail.readonly";
+  const scopeConfig = (host: string, path: string, scope: string, port = 443) => ({
+    fields: {
+      binding_id: { stringValue: managedGoogleInstall.releaseSha256 },
+      request_scope: { stringValue: JSON.stringify({ host, port, path, scopes: [scope] }) },
+    },
+  });
+  const config = scopeConfig("gmail.googleapis.com", "/gmail/v1/users/me/messages", gmail);
+  const target = {
+    scheme: "https",
+    host: "gmail.googleapis.com",
+    port: 443,
+    method: "GET",
+    path: "/gmail/v1/users/me/messages",
+    query: "maxResults=1",
+  };
+  const request = { phase: 1, middleware_name: managedPluginMiddleware, config, context, target };
+  const evaluate = async (input: object, caller = signed) =>
+    (await invoke(client, "EvaluateHttpRequest", input, caller)).decision;
+  const contract = "openshell.supervisor-middleware.contract";
+  const manifest = await invoke(
+    client,
+    "Describe",
+    {
+      gateway: {
+        protocol_version: { major: 1, minor: 0 },
+        supported_capabilities: [contract],
+        required_capabilities: [contract],
+      },
+    },
+    gateway,
+  );
+  // GetGatewayInfo exposes these negotiated fields before a Sandbox receives its provider.
+  assert.equal(manifest.extension.implementation_name, managedPluginMiddlewareImplementation);
+  assert.equal(manifest.extension.implementation_version, managedGoogleInstall.releaseSha256);
+  assert.deepEqual(manifest.extension.required_capabilities, [contract]);
+  assert.deepEqual(manifest.extension.supported_capabilities, [contract]);
+  assert.deepEqual(
+    manifest.bindings.map(({ operation, phase }: { operation: number; phase: number }) => [
+      operation,
+      phase,
+    ]),
+    [
+      [1, 1],
+      [2, 1],
+    ],
+  );
+  assert.equal((await invoke(client, "ValidateConfig", request, gateway)).valid, true);
+  const stale = {
+    ...request,
+    config: { fields: { ...config.fields, binding_id: { stringValue: "0".repeat(64) } } },
+  };
+  assert.equal((await invoke(client, "ValidateConfig", stale, gateway)).valid, false);
+  assert.equal(await evaluate(stale), 2);
+  // A source envelope outside Google's HTTPS shape fails binding validation at the Gateway,
+  // and a request under it is denied.
+  const plaintext = { ...request, config: scopeConfig(target.host, target.path, gmail, 80) };
+  assert.equal(
+    (await invoke(client, "ValidateConfig", plaintext, gateway)).valid,
+    false,
+    "port 80 source",
+  );
+  assert.equal(await evaluate(plaintext), 2, "port 80 source");
+  assert.equal(
+    await evaluate(
+      request,
+      token(keys, "supervisor", "other-runtime", managedPluginMiddlewareAudience),
+    ),
+    2,
+  );
+  assert.equal(await evaluate(request, gateway), 2);
+  assert.equal(await evaluate(request, token(keys, "supervisor", sandbox, "other-middleware")), 2);
+  assert.equal(await evaluate({ ...request, headers: [{ name: "user-agent", value: "gog" }] }), 1);
+
+  const discovery = {
+    ...target,
+    host: "www.googleapis.com",
+    path: "/discovery/v1/apis/gmail/v1/rest",
+    query: "",
+  };
+  assert.equal(await evaluate({ ...request, target: discovery }), 1);
+  const fallback = { ...target, path: "/$discovery/rest", query: "version=v1" };
+  assert.equal(await evaluate({ ...request, target: fallback }), 1);
+  assert.equal(await evaluate({ ...request, target: { ...fallback, query: "version=v2" } }), 2);
+  assert.equal(
+    await evaluate({
+      ...request,
+      config: scopeConfig(target.host, "/**", gmail),
+      target: fallback,
+    }),
+    2,
+    "a public Discovery fallback cannot receive a bearer from an overlapping source",
+  );
+  assert.equal(
+    await evaluate({
+      ...request,
+      target: { ...discovery, path: "/discovery/v1/apis", query: "preferred=true" },
+    }),
+    1,
+  );
+  for (const query of [
+    "",
+    "maxResults=2",
+    "q=is%3Aunread&maxResults=10",
+    "labelIds=INBOX&labelIds=STARRED",
+  ]) {
+    assert.equal(await evaluate({ ...request, target: { ...target, query } }), 1, query);
+  }
+  const get = { ...target, path: target.path + "/abc", query: "format=full" };
+  assert.equal(
+    await evaluate({ ...request, target: get }),
+    2,
+    "source still authorizes only the collection",
+  );
+  const subtree = scopeConfig(target.host, "/gmail/v1/users/me/**", gmail);
+  assert.equal(await evaluate({ ...request, config: subtree, target: get }), 1);
+  const metadataScope = scopeConfig(
+    target.host,
+    "/gmail/v1/users/me/**",
+    "https://www.googleapis.com/auth/gmail.metadata",
+  );
+  assert.equal(await evaluate({ ...request, config: metadataScope, target: get }), 2);
+  assert.equal(
+    await evaluate({
+      ...request,
+      config: metadataScope,
+      target: { ...get, query: "format=metadata" },
+    }),
+    1,
+  );
+  assert.equal(
+    await evaluate({
+      ...request,
+      config: metadataScope,
+      target: { ...target, query: "q=is%3Aunread" },
+    }),
+    2,
+  );
+  const json = (value: unknown) => ({
+    body: Buffer.from(JSON.stringify(value)),
+    headers: [{ name: "content-type", value: "application/json" }],
+  });
+  const calendarRead = "https://www.googleapis.com/auth/calendar.readonly";
+  const calendar = {
+    ...request,
+    config: scopeConfig("www.googleapis.com", "/calendar/v3/**", calendarRead),
+    target: {
+      ...target,
+      host: "www.googleapis.com",
+      path: "/calendar/v3/calendars/en.usa%23holiday%40group.v.calendar.google.com/events",
+      query: "",
+    },
+  };
+  for (const calendarId of ["primary", "reader%40example.test"]) {
+    assert.equal(
+      await evaluate({
+        ...calendar,
+        target: { ...calendar.target, path: `/calendar/v3/calendars/${calendarId}/events` },
+      }),
+      1,
+      calendarId,
+    );
+  }
+  assert.equal(await evaluate(calendar), 1, "encoded hash is Calendar ID data");
+  for (const path of [
+    "/calendar/v3/calendars/en.usa%23holiday%40group.v.calendar.google.com/events/event-1",
+    "/calendar/v3/users/me/calendarList/en.usa%23holiday%40group.v.calendar.google.com",
+  ]) {
+    assert.equal(await evaluate({ ...calendar, target: { ...calendar.target, path } }), 1, path);
+  }
+  for (const calendarId of [
+    "id#fragment",
+    "id?query",
+    "id%2Fother",
+    "id%5Cother",
+    "id%3Bother",
+    "id%3Fquery",
+    "id%00",
+    "id%1F",
+    "id%7F",
+    "id%25",
+    "id%2523hash",
+    "%2e",
+    "%2e%2e",
+    "id%",
+  ]) {
+    assert.equal(
+      await evaluate({
+        ...calendar,
+        target: { ...calendar.target, path: `/calendar/v3/calendars/${calendarId}/events` },
+      }),
+      2,
+      calendarId,
+    );
+  }
+  for (const path of [
+    "/calendar/v3/calendars/primary/events/event%23hash",
+    "/calendar/v3/calendars/id%23hash/events/event%23hash",
+    "/calendar/v3/calendars/id%23hash/events%23hash",
+    "/calendar/v3/calendars/id%23hash/unreleased",
+  ]) {
+    assert.equal(await evaluate({ ...calendar, target: { ...calendar.target, path } }), 2, path);
+  }
+  // These methods are admitted by the wire contract but do not authorize this read.
+  for (const method of ["HEAD", "POST", "PUT", "PATCH", "DELETE"]) {
+    assert.equal(
+      await evaluate({ ...calendar, target: { ...calendar.target, method } }),
+      2,
+      method,
+    );
+  }
+  // Invalid wire methods are rejected before the Google policy runs.
+  for (const method of ["get", "OPTIONS", "INVALID"]) {
+    assert.equal(
+      await evaluate({ ...calendar, target: { ...calendar.target, method } }),
+      2,
+      method,
+    );
+  }
+  for (const denied of [
+    { ...calendar, target: { ...calendar.target, host: "calendar.googleapis.com" } },
+    { ...calendar, config: scopeConfig(calendar.target.host, "/calendar/v3/**", gmail) },
+    {
+      ...calendar,
+      config: scopeConfig(calendar.target.host, "/calendar/v3/calendars/primary/**", calendarRead),
+    },
+    { ...calendar, ...json({}) },
+    { ...calendar, target: { ...calendar.target, query: "unreviewed=true" } },
+  ]) {
+    assert.equal(await evaluate(denied), 2, "Calendar authority remains constrained");
+  }
+  const freebusy = {
+    ...request,
+    config: scopeConfig(
+      "www.googleapis.com",
+      "/calendar/v3/freeBusy",
+      "https://www.googleapis.com/auth/calendar.readonly",
+    ),
+    target: {
+      ...target,
+      host: "www.googleapis.com",
+      path: "/calendar/v3/freeBusy",
+      method: "POST",
+      query: "",
+    },
+    ...json({
+      timeMin: "2025-01-01T00:00:00Z",
+      timeMax: "2025-01-02T00:00:00Z",
+      items: [{ id: "primary" }],
+    }),
+  };
+  assert.equal(await evaluate(freebusy), 1, "read-authorized POST");
+  assert.equal(
+    await evaluate({ ...freebusy, ...json({ items: [{ id: "primary", unreviewed: true }] }) }),
+    2,
+  );
+  const batch = {
+    ...request,
+    config: scopeConfig(
+      "sheets.googleapis.com",
+      "/v4/**",
+      "https://www.googleapis.com/auth/spreadsheets",
+    ),
+    target: {
+      ...target,
+      host: "sheets.googleapis.com",
+      path: "/v4/spreadsheets/id:batchUpdate",
+      method: "POST",
+      query: "",
+    },
+  };
+  assert.equal(
+    await evaluate({
+      ...batch,
+      ...json({ requests: [{ addSheet: { properties: { title: "Test" } } }] }),
+    }),
+    1,
+  );
+  assert.equal(await evaluate({ ...batch, ...json({ requests: [{ unknownAction: {} }] }) }), 2);
+  assert.equal(
+    await evaluate({
+      ...batch,
+      ...json({ requests: [{ addSheet: {}, deleteSheet: { sheetId: 1 } }] }),
+    }),
+    2,
+  );
+  const cells = {
+    ...batch,
+    target: {
+      ...batch.target,
+      method: "PUT",
+      path: "/v4/spreadsheets/id/values/Sheet1!A1%3AD1",
+      query: "valueInputOption=RAW",
+    },
+  };
+  assert.equal(
+    await evaluate({ ...cells, ...json({ values: [["hello", 2, true, null]] }) }),
+    1,
+    "gog sheets update",
+  );
+  assert.equal(await evaluate({ ...cells, ...json({ values: [[{ unreviewed: true }]] }) }), 2);
+  const drive = {
+    ...request,
+    target: {
+      ...target,
+      host: "www.googleapis.com",
+      path: "/drive/v3/files/my-file",
+      query: "fields=id,name",
+    },
+    config: scopeConfig(
+      "www.googleapis.com",
+      "/drive/v3/**",
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+    ),
+  };
+  assert.equal(await evaluate(drive), 1, "Drive metadata");
+  assert.equal(
+    await evaluate({ ...drive, target: { ...drive.target, path: "/drive/v3/files/file%23hash" } }),
+    2,
+    "encoded hash is not permitted in a non-Calendar identifier",
+  );
+  const download = { ...drive, target: { ...drive.target, query: "alt=media" } };
+  assert.equal(await evaluate(download), 2, "metadata grant cannot fetch file bytes");
+  assert.equal(
+    await evaluate({
+      ...download,
+      config: scopeConfig(
+        "www.googleapis.com",
+        "/drive/v3/**",
+        "https://www.googleapis.com/auth/drive.readonly",
+      ),
+    }),
+    1,
+  );
+  assert.equal(
+    await evaluate({
+      ...drive,
+      target: { ...drive.target, path: "/drive/v3/files/generateIds", query: "" },
+    }),
+    2,
+    "reserved RPC cannot match the generic file ID route",
+  );
+  const exp = {
+    ...drive.target,
+    path: "/drive/v3/files/doc/export",
+    query: "mimeType=application%2Fpdf&alt=media",
+  };
+  assert.equal(
+    await evaluate({ ...drive, target: exp }),
+    2,
+    "metadata scope cannot export content",
+  );
+  assert.equal(
+    await evaluate({
+      ...drive,
+      config: scopeConfig(
+        "www.googleapis.com",
+        "/drive/v3/**",
+        "https://www.googleapis.com/auth/drive.readonly",
+      ),
+      target: exp,
+    }),
+    1,
+  );
+  const keep = {
+    ...target,
+    host: "keep.googleapis.com",
+    path: "/v1/notes/note/attachments/file",
+    query: "mimeType=image%2Fpng&alt=media",
+  };
+  assert.equal(
+    await evaluate({
+      ...request,
+      config: scopeConfig(keep.host, "/v1/**", "https://www.googleapis.com/auth/keep.readonly"),
+      target: keep,
+    }),
+    1,
+  );
+  // The request host must be the source host, even when the source path and grant also fit
+  // another Google service: drive.readonly authorizes both Docs and Slides reads under /v1/**.
+  const driveRead = "https://www.googleapis.com/auth/drive.readonly";
+  const slides = {
+    ...request,
+    config: scopeConfig("slides.googleapis.com", "/v1/**", driveRead),
+    target: { ...target, host: "slides.googleapis.com", path: "/v1/presentations/deck", query: "" },
+  };
+  assert.equal(await evaluate(slides), 1, "Slides read under a Slides source");
+  assert.equal(
+    await evaluate({ ...slides, config: scopeConfig("docs.googleapis.com", "/v1/**", driveRead) }),
+    2,
+    "a Docs source cannot credential a Slides read",
+  );
+  const sheetsRead = scopeConfig(
+    "sheets.googleapis.com",
+    "/v4/**",
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+  );
+  assert.equal(
+    await evaluate({ ...cells, config: sheetsRead, ...json({ values: [["hello"]] }) }),
+    2,
+    "read-only scope refuses write",
+  );
+  // Dot segments may resolve upstream to another resource than the one routed here. A malformed
+  // escape makes the path decoder throw, and the guard denies a request whose check throws.
+  for (const segment of [".", "..", "%zz"]) {
+    assert.equal(
+      await evaluate({
+        ...request,
+        config: subtree,
+        target: { ...get, path: `${target.path}/${segment}` },
+      }),
+      2,
+      segment,
+    );
+  }
+  // Calendar's Discovery still declares Google's userIp system parameter; it stays refused.
+  assert.equal(
+    await evaluate({ ...freebusy, target: { ...freebusy.target, query: "userIp=192.0.2.1" } }),
+    2,
+    "userIp",
+  );
+  for (const denied of [
+    { ...request, target: { ...target, method: "POST" } },
+    { ...request, target: { ...target, host: discovery.host } },
+    { ...request, target: { ...target, path: target.path + "/send" } },
+    { ...request, target: { ...target, scheme: "http" } },
+    { ...request, target: { ...target, port: 444 } },
+    { ...request, target: { ...discovery, query: "key=unexpected" } },
+    { ...request, config: subtree, target: { ...get, path: target.path + "/%2e%2e%2fsend" } },
+    ...[
+      "maxResults=bad",
+      "maxResults=1&maxResults=1",
+      "maxResults=1&extra=x",
+      "access_token=injected",
+      "maxResults=1&",
+    ].map((query) => ({ ...request, target: { ...target, query } })),
+    { ...request, body: Buffer.from("{}") },
+    ...["x-http-method-override", "x-original-url", "x-goog-request-params", "authorization"].map(
+      // Only tests headers presented by the sender. Stock OpenShell filters Authorization.
+      (name) => ({ ...request, headers: [{ name, value: "override" }] }),
+    ),
+    {
+      ...request,
+      headers: [
+        { name: "accept", value: "*/*" },
+        { name: "accept", value: "application/json" },
+      ],
+    },
+  ]) {
+    assert.equal(await evaluate(denied), 2);
+  }
+
+  const metadata = new grpc.Metadata();
+  metadata.set("authorization", signed);
+  const session = client.EvaluateWebSocketSession(metadata, { deadline: Date.now() + 5_000 });
+  const decision = new Promise<{ preflight_decision: { action: number } }>((resolve, reject) => {
+    session.once("data", resolve);
+    session.once("error", reject);
+  });
+  session.end({ preflight: { context } });
+  assert.equal((await decision).preflight_decision.action, 3);
+});

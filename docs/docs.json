@@ -34,26 +34,75 @@
                 "group": "Quickstart",
                 "pages": [
                   {
-                    "page": "guides/quickstart",
-                    "label": "Local Setup"
+                    "group": "Set Up Installation",
+                    "pages": [
+                      {
+                        "page": "guides/deploy/local-setup",
+                        "label": "Local k3d"
+                      },
+                      {
+                        "page": "guides/deploy/kubernetes-setup",
+                        "label": "Kubernetes"
+                      },
+                      {
+                        "page": "guides/deploy/eks-openshell-setup",
+                        "label": "Amazon EKS"
+                      }
+                    ]
                   },
                   {
-                    "page": "guides/kubernetes-setup",
-                    "label": "Kubernetes Setup"
-                  }
-                ]
-              },
-              {
-                "group": "Deploy",
-                "pages": [
-                  {
-                    "page": "guides/first-agent",
+                    "page": "guides/deploy/deploy-first-agent",
                     "label": "Deploy Your First Agent"
+                  },
+                  {
+                    "group": "Add Capabilities",
+                    "pages": [
+                      {
+                        "page": "guides/repository-credentials/openshell-git-push",
+                        "label": "Git"
+                      },
+                      {
+                        "page": "guides/integrations/codex-plugins",
+                        "label": "Plugins"
+                      }
+                    ]
+                  },
+                  {
+                    "group": "Cleanup",
+                    "pages": [
+                      {
+                        "page": "guides/deploy/quickstart-delete-agent",
+                        "label": "Delete Agent"
+                      },
+                      {
+                        "group": "Clean Up Installation",
+                        "pages": [
+                          {
+                            "page": "guides/deploy/local-cleanup",
+                            "label": "Local k3d"
+                          },
+                          {
+                            "page": "guides/deploy/kubernetes-cleanup",
+                            "label": "Kubernetes"
+                          },
+                          {
+                            "page": "guides/deploy/eks-cleanup",
+                            "label": "Amazon EKS"
+                          }
+                        ]
+                      }
+                    ]
                   }
                 ]
               }
             ],
-            "hidden": ["guides/README"]
+            "hidden": [
+              "guides/README",
+              "guides/repository-credentials/openshell-read-only",
+              "guides/repository-credentials/openshell-git-renewal",
+              "guides/kubernetes-setup",
+              "guides/deploy/quickstart-session"
+            ]
           },
           {
             "tab": "Topics",
@@ -79,6 +128,10 @@
                     "label": "Deployment"
                   },
                   {
+                    "page": "reference/agents/gateway-managed-mode",
+                    "label": "Gateway managed mode"
+                  },
+                  {
                     "page": "guides/topics/agent-presets",
                     "label": "Presets"
                   },
@@ -93,6 +146,10 @@
                   {
                     "page": "reference/harness-execution",
                     "label": "Harness"
+                  },
+                  {
+                    "page": "guides/topics/remote-harness",
+                    "label": "Remote Harness"
                   },
                   {
                     "page": "guides/topics/workspace-files",
@@ -111,6 +168,10 @@
                     "label": "Create a Namespace"
                   },
                   {
+                    "page": "guides/console/delete-namespace",
+                    "label": "Delete a Namespace"
+                  },
+                  {
                     "page": "guides/console/agent-details",
                     "label": "Console Walkthrough"
                   },
@@ -121,6 +182,10 @@
                   {
                     "page": "guides/console/channels-and-credentials",
                     "label": "Channels and Credentials"
+                  },
+                  {
+                    "page": "guides/console/secrets",
+                    "label": "Manage Secrets"
                   },
                   {
                     "page": "guides/console/agent-sharing",
@@ -189,8 +254,20 @@
                     "label": "Secrets"
                   },
                   {
+                    "page": "design/credential-proxy",
+                    "label": "Credential Proxy"
+                  },
+                  {
+                    "page": "reference/security/credential-proxy",
+                    "label": "Credential Proxy Threat Model"
+                  },
+                  {
                     "page": "reference/credential-sources",
                     "label": "Credential Sources"
+                  },
+                  {
+                    "page": "guides/credential-proxy",
+                    "label": "Set Up Credential Proxy"
                   },
                   {
                     "page": "reference/credential-sources/withdrawal",
@@ -199,6 +276,10 @@
                   {
                     "page": "reference/connection-templates",
                     "label": "Connection Templates"
+                  },
+                  {
+                    "page": "reference/credential-sources/protected-inference",
+                    "label": "Protected Inference"
                   },
                   {
                     "page": "guides/topics/audit-log",
@@ -244,12 +325,14 @@
             ],
             "hidden": [
               "reference/console/debug-fields",
+              "reference/console/theming",
               "reference/console/agent-sharing",
               "reference/console/versions-and-channel-drafts",
               "reference/console/repository-access",
               "reference/configuration/secrets",
               "reference/security/runtime-isolation",
               "reference/agents",
+              "reference/agents/workspace-files",
               "reference/agent-plugins",
               "reference/presets"
             ]
@@ -292,16 +375,36 @@
                             "label": "Overview"
                           },
                           {
+                            "page": "reference/drivers/kubernetes-compute/configuration",
+                            "label": "Configuration"
+                          },
+                          {
                             "page": "reference/drivers/kubernetes-compute/networking-and-isolation",
                             "label": "Networking and Isolation"
+                          },
+                          {
+                            "page": "reference/drivers/kubernetes-compute/gateway-authentication",
+                            "label": "Gateway Authentication"
                           },
                           {
                             "page": "reference/drivers/kubernetes-compute/storage-and-credentials",
                             "label": "Storage and Credentials"
                           },
                           {
+                            "page": "reference/drivers/kubernetes-compute/managed-native-configuration",
+                            "label": "Managed Native Configuration"
+                          },
+                          {
                             "page": "reference/drivers/kubernetes-compute/codex-oauth-storage",
                             "label": "Codex OAuth Storage"
+                          },
+                          {
+                            "page": "reference/drivers/kubernetes-compute/split-layout-installations",
+                            "label": "Split-Layout Installations"
+                          },
+                          {
+                            "page": "reference/drivers/kubernetes-compute/preprovisioned-namespace",
+                            "label": "Preprovisioned Namespace"
                           }
                         ]
                       },
@@ -321,6 +424,10 @@
                       {
                         "page": "reference/drivers/openshell-sandbox",
                         "label": "OpenShell"
+                      },
+                      {
+                        "page": "reference/drivers/openshell-sandbox/harness-providers",
+                        "label": "OpenShell Harness Providers"
                       }
                     ]
                   },
@@ -330,6 +437,10 @@
                       {
                         "page": "reference/drivers/openshell-credential-gateway",
                         "label": "OpenShell"
+                      },
+                      {
+                        "page": "reference/drivers/openshell-credential-gateway/codex-oauth-poc",
+                        "label": "OpenShell Codex OAuth PoC"
                       }
                     ]
                   },
@@ -385,8 +496,8 @@
                         "label": "Installation"
                       },
                       {
-                        "page": "guides/repository-credentials/team-runbook",
-                        "label": "Team Runbook"
+                        "page": "guides/repository-credentials/openshell-enrollment",
+                        "label": "OpenShell Enrollment"
                       },
                       {
                         "page": "reference/repository-credentials",
@@ -399,6 +510,14 @@
                       {
                         "page": "reference/repository-credentials/push-ref-guardrail",
                         "label": "Push Guardrail"
+                      },
+                      {
+                        "page": "reference/repository-credentials/prepared-native-git",
+                        "label": "Native Git with a Prepared Credential"
+                      },
+                      {
+                        "page": "reference/repository-credentials/protected-openshell-git",
+                        "label": "Protected Git with OpenShell"
                       },
                       {
                         "page": "reference/public-github-reads",
@@ -432,16 +551,20 @@
               }
             ],
             "hidden": [
+              "guides/repository-credentials/team-runbook",
               "guides/repository-credentials/standalone-service",
               "guides/repository-credentials/development-token",
-              "reference/repository-credentials/development-token"
+              "reference/repository-credentials/development-token",
+              "reference/repository-credentials/openshell-git",
+              "reference/repository-credentials/openshell-git-refusals",
+              "reference/repository-credentials/openshell-git-restarts"
             ]
           },
           {
-            "tab": "Operate",
+            "tab": "Deploy & Operate",
             "groups": [
               {
-                "group": "Operate",
+                "group": "Deploy & Operate",
                 "pages": [
                   {
                     "page": "guides/operate/README",
@@ -457,72 +580,36 @@
                     "label": "Overview"
                   },
                   {
-                    "page": "guides/deploy/production-installation",
-                    "label": "Control Plane Setup"
+                    "page": "guides/deploy/kubernetes",
+                    "label": "Kubernetes"
                   },
                   {
-                    "page": "guides/deploy/private-registry-images",
-                    "label": "Private Images"
+                    "page": "guides/quickstart",
+                    "label": "Local Setup Without OpenShell"
+                  },
+                  {
+                    "page": "guides/deploy/production-installation",
+                    "label": "Control Plane Setup"
                   },
                   {
                     "page": "guides/deploy/installation-profiles",
                     "label": "Profiles"
                   },
                   {
-                    "page": "guides/deploy/breaking-changes",
-                    "label": "Breaking Changes"
+                    "page": "guides/deploy/private-registry-images",
+                    "label": "Private Images"
                   },
                   {
-                    "page": "guides/deploy/breaking-changes-archive",
-                    "label": "Earlier Breaking Changes"
+                    "page": "guides/deploy/eks-private-access",
+                    "label": "Private EKS Access"
                   },
                   {
-                    "page": "guides/deploy/breaking-changes-before-2026-10-13",
-                    "label": "Breaking Changes Before 2026-10-13"
+                    "page": "guides/deploy/codex-sandbox",
+                    "label": "Codex Sandbox"
                   },
                   {
-                    "page": "guides/deploy/breaking-changes-before-2026-10-12",
-                    "label": "Breaking Changes Before 2026-10-12"
-                  },
-                  {
-                    "page": "guides/deploy/breaking-changes-before-2026-10-11",
-                    "label": "Breaking Changes Before 2026-10-11"
-                  },
-                  {
-                    "page": "guides/deploy/breaking-changes-before-2026-10-10",
-                    "label": "Breaking Changes Before 2026-10-10"
-                  },
-                  {
-                    "page": "guides/deploy/split-layout-upgrade",
-                    "label": "Split-Layout Upgrade"
-                  },
-                  {
-                    "page": "guides/deploy/upgrade-checklist",
-                    "label": "Upgrade Checklist"
-                  },
-                  {
-                    "page": "guides/deploy/upgrade-dispositions",
-                    "label": "Upgrade Dispositions"
-                  },
-                  {
-                    "page": "guides/deploy/upgrade-baseline",
-                    "label": "Upgrade Baseline"
-                  },
-                  {
-                    "page": "guides/deploy/production-upgrade",
-                    "label": "Image Upgrades"
-                  },
-                  {
-                    "page": "guides/deploy/production-installation-changes",
-                    "label": "Installation Changes"
-                  },
-                  {
-                    "page": "guides/deploy/production-upgrade-recovery",
-                    "label": "Upgrade Recovery"
-                  },
-                  {
-                    "page": "guides/deploy/auth-maintenance",
-                    "label": "External Sign-in Maintenance"
+                    "page": "guides/deploy/console-theme",
+                    "label": "Console Theme"
                   },
                   {
                     "page": "guides/deploy/google-sign-in",
@@ -533,32 +620,8 @@
                     "label": "OIDC Sign-in"
                   },
                   {
-                    "page": "guides/deploy/oidc-operations",
-                    "label": "OIDC Operations"
-                  },
-                  {
                     "page": "guides/deploy/oidc-keycloak",
                     "label": "Keycloak Sign-in"
-                  },
-                  {
-                    "page": "guides/deploy/local-k3d-image-upgrade",
-                    "label": "Local k3d Upgrades"
-                  },
-                  {
-                    "page": "guides/deploy/kubernetes",
-                    "label": "Kubernetes"
-                  },
-                  {
-                    "page": "guides/deploy/eks",
-                    "label": "Amazon EKS"
-                  },
-                  {
-                    "page": "guides/deploy/eks-private-access",
-                    "label": "Private EKS Access"
-                  },
-                  {
-                    "page": "guides/deploy/codex-sandbox",
-                    "label": "Codex Sandbox"
                   },
                   {
                     "group": "Settings",
@@ -643,11 +706,60 @@
                 ]
               },
               {
-                "group": "Maintenance and Recovery",
+                "group": "Upgrades & Recovery",
+                "pages": [
+                  {
+                    "page": "guides/deploy/upgrade-checklist",
+                    "label": "Upgrade Checklist"
+                  },
+                  {
+                    "page": "guides/deploy/upgrade-baseline",
+                    "label": "Upgrade Baseline"
+                  },
+                  {
+                    "page": "guides/deploy/upgrade-dispositions",
+                    "label": "Upgrade Dispositions"
+                  },
+                  {
+                    "page": "guides/deploy/production-upgrade",
+                    "label": "Image Upgrades"
+                  },
+                  {
+                    "page": "guides/deploy/production-installation-changes",
+                    "label": "Installation Changes"
+                  },
+                  {
+                    "page": "guides/deploy/production-upgrade-recovery",
+                    "label": "Upgrade Recovery"
+                  },
+                  {
+                    "page": "guides/deploy/split-layout-upgrade",
+                    "label": "Split-Layout Upgrade"
+                  },
+                  {
+                    "page": "guides/deploy/local-k3d-image-upgrade",
+                    "label": "Local k3d Upgrades"
+                  },
+                  {
+                    "page": "guides/deploy/credential-proxy-upgrade",
+                    "label": "Migrate to Credential Proxy"
+                  }
+                ]
+              },
+              {
+                "group": "Maintenance",
                 "pages": [
                   {
                     "page": "guides/deploy/credential-lifecycle",
                     "label": "Credential Rotation"
+                  },
+                  {
+                    "page": "guides/deploy/auth-maintenance",
+                    "label": "External Sign-in Maintenance"
+                  },
+                  {
+                    "page": "guides/deploy/oidc-operations",
+                    "label": "OIDC Operations"
                   }
                 ]
               }
@@ -719,13 +831,21 @@
                     "label": "Quickstart"
                   },
                   {
-                    "page": "reference/api",
+                    "page": "reference/api-explorer",
                     "label": "API Reference"
+                  },
+                  {
+                    "page": "guides/http-api-agent",
+                    "label": "Create an Agent"
                   }
                 ]
               }
             ],
-            "hidden": ["reference/postgres-auth-binding"]
+            "hidden": [
+              "reference/api",
+              "reference/postgres-auth-binding",
+              "reference/cli/local-development"
+            ]
           },
           {
             "tab": "Contribute",
@@ -787,6 +907,10 @@
                     "label": "Driver Development"
                   },
                   {
+                    "page": "contributing/credential-proxy-driver",
+                    "label": "Implement a Credential Proxy Driver"
+                  },
+                  {
                     "group": "Driver Contracts",
                     "pages": [
                       {
@@ -808,6 +932,10 @@
                       {
                         "page": "reference/drivers/credential-gateway",
                         "label": "Credential Gateway"
+                      },
+                      {
+                        "page": "reference/drivers/credential-proxy",
+                        "label": "Credential Proxy"
                       },
                       {
                         "page": "reference/drivers/credential-refresh",
@@ -851,6 +979,10 @@
                   {
                     "page": "contributing/local-development",
                     "label": "Environment"
+                  },
+                  {
+                    "page": "contributing/console-ui",
+                    "label": "Console UI"
                   },
                   {
                     "page": "contributing/console-storybook",
@@ -931,6 +1063,10 @@
                     "label": "Overview"
                   },
                   {
+                    "page": "taxonomy",
+                    "label": "Document Types"
+                  },
+                  {
                     "page": "local-preview",
                     "label": "Preview and Validate"
                   },
@@ -952,6 +1088,9 @@
               "guides/deploy/local-sandbox-network-policy",
               "guides/deploy/openshell-credential-sources",
               "guides/deploy/google-gmail-connection",
+              "guides/deploy/local-openshell-images",
+              "guides/deploy/local-kubernetes-tools",
+              "guides/deploy/protected-egress-development",
               "reference/settings/development",
               "design/resources",
               "design/access",
@@ -962,6 +1101,7 @@
               "flows/platform-startup",
               "flows/production-startup",
               "flows/coordinated-production-upgrade",
+              "flows/tenant-restore",
               "flows/docker-compose-development/startup",
               "flows/docker-compose-development/keycloak",
               "flows/docker-compose-development/agent-execution",
@@ -973,6 +1113,7 @@
               "flows/platform-console",
               "flows/platform-console/agent-creation",
               "flows/platform-console/agent-editing",
+              "flows/platform-console/agent-workspace-files",
               "flows/platform-console/agent-stop-and-deletion",
               "flows/platform-console/agent-sharing",
               "flows/platform-console/sign-in-return",
@@ -1024,6 +1165,9 @@
               "flows/repository-credential-configuration",
               "testing/repository-credentials",
               "flows/agent-presets",
+              "flows/credential-source-egress",
+              "testing/static-egress",
+              "testing/protected-repository-custody",
               "reference/sandbox-policies",
               "guides/topics/agent-sandbox-policy",
               "flows/agent-sandbox-policy"
@@ -1032,5 +1176,59 @@
         ]
       }
     ]
-  }
+  },
+  "redirects": [
+    {
+      "from": "/guides/deploy/local-openshell-setup/",
+      "to": "/guides/deploy/local-setup/",
+      "anchors": {
+        "3-enable-the-credential-and-plugin-settings": "/guides/deploy/local-setup/#3-configure-credential-gateway",
+        "remove-a-previous-quickstart": "/guides/deploy/local-cleanup/#remove-the-installation",
+        "next-steps": "/guides/deploy/local-cleanup/#next-steps"
+      }
+    },
+    {
+      "from": "/guides/deploy/local-openshell-browser/",
+      "to": "/guides/deploy/deploy-first-agent/#3-grant-model-access-and-deploy",
+      "anchors": {
+        "bind-the-origin-before-deployment": "/guides/deploy/deploy-first-agent/#bind-the-origin-before-deployment",
+        "open-the-agent-and-continue-a-chat": "/guides/deploy/deploy-first-agent/#4-complete-onboarding-in-the-control-ui",
+        "restore-read-only-git-and-keep-the-agent-running": "/guides/repository-credentials/openshell-read-only/",
+        "renew-expired-read-only-access": "/guides/repository-credentials/openshell-read-only/#renew-expired-read-only-access"
+      }
+    },
+    {
+      "from": "/guides/deploy/eks-openshell-owner-session/",
+      "to": "/guides/deploy/quickstart-session/",
+      "anchors": {
+        "choose-a-console-deployment-action": "/guides/deploy/deploy-first-agent/#3-grant-model-access-and-deploy",
+        "complete-onboarding-in-the-browser": "/guides/deploy/deploy-first-agent/#4-complete-onboarding-in-the-control-ui",
+        "temporarily-grant-one-push": "/guides/repository-credentials/openshell-git-push/",
+        "restore-read-only-access": "/guides/repository-credentials/openshell-read-only/"
+      }
+    },
+    {
+      "from": "/guides/deploy/eks/",
+      "to": "/guides/deploy/eks-openshell-setup/",
+      "anchors": {
+        "prepare-aws-infrastructure": "/guides/deploy/eks-openshell-setup/#prepare-aws-infrastructure",
+        "select-the-cluster": "/guides/deploy/eks-openshell-setup/#select-the-cluster",
+        "authenticate-the-image-builder-to-ecr": "/guides/deploy/eks-openshell-setup/#authenticate-the-image-builder-to-ecr",
+        "configure-network-enforcement-and-storage": "/guides/deploy/eks-openshell-setup/#configure-network-enforcement-and-storage",
+        "enable-console-workspace-files": "/guides/deploy/eks-openshell-setup/#enable-console-workspace-files",
+        "configure-the-protected-copies-and-install": "/guides/deploy/eks-openshell-setup/#configure-the-protected-copies-and-install",
+        "verify-workspace-routing": "/guides/deploy/eks-openshell-setup/#verify-workspace-routing",
+        "update-an-existing-eks-installation": "/guides/deploy/production-upgrade/"
+      }
+    },
+    {
+      "from": "/guides/deploy/eks-openshell-browser/",
+      "to": "/guides/deploy/eks-openshell-setup/#configure-browser-access",
+      "anchors": {
+        "set-the-production-browser-origins-before-installing-occ": "/guides/deploy/eks-openshell-setup/#set-the-production-browser-origins-before-installing-occ",
+        "read-the-protected-initial-owner-files": "/guides/deploy/eks-openshell-setup/#read-the-protected-initial-owner-files",
+        "install-the-loopback-tls-listener": "/guides/deploy/eks-openshell-setup/#install-the-loopback-tls-listener"
+      }
+    }
+  ]
 }

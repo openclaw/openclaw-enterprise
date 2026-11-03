@@ -11,7 +11,7 @@ import type {
 } from "@openclaw-enterprise/occ";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
-import type { RequestContext, ResourceHandlers } from "./types.ts";
+import type { RequestContext, ResourceHandler, ResourceHandlers } from "./types.ts";
 
 /** The exact OCC callback URI providers redirect to; registered with each OAuth client. */
 export const CONNECTION_CALLBACK_PATH = "/oauth/callback";
@@ -45,8 +45,7 @@ export interface InstallationConnectionOperation {
 
 /**
  * Installation-scoped connection template and IAM binding routes. Returns false for any
- * other operation. Template mutations call the Credential Refresh Driver, so their audit
- * event commits after the change rather than inside it.
+ * other operation. Template records and their audit events commit together.
  */
 export async function performInstallationConnectionOperation(
   input: InstallationConnectionOperation,
@@ -70,8 +69,8 @@ export async function performInstallationConnectionOperation(
       const created = await controller.createConnectionTemplate(
         context.actorId,
         body as unknown as CreateConnectionTemplateInput,
+        (id) => input.mutationEvent(templateRef(id)),
       );
-      await audit(templateRef(created.id));
       send(templateResponse(created, redirectUri), 201);
       return true;
     }
@@ -88,14 +87,17 @@ export async function performInstallationConnectionOperation(
         context.actorId,
         params.connectionTemplateId!,
         body as unknown as UpdateConnectionTemplateInput,
+        input.mutationEvent(templateRef(params.connectionTemplateId!)),
       );
-      await audit(templateRef(updated.id));
       send(templateResponse(updated, redirectUri));
       return true;
     }
     case "deleteConnectionTemplate":
-      await controller.deleteConnectionTemplate(context.actorId, params.connectionTemplateId!);
-      await audit(templateRef(params.connectionTemplateId!));
+      await controller.deleteConnectionTemplate(
+        context.actorId,
+        params.connectionTemplateId!,
+        input.mutationEvent(templateRef(params.connectionTemplateId!)),
+      );
       reply.status(204).send();
       return true;
     case "rotateConnectionClientSecret": {
@@ -146,6 +148,42 @@ export async function performInstallationConnectionOperation(
 
 /** Namespace-scoped connection routes, dispatched with the other resource handlers. */
 export function connectionHandlers(redirectUri: () => string | undefined): ResourceHandlers {
+  const start: ResourceHandler = async ({
+    controller,
+    context,
+    request,
+    reply,
+    params,
+    body,
+    namespaceId,
+    mutationEvent,
+  }) => {
+    const started = await controller.startAgentConnection(
+      context.actorId,
+      {
+        namespaceId,
+        ...(params.agentId ? { agentId: params.agentId } : {}),
+        connectionTemplateId: body?.connectionTemplateId as string,
+        redirectUri: redirectUri()!,
+      },
+      (id) => mutationEvent({ kind: "credential_source", id, namespaceId }),
+    );
+    reply.header("cache-control", "no-store");
+    reply.status(201).send({ data: started, meta: { requestId: request.id } });
+  };
+  const list: ResourceHandler = async ({
+    controller,
+    context,
+    request,
+    reply,
+    params,
+    namespaceId,
+  }) => {
+    reply.send({
+      data: await controller.listAgentConnections(context.actorId, namespaceId, params.agentId),
+      meta: { requestId: request.id },
+    });
+  };
   return {
     async listUsableConnectionTemplates({ controller, context, request, reply, namespaceId }) {
       reply.send({
@@ -155,35 +193,25 @@ export function connectionHandlers(redirectUri: () => string | undefined): Resou
         meta: { requestId: request.id },
       });
     },
-    async startAgentConnection({
+    startNamespaceConnection: start,
+    startAgentConnection: start,
+    listNamespaceConnections: list,
+    listAgentConnections: list,
+    async attachAgentConnection({
       controller,
       context,
-      request,
       reply,
       params,
-      body,
       namespaceId,
       mutationEvent,
     }) {
-      // The dispatcher refuses this operation with 503 when no callback URI is configured.
-      const callback = redirectUri() as string;
-      const started = await controller.startAgentConnection(context.actorId, {
-        namespaceId,
-        agentId: params.agentId!,
-        connectionTemplateId: body?.connectionTemplateId as string,
-        redirectUri: callback,
-      });
-      await controller.transact((unit) =>
-        unit.audit.append(mutationEvent({ kind: "agent", id: params.agentId!, namespaceId })),
+      const { agentId, credentialSourceId } = params;
+      await controller.attachAgentConnection(
+        context.actorId,
+        { namespaceId, agentId: agentId!, credentialSourceId: credentialSourceId! },
+        mutationEvent({ kind: "agent", id: agentId!, namespaceId }, { credentialSourceId }),
       );
-      reply.header("cache-control", "no-store");
-      reply.status(201).send({ data: started, meta: { requestId: request.id } });
-    },
-    async listAgentConnections({ controller, context, request, reply, params, namespaceId }) {
-      reply.send({
-        data: await controller.listAgentConnections(context.actorId, namespaceId, params.agentId!),
-        meta: { requestId: request.id },
-      });
+      reply.status(204).send();
     },
     async disconnectAgentConnection({
       controller,
@@ -194,15 +222,30 @@ export function connectionHandlers(redirectUri: () => string | undefined): Resou
       namespaceId,
       mutationEvent,
     }) {
-      const result = await controller.disconnectAgentConnection(context.actorId, {
-        namespaceId,
-        agentId: params.agentId!,
-        credentialSourceId: params.credentialSourceId!,
-      });
-      await controller.transact((unit) =>
-        unit.audit.append(mutationEvent({ kind: "agent", id: params.agentId!, namespaceId })),
+      const { agentId, credentialSourceId } = params;
+      const result = await controller.disconnectAgentConnection(
+        context.actorId,
+        { namespaceId, agentId: agentId!, credentialSourceId: credentialSourceId! },
+        mutationEvent({ kind: "agent", id: agentId!, namespaceId }, { credentialSourceId }),
       );
       reply.send({ data: result, meta: { requestId: request.id } });
+    },
+    async disconnectNamespaceConnection({
+      controller,
+      context,
+      reply,
+      params,
+      namespaceId,
+      mutationEvent,
+    }) {
+      const credentialSourceId = params.credentialSourceId!;
+      await controller.disconnectNamespaceConnection(
+        context.actorId,
+        namespaceId,
+        credentialSourceId,
+        mutationEvent({ kind: "credential_source", id: credentialSourceId, namespaceId }),
+      );
+      reply.status(204).send();
     },
   };
 }
@@ -225,7 +268,7 @@ export const connectionCallbackSchema = {
   operationId: connectionCallbackOperation.operationId,
   summary: connectionCallbackOperation.summary,
   description:
-    "Requires the signed-in human session that started the connection, update permission on its Agent, and use permission on its connection template for the Agent's Namespace. The provider redirects here with `state` and `code`, or with `error`. The response is a 303 redirect to the console without the query string.",
+    "Requires the signed-in human session that started the connection, permission on the starting Namespace or Agent, and use permission on the connection template in that Namespace. The provider redirects here with `state` and `code`, or with `error`. The response is a 303 redirect to the console without the query string.",
   tags: [...connectionCallbackOperation.tags],
   security: [{ sessionCookie: [] }],
   "x-openclaw-permissions": [
@@ -282,23 +325,26 @@ export function createConnectionCallback(dependencies: ConnectionCallbackDepende
       return;
     }
     try {
-      const connection = await controller.completeAgentConnection(context.actorId, {
-        state: typeof query.state === "string" ? query.state : "",
-        ...(typeof query.code === "string" ? { code: query.code } : {}),
-        ...(typeof query.error === "string" ? { error: query.error } : {}),
-      });
-      const target: ResourceRef = {
-        kind: "agent",
-        id: connection.agentId,
-        namespaceId: connection.namespaceId,
-      };
-      await controller.transact((unit) =>
-        unit.audit.append(dependencies.auditEvent(request, context, target)),
+      const connection = await controller.completeAgentConnection(
+        context.actorId,
+        {
+          state: typeof query.state === "string" ? query.state : "",
+          ...(typeof query.code === "string" ? { code: query.code } : {}),
+          ...(typeof query.error === "string" ? { error: query.error } : {}),
+        },
+        (result) =>
+          dependencies.auditEvent(request, context, {
+            kind: "credential_source",
+            namespaceId: result.namespaceId,
+            id: result.credentialSourceId,
+          }),
       );
+      const location =
+        connection.agentId === undefined
+          ? "/console/"
+          : `/console/agents/${encodeURIComponent(connection.agentId)}`;
       reply.redirect(
-        `/console/agents/${encodeURIComponent(connection.agentId)}?namespace=${encodeURIComponent(
-          connection.namespaceId,
-        )}&connection=connected`,
+        `${location}?namespace=${encodeURIComponent(connection.namespaceId)}&connection=connected`,
         303,
       );
     } catch (error) {

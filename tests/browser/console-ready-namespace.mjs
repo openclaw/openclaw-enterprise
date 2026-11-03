@@ -1,8 +1,6 @@
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-
-export async function createReadyConsoleNamespace(t, name, options) {
-  const fixture = await createConsoleAppFixture(t, options);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace(name, { ready: true });
-  return { fixture, namespace };
-}
+// TODO: remove this path once the browser suites that still import it (all touched by open PRs on
+// 2026-10-30) import tests/helpers/console-ready-namespace.mjs instead.
+export {
+  createReadyConsoleNamespace,
+  fileReadyNamespace,
+} from "../helpers/console-ready-namespace.mjs";

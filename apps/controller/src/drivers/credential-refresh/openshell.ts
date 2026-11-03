@@ -1,3 +1,5 @@
+import { type ErrorDetail } from "@openclaw-enterprise/contracts";
+import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
   Backend,
   CredentialBrowserAuthorizationCallback,
@@ -142,7 +144,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     },
   });
 
-  static validateConfiguration(configuration: unknown): void {
+  static validateConfiguration(configuration: unknown): readonly ErrorDetail[] {
     const record = asRecord(configuration);
     if (
       record === undefined ||
@@ -151,10 +153,9 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
         (typeof record.clientWorkspace !== "string" ||
           !WORKSPACE_NAME.test(record.clientWorkspace)))
     ) {
-      throw new OpenShellCredentialRefreshFailure(
-        "OpenShell Credential Refresh configuration accepts only clientWorkspace, an OpenShell Workspace name.",
-      );
+      return [{path: "/clientWorkspace", code: "INVALID_VALUE", message: "clientWorkspace must name an OpenShell Workspace."}];
     }
+    return [];
   }
 
   readonly id: string;
@@ -164,7 +165,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
   private readonly clientWorkspace: string | undefined;
 
   constructor(configuration: unknown, selection: OpenShellCredentialRefreshSelection) {
-    OpenShellCredentialRefreshDriver.validateConfiguration(configuration);
+    requireConfiguration(OpenShellCredentialRefreshDriver, configuration);
     this.clientWorkspace = asRecord(configuration)?.clientWorkspace as string | undefined;
     this.id = selection.id ?? "credential-refresh-openshell";
     this.implementation = selection.implementation ?? "openshell";
@@ -336,14 +337,14 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     const state = browserAuthorizationState(context.source.id, privateState, callback);
     const clientSecret = await this.readClientSecret(state.clientRegistrationId, context.signal);
     // Only this role sees the grant: it goes straight into OpenShell's refresh custody.
-    const { refreshToken } = await exchangeAuthorizationCode(
+    const { refreshToken, scope } = await exchangeAuthorizationCode(
       state,
       callback.code,
       clientSecret,
       context.signal,
     );
     await this.configureRefresh(context, {
-      config: { client_id: state.clientId, scope: state.scope },
+      config: { client_id: state.clientId, scope },
       secrets: { refresh_token: refreshToken, client_secret: clientSecret },
       requestId: state.configureRequestId,
     });

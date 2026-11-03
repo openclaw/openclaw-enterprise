@@ -3,6 +3,7 @@ export interface ConnectionEndpoint {
   readonly host: string;
   readonly port: number;
   readonly path: string;
+  readonly access: "read-only" | "full";
 }
 
 /** The values a person approves when they connect; any change creates a new version. */
@@ -59,6 +60,7 @@ export function connectionValuesChanged(
     current.endpoint.host !== next.endpoint.host ||
     current.endpoint.port !== next.endpoint.port ||
     current.endpoint.path !== next.endpoint.path ||
+    current.endpoint.access !== next.endpoint.access ||
     current.scopes.length !== next.scopes.length ||
     current.scopes.some((scope, index) => scope !== next.scopes[index]) ||
     !sameParameters(current.authorizationParameters, next.authorizationParameters)
@@ -77,11 +79,12 @@ function sameParameters(
   );
 }
 
-/** One connected credential source: who consented, for which Agent, and what they approved. */
+/** One connected credential source: who consented in this Namespace and which template version they approved. */
 export interface AgentConnection {
   readonly namespaceId: string;
   readonly credentialSourceId: string;
-  readonly agentId: string;
+  /** Agent from which consent started, when present. Attachment is a separate Agent binding. */
+  readonly agentId?: string;
   readonly ownerPrincipalId: string;
   readonly connectionTemplateId: string;
   readonly connectionTemplateVersion: number;
@@ -92,7 +95,8 @@ export interface AgentConnection {
 export interface ConnectionSession {
   readonly stateHash: string;
   readonly namespaceId: string;
-  readonly agentId: string;
+  /** Agent from which consent started, when present. Attachment is a separate Agent binding. */
+  readonly agentId?: string;
   readonly credentialSourceId: string;
   /** The Namespace Secret holding the Refresh Driver's private state. */
   readonly secretId: string;

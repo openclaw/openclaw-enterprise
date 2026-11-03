@@ -12,7 +12,7 @@ type Row = Record<string, unknown>;
 
 const versionColumns = `v.template_id, v.version, v.client_registration_id, v.issuer, v.client_id,
   v.authorization_url, v.token_url, v.scopes, v.authorization_parameters, v.endpoint_host,
-  v.endpoint_port, v.endpoint_path, v.env_var, v.created_at AS version_created_at`;
+  v.endpoint_port, v.endpoint_path, v.endpoint_access, v.env_var, v.created_at AS version_created_at`;
 
 function invalid(): never {
   throw new DependencyUnavailableError("Persisted connection template state is invalid.");
@@ -35,8 +35,10 @@ function integer(row: Row, key: string): number {
 
 function versionFromRow(row: Row): ConnectionTemplateVersion {
   const scopes = row.scopes;
+  const access = row.endpoint_access;
   const parameters = row.authorization_parameters;
   if (
+    (access !== "full" && access !== "read-only") ||
     !Array.isArray(scopes) ||
     !scopes.every((scope) => typeof scope === "string") ||
     typeof parameters !== "object" ||
@@ -60,6 +62,7 @@ function versionFromRow(row: Row): ConnectionTemplateVersion {
       host: text(row, "endpoint_host"),
       port: integer(row, "endpoint_port"),
       path: text(row, "endpoint_path"),
+      access,
     },
     envVar: text(row, "env_var"),
     createdAt: timestamp(row, "version_created_at"),
@@ -93,8 +96,8 @@ async function insertVersion(
     `INSERT INTO occ.connection_template_versions
      (template_id, version, client_registration_id, issuer, client_id, authorization_url,
       token_url, scopes, authorization_parameters, endpoint_host, endpoint_port, endpoint_path,
-      env_var, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9::jsonb, $10, $11, $12, $13, $14)`,
+      endpoint_access, env_var, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9::jsonb, $10, $11, $12, $13, $14, $15)`,
     [
       version.templateId,
       version.version,
@@ -108,6 +111,7 @@ async function insertVersion(
       version.endpoint.host,
       version.endpoint.port,
       version.endpoint.path,
+      version.endpoint.access,
       version.envVar,
       version.createdAt,
     ],

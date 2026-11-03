@@ -29,7 +29,7 @@ function connectionFromRow(row: Row): Readonly<AgentConnection> {
   return immutableCopy({
     namespaceId: text(row, "namespace_id"),
     credentialSourceId: text(row, "credential_source_id"),
-    agentId: text(row, "agent_id"),
+    ...(row.agent_id === null ? {} : { agentId: text(row, "agent_id") }),
     ownerPrincipalId: text(row, "owner_principal_id"),
     connectionTemplateId: text(row, "connection_template_id"),
     connectionTemplateVersion: integer(row, "connection_template_version"),
@@ -41,7 +41,7 @@ function sessionFromRow(row: Row): Readonly<ConnectionSession> {
   return immutableCopy({
     stateHash: text(row, "state_hash"),
     namespaceId: text(row, "namespace_id"),
-    agentId: text(row, "agent_id"),
+    ...(row.agent_id === null ? {} : { agentId: text(row, "agent_id") }),
     credentialSourceId: text(row, "credential_source_id"),
     secretId: text(row, "secret_id"),
     actorId: text(row, "actor_id"),
@@ -55,7 +55,7 @@ function sessionFromRow(row: Row): Readonly<ConnectionSession> {
   });
 }
 
-/** Foreign keys tie each row to its source, Agent, and approved connection template version. */
+/** A completed connection lives as long as its source, independently of Agent bindings. */
 export function postgresAgentConnections(
   client: PostgresQueryClient,
   requireInitialized: () => Promise<unknown>,
@@ -71,12 +71,22 @@ export function postgresAgentConnections(
       ).rows;
       return row === undefined ? undefined : connectionFromRow(row as Row);
     },
+    listNamespaceConnections: async (namespaceId) =>
+      Object.freeze(
+        (
+          await client.query(
+            `SELECT * FROM occ.agent_connections WHERE namespace_id = $1 ORDER BY credential_source_id`,
+            [namespaceId],
+          )
+        ).rows.map((row) => connectionFromRow(row as Row)),
+      ),
     listAgentConnections: async (namespaceId, agentId) =>
       Object.freeze(
         (
           await client.query(
-            `SELECT * FROM occ.agent_connections
-             WHERE namespace_id = $1 AND agent_id = $2 ORDER BY credential_source_id`,
+            `SELECT c.* FROM occ.agent_connections c
+             JOIN occ.agent_credential_sources b USING (namespace_id, credential_source_id)
+             WHERE c.namespace_id = $1 AND b.agent_id = $2 ORDER BY c.credential_source_id`,
             [namespaceId, agentId],
           )
         ).rows.map((row) => connectionFromRow(row as Row)),
@@ -99,7 +109,7 @@ export function postgresAgentConnections(
         [
           connection.namespaceId,
           connection.credentialSourceId,
-          connection.agentId,
+          connection.agentId ?? null,
           connection.ownerPrincipalId,
           connection.connectionTemplateId,
           connection.connectionTemplateVersion,
@@ -125,7 +135,7 @@ export function postgresAgentConnections(
         [
           session.stateHash,
           session.namespaceId,
-          session.agentId,
+          session.agentId ?? null,
           session.credentialSourceId,
           session.secretId,
           session.actorId,

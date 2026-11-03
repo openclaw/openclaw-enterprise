@@ -45,6 +45,8 @@ type application struct {
 	output         string
 	parsedTimeout  time.Duration
 	ctx            context.Context
+	// commandPath is the running command after "occ", such as "agent list".
+	commandPath string
 }
 
 // New builds the OCC domain command tree.
@@ -56,7 +58,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 		Version:       Version,
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		Args:          cobra.NoArgs,
+		Args:          missingCommandArgs(signInCommands),
 		// Runnable like commandGroup, so cobra checks Args and rejects an unknown
 		// command instead of printing help and exiting 0.
 		RunE: func(command *cobra.Command, _ []string) error {
@@ -263,6 +265,9 @@ func (app *application) namespaceCommand() *cobra.Command {
 
 func (app *application) configurationCommand() *cobra.Command {
 	command := commandGroup("configuration", "Manage Configurations in the selected Namespace")
+	command.Args = missingCommandArgs(map[string]string{
+		"list": "occ has no configuration list; the CONFIGURATION column of \"occ agent list\" shows each Agent's Configuration ID.",
+	})
 
 	var createFile string
 	create := &cobra.Command{
@@ -304,9 +309,10 @@ func (app *application) configurationCommand() *cobra.Command {
 
 	var updateFile string
 	update := &cobra.Command{
-		Use:   "update ID",
-		Short: "Update a Configuration from a JSON document",
-		Args:  idArgs(configurationIDArg),
+		Use:     "update ID",
+		Short:   "Update a Configuration from a JSON document",
+		Example: configurationUpdateExample,
+		Args:    idArgs(configurationIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, body, client, err := app.namespaceJSONClient(updateFile)
 			if err != nil {
@@ -661,7 +667,7 @@ func (app *application) serviceAccountCommand() *cobra.Command {
 		Short: "Delete an unreferenced ServiceAccount",
 		Long: "Delete an unreferenced ServiceAccount, revoking its issued access token.\n" +
 			"--force also deletes an account whose token no ChatGPT Backend can revoke, because\n" +
-			"the Backend is gone; an administrator must then revoke the token at the provider.\n" +
+			"the Backend is gone; a ChatGPT workspace administrator must then revoke it at the provider.\n" +
 			"With a ChatGPT Backend configured, --force changes nothing: the token is revoked.",
 		Args: idArgs(serviceAccountIDArg),
 		RunE: func(command *cobra.Command, args []string) error {
@@ -744,15 +750,22 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.printAgent(agent, false)
+			if err := app.printAgent(agent, false); err != nil {
+				return err
+			}
+			if app.output != "table" {
+				return nil
+			}
+			return app.printAgentHarness(client, namespace, args[0], agent)
 		},
 	}
 
 	var updateFile string
 	update := &cobra.Command{
-		Use:   "update ID",
-		Short: "Update an Agent from a JSON document",
-		Args:  idArgs(agentIDArg),
+		Use:     "update ID",
+		Short:   "Update an Agent's draft from a JSON document",
+		Example: agentUpdateExample,
+		Args:    idArgs(agentIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, body, client, err := app.namespaceJSONClient(updateFile)
 			if err != nil {
@@ -772,7 +785,7 @@ func (app *application) agentCommand() *cobra.Command {
 		Use:   "deploy ID",
 		Short: "Deploy an Agent and create an immutable revision",
 		Args:  idArgs(agentIDArg),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
 			namespace, err := app.requiredNamespace()
 			if err != nil {
 				return err
@@ -785,12 +798,16 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.printItems(revision, false, []column{
+			if err := app.printItems(revision, false, []column{
 				{title: "ID", key: "id"},
 				{title: "REVISION", key: "revision"},
 				{title: "AGENT", key: "agentId"},
 				{title: "CONFIGURATION", key: "configurationId"},
-			})
+			}); err != nil {
+				return err
+			}
+			unreadableRevisionNotice(client, command.ErrOrStderr(), namespace, args[0], revision)
+			return nil
 		},
 	}
 	var revisionLimit int
@@ -811,7 +828,7 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rows, err := describeAgentRevisions(client, command.ErrOrStderr(), namespace, args[0], page.Revisions)
+			rows, err := describeAgentRevisions(client, namespace, args[0], page.Revisions)
 			if err != nil {
 				return err
 			}
@@ -845,6 +862,9 @@ func (app *application) agentCommand() *cobra.Command {
 			} else {
 				var number float64
 				if deploymentID, number, err = latestReadableRevision(client, namespace, args[0]); err != nil {
+					if errors.Is(err, errNoReadableRevisions) {
+						err = noReadableRevisionsError(client, namespace, args[0], fmt.Sprintf("agent %s has no revision you can read", args[0]), "")
+					}
 					return err
 				}
 				defaultDeploymentNotice(client, command.ErrOrStderr(), namespace, args[0], deploymentID, number)
@@ -868,12 +888,32 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Only an Agent the caller can already read tells whether anything ran:
+			// stopped with no active revision is a never-deployed or already
+			// stopped Agent (finding D746); stopped with an active revision is a
+			// stop requested earlier that has not finished, still running or
+			// failed (finding D765). A failed read keeps the plain notice.
+			idle, stopping := false, false
+			if before, readErr := client.GetAgent(namespace, args[0]); readErr == nil {
+				resource, _ := before.(map[string]any)
+				active, _ := resource["activeRevisionId"].(string)
+				idle = resource["desiredRuntimeState"] == "stopped" && active == ""
+				stopping = resource["desiredRuntimeState"] == "stopped" && active != ""
+			}
 			agent, err := client.StopAgent(namespace, args[0])
 			if err != nil {
 				return err
 			}
 			if err := app.printAgent(agent, false); err != nil {
 				return err
+			}
+			if idle {
+				fmt.Fprintf(command.ErrOrStderr(), "notice: No version is running, so there is nothing to stop. Run \"occ --namespace %s agent deploy %s\" to start the Agent.\n", namespace, args[0])
+				return nil
+			}
+			if stopping {
+				fmt.Fprintf(command.ErrOrStderr(), "notice: a stop of Agent %s was already requested and has not finished; run \"occ --namespace %s agent get %s\" to see its state, or \"occ --namespace %s agent deploy %s\" to start it again\n", args[0], namespace, args[0], namespace, args[0])
+				return nil
 			}
 			fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ --namespace %s agent deploy %s\" to start the Agent again\n", namespace, args[0])
 			return nil
@@ -946,21 +986,17 @@ func defaultDeploymentNotice(client *occclient.Client, notices io.Writer, namesp
 	}
 }
 
-// describeAgentRevisions adds what tells revisions apart to each listed
-// revision: whether it is the Agent's active revision and the status of the
-// deployment that created it. A revision whose deployment status the caller may
-// not read, or that OCC no longer records, gets a null deploymentStatus.
-func describeAgentRevisions(client *occclient.Client, notices io.Writer, namespace, agentID string, revisions []any) ([]any, error) {
+// describeAgentRevisions marks the Agent's active revision in each listed
+// revision. Each summary already carries the deploymentStatus and
+// deploymentErrorCode OCC read with the list, including for a revision whose
+// saved settings are unreadable, so the CLI keeps them as OCC sent them.
+func describeAgentRevisions(client *occclient.Client, namespace, agentID string, revisions []any) ([]any, error) {
 	agent, err := client.GetAgent(namespace, agentID)
 	if err != nil {
 		return nil, err
 	}
 	resource, _ := agent.(map[string]any)
 	activeID, _ := resource["activeRevisionId"].(string)
-	agentReadError, agentUnreadable := resource["configurationReadError"].(map[string]any)
-	if agentUnreadable {
-		noticef(notices, "notice: Agent saved configuration is unreadable (%s); deployment status is unavailable in revision history", displayValue(agentReadError["field"]))
-	}
 	rows := make([]any, 0, len(revisions))
 	for _, item := range revisions {
 		revision, ok := item.(map[string]any)
@@ -970,24 +1006,6 @@ func describeAgentRevisions(client *occclient.Client, notices io.Writer, namespa
 		row := maps.Clone(revision)
 		id, _ := revision["id"].(string)
 		row["active"] = id != "" && id == activeID
-		row["deploymentStatus"] = nil
-		if id != "" && !agentUnreadable {
-			deployment, err := client.GetAgentDeployment(namespace, agentID, id)
-			var apiErr *occclient.APIError
-			switch {
-			case err == nil:
-				if status, ok := deployment.(map[string]any); ok {
-					row["deploymentStatus"] = status["status"]
-				}
-			case errors.As(err, &apiErr) && (apiErr.Status == http.StatusNotFound || apiErr.Status == http.StatusForbidden):
-			case errors.As(err, &apiErr) && apiErr.Status == http.StatusServiceUnavailable:
-				// List items are summaries, so a revision whose saved settings are unreadable
-				// shows up only here; its status read fails while the others still work.
-				noticef(notices, "notice: deployment status of revision %s is unavailable: %v", id, err)
-			default:
-				return nil, err
-			}
-		}
 		rows = append(rows, row)
 	}
 	return rows, nil
@@ -1085,12 +1103,81 @@ func commandGroup(use, short string) *cobra.Command {
 	return &cobra.Command{
 		Use:         use,
 		Short:       short,
-		Args:        cobra.NoArgs,
+		Args:        missingCommandArgs(nil),
 		Annotations: map[string]string{helpOnlyAnnotation: "true"},
 		RunE: func(command *cobra.Command, _ []string) error {
 			return command.Help()
 		},
 	}
+}
+
+// signInCommands are commands people try first that occ does not have: it
+// authenticates with a service key file only (finding D745).
+var signInCommands = func() map[string]string {
+	const signIn = "occ has no sign-in command: it uses a service key file. Set OCC_SERVICE_KEY_FILE to the key an Installation administrator issued you."
+	return map[string]string{"login": signIn, "auth": signIn, "device-login": signIn, "whoami": signIn}
+}()
+
+// missingCommandArgs refuses positional arguments like cobra.NoArgs, but a
+// command name in missing gets its own explanation after cobra's text, and a
+// one-letter typo of a subcommand gets a suggestion (finding D765).
+func missingCommandArgs(missing map[string]string) cobra.PositionalArgs {
+	return func(command *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			if explanation, ok := missing[args[0]]; ok {
+				return fmt.Errorf("unknown command %q for %q. %s", args[0], command.CommandPath(), explanation)
+			}
+			if suggestion := suggestSubcommand(command, args[0]); suggestion != "" {
+				return fmt.Errorf("unknown command %q for %q; did you mean %q?", args[0], command.CommandPath(), command.CommandPath()+" "+suggestion)
+			}
+		}
+		return cobra.NoArgs(command, args)
+	}
+}
+
+// suggestSubcommand returns the subcommand a typo most likely meant, or "".
+// It suggests only a name one edit away ("lst" for "list", never "get"), or
+// else the one name that a typed prefix of at least two characters starts
+// ("de" alone matches both delete and deploy, so it gets nothing). An empty
+// argument is never one edit from a name and is too short for a prefix.
+func suggestSubcommand(command *cobra.Command, typed string) string {
+	var prefixed []string
+	for _, child := range command.Commands() {
+		if !child.IsAvailableCommand() {
+			continue
+		}
+		if editDistance(typed, child.Name()) <= 1 {
+			return child.Name()
+		}
+		if len(typed) >= 2 && strings.HasPrefix(child.Name(), typed) {
+			prefixed = append(prefixed, child.Name())
+		}
+	}
+	if len(prefixed) == 1 {
+		return prefixed[0]
+	}
+	return ""
+}
+
+// editDistance is the Levenshtein distance between two command names.
+func editDistance(a, b string) int {
+	previous := make([]int, len(b)+1)
+	for j := range previous {
+		previous[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		current := make([]int, len(b)+1)
+		current[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			current[j] = min(previous[j]+1, current[j-1]+1, previous[j-1]+cost)
+		}
+		previous = current
+	}
+	return previous[len(b)]
 }
 
 // printsTextOnly reports commands that never call OCC: the root and command
@@ -1163,7 +1250,7 @@ func (app *application) validateOptions(command *cobra.Command) error {
 	formats := []string{"table", "json", "yaml"}
 	if annotated, ok := command.Annotations[outputFormatsAnnotation]; ok {
 		formats = strings.Split(annotated, ",")
-		if app.output == "table" {
+		if !command.Flags().Changed("output") {
 			app.output = formats[0]
 		}
 	}
@@ -1190,17 +1277,19 @@ func (app *application) validateOptions(command *cobra.Command) error {
 // key; Namespace commands refuse it), so neither is listed. The other string
 // flags refuse an empty value themselves.
 var emptyFlagValues = map[string]string{
-	"file":                        "a JSON document",
-	"key-output":                  "a key file path",
-	"sandbox-network-policy-file": "a Sandbox network policy file",
-	"level":                       "error, warn, info or debug",
-	"out":                         "a key file path",
-	"pod":                         "a Pod",
-	"revision":                    "a revision ID",
-	"service-key-file":            "a bootstrap or service-key response file",
-	"service-principal":           "a ServicePrincipal ID",
-	"source":                      "gateway, agent or sandbox",
-	"url":                         "the OCC endpoint URL",
+	"facet":                               "a sandbox policy facet such as networking",
+	"file":                                "a JSON document",
+	"key-output":                          "a key file path",
+	"sandbox-network-policy-ceiling-file": "a Sandbox network policy ceiling file",
+	"sandbox-network-policy-file":         "a Sandbox network policy file",
+	"level":                               "error, warn, info or debug",
+	"out":                                 "a key file path",
+	"pod":                                 "a Pod",
+	"revision":                            "a revision ID",
+	"service-key-file":                    "a bootstrap or service-key response file",
+	"service-principal":                   "a ServicePrincipal ID",
+	"source":                              "gateway, agent or sandbox",
+	"url":                                 "the OCC endpoint URL",
 }
 
 // refuseEmptyFlags refuses an explicitly empty value for a flag in
@@ -1257,6 +1346,15 @@ func (app *application) client() (*occclient.Client, error) {
 
 func (app *application) requiredNamespace() (string, error) {
 	if app.namespace == "" {
+		// A Namespace-scoped key file records its one Namespace; offer it
+		// without a request (finding D765).
+		namespace := ""
+		if app.serviceKeyFile != "" {
+			namespace = occclient.ServiceKeyNamespace(app.serviceKeyFile)
+		}
+		if namespaceIDArg.check(namespace, "") == nil {
+			return "", fmt.Errorf("set OCC_NAMESPACE or pass --namespace; this service key works only in Namespace %s, so pass --namespace %s", namespace, namespace)
+		}
 		return "", fmt.Errorf("set OCC_NAMESPACE or pass --namespace")
 	}
 	if err := namespaceIDArg.check(app.namespace, ""); err != nil {

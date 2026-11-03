@@ -5,6 +5,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { appRoot } from "../fixtures/repository-credentials/runtime.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
+import { stopProcess } from "../helpers/stop-process.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 // The child uses the real process composition and common settlement owner. An
 // unresolved alternate-provider callback must never defeat finite process exit.
@@ -48,11 +50,7 @@ test(
       env: { PATH: process.env.PATH, REPOSITORY_CREDENTIALS_APP_ROOT: appRoot },
       stdio: ["pipe", "pipe", "pipe"],
     });
-    t.after(() => {
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGKILL");
-      }
-    });
+    t.after(() => stopProcess(child, { signal: "SIGKILL" }));
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => (stdout += chunk));
@@ -74,11 +72,17 @@ test(
       child.once("error", reject);
       child.once("close", (code, signal) => resolve({ code, signal }));
     });
-    const readyDeadline = Date.now() + 5000;
-    while (!stdout.includes("ready\n") && child.exitCode === null && Date.now() < readyDeadline) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    assert.ok(stdout.includes("ready\n"), "child did not reach pending-settlement readiness");
+    await waitUntil(
+      "the child to reach pending-settlement readiness",
+      () => {
+        if (stdout.includes("ready\n")) {
+          return true;
+        }
+        assert.equal(child.exitCode, null, `child exited before readiness: ${stderr}`);
+        return false;
+      },
+      { timeoutMs: 5000, intervalMs: 10 },
+    );
     const started = performance.now();
     child.kill("SIGTERM");
     const outcome = await exited;

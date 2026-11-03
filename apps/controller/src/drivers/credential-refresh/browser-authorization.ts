@@ -128,7 +128,7 @@ export async function exchangeAuthorizationCode(
   code: string,
   clientSecret: string,
   signal: AbortSignal,
-): Promise<{ readonly refreshToken: string }> {
+): Promise<{ readonly refreshToken: string; readonly scope: string }> {
   if (!isNonEmptyString(code)) {
     throw new BrowserAuthorizationError("missing_code", "retry");
   }
@@ -179,5 +179,12 @@ export async function exchangeAuthorizationCode(
     // Google returns no refresh token without offline access and fresh consent.
     throw new BrowserAuthorizationError("no_refresh_token", "fix_configuration");
   }
-  return { refreshToken: body.refresh_token };
+  // RFC 6749 §5.1: an omitted scope means the requested scope was granted. When the
+  // issuer returns a subset, use that narrower scope for every subsequent refresh.
+  const scope = body.scope === undefined ? state.scope : body.scope;
+  const requested = new Set(state.scope.split(" "));
+  if (typeof scope !== "string" || scope.split(" ").some((token) => !requested.has(token))) {
+    throw new BrowserAuthorizationError("grant_scope_mismatch", "fix_configuration");
+  }
+  return { refreshToken: body.refresh_token, scope };
 }

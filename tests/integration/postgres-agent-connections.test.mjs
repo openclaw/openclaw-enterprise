@@ -176,7 +176,7 @@ function recordingOpenShell() {
 }
 
 test(
-  "a person connects their Keycloak account to their personal Agent and nobody else can use it",
+  "one consent supplies independently authorized Agent connections in a Namespace",
   requiresKeycloak,
   async (t) => {
     const secrets = JSON.parse(await readFile(secretsFile, "utf8"));
@@ -213,6 +213,17 @@ test(
     // refuses the API-key Harness binding this fixture uses.
     const { namespace, agent } = await fixture.deployAgent("connections");
     const other = await fixture.deployAgent("connections other");
+    const makeAgent = async (name) => {
+      const result = await inject("POST", `/namespaces/${namespace.id}/agents`, {
+        name,
+        configurationId: agent.configurationId,
+        harnessAuth: agent.harnessAuth,
+      });
+      assert.equal(result.statusCode, 201, result.body);
+      return result.json().data;
+    };
+    const agentB = await makeAgent("Second Agent");
+    const agentC = await makeAgent("Unattached Agent");
 
     // Only the Kubernetes Compute Driver places Credential Gateway sources; like it, this
     // placement names the Namespace's Sandbox view with a short Kubernetes namespace label,
@@ -330,6 +341,20 @@ test(
     });
     assert.equal(unreachable.statusCode, 400, unreachable.body);
     assert.match(unreachable.json().error.message, /token_url host/);
+    const narrow = templateBody("oce", clientSecretA);
+    const unsupportedAccess = await inject("POST", "/connection-templates", {
+      ...narrow,
+      endpoint: { ...narrow.endpoint, access: "read-only" },
+    });
+    assert.equal(unsupportedAccess.statusCode, 400, unsupportedAccess.body);
+    assert.match(unsupportedAccess.json().error.message, /read-only/);
+    assert.deepEqual((await inject("GET", "/connection-templates")).json().data, []);
+    assert.equal(
+      Array.from(openShell.providers.values()).filter(
+        (provider) => provider.workspace === clientWorkspace,
+      ).length,
+      0,
+    );
     const createdA = await inject(
       "POST",
       "/connection-templates",
@@ -364,7 +389,7 @@ test(
     const usable = await bob.request("GET", `/namespaces/${namespace.id}/connection-templates`);
     assert.equal(usable.statusCode, 403, "Bob cannot read the Namespace yet");
 
-    // Bob gets the Namespace and exact-Agent grants a personal Agent's owner needs.
+    // Bob can read the Namespace and update one exact Agent.
     const role = await inject("POST", `/namespaces/${namespace.id}/iam/roles`, {
       name: "Namespace reader",
       permissions: [{ action: "read", resourceKind: "namespace" }],
@@ -428,14 +453,22 @@ test(
     );
     assert.equal(carolStart.statusCode, 403, carolStart.body);
 
-    // Bob starts the connection and approves on Keycloak's real consent page.
-    const started = await bob.request(
-      "POST",
-      `/namespaces/${namespace.id}/agents/${agent.id}/connections`,
-      { connectionTemplateId: templateA.id },
-    );
+    const namespaceConnections = `/namespaces/${namespace.id}/connections`;
+    const started = await bob.request("POST", namespaceConnections, {
+      connectionTemplateId: templateA.id,
+    });
     assert.equal(started.statusCode, 201, started.body);
     const { authorizationUrl, credentialSourceId } = started.json().data;
+    const account = `${namespaceConnections}/${credentialSourceId}`;
+    const agentPath = (target) => `/namespaces/${namespace.id}/agents/${target.id}`;
+    const attachment = (target) => `${agentPath(target)}/connections/${credentialSourceId}`;
+    const pending = await inject("POST", attachment(agentB));
+    assert.equal(pending.statusCode, 409, pending.body);
+    const bypass = await inject("PATCH", agentPath(agentB), {
+      configurationId: agentB.configurationId,
+      credentialSources: [{ sourceId: credentialSourceId }],
+    });
+    assert.ok(bypass.statusCode >= 400 && bypass.statusCode < 500, bypass.body);
     const consentUrl = new URL(authorizationUrl);
     assert.equal(consentUrl.searchParams.get("code_challenge_method"), "S256");
     assert.equal(consentUrl.searchParams.get("redirect_uri"), redirectUri);
@@ -485,45 +518,64 @@ test(
     });
     assert.equal(redeemed.status, 200, "the handed-over refresh token is a usable grant");
 
-    const connections = await bob.request(
-      "GET",
-      `/namespaces/${namespace.id}/agents/${agent.id}/connections`,
-    );
+    const accounts = await bob.request("GET", namespaceConnections);
+    assert.equal(accounts.statusCode, 200, accounts.body);
     assert.deepEqual(
-      connections
+      accounts
         .json()
-        .data.map(({ credentialSourceId: id, ownerPrincipalId, connectionTemplateVersion }) => ({
-          id,
-          ownerPrincipalId,
-          connectionTemplateVersion,
-        })),
-      [{ id: credentialSourceId, ownerPrincipalId: bob.principalId, connectionTemplateVersion: 1 }],
+        .data.map((row) => [
+          row.credentialSourceId,
+          row.ownerPrincipalId,
+          row.connectionTemplateVersion,
+        ]),
+      [[credentialSourceId, bob.principalId, 1]],
     );
-
-    // The Agent is now personal to Bob: no grant to Carol, and the admin cannot deploy it.
-    const share = await inject("POST", `/namespaces/${namespace.id}/iam/access-bindings`, {
-      subjectKind: "identity",
-      subjectId: carol.principalId,
-      roleId: role.json().data.id,
-      resourceKind: "agent",
-      resourceId: agent.id,
+    const attachedTo = async (target) => {
+      const response = await inject("GET", `${agentPath(target)}/connections`);
+      assert.equal(response.statusCode, 200, response.body);
+      return response.json().data.map(({ credentialSourceId }) => credentialSourceId);
+    };
+    assert.deepEqual(await attachedTo(agent), [], "consent did not attach the source to any Agent");
+    const ownerAttach = await bob.request("POST", attachment(agent));
+    assert.equal(ownerAttach.statusCode, 204, ownerAttach.body);
+    const unauthorized = await bob.request("POST", attachment(agentC));
+    assert.equal(unauthorized.statusCode, 403, unauthorized.body);
+    // The administrator can use this source and update B. Granting C's editor only read
+    // access to the source must still refuse the same operation.
+    const share = await inject("POST", attachment(agentB));
+    assert.equal(share.statusCode, 204, share.body);
+    for (const [target, id] of [
+      [agent, credentialSourceId],
+      [agentB, credentialSourceId],
+      [agentC, undefined],
+    ]) {
+      assert.deepEqual(await attachedTo(target), id ? [id] : []);
+    }
+    const readRole = await inject("POST", `/namespaces/${namespace.id}/iam/roles`, {
+      name: "View connected account",
+      permissions: [{ action: "read", resourceKind: "credential_source" }],
     });
-    assert.equal(share.statusCode, 409, share.body);
-    const adminDeploy = await inject(
+    assert.equal(readRole.statusCode, 201, readRole.body);
+    for (const [roleId, resourceKind, resourceId] of [
+      [readRole.json().data.id, "credential_source", credentialSourceId],
+      [agentRole.json().data.id, "agent", agentC.id],
+    ]) {
+      const permission = await inject("POST", `/namespaces/${namespace.id}/iam/access-bindings`, {
+        subjectKind: "identity",
+        subjectId: carol.principalId,
+        roleId,
+        resourceKind,
+        resourceId,
+      });
+      assert.equal(permission.statusCode, 201, permission.body);
+    }
+    const readOnlyAttach = await carol.request("POST", attachment(agentC));
+    assert.equal(readOnlyAttach.statusCode, 403, readOnlyAttach.body);
+    const foreign = await inject(
       "POST",
-      `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+      `/namespaces/${other.namespace.id}/agents/${other.agent.id}/connections/${credentialSourceId}`,
     );
-    assert.equal(adminDeploy.statusCode, 403, adminDeploy.body);
-
-    // A connected source cannot move to another Agent.
-    const moved = await inject(
-      "PATCH",
-      `/namespaces/${other.namespace.id}/agents/${other.agent.id}`,
-      {
-        credentialSources: [{ sourceId: credentialSourceId }],
-      },
-    );
-    assert.notEqual(moved.statusCode, 200, moved.body);
+    assert.ok(foreign.statusCode >= 400 && foreign.statusCode < 500, foreign.body);
 
     // An edit creates version 2; Bob's connection keeps the version he approved.
     const edited = await inject("PATCH", `/connection-templates/${templateA.id}`, {
@@ -567,29 +619,48 @@ test(
     const deleteUsed = await inject("DELETE", `/connection-templates/${templateA.id}`);
     assert.equal(deleteUsed.statusCode, 409, deleteUsed.body);
 
-    // Disconnect removes the source from the Agent and the gateway. A source this new keeps its
-    // record (a late gateway create could still appear), so the Agent stays personal.
-    const disconnectPath = `/namespaces/${namespace.id}/agents/${agent.id}/connections/${credentialSourceId}`;
-    const shareCarol = () =>
-      inject("POST", `/namespaces/${namespace.id}/iam/access-bindings`, {
-        subjectKind: "identity",
-        subjectId: carol.principalId,
-        roleId: agentRole.json().data.id,
-        resourceKind: "agent",
-        resourceId: agent.id,
-      });
-    const early = await bob.request("DELETE", disconnectPath);
-    assert.equal(early.statusCode, 200, early.body);
-    assert.deepEqual(early.json().data, { withdrawalRequested: false, deleted: false });
-    assert.equal((await shareCarol()).statusCode, 409, "still personal until the source is gone");
-
-    // Disconnecting again after the fence deletes the source, which lifts the restriction.
     skewMs = 71_000;
-    const disconnected = await bob.request("DELETE", disconnectPath);
-    assert.equal(disconnected.statusCode, 200, disconnected.body);
-    assert.deepEqual(disconnected.json().data, { withdrawalRequested: false, deleted: true });
-    const shareAfter = await shareCarol();
-    assert.equal(shareAfter.statusCode, 201, shareAfter.body);
+    const removed = await bob.request("DELETE", attachment(agent));
+    assert.equal(removed.statusCode, 200, removed.body);
+    assert.deepEqual(removed.json().data, { withdrawalRequested: false, deleted: false });
+    assert.deepEqual(await attachedTo(agent), []);
+    assert.deepEqual(await attachedTo(agentB), [credentialSourceId]);
+    const grants = await state.read((view) => view.iamPolicy.listAccessBindings(namespace.id));
+    assert.deepEqual(
+      grants
+        .filter(
+          (binding) =>
+            binding.resourceId === credentialSourceId &&
+            binding.roleId.endsWith("_agent_credential_source_operate"),
+        )
+        .map((binding) => binding.subjectId),
+      [agentB.servicePrincipalId],
+    );
+    const readOnlyDelete = await carol.request("DELETE", account);
+    assert.equal(readOnlyDelete.statusCode, 403, readOnlyDelete.body);
+    const inUse = await bob.request("DELETE", account);
+    assert.equal(inUse.statusCode, 409, inUse.body);
+    assert.equal((await inject("DELETE", attachment(agentB))).statusCode, 200);
+    const revoked = await bob.request("DELETE", account);
+    assert.equal(revoked.statusCode, 204, revoked.body);
+    assert.deepEqual((await bob.request("GET", namespaceConnections)).json().data, []);
+
+    // The Agent-scoped start route keeps its browser return context. Even that route
+    // cannot attach an account when the provider reports that consent was denied.
+    const contextualStart = await bob.request("POST", `${agentPath(agent)}/connections`, {
+      connectionTemplateId: templateA.id,
+    });
+    assert.equal(contextualStart.statusCode, 201, contextualStart.body);
+    const stateParameter = new URL(contextualStart.json().data.authorizationUrl).searchParams.get(
+      "state",
+    );
+    const denied = await bob.request(
+      "GET",
+      `/oauth/callback?${new URLSearchParams({ state: stateParameter, error: "access_denied" })}`,
+    );
+    assert.equal(denied.statusCode, 303, denied.body);
+    assert.match(denied.headers.location, /reason=consent_denied/);
+    assert.deepEqual(await attachedTo(agent), []);
 
     // No authorization code, refresh token, or client secret reaches the audit log.
     const audit = await pool.query("SELECT details::text AS details FROM occ.audit_events");

@@ -14,7 +14,7 @@ const connectionTemplateRoleID = "role_connection_template_user"
 func (app *application) connectionTemplateCommand() *cobra.Command {
 	command := commandGroup(
 		"connection-template",
-		"Manage Installation connection templates that people connect to personal Agents",
+		"Manage Installation templates for connecting OAuth accounts",
 	)
 	columns := []column{
 		{title: "ID", key: "id"},
@@ -231,7 +231,7 @@ func (app *application) connectionTemplateCommand() *cobra.Command {
 func (app *application) agentConnectionCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "connection",
-		Short: "List or disconnect an Agent's connected accounts (connect from the console)",
+		Short: "Manage the accounts attached to an Agent",
 	}
 	list := &cobra.Command{
 		Use:   "list AGENT_ID",
@@ -257,7 +257,7 @@ func (app *application) agentConnectionCommand() *cobra.Command {
 	}
 	disconnect := &cobra.Command{
 		Use:   "disconnect AGENT_ID SOURCE_ID",
-		Short: "Remove a connected account and request its withdrawal",
+		Short: "Detach a saved account from this Agent and request withdrawal",
 		Args:  idArgs(agentIDArg, credentialSourceIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()

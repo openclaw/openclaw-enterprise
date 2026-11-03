@@ -1,20 +1,13 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
-import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import {
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { loadGitHubRepositoryRegistry } from "../../apps/controller/src/composition/repository-credentials/registry.ts";
-import {
-  githubConfigurationData,
-  serviceConfigurationData,
-} from "../fixtures/repository-credentials/builders.mjs";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 function registryInput() {
   return {
@@ -127,75 +120,71 @@ test("canonical registry fingerprints bind exact authority and the selected Name
   }, TypeError);
 });
 
-test("GitHub factory snapshots a registry-selected write grant through session admission", async (t) => {
-  const [
-    { createGitHubDriverFactory, createGitHubKeyOwner },
-    { validateServiceConfig },
-    { createCredentialService },
-  ] = await Promise.all([
-    import("../../apps/controller/src/drivers/repo/github/credentials/index.ts"),
-    import("../../apps/controller/src/drivers/repo/credentials/configuration.ts"),
-    import("../../apps/controller/src/drivers/repo/credentials/service.ts"),
-  ]);
-  const resources = createTestResourceScope(t);
-  const registry = validateGitHubRepositoryRegistry(registryInput());
-  const binding = resolveGitHubRepositoryBinding(registry, {
-    namespaceId: "namespace-a",
-    repositoryRef: "application",
-    profile: "git-write",
-  });
-  const selection = {
-    profile: binding.profile,
-    identity: { ...binding.grant },
-    pushRefAllowlist: ["refs/heads/agent/*"],
-  };
-  const expected = { ...selection.identity };
-  const clock = createControlledClock(1700000000000);
-  const config = validateServiceConfig(serviceConfigurationData());
-  const configuration = githubConfigurationData({
-    providerInstanceId: registry.providerInstanceId,
-    configVersion: "registry",
-    appId: registry.appId,
-    installationId: registry.githubInstallationId,
-    repositoryId: registry.repositories[0].repositoryId,
-    repository: registry.repositories[0].repository,
-  });
-  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  const key = createGitHubKeyOwner({ privateKey, appId: configuration.appId, clock });
-  resources.after(() => key.close());
-  const factory = createGitHubDriverFactory({
-    configuration,
-    binding: selection,
-    authority: key,
-    clock,
-    gatewayOrigin: config.gateway.publicOrigin,
-    limits: config.limits,
-  });
-
-  // Caller mutation cannot replace the selected profile or its opaque registry grant.
-  selection.profile = "git-full";
-  selection.identity.providerInstanceId = "changed-instance";
-  selection.identity.repositoryId = "74";
-  selection.identity.grantId = "changed-grant";
-  selection.pushRefAllowlist.push("refs/heads/main");
-  const resolved = factory.resolve("git-write");
-  assert.deepEqual(resolved.client.pushRefAllowlist, ["refs/heads/agent/*"]);
-  assert.deepEqual(resolved.binding, expected);
-  assert.equal(Object.isFrozen(resolved.binding), true);
-  assert.throws(() => factory.resolve("git-read"), /unsupported-profile/);
-  assert.throws(() => factory.resolve("git-full"), /unsupported-profile/);
-
-  // Admission must find the selected write authority without probing a refused read profile.
-  const service = createCredentialService({ config, factory, clock });
-  resources.after(() => service.shutdown(1000));
-  const opened = service.open({ durationSeconds: 60, profile: "git-write" });
-  assert.equal(opened.session.state, "OPEN");
-  assert.deepEqual(opened.session.binding, expected);
+test("Git-only registry policy binds its transport and exact ref before opening a session", () => {
+  const input = registryInput();
+  const policy = input.repositories[0].namespaces[0];
+  policy.profiles = ["git-write"];
+  const registry = () => validateGitHubRepositoryRegistry(input);
+  const grant = () =>
+    resolveGitHubRepositoryBinding(registry(), {
+      namespaceId: "namespace-a",
+      repositoryRef: "application",
+    }).grant.grantId;
+  policy.pushRefAllowlist = ["refs/heads/review/exact"];
+  const legacyGrant = grant();
+  policy.transport = "git-only";
+  const scopedGrant = grant();
+  assert.notEqual(scopedGrant, legacyGrant, "legacy client-only ref policy is not the same grant");
+  policy.pushRefAllowlist = [];
+  assert.notEqual(grant(), scopedGrant, "ref authorization is bound to the grant");
+  delete policy.pushRefAllowlist;
   assert.throws(
-    () => service.open({ durationSeconds: 60, profile: "git-full" }),
-    /unsupported-profile/,
+    registry,
+    /invalid-repository-registry/,
+    "a Git-only policy requires explicit refs",
   );
-  service.close(opened.session.sessionId);
+  policy.pushRefAllowlist = [];
+  policy.profiles = ["git-full"];
+  assert.throws(
+    registry,
+    /invalid-repository-registry/,
+    "Git-only cannot silently widen a profile",
+  );
+});
+
+test("a draft policy's operator opt-out of the one-draft limit is its own grant", () => {
+  // Finding 2147 (owner 10-20): an operator may drop the one-draft-per-grant limit for one
+  // namespace's draft policy. The default stays enforced and keeps its grant; the opt-out
+  // changes the grant, and only a draft transport accepts it.
+  const input = registryInput();
+  const policy = input.repositories[0].namespaces[0];
+  policy.profiles = ["git-write"];
+  policy.pushRefAllowlist = ["refs/heads/review/exact"];
+  policy.transport = "git-and-draft-pr";
+  policy.pullRequestBase = "main";
+  const registry = () => validateGitHubRepositoryRegistry(input);
+  const grant = () =>
+    resolveGitHubRepositoryBinding(registry(), {
+      namespaceId: "namespace-a",
+      repositoryRef: "application",
+    }).grant.grantId;
+  const enforced = grant();
+  policy.draftPullLimit = "one-per-grant";
+  assert.equal(grant(), enforced, "the explicit default is the same grant");
+  assert.equal(Object.hasOwn(registry().repositories[0].namespaces[0], "draftPullLimit"), false);
+  policy.draftPullLimit = "none";
+  assert.equal(registry().repositories[0].namespaces[0].draftPullLimit, "none");
+  assert.notEqual(grant(), enforced, "the opt-out is a new grant");
+  for (const value of ["", "unlimited", false, null, 2]) {
+    policy.draftPullLimit = value;
+    assert.throws(registry, /invalid-repository-registry/, String(value));
+  }
+  policy.draftPullLimit = "none";
+  policy.transport = "git-only";
+  delete policy.pullRequestBase;
+  assert.throws(registry, /invalid-repository-registry/, "a Git-only policy has no drafts");
+  delete policy.transport;
+  assert.throws(registry, /invalid-repository-registry/, "nor does a legacy policy");
 });
 
 test("push-ref policy normalizes branch refs and changes grant identity", () => {
@@ -334,8 +323,7 @@ test("registry refuses ambiguous repositories, wildcard policy, unsupported prof
 });
 
 test("registry loader accepts a bounded projected regular file and rejects unsafe file contents", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "repository-registry-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "repository-registry-");
   const file = join(directory, "registry.json");
   const projected = join(directory, "projected.json");
   await writeFile(file, JSON.stringify(registryInput()), { mode: 0o644 });

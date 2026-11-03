@@ -1,13 +1,12 @@
-# Connection templates and personal Agents
+# Connection templates and saved accounts
 
-A connection lets one person connect their own OAuth account, such as Google
-Gmail, to their Agent. An Installation administrator defines the provider once as
-a **connection template**. The person approves access on the provider's consent
-page; the Credential Refresh Driver exchanges the code and gives the refresh grant
-to the Credential Gateway. The Agent's tool receives only a placeholder, and only
-that person can deploy or use the Agent while it holds the connection.
+An Installation administrator defines a connection template for an OAuth provider.
+A person signs in to that provider once and saves the connection in their
+Namespace. They can then grant individual Agents access to the same account.
+OCC records who consented and which template version they approved. Each Agent
+gets its own credential binding and operates under its own policy.
 
-The design is [RFC-0023](../../specs/rfcs/0023-agent-oauth-connections/index.md).
+The design is [RFC-0027](../../specs/rfcs/0027-agent-oauth-connections/index.md).
 To set up Gmail, follow
 [Connect Google Gmail](../guides/deploy/google-gmail-connection.md).
 
@@ -31,7 +30,7 @@ Without the Drivers, template and connect operations return `501`.
 A connection template is an Installation resource of IAM kind
 `connection_template`, managed through the
 [HTTP API](api.md#get-connectiontemplates). Credential sources created from it
-belong to the Agent's Namespace.
+belong to the Namespace where the person connects the account.
 
 | Field                     | Meaning                                                                                         |
 | ------------------------- | ----------------------------------------------------------------------------------------------- |
@@ -45,6 +44,8 @@ belong to the Agent's Namespace.
 | `authorizationParameters` | Extra consent-URL parameters, such as Google's `access_type=offline`. Reserved names fail.      |
 | `endpoint`                | The API `host`, `port` (default `443`), and `path` (default `/**`) that receive the credential. |
 | `envVar`                  | The placeholder variable in the Sandbox.                                                        |
+
+The endpoint also accepts an `access` setting. The default, `full`, allows requests within its host, port, path, and provider scopes. A template can request `read-only` only when the installed Credential Gateway can enforce it for every matching request. Stock OpenShell currently refuses this option at setup. A provider-enforced read-only OAuth scope still restricts what that provider accepts.
 
 PostgreSQL enforces value formats: `https` URLs, RFC 6749 scope tokens, a DNS
 endpoint host (not an IP address), and the variable rules of
@@ -90,9 +91,9 @@ need `use`, granted through an
 Installation Role `role_connection_template_user`:
 
 - `subjectKind: identity` grants one person.
-- `subjectKind: namespace` grants anyone acting for an Agent in that Namespace.
+- `subjectKind: namespace` grants eligible people acting in that Namespace.
 
-OCC checks `use` with the Agent's Namespace as context, so a Namespace grant does
+OCC checks `use` with the Namespace where the person connects the account as context, so a Namespace grant does
 not apply to Agents elsewhere. Service keys and Namespace-bound identities cannot
 use templates. Creating or deleting a binding requires
 `installation:administer`; deleting a template or a Namespace removes its
@@ -101,70 +102,26 @@ lists the ones the caller may connect in a Namespace.
 
 ## Connect an account
 
-1. The person signs in to OCC and
-   [starts a connection](api.md#post-namespacesnamespaceidagentsagentidconnections)
-   with a connection template ID. Only a human session can start one. OCC checks
-   exact `agent:read` and `agent:update`, `use`, and the
-   [personal-Agent rules](#personal-agents). These checks authorize the source and
-   Secret the connection creates; no Namespace `credential_source` or `secret`
-   grant is needed.
-2. OCC registers a pending `oauth2-refresh-token` credential source with the
-   approved values and no refresh material, and stores the Refresh Driver's
-   private state in a Namespace Secret. It returns `authorizationUrl` (S256 PKCE),
-   `credentialSourceId`, and `expiresAt`, ten minutes later.
-3. The person approves on the provider's page, which redirects to
-   [`/oauth/callback`](api.md#get-oauthcallback) with `code` and `state`.
-4. The callback needs the session that started the connection. OCC consumes the
-   session once, rechecks `agent:update`, `use`, and the personal-Agent rules, and
-   has the Refresh Driver exchange the code and mint the first token.
-5. OCC adds the source to the Agent's `credentialSources`, grants the Agent's
-   service principal `operate` on it, and records the connection. It redirects to
-   the Agent's console page with `connection=connected`.
+1. The person signs in to OCC and starts a connection with `POST /namespaces/{namespaceId}/connections` and a `connectionTemplateId`. OCC requires a human session, Namespace read access, and permission to use the template in that Namespace. The Agent-scoped start endpoint also accepts the template ID and requires read and update access to that Agent.
+2. OCC registers a pending `oauth2-refresh-token` source and stores the Refresh Driver's private state in a Namespace Secret. The response includes the provider's `authorizationUrl` with S256 PKCE, the source ID, and a ten-minute expiry. A pending source cannot be attached or deployed.
+3. The person approves on the provider's page. The [callback](api.md#get-oauthcallback) checks the browser session, consumes the state once, and rechecks access. The Credential Refresh Driver exchanges the code and configures the Credential Gateway to refresh the account.
+4. OCC saves the consent owner, template version, and ready source together. The callback redirects to the Console with `connection=connected`. The source becomes available for explicit attachment.
 
-The callback always answers `303`, with `Referrer-Policy: no-referrer` and
-`Cache-Control: no-store`, and its redirect drops the query string. Codes and
-tokens never appear in responses or audit records. OCC audits a started and a
-completed connection on the Agent, and a refused or failed callback with its
-reason code and the person who sent it.
+The callback returns `303` with `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. OCC strips the provider query from the redirect and logs the connection outcome without codes or tokens.
 
-[List connections](api.md#get-namespacesnamespaceidagentsagentidconnections)
-returns each source, its owner, and the approved template version. Deploy the
-Agent to use the connection.
+## Grant an Agent access
 
-### Disconnect
+List saved connections with `GET /namespaces/{namespaceId}/connections`. People with Namespace read access see accounts they connected and sources they can operate under the Namespace IAM policy. A Namespace administrator can grant a person or Group `operate` on a specific credential source.
 
-[Disconnect](api.md#delete-namespacesnamespaceidagentsagentidconnectionscredentialsourceid)
-requires exact `agent:update`. OCC removes the source from the Agent, requests
-[withdrawal](credential-sources/withdrawal.md) when the active revision holds it
-(which also requires `agent:operate`), and deletes the source when nothing holds
-it. Like connecting, it needs no `credential_source:delete` grant. The response
-reports `withdrawalRequested` and `deleted`. When `deleted` is `false`, deploy a
-new version or wait for withdrawal, then disconnect again.
+`POST /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}` attaches a completed connection to the named Agent. The caller must be able to update the Agent and must own the consent or have permission to operate that source. OCC saves the source on the Agent and grants the Agent's service principal permission to operate it. Repeat the attachment for each Agent that needs the account. The Agent's connections endpoint lists its attached accounts.
 
-## Personal Agents
+Deploy the Agent to use the account. Its authorized execution can send requests within the source's approved endpoint and access policy. The name of a program sending a request does not identify the consenting person or grant another Agent access.
 
-An Agent is personal while it holds a connection. The restriction lasts until
-the connected credential source is deleted. OCC refuses that deletion while the
-saved Agent, a pending deployment, an admitted revision, or withdrawal work still
-holds the source, so the restriction outlives every copy of the credential.
+## Detach or disconnect
 
-While an Agent is personal:
+`DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}` removes that Agent's saved binding and its connection grant. If its active revision holds the source, OCC also requests [withdrawal](credential-sources/withdrawal.md), which requires `agent:operate`. Other Agents with access can continue to use the account.
 
-- Only the connection owner can connect more accounts to it (`403`).
-- Only the owner can deploy it (`403`). The worker rechecks queued work and fails
-  it with `PERSONAL_AGENT_OWNER_REQUIRED`, including redeploys an administrator
-  starts.
-- Only the owner can open its native admin UI (`403`).
-- OCC refuses exact-Agent grants to anyone else and refuses Group grants (`409`).
-  Connecting also fails while such a grant exists.
-- OCC refuses enabled channels in its Configuration, at connect, at deploy, and
-  when anyone saves that Configuration (`409`). A channel counts as enabled
-  unless it sets `enabled: false`.
-- OCC refuses plugin approvers at connect and deploy (`409`).
-- Its connected source cannot be listed on another Agent (`409`).
-
-Administrators can still stop, delete, and disconnect the Agent. OCE has no
-per-message identity, so these rules cover access paths, not individual messages.
+To disconnect the saved account, the consent owner or a caller with `delete` on the source calls `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}`. First detach it from all Agents and let pending deployments or withdrawals release their references. OCC then removes the refresh material and source through the Credential Gateway. A source created recently may require a retry after its registration fence expires.
 
 ## Callback failures
 
@@ -183,7 +140,7 @@ A failed callback redirects to `/console/?connection=failed&reason=<code>`.
 | `exchange_refused`, `issuer_unavailable` | The token endpoint failed.                                                          | Fix the template, or retry later.                          |
 | `unavailable`                            | Any other failure, such as a lost grant or a timeout.                               | Check the source; delete it if unbound.                    |
 
-From `consent_denied` through `issuer_unavailable`, OCC deletes the pending
+From `consent_denied` through `issuer_unavailable`, OCC requests deletion of the pending
 source. After `session_used_or_expired`, a timeout, or another uncertain failure,
 the source stays registered but unbound; delete it and connect again. OCC never
 replays a code.

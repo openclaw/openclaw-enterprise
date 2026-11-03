@@ -2,7 +2,7 @@
 
 Prepare an existing Kubernetes cluster for OpenClaw Enterprise (OCE), then run
 [the shared Helm installation](production-installation.md). For AWS managed
-Kubernetes, use the [Amazon EKS guide](eks.md).
+Kubernetes, use the [Amazon EKS guide](eks-openshell-setup.md).
 
 ## Prepare the cluster
 
@@ -52,6 +52,38 @@ Provide these cluster services before installing OCC:
 | Container registry        | Push access for the image builder and pull access from every eligible node, including tenant workloads.            |
 | Operator access           | An approved HTTPS origin and access path matching `auth.baseUrl`; the chart does not create public TLS or Ingress. |
 
+An Envoy Gateway ingress for the console origin answers a path with an encoded
+slash (`%2F`) itself: by default it redirects with `307` to the decoded path, so
+the API never sees the request. The API refuses such an ID with `400` and names
+the parameter. To give callers that answer, attach a ClientTrafficPolicy to the
+ingress Gateway, or to its OCE listener with `sectionName`:
+
+```yaml
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: occ-keep-escaped-slashes
+  namespace: <ingress-gateway-namespace>
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: <ingress-gateway>
+  path:
+    escapedSlashesAction: KeepUnchanged
+```
+
+Envoy still resolves `.` and `..` segments and merges slashes. Envoy and the
+API router both keep `%2F` inside one path segment, so a route match cannot
+differ between them. If a ClientTrafficPolicy already targets that Gateway or
+listener, add `path` to it.
+
+Keep the console route's request timeout at 15 seconds or more; Envoy Gateway's
+default is 15 seconds. Configuration and Secret create, update and delete send no
+Kubernetes call later than 12 seconds after the API starts the request, so on a slow
+cluster they fail with `503` instead of saving after the ingress answered `504`. The
+database commit is not bounded by them.
+
 Follow the [storage contract](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 when choosing disks. A NetworkPolicy object alone is not proof of enforcement:
 verify allowed and denied traffic with your CNI before placing tenant workloads.
@@ -63,7 +95,10 @@ See [networking and isolation](../../reference/drivers/kubernetes-compute/networ
 
 On OpenShift, select the actual DNS backend namespace and Pod labels; the
 [Helm DNS grants](../../reference/settings/production.md#required-production-controller-environment)
-permit both Service and backend ports. Verify UDP and TCP DNS resolution from
+permit both Service and backend ports. Helm merges `dns.podLabels` into the chart
+default `k8s-app: kube-dns`. Profile rendering removes that default for you. In
+hand-written values, set `dns.podLabels.k8s-app: null` when the DNS Pods lack that
+label. Verify UDP and TCP DNS resolution from
 the initialization, API, worker, and enabled supporting workloads, plus denied
 traffic to a Pod outside the configured DNS selectors.
 

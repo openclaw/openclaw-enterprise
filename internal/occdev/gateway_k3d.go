@@ -215,21 +215,9 @@ func (r *runner) installDevelopmentRoutingControllers(ctx context.Context, state
 	if err := r.run(ctx, "kubectl", "wait", "--for=condition=Accepted", "gatewayclass/eg", "--timeout", timeout.String()); err != nil {
 		return "", err
 	}
-	nodeData, err := r.output(ctx, "kubectl", "get", "node", "k3d-"+state.Cluster+"-server-0", "-o", "json")
+	prefix, err := r.developmentNodePodCIDR(ctx, "k3d-"+state.Cluster+"-server-0", 32)
 	if err != nil {
 		return "", err
-	}
-	var node struct {
-		Spec struct {
-			PodCIDR string `json:"podCIDR"`
-		} `json:"spec"`
-	}
-	if err := json.Unmarshal(nodeData, &node); err != nil {
-		return "", fmt.Errorf("invalid k3d node information")
-	}
-	prefix, err := netip.ParsePrefix(node.Spec.PodCIDR)
-	if err != nil || !prefix.Addr().Is4() || prefix.Bits() < 16 || prefix != prefix.Masked() {
-		return "", fmt.Errorf("k3d node must have a canonical bounded IPv4 Pod CIDR")
 	}
 	return prefix.String(), nil
 }

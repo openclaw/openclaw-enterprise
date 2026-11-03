@@ -45,7 +45,8 @@ test(
         `console.log(await (await fetch(${JSON.stringify(url)})).text())`,
       );
       assert.match(local, /occ_process_start_time_seconds\{[^\n]+\} [0-9.]+/);
-      const logs = await f.kubectl("-n", f.system, "logs", pod.metadata.name, "--tail=100");
+      // worker.started is logged once at boot; a slow install can push it out of a short tail.
+      const logs = await f.kubectl("-n", f.system, "logs", pod.metadata.name);
       assert.match(logs, component === "api" ? /http.completed/ : /worker.started/);
     }
     await assertScrapes(listeners.map((url) => ["scraper", f.monitoring, url, 0]));

@@ -5,8 +5,8 @@ Record the starting state of a production installation before you run the
 [upgrade checklist](upgrade-checklist.md#record-the-starting-state) lists what to
 record; this page gives commands for its Helm, Kubernetes, OCC, PostgreSQL and
 workspace items. The upgrade helper keeps its own evidence of the release it
-changes. This baseline is what you compare against after the upgrade and use if
-you must restore.
+changes. Use the baseline to compare state after the upgrade and to rehearse a
+database restore before maintenance.
 
 ## Set the inputs
 
@@ -32,26 +32,35 @@ occ_json=(/secure/occ/bin/occ --output json)
 
 ## Record the release and its configuration
 
-The helper refuses to run when the protected values or Installation differ from
-the live release, so compare them now. Each check prints a message only when the
-files differ; resolve any difference before the upgrade.
+From the repository root, use Bash, yq v4, and jq to capture the live release
+and compare its configuration with the protected files. Set the inputs above
+first and keep shell tracing disabled. The subshell stops if a read or comparison
+fails; read failures exit 2 without printing configuration.
 
 ```bash
-helm history oce "${helm_args[@]}" >"$BASELINE/helm-history.txt"
-helm get values oce "${helm_args[@]}" --output yaml >"$BASELINE/live-values.yaml"
-diff <(yq -o=json . /secure/occ/values.yaml | jq -S .) \
-  <(yq -o=json . "$BASELINE/live-values.yaml" | jq -S .) ||
-  echo 'The protected values differ from the live release.' >&2
-OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' "$BASELINE/live-values.yaml")"
-OCC_INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' "$BASELINE/live-values.yaml")"
-"${kube[@]}" -n openclaw-system get secret "$OCC_INSTALLATION_SECRET" -o json |
-  jq '{installationId: .metadata.annotations["openclaw.dev/installation-id"]}' >"$BASELINE/installation-secret.json"
-"${kube[@]}" -n openclaw-system get secret "$OCC_INSTALLATION_SECRET" -o json |
-  jq -j --arg key "$OCC_INSTALLATION_KEY" '.data[$key] | @base64d' >"$BASELINE/live-installation.yaml"
-diff <(yq -o=json . /secure/occ/installation.yaml | jq -S .) \
-  <(yq -o=json . "$BASELINE/live-installation.yaml" | jq -S .) ||
-  echo 'The protected Installation differs from the live Secret.' >&2
+(
+  set -euo pipefail
+  trap 'echo "Baseline read failed: check access, tools, and inputs before retrying." >&2; exit 2' ERR
+  helm history oce "${helm_args[@]}" 2>/dev/null >"$BASELINE/helm-history.txt"
+  helm get values oce "${helm_args[@]}" --output yaml 2>/dev/null >"$BASELINE/live-values.yaml"
+  scripts/compare-upgrade-baseline /secure/occ/values.yaml "$BASELINE/live-values.yaml" || exit "$?"
+  OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' "$BASELINE/live-values.yaml" 2>/dev/null)"
+  OCC_INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' "$BASELINE/live-values.yaml" 2>/dev/null)"
+  "${kube[@]}" -n openclaw-system get secret "$OCC_INSTALLATION_SECRET" -o json 2>/dev/null |
+    jq '{installationId: .metadata.annotations["openclaw.dev/installation-id"]}' 2>/dev/null >"$BASELINE/installation-secret.json"
+  "${kube[@]}" -n openclaw-system get secret "$OCC_INSTALLATION_SECRET" -o json 2>/dev/null |
+    jq -ej --arg key "$OCC_INSTALLATION_KEY" '.data[$key] | strings | @base64d' 2>/dev/null >"$BASELINE/live-installation.yaml"
+  scripts/compare-upgrade-baseline /secure/occ/installation.yaml "$BASELINE/live-installation.yaml" || exit "$?"
+)
 ```
+
+The comparison prints `Configurations match.` and exits 0 for equal mappings,
+including `{}`. It ignores field order and formatting; scalar types and array
+order must match. Each file must contain exactly one YAML mapping. Exit 1 means
+configuration drift: reconcile the files before maintenance. Exit 2 means a
+missing, unreadable, empty, invalid, nonmapping, or multiple-document input, or a
+parser failure. Correct the input or tool setup and retry. The comparison does
+not print paths or configuration or write parsed data to disk.
 
 `installation-secret.json` records the `openclaw.dev/installation-id`
 annotation. When it is missing, [bind the Installation once](production-upgrade.md#bind-the-installation-once)
@@ -86,22 +95,46 @@ after the upgrade: a new UID means the volume and its Agent data were replaced.
 
 ## Record the OCC inventory
 
+On controllers that support it, record the installation-wide deployment inventory:
+
 ```bash
-"${occ_json[@]}" installation get >"$BASELINE/installation.json"
 "${occ_json[@]}" installation deployment-inventory >"$BASELINE/deployment-inventory.json"
-"${occ_json[@]}" namespace list >"$BASELINE/occ-namespaces.json"
-jq -r '.[].id' "$BASELINE/occ-namespaces.json" | while read -r ns; do
-  "${occ_json[@]}" --namespace "$ns" agent list >"$BASELINE/occ-$ns-agents.json"
-  "${occ_json[@]}" --namespace "$ns" secret list >"$BASELINE/occ-$ns-secrets.json"
-  "${occ_json[@]}" --namespace "$ns" iam role list >"$BASELINE/occ-$ns-roles.json"
-  "${occ_json[@]}" --namespace "$ns" iam access-binding list >"$BASELINE/occ-$ns-access-bindings.json"
-done
 ```
 
-The deployment inventory lists every Namespace, Agent, desired state and selected
-version. A controller that predates `deployment-inventory` cannot answer it;
-the per-Namespace `agent list` records the same Agents. `secret list` returns
-metadata only.
+Require this read to succeed. It requires Installation `administer` and read
+access to each Namespace and Agent. For a running Agent with a selected revision
+and no deployment in progress, it also checks Agent `deploy` and revision read
+access. An authorization or connection failure does not mean the endpoint is
+unavailable on that release.
+
+If the controller predates this endpoint, obtain the expected Namespace and Agent
+IDs, desired states and selected revisions from an independent inventory held by
+the resource or database owner. Include stopped Agents. Compare those records
+with the lists below before changing production. If an ID or state is missing
+or the expected inventory is unknown, stop. This fallback does not replace the
+deployment inventory required by the image helper for a runtime upgrade.
+
+For either release, collect the remaining records in Bash:
+
+```bash
+(
+  set -euo pipefail
+  "${occ_json[@]}" installation get >"$BASELINE/installation.json"
+  "${occ_json[@]}" namespace list >"$BASELINE/occ-namespaces.json"
+  jq -r '.[].id' "$BASELINE/occ-namespaces.json" | while read -r ns; do
+    "${occ_json[@]}" --namespace "$ns" agent list >"$BASELINE/occ-$ns-agents.json"
+    jq -e 'all(.[]; .configurationReadError == null)' "$BASELINE/occ-$ns-agents.json" >/dev/null
+    "${occ_json[@]}" --namespace "$ns" secret list >"$BASELINE/occ-$ns-secrets.json"
+    "${occ_json[@]}" --namespace "$ns" iam role list >"$BASELINE/occ-$ns-roles.json"
+    "${occ_json[@]}" --namespace "$ns" iam access-binding list >"$BASELINE/occ-$ns-access-bindings.json"
+  done
+)
+```
+
+Treat a failed command or unreadable saved configuration as an incomplete
+baseline. Even on success, ordinary Namespace and Agent lists omit resources
+the caller cannot read. Reconcile IDs and states with the expected inventory;
+matching counts alone do not establish coverage. `secret list` returns metadata only.
 
 ## Record the database
 
@@ -113,10 +146,103 @@ pg_dump --format=custom --file "$BASELINE/openclaw_enterprise.pgdump" "$OCC_MIGR
 pg_restore --list "$BASELINE/openclaw_enterprise.pgdump" >/dev/null
 ```
 
-`migrations.txt` holds the migration receipts. `pg_restore --list` proves the
-dump is readable, not that it restores; follow your database's backup and
-restore procedure when the release has migrations that may need data restored.
-Use a `pg_dump` at least as new as the server.
+`migrations.txt` holds the pre-upgrade migration receipts. `pg_restore --list`
+checks that the dump is readable. Rehearse the restore in a separate, empty,
+disposable database before maintenance. Provision the required roles first and
+use an identity authorized to restore ownership and grants. Set
+`RESTORE_DATABASE_URL` to that database privately. Keep passwords in the
+protected password file because the PostgreSQL clients take URLs as arguments.
+Use a `pg_dump` at least as new as the source server and `pg_restore` from the
+same PostgreSQL client release. Stop the rehearsal if any command fails.
+
+```bash
+pg_restore --exit-on-error --single-transaction --dbname "$RESTORE_DATABASE_URL" -- \
+  "$BASELINE/openclaw_enterprise.pgdump"
+```
+
+Keep normal ownership and ACL restoration; do not use `--no-owner` or
+`--no-acl`. Set `RESTORED_MIGRATION_DATABASE_URL` privately to the dedicated
+migrator login for that same restored database. From the root of a checkout of
+the pre-upgrade release, install its dependencies and run:
+
+```bash
+pnpm install --frozen-lockfile
+OCC_MIGRATION_DATABASE_URL="$RESTORED_MIGRATION_DATABASE_URL" pnpm db:migrate:production --check
+```
+
+Require exit 0, `migration.checked`, and the expected pre-upgrade `history`.
+Compare the rehearsal database's receipts with the pre-upgrade receipts:
+
+```bash
+(
+  set -euo pipefail
+  psql "$RESTORED_MIGRATION_DATABASE_URL" -At \
+    -c 'SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id' |
+    diff -u "$BASELINE/migrations.txt" -
+)
+```
+
+Compare the data you must retain with the pre-upgrade baseline. The
+[migration history check](../../reference/settings/operations.md#migration-history)
+recognizes a reviewed logical restore of the catalog. A successful check does
+not prove backup completeness or provenance or authorize a launch, recovery,
+or retry. Do not restore over the original database.
+
+## Restore the retained candidate database
+
+If an upgrade gate fails after the candidate accepts writes, keep writers
+stopped and retain the candidate database. Reconcile accepted and uncertain
+operations before capture. A pre-upgrade archive can restore successfully and
+omit those writes. Take a fresh archive and receipt snapshot while writers
+remain stopped.
+
+Use the protected password file, TLS settings and PostgreSQL clients from the
+rehearsal. Set `CANDIDATE_MIGRATION_DATABASE_URL` privately to the retained
+candidate database's `occ_migrator` login. Provision the required roles on the
+target PostgreSQL server and create a separate, empty database. Confirm that
+`RESTORE_DATABASE_URL` and `RESTORED_MIGRATION_DATABASE_URL` both name that
+target, using the restore identity and dedicated migrator respectively.
+Preserve ownership and grants.
+Keep the candidate intact. Do not restore over it, add `--clean`, or drop schemas.
+
+Run the block with Bash and jq from the root of the candidate release checkout
+with its dependencies installed. Set `EXPECTED_CANDIDATE_HISTORY` from the
+reconciled migration state. Use `completed` if the candidate applied all its
+migrations. Keep shell tracing disabled. The block stops on a failed command,
+unexpected history, or different receipts.
+
+```bash
+(
+  set -euo pipefail
+  umask 077
+  : "${CANDIDATE_MIGRATION_DATABASE_URL:?}" "${RESTORE_DATABASE_URL:?}"
+  : "${RESTORED_MIGRATION_DATABASE_URL:?}" "${EXPECTED_CANDIDATE_HISTORY:?}"
+  CANDIDATE_RETURN=$(mktemp -d /secure/occ/upgrades/candidate-return.XXXXXXXX)
+  printf 'Candidate recovery evidence: %s\n' "$CANDIDATE_RETURN"
+  psql "$CANDIDATE_MIGRATION_DATABASE_URL" -XAt -v ON_ERROR_STOP=1 \
+    -c 'SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id' \
+    >"$CANDIDATE_RETURN/candidate-migrations.txt"
+  pg_dump --format=custom --file "$CANDIDATE_RETURN/candidate.pgdump" "$CANDIDATE_MIGRATION_DATABASE_URL"
+  pg_restore --exit-on-error --single-transaction --dbname "$RESTORE_DATABASE_URL" -- \
+    "$CANDIDATE_RETURN/candidate.pgdump"
+  NODE_ENV=production OCC_MIGRATION_DATABASE_URL="$RESTORED_MIGRATION_DATABASE_URL" \
+    node scripts/migrate-production.mjs --check >"$CANDIDATE_RETURN/restored-history.json"
+  jq -se --arg expected "$EXPECTED_CANDIDATE_HISTORY" \
+    'length == 1 and .[0].event == "migration.checked" and .[0].history == $expected' \
+    "$CANDIDATE_RETURN/restored-history.json" >/dev/null
+  psql "$RESTORED_MIGRATION_DATABASE_URL" -XAt -v ON_ERROR_STOP=1 \
+    -c 'SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id' \
+    >"$CANDIDATE_RETURN/restored-migrations.txt"
+  cmp "$CANDIDATE_RETURN/candidate-migrations.txt" "$CANDIDATE_RETURN/restored-migrations.txt"
+)
+```
+
+Compare the restored Agent revisions, selected revisions, audit records and
+other required data with the retained candidate. Confirm that the restored
+database contains the records for each accepted operation. Keep writers stopped
+if any required record differs or an operation remains uncertain. Verify Gateway
+and workspace volumes and compatibility with any older image before switching
+writers.
 
 ## Record Agent data
 

@@ -92,16 +92,17 @@ export function assignedSymbols(source, checker) {
       depth++;
       value = unwrap(value.expression);
     }
-    const symbol =
-      value && ts.isShorthandPropertyAssignment(value.parent)
-        ? checker.getShorthandAssignmentValueSymbol(value.parent)
-        : value && checker.getSymbolAtLocation(value);
+    // Resolve the binding only for a candidate `process` root: name lookup is the costly part.
     return (
       value &&
       ts.isIdentifier(value) &&
       value.text === "process" &&
       depth <= 1 &&
-      implicitWrapperSymbol(symbol)
+      implicitWrapperSymbol(
+        ts.isShorthandPropertyAssignment(value.parent)
+          ? checker.getShorthandAssignmentValueSymbol(value.parent)
+          : checker.getSymbolAtLocation(value),
+      )
     );
   }
   function directProcessRead(node) {
@@ -138,7 +139,9 @@ export function assignedSymbols(source, checker) {
       ((ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) ||
         (ts.isPropertyAssignment(node.parent) && node.parent.name === node) ||
         (ts.isBindingElement(node.parent) && node.parent.propertyName === node));
-    const valueSymbol =
+    // Resolve the binding only for the global names checked below; resolving every node's
+    // symbol was most of the analyzer's CPU on the repository tree.
+    const valueSymbol = () =>
       node.parent && ts.isShorthandPropertyAssignment(node.parent)
         ? checker.getShorthandAssignmentValueSymbol(node.parent)
         : checker.getSymbolAtLocation(node);
@@ -146,7 +149,7 @@ export function assignedSymbols(source, checker) {
       ts.isIdentifier(node) &&
       !propertyName &&
       ["globalThis", "global"].includes(node.text) &&
-      implicitWrapperSymbol(valueSymbol)
+      implicitWrapperSymbol(valueSymbol())
     ) {
       // Either Node global object alias can expose or replace builtins and env.
       globalURLMutable = true;
@@ -156,7 +159,7 @@ export function assignedSymbols(source, checker) {
       ts.isIdentifier(node) &&
       !propertyName &&
       node.text === "URL" &&
-      implicitWrapperSymbol(valueSymbol) &&
+      implicitWrapperSymbol(valueSymbol()) &&
       !(
         ts.isNewExpression(outerExpression(node).parent) &&
         outerExpression(node).parent.expression === outerExpression(node)

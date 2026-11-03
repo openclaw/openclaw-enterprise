@@ -20,6 +20,7 @@ import { waitFor } from "./wait-for.mjs";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { reservedPortArgs } from "./available-port.mjs";
 import { databaseUrl, requiresPostgres } from "./postgres-database.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export { databaseUrl, requiresPostgres };
 
@@ -277,6 +278,7 @@ export function createBackendController(fixture, options = {}) {
   const controller = new OpenClawController(fixture.installation, {
     state: fixture.state,
     backends,
+    driverConfigurations: options.driverConfigurations,
     nativeWorkerSupport: options.nativeWorkerSupport,
     now: options.now,
   });
@@ -370,8 +372,7 @@ export async function createBootstrappedBackendState(context, options) {
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
   const state = new PostgresPlatformState(pool);
   const namespaces = trackNamespaces(context, pool);
-  const configurationRoot = await mkdtemp(join(tmpdir(), "openclaw-backend-repair-config-"));
-  context.after(() => rm(configurationRoot, { recursive: true, force: true }));
+  const configurationRoot = await temporaryDirectory(context, "openclaw-backend-repair-config-");
   return { pool, state, configurationRoot, ...namespaces };
 }
 

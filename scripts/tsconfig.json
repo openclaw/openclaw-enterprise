@@ -1,0 +1,39 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "composite": false,
+    "declaration": false,
+    "noEmit": true,
+    "noCheck": false,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": false,
+    "erasableSyntaxOnly": true,
+    "tsBuildInfoFile": "../.build/scripts/tsconfig.tsbuildinfo",
+    "paths": {
+      "@openclaw-enterprise/contracts": ["../packages/contracts/src/index.ts"]
+    }
+  },
+  "include": ["*.ts", "ci/**/*.ts", "lib/**/*.ts", "docs-site/compute-matrix.ts"],
+  "references": [
+    {
+      "path": "../packages/utils"
+    },
+    {
+      "path": "../packages/contracts"
+    },
+    {
+      "path": "../packages/occ"
+    },
+    {
+      "path": "../packages/iam"
+    },
+    {
+      "path": "../packages/audit"
+    },
+    {
+      "path": "../apps/controller"
+    }
+  ]
+}

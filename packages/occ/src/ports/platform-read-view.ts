@@ -38,6 +38,7 @@ export function createPlatformReadView(
     ]),
     agentConnections: bindRepository(repositories.agentConnections, lifetime, [
       "findAgentConnection",
+      "listNamespaceConnections",
       "listAgentConnections",
       "findConnectionSession",
     ]),
@@ -47,6 +48,10 @@ export function createPlatformReadView(
       "listReferences",
     ]),
     credentialSources: bindRepository(repositories.credentialSources, lifetime, [
+      "findEgressInstallation",
+      "findRevisionEgressInstallation",
+      "listCredentialPolicyReductions",
+      "isEgressMaterialRejected",
       "findCredentialSource",
       "listCredentialSources",
       "findCredentialWithdrawal",
@@ -61,6 +66,7 @@ export function createPlatformReadView(
     agents: bindRepository(repositories.agents, lifetime, [
       "findAgent",
       "listAgents",
+      "hasAgentNamed",
       "findAgentForBrowsing",
       "listAgentsForBrowsing",
       "listAgentReferences",
@@ -86,6 +92,10 @@ export function createPlatformReadView(
       "getInstallationAccessBinding",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
+      "findStandingExecution",
+      "listStandingApprovals",
+      "findStandingApproval",
+
       "findAttempt",
       "findBrokerReceipt",
       "findBrokerReceiptBySession",

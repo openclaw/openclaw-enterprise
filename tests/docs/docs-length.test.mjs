@@ -1,17 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cli = join(root, "scripts/docs-site/word-count.mjs");
 
 async function fixture(t) {
-  const directory = await mkdtemp(join(tmpdir(), "enterprise-docs-length-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "enterprise-docs-length-");
   execFileSync("git", ["init"], { cwd: directory, stdio: "ignore" });
   return directory;
 }
@@ -172,28 +171,31 @@ test("word-count CLI checks tracked and nonignored Markdown once per real file",
   );
 });
 
-test("word-count CLI reports the approved API exception without exempting other pages", async (t) => {
+test("word-count CLI reports the nolimit tag without exempting other pages", async (t) => {
   const directory = await fixture(t);
   await mkdir(join(directory, "docs/reference/api"), { recursive: true });
-  await writeFile(join(directory, "docs/reference/api.md"), words(3000));
+  await writeFile(
+    join(directory, "docs/reference/long-guide.md"),
+    `---\ntags: [nolimit]\n---\n\n${words(3000)}`,
+  );
 
   const exempt = readJson(runWordCount(directory, ["--json"]));
-  assert.deepEqual(exempt.exceptions, ["docs/reference/api.md"]);
+  assert.deepEqual(exempt.exceptions, ["docs/reference/long-guide.md"]);
   assert.deepEqual(exempt.violations, []);
   assert.deepEqual(exempt.reviewPages, []);
   assert.equal(exempt.rows[0].totalWords, 3000);
-  assert.match(exempt.rows[0].lengthException, /single-page API reference/);
+  assert.match(exempt.rows[0].lengthException, /nolimit tag/);
   const report = runWordCount(directory);
   assert.equal(report.status, 0, report.stderr || report.stdout);
-  assert.match(report.stdout, /docs\/reference\/api\.md: 3000 words/);
+  assert.match(report.stdout, /docs\/reference\/long-guide\.md: 3000 words/);
   assert.match(report.stdout, /approved length exception/i);
 
-  // Neither the API basename nor its former child directory extends the exception.
+  // Formerly exempt filenames do not waive the limit without the tag.
   await writeFile(join(directory, "api.md"), words(2501));
-  await writeFile(join(directory, "docs/reference/api/agents.md"), words(2501));
+  await writeFile(join(directory, "docs/reference/api.md"), words(2501));
   const rejected = runWordCount(directory, ["--json"]);
   assert.equal(rejected.status, 1);
-  assert.deepEqual(readJsonOutput(rejected).violations, ["api.md", "docs/reference/api/agents.md"]);
+  assert.deepEqual(readJsonOutput(rejected).violations, ["api.md", "docs/reference/api.md"]);
 });
 
 test("word-count CLI exempts root and nested AGENTS.md files and their aliases", async (t) => {
@@ -252,15 +254,18 @@ test("word-count CLI does not exempt another file through an API path symlink", 
   assert.equal(json.violations.length, 1);
 });
 
-test("word-count CLI names the canonical API exception when it has an alias", async (t) => {
+test("word-count CLI names the canonical tagged page when it has an alias", async (t) => {
   const directory = await fixture(t);
   await mkdir(join(directory, "docs/reference"), { recursive: true });
-  await writeFile(join(directory, "docs/reference/api.md"), words(3000));
-  await symlink("docs/reference/api.md", join(directory, "api.md"));
+  await writeFile(
+    join(directory, "docs/reference/long-guide.md"),
+    `---\ntags: [nolimit]\n---\n\n${words(3000)}`,
+  );
+  await symlink("docs/reference/long-guide.md", join(directory, "api.md"));
 
   const json = readJson(runWordCount(directory, ["--json"]));
-  assert.deepEqual(json.exceptions, ["docs/reference/api.md"]);
+  assert.deepEqual(json.exceptions, ["docs/reference/long-guide.md"]);
   assert.equal(json.rows.length, 1);
-  assert.equal(json.rows[0].path, "docs/reference/api.md");
+  assert.equal(json.rows[0].path, "docs/reference/long-guide.md");
   assert.deepEqual(json.rows[0].aliases, ["api.md"]);
 });
