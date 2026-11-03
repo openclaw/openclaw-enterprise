@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-10-20
-last_updated_session: agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c
+updated: 2026-11-02
+last_updated_session: authoring-run/275c0d0a-d040-47d3-9e52-47ff86b87ab9
 ---
 
 # Agent Native Admin UI Flow
@@ -12,7 +12,7 @@ The console checks exact-Agent `administer` access and returns a stable native a
 
 ## Entry Points
 
-- Trigger: Console opens an Agent native admin URL, or `scripts/first-agent.mjs --control-ui` creates a compatible local Compose/OpenShell Agent.
+- Trigger: Console opts into native admin during Agent creation, opens an Agent native admin URL, or `scripts/first-agent.mjs --control-ui` creates a compatible local Compose/OpenShell Agent.
 - Source: `scripts/first-agent.mjs:nativeConfiguration`
 - Source: `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
@@ -22,6 +22,11 @@ The console checks exact-Agent `administer` access and returns a stable native a
 
 ```mermaid
 graph TD
+  C0["Create Agent opts into Native admin UI"] --> C1["Authorize provisioning and reserve Agent identity"]
+  C1 --> C2["Prepare exact origin and trusted-proxy policy"]
+  C2 -->|conflicting policy or feature disabled| C3["Refuse before queueing work"]
+  C2 -->|valid| C4["Save prepared plan, Configuration and first version"]
+  C4 --> A
   L["Local first-Agent selects Control UI"] --> L2["Create Agent, derive exact origin,<br/>and save Configuration generation 2"]
   L2 --> A
   A["Console opens Agent detail tab"] --> P{"administer answer false?"}
@@ -66,7 +71,23 @@ graph TD
 
 ## Execution Trace
 
-### 0. Local first-Agent opts into native admin
+### 0. Console opts in before the first deployment
+
+`apps/controller/src/console/agents/create.mts:renderCreateAgent`
+`apps/controller/src/http/agents.ts:createAgentHandlers`
+`apps/controller/src/gateway/native-admin.ts:prepareNativeAdminConfiguration`
+`packages/occ/src/index.ts:provisionAgent`
+
+The unchecked checkbox requires Installation native admin support and runtime
+provisioning support. It sends `nativeAdmin: true`. After authorization,
+provisioning reserves an Agent ID. The HTTP adapter prepares Configuration from
+the configured public origin and Agent domain, never a browser-supplied origin.
+It merges the policy or refuses conflicts before queueing. The request fingerprint
+includes the preparation choice; retries reuse the saved plan and identity.
+The worker creates that Agent and deploys its initial Configuration through
+the normal provisioning lifecycle, without a later patch or second deployment.
+
+### 0a. Local first-Agent opts into native admin
 
 `scripts/first-agent.mjs:loadLocalInstallation`
 `scripts/first-agent.mjs:nativeConfiguration`
@@ -76,6 +97,7 @@ With launcher-owned Compose/OpenShell browser state, the helper saves disabled
 Configuration generation 1, creates the Agent, then derives its origin. Before
 deployment, generation 2 enables `controlUi`, pins origins, and grants
 `occ-workspace-files` trusted-proxy `operator.admin` with device auto-approval.
+Identity grants supply admin independently of device scopes.
 An existing helper-owned name cannot change this selection.
 
 ### 1. Console renders native admin availability
@@ -84,13 +106,23 @@ An existing helper-owned name cannot change this selection.
 
 Agent detail reads `${path}/native-admin` only when the Agent permission answer
 allows `administer` or is unknown. Disabled or denied access stays hidden;
-other refusals explain why. Only `available` shows **Open admin console**, opening
+other refusals explain why. Only `available` enables the header **Open Agent UI** link, opening directly
 with `noopener noreferrer`. An audited `403` in the session owner’s tab
 `sessionStorage` suppresses reads until logout, sign-in, or a new tab. Changes to
 `activeRevisionId` or `desiredRuntimeState` refresh access, coalescing concurrent
-requests into one follow-up.
+requests into one follow-up. The target description names the version selected for
+service; browsing a historical version does not change the destination. Stopped and
+unsupported states offer **Open draft**. An unavailable deployment offers **View deployment**
+when a readable version exists. Other unavailable states keep Refresh access.
 
-The warning says native edits are outside OCE; durable configuration belongs in OCE.
+The warning describes Gateway managed mode and OCE overwriting changes made while
+it is off; durable configuration belongs in OCE.
+
+Docker and Kubernetes also pass `OPENCLAW_CONFIG_READONLY_NOTICE` to the Gateway
+child when the deployed revision enables managed mode
+(`apps/controller/src/drivers/compute/runtime-startup.ts:gatewayManagedModeEnvironment`).
+A supporting Gateway uses this text to direct administrators to the Console when
+configuration is read-only. A change to the draft's managed mode takes effect at deployment.
 
 ### 2. OCC protects the availability route
 
@@ -114,7 +146,7 @@ After the authorization and existence checks above, enabled access requires a pu
 
 `ResourceConflictError` for an authorized stopped Agent without a selected version becomes only `status: "stopped"`, including new Agents and completed stops. `NoActiveAgentRevisionError` for a running Agent awaiting activation returns `unavailable`. Other dependencies, including IAM/State outages, remain `503` before gateway routing. The console offers deployment checks and refresh for the selected version, independently of the viewed snapshot.
 
-With a selected version, OCC derives its native target. Non-running Agents return `stopped` with host/origin; a newer exclusive replacement returns `unavailable`. Unsupported trusted-proxy auth, admin scopes/device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header/device-auth settings return `unsupported` with the target.
+With a selected version, OCC derives its native target. Non-running Agents return `stopped` with host/origin; a newer exclusive replacement returns `unavailable`. Unsupported trusted-proxy auth, machine admin grants/device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header/device-auth settings return `unsupported` with the target.
 
 Then the selected Compute Driver's `id` and `implementation` must match `revision.compute`. Selection changes do not migrate versions. A mismatch raises status `503 DEPENDENCY_UNAVAILABLE` before endpoint/key/transport. Matching ownership proceeds to endpoint validation; a missing or unclean private `wss:` endpoint returns `unsupported`. Only `available` carries `gatewayBase`, which `nativeAdminAvailabilityData` omits from browser responses.
 
@@ -144,6 +176,10 @@ Agent origin cannot expose console or controller routes. OCC authenticates the
 shared session, resolves the IAM identity and exact Agent, requires `administer`,
 then checks the selected version and native configuration. An attributable IAM
 denial records the human and Agent in the denial audit.
+Admission owns one audit attempt per such denial, also when it arrives after the
+five-second admission wait, a client disconnect or the shutdown wait. A timely HTTP
+denial waits for its append before returning `403`; a failed append or admission
+timeout returns `503`.
 
 Without a valid session, a user-activated, top-level HTML GET to `/`,
 `/chat/main`, or `/chat/main/<32 hex digits>` gets a `302` to the configured
@@ -172,11 +208,16 @@ The HTTP proxy validates and normalizes the request URL, which must not exceed 4
 
 `apps/controller/src/http/native-admin.ts:handleNativeAdminUpgrade`
 
-The API process intercepts `upgrade` before Fastify routing. It accepts only derived Agent hosts and tracks active sockets so `preClose` destroys them during shutdown. Before awaiting shared-session and exact-Agent admission, it handles client socket errors; a TCP reset during admission therefore does not raise an uncaught socket error. An exact-Agent authorization denial still records its attributable audit after a reset. An allowed admission checks whether the client socket was destroyed before and after resolving the private transport context, so a disconnected client does not open a gateway connection. A connected client proceeds with the selected version.
+The API process intercepts `upgrade` before Fastify routing. It accepts only derived Agent hosts and tracks active sockets so `preClose` destroys them during shutdown. Before awaiting shared-session and exact-Agent admission, it handles client socket errors; a TCP reset during admission therefore does not raise an uncaught socket error. A refused socket closes without waiting for its denial audit, which still runs after a reset. An allowed admission checks for client destruction and shutdown before and after resolving the private transport context, so late success cannot open a gateway connection. A connected client proceeds with the selected version.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminWebSocket`
 
-The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitized upgrade request to the private `https:` gateway base, and only connects the browser after the upstream returns `101`. `onConnect` appends `openclaw.agents.native_admin.websocket.connect`; `onClose` appends `openclaw.agents.native_admin.websocket.close`. The `websocket.connect` audit record includes `connectionId`; the matching `websocket.close` audit record reuses that `connectionId` and includes `closeReason`, whose value distinguishes lifecycle, revocation, dependency, client, upstream, and shutdown paths. A timer rechecks the shared-session admission path every 25 seconds, with each check subject to a five-second timeout. Failed, denied, timed-out, or version-changed lease checks close both sockets and preserve the IAM denial audit when authorization is the reason. An authorized reconnect uses the selected version. Native chat does not renew the OCE session.
+The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitized upgrade request to the private `https:` gateway base, and only connects the browser after the upstream returns `101`. `onConnect` appends `openclaw.agents.native_admin.websocket.connect`; `onClose` appends `openclaw.agents.native_admin.websocket.close`. The `websocket.connect` audit record includes `connectionId`; the matching `websocket.close` audit record reuses that `connectionId` and includes `closeReason`, whose value distinguishes lifecycle, revocation, dependency, client, upstream, and shutdown paths. A timer rechecks the shared-session admission path every 25 seconds, with each check subject to a five-second timeout. Failed, denied, timed-out, or version-changed lease checks close both sockets. Denial closure does not wait for the append; a late attributable lease denial still gets its single audit attempt. An authorized reconnect uses the selected version. Native chat does not renew the OCE session.
+
+Admission and close audits share one five-second shutdown drain. Work still pending
+afterwards logs `native_admin.pending_work_unresolved` with its count and keeps its
+audit attempt while the process lives. The drain neither cancels producers nor
+guarantees durable delivery; process exit can prevent or interrupt an audit attempt.
 
 ### 8. Runtime renders HTML on a separate origin
 
@@ -210,10 +251,7 @@ admin Configuration remains Pod-local.
 ## Debugging and Verification
 
 - `AGENT_NATIVE_ADMIN_INVALID` at startup points to native admin enablement, the Agent domain, or a missing shared cookie domain. A bad shared cookie domain or public origin reports `AUTH_BASE_URL_INVALID`, short auth secret material `AUTH_SECRET_INVALID`, and a missing gateway API key path `GATEWAY_API_KEY_UNAVAILABLE`.
-- `disabled` means the Installation has not enabled the feature.
-- `stopped` means the exact Agent is not desired running. Its response has no origin or version after stop reconciliation clears the selected version, or before the first deployment.
-- `unavailable` means a desired-running Agent has no selected version, or a newer version on a Compute Driver with `requiresStoppedPredecessors` has stopped the active workload. If replacement fails, the old version remains selected without a workload.
-- `unsupported` means the selected Compute Driver, gateway endpoint, or native trusted-proxy/control UI configuration cannot support the selected version.
+- For `disabled`, `stopped`, `unavailable`, and `unsupported`, use the [availability status definitions](../reference/agent-native-admin.md#authorization-and-availability). A failed replacement can leave the previous version selected without a workload.
 - Wrong or unknown Agent hosts fail before gateway proxying. Check the derived host calculation, Agent lifecycle state, and `agentNativeAdmin.domain`.
 - Browser requests contain no native-admin exchange, callback, verifier, or Agent-specific session-cookie traffic.
 - IAM denial audits should appear for attributable denied status checks, proxy admission, and WebSocket lease renewal, with the human principal and exact Agent target preserved.
@@ -236,7 +274,21 @@ admin Configuration remains Pod-local.
 
 ## Changelog
 
+- 2026-11-02 09:55: Shorten provisioning prose and link shared status definitions after rebasing. (authoring-run/275c0d0a-d040-47d3-9e52-47ff86b87ab9 - 393b1585e4b10a3232abf10c60b766d8e55d85ce)
+
+- 2026-10-28 19:58: Document how managed deployments supply read-only configuration guidance. (codex/01a1558e-c27f-7bc0-a403-af59e9364ddf - aa352e92bcdc7cab58364c692a01042c5e459db0)
+- 2026-10-28 12:08: Preserve current native UI navigation and human identity grants during the main refresh. (authoring-run/bafb2708-241b-4261-ab93-1df07dbe94fc - 19c62e378cce0658dff99f5a2d264669a48fc5c6)
+
+- 2026-10-27 11:18: Added creation-time native admin preparation before the first deployment. (authoring-run/5809f10b-3a85-4a0a-8cce-2d3ba6714791 - b91dc40eaaa6e5d29759f5cf4e9dada5a36be86e)
+- 2026-10-27 09:30: Document direct Open Agent UI navigation and availability recovery. Accompanying uncommitted changes. (authoring-run/f3434faa-8624-4f34-83a2-521047f80329 - 24a35dff22e1efb2a9b7058f5c90d6d9e2f9caf7)
+- 2026-10-27 01:52: Preserve current socket-admission behavior while integrating human Gateway grants. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - d56aaf212)
+
+- 2026-10-26 22:00: Close refused sockets and denied leases before their denial audit settles; track admission through its audit attempt and bound the shutdown drain. (wf-land-1707 - #1707)
 - 2026-10-26 01:00: A JSON `administer` denial names the grant, not the Agent.
+- 2026-10-25 16:40: Preserve current native-admin flow and identity-grant eligibility while rebasing. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - e1c6288c28b8dcc62926e44ba43f8edd945dfcd1)
+
+- 2026-10-15 21:41: Allowed narrow device enrollment with machine admin grants. (authoring-run/4a439216-a1ba-4628-b96e-660a9db92d59 - e03429ce3d889b0ac07fedad801aacacc3498a6a)
+
 - 2026-10-25 12:00: Skip the status read when the permission answer denies `administer`.
 - 2026-10-24 23:25: Documented the authenticated browser 403 Agents link.
 - 2026-10-20 14:54: Extract persistence repair; trim repeated prose. (agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c - 1ce18eeea10c83c856c8c08f6b0815e4b39308e0)

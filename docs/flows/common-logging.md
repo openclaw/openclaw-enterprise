@@ -1,16 +1,15 @@
 ---
 created: 2026-09-02
-updated: 2026-10-23
-last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
+updated: 2026-10-31
+last_updated_session: authoring-run/71d9343b-72da-449a-8e8a-a55be95876c7
 ---
 
 # Common Operational Logging Flow
 
 ## Overview
 
-Trusted startup configuration selects the OCC logging level. Authorized Agent
-deployment freezes runtime logging in an immutable Agent revision. Optional
-Collectors export reviewed operational records; PostgreSQL audit remains separate
+Trusted startup configuration selects the OCC logging level. At deployment, OCC
+saves the runtime logging settings in the Agent revision. Optional Collectors export reviewed operational records; PostgreSQL audit remains separate
 durable evidence.
 
 ## Entry Points
@@ -35,7 +34,7 @@ graph TD
     B --> E["Authorized Agent deployment starts"]
     E --> F["Sandbox may transform a Configuration copy"]
     F --> G["Admission stamps platform-owned native logging fields"]
-    G --> H["Persist immutable Agent revision"]
+    G --> H["Save logging settings in the Agent revision"]
   end
 
   subgraph Runtime["Managed runtime"]
@@ -116,7 +115,7 @@ Configuration. Deployment stamps native fields before validation: matching
 `logging.level` and `logging.consoleLevel`, JSON console style, and
 `diagnostics.otel.logs=false`. It drops the retired `logging.redactSensitive` key.
 Runtime code owns console and tool redaction. The source Configuration is unchanged;
-the immutable Agent revision retains the admitted policy across restarts and later edits.
+the Agent revision retains the admitted policy across restarts and later edits.
 
 <a id="4-compute-renders-settings-from-the-revision" class="anchor-alias"></a>
 
@@ -192,6 +191,10 @@ failed phase's cause as `occ.code`, such as `PLUGIN_NOT_IN_CATALOG`), and
 non-`READY` probe is WARN, so a startup failure's cause reaches the backend.
 `runtime.gateway_settings_overridden` is WARN with no attributes: the names of
 the replaced owner settings stay in `occ agent logs`.
+`runtime.protected_startup` is INFO and keeps its SHA-256 identity as `occ.startup.hash`.
+`worker.openshell-git-continuity-refused` keeps `occ.check`, a SHA-256
+`occ.continuity.key_hash`, and `occ.continuity.result`: a boolean, a count from
+0 to 2,147,483,647, or the fixed value `invalid`. Other values are discarded.
 Kubernetes resources drop the `latest` image tag that metadata extraction reports
 for a digest-only image. For retained records it keeps allowlisted
 attributes and replaces the body with the event name, stripping arbitrary content;
@@ -238,8 +241,11 @@ Compute Driver refused a provisioning plan for a reason the caller cannot fix) k
 of an API `503 DEPENDENCY_UNAVAILABLE`, whose response keeps generic text) keeps only
 `request.id`; its route, error class, message and causes stay in the API's local log.
 `native_admin.websocket_audit_failed`
-keeps the Namespace, Agent and Agent revision IDs, and `native_admin.websocket_denial_audit_failed`
-carries none. `native_admin.compute_owner_mismatch` (native admin refused because the selected version belongs to another Compute Driver) keeps the same three IDs; the Driver IDs and
+keeps the Namespace, Agent and Agent revision IDs. `native_admin.http_denial_audit_failed`
+and `native_admin.websocket_denial_audit_failed` carry no request, user, error or payload
+fields. `native_admin.pending_work_unresolved` keeps only its nonnegative safe-integer
+count as `occ.native_admin.pending`; invalid counts are omitted.
+`native_admin.compute_owner_mismatch` (native admin refused because the selected version belongs to another Compute Driver) keeps the Namespace, Agent and Agent revision IDs; the Driver IDs and
 implementations stay local. `authentication.activation-warning`, `authentication.password-sign-in-warning`
 and `authentication.recovery-seed-warning` keep at most `occ.code`; account IDs and
 messages stay local.
@@ -313,6 +319,10 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31 04:17: Export bounded continuity comparisons and startup hashes. (authoring-run/71d9343b-72da-449a-8e8a-a55be95876c7 - 370dc4d10297a81fbb18f850500dc945bc7925d5)
+
+- 2026-10-26 22:00: Export `native_admin.http_denial_audit_failed` and `native_admin.pending_work_unresolved` (bounded count only); both denial-audit failure events drop caller context. (wf-land-1707 - #1707)
 
 - 2026-10-23 21:00: Log `worker.repository-delivery-pending` when delivery starts failing, then at most once a minute, not on every one-second retry. (fix-2251)
 

@@ -37,14 +37,21 @@ details with the error; it does not reduce them to a generic Driver refusal.
 User editing is disabled by default. Enabling or disabling
 `Agent.sandboxPolicyEditing` requires both Installation and exact-Agent
 `administer`. Changing additions or requesting live application requires exact-Agent
-`manage_policy` and exact-SandboxPolicy `update`. Reads require `read` on both
-resources. Ordinary Agent `update` does not authorize these operations.
+`manage_policy` and exact-SandboxPolicy `update`. Live application also requires
+SandboxPolicy `read`: it admits and returns the saved additions. When saved
+additions exist, Agent deploy and an Agent update that leaves repository bindings
+also require SandboxPolicy `read` before any refusal that names them. Reads require
+`read` on both resources. Ordinary Agent `update` does not authorize these operations.
 The editing switch is temporary until the platform Guardrails primitive owns
 these restrictions. Its controller and HTTP operation are named
 `TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing`; callers must
 expect this API to change when Guardrails replaces it.
 Disabling editing preserves approved additions and previously admitted work.
 Revocation requires an explicit policy change or Agent shutdown.
+Without per-Agent network policy support, enabling editing returns HTTP 409;
+disabling it stays allowed. When the Installation selects no Sandbox Driver,
+validate, save and apply return the same 409 right after authorization. Policy GET
+then returns `capability: null` and the cause in `unavailableReason`.
 
 The trusted startup field `sandboxNetworkPolicyCeiling` bounds additions in both
 the API and worker. Each entry has `id`, an exact absolute `binary` path, a DNS
@@ -83,7 +90,7 @@ Restrictions are removed with their policy.
 
 Saving additions requires `expectedVersion` and advances the desired policy
 version. It performs no provider mutation. Deploy explicitly to freeze selected
-Driver defaults and approved additions into a new immutable AgentRevision;
+Driver defaults and approved additions into a new AgentRevision;
 deployment retains its usual authorization and interruption behavior.
 In the Console, **Save and apply to current revision** proceeds to application
 only when the save response identifies this policy, its next version, and the
@@ -123,6 +130,10 @@ that policy, and the worker does not send it again:
 
 The last
 confirmed live version remains recorded separately when desired additions change.
+Policy GET returns the running revision as `defaultsRevisionId` and the saved
+policy version it was deployed with as `deployedPolicyVersion`. When that version
+is the saved version and no application targets that revision, the Sandbox
+enforces the saved rules without live application. The console shows **Deployed**.
 Revision snapshots and attributable audit evidence preserve the original admission.
 The console shows read-only defaults from the running revision, or the selected
 Driver before deployment, separately from the delegation ceiling and additions.

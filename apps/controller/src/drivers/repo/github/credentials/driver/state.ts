@@ -31,10 +31,9 @@ export function sameAuthority(a: AuthorityIdentity, b: AuthorityIdentity): boole
 }
 
 interface CredentialRecord {
-  expiresAt: number | undefined;
+  expiresAt: number;
   observedWall: number;
   observedMono: number;
-  accepted: boolean;
 }
 
 export interface GitHubDriverState extends Pick<RepositoryBackend, "finalize" | "settle" | "plan"> {

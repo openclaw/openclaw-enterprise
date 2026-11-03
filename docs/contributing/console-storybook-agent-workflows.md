@@ -53,6 +53,9 @@ tokens (Credentials tab and Channels drawer). See
 [Create and deploy in the console](../reference/console/create-and-deploy.md)
 for the supported installation workflow, prerequisites, and Teams deployment limits.
 
+The [repository collaborator walkthrough](../../scripts/console-storybook/repository-access-workflow.md)
+covers new selections, saved access during discovery, and explicit Read-only overrides.
+
 Repository previews cover access levels, empty or pending discovery, unavailable
 choices, denied or unverified authorization, and reselection after a rejected save.
 In **Locale-stable repository search**, search `ibm`, select `acme/platform`, and
@@ -213,9 +216,18 @@ Browsing never deploys. Deploy credential changes; workspace edits apply immedia
 Native JSON omits Agent-owned Backend and execution mode. See [versions and Slack
 sender access](../reference/console/versions-and-channel-drafts.md).
 
+In **Collaboration and safety**, Strict mode stages both locked-down values in the
+Configuration JSON and keeps focus; the viewer story shows every toggle unavailable.
+None proves a deployed Gateway's steering.
+
 In **Enable gateway password access**, Cancel discards the staged reference.
 To apply it, save Configuration, then deploy. Compare configured, save-denied,
-and save-in-progress stories; none proves credential delivery or login.
+and save-in-progress stories; none proves credential delivery or login. The
+unreadable-reference story shows a saved reference without a provider: the
+refusal, the button and a disabled **Deploy new version**. The refused-alias
+story shows an upper-case `secrets.defaults.env`: the alias refusal, no button
+and a disabled **Deploy new version**. The allowlist story shows a default env
+alias whose `allowlist` omits the variable: the reason and no button.
 
 ## Stop
 

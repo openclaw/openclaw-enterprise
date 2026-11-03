@@ -59,19 +59,19 @@ export async function selfSigned(
   };
 }
 
-// A CA and a server leaf it signed, in `directory` as ca-key.pem, ca.pem, key.pem and
-// cert.pem. `run(command, args)` runs openssl; pass one to apply the caller's subprocess
-// policy (timeouts, logging). Callers own the files, including removing the CA key.
-export async function caAndLeaf(
+// A CA in `directory` as ca-key.pem and ca.pem. `run(command, args)` runs openssl; pass
+// one to apply the caller's subprocess policy (timeouts, logging). Callers own the files,
+// including removing the CA key.
+export async function certificateAuthority(
   directory,
-  { caName, commonName, subjectAltName, caKeyPem, leafKeyPem, days = 2, run = execute },
+  { caName, caKeyPem, days = 2, run = execute },
 ) {
-  const file = (name) => join(directory, name);
-  const caKey = await keyArguments(file("ca-key.pem"), caKeyPem);
+  const caPath = join(directory, "ca.pem");
+  const caKeyPath = join(directory, "ca-key.pem");
   await run("openssl", [
     "req",
     "-x509",
-    ...caKey,
+    ...(await keyArguments(caKeyPath, caKeyPem)),
     "-days",
     String(days),
     "-subj",
@@ -81,23 +81,33 @@ export async function caAndLeaf(
     "-addext",
     "keyUsage=critical,keyCertSign",
     "-out",
-    file("ca.pem"),
+    caPath,
   ]);
+  return { caPath, caKeyPath };
+}
+
+// Writes the leaf key, CSR, extensions and certificate at `paths` and signs it with `ca`.
+// `subjectAltName` is left out when unset; `usage` is the extended key usage.
+async function issueLeaf(
+  paths,
+  { caPath, caKeyPath },
+  { subject, subjectAltName, usage, keyPem, days, run },
+) {
   await run("openssl", [
     "req",
     "-new",
-    ...(await keyArguments(file("key.pem"), leafKeyPem)),
+    ...(await keyArguments(paths.key, keyPem)),
     "-subj",
-    `/CN=${commonName}`,
+    subject,
     "-out",
-    file("leaf.csr"),
+    paths.csr,
   ]);
   await writeFile(
-    file("leaf.ext"),
+    paths.ext,
     [
-      `subjectAltName=${subjectAltName}`,
+      ...(subjectAltName === undefined ? [] : [`subjectAltName=${subjectAltName}`]),
       "basicConstraints=critical,CA:FALSE",
-      "extendedKeyUsage=serverAuth",
+      `extendedKeyUsage=${usage}`,
       "keyUsage=critical,digitalSignature,keyEncipherment",
       "",
     ].join("\n"),
@@ -106,23 +116,70 @@ export async function caAndLeaf(
     "x509",
     "-req",
     "-in",
-    file("leaf.csr"),
+    paths.csr,
     "-CA",
-    file("ca.pem"),
+    caPath,
     "-CAkey",
-    file("ca-key.pem"),
+    caKeyPath,
     "-CAcreateserial",
     "-days",
     String(days),
     "-extfile",
-    file("leaf.ext"),
+    paths.ext,
     "-out",
-    file("cert.pem"),
+    paths.cert,
   ]);
+}
+
+// A leaf signed by `ca` (from certificateAuthority), in `directory` as <name>.key and
+// <name>.crt. `subject` defaults to `/CN=<commonName>`; `usage` is serverAuth or
+// clientAuth. Returns the PEM texts and their paths.
+export async function signedLeaf(
+  directory,
+  ca,
+  {
+    name,
+    commonName,
+    subject = `/CN=${commonName}`,
+    subjectAltName,
+    usage = "serverAuth",
+    keyPem,
+    days = 2,
+    run = execute,
+  },
+) {
+  const file = (suffix) => join(directory, `${name}.${suffix}`);
+  const paths = { key: file("key"), csr: file("csr"), ext: file("ext"), cert: file("crt") };
+  await issueLeaf(paths, ca, { subject, subjectAltName, usage, keyPem, days, run });
   return {
-    caPath: file("ca.pem"),
-    caKeyPath: file("ca-key.pem"),
-    keyPath: file("key.pem"),
-    certPath: file("cert.pem"),
+    key: await readFile(paths.key, "utf8"),
+    cert: await readFile(paths.cert, "utf8"),
+    keyPath: paths.key,
+    certPath: paths.cert,
   };
+}
+
+// A CA and a server leaf it signed, in `directory` as ca-key.pem, ca.pem, key.pem and
+// cert.pem. `run` and file ownership as for certificateAuthority.
+export async function caAndLeaf(
+  directory,
+  { caName, commonName, subject, subjectAltName, caKeyPem, leafKeyPem, days = 2, run = execute },
+) {
+  const file = (name) => join(directory, name);
+  const ca = await certificateAuthority(directory, { caName, caKeyPem, days, run });
+  const paths = {
+    key: file("key.pem"),
+    csr: file("leaf.csr"),
+    ext: file("leaf.ext"),
+    cert: file("cert.pem"),
+  };
+  await issueLeaf(paths, ca, {
+    subject: subject ?? `/CN=${commonName}`,
+    subjectAltName,
+    usage: "serverAuth",
+    keyPem: leafKeyPem,
+    days,
+    run,
+  });
+  return { ...ca, keyPath: paths.key, certPath: paths.cert };
 }

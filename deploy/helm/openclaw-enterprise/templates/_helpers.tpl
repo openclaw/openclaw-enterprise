@@ -368,9 +368,10 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.database.port))) (gt (int .Values.database.port) 65535) -}}
 {{- fail "database.port must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
-{{- /* The server reads OCC_PORT with decimal Number(); Kubernetes YAML reads an unquoted leading zero as octal. Sprig int returns 0 past int64, and this check used to treat that 0 as in range, then emit the original digits. */ -}}
-{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.api.port))) (gt (int .Values.api.port) 65535) -}}
-{{- fail "api.port must be an integer TCP port from 1 to 65535" -}}
+{{- /* The server reads OCC_PORT with decimal Number(); Kubernetes YAML reads an unquoted leading zero as octal. Sprig int returns 0 past int64, and this check used to treat that 0 as in range, then emit the original digits.
+     The API runs as UID 1000 without capabilities, so a port below 1024 fails to bind where the runtime keeps privileged ports. */ -}}
+{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.api.port))) (lt (int .Values.api.port) 1024) (gt (int .Values.api.port) 65535) -}}
+{{- fail "api.port must be an integer TCP port from 1024 to 65535: the API runs as a non-root user without capabilities" -}}
 {{- end -}}
 {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.cluster.port))) (gt (int .Values.cluster.port) 65535) -}}
 {{- fail "cluster.port must be an integer TCP port from 1 to 65535" -}}
@@ -552,8 +553,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (gt (len $proxy.serviceName) 63) (not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $proxy.serviceName)) -}}
 {{- fail "slackProxy.serviceName must be a DNS-1035 Service name" -}}
 {{- end -}}
-{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $proxy.port))) (lt (int $proxy.port) 1) (gt (int $proxy.port) 65535) -}}
-{{- fail "slackProxy.port must be an integer TCP port from 1 to 65535" -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $proxy.port))) (lt (int $proxy.port) 1024) (gt (int $proxy.port) 65535) -}}
+{{- fail "slackProxy.port must be an integer TCP port from 1024 to 65535: the proxy runs as a non-root user without capabilities" -}}
 {{- end -}}
 {{- include "openclaw.resourceRequirements" (dict "name" "slackProxy.resources" "requirements" $proxy.resources) -}}
 {{- end -}}

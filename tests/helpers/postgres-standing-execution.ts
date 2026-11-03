@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import type { GitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import type { Pool } from "pg";
 import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
@@ -63,13 +62,8 @@ export async function standingExecutionFixture(
     } as const);
   const driver = new GitHubRepositoryPolicy(
     {
-      id: registry.backendId,
-      client: external?.protectedDriver
-        ? undefined
-        : new UnixRepositoryCredentialControlClient({
-            controlSocket: external?.controlSocket ?? "/unused-execution-contract/control.sock",
-          }),
-      drivers: { repo: registry.backendId },
+      driverId: external?.backendId ?? "execution-proof",
+      backendId: external?.backendId ?? "execution-proof",
     },
     registry,
     { sessionDurationSeconds: 120 },
@@ -195,6 +189,7 @@ export async function standingExecutionPlatform(
   t: TestContext,
   testUrl: string,
   driverSelections: Partial<InstallationStartupConfiguration["drivers"]> = {},
+  backends: import("../../packages/contracts/src/index.ts").BackendDefinition[] = [],
 ) {
   await ensurePostgresAgentBootstrap(t, {
     label: "standing-execution",
@@ -212,6 +207,6 @@ export async function standingExecutionPlatform(
       }
     }
   });
-  const setupOptions = { database, leaseDurationMs: 30_000, driverSelections };
+  const setupOptions = { database, leaseDurationMs: 30_000, driverSelections, backends };
   return createWorkerRevisionFixtures(testUrl).setup(t, setupOptions);
 }

@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
@@ -168,6 +169,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     configurationId: "configuration-repository-material",
     configurationKind: "agent",
     configurationGeneration: 1,
+    gatewayManagedMode: true,
     configuration: {
       gateway: {
         // Kubernetes renders lan for an omitted bind; this admitted document already is.
@@ -2037,6 +2039,7 @@ test("a repository-access Sandbox revision stops, retires and is deleted without
       id: "openshell-sandbox",
       implementation: "openshell",
       capability: "sandbox",
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
       facets: ["networking", "filesystem", "process"],
       repositoryAccess: openShellRepositoryAccess(
         {

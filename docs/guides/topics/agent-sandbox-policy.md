@@ -3,11 +3,14 @@
 Open an Agent in the OCE console, select its running version, and choose
 **Policy denials**. You need the Agent's existing Sandbox log permissions to see
 observed denials. A version that runs without a Sandbox records none, and the tab
-says so. Policy reads and changes have independent permissions; see the
+says so. On an Installation that selects no Sandbox Driver, the tab says that
+instead, and policy changes, including turning editing on, are refused. Policy reads and changes have independent permissions; see the
 [policy reference](../../reference/sandbox-policies.md).
 
 1. Check the **Network policy** card above the log. **Policy details** shows saved
-   and confirmed live versions and read-only Installation defaults. **View network
+   and confirmed live versions and read-only Installation defaults. **Deployed**
+   means the version runs the saved policy it was deployed with and no live change
+   was requested. **View network
    limits** opens the Installation ceiling, which grants no access by itself.
    Suggestions are untrusted candidates. The card shows three at a time; **Show all**
    expands the list. Expand **Full executable path** before reviewing a suggestion.
@@ -59,8 +62,10 @@ error identifies the saved version. Refresh and inspect the current revision
 before retrying application; the saved change has not been rolled back.
 
 An administrator must first enable editing for the Agent and separately grant
-exact-Agent `manage_policy` and exact-SandboxPolicy `update`. Enabling editing
-alone grants neither permission. The ordinary editor cannot alter Installation
+exact-Agent `manage_policy` and exact-SandboxPolicy `update`. Viewing the policy
+and live application also need exact-SandboxPolicy `read`, as do deploying and
+updating an Agent with a repository binding while it has saved grants. Enabling editing
+alone grants none of these permissions. The ordinary editor cannot alter Installation
 or generated rules. Disabling editing preserves approved grants. To remove
 access, re-enable editing if needed, remove the addition, and apply or deploy it.
 

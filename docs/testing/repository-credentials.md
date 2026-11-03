@@ -22,7 +22,7 @@ node --test tests/integration/repository-credentials-git.test.mjs \
   tests/integration/repository-credentials-service-loss.test.mjs
 ```
 
-The source Git tests require a `node:24-bookworm` image and `gh` **2.100.0**
+The source Git tests require a `node:24-bookworm` image and `gh` **2.103.2**
 at `/usr/bin/gh`. Override these with `REPOSITORY_CREDENTIALS_NODE_IMAGE` and
 `REPOSITORY_CREDENTIALS_GH_BINARY`. Missing prerequisites fail the tests. The
 fixtures use a controlled provider and verified TLS; they do not prove live GitHub
@@ -93,7 +93,7 @@ a running Kubernetes Pod or model turn.
 
 ```sh
 pnpm credentials:build
-node --test tests/integration/repository-credentials-package.test.mjs
+node --test tests/integration/repository-credentials-package.test.ts
 ```
 
 This verifies the emitted service and client without workspace source or runtime
@@ -108,7 +108,8 @@ docker build --builder default --load --pull=false \
   -f tests/fixtures/repository-credentials/Dockerfile.qualification \
   -t repository-credentials-qualification:test .
 REPOSITORY_CREDENTIALS_TEST_IMAGE=repository-credentials-qualification:test \
-  node --test tests/integration/repository-credentials-container.test.mjs
+  node --test tests/integration/repository-credentials-container.test.mjs \
+    tests/integration/repository-credentials-gh.test.mjs
 ```
 
 The combined suite runs the emitted service/client cases, native Git paths, pinned
@@ -159,6 +160,34 @@ uses a dedicated Codex Agent in a fresh installation with controlled private Git
 Its authorized run proves the packaged sender in a real cluster; it is separate from ordinary CI.
 The PostgreSQL tests cover receipt recovery and no-replay behavior, while the runtime image tests
 cover stock Codex and generated client material. These checks do not replace the installed lane.
+
+To bind its receipt to a [selected OCE release](../guides/deploy/production-upgrade.md#prepare-the-release),
+prepare an independent JSON control file with `sourceSha` (the full OCE checkout SHA)
+and `images.controller`, `images.runtime`, and `images.repository` (the broker), each
+an immutable `sha256:<64 lowercase hex characters>` built manifest digest. Obtain
+these expected values from the release selection, not from the receipt being checked.
+From that release checkout, run:
+
+```sh
+node scripts/ci/run-tests.mjs aggregate skipper-prepared-git-installed \
+  --results-dir /path/to/results --release-selection /path/to/release.json
+```
+
+The consumer requires the selected SHA, all three built digests, recorded imported
+manifest and config digests, the complete chat/Git/withdrawal journey, and successful
+test and cluster cleanup. Missing control, release fields or proof fails qualification;
+a generic runner summary is insufficient. Success adds `releaseQualification` to the
+aggregate. Without `--release-selection`, normal smoke aggregation remains unchanged
+and does not qualify a selected release.
+
+The prepared runtime includes an added synthetic-model CA trust layer. Its recorded
+runtime digest identifies **that prepared image**, not the underlying stock or published
+runtime image. Qualification applies only to the exact selected digest set under
+`checkout-images-with-synthetic-model-trust-layer`; it cannot establish qualification
+of a different published image set, even at the same OCE commit.
+
+Run `node --test tests/integration/skipper-release.test.ts` for positive and adverse
+offline checks through the actual aggregate CLI. They do not execute an installed journey.
 
 ## Controller and broker image compatibility probe
 

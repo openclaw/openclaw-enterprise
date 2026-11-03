@@ -2,22 +2,23 @@
 
 This page is part of the [Kubernetes storage and credentials](storage-and-credentials.md) reference.
 
-Ordinary runtime gateways read the managed ConfigMap at
-`/etc/openclaw/openclaw.json`. Native admin editing uses a writable copy only
-when runtime gateway images and private `gatewayRouting` are configured and
-the saved native Configuration explicitly enables the pilot shape:
+With [Gateway managed mode](../../agent-native-admin.md#gateway-managed-mode) off,
+Kubernetes gives the Gateway a writable copy of its native configuration.
+With managed mode on, Kubernetes creates that copy only when the deployment uses
+runtime Gateway images and private `gatewayRouting`, and the saved Configuration
+meets the following native admin requirements.
 
 - Trusted-proxy authentication accepts `x-occ-identity: occ-workspace-files`
   with `operator.admin` identity scopes.
-- Trusted-proxy device auto-approval is enabled with `operator.admin` scope.
+- Trusted-proxy device auto-approval is enabled; the machine identity grant supplies administrator authority independently of device scopes.
 - `controlUi.enabled` is true and `controlUi.allowedOrigins` is nonempty.
 - Dangerous device-auth disabling and host-header origin fallback are disabled.
 
 For those gateways, the managed ConfigMap remains read-only at
 `/etc/openclaw-managed/openclaw.json`. The nonroot init container copies it to
 `/home/node/.openclaw/openclaw.json` on the Pod-local `emptyDir`, and
-`OPENCLAW_CONFIG_PATH` points to that writable copy. Gateways without the full
-opt-in shape, including ordinary routed gateways, keep the read-only path.
+`OPENCLAW_CONFIG_PATH` points to that writable copy. Other managed Gateways read the ConfigMap directly at
+`/etc/openclaw/openclaw.json`.
 
 Native edits change only the copy; Pod replacement or Agent redeployment
 restores the managed snapshot, while the persistent gateway and workspace claims
@@ -28,3 +29,32 @@ edits remain refused. Pod replacement clears copy/provenance.
 Edits stay outside OCE Configuration and AgentRevisions; see
 the [native admin feature boundary](../../agent-native-admin.md#native-authority-and-drift)
 and [deployment procedure](../../../guides/deploy/native-admin.md).
+
+## Configuration OpenClaw refuses at startup
+
+When an embedded or dedicated Gateway starts, OpenClaw checks every setting. This
+includes the `config` of each plugin entry, even a disabled or denied plugin,
+against that plugin's schema. One failure stops the Gateway. When the Gateway
+exits before it first serves, its wrapper runs `openclaw config validate`. If that
+reports the configuration invalid, the wrapper holds the failed check
+`gateway-config` (code `UNAVAILABLE`) instead of restarting, and the worker fails
+the deployment with `RUNTIME_STARTUP_FAILED` within seconds. The Gateway log
+names up to five setting paths, with OpenClaw's schema message where it gives
+one, and never their values. Fix or remove those settings, then deploy a new
+version. A dedicated Gateway validates its configuration before OpenClaw starts.
+It holds `gateway-config` the same way when no invalid setting belongs to its
+[Gateway tool policy](../../configuration.md#gateway-tool-policy), and
+`gateway-tool-policy` otherwise.
+
+## Custom Codex provider capabilities
+
+`runtime.codexModelSupportsStandaloneWebSearch` defaults to false. Set it to true
+only when the explicit `runtime.codexModelBaseUrl` supports Codex's standalone
+web-search protocol. True without that endpoint or a nonboolean value is rejected.
+
+For dedicated Codex API-key authentication, OCE writes
+`supports_standalone_web_search = true` under the existing custom provider in
+Codex's user configuration. Account logins, other Harnesses, and protected
+credential-source endpoints ignore this declaration. Protected `providerTools: none`
+still disables web search. The option does not grant network access or validate
+endpoint support. Deploy a new Agent revision to apply a changed declaration.

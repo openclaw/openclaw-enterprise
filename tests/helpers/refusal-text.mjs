@@ -31,9 +31,19 @@ export const NAMESPACE_CREATE_DENIED =
   "Not authorized: this needs Namespace create. Only an Installation administrator can create Namespaces: ask one to create it.";
 export const INSTALLATION_ADMINISTER_DENIED =
   "Not authorized: this needs Installation administer. Ask an Installation administrator to do it for you or to grant it.";
+// An Agent create or update whose gatewayManagedMode alone needs Installation administer names the
+// field (finding 2691).
+export const GATEWAY_MANAGED_MODE_DENIED =
+  "Not authorized: changing gatewayManagedMode needs Installation administer. Omit it, or ask an Installation administrator to change it.";
 // The native admin host names the grant but no Agent: the host, not the caller, names the Agent.
 export const NATIVE_ADMIN_DENIED =
   "Not authorized: opening this Agent's native admin UI needs Agent administer on it. Ask an Installation administrator to grant it.";
+// An IAM AccessBinding subject that is an email, and one that is no eligible principal: an unknown
+// ID gets the same answer as an ineligible one (finding D753).
+export const BINDING_SUBJECT_EMAIL =
+  "The IAM AccessBinding subject is an email address, not a principal ID. Use the person's principalId (prn_…): creating their account returns it; see the IAM guide.";
+export const BINDING_SUBJECT_INELIGIBLE =
+  "The IAM AccessBinding subject must be a human Principal, a non-Agent ServicePrincipal of this Namespace, or the ServicePrincipal of a live Agent here.";
 export const DEPENDENCY_UNAVAILABLE = "A required platform dependency is unavailable.";
 export const RESOURCE_CONFLICT = "The requested platform resource already exists.";
 export const RESOURCE_NOT_FOUND = "The requested platform resource was not found.";
@@ -46,6 +56,10 @@ export const SECRET_NAME_CONFLICT =
   "A Secret with this name already exists in this Namespace. Choose a different name.";
 export const NAMESPACE_NAME_CONFLICT =
   "A Namespace with this name already exists. Choose a different name.";
+export const PRESET_NAME_CONFLICT =
+  "A Preset with this name already exists in this Namespace. Choose a different name.";
+export const SERVICE_ACCOUNT_NAME_CONFLICT =
+  "A ServiceAccount with this name already exists in this Namespace. Choose a different name.";
 // Refusals that once read as the generic 404 or 409 and now say what to change (finding 2536).
 // A credential source field its type's catalog does not list, or a required one that is missing:
 // `field` is the request path, such as "secrets.api_key".
@@ -133,9 +147,9 @@ export const AGENT_CREATE_RESTRICTED =
 // Secrets and Namespaces follow the same rule: Namespace Roles cannot grant people create.
 export const SECRET_CREATE_DENIED =
   "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.";
-// Create Agent for a member whose Installation read and Agent create are both refused (create.mts).
-export const AGENT_CREATE_INSTALLATION_DENIED =
-  "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent.";
+// The same refused Installation read when the Namespace permission read failed (finding 2110).
+export const AGENT_CREATE_PERMISSIONS_UNREAD =
+  "Your permissions in this Namespace could not be checked, and Installation-wide capabilities are not readable with your access. Retry the permission check before creating an Agent.";
 export const CONSOLE_NAMESPACE_CREATE_DENIED =
   "Your access does not include creating Namespaces in this Installation. Only an Installation administrator can create Namespaces: ask one to create a Namespace or to give you access to an existing one.";
 
@@ -159,12 +173,14 @@ export const SECRET_UPDATE_DENIED = notIncluded(
 );
 export const SECRET_DELETE_DENIED = notIncluded("deleting this Secret", "Secret delete on it");
 export const AGENT_DELETE_DENIED = notIncluded("deleting this Agent", "Agent delete on it");
+// A Namespace the reader cannot read, deleted or not shared, in one sentence (finding D753).
+export const NAMESPACE_UNAVAILABLE = "This Namespace is missing or your access does not include it";
 export const AGENT_STOP_AND_DELETE_DENIED = notIncluded(
   "stopping or deleting this Agent",
   "Agent operate and Agent delete on it",
 );
-// Deploy's status line on the draft for a reader without Agent deploy.
-export const AGENT_DEPLOY_NOT_INCLUDED = "Your access does not include deploying this Agent.";
+// Deploy's status line on the draft for a reader without Agent deploy names the grant (D753).
+export const AGENT_DEPLOY_NOT_INCLUDED = notIncluded("deploying this Agent", "Agent deploy on it");
 // The Stop confirmation, on the Agents list and the Agent page, by what the page read of the
 // Agent's version and its latest deployment (apps/controller/src/console/agents/
 // lifecycle-confirmation.mts, finding D691).
@@ -176,6 +192,8 @@ export const STOP_CONFIRMATION = `This interrupts the current runtime gateway an
 export const STOP_FIRST_DEPLOYMENT_CONFIRMATION = `No version is serving yet, so this cancels the deployment in progress. ${STOP_KEEPS}`;
 // No version is selected and the page could not read the latest deployment's outcome.
 export const STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION = `This cancels a deployment in progress or, if a version already started, interrupts its runtime gateway and ends any reply in progress. ${STOP_KEEPS}`;
+// The Agent is already requested to stop: Request Stop again only repeats the request (D815).
+export const STOP_REPEAT_CONFIRMATION = `This Agent is already requested to stop. This sends the stop request again; use it if an earlier stop did not finish. ${STOP_KEEPS}`;
 // The Agent page's Stop row, by whether Stop would cancel a first deployment in progress.
 export const STOP_CANCELS_FIRST_DEPLOYMENT =
   "Cancels the deployment in progress. The Agent stays and can be deployed again.";
@@ -188,9 +206,12 @@ export const NEW_VERSIONS_READ =
 // A request the API refused for lack of a grant: what the reader tried, then the grant to ask for.
 export const permissionRefused = (task, grant) =>
   `You do not have permission to ${task}. ${askForGrant(grant)}`;
-// A refused Stop or Delete names the Agent on the Agents list and "this Agent" on its page.
-export const stopRefused = (name) => permissionRefused(`stop ${name}`, "Agent operate on it");
-export const deleteRefused = (name) => permissionRefused(`delete ${name}`, "Agent delete on it");
+// A refused Stop or Delete names the Agent on the Agents list and "this Agent" on its page, says
+// what was refused, then the reason (finding D753).
+export const stopRefused = (name) =>
+  `Stop was refused: your access does not include stopping ${name}. ${askForGrant("Agent operate on it")}`;
+export const deleteRefused = (name) =>
+  `Deletion was refused: your access does not include deleting ${name}. ${askForGrant("Agent delete on it")}`;
 export const CONFIGURATION_UPDATE_DENIED = notIncluded(
   "editing this Configuration",
   "Configuration update on it",
@@ -207,12 +228,22 @@ export const SANDBOX_POLICY_READ_DENIED = notIncluded(
   "reading this Agent’s network policy or its suggestions",
   "SandboxPolicy read on it",
 );
+// Deploy checks the same read when the policy has saved rules; the Agent page names the policy in
+// words, not by the ID the API's denial gives (finding D801).
+export const DEPLOY_SANDBOX_POLICY_READ_DENIED =
+  "Deploying this Agent needs SandboxPolicy read on its network policy, which your access does not include. Ask an Installation administrator to grant it.";
 // The Logs tab's refusals use the API's grant words for log text (finding 2599).
 export const LOG_TEXT_DENIED =
   "Log text requires Agent read_logs (or Agent administer) on this Agent. Ask an Installation administrator to grant it.";
-// The status refusal names only status: the log pane names read_logs itself (finding D763).
+// The status refusal names only status: the log pane names read_logs itself (finding D763). It
+// names only the grant the caller's answers show missing (finding D753); unknown answers, both.
 export const RUNTIME_STATUS_DENIED =
   "Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Ask an Installation administrator to grant them.";
+export const RUNTIME_STATUS_OPERATE_DENIED =
+  "Runtime status requires Agent operate on this Agent. Ask an Installation administrator to grant it.";
+// A version the page could not read: the strip says so instead of reading status (finding D794).
+export const RUNTIME_STATUS_VERSION_UNREADABLE =
+  "You cannot read this version, so its runtime status is not shown. Ask an Installation administrator for AgentRevision read on it.";
 // A version link the page cannot list may name a version that does not exist: the API answers
 // both alike, so the console says either may be true (finding D750).
 export const VERSION_UNAVAILABLE =
@@ -226,17 +257,43 @@ export const deployAcceptedVersionUnreadable = (version) =>
 export const DEPLOYED_VERSION_UNREADABLE = "You cannot read the version you deployed.";
 export const VERSION_READ_DENIED =
   "Your access does not include this version, so its configuration and deployment outcome are hidden. Ask an Installation administrator for AgentRevision read on it.";
-// A rejected model credential for a caller known to lack Agent update names the grants that fix
-// it and who gives them (finding D750): the failure banner, and the draft's deploy line. A
+// A rejected model credential for a caller whose permission answer denies the Agent update that
+// fixes it names the grant it lacks, the grants that fix it and who gives them (finding D750): the
+// failure banner, the draft's deploy line, the deployment record and the Agents list (D752). A
 // Secret-backed credential can also be replaced in place with Secret update on its Secret.
-const credentialFixGrants = (secretBacked, then) =>
-  secretBacked
-    ? `Replacing its Secret's value needs Secret update on that Secret; choosing another credential needs Agent update on this Agent, which your access does not include. If your access does not include Secret update either, ask an Installation administrator for one of them. Then ${then}.`
-    : `Your access does not include changing it. Ask an Installation administrator for Agent update on this Agent. Then ${then}.`;
-export const modelCredentialRejectedAsk = (secretBacked) =>
-  `The model provider rejected this version's credential (HTTP 401 or 403). ${credentialFixGrants(secretBacked, "deploy a new version")}`;
-export const modelCredentialRejectedReadOnly = (secretBacked) =>
-  `The last deployment's model credential was rejected. ${credentialFixGrants(secretBacked, "deploy again")}`;
+// Deploying needs Agent deploy, and Secret operate on that Secret, unless the answer denies deploy.
+const CREDENTIAL_CHOICE_NEEDS = {
+  update: "Agent update on this Agent, which your access does not include",
+  configurationRead:
+    "Configuration read on this Agent's Configuration, which your access does not include",
+  sources:
+    "operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include",
+  serviceAccount:
+    "operate on each Secret and credential source this Agent and its Configuration bind, and read on the ServiceAccount it uses for Harness authentication; your access does not include all of them",
+};
+const credentialFixGrants = ({ secretBacked, gap, deploy }, then) => {
+  const choose = `another credential needs ${CREDENTIAL_CHOICE_NEEDS[gap]}.`;
+  const fix = secretBacked
+    ? `Replacing its Secret's value needs Secret update on that Secret; choosing ${choose}`
+    : `Choosing ${choose}`;
+  const deploying =
+    deploy === false
+      ? "Deploying needs Agent deploy on this Agent, which your access does not include."
+      : deploy === true
+        ? `Then ${then}${secretBacked ? ", which also needs Secret operate on that Secret" : ""}.`
+        : `Then ${then}, which needs Agent deploy on this Agent${secretBacked ? " and Secret operate on that Secret" : ""}.`;
+  return `${fix} ${deploying} Ask an Installation administrator for whichever of these grants your access does not include.`;
+};
+export const modelCredentialRejectedAsk = (access) =>
+  `The model provider rejected this version's credential (HTTP 401 or 403). ${credentialFixGrants(access, "deploy a new version")}`;
+export const modelCredentialRejectedReadOnly = (access) =>
+  `The last deployment's model credential was rejected. ${credentialFixGrants(access, "deploy again")}`;
+// The recorded failure once the Agent binds another credential than the failed version (D752).
+export const MODEL_CREDENTIAL_REJECTED_REPLACED =
+  "The model provider rejected this version's credential (HTTP 401 or 403). The Agent now uses a different credential, which the next deployment uses.";
+// The API's recorded message for the same failure, which tells everyone to change the credential.
+export const MODEL_CREDENTIAL_REJECTED_RECORDED =
+  "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.";
 // The API has no route to Slack (SlackRouteNotConfiguredError, apps/controller/src/drivers/channel/
 // slack.ts). A member reads who to ask, not Helm keys; the guide lists them (findings D750, D753).
 export const SLACK_ROUTE_NOT_CONFIGURED =
@@ -270,12 +327,155 @@ export const AGENT_DEVICE_LOGIN_CANCEL_DENIED = notIncluded(
 export const DEDICATED_PLACEMENT_REQUIREMENT =
   "Dedicated Agents need gateway routing and node enrollment in this Installation's Kubernetes Compute configuration.";
 export const CODEX_PLACEMENT_REFUSAL = `${DEDICATED_PLACEMENT_REQUIREMENT} Codex runs only as a Dedicated Agent: select Embedded OpenClaw, or ask an operator to configure it.`;
+// The Compute Driver's own refusal of Dedicated storage without them, at provisioning, preparation
+// and activation. The API keeps it out of the response and logs it as the refusal reason; the
+// worker records it as the permanent failure reason.
+export const DEDICATED_STORAGE_ROUTING_REQUIRED =
+  "Dedicated Harness storage requires gateway routing and node enrollment.";
 // Kubernetes Compute's harness rules: embedded OpenClaw takes only API key authentication, and
 // Dedicated Codex takes its model credential only from the Harness authentication binding.
 export const EMBEDDED_API_KEY_REQUIRED =
   "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.";
 export const codexApiKeyRefusal = (setting) =>
   `Configuration setting ${setting} must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding.`;
+// Kubernetes Agent save and deploy admission refuse a plugin setting that turns off file-transfer
+// for an Agent whose Gateway hosts its workspace node (findings 1112, 3083). `setting` is
+// plugins.deny, plugins.enabled or plugins.entries.file-transfer.enabled; `rule` is what it must
+// satisfy, such as "must not be false".
+export const workspaceNodePluginRefusal = (setting, rule) =>
+  `Configuration setting ${setting} ${rule}: the Agent's workspace node requires the file-transfer plugin.`;
+// Kubernetes Configuration save, Agent save, provisioning and deploy admission refuse a plugin
+// setting that turns off the codex plugin every Dedicated Codex Gateway runs (finding 3096).
+// `setting` is plugins.allow, plugins.deny or plugins.enabled; `rule` is what it must satisfy,
+// such as "must list codex"; `step` is the fix, such as "Add it".
+export const codexPluginRefusal = (setting, rule, step) =>
+  `Configuration setting ${setting} ${rule}: Dedicated Codex runs the codex plugin, so its Gateway would not start. ${step}.`;
+// Configuration save, Agent save and deploy admission refuse a plugins.entries key that spells the
+// codex or acpx plugin another way (finding 3073), and on Kubernetes file-transfer or a managed
+// plugin (finding 3077). `path` is the setting as the message shows it, such as
+// plugins.entries.Codex or plugins.entries[" codex"]; `id` is the plugin. Renaming the key beside
+// the exact entry would leave a duplicate key, so the step says what to do in both cases (finding
+// 3087).
+export const pluginEntryKeyVariantRefusal = (path, id) =>
+  `Configuration setting ${path} must be named ${id}: OpenClaw merges it into plugins.entries.${id}, the entry OCE checks. If that entry exists, move these settings into it and remove this key; else rename this key.`;
+// Agent save, provisioning and deploy admission refuse a Configuration plugin setting the Gateway
+// entrypoint refuses for an OpenClaw catalog plugin the Agent selects (finding 3091).
+// `setting` is plugins.enabled, plugins.deny, plugins.allow or a plugins.entries key as the
+// message shows it; `rule` is what it must satisfy; `pluginId` is the selection's key; `step` is
+// the fix.
+export const managedPluginSettingRefusal = (setting, rule, pluginId, step) =>
+  `Configuration setting ${setting} ${rule} while the Agent selects plugin ${pluginId}, or the Gateway does not start: ${step}.`;
+// Configuration save, Agent save and deploy admission refuse a models.providers key that OpenClaw
+// applies to another key: one with surrounding whitespace, or another spelling of openai, anthropic
+// or codex (finding 3097). `path` is the setting as the message shows it, such as
+// models.providers.OpenAI or models.providers[" openai"]; `name` is the key OCE checks.
+export const providerKeyVariantRefusal = (path, name) =>
+  `Configuration setting ${path} must be named ${JSON.stringify(name)}: OpenClaw applies it to that provider's entry, the one OCE checks. Move these settings there if that key exists, else rename this key.`;
+// Configuration save, Agent save and deploy admission refuse a plugins.allow or plugins.deny that
+// OpenClaw's config schema refuses, so no Gateway starts with it (finding 3101): `key` is allow or
+// deny; `list` is false for a value that is not a list, true for a list item that is not text.
+export const pluginPolicyListRefusal = (key, list = true) =>
+  list
+    ? `Configuration setting plugins.${key} must list only plugin IDs as text, or the Gateway does not start: remove any other item.`
+    : `Configuration setting plugins.${key} must be a list of plugin IDs as text, or the Gateway does not start: make it a list or remove it.`;
+// Configuration save, Agent save and deploy admission refuse OpenClaw's $include directive anywhere
+// in the document (finding 3078). `path` is the setting as the message shows it, such as $include
+// or gateway.auth.$include.
+export const configIncludeRefusal = (path) =>
+  `Configuration setting ${path} is not supported: OpenClaw would merge settings from another file that OCE does not check. Write those settings in the Configuration instead.`;
+// Kubernetes Compute generates the Gateway password, so gateway.auth.password may only reference it,
+// on the default env provider alias (secrets.defaults.env, else "default").
+export const kubernetesGatewayPasswordRequirement = (alias = "default") =>
+  `must be the environment reference {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates`;
+export const KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT = kubernetesGatewayPasswordRequirement();
+export const KUBERNETES_GATEWAY_PASSWORD_REFUSAL = `Configuration setting gateway.auth.password ${KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT}.`;
+// Kubernetes Configuration save, provisioning and deploy admission refuse a trusted-proxy allowlist
+// and a device auto-approval the Gateway would refuse, naming no submitted identity (finding 3032).
+// The allowlist text says which identities match case-insensitively, so a case duplicate reads as
+// one (finding 3122).
+export const KUBERNETES_ALLOW_USERS_REFUSAL =
+  "Configuration setting gateway.auth.trustedProxy.allowUsers must include occ-workspace-files and list distinct (case-insensitive for occ-workspace-files and @ identities), nonblank, trimmed, printable ASCII identities that are not object property names.";
+export const KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL =
+  "Configuration setting gateway.auth.trustedProxy.deviceAutoApprove must be an object with only an optional boolean enabled and an optional array of nonblank scope names.";
+// Deploy and Agent provisioning of dedicated OpenClaw where the Installation selects no
+// provisioning SandboxDriver with all three containment facets (409 RESOURCE_CONFLICT). It names
+// the next step: codex for the selected models when Codex runs them (`codexRuns`), else a Codex
+// model (finding 3036), within the API's 256-character message cap. Stored provisioning work keeps
+// the first sentence alone, as a 503.
+export const DEDICATED_OPENCLAW_SANDBOX_REQUIRED =
+  "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.";
+export const dedicatedOpenClawSandboxRefusal = (codexRuns) =>
+  `${DEDICATED_OPENCLAW_SANDBOX_REQUIRED} ${
+    codexRuns
+      ? "Set agentRuntime.id to codex for the selected models"
+      : "Select a codex/<model> model with agentRuntime.id codex"
+  }, or ask an Installation administrator for such a SandboxDriver.`;
+// Model policy refusals at Configuration save and deploy (packages/occ/src/configured-harness.ts).
+// `policy` is the setting path of the object that holds agentRuntime, such as
+// agents.defaults.models["openai/gpt-4.1"] or models.providers.openai.models[0]; `parent` is
+// agents.defaults.models or agents.entries.<id>.models.
+export const runtimeIdUnsupported = (policy) =>
+  `Configuration setting ${policy}.agentRuntime.id must be openclaw or codex.`;
+// `offer` lists only values deployment then accepts: "openclaw", "openclaw or codex" where Codex
+// runs the model ("codex" alone for a dedicated Agent on an Installation that cannot run
+// dedicated OpenClaw, finding 3036; "openclaw" alone for an embedded Agent where the Installation
+// approves Codex only for dedicated execution, finding 3037), or the runtime the other selected
+// models use.
+export const runtimeIdRequired = (policy, offer) =>
+  `Configuration setting ${policy}.agentRuntime.id is required for the selected model: set it to ${offer}.`;
+// Where the deploying Agent runs neither runtime for the model (an embedded Agent with a
+// codex/<model> model, where the Installation approves Codex only for dedicated execution and
+// embedded OpenClaw runs no codex/<model> model), deploy names this next step instead of an offer
+// (finding 3037). `target` is "it" for one setting, or "both" for two that conflict.
+export const noRunnableRuntime = (target) =>
+  `set ${target} to codex on a dedicated Agent, or select a model of another provider`;
+export const runtimeIdRequiredNextStep = (policy) =>
+  `Configuration setting ${policy}.agentRuntime.id is required for the selected model: ${noRunnableRuntime("it")}.`;
+// Deploy, and Agent save given the deploy route's Harness resolver, of an embedded Agent whose
+// Configuration selects the Codex Harness, which the Installation approves only for dedicated
+// execution.
+export const CODEX_NEEDS_DEDICATED =
+  "The Configuration selects the Codex Harness, which needs dedicated execution; this Agent uses embedded execution. Change the Agent's execution mode or its Configuration.";
+export const runtimeOfOtherModels = (runtime) =>
+  `${runtime}, the runtime the other selected models use`;
+// `remedy` offers only values deployment then accepts: BOTH_RUNTIMES, or keepRuntime(...) when
+// only one runtime is accepted (Codex does not run the model, another policy or an earlier
+// selected model already selects it, or the deploying Agent cannot run the other one), or
+// noRunnableRuntime("both") where the deploying Agent runs neither (finding 3037).
+export const runtimePoliciesConflict = (first, firstId, second, secondId, remedy) =>
+  `Configuration settings ${first}.agentRuntime.id (${firstId}) and ${second}.agentRuntime.id (${secondId}) conflict: ${remedy}.`;
+export const BOTH_RUNTIMES = "set both to openclaw or both to codex, or remove one";
+export const keepRuntime = (runtime, other) =>
+  `set both to ${runtime}, or remove the one set to ${other}`;
+// `remedy` keeps only the step the deploying Agent can take: CODEX_MODEL_ONLY where it cannot run
+// OpenClaw (finding 3036), OPENCLAW_ONLY where it cannot run Codex (finding 3037).
+export const CODEX_MODEL_OR_OPENCLAW = "select a codex/<model> model, or set it to openclaw";
+export const CODEX_MODEL_ONLY = "select a codex/<model> model";
+export const OPENCLAW_ONLY = "set it to openclaw";
+export const codexRuntimeOffProvider = (policy, remedy = CODEX_MODEL_OR_OPENCLAW) =>
+  `Configuration setting ${policy}.agentRuntime.id selects codex for a model outside the codex provider: ${remedy}.`;
+export const selectableModelsNotObject = (parent) =>
+  `Configuration setting ${parent} must be an object keyed by model ref, such as {"openai/gpt-5.1": {"agentRuntime": {"id": "openclaw"}}}.`;
+// `offer` as for runtimeIdRequired, or the runtime other settings or the listed models select.
+export const selectablePrimaryRuntimeRequired = (primaryPolicy, offer) =>
+  `Configuration setting ${primaryPolicy}.agentRuntime.id is required when other models are listed beside the primary model: set it to ${offer}.`;
+export const selectablePrimaryRuntimeNextStep = (primaryPolicy) =>
+  `Configuration setting ${primaryPolicy}.agentRuntime.id is required when other models are listed beside the primary model: ${noRunnableRuntime("it")}.`;
+export const runtimeOfPrimaryElsewhere = (runtime) =>
+  `${runtime}, the runtime other settings select for the primary model`;
+export const runtimeOfListedModels = (runtime) => `${runtime}, the runtime the listed models use`;
+export const runtimeOfEntries = (runtime) =>
+  `${runtime}, the runtime agents.entries select for the model`;
+export const selectableModelOffProvider = (policy, provider) =>
+  `Configuration setting ${policy} is not on the primary model's provider, "${provider}": remove it, or list a model of that provider.`;
+export const selectableModelRuntimeMismatch = (policy, runtime) =>
+  `Configuration setting ${policy}.agentRuntime.id must be ${runtime}, the primary model's runtime: set it, or remove the model.`;
+// A provider catalog row (`provider` such as models.providers.openai) that names no selected
+// model; with no model selected at all, the refusal names the model setting instead.
+export const catalogRowUnselected = (provider) =>
+  `Configuration setting ${provider}.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.`;
+export const catalogRowNoModel = (provider) =>
+  `Configuration setting ${provider}.models lists models, but no model is selected: set agents.defaults.model or an agents.entries model.`;
 // Deploy refused because the cluster denied the controller the RoleBindings for this Agent's
 // runtime credentials (RUNTIME_CREDENTIALS_CLUSTER_RBAC; agents/detail.mts).
 export const DEPLOY_CLUSTER_RBAC_REFUSED =
@@ -418,6 +618,140 @@ export const referenceFormRefusal = (setting, form) =>
 // (packages/occ/src/channel-secret-bindings.ts).
 export const unboundReferenceRefusal = (setting, name) =>
   `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings to an environment-backed Secret, or remove the reference.`;
+// Kubernetes Compute admission of an Agent's plugin secret input whose unset variable stops its
+// Gateway at startup (findings 3040, 3041, 3042): an APP_SERVER_ variable on an embedded or
+// Dedicated OpenClaw Agent at Agent save and deployment, any other unbound name a binding could
+// set at deployment.
+export const dedicatedCodexVariableRefusal = (
+  setting,
+  name,
+  plugin = "codex",
+  agent = "an embedded",
+) =>
+  `Configuration setting ${setting} references ${name}, which only a Dedicated Codex Agent receives: on ${agent} Agent, remove plugins.entries.${plugin} or set its enabled to false.`;
+// `enabledBy`: the key of a later entry for the same plugin that enables it, such as GOOGLE; the
+// step names it instead of the entry itself (finding 3074). `null`: the order written and the
+// stored order end on different entries, so the step offers only removal (finding 3095).
+export const unboundPluginSecretRefusal = (setting, name, plugin, enabledBy) =>
+  `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings, or remove plugins.entries.${plugin}${enabledBy === null ? "" : ` or set ${enabledBy === undefined ? "its enabled" : `plugins.entries.${enabledBy}.enabled`} to false`}.`;
+// Why OpenClaw cannot read a SecretRef, as [problem, step] (packages/occ/src/environment-
+// references.ts): every refusal names one next step (finding 3067). `alias` is the default alias
+// of the ref's source (secrets.defaults.<source>, else "default"). `substitutedAlias`: that alias
+// holds an environment reference, which only the runtime resolves. `provider`: a provider
+// secrets.providers does not configure for the source; `defaultAlias`: provider default while
+// secrets.defaults.<source> names `alias`; `providerAlias`: a provider outside the alias grammar;
+// `id`: an env id outside the grammar, with the `example` the step offers, if any. A null `alias`
+// is one too long to offer by name.
+const useDefaultAlias = (alias, source = "env") =>
+  alias === null ? `use the secrets.defaults.${source} alias` : `use provider ${alias}`;
+const UNREADABLE_SECRET_REFS = {
+  providerless: (source = "env", alias = "default") => [
+    "is a SecretRef without a provider",
+    ["env", "store"].includes(source)
+      ? `add provider ${alias}`
+      : `add a provider that secrets.providers configures for ${source}`,
+  ],
+  substitutedAlias: (source = "env") => [
+    "is a SecretRef without a provider",
+    `add the provider secrets.defaults.${source} names`,
+  ],
+  provider: (provider, source = "env", alias = "default") => [
+    `uses secret provider ${provider}, not configured for ${source}`,
+    `${["env", "store"].includes(source) ? `${useDefaultAlias(alias, source)}, or ` : ""}add it to secrets.providers`,
+  ],
+  defaultAlias: (alias, source = "env", offered = alias) => [
+    `uses secret provider default, but secrets.defaults.${source} names ${alias}`,
+    `use ${offered === null ? "that provider" : `provider ${offered}`}`,
+  ],
+  providerAlias: (provider, alias = "default") => [
+    `uses secret provider ${provider}, not a provider alias OpenClaw reads`,
+    useDefaultAlias(alias),
+  ],
+  id: (id, example) => [
+    `references ${id}, not an env id OpenClaw reads`,
+    `use ${example ?? "A-Z, 0-9 and _, from a letter"}`,
+  ],
+  // A long provider shows quoted and cut, as a key in brackets.
+  allowlist: (id, provider = "default") => [
+    `references ${id}, which secrets.providers${provider.startsWith('"') ? `[${provider}]` : `.${provider}`}.allowlist omits`,
+    "add it to that allowlist",
+  ],
+};
+// The problem alone, as SSH Compute states it for the reference it renders.
+export const unreadableSecretRefProblem = (held, ...shown) =>
+  UNREADABLE_SECRET_REFS[held](...shown)[0];
+// The plugin secret input rule's refusal of a reference OpenClaw cannot read, which stops the
+// Gateway at startup whatever the bindings (finding 3056).
+export const unreadablePluginSecretRefusal = (setting, plugin, held, ...shown) => {
+  const [problem, step] = UNREADABLE_SECRET_REFS[held](...shown);
+  return `Configuration setting ${setting} ${problem}: ${step}, or remove plugins.entries.${plugin} or set its enabled to false.`;
+};
+// The same refusal of a whole `${NAME}` at an input with a runtime owner (beam, imap): OpenClaw
+// reads it as a SecretRef only while NAME is unset, so deployment refuses it while unbound.
+// Binding NAME is the step it names.
+export const unboundUnreadablePluginSecretRefusal = (setting, plugin, name, held, ...shown) =>
+  `Configuration setting ${setting} ${unreadableSecretRefProblem(held, ...shown)}: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
+// The same refusal of a whole `${APP_SERVER_*}` there on an embedded or Dedicated OpenClaw Agent
+// (`agent`: "an embedded" or "a Dedicated OpenClaw"), which never sets it (finding 3060).
+export const appServerUnreadablePluginSecretRefusal = (setting, plugin, agent, held, ...shown) =>
+  `Configuration setting ${setting} ${unreadableSecretRefProblem(held, ...shown)}, and it is never set on ${agent} Agent: remove plugins.entries.${plugin} or set its enabled to false.`;
+// The refusal of a gateway.auth.password object OpenClaw cannot read, which stops every start on
+// every Compute (findings 3057, 3061, 3062): Configuration save, Agent save and deployment
+// (packages/occ/src/configuration-settings.ts), and Kubernetes and Docker Compute admission and
+// preparation, from one reader (`gatewayPasswordRequirement`). `keys`: an object with other keys;
+// `shape`: an object OpenClaw does not read as a SecretRef, offering the generated reference on the
+// default env alias.
+const UNREADABLE_GATEWAY_PASSWORDS = {
+  ...UNREADABLE_SECRET_REFS,
+  keys: () => [
+    "holds keys other than source, provider and id, which OpenClaw refuses",
+    "remove them",
+  ],
+  shape: (alias = "default") => [
+    "is not a SecretRef OpenClaw reads",
+    `use {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}`,
+  ],
+};
+export const unreadableGatewayPasswordRefusal = (held, ...shown) =>
+  `Configuration setting gateway.auth.password ${UNREADABLE_GATEWAY_PASSWORDS[held](...shown).join(": ")}.`;
+// The refusal of a secrets.defaults OpenClaw's configuration check refuses, which stops the
+// Gateway at every start on every Compute (finding 3064): Configuration save, Agent save and
+// deployment (`secretProviderDefaultsProblem`) and the console. `alias`: an alias outside the
+// grammar on `source` (`shown` as the message shows it, absent for one that is not text; `fixed`:
+// the alias the step offers, if any); `key`: a key other than a source; `shape`: secrets.defaults
+// that is not an object.
+const INVALID_SECRET_PROVIDER_DEFAULTS = {
+  alias: (source, shown, fixed) => [
+    `secrets.defaults.${source}`,
+    `${shown === undefined ? "is " : `is ${shown}, `}not a provider alias OpenClaw reads (a-z, 0-9, _ and -, from a lowercase letter, at most 64 characters): ${fixed === undefined ? "" : `use ${fixed}, or `}remove it`,
+  ],
+  key: (shown) => [
+    "secrets.defaults",
+    `holds ${shown}, which OpenClaw refuses: name only env, file, exec or store`,
+  ],
+  shape: () => [
+    "secrets.defaults",
+    "must be an object that names a provider alias for env, file, exec or store",
+  ],
+};
+export const invalidSecretProviderDefaultsRefusal = (held, ...shown) => {
+  const [setting, requirement] = INVALID_SECRET_PROVIDER_DEFAULTS[held](...shown);
+  return `Configuration setting ${setting} ${requirement}.`;
+};
+// SSH Compute's refusals of a gateway.auth.password it cannot deliver (finding 3065): `reference`,
+// a password other than the expression or an env SecretRef to the generated password, offering it
+// on the default env alias; `rendered`, an unset password or the expression in password mode when
+// the default-provider reference SSH Compute renders then is unreadable (`requirement` says why),
+// offering the reference on the default env alias; `unoffered`, the same when OpenClaw cannot read
+// that reference either, so no reference is offered.
+export const sshGatewayPasswordRefusal = {
+  unoffered: (requirement) =>
+    `Configuration setting gateway.auth.password must be set to an env SecretRef to OPENCLAW_GATEWAY_PASSWORD that OpenClaw reads: SSH Compute's default reference ${requirement}.`,
+  reference: (alias = "default") =>
+    `Configuration setting gateway.auth.password must be "\${OPENCLAW_GATEWAY_PASSWORD}" or the environment SecretRef {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value SSH Compute generates.`,
+  rendered: (alias, requirement) =>
+    `Configuration setting gateway.auth.password must be set to {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}: SSH Compute's default reference ${requirement}.`,
+};
 const USE_UPPERCASE =
   "use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}";
 export const unsubstitutedReferenceRefusal = (setting, shown) =>
@@ -432,13 +766,20 @@ const SLACK_TOKEN_OBJECTS = { secretRef: "a SecretRef", object: "an object" };
 export const unreadableSlackTokenRefusal = (setting, held) =>
   `Configuration setting ${setting} holds ${SLACK_TOKEN_OBJECTS[held]} the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole \${NAME}, bound in secretBindings.`;
 // Where the console says to add a Secret binding that a channel refusal asks for: the Agent
-// page's Configuration JSON editor saves none (finding 2494), and Create Agent binds only Slack's
-// standard names (finding 2506).
-export const CHANNEL_BINDING_CONSOLE_REMEDY =
-  "This editor does not save Secret bindings: bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
+// page's Configuration JSON editor saves none (finding 2494), the Credentials tab binds only Slack's
+// standard names (finding 2542), and Create Agent binds only those too (finding 2506).
+const CHANNEL_BINDING_PLACES =
+  "bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
+export const CHANNEL_BINDING_CONSOLE_REMEDY = `This editor does not save Secret bindings: ${CHANNEL_BINDING_PLACES}`;
+export const CHANNEL_BINDING_CREDENTIALS_REMEDY = `To fix it, ${CHANNEL_BINDING_PLACES}`;
 // The Slack card of an Embedded Agent, on Create Agent and the Agent page's Channels tab.
 export const CHANNELS_NEED_DEDICATED =
   "Channels require Dedicated execution. Embedded Agents can only keep channels disabled.";
+// Kubernetes Compute's Configuration rule for a channel other than Slack or Microsoft Teams, at
+// Configuration and Preset save and at deployment (apps/controller/src/drivers/compute/kubernetes/
+// configuration-rules.ts). `setting` is channels.<name>.
+export const unsupportedChannelRefusal = (setting) =>
+  `Configuration setting ${setting} is not a supported channel: use slack or msteams, or set its enabled to false.`;
 // The Slack card's setup step, shown until both token Secrets are bound (finding 2438), and never
 // on an Embedded Agent, which cannot have channels (finding D708).
 export const SLACK_SETUP_HINT =
@@ -509,9 +850,7 @@ export const CREDENTIAL_PROXY_GIT_ALONE =
 export const CREDENTIAL_PROXY_INSTALLATION_PREVIEW =
   "Installation-wide repository access (profile github-installation) needs the OpenShell Credential Proxy's observed-hook preview, which this Installation does not enable. Choose another profile, or ask an Installation administrator to enable the preview.";
 export const PROXY_REGISTRATION_UNAVAILABLE =
-  "The OpenShell gateway does not offer the protected egress middleware the Credential Proxy is configured to use. Ask an operator to check the gateway's middleware registration and version, then retry.";
-export const PREVIEW_GATEWAY_VERSION =
-  "Installation-wide repository access uses the observed-hook preview, which needs OpenShell gateway 0.1.5, and the gateway reports another version. Ask an operator to run 0.1.5 or turn the preview off, then retry.";
+  "The OpenShell gateway does not offer the protected egress middleware the Credential Proxy is configured to use. Ask an operator to check the gateway's middleware registration, protocol and capabilities, then retry.";
 export const storedCredentialSourceConfig = (field) =>
   `This credential source's saved ${field} no longer meets the OpenShell Credential Gateway's rules, so it cannot be used. Create a new source with a valid ${field}, bind it in place of this one, then delete this one.`;
 export const SERVICE_ACCOUNT_NO_BACKEND_BINDING =
@@ -630,6 +969,10 @@ export const WITHDRAWAL_NO_ACTIVE_VERSION =
   "The Agent has no active version, so it has no credential withdrawals. Deploy the Agent first.";
 export const WITHDRAWAL_NOT_FOUND =
   "The Agent's active version has no withdrawal for this credential source: either the version does not use it, or no withdrawal was requested for it.";
+// Every per-Agent network policy answer on an Installation that selects no Sandbox Driver: the
+// policy view, validate, save, apply and turning editing on (D774).
+export const NO_SANDBOX_DRIVER_NETWORK_POLICY =
+  "This Installation selects no Sandbox Driver, so Agents run without a Sandbox: there are no policy denials, suggestions or Agent network rules.";
 // A policy denial that names only OpenShell's policy DNS placeholder address, with no record
 // of the host it stood for in the loaded log: the row proposes no rule (D771).
 export const PLACEHOLDER_DESTINATION =
@@ -662,3 +1005,46 @@ export const workspaceWithoutRunningVersion = (agentId) =>
   `Agent ${agentId} has no running version, so its workspace files cannot be read or written. Deploy it, then try again.`;
 export const workspaceVersionStarting = (agentId) =>
   `Agent ${agentId} has no running version yet: its deployment is still starting, so its workspace files cannot be read or written. Try again when the deployment finishes.`;
+// Finding D788. Namespace IAM Roles cannot grant Namespace delete, so a member's trash icon names
+// who can delete the Namespace instead of a grant to ask for.
+export const NAMESPACE_DELETE_DENIED =
+  "Only an Installation administrator can delete a Namespace. Ask one to delete this Namespace.";
+// The same icon for an Installation administrator whom a deny Restriction keeps from deleting the
+// Namespace (finding 2861): administration cannot lift it.
+export const NAMESPACE_DELETE_RESTRICTED =
+  "A Restriction denies deleting this Namespace, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it.";
+
+// Deploy new version's reason while saved Secrets wait for the Agent's grant names the bindings
+// whose Secrets wait, as the Credentials tab lists them, and where to grant access (finding 3017).
+// `missing`: an Installation administrator's console read no grant; otherwise a grant request left
+// it unconfirmed. `administrator`: the grant was refused, or the reader is offered no Retry.
+export const secretGrantDeployReason = (
+  bindings,
+  { missing = false, administrator = false } = {},
+) => {
+  const names =
+    bindings.length < 2
+      ? bindings.join("")
+      : `${bindings.slice(0, -1).join(", ")} and ${bindings.at(-1)}`;
+  const secrets = `the ${bindings.length > 1 ? "Secrets" : "Secret"} bound to ${names}`;
+  const problem = missing
+    ? `This Agent has no access to ${secrets}, so deploying it would be refused.`
+    : `This Agent's access to ${secrets} is not confirmed.`;
+  const step = administrator
+    ? "Granting access needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Retry Secret access."
+    : "Open Credentials and select Retry Secret access.";
+  return `${problem} ${step}`;
+};
+
+// Channel Secrets outcomes once the Agent can use its bound Secrets (agents/credentials.mts). With
+// Slack on they name the saved Slack Secrets. With Slack off a Retry saved nothing about Slack, so
+// they name the bound Secrets (finding 3021). A grant read that finds the grant a lost Retry made
+// says access is confirmed (finding 3030).
+const SLACK_SECRETS_USABLE =
+  "This Agent can use its saved Slack Secrets. Deploy the new version to deliver them.";
+const BOUND_SECRETS_USABLE =
+  "This Agent can use its bound Secrets. Deploy the new version to deliver them.";
+export const SLACK_RETRY_GRANTED = SLACK_SECRETS_USABLE;
+export const SLACK_OFF_RETRY_GRANTED = `Secret access granted. ${BOUND_SECRETS_USABLE}`;
+export const secretAccessConfirmed = (slackOn) =>
+  `Secret access confirmed. ${slackOn ? SLACK_SECRETS_USABLE : BOUND_SECRETS_USABLE}`;

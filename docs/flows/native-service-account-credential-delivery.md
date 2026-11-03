@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-26
-last_updated_session: authoring-run/b86fa7f0-f083-4554-9614-a6ce525be335
+updated: 2026-10-30
+last_updated_session: authoring-run/ea326acd-648d-4ca4-a2c6-afdd4cb4771e
 ---
 
 # Harness Authentication Binding Flow
@@ -127,7 +127,9 @@ the admitted reference; draft changes affect only the next explicit deployment.
 
 <span id="3-reauthorize-the-immutable-revision-before-effects" class="anchor-alias"></span>
 
-### 3. Reauthorize the immutable Agent revision before effects
+<span id="3-reauthorize-the-immutable-agent-revision-before-effects" class="anchor-alias"></span>
+
+### 3. Recheck authorization before provisioning the Agent revision
 
 `apps/controller/src/worker.ts:ControllerWorker.resolveRevisionBackend`,
 `resolveRevisionSecretContext`
@@ -155,16 +157,23 @@ indefinitely; drafts, selected versions, and pending deployments block source de
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareHarnessAuth`,
 `KubernetesComputeDriver.prepareRevision`
 
-One workload-rendering step converts validated references to supported
-Secret projections and a closed login mode. Embedded OpenClaw receives the key
-in its combined workload as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, derived
-from the immutable native model Configuration; admission requires every model
-selection, including fallbacks, to use the same supported provider. Dedicated
-Codex receives the key or account token through a DP projection for the Agent revision.
-Managed and directly supplied service account tokens deliver only
-`CODEX_ACCESS_TOKEN` as the model credential; the separate Gateway receives none.
-Neither gateway-only Configuration secret bindings nor initial runtime
-provisioning, which creates only transport/channel groups, can supply model auth.
+For `credential_source`, `KubernetesComputeDriver.admittedCredentialSourceType`
+checks the saved Credential Gateway ID before querying its current type catalog
+in preparation and runtime activation. A replacement Gateway receives no catalog
+call. The existing Harness authentication validator refuses the mismatch and
+still checks the source type, login mode, and paired Sandbox. Catalog lookup
+passes only an abort signal; it does not read or send a credential.
+
+Compute projects the admitted Secret into the combined embedded workload as
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or, for explicit custom providers,
+`OCE_MODEL_API_KEY`. `harnessModelAuthentication` and `requireProviderApiKeys`
+require a matching provider key reference. Configuration environment and generic
+Secret bindings cannot override it. All selections retain the same provider.
+`harnessProbeConfiguration` preserves custom transport/model IDs and supplies a
+default env SecretRef; native probe results must name `models.json` for this path,
+`env` for built-ins. Dedicated Codex receives only its key or `CODEX_ACCESS_TOKEN`;
+its Gateway receives neither. Initial runtime credentials supply transport/channel
+groups, not model authentication.
 
 The selected Sandbox consumes these already-rendered
 `HarnessWorkloadRequirements` and selects or looks up no other credential. An
@@ -286,7 +295,7 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
   provider authorization, an issued ChatGPT credential, and a real Codex turn;
   API fixtures prove only admission or persistence.
 - Verify Secret projections only on intended consumers, source-deletion guards,
-  immutable Agent revision metadata, dispatch denial after revoked grants, and failed
+  Agent revision metadata, dispatch denial after revoked grants, and failed
   auth preventing readiness. Use synthetic sentinels for serialized resources,
   logs, and audit disclosure checks; never print live credentials.
 - [OpenShell testing](../testing/openshell.md) distinguishes explicit unsupported
@@ -307,7 +316,11 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 
 ## Changelog
 
+- 2026-10-30 07:41: Check the recorded Credential Gateway before catalog lookup in the accompanying Compute fix. (authoring-run/ea326acd-648d-4ca4-a2c6-afdd4cb4771e - 429951edfc002c1c6ef98970696e655e03ba3ec7)
+
 - 2026-10-26 22:06: Document streamed credential rejection, process-group cleanup, bounded retry behavior, and probe directory failures held as `MODEL_PROBE_FAILED` with a no-detail `WRAPPER_ERROR` cause. (authoring-run/b86fa7f0-f083-4554-9614-a6ce525be335 - b885333a63302f26bfb6bdf892cdf0a3fc20eba3)
+
+- 2026-10-26 06:25: Document embedded custom-provider Secret projection and isolated probe binding in the accompanying implementation. (authoring-run/dc3e84d5-d5f9-44fa-870c-a8497b2c5379 - 835094105cb0feba10ab0f82243bd6fe7e146931)
 
 - 2026-10-16 01:36: Keep external OAuth custody while integrating current Sandbox policy. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
 

@@ -13,6 +13,11 @@ and supported controls before saving nonempty selections. Startup runs
 
 ## Current support
 
+On dedicated OpenClaw with Kubernetes, enable one managed package with `plugins[id].enabled`.
+[Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and worker CLI.
+[Slack](../../apps/controller/plugins/oce-slack/plugin.json) stages Slack’s hosted MCP server on the worker.
+[Verify installation in Console](../guides/topics/plugins-configure.md#use-the-console).
+
 Embedded OpenClaw supports the bundled Diffs plugin and its `diffs` tool, with
 plugin/tool enablement and `provider_default` or `none` approval. Both use the
 existing native execution path without a review step. Diffs rejects

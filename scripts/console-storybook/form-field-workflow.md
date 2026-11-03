@@ -46,3 +46,14 @@ each story at 1440 and at 390.
     file, with focus.
 12. With a screen reader, focus each field with an error: it reads the label,
     then the error and the help.
+
+## Native admin at creation
+
+Open **Pages / Create Agent / Native admin UI opt-in**. The checkbox starts off.
+Use Space to select it, clear it, then select it again. Create the Agent and
+inspect the simulated provisioning request for `nativeAdmin: true`.
+**Native admin UI selected** shows the checked state; **Native admin UI unavailable**
+shows the disabled control and installation setup guidance. Also inspect the
+existing capability-loading, permission-denied, missing-credential, and create
+failure stories. Capture the checkbox and its explanation at desktop and phone
+widths. These fixtures prove UI behavior, not deployment or native authentication.

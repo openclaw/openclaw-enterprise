@@ -37,6 +37,7 @@ import { startCredentialServiceFixture } from "../fixtures/repository-credential
 import { selfSigned } from "../helpers/certificates.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { relaySockets } from "../helpers/socket-relay.mjs";
 import {
   cleanEnvironment,
   listen,
@@ -101,6 +102,32 @@ const gitEnvironment = (root, extra = {}) => {
 };
 const git = (root, args, input, extra) =>
   run("/usr/bin/git", args, { env: gitEnvironment(root, extra), input, allowFailure: true });
+
+test("published client files stay owner-readable when umask masks owner read", async (t) => {
+  const parent = await realpath(await temporaryDirectory(t));
+  const session = join(parent, "session");
+  const script = `
+    import { lstat, readFile } from "node:fs/promises";
+    import { join } from "node:path";
+    import { writeClientConfiguration, readClientConfiguration } from ${JSON.stringify(
+      resolve("apps/controller/src/drivers/repo/github/credentials/client/config.ts"),
+    )};
+    process.umask(0o400);
+    await writeClientConfiguration(${JSON.stringify(opened)}, ${JSON.stringify(session)}, undefined);
+    const mode = (await lstat(join(${JSON.stringify(session)}, "client.json"))).mode & 0o777;
+    const directory = (await lstat(${JSON.stringify(session)})).mode & 0o777;
+    await readClientConfiguration(${JSON.stringify(session)});
+    await readFile(join(${JSON.stringify(session)}, "bearer"));
+    process.stdout.write(JSON.stringify({ mode, directory }));
+  `;
+  const result = childProcess.spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "--eval", script],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { mode: 0o600, directory: 0o700 });
+});
 
 isolatedTest("gh refuses mixed and unsafe session files before starting a child", async (t) => {
   const parent = await temporaryDirectory(t);
@@ -650,7 +677,7 @@ test("operator rejects unsafe or conflicting bound request files before admissio
   assert.equal(admitted.stdout, "");
   assert.match(
     admitted.stderr,
-    /^credential-admission [0-9]{13}-[0-9a-f-]{36}; recover with open --admission-id and the same inputs\ncredential-operator-not-found\n$/,
+    /^credential-admission [0-9]{13}-[0-9a-f-]{36}; if the outcome is uncertain, inspect the original owner and use status for any known session\ncredential-operator-not-found\n$/,
   );
   assert.deepEqual(requests, [
     { method: "POST", path: "/v1/sessions", body: { ...request, durableAdmission: true } },
@@ -698,12 +725,10 @@ async function loopbackBrokerTunnel(t, fixture) {
     }
     const upstream = connect(fixture.listeners.address.port, "127.0.0.1", () => {
       socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-      upstream.write(head);
-      socket.pipe(upstream).pipe(socket);
     });
-    socket.on("error", () => upstream.destroy());
-    socket.on("close", () => upstream.destroy());
-    upstream.on("error", () => socket.destroy());
+    // Bytes the client sent after CONNECT go first; the socket queues them until connected.
+    upstream.write(head);
+    relaySockets(socket, upstream);
   });
   return (await listen(t, proxy)).replace("https:", "http:");
 }

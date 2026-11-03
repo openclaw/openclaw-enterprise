@@ -171,8 +171,17 @@ export function openShellLogDecisions(
       return decorated;
     }
     const mapping = PLACEHOLDER_MAPPING.exec(decorated.message);
-    if (mapping !== null && openShellPlaceholderAddress(mapping[2]!)) {
-      hosts.set(mapping[2]!.toLowerCase(), mapping[1]!);
+    // Only a placeholder address is ever looked up below (`dst_placeholder_ip`), so a record
+    // whose `synthetic=` lies outside the range is never read and needs no check of its own.
+    if (mapping !== null) {
+      // A workload can look up a placeholder-shaped name such as `198.18.0.5.`, and policy DNS
+      // maps it like any other name. That name is no destination either, so the address names
+      // no host until a later record maps it to a real one.
+      if (openShellPlaceholderAddress(mapping[1]!.replace(/\.$/, ""))) {
+        hosts.delete(mapping[2]!.toLowerCase());
+      } else {
+        hosts.set(mapping[2]!.toLowerCase(), mapping[1]!);
+      }
     }
     const placeholder = decorated.fields.dst_placeholder_ip;
     const host = placeholder === undefined ? undefined : hosts.get(placeholder.toLowerCase());

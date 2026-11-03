@@ -15,16 +15,18 @@ endpoint is `https://api.openai.com/v1`. The
 API behavior.
 
 The profile installs private Gateway routing, so the deployment provisions an
-OpenShell Sandbox for the dedicated Codex Harness. To run these steps and verify
-a real model turn with the injected key in one command, use
-[Deploy your first Agent](../first-agent.md) with `--harness codex`.
+OpenShell Sandbox for the dedicated Codex Harness. After deployment,
+[verify a model response](../operate/model-verification.md).
+
+For native Git with worker-managed GitHub App credentials, use the
+[OpenShell Git push guide](../repository-credentials/openshell-git-push.md).
 
 ## Before you start
 
 Start the Kubernetes-only OpenShell profile and build the CLI:
 
 ```bash
-pnpm cli:build
+go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell

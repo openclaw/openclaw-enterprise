@@ -25,6 +25,7 @@ import {
 import {
   deploymentDetailsOpen,
   deploymentRecordUrl,
+  showDeploymentTab,
 } from "./console-deployment-activity-helpers.mjs";
 import { replyWithDifferentAgentId } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
@@ -337,10 +338,10 @@ test("Recovery offers no Deploy again when the caller's permission answer fails"
 });
 
 // A startup model check failure sends the caller to the draft's Configuration. A deployer without
-// update gets "Open version draft", whose only step is Deploy new version, and that is built only
+// update gets "Open draft", whose only step is Deploy new version, and that is built only
 // from a readable Configuration. The link used to follow "not yet denied" and opened a draft without
 // it (finding 1944); it now waits for the same read as Deploy again.
-test("A deployer who cannot read the Configuration gets no Open version draft", async (t) => {
+test("A deployer who cannot read the Configuration gets no Open draft", async (t) => {
   const auditSink = new InMemoryAuditSink();
   const { fixture, namespace, agent, active, page, configurationUrl } = await failedRedeploy(
     t,
@@ -352,7 +353,7 @@ test("A deployer who cannot read the Configuration gets no Open version draft", 
     globalThis.openDraftSeen = false;
     new globalThis.MutationObserver(() => {
       for (const node of globalThis.document.querySelectorAll(".deployment-recovery a")) {
-        if (node.textContent === "Open version draft") {
+        if (node.textContent === "Open draft") {
           globalThis.openDraftSeen = true;
         }
       }
@@ -385,13 +386,13 @@ test("A deployer who cannot read the Configuration gets no Open version draft", 
   await denied;
   await nextFrames(page);
   assert.equal(await logs.getAttribute("class"), "button button--primary");
-  assert.equal(await recovery.getByRole("link", { name: "Open version draft" }).count(), 0);
+  assert.equal(await recovery.getByRole("link", { name: "Open draft" }).count(), 0);
   assert.equal(await page.evaluate(() => globalThis.openDraftSeen), false);
   assert.equal(authorizationDenials(auditSink, "openclaw.configurations.read").length, 1);
 });
 
 // A deployer who can read it gets the link once the read succeeds, not before.
-test("Open version draft waits for the Configuration read to succeed", async (t) => {
+test("Open draft waits for the Configuration read to succeed", async (t) => {
   const { fixture, namespace, agent, active, page, configurationUrl } = await failedRedeploy(
     t,
     "Open draft held",
@@ -420,7 +421,7 @@ test("Open version draft waits for the Configuration read to succeed", async (t)
   const recovery = recoveryOf(page);
   const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
   await logs.waitFor();
-  const openDraft = recovery.getByRole("link", { name: "Open version draft" });
+  const openDraft = recovery.getByRole("link", { name: "Open draft" });
   assert.equal(await openDraft.count(), 0);
   await read.requested;
   await nextFrames(page);
@@ -447,7 +448,11 @@ const failure = (status) =>
       : apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.");
 const UNAVAILABLE = failure(503);
 
-async function deployingVersion(t, name, { status = "running", older = false } = {}) {
+async function deployingVersion(
+  t,
+  name,
+  { status = "running", older = false, beforeLogin = undefined } = {},
+) {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
   const agent = await fixture.createAgent(namespace.id, `${name} Agent`, nativeValues("v1"));
   const { revision: current } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
@@ -487,6 +492,7 @@ async function deployingVersion(t, name, { status = "running", older = false } =
         });
   });
   await page.clock.install({ time: new Date("2026-10-20T12:00:00Z") });
+  await beforeLogin?.(page, { namespace, agent, current, next });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, next.id, "configuration"));
   const summary = page.getByRole("region", { name: "Agent state at a glance" });
   const outcome = { queued: "Queued", running: "In progress", succeeded: "Completed" }[status];
@@ -540,7 +546,7 @@ test("A version that is deploying is labelled Deploying, not Historical, until i
   record.status = "succeeded";
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
   await page.getByText(/^Current version · read-only admitted snapshot/).waitFor();
-  await summary.getByText("v2", { exact: true }).waitFor();
+  await summary.locator("strong").filter({ hasText: /^v2$/ }).waitFor();
   assert.equal(await page.getByText(/^Deploying version/).count(), 0);
   const labels = (await page.evaluate(() => globalThis.noticeTexts)).map(
     (text) => text.split(" ·")[0],
@@ -548,6 +554,59 @@ test("A version that is deploying is labelled Deploying, not Historical, until i
   assert.equal(labels.at(-1), "Current version");
   assert.equal(labels.includes("Historical version"), false, labels.join(" → "));
 });
+
+// A finished deployment rereads native admin access, and Open Agent UI swaps between the live
+// launch link and the unavailable button in the same place. Keyboard focus on the one replaced
+// moves to its replacement instead of dropping to the page (finding 2880), both ways. This
+// fixture runs no native admin domain, so the access read answers with the API's own status
+// shapes: the deployment completing is what makes the page ask again.
+for (const [from, to] of [
+  ["unavailable", "available"],
+  ["available", "stopped"],
+]) {
+  test(`Open Agent UI keeps keyboard focus when access goes from ${from} to ${to} after a deployment`, async (t) => {
+    const access = { status: from };
+    const { fixture, namespace, agent, current, next, page, record } = await deployingVersion(
+      t,
+      `Native focus ${from}`,
+      {
+        beforeLogin: (page, { namespace, agent, current }) =>
+          page.route(`**/namespaces/${namespace.id}/agents/${agent.id}/native-admin`, (route) => {
+            const host = `${agent.id}.agents.example.test`;
+            return route.fulfill({
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify({
+                data:
+                  access.status === "available"
+                    ? {
+                        status: "available",
+                        host,
+                        origin: `https://${host}`,
+                        activeRevisionId: current.id,
+                        url: `https://${host}/`,
+                      }
+                    : { status: access.status },
+                meta: { requestId: "req_test_native_focus" },
+              }),
+            });
+          }),
+      },
+    );
+    const link = page.getByRole("link", { name: "Open Agent UI", exact: true });
+    const unavailable = page.getByRole("button", { name: "Open Agent UI", exact: true });
+    const [before, after] = from === "available" ? [link, unavailable] : [unavailable, link];
+    await before.waitFor();
+    await before.focus();
+    access.status = to;
+    await fixture.activateRevision(namespace.id, agent.id, next.id, current.id);
+    record.status = "succeeded";
+    await page.clock.runFor(DEPLOYMENT_POLL_MS);
+    await after.waitFor();
+    await before.waitFor({ state: "hidden" });
+    assert.equal(await after.evaluate((node) => node === globalThis.document.activeElement), true);
+  });
+}
 
 // A Configuration tab parked while the deployment fails shows Failed when it comes back: a failed
 // version that never became current is not history (finding 2403).
@@ -557,7 +616,10 @@ test("A deploying version's parked Configuration tab says Failed once the deploy
   await page.getByRole("tab", { name: "Plugins", exact: true, selected: true }).waitFor();
   record.status = "failed";
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
-  await page.getByText("v2 · Failed", { exact: true }).waitFor();
+  await page
+    .getByRole("region", { name: "Agent state at a glance" })
+    .getByText("v2 · Failed", { exact: true })
+    .waitFor();
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByText(/^Failed version · read-only admitted snapshot/).waitFor();
   assert.equal(await page.getByText(/^Deploying version/).count(), 0);
@@ -588,7 +650,7 @@ test("A completed deployment whose Agent reread fails is labelled Deployed, not 
   record.status = "succeeded";
   record.agentFail = true;
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
-  await page.getByText(`${OVERVIEW_REFRESH_FAILED} ${READ_OUTAGE_REASON}`).waitFor();
+  await page.locator(".agent-deployment-attention").getByText(OVERVIEW_REFRESH_FAILED).waitFor();
   await summary.getByText("v2 · Completed", { exact: true }).waitFor();
   await page
     .getByText(
@@ -614,6 +676,7 @@ for (const [status, label] of [
     const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
     await page.route(agentUrl, (route) => replyWithDifferentAgentId(route, agent.id, 200));
     record.status = status;
+    await showDeploymentTab(page);
     await page.getByRole("button", { name: "Refresh deployment" }).click();
 
     // Wait for either settled outcome: losing the valid record used to show "Unavailable".
@@ -640,7 +703,8 @@ test("One failed status read keeps a deploying version Deploying and polling", a
   await watchNotice(page);
   record.fail = 503;
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
-  await summary.getByText("v2 · Unavailable", { exact: true }).waitFor();
+  await summary.getByText("Update delayed.", { exact: true }).waitFor();
+  assert.equal(await summary.getByText("v2 · In progress", { exact: true }).isVisible(), true);
   assert.equal(await page.getByText(/^Deploying version · /).count(), 1);
   // The next poll still comes, and it finds the deployment completed.
   record.fail = false;
@@ -661,10 +725,12 @@ test("A rate-limited status read keeps a deploying version polling", async (t) =
   const { page, record, summary } = await deployingVersion(t, "Status rate limit");
   record.fail = 429;
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
-  await summary.getByText("v2 · Unavailable", { exact: true }).waitFor();
+  await summary.getByText("Update delayed.", { exact: true }).waitFor();
+  assert.equal(await summary.getByText("v2 · In progress", { exact: true }).isVisible(), true);
   assert.equal(await page.getByText(/^Deploying version · /).count(), 1);
   record.fail = false;
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await summary.getByText("Latest update received.", { exact: true }).waitFor();
   await summary.getByText("v2 · In progress", { exact: true }).waitFor();
 });
 
@@ -677,6 +743,7 @@ test("A completed record with no failed Agent reread leaves the newest version H
   // The tab is built again from what the page knows now.
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("tab", { name: "Plugins", exact: true, selected: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   assert.equal(await page.getByText(/^Deployed version/).count(), 0);
@@ -725,8 +792,10 @@ test("A failed reread leaves the newest readable version Historical under a hidd
   await summary.getByText("Newer version hidden", { exact: true }).waitFor();
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   agentFail = true;
+  await showDeploymentTab(page);
   await page.getByRole("button", { name: "Refresh deployment" }).click();
   await page.getByText(`${OVERVIEW_REFRESH_FAILED} ${READ_OUTAGE_REASON}`).waitFor();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   assert.equal(await page.getByText(/^Deployed version/).count(), 0);
 });
@@ -738,6 +807,7 @@ test("A failure read by a refresh that cannot reread the Agent keeps its warning
   const { page, record } = await deployingVersion(t, "Failed refresh");
   record.status = "failed";
   record.agentFail = true;
+  await showDeploymentTab(page);
   await page.getByRole("button", { name: "Refresh deployment" }).click();
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.waitFor();
@@ -755,6 +825,7 @@ test("A failure read with startup warnings keeps them in view", async (t) => {
   const { page, record } = await deployingVersion(t, "Failed warnings");
   record.status = "failed";
   record.warnings = [{ code: "PLUGIN_INSTALL_FAILED", pluginId: "remote-calendar" }];
+  await showDeploymentTab(page);
   await page.getByRole("button", { name: "Refresh deployment" }).click();
   await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
   const warning = page
@@ -772,6 +843,8 @@ test("A refused status read ends the wait and the Deploying label", async (t) =>
   record.fail = 403;
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
   await summary.getByText("v2 · Unavailable", { exact: true }).waitFor();
+  assert.equal(await summary.getByText("Update delayed.", { exact: true }).count(), 0);
+  assert.equal(await summary.getByText("v2 · In progress", { exact: true }).count(), 0);
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   const refused = record.recordReads;
   record.fail = false;

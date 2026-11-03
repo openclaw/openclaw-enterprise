@@ -52,6 +52,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AGENT_NATIVE_ADMIN_DOMAIN` — Agent hostname suffix; required when the pilot is enabled.
 - `OCC_AUTH_COOKIE_DOMAIN` — Shared parent domain for console and Agent cookies; required when the pilot is enabled.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
+- `OCC_PREPROVISIONED_NAMESPACE` — API/worker JSON `{"namespaceId", "uid"}` binding one operator-created tenant namespace; set by Helm `preprovisionedNamespace`. See [preprovisioned namespace](../drivers/kubernetes-compute/preprovisioned-namespace.md).
 - `OCC_CHANNEL_DIRECTORY_PROXY_URL` — Optional API-only HTTP(S) proxy endpoint for production Slack directory lookup and credential validation; set by Helm `slackProxy.enabled` or `api.channelDirectoryProxyUrl`.
 - `OCC_API_HTTPS_EGRESS_OPEN` — `true` when API egress allows TCP 443 to any address, so a Slack check without a proxy can succeed; default: `false`. Set by the chart from sign-in `egressCidrs`.
 - `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` — Exact Kubernetes Service host accepted as a managed Slack directory proxy; set only by Helm `slackProxy.enabled`.
@@ -111,7 +112,7 @@ for supported engines, images, and security restrictions.
 - `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `docker` (default) or `kubernetes`; the Docker preview cannot deploy Agents.
 - `OCC_DEVELOPMENT_SANDBOX_DRIVER` — `none` (default) or `openshell`; OpenShell requires Kubernetes Compute.
 - `OCC_DEVELOPMENT_CONTROL_PLANE` — `compose` (default) or `kubernetes`; Kubernetes control plane requires Kubernetes Compute. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
-- `OCC_DEVELOPMENT_PROTECTED_EGRESS` — `0` or unset by default; `1` selects the [protected Kubernetes OpenShell profile](../../guides/deploy/local-openshell-images.md#select-the-protected-profile) with explicit candidate images and charts.
+- `OCC_DEVELOPMENT_PROTECTED_EGRESS` — `0` or unset by default; `1` opts into [static-inference enforcement](../../guides/deploy/local-openshell-images.md#select-the-protected-profile). Kubernetes-only Gateway authentication does not require this flag.
 - `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` — Optional verified private host IPv4 for the protected profile’s native OpenShell host alias; see [development settings](../settings/development.md).
 - `OCC_DEVELOPMENT_DATABASE_NAME` — Optional disposable `openclaw_k8s_` database for the Kubernetes control plane; see [development settings](../settings/development.md).
 - `OCC_DEVELOPMENT_CONTAINER_ENGINE` — `auto` (default), `docker`, or `podman`; Kubernetes-only mode uses it for k3d and image operations, while Compose mode also requires its Compose provider.
@@ -136,6 +137,7 @@ for supported engines, images, and security restrictions.
 - `OCC_DEVELOPMENT_KUBERNETES_NAMESPACE` — Kubernetes namespace that runs the control plane in the Kubernetes-only profile; default: `oce-system`.
 - `OCC_DEVELOPMENT_KUBERNETES_CLUSTER` — Disposable k3d cluster; default: a generated name beginning with `occ-dev-`.
 - `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` — Kubernetes profile cluster and service readiness timeout; default: `600` seconds per wait in Kubernetes-only mode, `300` in Compose mode.
+- `OCC_DEVELOPMENT_KEEP_ON_FAILURE` — Unset by default; any nonempty value keeps a failed `occ dev up` stack, state directory, and copied service key for inspection; see [development settings](../settings/development.md).
 - `OCC_DEVELOPMENT_KUBERNETES_API_PORT` — Local Kubernetes API port; default: `6443`.
 - `OCC_DEVELOPMENT_K3D_DNS_RESOLVER` — Optional IPv4 resolver for either local k3d profile, or `k3d` for k3d's default; Linux Docker defaults to the host's upstream resolver.
 - `OCC_DEVELOPMENT_K3S_IMAGE` — K3s node image or channel for Compose control plane without OpenShell; default: `+v1.35`. Kubernetes-only and OpenShell profiles use their pinned image.
@@ -151,7 +153,7 @@ for supported engines, images, and security restrictions.
 
 ### First Agent and local model credentials
 
-For a local model turn, see [Deploy your first Agent](../../guides/first-agent.md).
+These inputs belong to the [local first-Agent helper](../../../scripts/first-agent.mjs).
 Use only one of the two credential inputs. In production, use
 [platform Secret bindings](../configuration/secrets.md) instead of setting the
 credential on the controller.

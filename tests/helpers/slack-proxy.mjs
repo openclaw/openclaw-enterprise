@@ -3,18 +3,19 @@ import { spawn } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import net from "node:net";
 import { join } from "node:path";
-import { availablePort } from "./available-port.mjs";
+import { reservedPortArgs, reservePort } from "./available-port.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 /**
  * Starts the bundled Slack proxy (apps/controller/src/slack-proxy.mjs) as a child process and
  * resolves once it logs the port it bound. By default OCC_SLACK_PROXY_PORT is 0; with
- * `fixedPort` the helper picks a free port, passes it, and requires the proxy to bind exactly
- * that port (another process can take a picked port first, so EADDRINUSE picks again). The
- * test's cleanup sends the proxy SIGTERM. With `upstreamPort`, the child resolves each of
- * `upstreamHosts` (default slack.com) to 127.0.0.1 and its connections to those hosts on port
- * 443 reach that loopback port instead; a connection to any other host throws in the child, so
- * a test can never reach the network. Returns the child, the listening port and `stderr()`,
+ * `fixedPort` the helper holds a free port with reservePort() until the proxy has bound it,
+ * passes it, and requires the proxy to bind exactly that port. Without SO_REUSEPORT the
+ * reservation holds nothing and another process can take the port first, so EADDRINUSE picks
+ * again. The test's cleanup sends the proxy SIGTERM. With `upstreamPort`, the child resolves
+ * each of `upstreamHosts` (default slack.com) to 127.0.0.1 and its connections to those hosts on
+ * port 443 reach that loopback port instead; a connection to any other host throws in the child,
+ * so a test can never reach the network. Returns the child, the listening port and `stderr()`,
  * what the proxy has written so far.
  */
 export async function startSlackProxy(
@@ -26,8 +27,13 @@ export async function startSlackProxy(
       ? []
       : ["--import", await writeDnsFixture(t, upstreamPort, upstreamHosts)];
   for (let attempt = 1; ; attempt += 1) {
-    const port = fixedPort ? await availablePort({ host: "0.0.0.0" }) : 0;
-    const proxy = await spawnSlackProxy(t, preload, port);
+    const reservation = fixedPort ? await reservePort({ host: "0.0.0.0" }) : undefined;
+    const port = reservation?.port ?? 0;
+    const proxy = await spawnSlackProxy(
+      t,
+      [...(reservation ? reservedPortArgs(reservation) : []), ...preload],
+      port,
+    ).finally(() => reservation?.release());
     if (proxy.port === undefined && fixedPort && attempt < 5 && /EADDRINUSE/.test(proxy.stderr())) {
       continue;
     }

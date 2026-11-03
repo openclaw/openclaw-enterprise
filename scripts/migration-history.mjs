@@ -244,6 +244,12 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 62) {
     return "prePreparedAttemptSettlement";
   }
+  if (count === 64) {
+    return "preSelectedRepositorySet";
+  }
+  if (count === 63) {
+    return "preGatewayManagedMode";
+  }
   refuse("an incomplete or unsupported development history is installed");
 }
 
@@ -302,7 +308,8 @@ async function preflight(client, manifest) {
   }
   const native = manifest.catalogs[shape];
   const actual = catalogDigest(await migrationCatalog(client));
-  if (actual !== native && actual !== manifest.logicalRestoreCatalogs?.[native]) {
+  const aliases = manifest.logicalRestoreCatalogs?.[native];
+  if (actual !== native && !(Array.isArray(aliases) && aliases.includes(actual))) {
     refuse(`catalog objects or effective grants differ for ${shape}`);
   }
   if (shape === "providerCompleted" || shape === "backendCompleted") {

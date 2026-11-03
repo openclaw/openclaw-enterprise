@@ -6,7 +6,6 @@ import {
   observed,
   phaseAt,
   probeApiKey,
-  productionGatewayMemoryLimit,
   runEmbeddedGatewayProbe,
   runtimeFailure,
 } from "../helpers/runtime-image-model-probe.mjs";
@@ -33,7 +32,6 @@ describe("runtime image embedded Gateway model probe outcomes", { concurrency: 2
         mode: "answer",
         delayMs,
         cpus: constrainedGatewayCpuLimit,
-        memory: productionGatewayMemoryLimit,
         limitMs: 300_000,
         until: ({ events }) =>
           runtimeFailure(events) !== undefined ||
@@ -77,7 +75,6 @@ describe("runtime image embedded Gateway model probe outcomes", { concurrency: 2
       const run = await runEmbeddedGatewayProbe(t, {
         mode: "hang",
         cpus: constrainedGatewayCpuLimit,
-        memory: productionGatewayMemoryLimit,
         limitMs: 300_000,
         until: failed,
       });

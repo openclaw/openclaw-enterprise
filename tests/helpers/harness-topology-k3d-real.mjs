@@ -23,6 +23,8 @@ import {
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
   kubernetesHash as hash,
+  productionGatewayMemoryLimit,
+  productionGatewayMemoryLimitGi,
   withBoundedTeardown,
 } from "../helpers/kubernetes-real.mjs";
 import {
@@ -912,7 +914,8 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
   }
   configuration.drivers.plugin = { id: "codex-plugin", configuration: {} };
   // The real Gateway loads its plugins during the first model request.
-  configuration.drivers.compute.configuration.resources.gateway.limits.memory = "2Gi";
+  configuration.drivers.compute.configuration.resources.gateway.limits.memory =
+    productionGatewayMemoryLimit;
   const pluginStatusProxyCidrs = process.env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS;
   if (pluginStatusProxyCidrs !== undefined && pluginStatusProxyCidrs.trim().length > 0) {
     configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
@@ -931,7 +934,7 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     "requests.memory": "2Gi",
     "limits.cpu": "8",
     // Two embedded Agents plus one replacement Gateway may coexist during cutover.
-    "limits.memory": "6Gi",
+    "limits.memory": `${3 * productionGatewayMemoryLimitGi}Gi`,
   };
   configuration.drivers.compute.configuration.servicePrincipalCredentials.expirationSeconds = 3_600;
   if (options.gatewayRouting !== undefined) {
@@ -1127,9 +1130,11 @@ async function createApiSecret(request, namespaceId, name, value) {
     200,
     `Secret read failed with HTTP ${read.status} (${read.error?.code ?? "unknown"})`,
   );
-  // Detail reads include consumers; a newly created, unbound Secret has none.
+  // Detail reads include consumers; a newly created, unbound Secret has none. Only the exact
+  // read reports what its caller may do next: every caller here holds Secret update and delete.
   assert.deepEqual(read.data, {
     ...response.data,
+    callerPermissions: { update: true, delete: true },
     consumers: {
       agents: [],
       configurations: [],
@@ -1476,7 +1481,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       ? authBaseURL
       : `http://127.0.0.1:${options.controllerPort}`;
   const controllerAuthBaseURL = options.publicOrigin ?? bootstrapAuthBaseURL;
-  const gatewayPassword =
+  let gatewayPassword =
     options.gatewayPassword === false ? undefined : randomBytes(32).toString("base64url");
   let inClusterWorker;
   let restartInClusterApi;
@@ -2129,104 +2134,151 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     secretId: secretApi.model.ref.id,
   });
   assert.deepEqual(launch.configuration.values, launchValues);
-  const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
-    kind: "agent",
-    ...launch.configuration,
-  });
-  assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
-  if (Object.keys(secretBindings).length > 0) {
-    assert.deepEqual(configuration.data.secretBindings, secretBindings);
+  async function assertPresetIndependent(configuration) {
+    const changedPreset = await adminRequest("PATCH", presetPath, { template: {} });
+    assert.equal(changedPreset.status, 200, JSON.stringify(changedPreset.error));
+    const deletedPreset = await adminRequest("DELETE", presetPath);
+    assert.equal(deletedPreset.status, 204, JSON.stringify(deletedPreset.error));
+    const independentConfiguration = await request(
+      "GET",
+      `/namespaces/${namespaceId}/configurations/${configuration.data.id}`,
+    );
+    assert.equal(independentConfiguration.status, 200);
+    assert.deepEqual(independentConfiguration.data.values, configuration.data.values);
   }
-  const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
-    ...launch.agent,
-    configurationId: configuration.data.id,
-  });
-  assert.equal(agent.status, 201, JSON.stringify(agent.error));
-  assert.deepEqual(agent.data.harnessAuth, { method: "api_key", source: secretApi.model.ref });
-  const changedPreset = await adminRequest("PATCH", presetPath, { template: {} });
-  assert.equal(changedPreset.status, 200, JSON.stringify(changedPreset.error));
-  const deletedPreset = await adminRequest("DELETE", presetPath);
-  assert.equal(deletedPreset.status, 204, JSON.stringify(deletedPreset.error));
-  const independentConfiguration = await request(
-    "GET",
-    `/namespaces/${namespaceId}/configurations/${configuration.data.id}`,
-  );
-  assert.equal(independentConfiguration.status, 200);
-  assert.deepEqual(independentConfiguration.data.values, launchValues);
-  const persistedAgent = await storedAgent(observerPool, namespaceId, agent.data.id);
-  const provisionedGatewayPassword = await provisionAgentTransportSecret(
-    directory,
-    placement,
-    agent.data.id,
-    {
-      gatewayPassword,
-      legacyCombined: options.legacyRuntimeCredentials === true,
-    },
-  );
-  assert.equal(provisionedGatewayPassword, gatewayPassword);
-  const legacyTransportName = `openclaw-agent-transport-${hash(agent.data.id)}`;
-  const legacyTransport =
-    options.legacyRuntimeCredentials === true
-      ? await resource("secret", legacyTransportName, placement)
-      : undefined;
-  {
-    const revisionsBefore = await request(
+  let configuration;
+  let agent;
+  let deployed;
+  let legacyTransport;
+  if (options.provisionNativeAdmin) {
+    // Use Create Agent's admission path. The worker owns Configuration creation,
+    // transport credentials, exact Secret grants, and the initial deployment.
+    const admitted = await adminRequest("POST", `/namespaces/${namespaceId}/agents/provision`, {
+      ...launch.agent,
+      requestId: `req_${randomUUID()}`,
+      nativeAdmin: true,
+      configuration: { kind: "agent", ...launch.configuration },
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.error));
+    const provisioned = await waitFor("native admin provisioning handoff", async () => {
+      const result = await adminRequest("GET", admitted.data.provisioning.url);
+      assert.equal(result.status, 200, JSON.stringify(result.error));
+      assert.notEqual(result.data.status, "failed", JSON.stringify(result.data));
+      return result.data.revisionId ? result.data : undefined;
+    });
+    agent = await adminRequest("GET", `/namespaces/${namespaceId}/agents/${provisioned.agentId}`);
+    configuration = await adminRequest(
+      "GET",
+      `/namespaces/${namespaceId}/configurations/${provisioned.configurationId}`,
+    );
+    deployed = await adminRequest(
+      "GET",
+      `/namespaces/${namespaceId}/agents/${provisioned.agentId}/revisions/${provisioned.revisionId}`,
+    );
+    for (const response of [agent, configuration, deployed]) {
+      assert.equal(response.status, 200, JSON.stringify(response.error));
+    }
+    assert.equal(configuration.data.generation, 1);
+    await assertPresetIndependent(configuration);
+    const revisions = await adminRequest(
       "GET",
       `/namespaces/${namespaceId}/agents/${agent.data.id}/revisions`,
     );
-    assert.equal(revisionsBefore.status, 200, JSON.stringify(revisionsBefore.error));
-    const deniedDeploy = await expectApiFailureWithoutSecret(
-      request,
-      "POST",
-      `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
-      undefined,
-      secretApiProtectedValues({ secretApi }),
-      "Secret-backed deploy before Agent service principal operate",
-    );
-    assert.equal(
-      deniedDeploy.status,
-      403,
-      `Agent service principal denial returned HTTP ${deniedDeploy.status}`,
-    );
-    const revisionsAfter = await request(
-      "GET",
-      `/namespaces/${namespaceId}/agents/${agent.data.id}/revisions`,
-    );
-    assert.equal(revisionsAfter.status, 200, JSON.stringify(revisionsAfter.error));
+    assert.equal(revisions.status, 200, JSON.stringify(revisions.error));
     assert.deepEqual(
-      revisionsAfter.data.map(({ id }) => id),
-      revisionsBefore.data.map(({ id }) => id),
-      "missing Agent service-principal Secret operate must reject deployment before revision admission",
+      revisions.data.map(({ id }) => id),
+      [deployed.data.id],
     );
-    await Promise.all(
-      [
-        secretApi.model,
-        secretApi.slackApp,
-        secretApi.slackBot,
-        secretApi.probe,
-        secretApi.sharedProbe,
-      ]
-        .filter(Boolean)
-        .map((secret) =>
-          grantSecretOperate(
-            observerPool,
-            namespaceId,
-            persistedAgent.servicePrincipalId,
-            secret.id,
+    const password = await resource("secret", `gateway-password-${hash(agent.data.id)}`, placement);
+    gatewayPassword = Buffer.from(password.data["gateway-password"], "base64").toString("utf8");
+    assert.ok(gatewayPassword.length > 0);
+  } else {
+    configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
+      kind: "agent",
+      ...launch.configuration,
+    });
+    assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
+    assert.deepEqual(configuration.data.values, launchValues);
+    if (Object.keys(secretBindings).length > 0) {
+      assert.deepEqual(configuration.data.secretBindings, secretBindings);
+    }
+    agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
+      ...launch.agent,
+      configurationId: configuration.data.id,
+    });
+    assert.equal(agent.status, 201, JSON.stringify(agent.error));
+    assert.deepEqual(agent.data.harnessAuth, { method: "api_key", source: secretApi.model.ref });
+    await assertPresetIndependent(configuration);
+    const persistedAgent = await storedAgent(observerPool, namespaceId, agent.data.id);
+    const provisionedGatewayPassword = await provisionAgentTransportSecret(
+      directory,
+      placement,
+      agent.data.id,
+      {
+        gatewayPassword,
+        legacyCombined: options.legacyRuntimeCredentials === true,
+      },
+    );
+    assert.equal(provisionedGatewayPassword, gatewayPassword);
+    const legacyTransportName = `openclaw-agent-transport-${hash(agent.data.id)}`;
+    legacyTransport =
+      options.legacyRuntimeCredentials === true
+        ? await resource("secret", legacyTransportName, placement)
+        : undefined;
+    {
+      const revisionsBefore = await request(
+        "GET",
+        `/namespaces/${namespaceId}/agents/${agent.data.id}/revisions`,
+      );
+      assert.equal(revisionsBefore.status, 200, JSON.stringify(revisionsBefore.error));
+      const deniedDeploy = await expectApiFailureWithoutSecret(
+        request,
+        "POST",
+        `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
+        undefined,
+        secretApiProtectedValues({ secretApi }),
+        "Secret-backed deploy before Agent service principal operate",
+      );
+      assert.equal(
+        deniedDeploy.status,
+        403,
+        `Agent service principal denial returned HTTP ${deniedDeploy.status}`,
+      );
+      const revisionsAfter = await request(
+        "GET",
+        `/namespaces/${namespaceId}/agents/${agent.data.id}/revisions`,
+      );
+      assert.equal(revisionsAfter.status, 200, JSON.stringify(revisionsAfter.error));
+      assert.deepEqual(
+        revisionsAfter.data.map(({ id }) => id),
+        revisionsBefore.data.map(({ id }) => id),
+        "missing Agent service-principal Secret operate must reject deployment before revision admission",
+      );
+      await Promise.all(
+        [
+          secretApi.model,
+          secretApi.slackApp,
+          secretApi.slackBot,
+          secretApi.probe,
+          secretApi.sharedProbe,
+        ]
+          .filter(Boolean)
+          .map((secret) =>
+            grantSecretOperate(
+              observerPool,
+              namespaceId,
+              persistedAgent.servicePrincipalId,
+              secret.id,
+            ),
           ),
-        ),
-    );
-    secretApi = {
-      ...secretApi,
-      configuration: configuration.data,
-    };
-  }
+      );
+    }
 
-  const deployed = await request(
-    "POST",
-    `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
-  );
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+    deployed = await request("POST", `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`);
+    assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+  }
+  secretApi = { ...secretApi, configuration: configuration.data };
+  const persistedAgent = await storedAgent(observerPool, namespaceId, agent.data.id);
   assert.deepEqual(deployed.data.harness, { id: harnessId, version: "1.0.0", mode });
   assert.deepEqual(deployed.data.harnessAuth, agent.data.harnessAuth);
   assert.equal(Object.hasOwn(deployed.data, "serviceAccount"), false);
@@ -2396,7 +2448,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   );
 
   if (legacyTransport !== undefined) {
-    const retained = await resource("secret", legacyTransportName, placement);
+    const retained = await resource("secret", legacyTransport.metadata.name, placement);
     const password = await resource("secret", `gateway-password-${hash(agent.data.id)}`, placement);
     assert.equal(retained.metadata.uid, legacyTransport.metadata.uid);
     assert.deepEqual(retained.data, legacyTransport.data);
@@ -3017,9 +3069,20 @@ async function assertStartupFailureDeploymentStatusDurable(context, topology, op
   });
   assert.deepEqual(
     Object.keys(failed).sort(),
-    ["agentId", "deploymentId", "error", "namespaceId", "progress", "status", "warnings"],
+    [
+      "agentId",
+      "cleanup",
+      "deploymentId",
+      "error",
+      "namespaceId",
+      "progress",
+      "status",
+      "warnings",
+    ],
     "deployment status must use the approved durable status shape",
   );
+  // No earlier revision retired, so no repository cleanup exists for this deployment (#1994).
+  assert.equal(failed.cleanup, null);
   assert.equal(failed.deploymentId, failure.revision.id);
   assert.equal(failed.namespaceId, topology.agent.namespaceId);
   assert.equal(failed.agentId, topology.agent.id);
@@ -3117,15 +3180,29 @@ function sharedVolumeSubPaths(pod) {
     .sort();
 }
 
-function assertPrivateStateInitContainer(pod) {
+function assertPrivateStateInitContainer(pod, { embeddedGatewayOwner = false } = {}) {
   const main = pod.spec.containers[0];
-  const [init] = pod.spec.initContainers ?? [];
+  const [init, owner] = pod.spec.initContainers ?? [];
   const { runAsUser, runAsGroup, fsGroup } = pod.spec.securityContext;
+  // An embedded gateway with no Secret environment also records its owner key (#2633), in a
+  // second init that mounts only its two in-memory volumes and no Agent-controlled state.
   assert.deepEqual(
     pod.spec.initContainers?.map(({ name }) => name),
-    ["prepare-private-state"],
+    ["prepare-private-state", ...(embeddedGatewayOwner ? ["prepare-embedded-gateway-owner"] : [])],
     "runtime gateway and Codex Pods must prepare private /home/node state exactly once",
   );
+  if (embeddedGatewayOwner) {
+    assert.equal(owner.image, main.image);
+    assert.deepEqual(owner.volumeMounts, [
+      { name: "gateway-owner-key", mountPath: "/run/oce-gateway-owner-key" },
+      { name: "gateway-owner-start", mountPath: "/run/oce-gateway-owner-start" },
+    ]);
+    assert.deepEqual(owner.securityContext, {
+      allowPrivilegeEscalation: false,
+      readOnlyRootFilesystem: true,
+      capabilities: { drop: ["ALL"] },
+    });
+  }
   assert.equal(init.image, main.image, "private-state init must use the main workload image");
   assert.deepEqual(
     [
@@ -3205,6 +3282,8 @@ const continuityImage =
   "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKklEQVR4nGPQqLhEU8QwasGoBaMWjFowasGoBaMWjFowasGoBaMWDBULAPHFyEwoyF0pAAAAAElFTkSuQmCC";
 const gatewayPrivatePaths = [
   ["state", "/home/node/.openclaw/state"],
+  // Client migration receipts refer to the retained Gateway database (#3041).
+  ["client", "/home/node/.openclaw/client"],
   ["agent", "/home/node/.openclaw/agents/main/agent"],
   ["media", "/home/node/.openclaw/media"],
   ["worktrees", "/home/node/.openclaw/worktrees"],
@@ -4592,10 +4671,14 @@ async function assertCrossNamespaceSecretBindingDenied(context, topology) {
     topology.secretApi.assignmentPrincipalId,
     crossSecret.id,
   );
+  const agentPath = `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`;
+  const before = await topology.request("GET", agentPath);
+  assert.equal(before.status, 200, JSON.stringify(before.error));
+  assert.deepEqual(before.data.harnessAuth, topology.agent.harnessAuth);
   const denied = await expectApiFailureWithoutSecret(
     topology.request,
     "PATCH",
-    `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
+    agentPath,
     {
       configurationId: topology.agent.configurationId,
       harnessAuth: { method: "api_key", source: crossSecret.ref },
@@ -4603,17 +4686,20 @@ async function assertCrossNamespaceSecretBindingDenied(context, topology) {
     secretApiProtectedValues(topology, [crossValue]),
     "cross-Namespace Secret binding",
   );
-  assert.equal(denied.status, 404, `unexpected cross-Namespace denial ${denied.status}`);
-  const observed = await topology.request(
-    "GET",
-    `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
-  );
+  assert.equal(denied.status, 400, "an explicit foreign Namespace is an invalid binding");
+  assert.deepEqual(denied.error, {
+    code: "INVALID_REQUEST",
+    message: "Secret references cannot cross Namespaces.",
+  });
+  assert.equal(denied.data, undefined);
+  const observed = await topology.request("GET", agentPath);
   assert.equal(observed.status, 200, JSON.stringify(observed.error));
   assert.deepEqual(
     observed.data.harnessAuth,
-    topology.agent.harnessAuth,
+    before.data.harnessAuth,
     "cross-Namespace denial must preserve the valid same-Namespace bindings",
   );
+  assert.equal(observed.data.activeRevisionId, before.data.activeRevisionId);
   context.diagnostic(`secret-api cross-namespace: denied with HTTP ${denied.status}`);
 }
 

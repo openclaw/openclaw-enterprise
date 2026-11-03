@@ -56,8 +56,7 @@ The Agent's native Configuration selects a Harness through model/provider
 owns supported runtime selections, model catalogs, transport, and credential
 boundaries. OCC rejects conflicting, unknown, missing, or mode-incompatible
 selections before admitting a version: deploy returns `400 INVALID_REQUEST`
-with the specific reason, such as "The configured Agent model requires an
-explicit supported Harness runtime." A selected SandboxDriver currently requires
+with a reason that names the setting to change. A selected SandboxDriver currently requires
 `dedicated` Codex execution; it does not support embedded OpenClaw.
 
 An Agent update may include `executionMode`, `harnessAuth`, and `backendId`
@@ -89,7 +88,7 @@ ordered version history and at most one selected version, identified by
 readiness. See [Agent revisions](../../guides/topics/agent-revisions.md).
 
 The Agent revision records the source `configurationId`, `configurationKind`, and
-`configurationGeneration`, its complete saved native `configuration`
+`configurationGeneration`, [`gatewayManagedMode`](../agent-native-admin.md#gateway-managed-mode), its complete saved native `configuration`
 document, the approved Harness identity/version/mode, selected Compute identity,
 nullable `backendId`, and `harnessAuth` with its resolved internal source snapshot.
 The auth snapshot contains no credential bytes; public Agent revisions omit private
@@ -105,6 +104,11 @@ therefore records the source generation and the effective document after that
 transformation. Its SandboxDriver selection and the Agent's stable service
 principal remain internal; the current HTTP Agent revision schema omits them.
 See [SandboxDriver](../drivers/sandbox.md).
+
+After its checks pass, deployment saves the Agent `name` as the sole roster
+entry's `identity.name`, under `agents.entries.main` when the roster is omitted.
+The native admin UI shows it, up to 50 characters, instead of `Assistant`. OCC
+keeps a name the Configuration sets and does not name entries of a larger roster.
 
 The bodyless `POST /namespaces/:namespaceId/agents/:agentId/deploy` requires a
 `ready` Namespace, exact-Agent `deploy`, exact
@@ -209,10 +213,11 @@ continues, or past its convergence deadline stops the candidate and fails
 newer version supersedes still finishes the stop, even of a lifted refusal,
 then ends superseded.
 
-`AGENT_STOP_YIELDED` means the Agent was stopped and its gateway is
-still draining; `PREDECESSOR_STOP_YIELDED` means a dedicated replacement waits for
-the previous version's gateway to drain. Meanwhile the worker runs other due work,
-then repeats the stop without spending attempts.
+`AGENT_STOP_YIELDED` (the Agent was stopped), `PREDECESSOR_STOP_YIELDED` (a
+dedicated replacement waits for the previous version) and
+`SUPERSEDED_STOP_YIELDED` (a newer version replaced this dedicated one) mean a
+gateway is still draining. Meanwhile the worker runs other due work, then
+repeats the stop without spending attempts.
 
 ### Model check failure cause
 
@@ -286,8 +291,7 @@ finished. The worker reauthorizes the original actor, invokes the selected
 Compute Driver's idempotent `stopRevision`, and clears the exact
 `activeRevisionId` only after shutdown succeeds.
 
-Stop terminates inbound routing and execution while retaining the immutable
-Agent revision, Agent credentials, gateway state, and workspace. It neither creates an
+Stop terminates inbound routing and execution while retaining the Agent revision, Agent credentials, gateway state, and workspace. It neither creates an
 Agent revision nor calls destructive version retirement. Repeated stop requests
 converge safely, and one Agent's stop does not affect siblings.
 

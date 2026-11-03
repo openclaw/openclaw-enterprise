@@ -52,7 +52,10 @@
     },
     {
       "path": "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
-      "expectedTests": ["OpenShell enforces provider delivery and authenticated Codex exposure"]
+      "expectedTests": [
+        "OpenShell enforces provider delivery and authenticated Codex exposure",
+        "OpenShell dedicated Agents enforce Gateway tool policy during normal work"
+      ]
     },
     {
       "path": "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
@@ -60,7 +63,14 @@
         "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",
         "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution"
       ]
+    },
+    {
+      "path": "tests/integration/openshell-plugin-install-real.test.ts",
+      "expectedTests": ["OpenShell Agent workflow installs and retains selected Codex plugins"]
     }
   ],
-  "optionalEnv": ["OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE"]
+  "optionalEnv": [
+    "OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE",
+    "OCC_TEST_CODEX_INSTALL_PLUGIN_ID"
+  ]
 }

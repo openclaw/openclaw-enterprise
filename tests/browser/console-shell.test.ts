@@ -6,6 +6,7 @@ import type { BrowserContextOptions, Locator, Page } from "playwright";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import {
+  accessibleDescription,
   fileBrowser,
   holdRequests,
   login,
@@ -154,10 +155,10 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
   assert.equal(Math.round((await visibleBox(topbar)).height), 56);
   assert.equal(await topbar.locator(".brand").textContent(), "OpenClaw Enterprise");
   const mark = topbar.locator(".brand img");
-  const inverse = { path: "/console/oce-mascot-inverse.png", width: 48, height: 38 };
+  const inverse = { path: "/console/oce-mascot-inverse.png", width: 48, height: 48 };
   await waitForMark(mark, inverse);
   await page.emulateMedia({ forcedColors: "active" });
-  await waitForMark(mark, { path: "/console/oce-mascot.png", width: 20, height: 20 });
+  await waitForMark(mark, { path: "/console/oce-mascot.png", width: 48, height: 48 });
   await page.emulateMedia({ forcedColors: "none" });
   await waitForMark(mark, inverse);
   const header = await page
@@ -357,6 +358,107 @@ test("changing between desktop and phone layouts closes the account menu left be
   assert.equal(await page.locator("#account-menu-top").isVisible(), false);
 });
 
+const isFocused = (locator: Locator) =>
+  locator.evaluate((node) => node === globalThis.document.activeElement);
+
+// Refresh while offline rereads the session, and that read never reaches the API, which says
+// nothing about the session (finding 1896). The tab keeps its signed-in shell with the account
+// and navigation, names the connection on the page with focus on Retry, and shows no page or
+// Namespace data read before. A second Retry offline keeps that; Retry once online loads the page.
+for (const context of [desktop, phone]) {
+  test(`an offline Refresh keeps the signed-in shell and names the connection at ${context.viewport.width} px`, async (t) => {
+    const { fixture, page } = await openAgents(t, context);
+    const { email, name } = fixture.credentials;
+    const account = page.getByRole("button", {
+      name: context === desktop ? `${name} ${email}` : `Account: ${name}`,
+      exact: true,
+    });
+    const navigation =
+      context === desktop
+        ? page.getByRole("navigation", { name: "Main navigation", exact: true })
+        : page.getByRole("button", { name: "Open navigation", exact: true });
+
+    await page.context().setOffline(true);
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    const unreachable = page.locator(".content .state-panel");
+    await unreachable
+      .getByRole("heading", { name: "Could not reach OpenClaw Enterprise", exact: true })
+      .waitFor();
+    const retry = unreachable.getByRole("button", { name: "Retry", exact: true });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      assert.equal(await isFocused(retry), true, "focus is on Retry, not the page body");
+      assert.equal(await accessibleDescription(retry), "Check your connection, then try again.");
+      assert.equal(await account.isVisible(), true, "the account stays");
+      assert.equal(await navigation.isVisible(), true, "the navigation stays");
+      assert.doesNotMatch(await page.locator("body").innerText(), /Shell|Session unavailable/);
+      if (attempt === 0) {
+        await retry.click();
+        await page.locator(settledView).locator(".state-panel h2").waitFor();
+      }
+    }
+
+    await page.context().setOffline(false);
+    await retry.click();
+    await page.locator(settledView).getByText("Shell Agent", { exact: true }).waitFor();
+  });
+}
+
+// An answer from the API still signs the tab out after an offline Retry: here the controller
+// refuses this tab's pinned session key (401) because another tab signed in.
+test("Retry after an offline Refresh still signs out on a 401", async (t) => {
+  const { fixture, page } = await openAgents(t, desktop);
+  await page.context().setOffline(true);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  const retry = page.locator(".content .state-panel").getByRole("button", { name: "Retry" });
+  await retry.waitFor();
+  await page.context().setOffline(false);
+  const response = await page.context().request.post(`${fixture.origin}/api/auth/sign-in/email`, {
+    headers: { origin: fixture.origin },
+    data: { email: fixture.credentials.email, password: fixture.credentials.password },
+  });
+  assert.equal(response.status(), 200);
+
+  const refused = page.waitForResponse(
+    (candidate) => new URL(candidate.url()).pathname === "/api/auth/session",
+  );
+  await retry.click();
+  assert.equal((await refused).status(), 401);
+  await page.getByText("Your session has expired.", { exact: true }).waitFor();
+  await page.getByLabel("Email", { exact: true }).waitFor();
+  assert.equal(await page.locator(".shell").count(), 0);
+});
+
+// A session read the API does not answer within the console's 15 s request deadline says
+// nothing about the session either: the tab keeps its shell and names the connection.
+test("a Refresh whose session check times out keeps the signed-in shell", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Shell", { ready: true });
+  await fixture.createAgent(namespace.id, "Shell Agent");
+  const { page } = await newPage(t, fixture, { browser, context: desktop });
+  await page.clock.install();
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.locator(settledView).getByText("Shell Agent", { exact: true }).waitFor();
+  const { email, name } = fixture.credentials;
+
+  const held = await holdRequests(t, page, "**/api/auth/session", { once: true });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await held.requested;
+  await page.clock.runFor(15_000);
+  const unreachable = page.locator(".content .state-panel");
+  await unreachable
+    .getByRole("heading", { name: "Could not reach OpenClaw Enterprise", exact: true })
+    .waitFor();
+  const retry = unreachable.getByRole("button", { name: "Retry", exact: true });
+  assert.equal(await isFocused(retry), true, "focus is on Retry, not the page body");
+  assert.equal(
+    await page.getByRole("button", { name: `${name} ${email}`, exact: true }).isVisible(),
+    true,
+    "the account stays",
+  );
+  assert.doesNotMatch(await page.locator("body").innerText(), /Shell|Session unavailable/);
+});
+
 // Sign-in (UX spec 3.12): "Sign in" with the email hint as its one muted line, Email and
 // Password, a full-width primary, the ink wordmark, and the build in a muted footer.
 test("the sign-in page says Sign in, labels the email field and names the build", async (t) => {
@@ -438,8 +540,8 @@ test("the sign-in page leaves the footer out without a build commit", async (t) 
   assert.equal(await page.locator("#app").evaluate((node) => node.lastChild?.nodeType), 1);
 });
 
-// Namespaces (UX spec 3.12): one table card with Namespace, Status and Created columns. Rows stay
-// list items that open the Namespace's Agents, from the pointer or the keyboard.
+// Namespace rows group names, statuses, dates and deletion controls under matching headers.
+// They remain list items that open the Namespace's Agents from the pointer or keyboard.
 test("Namespaces read as a table whose rows open each Namespace's Agents", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -461,6 +563,7 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
     "Namespace",
     "Status",
     "Created",
+    "Actions",
   ]);
   assert.equal(
     (await style(head, "backgroundColor")).backgroundColor,
@@ -469,6 +572,7 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
   const columns = await head
     .locator("span")
     .evaluateAll((nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().left)));
+  const actionsHeader = await visibleBox(head.locator("span").last());
 
   for (const [namespace, label, tone] of [
     [ready, "Ready", "success"],
@@ -489,11 +593,18 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
     // The column name is read with the value but shown only by the head row.
     assert.match((await created.textContent()) ?? "", /^Created \S/);
     assert.ok((await visibleBox(created.locator(".namespace-cell-label"))).width <= 1);
-    // Each cell starts under its column's name.
+    // Names, statuses and dates align left; deletion controls align right under Actions.
     const lefts = await Promise.all(
       [link, badge, created].map(async (node) => Math.round((await visibleBox(node)).x)),
     );
-    assert.deepEqual(lefts, columns);
+    assert.deepEqual(lefts, columns.slice(0, 3));
+    const remove = await visibleBox(
+      row.getByRole("button", { name: `Delete ${namespace.name}`, exact: true }),
+    );
+    assert.equal(
+      Math.round(remove.x + remove.width),
+      Math.round(actionsHeader.x + actionsHeader.width),
+    );
   }
 
   // The keyboard reaches each row's link; the ring is drawn inside the table's clipped corners.
@@ -514,7 +625,7 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
   await page.keyboard.press("Enter");
   await page.waitForURL(`**/console/agents?namespace=${provisioning.id}`);
 
-  // A phone stacks each row: the badge beside the name and the labelled date beneath.
+  // A phone puts status and the labelled date below the name, beside the deletion control.
   await page.goBack();
   await list.waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
@@ -525,8 +636,15 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
   const name = await visibleBox(phoneRow.locator(".resource-name"));
   const status = await visibleBox(phoneRow.locator(".badge"));
   const date = await visibleBox(phoneRow.locator(".namespace-cell-created"));
-  assert.ok(status.x > name.x && Math.abs(status.y - name.y) < 16, "badge beside the name");
-  assert.ok(date.y > name.y + name.height, "date beneath the name");
+  const remove = await visibleBox(
+    phoneRow.getByRole("button", { name: `Delete ${ready.name}`, exact: true }),
+  );
+  assert.ok(status.y >= name.y + name.height, "status beneath the name");
+  assert.ok(date.y >= status.y + status.height, "date beneath the status");
+  assert.ok(
+    remove.x >= Math.max(status.x + status.width, date.x + date.width),
+    "deletion control beside status and date",
+  );
   assert.ok(
     (await page.evaluate(() => globalThis.document.documentElement.scrollWidth)) <= 390,
     "nothing scrolls sideways",
@@ -554,21 +672,70 @@ test("a sidebar link pressed while a Namespace switch renders opens once", async
     .getByRole("navigation", { name: "Main navigation" })
     .getByRole("link", { name: "Namespaces", exact: true });
   const box = await visibleBox(link);
-  await link.evaluate((node: HTMLElement) => {
-    node.dataset.pressed = "";
+  const press = await page.evaluateHandle(() => {
+    const observed = { link: null as Element | null };
+    document.addEventListener(
+      "mousedown",
+      (event) => {
+        if (event.isTrusted && event.target instanceof Element) {
+          observed.link = event.target.closest("a[data-nav]");
+        }
+      },
+      { capture: true, once: true },
+    );
+    return observed;
   });
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
+  assert.equal(await press.evaluate(({ link }) => link?.getAttribute("data-nav")), "namespaces");
   agents.release();
   // The load's next render puts a new link under the held press.
   await waitFor(
     "a render to replace the pressed link",
-    async () =>
-      (await link.evaluate((node: HTMLElement) => !("pressed" in node.dataset))) || undefined,
+    async () => (await press.evaluate(({ link }) => link?.isConnected === false)) || undefined,
   );
   await page.mouse.up();
   await page.waitForURL(`**/console/namespaces?namespace=${other.id}`);
   await page.locator(settledView).getByRole("list", { name: "Namespaces" }).waitFor();
   // One history entry: the click navigated once.
   assert.equal(await position(), switched + 1);
+});
+
+test("a press on one Agent's copy control does not activate another Agent's control", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Pressed", { ready: true });
+  await fixture.createAgent(namespace.id, "First Agent");
+  await fixture.createAgent(namespace.id, "Second Agent");
+  const { page } = await newPage(t, fixture, { browser, context: desktop });
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const view = page.locator(settledView);
+  await view.getByText("First Agent", { exact: true }).click();
+  const copy = page.getByRole("button", { name: "Copy Agent ID", exact: true });
+  await copy.waitFor();
+  const firstId = await page.locator(".page-meta-id .resource-id").innerText();
+  await page.getByRole("link", { name: "← Agents", exact: true }).click();
+  await view.getByText("Second Agent", { exact: true }).click();
+  const secondId = await page.locator(".page-meta-id .resource-id").innerText();
+  assert.notEqual(secondId, firstId);
+  await copy.hover();
+  const pressed = await copy.evaluateHandle((node) => node);
+  await page.mouse.down();
+  await page.goBack();
+  await view.getByText("First Agent", { exact: true }).waitFor();
+  await page.goBack();
+  await page.locator(".page-meta-id .resource-id").filter({ hasText: firstId }).waitFor();
+  assert.equal(await pressed.evaluate((node) => node.isConnected), false);
+  await copy.evaluate((node: HTMLElement) => {
+    node.addEventListener(
+      "click",
+      () => {
+        node.dataset.activated = "";
+      },
+      { once: true },
+    );
+  });
+  await copy.hover();
+  await page.mouse.up();
+  assert.equal(await copy.getAttribute("data-activated"), null);
 });

@@ -78,6 +78,7 @@ import {
   IMAGE_PULL_FAILING,
   codexApiKeyRefusal,
 } from "../helpers/refusal-text.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -2084,8 +2085,8 @@ test("Agent creation recognizes its saved Configuration when JSON serializes neg
   assert.equal(response.status(), 201);
   const { data } = await response.json();
   assert.equal(data.values.agents.defaults.models[model].params.temperature, 0);
-  const details = page.getByRole("button", {
-    name: "View new version, editable Configuration",
+  const details = page.getByRole("combobox", {
+    name: "Viewing version",
     exact: true,
   });
   await details.or(page.getByRole("alert").filter({ hasText: "Outcome unknown" })).waitFor();
@@ -2095,7 +2096,9 @@ test("Agent creation recognizes its saved Configuration when JSON serializes neg
     1,
     "the matching saved Configuration was recognized",
   );
-  await details.waitFor();
+  await details
+    .getByRole("option", { name: "Draft · Editable Configuration", exact: true, selected: true })
+    .waitFor({ state: "attached" });
 });
 
 test("Agent creation names the Configuration field that holds an inline model credential without showing it", async (t) => {
@@ -2567,12 +2570,8 @@ test("Agent creation retries a denied credential grant without duplicating its s
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   // Native IAM denies the administrator's grant authority after the session found it allowed. A
   // session that already knows it is refused sends no grant at all (finding 2109).
-  fixture.policy.restrictions.push({
-    id: "deny-credential-grant",
-    resourceKind: "installation",
+  const deniedGrant = restrict(fixture.policy, "administer", "installation", {
     resourceId: installation.id,
-    action: "administer",
-    effect: "deny",
   });
   await page.getByLabel("Agent name").fill("Grant retry Agent");
   await enterManualModel(page, "grant-retry-key", "gpt-4.1");
@@ -2588,10 +2587,7 @@ test("Agent creation retries a denied credential grant without duplicating its s
   assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
   const bindingPath = `/namespaces/${namespace.id}/iam/access-bindings`;
   assert.equal(pathRequests(requests, "POST", bindingPath).length, 0);
-  fixture.policy.restrictions.splice(
-    fixture.policy.restrictions.findIndex((item) => item.id === "deny-credential-grant"),
-    1,
-  );
+  liftRestriction(fixture.policy, deniedGrant);
 
   // The binding is really committed; only its response is lost before the browser sees it.
   await page.route(`**${bindingPath}`, async (route) => {
@@ -2665,9 +2661,7 @@ for (const swapped of ["Agent", "service principal"]) {
     });
     // If creation incorrectly continues to Agent details, inspect the actual grant before failing.
     await warning
-      .or(
-        page.getByRole("button", { name: "View new version, editable Configuration", exact: true }),
-      )
+      .or(page.getByRole("combobox", { name: "Viewing version", exact: true }))
       .waitFor();
     const saved = await fixture.request("GET", bindings);
     assert.equal(saved.status, 200);

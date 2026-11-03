@@ -491,31 +491,43 @@ test("dev-up honors Podman Compose file selection from the environment and expli
     false,
   );
 
-  // Explicit file flags must override COMPOSE_FILE, including argparse's attached
-  // short form. Real Compose must load the selected file before startup proceeds.
-  for (const form of ["split", "attached", "long equals"]) {
+  // Podman 4.9 can read an "h" in -fFILE as help. Check the arguments Podman
+  // receives as well as the configuration its Compose provider actually renders.
+  for (const form of ["split", "attached", "short equals", "long split", "long equals"]) {
     await t.test(form, async (t) => {
       const explicit = await createFixture(t, { engine: "podman" });
       const sourceDirectory = join(explicit.directory, "source with spaces");
       await symlink(explicit.env.DEV_UP_REPOSITORY, sourceDirectory);
       const selectedFile = join(sourceDirectory, "compose.yaml");
       const missingFile = join(explicit.directory, "missing-compose.yaml");
-      const fileArgs =
-        form === "split"
-          ? ["-f", selectedFile]
-          : [form === "attached" ? `-f${selectedFile}` : `--file=${selectedFile}`];
+      const fileArgs = {
+        split: ["-f", selectedFile],
+        attached: [`-f${selectedFile}`, "-f-dash.yaml", "-f==equals.yaml"],
+        "short equals": [`-f=${selectedFile}`],
+        "long split": ["--file", selectedFile],
+        "long equals": [`--file=${selectedFile}`],
+      }[form];
+      const options = ["--env-file", explicit.emptyEnv];
+      const projectOptions = ["--project-name", "oce-dev-up-explicit-files"];
+      const overlay = join(explicit.directory, "another file.yaml");
+      await writeFile(overlay, "services: {}\n");
+      if (form === "attached") {
+        for (const file of ["-dash.yaml", "=equals.yaml"]) {
+          await writeFile(join(explicit.directory, file), "services: {}\n");
+        }
+      }
       const result = await runDevUp(
         [
           "--key-output",
           join(explicit.directory, "explicit-service-key.json"),
           "--",
-          "--env-file",
-          explicit.emptyEnv,
-          "--project-name",
-          "oce-dev-up-explicit-files",
+          ...options,
           ...fileArgs,
+          ...projectOptions,
+          "--file",
+          overlay,
         ],
-        { ...explicit.env, COMPOSE_FILE: missingFile },
+        { ...explicit.env, DEV_UP_REPOSITORY: explicit.directory, COMPOSE_FILE: missingFile },
       );
 
       assert.equal(result.status, 0, result.stderr ?? result.error?.message);
@@ -523,7 +535,78 @@ test("dev-up honors Podman Compose file selection from the environment and expli
       assert.match(result.stdout, /API URL: http:\/\/127\.0\.0\.1:3000/);
       const calls = composeInvocations(await readJsonLines(explicit.podmanLog));
       assert.ok(calls.some((entry) => entry.args.includes("config")));
-      assert.ok(calls.every((entry) => !entry.args.includes(missingFile)));
+      const expectedFiles =
+        {
+          attached: [`--file=${selectedFile}`, "--file=-dash.yaml", "--file==equals.yaml"],
+          "short equals": [`--file=${selectedFile}`],
+        }[form] ?? fileArgs;
+      const socketOverride = join(explicit.fixtureRepository, "compose.podman.yaml");
+      const expected = [
+        "compose",
+        ...options,
+        ...expectedFiles,
+        ...projectOptions,
+        "--file",
+        overlay,
+        "-f",
+        socketOverride,
+      ];
+      for (const { args } of calls) {
+        assert.deepEqual(args.slice(0, expected.length), expected);
+        assert.ok(!args.includes(missingFile));
+      }
+
+      await prepareLifecycleCommands(explicit, "success", { engine: "podman" });
+      const down = await runCommand(
+        explicit.cli,
+        [
+          "dev",
+          "down",
+          "--volumes",
+          "--",
+          ...options,
+          ...fileArgs,
+          ...projectOptions,
+          "--file",
+          overlay,
+        ],
+        {
+          cwd: explicit.fixtureRepository,
+          env: { ...explicit.env, COMPOSE_FILE: missingFile },
+        },
+      );
+      assert.equal(down.status, 0, down.stderr);
+      const cleanupCalls = await readJsonLines(explicit.env.SAFETY_LOG);
+      const cleanup = cleanupCalls.find(({ args }) => args.includes("down"));
+      assert.deepEqual(cleanup?.args, [
+        ...expected.slice(0, -1),
+        "compose.podman.yaml",
+        "down",
+        "--volumes",
+      ]);
+    });
+  }
+});
+
+test("Podman entry points reject empty or missing Compose file values before mutation", async (t) => {
+  for (const fileArgs of [["-f="], ["--file="], ["-f", ""], ["--file", ""], ["-f"], ["--file"]]) {
+    await t.test(JSON.stringify(fileArgs), async (t) => {
+      const fixture = await createFixture(t, { engine: "podman" });
+      await prepareLifecycleCommands(fixture, "success", { engine: "podman" });
+      const env = { ...fixture.env, COMPOSE_FILE: "must-not-select.yaml" };
+      const results = [
+        await runDevUp(["--", ...fileArgs], env),
+        await runCommand(fixture.cli, ["dev", "down", "--", ...fileArgs], {
+          cwd: fixture.fixtureRepository,
+          env,
+        }),
+      ];
+      for (const result of results) {
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /--file requires a Compose file path/);
+      }
+      const calls = await readJsonLines(env.SAFETY_LOG);
+      assert.ok(calls.every(({ args }) => !args.includes("up") && !args.includes("down")));
     });
   }
 });

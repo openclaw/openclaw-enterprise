@@ -1,3 +1,4 @@
+import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -13,6 +14,7 @@ import {
   createKubernetesClient,
   createRealKubernetesFixture,
   diagnosticDeadlineMs,
+  productionGatewayMemoryLimit,
   withinDiagnosticDeadline,
 } from "./kubernetes-real.mjs";
 
@@ -38,8 +40,8 @@ function safeKubectlFailure(error, signal) {
 
 // The pinned Kubernetes driver, not policy.process, owns workload identity.
 // This k3d fixture leaves sandbox_uid/gid and OpenShift namespace ranges unset:
-// NVIDIA/OpenShell bdb956f2cd65a635f1294fccf1d138d263bf650f
-// crates/openshell-driver-kubernetes/src/config.rs:335,569-602.
+// NVIDIA/OpenShell ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47
+// crates/openshell-driver-kubernetes/src/config.rs:425-455,731-758.
 export const OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY = Object.freeze({ uid: 10001, gid: 10001 });
 
 // Compute's dedicated Codex Harness categories: the workspace, generated images, and Codex
@@ -309,8 +311,13 @@ export function createOpenShellServiceLoopbackLookup(serviceHostname) {
   };
 }
 
-/** Initialize Codex once through its exposed service, without starting a thread or turn. */
-export async function assertExposedCodexInitializes(serviceUrl, appServerToken) {
+/** Initialize the actual exposed native process, then perform optional read-only discovery. */
+export async function assertExposedCodexInitializes(serviceUrl, appServerToken, reads = []) {
+  assert.ok(
+    reads.every(({ method }) =>
+      ["plugin/list", "plugin/read", "plugin/installed", "config/read"].includes(method),
+    ),
+  );
   const controllerRequire = createRequire(
     new URL("../../apps/controller/package.json", import.meta.url),
   );
@@ -323,73 +330,87 @@ export async function assertExposedCodexInitializes(serviceUrl, appServerToken) 
     perMessageDeflate: false,
     closeTimeout: 1_000,
   });
-
-  let stage = "WebSocket upgrade";
+  const requests = [
+    {
+      method: "initialize",
+      params: {
+        clientInfo: { name: "openclaw-enterprise-openshell-integration", version: "1.0.0" },
+        capabilities: { experimentalApi: true },
+      },
+    },
+    ...reads,
+  ];
+  let index = 0;
+  const results = [];
   try {
-    await new Promise((resolve, reject) => {
-      // Report only the stage and status; peer payloads and close reasons can contain credentials.
-      const fail = (detail) => reject(new Error(`OpenShell exposed Codex ${stage}: ${detail}.`));
-      const deadline = setTimeout(() => fail("timed out after 5 s"), 5_000);
+    return await new Promise((resolve, reject) => {
+      // Peer payloads and close reasons can contain credentials; report only method/status.
+      const fail = (detail) =>
+        reject(
+          new Error(
+            `OpenShell exposed Codex ${requests[index]?.method ?? "transport"}: ${detail}.`,
+          ),
+        );
+      const deadline = setTimeout(() => fail("timed out"), reads.length === 0 ? 5_000 : 30_000);
+      const send = () => socket.send(JSON.stringify({ id: index + 1, ...requests[index] }));
       socket.once("close", (code) => {
         clearTimeout(deadline);
         fail(`socket closed (code ${code})`);
       });
-      socket.once("error", () => fail("WebSocket error"));
+      socket.once("error", () => {
+        clearTimeout(deadline);
+        fail("WebSocket error");
+      });
       socket.once("unexpected-response", (_request, response) => {
+        clearTimeout(deadline);
         fail(`HTTP ${response.statusCode}`);
         response.destroy();
       });
-      const id = 1;
-      socket.once("open", () => {
-        stage = "initialize response after HTTP 101";
-        const params = {
-          clientInfo: { name: "openclaw-enterprise-openshell-integration", version: "1.0.0" },
-          capabilities: { experimentalApi: true },
-        };
-        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method: "initialize", params }));
-      });
-      socket.on("message", function receiveInitialize(data) {
+      socket.once("open", send);
+      socket.on("message", (data) => {
         let message;
         try {
           message = JSON.parse(data);
         } catch {
-          return fail("invalid JSON");
-        }
-        if (message?.id !== id || "method" in message) {
+          clearTimeout(deadline);
+          fail("invalid JSON");
           return;
         }
-        if (message.error !== undefined) {
-          const code = message.error?.code;
-          return fail(Number.isSafeInteger(code) ? `RPC error (code ${code})` : "RPC error");
+        if (message?.id !== index + 1 || "method" in message) {
+          return;
         }
-        if (message.result === undefined || message.result === null) {
-          return fail("missing initialize result");
-        }
-        socket.off("message", receiveInitialize);
-        stage = "initialized notification write";
-        const notification = { jsonrpc: "2.0", method: "initialized", params: {} };
-        socket.send(JSON.stringify(notification), (error) => {
-          if (error) {
-            return fail("WebSocket write failed");
-          }
+        if (message.error !== undefined || message.result == null) {
           clearTimeout(deadline);
-          resolve();
-        });
+          fail("RPC did not succeed");
+          return;
+        }
+        if (index === 0) {
+          socket.send(JSON.stringify({ method: "initialized", params: {} }));
+        } else {
+          results.push(message.result);
+        }
+        index++;
+        if (index === requests.length) {
+          clearTimeout(deadline);
+          resolve(results);
+        } else {
+          send();
+        }
       });
     });
   } catch (error) {
     socket.terminate();
     throw error;
+  } finally {
+    socket.close(1000);
   }
-  // Codex does not acknowledge initialized. Send a normal close; this route may not echo it.
-  socket.close(1000);
 }
 
 // Model egress comes only from the credential source's profile, bound to native Codex.
 // Match either architecture of the pinned image, independent of the test runner's host.
 const openshellCodexBinaries = Object.freeze([
-  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
-  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
 ]);
 
 export function createOpenShellInstallationConfiguration({
@@ -410,7 +431,8 @@ export function createOpenShellInstallationConfiguration({
   configuration.drivers.configuration.id = "configuration-kubernetes-production";
   configuration.drivers.compute.id = "compute-kubernetes-production";
   // The real Gateway loads its plugins and installs the native worker bundle during the first turn.
-  configuration.drivers.compute.configuration.resources.gateway.limits.memory = "4Gi";
+  configuration.drivers.compute.configuration.resources.gateway.limits.memory =
+    productionGatewayMemoryLimit;
   configuration.drivers.compute.configuration.resources.namespace.quota = {
     pods: "14",
     "requests.cpu": "3",
@@ -593,7 +615,7 @@ function openShellGatewayServiceName(namespace) {
   return `openshell-${openshellHash(namespace, 10)}`;
 }
 
-// OpenShell v0.1.5 runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
+// OpenShell v0.1.6 runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
 // the gateway back. Mirrors internal/occdev/kubernetes.go and OpenShell sandbox_runtime.rs labels.
 export const openShellSupervisorLabels = Object.freeze({
   "openshell.ai/managed-by": "openshell",
@@ -717,7 +739,7 @@ export function createOpenShellKubernetesFixture({
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
-  openShellChartVersion = "0.1.5",
+  openShellChartVersion = "0.1.6",
   commandTimeoutMs,
   signal,
 }) {
@@ -971,14 +993,14 @@ export function createOpenShellKubernetesFixture({
     await applyOpenShellGatewayNetworkPolicies(namespace);
     await ensureOpenShellJwtSecret(namespace);
     const instance = openShellGatewayServiceName(namespace);
+    // Workspace preparation uses the chart-owned default account before an Agent's
+    // account is selected. Keep that account across later Gateway reconfiguration.
     const workspaceValues = [
       `--set-string=fullnameOverride=${instance}-workspace`,
       "--set=gateway.allowDriverConfig=true",
       `--set-string=gateway.serviceAccount.name=${instance}`,
       `--set-string=gateway.serviceAccount.namespace=${namespace}`,
       `--set-string=gateway.networkPolicy.podSelector.app\\.kubernetes\\.io/instance=${instance}`,
-      "--set=sandboxServiceAccount.create=false",
-      `--set-string=sandboxServiceAccount.name=${sandboxServiceAccountName ?? "openshell-sandbox"}`,
     ];
     await execute(
       openShellHelmPath,
@@ -1008,7 +1030,7 @@ export function createOpenShellKubernetesFixture({
       "--set=server.drivers.kubernetes.allowDriverConfig=true",
       // The gateway rejects every Sandbox template label it does not allow; Harness
       // Pods carry the OCE selector labels that NetworkPolicies and Services match.
-      '--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]',
+      `--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=${JSON.stringify(OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST)}`,
       "--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
       "--set-string=server.drivers.kubernetes.workspaceMode=operator",
       "--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
@@ -1319,7 +1341,7 @@ export function createOpenShellKubernetesFixture({
     assert.equal(claims.sub, `system:serviceaccount:${namespace}:${pod.spec.serviceAccountName}`);
   }
 
-  function assertApprovedOpenShellPrivileges(pod, { compatibilityBridge = false } = {}) {
+  function assertApprovedOpenShellPrivileges(pod) {
     assert.equal(
       pod.spec.runtimeClassName,
       openShellRuntimeClass,
@@ -1333,7 +1355,7 @@ export function createOpenShellKubernetesFixture({
     assert.deepEqual(
       [...initCapabilities],
       [],
-      "OpenShell v0.1.5 must not add capabilities to workload Pod init containers.",
+      "OpenShell v0.1.6 must not add capabilities to workload Pod init containers.",
     );
     const networkSidecar = pod.spec.containers.find(({ name }) =>
       ["openshell-network", "openshell-supervisor-network"].includes(name),
@@ -1341,11 +1363,9 @@ export function createOpenShellKubernetesFixture({
     assert.equal(
       networkSidecar,
       undefined,
-      "OpenShell v0.1.5 must keep its network supervisor outside the workload Pod.",
+      "OpenShell v0.1.6 must keep its network supervisor outside the workload Pod.",
     );
-    const container = compatibilityBridge
-      ? pod.spec.containers.find(({ name }) => name === "agent")
-      : harnessContainer(pod);
+    const container = pod.spec.containers.find(({ name }) => name === "agent");
     assert.ok(container, "the provider-owned Pod must contain its Agent container.");
     assert.equal(container.securityContext?.allowPrivilegeEscalation, false);
     assert.deepEqual(container.securityContext?.capabilities?.drop, ["ALL"]);
@@ -1386,7 +1406,7 @@ export function createOpenShellKubernetesFixture({
     }
   }
 
-  async function requestCodexTurnFromPod({
+  async function requestCodexFromPod({
     namespace,
     pod,
     container,
@@ -1394,6 +1414,7 @@ export function createOpenShellKubernetesFixture({
     prompt,
     appServerUrl,
     appServerTokenPath,
+    readThreadId,
     observeFailure = false,
     timeoutMs = 300_000,
   }) {
@@ -1544,6 +1565,15 @@ export function createOpenShellKubernetesFixture({
             capabilities: { experimentalApi: true },
           });
           socket.send(JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} }));
+          if (${JSON.stringify(readThreadId)} !== undefined) {
+            const result = await request("thread/read", {
+              threadId: ${JSON.stringify(readThreadId)}, includeTurns: true,
+            });
+            finished = true;
+            clearTimeout(timeout);
+            process.stdout.write(JSON.stringify(result.thread), () => process.exit(0));
+            return;
+          }
           // A Gateway serving an OpenShell Harness names the Sandbox workspace root; Codex
           // cannot start exec tools in a working directory that does not exist there.
           const workspace = process.env.OPENCLAW_REMOTE_WORKSPACE_ROOT ?? "/home/node/workspace";
@@ -1573,6 +1603,7 @@ export function createOpenShellKubernetesFixture({
       socket.addEventListener("message", ({ data }) => {
         if (finished) return;
         const message = JSON.parse(String(data));
+        if (${JSON.stringify(readThreadId)} !== undefined && message.id === undefined) return;
         const { method, params } = message;
         const item = params?.item;
         // Any server request (an approval of any API version) counts as an action too.
@@ -1714,6 +1745,11 @@ export function createOpenShellKubernetesFixture({
     );
   }
 
+  async function readCodexThreadFromGatewayPod({ namespace, gatewayPod, threadId }) {
+    assert.ok(typeof threadId === "string" && threadId.length > 0);
+    return requestCodexFromPod({ namespace, pod: gatewayPod, readThreadId: threadId });
+  }
+
   async function requestCodexTurnFromGatewayPod({
     namespace,
     gatewayPod,
@@ -1722,7 +1758,7 @@ export function createOpenShellKubernetesFixture({
     observeFailure = false,
     timeoutMs = 300_000,
   }) {
-    return requestCodexTurnFromPod({
+    return requestCodexFromPod({
       namespace,
       pod: gatewayPod,
       providerModel,
@@ -1739,7 +1775,7 @@ export function createOpenShellKubernetesFixture({
     prompt,
     appServerTokenPath,
   }) {
-    return requestCodexTurnFromPod({
+    return requestCodexFromPod({
       namespace,
       pod: harnessPod,
       container: "agent",
@@ -1772,6 +1808,7 @@ export function createOpenShellKubernetesFixture({
     assertGatewayBootstrapPolicies,
     assertNoSecretBytes,
     requestCodexTurnFromGatewayPod,
+    readCodexThreadFromGatewayPod,
     requestCodexTurnFromOpenShellHarnessPod,
     startGatewayPortForward,
   };

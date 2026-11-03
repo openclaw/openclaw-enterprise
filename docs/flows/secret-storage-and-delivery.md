@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-16
-last_updated_session: authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6
+updated: "2026-10-29"
+last_updated_session: "authoring-run/d5feb6ab-c39d-4b0f-9af9-d6aec0acfb42"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -101,6 +101,12 @@ its stored object was rewritten deletes it, pinned to the answered UID and
 resourceVersion. There is no value journal or automatic replay; a create still in
 flight can require operator recovery.
 
+Secret create, update and delete share the 12-second Kubernetes budget of
+[Configuration writes](configuration-driver/persistence-and-revisions.md). A Kubernetes
+write is sent only with at least 2 seconds of it left; otherwise the request fails with
+`503` and the write is not sent. A create that was sent and failed is cleaned up after
+the budget; a create that was not sent stored nothing and gets no cleanup read.
+
 ### 3. Bind a source, then admit references
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
@@ -170,6 +176,10 @@ CredentialSource and uses the public Namespace IAM API to grant the Agent princi
 updates the Secret and asks the Credential Gateway to reread it before deploying
 a new version. The private helper record freezes the Harness and Sandbox Driver
 choices so a rerun cannot silently change topology.
+`scripts/first-agent.mjs:withRecord` creates the PID lock and atomic record
+replacement with explicit owner read/write mode `0600`, independent of the
+process umask. It closes the temporary file before renaming and removes a
+failed temporary output without replacing the previous record.
 
 The tool provisions runtime credentials and requests deployment through
 OCC. The check requires the local OpenShell profile's Driver-owned
@@ -297,7 +307,7 @@ credential at its issuer.
 - [SecretDriver implementation specification](../../specs/.archive/14-secret-driver.md)
 - [Secret access architecture](../design/safeguards.md#secret-access)
 - [Kubernetes deployment](../guides/deploy.md)
-- [Deploy your first Agent](../guides/first-agent.md)
+- [Set up an OpenShell Codex Agent](../guides/deploy/local-setup.md)
 - [Configuration](../reference/configuration.md)
 - [Kubernetes Secret Driver](../reference/drivers/kubernetes-secret.md)
 
@@ -306,6 +316,12 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-01: A Secret create refused as not sent runs no cleanup read and keeps its `503`. (fix-3108, finding 3108)
+
+- 2026-11-01 08:10: Secret create, update and delete send no Kubernetes call after the 12-second write budget. (fix-3106b, finding 3106)
+
+- 2026-10-29 19:38: Keep local first-Agent records owner-readable under restrictive umasks. (authoring-run/d5feb6ab-c39d-4b0f-9af9-d6aec0acfb42 - cadab7afee966df8ff7a13250df443404ae76314)
 
 - 2026-10-16 01:36: Combine the OpenShell workspace guard with credential-independent Codex permissions. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
 

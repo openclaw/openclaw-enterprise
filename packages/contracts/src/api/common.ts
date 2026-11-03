@@ -714,6 +714,11 @@ export const RepositoryBindingSelectionsSchema = Type.Array(RepositoryBindingSel
   maxItems: 16,
 });
 
+export const GatewayManagedModeSchema = Type.Boolean({
+  description:
+    "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
+});
+
 export const CreateAgentBody = Type.Object(
   {
     initialWorkspaceFiles: Type.Optional(
@@ -734,6 +739,7 @@ export const CreateAgentBody = Type.Object(
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
+    gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
@@ -754,6 +760,12 @@ export const ProvisionAgentConfigurationBody = Type.Object(
 export const ProvisionAgentBody = Type.Object(
   {
     requestId: RequestId,
+    nativeAdmin: Type.Optional(
+      Type.Boolean({
+        description:
+          "Opt in to native admin UI access on this Agent's exact OCE HTTPS origin before its first deployment. Requires native admin access enabled on the Installation. Defaults to false.",
+      }),
+    ),
     initialWorkspaceFiles: Type.Optional(CreateAgentBody.properties.initialWorkspaceFiles),
     workspaceDefaultsId: Type.Optional(CreateAgentBody.properties.workspaceDefaultsId),
     name: Name,
@@ -766,6 +778,7 @@ export const ProvisionAgentBody = Type.Object(
       }),
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
+    gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
@@ -799,6 +812,7 @@ export const ValidateAgentCreateBody = Type.Object(
       },
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
+    gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     harnessAuth: Type.Optional(
@@ -846,17 +860,21 @@ export const UpdateAgentBody = Type.Object(
         ),
       ]),
     ),
-    configurationId: ConfigurationId,
+    configurationId: Type.Optional(ConfigurationId),
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
+    gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Union([Type.Ref("PluginApprovers"), Type.Null()])),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
     repositoryAccess: Type.Optional(RepositoryAccessSchema),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    anyOf: [{ required: ["configurationId"] }, { required: ["gatewayManagedMode"] }],
+  },
 );
 
 const ChannelDirectoryLookupFields = {
@@ -1049,7 +1067,7 @@ export const ErrorResponse = Type.Object(
           }),
           Type.Literal("REPOSITORY_GIT_PROFILE_UNSUPPORTED", {
             description:
-              "Deploy is refused because the selected Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile; git-read, git-full or several bindings could never start.",
+              "Deploy is refused because the selected Credential Proxy delivers repository Git only for github-repository bindings, or one git-write or github-installation binding; git-read, git-full or several bindings that are not all github-repository could never start.",
           }),
           Type.Literal("SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED", {
             description:
@@ -1090,6 +1108,23 @@ export const ErrorResponse = Type.Object(
         ]),
         message: Type.String({ minLength: 1, maxLength: 256 }),
         details: Type.Optional(Type.Array(ErrorDetail, { maxItems: 32 })),
+        remainingResources: Type.Optional(
+          Type.Array(
+            Type.Object(
+              {
+                kind: Type.String({ minLength: 1, maxLength: 64 }),
+                count: Type.Integer({ minimum: 0 }),
+                ids: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 20 }),
+              },
+              { additionalProperties: false },
+            ),
+            {
+              maxItems: 7,
+              description:
+                "Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others.",
+            },
+          ),
+        ),
       },
       { additionalProperties: false },
     ),
