@@ -9453,7 +9453,7 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     });
   const refused = await save(pluginsFor(["slack_*"]));
   assertApiError(refused, 400, "INVALID_REQUEST");
-  assert.match(refused.body.error.message, /distinct literal Slack tool names/);
+  assert.match(refused.body.error.message, /Select distinct literal Slack tool names/);
   const approved = pluginsFor(["slack_search_public"]);
   const saved = await save(approved);
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
