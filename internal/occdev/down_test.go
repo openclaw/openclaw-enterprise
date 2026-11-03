@@ -5,13 +5,112 @@ package occdev
 import (
 	"bytes"
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestDownLegacyProtectedStaticInferenceRecovery(t *testing.T) {
+	directory, log, sentinel := recoveryFixture(t, "oce-system", "openshell", "podman", "fail")
+	path := filepath.Join(directory, "state.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal(data, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	// Keep the historical wire fields even after startup stops using their Go
+	// counterparts. Never round-trip this receipt through developmentState.
+	const legacy = `{
+		"protectedEgress": true,
+		"databaseName": "openclaw_k8s_connected",
+		"openShellHostGatewayIP": "172.30.42.1",
+		"sandboxNetworkPolicyCeiling": [{"id":"legacy-inference","binary":"/usr/bin/python3.11","host":"inference.example.invalid","ports":[{"from":443,"to":443}]}]
+	}`
+	if err := json.Unmarshal([]byte(legacy), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	data, err = json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Dir(directory)
+	project := filepath.Join(root, "unrelated-project")
+	volume := filepath.Join(root, "k3d-occ-dev-unrelated-images")
+	for _, name := range []string{project, volume} {
+		if err := os.WriteFile(name, []byte("keep"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("COMPOSE_PROJECT_NAME", "unrelated-project")
+	assertSentinels := func() {
+		t.Helper()
+		for _, name := range []string{sentinel, project, volume} {
+			if contents, err := os.ReadFile(name); err != nil || string(contents) != "keep" {
+				t.Fatalf("unrelated resource changed: %s: %q, %v", name, contents, err)
+			}
+		}
+	}
+	assertCalls := func(want string) {
+		t.Helper()
+		if calls, err := os.ReadFile(log); err != nil || string(calls) != want {
+			t.Fatalf("unexpected cleanup commands: %q, %v; want %q", calls, err, want)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var output bytes.Buffer
+	opts := Options{Repository: root, Out: &output}
+	err = Down(ctx, opts)
+	var exitError *exec.ExitError
+	if err == nil || !strings.Contains(err.Error(), "cleanup incomplete; preserving "+directory) ||
+		!errors.As(err, &exitError) || exitError.ExitCode() != 7 {
+		t.Fatalf("want recorded cluster deletion failure, got %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("premature success output: %q", output.String())
+	}
+	for name, want := range map[string][]byte{"state.json": data, ".openclaw-development": []byte(stateMarker)} {
+		if got, err := os.ReadFile(filepath.Join(directory, name)); err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("failed cleanup lost or rewrote receipt %s: %q, %v", name, got, err)
+		}
+	}
+	recorded := filepath.Join(root, "recorded-cluster")
+	if got, err := os.ReadFile(recorded); err != nil || string(got) != "owned" {
+		t.Fatalf("failed deletion lost recorded resource: %q, %v", got, err)
+	}
+	const deletion = "cluster list -o json\ncluster delete occ-dev-recorded\n"
+	assertCalls(deletion)
+	assertSentinels()
+
+	// Retry the same on-disk receipt, changing only the inert delete outcome.
+	// The harness rejects caller endpoints, other clusters and Compose commands;
+	// its successful delete removes the recorded marker and volume ls is empty.
+	t.Setenv("RECOVERY_OUTCOME", "success")
+	if err := Down(ctx, opts); err != nil {
+		t.Fatalf("retry Down: %v", err)
+	}
+	assertCalls(deletion + deletion + "volume ls --filter label=k3d.cluster=occ-dev-recorded --format {{.Name}}\n")
+	for _, name := range []string{recorded, directory} {
+		if _, err := os.Lstat(name); !os.IsNotExist(err) {
+			t.Fatalf("successful cleanup retained %s: %v", name, err)
+		}
+	}
+	if output.String() != "Stopped Kubernetes development stack occ-dev-recorded.\n" {
+		t.Fatalf("unexpected success output: %q", output.String())
+	}
+	assertSentinels()
+}
 
 // These are command-boundary tests, not engine integration. Legacy recovery
 // covers k3d absence and deletion failures on both engines; these cases add

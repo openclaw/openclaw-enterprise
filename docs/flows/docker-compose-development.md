@@ -211,7 +211,9 @@ before creating the corresponding Gateway Workspace. Startup waits until the
 OCC Namespace becomes ready. See the
 [OpenShell flow](openshell-sandbox-provisioning.md#0-create-the-development-control-plane).
 
-### 6. Start protected OpenShell transport
+<a id="6-start-protected-openshell-transport"></a>
+
+### 6. Start authenticated OpenShell transport
 
 `internal/occdev/egress_k3d.go:protectedEgressSelection`,
 `internal/occdev/openshell_k3d.go:installDevelopmentPlatform`,
@@ -232,17 +234,16 @@ Any presence of `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP`, including an empty
 value, is rejected. Unset, empty and `0` protected-egress selections retain ordinary
 startup; malformed values still fail validation. Refusal does not select a fallback.
 
-The retained packaging fixtures still exercise authority provisioning and release
-ordering: the Gateway becomes ready after the API authority starts and before
-workers start. The fixtures cover authority TLS and public trust, native OpenShell
-PKI, and paired Backend and authority settings. For an existing installation,
-keep the recorded state and ownership evidence for cleanup and rollback.
+For an existing installation, keep the recorded state and ownership evidence
+for cleanup. Legacy protected fields remain readable in cleanup receipts but
+do not configure startup.
 
 The chart projects the administrative client certificate into API and worker
 only. The Backend supplies it to verified gRPC TLS for DNS or exact-IP server
-identities. Service traffic keeps its separate scoped bearer identity. For recorded
-protected state, the API alone receives authority TLS and the issuer public key; selected Gateway and
-supervisor Pods can reach that listener through narrow NetworkPolicies. See the
+identities. Service traffic keeps its separate scoped bearer identity. For
+separately prepared production installations with an authority, the API alone
+receives authority TLS and the issuer public key; selected Gateway and supervisor
+Pods can reach that listener through narrow NetworkPolicies. See the
 [Backend authentication boundary](../reference/backends.md#openshell-gateway).
 
 `selectedDevelopmentDatabase` validates an optional disposable database name
@@ -251,8 +252,7 @@ migrator and application URLs. Bootstrap, API and worker share the limited
 application-role URL. PostgreSQL starts while the bootstrap volume is prepared;
 Helm waits for both. Unselected profiles retain the existing database and
 transport defaults. The [retirement notice](../guides/deploy/local-openshell-images.md#select-the-protected-profile)
-describes accepted selectors; retained [packaging verification](../testing/static-egress.md#protected-launch-packaging)
-covers historical configuration and existing owners, not new local launches.
+describes accepted selectors.
 
 ## Debugging and Verification
 

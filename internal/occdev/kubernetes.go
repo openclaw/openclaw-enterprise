@@ -454,15 +454,6 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			// Native OpenClaw uses Node; retain both architecture-specific Codex allowances.
 			"configuration": map[string]any{"binaries": append(openShellCodexBinaries(), "/usr/local/bin/node")},
 		}
-		if s.ProtectedEgress {
-			if s.egressKeyID == "" {
-				return fmt.Errorf("protected egress requires the generated OpenShell JWT key identifier")
-			}
-			config["drivers"].(map[string]any)["credential_proxy"] = developmentEgressConfiguration(s)
-			sandbox := config["drivers"].(map[string]any)["sandbox"].(map[string]any)["configuration"].(map[string]any)
-			gateway := sandbox["gateway"].(map[string]any)
-			gateway["networkPolicyResources"] = append(gateway["networkPolicyResources"].([]any), developmentAuthorityEgressPolicy(s))
-		}
 		config["backend"] = []any{openShellBackendConfiguration(s)}
 	}
 	data, err := yaml.Marshal(config)
@@ -491,9 +482,6 @@ func openShellCodexBinaries() []string {
 func openShellBackendConfiguration(s *developmentState) map[string]any {
 	if s.authenticatedOpenShell() {
 		drivers := map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID}
-		if s.ProtectedEgress {
-			drivers["credential_proxy"] = developmentEgressDriver
-		}
 		return map[string]any{
 			"id": "openshell", "type": "openshell",
 			"configuration": map[string]any{

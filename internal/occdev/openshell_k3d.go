@@ -57,8 +57,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if len(opts.ComposeArgs) != 0 {
 		return fmt.Errorf("the Kubernetes-only profile does not accept Compose options")
 	}
-	protectedEgress, err := r.protectedEgressSelection("kubernetes", sandboxDriver)
-	if err != nil {
+	if err := r.protectedEgressSelection(); err != nil {
 		return err
 	}
 	databaseName, err := r.selectedDevelopmentDatabase("kubernetes")
@@ -117,9 +116,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		SandboxNetworkPolicies:      networkPolicies,
 		SandboxNetworkPolicyCeiling: ceiling,
 		Version:                     3,
-		ProtectedEgress:             protectedEgress,
 		DatabaseName:                databaseName,
-		OpenShellHostGatewayIP:      r.env["OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"],
 		Repository:                  opts.Repository,
 		ComputeDriver:               "kubernetes",
 		SandboxDriver:               sandboxDriver,
@@ -164,11 +161,6 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	for _, name := range required {
 		if _, err := exec.LookPath(name); err != nil {
 			return fmt.Errorf("%s is required on PATH", name)
-		}
-	}
-	if state.ProtectedEgress {
-		if err := r.checkProtectedOpenShellChart(ctx, state, openShellImages); err != nil {
-			return err
 		}
 	}
 	if err := r.selectImageEngine(ctx, r.setting("OCC_DEVELOPMENT_CONTAINER_ENGINE", "auto")); err != nil {
@@ -453,7 +445,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	return nil
 }
 
-// Install the interdependent platform releases before their final readiness gate.
+// Install the authenticated Gateway before the ordinary OCE release.
 // The caller owns cluster rollback, including a partially installed release.
 type developmentPlatformInputs struct {
 	openShell                                    *openShellDevelopmentAssets
@@ -465,11 +457,6 @@ func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developm
 	if err := r.ensureKubernetesNamespace(ctx, state.PlatformNamespace); err != nil {
 		return err
 	}
-	if state.ProtectedEgress {
-		if err := r.prepareDevelopmentEgress(ctx, state); err != nil {
-			return err
-		}
-	}
 	if state.SandboxDriver == "openshell" {
 		fmt.Fprintf(r.opts.Out, "Installing OpenShell Gateway and OCE in Namespace %s...\n", state.PlatformNamespace)
 		if err := r.installOpenShellGateway(ctx, state, inputs.openShell, state.PlatformNamespace, timeout); err != nil {
@@ -477,11 +464,6 @@ func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developm
 		}
 	} else {
 		fmt.Fprintf(r.opts.Out, "Installing OCE in Namespace %s...\n", state.PlatformNamespace)
-	}
-	if state.ProtectedEgress {
-		if err := r.readDevelopmentEgressKeyID(ctx, state); err != nil {
-			return err
-		}
 	}
 	statusProxySource, err := r.developmentStatusProxySource(ctx, state)
 	if err != nil {
@@ -821,9 +803,6 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	if state.authenticatedOpenShell() {
 		values["backend"] = map[string]any{"openshell": map[string]string{"clientSecretName": "openshell-client-tls"}}
 	}
-	if state.ProtectedEgress {
-		values["egressAuthority"] = developmentEgressChartValues(state)
-	}
 	if routing {
 		gatewayKey, err := randomDevelopmentSecret()
 		if err != nil {
@@ -866,26 +845,10 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	if err := exclusiveWrite(valuesPath, valuesData, 0600); err != nil {
 		return err
 	}
-	// The protected Gateway needs the API's authority to become ready. Keep
-	// the worker from claiming bootstrap work until its access and Gateway are
-	// in place. Override only this release, not the saved steady-state values.
-	install := []string{"--install"}
-	if state.ProtectedEgress {
-		install = append(install, "--set", "worker.replicaCount=0")
-	}
-	if err := r.helmUpgrade(ctx, state, valuesPath, timeout, install...); err != nil {
+	if err := r.helmUpgrade(ctx, state, valuesPath, timeout, "--install"); err != nil {
 		return err
 	}
-	if err := r.installDevelopmentAPIProxy(ctx, state, controllerImage, timeout); err != nil {
-		return err
-	}
-	if !state.ProtectedEgress {
-		return nil
-	}
-	if err := r.waitProtectedOpenShell(ctx, state, timeout); err != nil {
-		return fmt.Errorf("wait for protected OpenShell Gateway rollout before starting worker: %w", err)
-	}
-	return r.helmUpgrade(ctx, state, valuesPath, timeout, "--set", "worker.replicaCount=1")
+	return r.installDevelopmentAPIProxy(ctx, state, controllerImage, timeout)
 }
 
 // helmUpgrade installs or upgrades the chart from one complete values file.

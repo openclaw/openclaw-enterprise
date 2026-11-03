@@ -376,8 +376,8 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	return runtimeReference, nil
 }
 
-// Kubernetes-only installations always authenticate the Gateway, independently
-// of the optional static-inference authority. Compose keeps its existing profile.
+// Kubernetes-only installations always authenticate the Gateway.
+// Compose keeps its existing profile.
 func (state *developmentState) authenticatedOpenShell() bool {
 	return state.DeploymentMode == "k3d" && state.SandboxDriver == "openshell"
 }
@@ -402,11 +402,7 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 		}
 	}
 	args := []string{"upgrade", "--install", openShellGatewayService, assets.gatewayChart, "--namespace", namespace, "--kubeconfig", filepath.Join(state.directory, "kubeconfig"), "--kube-context", "k3d-" + state.Cluster, "--timeout", timeout.String()}
-	// The registry contacts OCC at startup. Install both releases before waiting
-	// for the protected Gateway; native PKI hooks still complete synchronously.
-	if !state.ProtectedEgress {
-		args = append(args, "--wait")
-	}
+	args = append(args, "--wait")
 	args = append(args, openShellGatewayValues(state, assets, gatewayValues)...)
 	if err := r.run(ctx, "helm", args...); err != nil {
 		return err
