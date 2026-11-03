@@ -77,7 +77,9 @@ export function documentApiExamples<T>(document: T): T {
         }
         const value =
           parameterName === "cursor"
-            ? (Object.hasOwn(cursorExamples, name) ? cursorExamples[name] : undefined)
+            ? Object.hasOwn(cursorExamples, name)
+              ? cursorExamples[name]
+              : undefined
             : lookup(parameterExamples, parameterName);
         if (value === undefined) {
           throw new Error(`Missing parameter example: ${name}.${parameterName}`);
