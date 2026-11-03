@@ -103,6 +103,32 @@ const gitEnvironment = (root, extra = {}) => {
 const git = (root, args, input, extra) =>
   run("/usr/bin/git", args, { env: gitEnvironment(root, extra), input, allowFailure: true });
 
+test("published client files stay owner-readable when umask masks owner read", async (t) => {
+  const parent = await realpath(await temporaryDirectory(t));
+  const session = join(parent, "session");
+  const script = `
+    import { lstat, readFile } from "node:fs/promises";
+    import { join } from "node:path";
+    import { writeClientConfiguration, readClientConfiguration } from ${JSON.stringify(
+      resolve("apps/controller/src/drivers/repo/github/credentials/client/config.ts"),
+    )};
+    process.umask(0o400);
+    await writeClientConfiguration(${JSON.stringify(opened)}, ${JSON.stringify(session)}, undefined);
+    const mode = (await lstat(join(${JSON.stringify(session)}, "client.json"))).mode & 0o777;
+    const directory = (await lstat(${JSON.stringify(session)})).mode & 0o777;
+    await readClientConfiguration(${JSON.stringify(session)});
+    await readFile(join(${JSON.stringify(session)}, "bearer"));
+    process.stdout.write(JSON.stringify({ mode, directory }));
+  `;
+  const result = childProcess.spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "--eval", script],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { mode: 0o600, directory: 0o700 });
+});
+
 isolatedTest("gh refuses mixed and unsafe session files before starting a child", async (t) => {
   const parent = await temporaryDirectory(t);
   const session = join(parent, "session");

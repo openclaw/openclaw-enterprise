@@ -1,4 +1,5 @@
 import type {
+  AgentPluginCredentialSlot,
   InstallationCapabilities,
   PluginApprovalMode,
   PluginApprovers,
@@ -10,7 +11,14 @@ import type {
   PluginToolCatalogEntry,
   PluginToolPolicy,
 } from "@openclaw-enterprise/contracts";
-import { element, button, dismissOnBackdrop, setText } from "../dom.mjs";
+import {
+  element,
+  button,
+  dismissOnBackdrop,
+  mayReturnFocus,
+  setText,
+  setUnavailable,
+} from "../dom.mjs";
 
 export type CatalogDirection = "search" | "refresh" | "next" | "previous";
 export type CatalogEntry = PluginCatalogEntry & {
@@ -44,7 +52,11 @@ export interface ApproverFieldOptions {
 export interface PluginFieldsOptions {
   input: HTMLTextAreaElement;
   catalog?: PluginFieldCatalog | null;
-  capabilities?: NonNullable<InstallationCapabilities["pluginPolicies"]> | null;
+  capabilities?:
+    | (NonNullable<InstallationCapabilities["pluginPolicies"]> & {
+        credentialSlots?: readonly AgentPluginCredentialSlot[];
+      })
+    | null;
   onLoadPlugins?: ((direction: CatalogDirection, query: string) => void) | null;
   onCancelDiscovery?: (() => void) | null;
   onLoadTools?: ((id: string) => void) | null;
@@ -237,6 +249,17 @@ export function createPluginFields({
   const previous = button("Previous page", () => loadPage("previous"));
   const next = button("Next page", () => loadPage("next"));
   const pagination = element("div", { className: "plugin-pagination" }, previous, next);
+  // While the catalog cannot load, Load plugins and the pager are disabled and the status line
+  // says why, such as "Plugin browsing is unavailable with API-key authentication.": each is
+  // described by it (finding D796) and stays in the Tab order (finding 2899). Called wherever the
+  // status line or the controls change.
+  function describeCatalogControls() {
+    const reason = configuredOnly || catalog?.canLoad ? null : status;
+    const blocked = disabled || !catalog?.canLoad || catalog?.status === "loading";
+    setUnavailable(loadPlugins, blocked, reason);
+    setUnavailable(previous, blocked || !catalog?.hasPrevious, reason);
+    setUnavailable(next, blocked || !catalog?.nextCursor, reason);
+  }
   const available = button("Available plugins", () => showConfigured(false));
   const configured = button("Configured plugins", () => showConfigured(true));
   available.setAttribute("aria-label", "Available plugins");
@@ -306,7 +329,9 @@ export function createPluginFields({
   dialog.addEventListener("close", () => {
     waitingForCatalog = false;
     onCancelDiscovery?.();
-    configure.focus();
+    if (mayReturnFocus(dialog)) {
+      configure.focus();
+    }
   });
   // A search Enter must not submit a surrounding form.
   dialog.addEventListener("keydown", (event) => {
@@ -745,13 +770,8 @@ export function createPluginFields({
       statusText = `Page ${catalog.pageNumber ?? 1} · ${catalog.entries.length} plugins`;
     }
     loadPlugins.textContent = catalog?.status === "loading" ? "Loading plugins…" : "Load plugins";
-    loadPlugins.disabled = disabled || !catalog?.canLoad || catalog?.status === "loading";
     loadPlugins.hidden = configuredOnly || !onLoadPlugins;
     pagination.hidden = configuredOnly || !onLoadPlugins;
-    previous.disabled =
-      disabled || !catalog?.canLoad || !catalog?.hasPrevious || catalog?.status === "loading";
-    next.disabled =
-      disabled || !catalog?.canLoad || !catalog?.nextCursor || catalog?.status === "loading";
     available.setAttribute("aria-pressed", String(!configuredOnly));
     configured.setAttribute("aria-pressed", String(configuredOnly));
     const count = Object.keys(values ?? {}).length;
@@ -769,6 +789,7 @@ export function createPluginFields({
       statusText = `${count} configured plugin${count === 1 ? "" : "s"}`;
     }
     setText(status, statusText);
+    describeCatalogControls();
     workspace.dataset.showDetails = String(tabState().activeId !== null);
     renderPluginList(values, entries, catalogLoading);
     const activeId = tabState().activeId;
@@ -824,6 +845,12 @@ export function createPluginFields({
         enabled.addEventListener("change", () =>
           updateSelection(entry.id, (selection) => {
             selection.enabled = enabled.checked;
+            if (
+              !enabled.checked &&
+              capabilities?.credentialSlots?.some((slot) => slot.pluginId === entry.id)
+            ) {
+              delete selection.driverPolicy;
+            }
           }),
         );
         const actionsId = `${input.id}-plugin-actions`;
@@ -852,6 +879,52 @@ export function createPluginFields({
             ),
           ),
         );
+      }
+      if (selected?.enabled) {
+        for (const slot of capabilities?.credentialSlots ?? []) {
+          if (slot.pluginId !== entry.id) {
+            continue;
+          }
+          const bindings = selected.driverPolicy?.credentials;
+          const current = isObject(bindings) ? bindings[slot.id] : undefined;
+          const stale =
+            typeof current === "string" &&
+            selected.driverPolicy?.releaseSha256 !== slot.releaseSha256;
+          const options: Choice[] = [
+            ["", "Install without an account"],
+            ...slot.sources.map(({ id, name }) => [id, name] as const),
+          ];
+          if (stale) {
+            options.push(["stale", "Release changed — select an account again", true]);
+          }
+          details.append(
+            select(
+              slot.label,
+              stale ? "stale" : typeof current === "string" ? current : "",
+              options,
+              (sourceId) =>
+                updateSelection(entry.id, (selection) => {
+                  if (sourceId) {
+                    selection.driverPolicy = {
+                      releaseSha256: slot.releaseSha256,
+                      credentials: { [slot.id]: sourceId },
+                    };
+                  } else {
+                    delete selection.driverPolicy;
+                  }
+                }),
+            ),
+          );
+          if (!slot.sources.length) {
+            details.append(
+              element(
+                "p",
+                { className: "hint" },
+                "No compatible, ready credential is available to both you and this Agent.",
+              ),
+            );
+          }
+        }
       }
       const enablementOnly = capabilities?.policyScopeByPlugin?.[entry.id] === "enablement_only";
       if (selected) {
@@ -1253,11 +1326,7 @@ export function createPluginFields({
       }
       input.readOnly = value;
       configure.disabled = value;
-      loadPlugins.disabled = value || !catalog?.canLoad || catalog?.status === "loading";
-      previous.disabled =
-        value || !catalog?.canLoad || !catalog?.hasPrevious || catalog?.status === "loading";
-      next.disabled =
-        value || !catalog?.canLoad || !catalog?.nextCursor || catalog?.status === "loading";
+      describeCatalogControls();
       updateDetailDisabled(selections() === null);
     },
     resetSearch() {
@@ -1272,7 +1341,7 @@ export function createPluginFields({
     // `unread` says the capabilities read failed, so nothing is known about Installation support;
     // the owner shows why (finding 2538).
     setCapabilities(
-      value: NonNullable<InstallationCapabilities["pluginPolicies"]> | null,
+      value: NonNullable<PluginFieldsOptions["capabilities"]> | null,
       unread = false,
     ) {
       capabilities = value;

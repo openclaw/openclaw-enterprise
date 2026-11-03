@@ -6,12 +6,14 @@ import {
   type DriverConfigurationDescriptor,
   type DriverImplementation,
 } from "@openclaw-enterprise/contracts";
+import { immutableCopy } from "@openclaw-enterprise/utils";
 
 export interface DriverConfigurationRegistration {
   readonly capability: DriverCapability;
   readonly driverId: string;
   readonly implementation: string;
   readonly definition: DriverImplementation;
+  readonly startupConfiguration?: Readonly<Record<string, unknown>>;
 }
 
 interface Entry extends DriverConfigurationRegistration {
@@ -68,7 +70,14 @@ export class DriverConfigurationRegistry {
       if (this.entries.has(key) || pending.has(key)) {
         throw new Error("Duplicate Driver configuration contribution identity.");
       }
-      pending.set(key, { ...registration, contribution, binding });
+      pending.set(key, {
+        ...registration,
+        ...(registration.startupConfiguration === undefined
+          ? {}
+          : { startupConfiguration: immutableCopy(registration.startupConfiguration) }),
+        contribution,
+        binding,
+      });
     }
     for (const [key, entry] of pending) {
       this.entries.set(key, entry);

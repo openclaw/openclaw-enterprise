@@ -8,15 +8,14 @@ the short-lived credential. The setup and verification depend on the selected
 delivery profile. The [architecture walkthrough](../design/credential-proxy.md)
 shows what a child process can request and what it can read in the response.
 
-**There is no qualified stock OpenShell deployment for protected access in this
-release.** Stock OpenShell 0.1.5 is not qualified. A successful fixture, Helm
-rollout, or source registration does not establish an installed enforcing path.
-Deploy refuses a `git-write` binding on the bundled OpenShell Credential Proxy
-with `409 REPOSITORY_GIT_SENDER_UNQUALIFIED`.
-Before enrolling real credentials, qualify the exact Driver, Compute, Sandbox,
-images, charts, and TLS path for the requested profile. The
+Use matching OpenShell 0.1.6 components and mandatory pre-credential middleware
+for [repository enrollment](repository-credentials/openshell-enrollment.md).
+A rollout or source registration alone does not establish enforcement. Missing
+request hooks are refused before credential release. Older or unqualified
+compositions can return `409 REPOSITORY_GIT_SENDER_UNQUALIFIED`; do not broaden a
+ref-limited grant to bypass that error. The
 [Credential Proxy reference](../reference/drivers/credential-proxy.md) describes
-the contract those components must meet.
+the delivery contracts.
 
 ## Choose the path before changing an installation
 
@@ -41,7 +40,7 @@ For a reviewed development candidate, follow
 [local candidate image selection](deploy/local-openshell-images.md), including
 all three immutable OpenShell images, their source commit, and matching charts.
 Use its protected launch procedure only for the profile it prepares. It creates
-a development installation for qualification, not a supported stock deployment.
+a development installation; production still requires its own trust and network setup.
 
 For protected static inference, the Installation selects the same Driver ID in
 `backend[].drivers.credential_proxy` and `drivers.credential_proxy`. A bundled
@@ -103,6 +102,57 @@ copy either into Agent configuration. The request-phase worker service and its
 TLS port are separate from the static API authority above. A missing key,
 unqualified sender, or unavailable trust path is a stop condition, not a reason
 to use an ambient token.
+
+## Enable Google Workspace requests from a dedicated worker
+
+OCE binds the selected Google source to its host, path, OAuth scopes and plugin
+release when deploying the Agent. For each request, the OpenShell supervisor
+sends the HTTP details and deployed binding to a shared guard in the execution
+cluster. The guard checks the release’s operation map locally. OpenShell
+substitutes the bearer after approval. Redeploy to apply a new plugin selection.
+Public Discovery uses no credential.
+
+Set the source’s `config.binary` to `/usr/local/lib/oce/plugins/google/bin/gog`
+when the installation allows other executables. The checks also cover `gog` helpers.
+
+Install the guard once for the OpenShell Gateway. Use the execution cluster’s
+Helm context and the same digest-pinned OCE controller image that deploys the map.
+
+```sh
+helm upgrade --install oce-plugin-guard deploy/helm/openclaw-plugin-request-guard \
+  --namespace openshell-system --values guard-values.yaml --set-string image="$OCE_IMAGE"
+```
+
+In `guard-values.yaml`, set `tlsSecretName` for the guard Service DNS name,
+`issuerSecretName` for the Gateway’s verification key (`public.pem`), and
+`issuer` and `keyId` to match the Gateway. Set `clients` to the Gateway and
+supervisor namespace and Pod selectors, as illustrated in the
+[chart values](../../deploy/helm/openclaw-plugin-request-guard/values.yaml).
+Allow both peers to reach the Service. The guard reads its keys at startup.
+Roll its Pods after rotating a Secret in place and update the Gateway’s trusted
+CA if it changes. Register the guard on the Gateway:
+
+```toml
+[[openshell.supervisor.middleware]]
+name = "oce-plugin-requests"
+grpc_endpoint = "https://openclaw-enterprise-plugin-request-guard.openshell-system.svc.cluster.local:9445"
+audience = "urn:openshell:extension:middleware:oce-plugin-requests"
+tls_ca_cert_path = "/etc/openshell/certs/oce-egress-ca.pem"
+max_payload_bytes = 4194304
+timeout = "2s"
+```
+
+Restart the Gateway to load the registration. Set
+`drivers.sandbox.configuration.gateway.managedPluginMiddleware` to the same
+`grpc_endpoint`. Select the account, save, and deploy. If the guard is
+unreachable, the supervisor denies guarded requests before sending them upstream.
+
+For Gmail, configure `gmail.googleapis.com`, `/gmail/v1/users/me/messages` and
+`gmail.readonly`. At a controlled upstream, verify that listing IDs receives the
+bearer and fetching an individual message produces no request. To allow more
+mapped Gmail operations, explicitly configure a subtree such as `/gmail/v1/users/me/**`.
+[Withdraw the source](../reference/credential-sources/withdrawal.md) to stop its use
+by the running version.
 
 <a id="register-authorize-and-deploy-a-static-source"></a>
 <a id="register%2C-authorize%2C-and-deploy-a-static-source"></a>
@@ -171,29 +221,13 @@ workload. Do not bypass pending or failed admission.
 
 ## Enroll prepared GitHub access
 
-Choose model authentication before enrollment. For bundled OpenShell v5/v6 Git,
-use an existing ready Gateway Harness source **without `egress`**, named by
-`harnessAuth.method: credential_source`; the protected static source above cannot
-be reused beside Git. Gateway selection rejects an ordinary Secret-backed model
-substitute. A capable exact-dispatch Driver with verified policy reduction v2
-can instead admit Git alongside independently authorized routes as v7; see
-[selection differences](../reference/drivers/selection.md#select-a-protected-sender).
-Fresh static `openai` registration while Proxy is selected produces an egress
-source (a Git-only `repository.openShell` Proxy refuses it with `409`). For the v5/v6 combination, retain a suitable existing ordinary source
-or provision it in a supported Gateway-only installation before enabling Git.
-If neither is available, stop before enrollment.
-Neither configuration qualifies stock OpenShell. Native prepared Git is a separate
-composition without Sandbox or Credential Proxy.
-
-For a qualified protected repository sender, follow
-[GitHub App installation access](../reference/repository-credentials/protected-openshell-git.md#grant-access-to-a-github-app-installation)
-to make the App installation's scope available to the Namespace and select its
-`repositoryRef` and `github-installation` profile in the Agent's
-`repositoryBindings`. GitHub's installation membership and permissions set the
-outer limit. Access is finite by default; standing access needs a separate
-approval for that scope. The worker receives the signing and custody keys and
-prepares tokens; the Agent does not receive them. Qualify the selected profile
-before enrolling a real credential or enabling a protected revision.
+Follow [OpenShell repository enrollment](repository-credentials/openshell-enrollment.md)
+to authorize repositories for a Namespace and select up to 16 on an Agent using
+`github-repository`. The worker prepares a token for exactly that selection;
+GitHub permissions and branch rules still apply. No preview option or OCE branch
+list is needed. Existing explicit `git-write` grants retain their ref limits.
+The walkthrough includes the separate Gateway model source, worker custody,
+registry and mandatory pre-credential middleware setup.
 
 ## Verify use, loss, and withdrawal
 
@@ -241,11 +275,14 @@ cannot support continued model turns. Restore service with an authorized
 replacement binding and a new revision; restarting cannot restore withdrawn
 permission. See [withdrawal](../reference/credential-sources/withdrawal.md).
 
-For protected repository scope, use the admitted `<owner>/<repo>.git` path.
+For a `git-write` grant with an explicit review ref, use the admitted `<owner>/<repo>.git` path.
 Verify discovery (`GET /<owner>/<repo>.git/info/refs?service=git-upload-pack`),
 fetch (`POST /<owner>/<repo>.git/git-upload-pack`) and a push to the approved review
 ref (`POST /<owner>/<repo>.git/git-receive-pack`). Independently read the written ref. A push to another
 ref and `DELETE` on the same Git route must be refused before reaching the origin.
+For `github-repository`, push and read back its ref in each selected repository.
+Verify that the same Agent cannot push to an unselected private repository in the
+same installation. Ordinary permitted refs remain available within the selected set.
 For installation-wide access, there is **no OCE ref allowlist**: GitHub controls
 membership and permissions. Use an unsupported method such as that `DELETE` for
 the OCE negative check; a GitHub `404` outside membership is not an OCE denial.
@@ -286,8 +323,8 @@ Require a new model reply in the same conversation after Git removal. Continuity
 requires verified Git-only policy reduction and healthy independent model access;
 an explicit model withdrawal or IAM refusal queues retirement of that runtime.
 Unavailable evidence keeps cleanup pending without repeating the reduction or stopping
-a healthy Agent. Stock OpenShell cannot currently
-supply qualified proof of this workflow. Static model sources do not renew tokens;
+a healthy Agent. Verify continuity on the selected release; readiness alone does
+not prove it. Static model sources do not renew tokens;
 existing Gateway refresh sources use their own
 [rotation procedure](../reference/credential-sources.md#rotate-a-refresh-source).
 

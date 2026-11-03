@@ -1,17 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { publishWorkflow, repository } from "../../scripts/ci/container-release.mjs";
 import { setEnvironment } from "../helpers/environment.mjs";
 import { prependPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test("publication aliases and recovery preserve producer bytes and identity", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "container-resume-test-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "container-resume-test-");
   setEnvironment(t, { GH_TOKEN: "test-token" });
   prependPath(t, directory);
   const workflowSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();

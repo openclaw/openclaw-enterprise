@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
-import { once } from "node:events";
-import { readFile, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { createServer as createHttpsServer } from "node:https";
-import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
+import { signedLeaf } from "../helpers/certificates.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 // `oce-github pr-create` in OpenShell mode: each failure class prints its own line, so an
 // Agent or operator can tell a usage error, a local refusal, a route denial, a GitHub
@@ -43,51 +42,16 @@ function runHelper(args, env, secret) {
   });
 }
 
+// A server leaf for api.github.com signed by the Harness fixture CA, so the helper's
+// configured root trusts it.
 async function githubLeaf(tls) {
-  const openssl = (...args) => {
-    const result = spawnSync("openssl", args, { cwd: tls.directory, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr || result.error?.message);
-  };
-  await writeFile(
-    join(tls.directory, "github.ext"),
-    "basicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:api.github.com\n",
-  );
-  openssl(
-    "req",
-    "-new",
-    "-newkey",
-    "ec",
-    "-pkeyopt",
-    "ec_paramgen_curve:prime256v1",
-    "-nodes",
-    "-keyout",
-    "github.key",
-    "-out",
-    "github.csr",
-    "-subj",
-    "/CN=api.github.com",
-  );
-  openssl(
-    "x509",
-    "-req",
-    "-in",
-    "github.csr",
-    "-CA",
-    "ca.pem",
-    "-CAkey",
-    "ca.key",
-    "-CAcreateserial",
-    "-days",
-    "1",
-    "-out",
-    "github.pem",
-    "-extfile",
-    "github.ext",
-  );
-  return {
-    cert: await readFile(join(tls.directory, "github.pem")),
-    key: await readFile(join(tls.directory, "github.key")),
-  };
+  const { key, cert } = await signedLeaf(tls.directory, tls.authority, {
+    name: "github",
+    commonName: "api.github.com",
+    subjectAltName: "DNS:api.github.com",
+    days: 1,
+  });
+  return { cert, key };
 }
 
 test(
@@ -106,9 +70,7 @@ test(
       res.writeHead(reply.status, { "content-type": "application/json" });
       res.end(typeof reply.body === "string" ? reply.body : JSON.stringify(reply.body));
     });
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    t.after(() => server.close());
+    await listen(t, server);
     // A released port could be taken by a parallel listener; this one refuses until released.
     const refusing = await refusingPort();
     t.after(() => refusing.release());
@@ -420,9 +382,7 @@ test(
       res.writeHead(reply.status, { "content-type": "application/json" });
       res.end(JSON.stringify(reply.body));
     });
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    t.after(() => server.close());
+    await listen(t, server);
     const origin = "https://localhost:" + server.address().port;
     const { root } = await createNativeClientMaterial(
       t,

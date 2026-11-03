@@ -29,11 +29,15 @@
     "tests/browser/docs-compute-matrix.test.mjs",
     "tests/browser/console-namespace-not-ready.test.mjs",
     "tests/browser/console-secrets.test.ts",
-    "tests/browser/console-namespace-delete.test.ts"
+    "tests/browser/console-namespace-delete.test.ts",
+    "tests/browser/console-lifecycle-refusals.test.ts"
   ],
   "files": [
     {
-      "path": "tests/browser/console-agent-repositories.test.ts"
+      "path": "tests/browser/console-agent-repositories.test.ts",
+      "expectedTests": [
+        "selected repository collaborators never override an explicit Read-only Agent default"
+      ]
     },
     {
       "path": "tests/browser/console-agent-detail.test.mjs"
@@ -116,6 +120,9 @@
     },
     {
       "path": "tests/browser/console-namespace-delete.test.ts"
+    },
+    {
+      "path": "tests/browser/console-lifecycle-refusals.test.ts"
     }
   ]
 }

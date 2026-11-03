@@ -333,12 +333,17 @@ export function createDeploymentStatusPanel(
   // pending or how it ended, and its warning count.
   let previousSettled: string | undefined;
   let loading = false;
+  let readingOverview = false;
+  let generation = 0;
+  let recordGeneration = 0;
   // Quiet polls and their overview rereads leave Refresh alone until the reader presses it.
   let polling = false;
   let refreshQueued = false;
   let record: Deployment | null = null;
   let error: unknown = null;
   let overviewUnavailable = false;
+  // This records reconciliation, not a cached deployment; refusals reset it.
+  let terminalOverview: "unread" | "reading" | "ready" | "failed" = "unread";
   // The refused or failed overview read, when one was, so its text says why (finding 2538).
   let overviewError: unknown = null;
   // Tallest the details have been since a deploy was seen pending; see reserveHeight().
@@ -374,23 +379,48 @@ export function createDeploymentStatusPanel(
     }, DEPLOYMENT_POLL_MS);
   }
 
-  async function loadStatus(refreshAgent = false, poll = false) {
+  function finishRecord(overviewRead = false, retryOverview = false) {
+    if (refreshQueued) {
+      refreshQueued = false;
+      void loadStatus(true);
+    } else if (
+      !overviewRead &&
+      (terminalOverview === "unread" || (retryOverview && terminalOverview === "failed")) &&
+      !error &&
+      record &&
+      !deploymentPending(record.status)
+    ) {
+      // Either reader can discover completion. Reuse that verified record while
+      // refreshing current-version information, without another deployment GET.
+      terminalOverview = "reading";
+      void loadStatus(true, true, record);
+    } else {
+      schedulePoll();
+    }
+  }
+
+  async function loadStatus(refreshAgent = false, poll = false, verifiedRecord?: Deployment) {
     if (loading || !context.isCurrent()) {
       return;
     }
     clearTimeout(pollTimer);
     pollTimer = undefined;
-    // After a failed read, the record before it.
-    const previousStatus = lastRecord?.status ?? null;
+    const started = generation;
+    const startedRecord = recordGeneration;
+    readingOverview = refreshAgent;
+    // A failed background check does not change recorded progress. A definitive refusal
+    // clears both copies so a later transient failure cannot restore revoked evidence.
     loading = true;
     polling = poll;
     error = null;
-    overviewUnavailable = false;
-    overviewError = null;
+    if (refreshAgent) {
+      overviewUnavailable = false;
+      overviewError = null;
+    }
     render();
     try {
       const [statusResult, agentResult, revisionsResult] = await Promise.allSettled([
-        readDeployment(context, path, revision.id),
+        verifiedRecord ?? readDeployment(context, path, revision.id),
         refreshAgent ? (context.request(path) as Promise<AgentReadWire>) : null,
         refreshAgent ? readRevisionPage(context.request, path) : null,
       ]);
@@ -405,12 +435,32 @@ export function createDeploymentStatusPanel(
         context.onExpired();
         return;
       }
+      if (started !== generation) {
+        // A fresh selected read can supersede this work, but not a definitive refusal.
+        if (statusResult.status === "rejected" && !transientReadError(statusResult.reason)) {
+          invalidate(statusResult.reason);
+        }
+        return;
+      }
       if (statusResult.status === "fulfilled") {
-        record = statusResult.value;
-        lastRecord = statusResult.value;
-      } else {
-        record = null;
+        if (!verifiedRecord && startedRecord === recordGeneration) {
+          if (
+            lastRecord?.status !== statusResult.value.status ||
+            deploymentPending(statusResult.value.status)
+          ) {
+            terminalOverview = "unread";
+          }
+          record = statusResult.value;
+          lastRecord = statusResult.value;
+        }
+      } else if (!transientReadError(statusResult.reason)) {
+        // A definitive refusal also cancels the accompanying overview. Publish it
+        // before a newer revision could replace this panel and hide the refusal.
+        invalidate(statusResult.reason);
+        return;
+      } else if (startedRecord === recordGeneration) {
         error = statusResult.reason;
+        record = poll ? lastRecord : null;
       }
       if (refreshAgent) {
         if (
@@ -432,9 +482,12 @@ export function createDeploymentStatusPanel(
               (result): result is PromiseRejectedResult => result.status === "rejected",
             )?.reason ?? null;
         }
+        if (!error && record && !deploymentPending(record.status)) {
+          terminalOverview = overviewUnavailable ? "failed" : "ready";
+        }
       }
     } catch (cause) {
-      if (!context.isCurrent()) {
+      if (!context.isCurrent() || started !== generation) {
         return;
       }
       if (requestFailure(cause).status === 401) {
@@ -442,63 +495,61 @@ export function createDeploymentStatusPanel(
         return;
       }
       error = cause;
-      record = null;
+      record = poll && transientReadError(error) ? lastRecord : null;
+      if (verifiedRecord) {
+        terminalOverview = "failed";
+      }
+      if (!transientReadError(error)) {
+        lastRecord = null;
+        terminalOverview = "unread";
+      }
     } finally {
-      if (context.isCurrent()) {
+      if (context.isCurrent() && started === generation) {
         loading = false;
-        // Revealing a final refusal can push the next focused control off screen.
-        // Keep it visible only if the reader could see it before the poll completed.
-        const focused = document.activeElement;
-        const position =
-          poll &&
-          error &&
-          !transientReadError(error) &&
-          !details.open &&
-          focused instanceof HTMLElement &&
-          section.parentElement?.contains(focused)
-            ? focused.getBoundingClientRect()
-            : null;
-        render();
-        onStatusChange({
-          outcome: record ? deploymentOutcome(record) : null,
-          record,
-          readFailed: error !== null,
-          readError: error,
-          transientFailure: error !== null && transientReadError(error),
-          overviewUnavailable,
-        });
-        if (
-          position &&
-          position.height > 0 &&
-          position.top >= 0 &&
-          position.bottom <= window.innerHeight &&
-          details.open &&
-          focused instanceof HTMLElement &&
-          document.activeElement === focused
-        ) {
-          focused.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
-        }
-        if (
-          refreshQueued ||
-          (poll &&
-            deploymentPending(previousStatus) &&
-            !error &&
-            !deploymentPending(record?.status))
-        ) {
-          // A recorded result can change the current version; reread it once.
-          // Only a queued user refresh makes this full reread visible as manual work.
-          const quiet = !refreshQueued;
-          refreshQueued = false;
-          void loadStatus(true, quiet);
-        } else {
-          schedulePoll();
-        }
+        readingOverview = false;
+        publish(poll);
+        finishRecord(refreshAgent);
       }
     }
   }
 
+  function publish(poll: boolean, freshRecord = false) {
+    // Revealing a final refusal can push the next focused control off screen.
+    // Keep it visible only if the reader could see it before the poll completed.
+    const focused = document.activeElement;
+    const position =
+      poll &&
+      error &&
+      !transientReadError(error) &&
+      !details.open &&
+      focused instanceof HTMLElement &&
+      section.parentElement?.contains(focused)
+        ? focused.getBoundingClientRect()
+        : null;
+    render(freshRecord);
+    onStatusChange({
+      outcome: record ? deploymentOutcome(record) : null,
+      record,
+      readFailed: error !== null,
+      readError: error,
+      transientFailure: error !== null && transientReadError(error),
+      overviewUnavailable,
+    });
+    if (
+      position &&
+      position.height > 0 &&
+      position.top >= 0 &&
+      position.bottom <= window.innerHeight &&
+      details.open &&
+      focused instanceof HTMLElement &&
+      document.activeElement === focused
+    ) {
+      focused.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+    }
+  }
+
   function renderStatus() {
-    if (error) {
+    if (error && !record) {
       return statusBlock("danger", null, message(error));
     }
     if (!record) {
@@ -564,14 +615,14 @@ export function createDeploymentStatusPanel(
     );
   }
 
-  function render() {
+  function render(freshRecord = false) {
     // Keep both controls mounted during reads. Fold routine completion and a first outcome
     // that arrives after the page is visible; the summary above already shows that outcome.
     const busy = String((loading && !polling) || refreshQueued);
     if (refresh.getAttribute("aria-disabled") !== busy) {
       refresh.setAttribute("aria-disabled", busy);
     }
-    if (loading) {
+    if (loading && !freshRecord) {
       return;
     }
     const outcome = record ? deploymentOutcome(record) : null;
@@ -630,6 +681,15 @@ export function createDeploymentStatusPanel(
         { className: "muted" },
         `Most recent visible deployment · v${revision.revision}`,
       ),
+      ...(record
+        ? [
+            element(
+              "p",
+              { className: "muted" },
+              error ? "Update delayed · last known status" : "Latest update received",
+            ),
+          ]
+        : []),
       renderStatus(),
       ...(overviewUnavailable
         ? [
@@ -683,10 +743,59 @@ export function createDeploymentStatusPanel(
     }
   }
 
+  // A matching refusal revokes cached evidence and older reads together.
+  function invalidate(cause: unknown) {
+    if (!context.isCurrent()) {
+      return;
+    }
+    terminalOverview = "unread";
+    generation += 1;
+    clearTimeout(pollTimer);
+    pollTimer = undefined;
+    loading = false;
+    readingOverview = false;
+    refreshQueued = false;
+    record = null;
+    lastRecord = null;
+    error = cause;
+    overviewUnavailable = false;
+    overviewError = null;
+    publish(true);
+  }
+
   void loadStatus();
   // New permission or binding information can change a recorded failure's wording.
   // It is not a user refresh of an unsuccessful read.
   return Object.assign(section, {
+    invalidate,
+    // Called only for a fresh independent GET, never for a stale shared fallback.
+    accept(next: Deployment) {
+      if (!context.isCurrent() || next.deploymentId !== revision.id) {
+        return;
+      }
+      const sameTerminal = !deploymentPending(next.status) && lastRecord?.status === next.status;
+      recordGeneration += 1;
+      if (sameTerminal && loading && readingOverview) {
+        // A matching record shares explicit as well as automatic overview reads.
+        // Its generation keeps the older status payload from replacing this one.
+        record = next;
+        lastRecord = next;
+        error = null;
+        // Only a freshly accepted matching record may render during this read.
+        publish(true, true);
+        return;
+      }
+      if (!sameTerminal) {
+        terminalOverview = "unread";
+      }
+      generation += 1;
+      loading = false;
+      record = next;
+      lastRecord = next;
+      error = null;
+      publish(true);
+      finishRecord(false, true);
+    },
     rerender() {
       if (record?.error) {
         render();
@@ -706,6 +815,8 @@ export function createVersionDeploymentEvidence(
     operateAllowed,
     isCurrentVersion,
     onRecord,
+    onRefused,
+    onFreshRecord,
     hasVisibleReadError = () => false,
   }: {
     shared: boolean;
@@ -714,6 +825,8 @@ export function createVersionDeploymentEvidence(
     hasVisibleReadError?: (cause: unknown) => boolean;
     // Each record this panel shows, read here or handed over by the page.
     onRecord: (record: Deployment) => void;
+    onRefused: (cause: unknown) => void;
+    onFreshRecord: (record: Deployment) => void;
   },
 ) {
   const section = element("section", { className: "agent-card version-deployment-record" });
@@ -746,11 +859,13 @@ export function createVersionDeploymentEvidence(
     loading = true;
     error = null;
     const started = generation;
+    let fresh: Deployment | null = null;
     render();
     try {
       const next = await readDeployment(context, path, revisionId);
       if (context.isCurrent() && started === generation) {
         status = next;
+        fresh = next;
       }
     } catch (cause) {
       if (!context.isCurrent()) {
@@ -760,7 +875,12 @@ export function createVersionDeploymentEvidence(
         context.onExpired();
         return;
       }
-      if (started === generation) {
+      if (!transientReadError(cause)) {
+        // A shared success can render while this read is pending. Its generation
+        // must not suppress a definitive refusal for the same immutable revision.
+        fail(cause);
+        onRefused(cause);
+      } else if (started === generation) {
         status = null;
         error = cause;
       }
@@ -771,13 +891,16 @@ export function createVersionDeploymentEvidence(
         diagnostics.render();
         if (status) {
           onRecord(status);
+          if (fresh) {
+            onFreshRecord(fresh);
+          }
         }
       }
     }
   }
 
   // Deployment activity already read this version's record; show it instead of a stale one.
-  function show(next: Deployment) {
+  function show(next: Deployment, readError: unknown = null) {
     if (!context.isCurrent() || !next) {
       return;
     }
@@ -786,7 +909,7 @@ export function createVersionDeploymentEvidence(
     generation += 1;
     loading = false;
     status = next;
-    error = null;
+    error = readError;
     render();
     diagnostics.render();
     onRecord(next);
@@ -836,7 +959,7 @@ export function createVersionDeploymentEvidence(
         element(
           "div",
           {},
-          error
+          error && !status
             ? statusBlock("danger", null, message(error), [], {
                 role: hasVisibleReadError(error) ? null : "alert",
               })
@@ -844,7 +967,11 @@ export function createVersionDeploymentEvidence(
               ? element(
                   "div",
                   {},
-                  element("p", {}, `Recorded outcome: ${outcomeLabel(deploymentOutcome(status))}`),
+                  element(
+                    "p",
+                    {},
+                    `Recorded outcome: ${outcomeLabel(deploymentOutcome(status))}${error ? " · update delayed" : ""}`,
+                  ),
                   failureShownAbove && deploymentOutcome(status) === "failed"
                     ? element(
                         "p",

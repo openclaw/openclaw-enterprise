@@ -12,6 +12,9 @@ export const FormNamespaceBecomesReady = story("createFormNamespaceBecomesReady"
 export const FormNamespaceFailed = story("createFormNamespaceFailed");
 export const FormNamespaceMissing = story("createFormNamespaceMissing");
 export const CreateForm = { ...story("createForm"), name: "OpenAI with Codex harness" };
+export const CreateNativeAdmin = story("createNativeAdmin");
+export const CreateNativeAdminSelected = story("createNativeAdminSelected");
+export const CreateNativeAdminDisabled = story("createNativeAdminDisabled");
 export const CreateSecretCreateNotPermitted = {
   ...story("createSecretCreateNotPermitted"),
   name: "Secret creation not permitted",
@@ -197,6 +200,10 @@ export const CreateCapabilitiesDenied = {
   ...story("createCapabilitiesDenied"),
   name: "Permission check failed",
 };
+export const CreatePermissionRetryDenied = {
+  ...story("createPermissionRetryDenied"),
+  name: "Permission retry refuses Agent create",
+};
 export const CreateMember = {
   ...story("createMember"),
   name: "Member with Agent create",
@@ -214,6 +221,10 @@ export const CreateCapabilitiesError = {
   name: "Capability check failure",
 };
 export const CreateNoPresets = { ...story("createNoPresets"), name: "No Presets" };
+export const CreateNoDefaultPreset = {
+  ...story("createNoDefaultPreset"),
+  name: "Other Presets, no default",
+};
 export const CreateWithoutPreset = {
   ...story("createWithoutPreset"),
   name: "Start without Preset",
@@ -228,6 +239,7 @@ export const CreateOAuthPending = story("createOAuthPending");
 export const CreateOAuthReady = story("createOAuthReady");
 export const CreateOAuthDenied = story("createOAuthDenied");
 export const CreateOAuthUnavailable = story("createOAuthUnavailable");
+export const CreateOAuthNotOffered = story("createOAuthNotOffered");
 export const CreateOAuthStartUnconfirmed = story("createOAuthStartUnconfirmed");
 export const CreateOAuthError = story("createOAuthError");
 export const CreateOAuthExpired = story("createOAuthExpired");
@@ -293,6 +305,9 @@ export const CreatePasswordPresetDraft = {
   ...story("createPasswordPresetDraft"),
   name: "Standard Codex password draft",
 };
+export const CreatePresetVariableRefused = story("createPresetVariableRefused");
+export const CreatePresetVariableMarked = story("createPresetVariableMarked");
+export const CreatePresetQuotedSettingRefused = story("createPresetQuotedSettingRefused");
 export const CreatePasswordPresetDenied = {
   ...story("createPasswordPresetDenied"),
   name: "Password Secret creation denied",
@@ -346,3 +361,11 @@ export const RosterModelPrimary = {
   ...story("createRosterModelSelection"),
   name: "Change a roster's shared primary model",
 };
+
+export const PasswordSecretConflict = story("createPasswordSecretConflict");
+
+export const PasswordSecretConflictPat = story("createPasswordSecretConflictPat");
+
+export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOAuth");
+
+export const CreateOAuthStartNavigation = story("createOAuthStartNavigation");

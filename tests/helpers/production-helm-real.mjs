@@ -211,6 +211,8 @@ export async function installProductionHelmControlPlane({
     cluster: { cidrs: [`${endpoint.addresses[0].ip}/32`], port: endpoint.ports[0].port },
     api: { clients: apiClients },
     resources,
+    // Callers without prepared routing exercise the supported direct-access installation.
+    gatewayRouting: { enabled: false },
   };
   if (repositoryCredentials !== undefined) {
     values.repositoryCredentials = repositoryCredentials;

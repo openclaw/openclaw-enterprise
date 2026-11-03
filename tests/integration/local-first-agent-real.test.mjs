@@ -24,6 +24,7 @@ import {
   runtimeLogSources,
   waitForNativeRedeploy,
 } from "../helpers/local-first-agent-native.mjs";
+import { localOpenShellGatewayOptions } from "../helpers/local-openshell-gateway.mjs";
 import { localFirstAgentStack } from "../helpers/local-first-agent-stack.mjs";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { availablePort } from "../helpers/available-port.mjs";
@@ -1234,9 +1235,10 @@ test(
       const appServerUrl = gateway.spec.template.spec.containers[0].env.find(
         ({ name: variable }) => variable === "APP_SERVER_URL",
       )?.value;
+      const appServerScheme = recorded.deploymentMode === "k3d" ? "wss" : "ws";
       assert.match(
         appServerUrl ?? "",
-        /^ws:\/\/[a-z0-9-]+--[a-z0-9-]+\.openshell\.localhost:8080\/$/,
+        new RegExp(`^${appServerScheme}://[a-z0-9-]+--[a-z0-9-]+\\.openshell\\.localhost:8080/$`),
       );
       const openShellNamespace =
         recorded.deploymentMode === "k3d" ? recorded.platformNamespace : "openshell-system";
@@ -1285,10 +1287,22 @@ test(
           { env: safeEnvironment, stdio: "ignore" },
         );
         context.after(() => stopProcess(forward));
-        const client = new GrpcOpenShellGatewayClient({
-          endpoint: `http://127.0.0.1:${port}`,
-          auth: { mode: "unauthenticated" },
-        });
+        const options =
+          recorded.deploymentMode === "k3d"
+            ? await localOpenShellGatewayOptions(
+                context,
+                [
+                  "--kubeconfig",
+                  join(stateDirectory, "kubeconfig"),
+                  "--context",
+                  `k3d-${recorded.cluster}`,
+                ],
+                safeEnvironment,
+                openShellNamespace,
+                port,
+              )
+            : { endpoint: `http://127.0.0.1:${port}`, auth: { mode: "unauthenticated" } };
+        const client = new GrpcOpenShellGatewayClient(options);
         try {
           const sandboxName = new URL(appServerUrl).hostname.split("--")[1].split(".")[0];
           const deadline = Date.now() + 30_000;
@@ -1680,13 +1694,38 @@ test(
               claimName: volume.persistentVolumeClaim.claimName,
               subPath: mount.subPath,
             };
-            return { pod, sandbox, workspaceStorage };
+            // Match RPC node observations to this revision's configured workspace node.
+            // Kubernetes supplies the public identity; do not read node enrollment Secrets.
+            const gatewayPods = await readKubernetesJson(
+              kube,
+              [
+                "get",
+                "pods",
+                "--all-namespaces",
+                "--selector",
+                `openclaw.dev/agent=${nativeAgent.id},openclaw.dev/revision=${revisionId},openclaw.dev/workload-role=gateway,openclaw.dev/namespace=${first.namespaceId}`,
+              ],
+              "the native Gateway's workspace-node identity",
+            );
+            const gateways = gatewayPods.items.filter((item) => !item.metadata.deletionTimestamp);
+            assert.equal(gateways.length, 1);
+            const nodeIds = gateways[0].spec.containers.flatMap((item) =>
+              (item.env ?? [])
+                .filter(({ name }) => name === "OPENCLAW_WORKSPACE_NODE_ID")
+                .map(({ value }) => value),
+            );
+            assert.equal(nodeIds.length, 1);
+            assert.ok(
+              typeof nodeIds[0] === "string" && /^[a-f0-9]{64}$/.test(nodeIds[0]),
+              "The native Gateway must name its exact workspace node",
+            );
+            return { pod, sandbox, workspaceStorage, expectedNodeId: nodeIds[0] };
           };
           const initialProvider = await readProviderRevision(provisioned.revisionId);
-          const firstNativeProof = await assertNativeWorkerProofInController(
-            nativeContext,
-            proofOptions,
-          );
+          const firstNativeProof = await assertNativeWorkerProofInController(nativeContext, {
+            ...proofOptions,
+            expectedNodeId: initialProvider.expectedNodeId,
+          });
           assert.equal(
             firstNativeProof.hostname,
             initialProvider.pod.spec.hostname ?? initialProvider.pod.metadata.name,
@@ -1723,6 +1762,7 @@ test(
           }
           const replacementNativeProof = await assertNativeWorkerProofInController(nativeContext, {
             ...proofOptions,
+            expectedNodeId: replacementProvider.expectedNodeId,
             session: firstNativeProof.session,
             sessionFile: firstNativeProof.sessionFile,
           });

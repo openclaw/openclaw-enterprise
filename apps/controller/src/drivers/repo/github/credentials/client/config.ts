@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, open, rename, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { RepositoryCredentialSessionFiles } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../../credentials/client-contracts.ts";
@@ -132,11 +132,17 @@ export async function writeClientConfiguration(
     }
   }
   const staging = await mkdtemp(join(parent, ".session-"));
+  const gh = join(staging, "gh");
   try {
-    await mkdir(join(staging, "gh"), { mode: 0o700 });
+    // mkdtemp and open apply the process umask. A mask such as 0400 removes
+    // owner read, the publish still succeeds, and the next read is EACCES.
+    await chmod(staging, 0o700);
+    await mkdir(gh, { mode: 0o700 });
+    await chmod(gh, 0o700);
     for (const [name, content] of Object.entries(contents)) {
       const file = await open(join(staging, name), "wx", 0o600);
       try {
+        await file.chmod(0o600);
         await file.writeFile(content);
         await file.sync();
       } finally {
@@ -145,6 +151,8 @@ export async function writeClientConfiguration(
     }
     await rename(staging, target);
   } catch (error) {
+    await chmod(gh, 0o700).catch(() => undefined);
+    await chmod(staging, 0o700).catch(() => undefined);
     await rm(staging, { recursive: true, force: true });
     throw error;
   }

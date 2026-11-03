@@ -65,18 +65,7 @@ func (r *runner) protectedEgressSelection(controlPlane, sandbox string) (bool, e
 	if controlPlane != "kubernetes" || sandbox != "openshell" {
 		return false, fmt.Errorf("protected egress requires Kubernetes control plane and OpenShell Sandbox")
 	}
-	// The bundled release predates the protected middleware contract. Require an
-	// explicit candidate; the ordinary image import/revision checks still apply.
-	for _, key := range []string{
-		"OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE",
-		"OCC_DEVELOPMENT_OPENSHELL_GATEWAY_IMAGE", "OCC_DEVELOPMENT_OPENSHELL_SANDBOX_IMAGE",
-		"OCC_DEVELOPMENT_OPENSHELL_SUPERVISOR_IMAGE", "OCC_DEVELOPMENT_OPENSHELL_SOURCE_REVISION",
-		"OCC_DEVELOPMENT_OPENSHELL_HELM_CHART", "OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART",
-	} {
-		if r.env[key] == "" {
-			return false, fmt.Errorf("protected egress requires explicit %s", key)
-		}
-	}
+
 	return true, nil
 }
 
@@ -121,7 +110,7 @@ func developmentAuthorityEndpoint(state *developmentState) string {
 	return fmt.Sprintf("https://%s:%d", developmentAuthorityHostname(state), developmentEgressPort)
 }
 
-func developmentProtectedOpenShellValues(state *developmentState) map[string]any {
+func developmentAuthenticatedOpenShellValues(state *developmentState) map[string]any {
 	values := map[string]any{
 		"pkiInitJob": map[string]any{"enabled": true},
 		"server": map[string]any{
@@ -129,12 +118,7 @@ func developmentProtectedOpenShellValues(state *developmentState) map[string]any
 			"auth":       map[string]any{"allowUnauthenticatedUsers": false},
 			"tls":        map[string]any{"enableMtls": true},
 		},
-		"supervisor": map[string]any{"middleware": []any{map[string]any{
-			"name":         developmentEgressMiddleware,
-			"grpcEndpoint": developmentAuthorityEndpoint(state),
-			"audience":     developmentEgressAudience, "tlsCaConfigMapName": developmentEgressCA,
-			"maxPayloadBytes": developmentEgressPayload, "timeout": developmentEgressTimeout,
-		}}},
+		"gatewayConfig": map[string]any{"openshell.supervisor.middleware": []any{}},
 	}
 	if state.OpenShellHostGatewayIP != "" {
 		values["server"].(map[string]any)["hostGatewayIP"] = state.OpenShellHostGatewayIP
@@ -142,12 +126,44 @@ func developmentProtectedOpenShellValues(state *developmentState) map[string]any
 	return values
 }
 
-func (r *runner) writeProtectedOpenShellValues(state *developmentState) (string, error) {
-	data, err := json.Marshal(developmentProtectedOpenShellValues(state))
+// TODO(#4437): Remove this optional static-inference profile and its authority.
+// Gateway authentication is independent and remains enabled without this profile.
+func developmentProtectedOpenShellValues(state *developmentState) map[string]any {
+	values := developmentAuthenticatedOpenShellValues(state)
+	values["gatewayConfig"] = map[string]any{
+		"openshell.supervisor.middleware": []any{map[string]any{
+			"name":                     developmentEgressMiddleware,
+			"grpc_endpoint":            developmentAuthorityEndpoint(state),
+			"audience":                 developmentEgressAudience,
+			"tls_ca_cert_path":         "/etc/openshell/oce-authority/ca.crt",
+			"allow_insecure_transport": false,
+			"max_payload_bytes":        developmentEgressPayload,
+			"timeout":                  developmentEgressTimeout,
+			"binding_policy":           "allowlist",
+			"bindings":                 []string{"http_request_pre_credentials"},
+		}},
+	}
+	server := values["server"].(map[string]any)
+	server["extraVolumes"] = []any{map[string]any{
+		"name":      "oce-authority-ca",
+		"configMap": map[string]any{"name": developmentEgressCA},
+	}}
+	server["extraVolumeMounts"] = []any{map[string]any{
+		"name": "oce-authority-ca", "mountPath": "/etc/openshell/oce-authority", "readOnly": true,
+	}}
+	return values
+}
+
+func (r *runner) writeOpenShellGatewayValues(state *developmentState) (string, error) {
+	values := developmentAuthenticatedOpenShellValues(state)
+	if state.ProtectedEgress {
+		values = developmentProtectedOpenShellValues(state)
+	}
+	data, err := json.Marshal(values)
 	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(state.directory, "openshell-protected-values.json")
+	path := filepath.Join(state.directory, "openshell-gateway-values.json")
 	return path, exclusiveWrite(path, data, 0600)
 }
 

@@ -19,19 +19,24 @@ bundled or installed Configuration Driver: model provider settings,
 `requireDeployableRoster` in
 [the roster rules](../../../packages/occ/src/openclaw-roster.ts), which refuses
 an `agents` roster, a model or fallback that is not `<provider>/<model>`
-(OpenClaw's `openrouter:auto` included), or a fallback on another provider than
-its primary's, all of which every deployment refuses, with deployment's own
-text, and
-[the settings rules](../../../packages/occ/src/configuration-settings.ts), which
-refuse a Codex approval policy the Gateway refuses and a literal
-`gateway.auth.password`, and the selected Compute Driver's optional
-[`validateConfiguration`](../../reference/drivers/compute-admission.md), which on
-Kubernetes refuses unsupported channels, model credentials outside the Harness
+(OpenClaw's `openrouter:auto` included), a fallback on another provider than
+its primary's, a `models.providers.<id>.models` entry that names no selected
+model, or model and runtime settings that conflict (`requireConsistentModelPolicy`,
+which runs the deployment resolver itself, in its order, and leaves a draft
+without a model or runtime to deployment), all of which every deployment refuses,
+with deployment's own text, and [the settings rules](../../../packages/occ/src/configuration-settings.ts).
+These rules reject unsupported Codex approval policies, a literal
+`gateway.auth.password` or a password SecretRef OpenClaw cannot read
+(`gatewayPasswordRequirement`), and retired settings such as `security.preset`.
+OCC also calls the selected Compute Driver's optional
+[`validateConfiguration`](../../reference/drivers/compute-admission.md). On
+Kubernetes, this check refuses unsupported channels, model credentials outside the Harness
 authentication binding, and model selections or provider `apiKey`s off the
 primary model's provider. Configuration create and update, Agent provisioning and
 Preset save run this one set (`validateConfigurationContent` in
 [OCC](../../../packages/occ/src/index.ts)); a Preset value that waits on a
 variable is checked as far as its written text goes, and in full once filled.
+Preset save skips the catalog and runtime checks; its launch's Configuration runs them.
 Create, update and provisioning first ask the Driver's optional
 [`validateSize`](../../reference/drivers/configuration.md#optional-validation)
 to refuse a document too large to store, so no content rule walks it. Its
@@ -42,7 +47,8 @@ bundled Driver checks a stored document only against
 the credential-reference rules in force before 2026-10-12, and every write and
 deployment against all of them. Those include a `${NAME}` reference or SecretRef
 in every slot OpenClaw marks sensitive, channel and plugin secrets included
-([list](../../reference/configuration/secrets.md#secret-boundaries)), checked in
+([list](../../reference/configuration/secrets.md#secret-boundaries)), and in a
+plugin secret input also OpenClaw's whole `$NAME` shorthand, checked in
 [the credential rules](../../../apps/controller/src/drivers/configuration/model-auth.ts),
 which a Preset save runs too. The Driver owns backing document
 storage and checks storage-specific identity and ownership. When the bundled
@@ -78,6 +84,15 @@ act only while it is unchanged: a Configuration another request deleted or updat
 in the meantime is left as that request committed it. If that re-read fails, the
 compensation proceeds as before. A write still in flight, or
 another change that lands between that re-read and the compensation, is not covered.
+Each Kubernetes call has its own 10-second limit. A Configuration or Secret create,
+update or delete gives all of its Kubernetes calls 12 seconds from the start of its API
+handler (`apps/controller/src/admission/mutation-deadline.ts:withMutationDeadline`;
+finding 3106). A call gets only the time left. A write is sent only with at least 2 seconds
+left, and a read is retried only when its pause and 2 seconds fit. Otherwise nothing more is
+sent: the request fails with `503 DEPENDENCY_UNAVAILABLE`, or with the error a sent read
+already got. The audit append and the commit run after the budget and are not bounded by
+it. Compensations, and the cleanup of a Secret create that was sent, also run after it,
+each call with its own 10 seconds.
 A referenced Configuration cannot be deleted. Tenant child-data access remains
 limited to namespaced ConfigMap `create`, `get`, `update`, and `delete`;
 Kubernetes cannot restrict `create` by `resourceNames`, so that verb must use
@@ -110,6 +125,9 @@ Agent's exact same-Namespace `configurationId` and ensure its Configuration kind
 is `"agent"`. They also run deployment's checks of the Agent against that
 Configuration ([Agent save](../../reference/drivers/compute-admission.md#agent-save)):
 the Sandbox execution mode, the Harness and its mode, and the Compute checks.
+Agent save and deployment also refuse a stored Configuration that still contains
+`security.preset`. The operator can read it and replace the field with
+[explicit settings](../../guides/console/configuration-plugins-and-files.md#configuration-tab).
 With a Compute Driver and a Harness resolver selected, every Agent save reads
 its Configuration once from the Configuration Driver, inside the save's
 transaction; a Driver outage then fails the save with `503`. `deployAgent` then locks the Agent, authorizes a read of the
@@ -125,22 +143,17 @@ When the selected Sandbox Driver exposes `configureAgent`, OCC transforms a
 frozen copy before Configuration Driver validation and Harness selection. The
 stored reusable Configuration and its generation remain unchanged.
 [`admitGatewaySecurityDefaults`](../../../packages/occ/src/gateway-security-defaults.ts)
-then fills `tools.exec.applyPatch.workspaceOnly`, which OpenClaw's `personal` security preset
-would loosen, `agents.defaults.sandbox.mode: "off"`, which its `corporate` preset would turn
-on although the OCE runtime cannot run OpenClaw's sandbox (an explicit other mode, or a
-`tools.exec.host: "sandbox"`, is refused at save and here), and `tools.exec.mode: "full"` when
-`tools.exec` sets no mode, security or ask, where `corporate` would fill `ask`, which needs an
-approval client OCE does not have, then `tools.exec.strictInlineEval: false` beside mode `full`
-and no security or ask, where `corporate`'s `true` needs that client for each inline program
-(under `corporate`, an Agent entry with its own non-`full` exec policy keeps that `true`, since it
-would otherwise inherit the filled `false`); other unset settings keep the preset's defaults
-([reference](../../reference/configuration.md#agent-references-and-immutable-versions)). Compute then
+then fills the [Gateway security defaults](../../reference/configuration.md#agent-references-and-immutable-versions)
+on the copy. It preserves explicit settings. OCE refuses an explicit OpenClaw
+sandbox mode other than `"off"` or a `tools.exec.host` of `"sandbox"` at save and
+deployment because OCE provides the Agent's sandbox. Compute then
 checks the Harness authentication binding (Kubernetes Compute also runs the shared
 `requireOpenClawRoster`, the dedicated OpenClaw and Codex `main` Agent rules, and
 [the rules](../../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts)
 preparation and the Gateway entrypoint apply after a dedicated deployment stops its
-predecessors: enabled channels need a dedicated workload and `runtime.channels`, and a
-Gateway hosting a workspace node needs the file-transfer plugin) and, through optional
+predecessors: enabled channels need a dedicated workload and `runtime.channels`, a
+Gateway hosting a workspace node needs the file-transfer plugin, and a Dedicated Codex
+Gateway needs its codex plugin left on) and, through optional
 `validateGatewaySettings`, the native gateway settings: Kubernetes and Docker Compute
 refuse a setting every preparation would refuse with `409`, naming the setting and never
 its value, before an Agent revision exists. Kubernetes and Docker Compute also refuse

@@ -202,8 +202,21 @@ func (app *application) printAgent(value any, collection bool) error {
 	})
 }
 
+// neutralDeploymentEndings are the codes of deployment work that a newer
+// revision or a Stop ended. OCC records them as failed, but the revision did
+// not fail, so the revisions table shows the ending instead, as the console
+// does (apps/controller/src/console/agents/list.mts). REPOSITORY_REVISION_STOPPED
+// stays failed: it can also mean the Namespace is not ready.
+var neutralDeploymentEndings = map[string]string{
+	"REVISION_SUPERSEDED":            "superseded",
+	"REPOSITORY_REVISION_SUPERSEDED": "superseded",
+	"REVISION_STOPPED":               "stopped",
+}
+
 // printAgentRevisionList prints rows from describeAgentRevisions. Structured
-// output keeps every field, including active and deploymentStatus.
+// output keeps every field as OCC listed it, including active,
+// deploymentStatus and deploymentErrorCode; the table has no error column, so
+// its STATUS names a neutral ending instead of failed.
 func (app *application) printAgentRevisionList(rows []any) error {
 	if app.output != "table" {
 		return app.printStructured(rows)
@@ -215,6 +228,10 @@ func (app *application) printAgentRevisionList(rows []any) error {
 			row["active"] = "*"
 		} else {
 			row["active"] = ""
+		}
+		code, _ := row["deploymentErrorCode"].(string)
+		if ending, ok := neutralDeploymentEndings[code]; ok && row["deploymentStatus"] == "failed" {
+			row["deploymentStatus"] = ending
 		}
 		table = append(table, row)
 	}

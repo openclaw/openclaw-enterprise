@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "./sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
@@ -20,6 +21,7 @@ import { createTestConfigurationDriver } from "./configuration-driver.mjs";
 import { createReadyComputeDriver } from "./development.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { grantRole } from "./iam-grants.mjs";
+import { jsonRequestInit } from "./inject-json.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 
 export const runtimeLogPodUid = "0f3b6c1e-7d52-4f4b-9a2e-5c6d7e8f9a01";
@@ -52,6 +54,10 @@ export function createRuntimeLogComputeDriver(options = {}) {
     readError: undefined,
     /** Pods named by the Driver; tests may add a Pod that does not belong to the revision. */
     extraPods: [],
+    /** `false` reports no Gateway Pod, as for a version whose Pods are gone. */
+    gatewayPod: true,
+    /** Revisions that report no Gateway Pod, as a version stopped and replaced since. */
+    podlessRevisions: [],
     /**
      * `{ ready }` adds a dedicated Harness Pod and the Agent (Harness) source;
      * `{ created: false }` lists the source with no Pod; `{ ready, stale: true }`
@@ -90,7 +96,9 @@ export function createRuntimeLogComputeDriver(options = {}) {
             }
             const name = podName(binding.revision);
             const pods = [
-              { name, uid: state.podUid },
+              ...(state.gatewayPod === false || state.podlessRevisions.includes(binding.revision.id)
+                ? []
+                : [{ name, uid: state.podUid }]),
               ...state.extraPods.map((pod) => ({ name: pod.name, uid: pod.uid })),
             ];
             const harnessPods =
@@ -153,7 +161,8 @@ export function createRuntimeLogComputeDriver(options = {}) {
                     container: "gateway",
                     restartCount: state.restartCount,
                   })),
-                  available: true,
+                  available: pods.length > 0,
+                  ...(pods.length > 0 ? {} : { unavailableCode: "NO_POD" }),
                   retention: "Kubernetes keeps the current and the previous instance.",
                 },
               ],
@@ -258,6 +267,7 @@ export function createProviderSandboxDriver({ id = "console-sandbox" } = {}) {
     id,
     capability: "sandbox",
     implementation: "openshell",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async provisionHarness(context) {
       return {
@@ -342,16 +352,14 @@ export async function createRuntimeLogFixture(options = {}) {
 
   async function request(method, path, { session = adminSession, serviceKey, body } = {}) {
     const response = await app.fetch(
-      new Request(new URL(path, "http://127.0.0.1"), {
-        method,
-        headers: {
-          ...(serviceKey === undefined
-            ? authenticatedHeaders(session)
-            : { "x-api-key": serviceKey }),
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      }),
+      new Request(
+        new URL(path, "http://127.0.0.1"),
+        jsonRequestInit(
+          method,
+          body,
+          serviceKey === undefined ? authenticatedHeaders(session) : { "x-api-key": serviceKey },
+        ),
+      ),
     );
     const text = await response.text();
     return {

@@ -45,7 +45,7 @@ superuser, create roles or databases, replicate, or bypass row security. The
 migrator needs database `CREATE` and owns the `occ` and `drizzle` schemas. The
 application role must not inherit the migrator or have database/schema `CREATE`.
 
-Classify a database without applying migrations:
+From the target release checkout, classify the database without applying migrations:
 
 ```sh
 pnpm db:migrate --check
@@ -80,7 +80,9 @@ has 46 through `0046_model_probe_failure_cause`;
 through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
 through `0050_agent_credential_sources`; later `pre*` shapes add one each, through
 `preCredentialProxy` (59) and `prePreparedAttemptSettlement` (62, through
-`0062_credential_delivery_custody`). Migration brings each to `completed` with 63 receipts.
+`0062_credential_delivery_custody`). After `0063_prepared_attempt_settlement`,
+63 receipts mean `preGatewayManagedMode`; `0064_gateway_managed_mode` is pending.
+Rerun `--check` after migration and require `completed` from the same release.
 The [canonical manifest](../../../migrations/meta/_canonical-history.json) records
 accepted source and catalog hashes. Never delete or relabel unsupported preview
 receipts. Empty schemas may be absent or owner-only, with no objects or
@@ -217,9 +219,8 @@ access; qualify worker, Agent, repository, and provider behavior separately.
 
 ## Controller worker environment
 
-The [controller worker](../controller.md) runs separately from the HTTP API. It
-requires a bootstrapped Installation and the same migrated PostgreSQL database;
-it does not use the API's listener or authentication settings.
+The [controller worker](../controller.md) uses a bootstrapped Installation and
+the API's migrated PostgreSQL database, not its listener or authentication settings.
 
 | Variable                            | Requirement or default         | Behavior                                                                                                                                                                    |
 | ----------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -233,6 +234,8 @@ it does not use the API's listener or authentication settings.
 | `OCC_WORKER_DATABASE_TIMEOUT_MS`    | `60000`.                       | Client-side bound on each worker query and connection; a silent connection is dropped and retried, and longer lock waits fail the pass as an attempt; at most `2147483647`. |
 | `OCC_WORKER_READINESS_PATH`         | Optional absolute path.        | Writes a private freshness marker after real queue-health observations; required by packaged worker probes.                                                                 |
 | `OCC_WORKER_LIVENESS_PATH`          | Optional absolute path.        | Writes a private marker as the run loop makes progress, even through database outages; the packaged liveness probe restarts a worker whose marker is stale.                 |
+
+Packaged worker probes require regular marker files and refuse directory paths.
 
 The run loop writes the liveness marker at startup, at the start of every pass
 and on every claim renewal. A database outage keeps it moving; the packaged
