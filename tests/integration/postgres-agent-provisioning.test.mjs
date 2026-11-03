@@ -1091,7 +1091,7 @@ test(
   "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    const { namespace, fixture, secrets } = await repositoryProvisioningFixture(
+    const { namespace, repoDriver, fixture, secrets } = await repositoryProvisioningFixture(
       context,
       "provisioning-topology",
       { profiles: ["git-read", "git-write"], stopAfterProvisioning: true },
@@ -1102,11 +1102,18 @@ test(
     ).length;
     const body = repositoryProvisioningBody(namespace.id, secrets, { gatewayManagedMode: false });
     const { repositoryAccess } = body;
+    const bound = context.mock.method(repoDriver, "resolveBindings");
+    const legacy = context.mock.method(repoDriver, "resolve");
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
     });
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
 
+    assert.equal(bound.mock.callCount(), 1, "fresh planning uses the bound policy exactly once");
+    assert.equal(legacy.mock.callCount(), 0, "fresh planning bypasses the legacy resolver");
+    assert.deepEqual(bound.mock.calls[0]?.arguments, [
+      { namespaceId: namespace.id, bindings: repositoryBindings },
+    ]);
     const queued = await provisioningRow(fixture.pool, namespace.id, body.requestId);
     assert.deepEqual(queued.plan.repositoryBindings, repositoryBindings);
     assert.deepEqual(queued.plan.repositoryAccess, repositoryAccess);
@@ -1125,6 +1132,10 @@ test(
       (await provisioningRow(fixture.pool, namespace.id, body.requestId)).plan,
       queued.plan,
     );
+    assert.equal(bound.mock.callCount(), 1, "replay does not repeat repository planning");
+    assert.equal(legacy.mock.callCount(), 0, "replay does not use the legacy resolver");
+    bound.mock.restore();
+    legacy.mock.restore();
     const changed = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body: { ...body, repositoryAccess: { ...repositoryAccess, defaultProfile: "git-write" } },
     });
