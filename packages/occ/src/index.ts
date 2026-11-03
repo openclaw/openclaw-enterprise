@@ -6388,6 +6388,7 @@ export class OpenClawController {
   ): Promise<ProxyPlan | undefined> {
     const sources: CredentialSource[] = [];
     let harnessCredentialSource: ProxyPlan["harnessCredentialSource"];
+    let harnessSourceNeedsRepository = false;
     for (const binding of agent.credentialSources ?? []) {
       const source = await state.credentialSources.findCredentialSource(
         agent.namespaceId,
@@ -6396,7 +6397,6 @@ export class OpenClawController {
       if (source?.egress !== undefined) {
         sources.push(source);
       } else if (
-        repositoryGit &&
         source?.state === "ready" &&
         harnessAuth?.method === "credential_source" &&
         source.id === harnessAuth.sourceId &&
@@ -6404,7 +6404,11 @@ export class OpenClawController {
       ) {
         // admitHarnessAuth and admitCredentialSources already authorized this ordinary
         // Harness source. Bind its identity to release, without giving Git any model authority.
-        harnessCredentialSource = harnessAuth;
+        if (repositoryGit) {
+          harnessCredentialSource = harnessAuth;
+        } else {
+          harnessSourceNeedsRepository = true;
+        }
       }
     }
     // Each refusal below is an Installation property or the Agent's saved bindings, after the
@@ -6425,12 +6429,16 @@ export class OpenClawController {
     const driver = owner.require("credential_proxy");
     if ((agent.credentialSources?.length ?? 0) !== sourceCount) {
       if (repositoryGit === undefined) {
-        // Finding 2360: when the Proxy serves only repository Git, replacing the source cannot
-        // help, so that refusal comes first. Any other outcome leaves the binding refusal.
+        // A repository can enable the ready Harness source. It cannot repair other
+        // source bindings, which must keep the source-specific refusal.
         await driver.sourceControl
           .assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS))
           .catch((error: unknown) => {
-            if (error instanceof CredentialProxyRepositoryOnlyError) {
+            if (
+              error instanceof CredentialProxyRepositoryOnlyError &&
+              harnessSourceNeedsRepository &&
+              agent.credentialSources?.length === 1
+            ) {
               throw new CredentialProxyRepositoryOnlyError("deploy");
             }
           });
@@ -6461,7 +6469,11 @@ export class OpenClawController {
       AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
       gitProfile,
     ).catch((error: unknown) => {
-      if (repositoryGit === undefined && error instanceof CredentialProxyRepositoryOnlyError) {
+      if (
+        repositoryGit === undefined &&
+        sourceCount === 0 &&
+        error instanceof CredentialProxyRepositoryOnlyError
+      ) {
         throw new CredentialProxyRepositoryOnlyError("deploy");
       }
       throw error;

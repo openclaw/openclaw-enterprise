@@ -1986,12 +1986,14 @@ test("Deploy names the Proxy's limit when a protected source sits beside reposit
   // a Proxy-owned source can never start: deploy answers 409 naming the limit and the fixes,
   // after the deploy grant and without a revision.
   const installation = [{ repositoryRef: "installation", profile: "github-installation" }];
+  const extension = {};
   const f = await protectedOpenShellComposition(t, {
     bindings: installation,
     installationAccess: true,
     preview: true,
     // The gateway also registers the execution profile, so the Proxy can own a source.
     advertised: true,
+    extension,
   });
   const agent = await f.createAgent({
     executionMode: "dedicated",
@@ -2027,6 +2029,23 @@ test("Deploy names the Proxy's limit when a protected source sits beside reposit
   assert.equal(deployed.status, 409, JSON.stringify(deployed));
   assert.equal(deployed.error.code, "RESOURCE_CONFLICT");
   assert.equal(deployed.error.message, CREDENTIAL_PROXY_GIT_ALONE);
+  assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
+  // A source created while the execution capability was available remains bound.
+  // Losing that capability requires Proxy configuration repair, not adding a repository.
+  const cleared = await f.request("PATCH", path, {
+    configurationId: f.configuration.id,
+    repositoryBindings: [],
+  });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared));
+  extension.required_capabilities = [];
+  extension.supported_capabilities = [];
+  const gitOnly = await f.request("POST", `${path}/deploy`);
+  assert.equal(gitOnly.status, 409, JSON.stringify(gitOnly));
+  assert.equal(gitOnly.error.code, "RESOURCE_CONFLICT");
+  assert.equal(
+    gitOnly.error.message,
+    "This installation's Credential Proxy is configured for repository Git, not this credential source type. Ask an administrator to configure support for this source type.",
+  );
   assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
   const outsider = await f.requestWithoutGrants(f.app);
   await assertSameAnswer(
@@ -2084,8 +2103,9 @@ test("A Git-only Credential Proxy names repository.openShell instead of a 503 or
   // generic 503, and deploying an Agent without Git whose Gateway source predates the Proxy
   // answered 404 with nothing logged. Each refusal now names what cannot serve it; any other
   // probe outcome keeps the binding refusal.
-  for (const [label, options, refusal] of [
+  for (const [label, options, refusal, soleHarnessSource = true] of [
     ["stock 0.1.5", {}, CredentialProxyRepositoryOnlyError],
+    ["unrelated bound source", {}, CredentialSourceUnprotectedError, false],
     ["with the execution profile", { advertised: true }, CredentialSourceUnprotectedError],
     ["registration missing", { registered: false }, CredentialSourceUnprotectedError],
   ]) {
@@ -2100,7 +2120,7 @@ test("A Git-only Credential Proxy names repository.openShell instead of a 503 or
     });
     assert.equal(secret.status, 201, JSON.stringify(secret));
     const sourceInput = { type: "openai", config: {}, secrets: { api_key: secret.data.ref } };
-    if (label !== "with the execution profile") {
+    if (soleHarnessSource && label !== "with the execution profile") {
       // The Installation refusal comes before any Secret read: this fixture's Secret Driver
       // has no versioned reads, which would otherwise answer first. A gateway without the
       // registration is a state an operator fixes: a 503 that names it (finding 2536).
@@ -2112,30 +2132,34 @@ test("A Git-only Credential Proxy names repository.openShell instead of a 503 or
         label === "stock 0.1.5"
           ? [
               409,
-              "This installation supports protected Git access, but cannot create this credential source. Ask an administrator to configure a Credential Proxy that supports this source type.",
+              "This installation's Credential Proxy is configured for repository Git, not this credential source type. Ask an administrator to configure support for this source type.",
             ]
           : [503, PROXY_REGISTRATION_UNAVAILABLE];
       assert.equal(created.status, status, `${label}: ${JSON.stringify(created)}`);
       assert.equal(created.error.message, message, label);
     }
-    // A Gateway-owned source registered before the Installation selected the Proxy.
+    // A ready Harness source can become usable beside Git. An additional ordinary
+    // Gateway source still needs its own compatible Proxy admission.
     const sourceId = `cs_${randomUUID()}`;
-    await f.state.transact((unit) =>
-      unit.credentialSources.createCredentialSource({
-        id: sourceId,
-        namespaceId,
-        name: "earlier-model",
-        ...sourceInput,
-        ownerCapability: "credential_gateway",
-        driverId: "openshell-credentials",
-        state: "ready",
-        createdAt: new Date().toISOString(),
-      }),
-    );
+    const sourceIds = soleHarnessSource ? [sourceId] : [sourceId, `cs_${randomUUID()}`];
+    for (const id of sourceIds) {
+      await f.state.transact((unit) =>
+        unit.credentialSources.createCredentialSource({
+          id,
+          namespaceId,
+          name: `earlier-model-${id}`,
+          ...sourceInput,
+          ownerCapability: "credential_gateway",
+          driverId: "openshell-credentials",
+          state: "ready",
+          createdAt: new Date().toISOString(),
+        }),
+      );
+    }
     const agent = await f.createAgent({
       executionMode: "dedicated",
       harnessAuth: { method: "credential_source", sourceId },
-      credentialSources: [{ sourceId }],
+      credentialSources: sourceIds.map((sourceId) => ({ sourceId })),
     });
     const internal = await f.controller.getAgent(f.actorId, namespaceId, agent.id);
     f.iamState.identities.push({
@@ -2143,12 +2167,14 @@ test("A Git-only Credential Proxy names repository.openShell instead of a 503 or
       id: internal.servicePrincipalId,
       namespaceId,
     });
-    grantRole(f.iamState, internal.servicePrincipalId, {
-      id: `source-${agent.id}`,
-      namespaceId,
-      permissions: { credential_source: ["operate"] },
-      resource: { kind: "credential_source", id: sourceId },
-    });
+    for (const id of sourceIds) {
+      grantRole(f.iamState, internal.servicePrincipalId, {
+        id: `source-${id}`,
+        namespaceId,
+        permissions: { credential_source: ["operate"] },
+        resource: { kind: "credential_source", id },
+      });
+    }
     const path = `${f.collection}/${agent.id}`;
     const deployed = await f.request("POST", `${path}/deploy`);
     assert.equal(deployed.status, 409, `${label}: ${JSON.stringify(deployed)}`);
@@ -2160,6 +2186,25 @@ test("A Git-only Credential Proxy names repository.openShell instead of a 503 or
       label,
     );
     assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, [], label);
+    if (label === "stock 0.1.5" || !soleHarnessSource) {
+      // Adding a repository admits the ready Harness source, but cannot make an
+      // unrelated Gateway source usable by the Proxy. It must keep its source diagnosis.
+      const updated = await f.request("PATCH", path, {
+        configurationId: f.configuration.id,
+        repositoryBindings: selection,
+      });
+      assert.equal(updated.status, 200, JSON.stringify(updated));
+      const retried = await f.request("POST", `${path}/deploy`);
+      assert.equal(retried.status, 409, JSON.stringify(retried));
+      assert.equal(
+        retried.error.code,
+        soleHarnessSource ? "REPOSITORY_GIT_SENDER_UNQUALIFIED" : "RESOURCE_CONFLICT",
+      );
+      if (!soleHarnessSource) {
+        assert.equal(retried.error.message, CredentialSourceUnprotectedError.description);
+      }
+      assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
+    }
   }
   // Only the repository registration, of either kind encoding, at protocol 1 and advertising no
   // execution capability, is Git-only. A registration missing from gateway info, a partial

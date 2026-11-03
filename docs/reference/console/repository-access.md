@@ -48,10 +48,10 @@ disable creation and show the Configuration ID. Expiry returns to sign-in.
 
 ## Recover from a refused deployment
 
-When the installation requires repository access, deploying an Agent without a
-repository returns `409 RESOURCE_CONFLICT`. Open **Repositories**, select an
-approved repository, save, and deploy again. Creating an unsupported credential
-source has separate guidance for the installation administrator.
+For a `409 RESOURCE_CONFLICT` that asks for a repository, open **Repositories**,
+select an approved repository, save, and deploy again. A source refusal needs
+its own fix: ask an administrator to configure support for the source type,
+or replace an unsupported binding before deployment.
 
 `REPOSITORY_GIT_SENDER_UNQUALIFIED` means this installation cannot enforce the
 selected Git permissions. Ask an administrator to enable protected Git access.

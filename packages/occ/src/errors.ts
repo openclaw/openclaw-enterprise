@@ -658,7 +658,7 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
  */
 export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
   static readonly description =
-    "This installation supports protected Git access, but cannot create this credential source. Ask an administrator to configure a Credential Proxy that supports this source type.";
+    "This installation's Credential Proxy is configured for repository Git, not this credential source type. Ask an administrator to configure support for this source type.";
   static readonly repositoryRequired =
     "Select a repository for this Agent, save your changes, and deploy again. This installation requires every Agent to have a repository.";
 

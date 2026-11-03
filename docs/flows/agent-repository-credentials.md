@@ -142,7 +142,7 @@ refuses Codex proxy settings that block the broker.
 Deploy resolves through the current Repo Driver again after reading standing
 approval. Denial or a changed binding or scope blocks revision creation.
 
-`OpenClawController.admitProxyPlan` distinguishes repository-free deployment
+`OpenClawController.admitProxyPlan` distinguishes missing repositories
 from unsupported sources on Git-only Proxies.
 
 Protected `repository.preparedGitHub` uses the installed Sandbox/Credential Proxy
