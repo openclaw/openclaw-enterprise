@@ -56,6 +56,9 @@ function computeDriver({
   const driver = createTestKubernetesComputeDriver("console-compute", {
     gatewayRuntime: true,
     ...(modelProvider === undefined ? {} : { modelProvider }),
+    // As `occ dev up` installs it: the controller reads Gateway private status, so the save and
+    // deploy rules for a runtime workspace node apply (finding 3133).
+    privateStatus: true,
     repositoryCredentials,
     sandboxDriver,
     credentialGatewayDriver,

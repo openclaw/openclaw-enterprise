@@ -19,12 +19,13 @@ for (const harness of ["codex", "openclaw"] as const) {
       const namespace = await f.createNamespace("shared-provider", { ready: true });
       const computeDriver = f.controller.selectedDriver("compute");
       const authored = createHarnessConfiguration(harness, "gpt-5");
-      // Use the supported trusted-proxy Gateway configuration, with no password binding.
+      // Retain the Gateway password reference needed for private workspace-node status.
       const configuration = {
         ...authored,
         gateway: {
           ...authored.gateway,
           auth: {
+            ...authored.gateway.auth,
             mode: "trusted-proxy",
             trustedProxy: {
               userHeader: "x-occ-identity",

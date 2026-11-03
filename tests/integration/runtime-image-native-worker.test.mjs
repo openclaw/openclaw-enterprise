@@ -21,7 +21,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   managedGoogleInstall,
-  managedSlackInstall,
+  managedMcpInstalls,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
@@ -189,7 +189,9 @@ process.exit(r.error ? 0 : r.status);`;
         );
         return JSON.parse(result.stdout);
       };
-      const { releaseSha256 } = managedSlackInstall;
+      const slack = managedMcpInstalls.find(({ id }) => id === "occ-plugin:slack@1.0.0");
+      assert.ok(slack);
+      const { releaseSha256 } = slack;
       const selected = await inspect(releaseSha256);
       assert.deepEqual(selected.mcp.servers.slack, {
         enabled: false,

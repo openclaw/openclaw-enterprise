@@ -387,6 +387,12 @@ export const kubernetesGatewayPasswordRequirement = (alias = "default") =>
   `must be the environment reference {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates`;
 export const KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT = kubernetesGatewayPasswordRequirement();
 export const KUBERNETES_GATEWAY_PASSWORD_REFUSAL = `Configuration setting gateway.auth.password ${KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT}.`;
+// A Dedicated Codex Configuration without gateway.auth.password, where the Installation applies the
+// workspace node at runtime: every activation failed AGENT_GATEWAY_UNAUTHORIZED (finding 3132), so
+// save, preflight, provisioning and deploy admission refuse it.
+export const kubernetesWorkspaceNodePasswordRefusal = (alias = "default") =>
+  `Configuration setting gateway.auth.password must be the environment reference {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"} on a Dedicated Codex Agent: its Gateway uses it to apply the workspace node.`;
+export const KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL = kubernetesWorkspaceNodePasswordRefusal();
 // Kubernetes Configuration save, provisioning and deploy admission refuse a trusted-proxy allowlist
 // and a device auto-approval the Gateway would refuse, naming no submitted identity (finding 3032).
 // The allowlist text says which identities match case-insensitively, so a case duplicate reads as

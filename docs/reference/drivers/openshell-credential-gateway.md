@@ -98,7 +98,7 @@ status. The Refresh Driver owns device exchange and refresh configuration.
 | `openai`                     | `api_key` (required)                        | `authorized_base_url` (optional)                                                | `none`    | `openai` / `api_key`           |
 | `codex-pat`                  | `access_token` (required)                   | None                                                                            | `none`    | `openai` / `codex_pat`         |
 | `codex-oauth` (Experimental) | None; device login                          | None                                                                            | `refresh` | `openai` / `chatgptAuthTokens` |
-| `bearer-token`               | `token` (required)                          | `host`, `env_var` (required); `port`, `path`                                    | `none`    | None (tool credential)         |
+| `bearer-token`               | `token` (required)                          | `host`, `env_var` (required); `port`, `path`, `protocol`                        | `none`    | None (tool credential)         |
 | `oauth2-client-credentials`  | `client_secret` (required)                  | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential)         |
 | `oauth2-refresh-token`       | `refresh_token` (required); `client_secret` | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential)         |
 
@@ -157,6 +157,8 @@ OpenShell refuses a model request whose body carries one, so the Agent's turns
 fail until that history is gone.
 
 Registration rejects provider types outside this catalog.
+
+For `protocol: mcp`, see the [Slack example](../../guides/topics/plugins-configure.md#prepare-a-slack-mcp-credential).
 
 ### Experimental Codex OAuth PoC
 
