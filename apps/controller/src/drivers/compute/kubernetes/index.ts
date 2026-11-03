@@ -211,6 +211,7 @@ import {
   providerWaitsOnVariable,
   requireHarnessCredentialBinding,
   requireSelectedModelProvider,
+  requireWorkspaceNodeGatewayPassword,
   requireWorkspaceNodePlugins,
   TRUSTED_PROXY_IDENTITY,
   usesGatewayPasswordEnvironment,
@@ -4841,9 +4842,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
    * model credentials only through the Harness authentication binding, the Gateway tool policy,
    * model selections and provider apiKeys on the primary model's provider, another spelling of a
    * plugin entry key it renders (finding 3077), plugin secret inputs OpenClaw cannot read
-   * (finding 3069), and the trusted-proxy allowlist and deviceAutoApprove shape (finding 3032).
-   * Deployment admission applies each in its own order
-   * (validateAdmittedHarnessAuth).
+   * (finding 3069), the trusted-proxy allowlist and deviceAutoApprove shape (finding 3032), and,
+   * where this Installation applies a Dedicated Codex workspace node at runtime, the gateway
+   * password its Gateway signs in with (finding 3132). Deployment admission applies each in its
+   * own order (validateAdmittedHarnessAuth).
    */
   validateConfiguration(
     configuration: Readonly<OpenClawConfigurationDocument>,
@@ -4853,13 +4855,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const harnessId = requireConfiguredModelProviders(configuration, options);
     refuseUnreadablePluginSecretInputs(configuration, callerSettingError, options);
     // A Configuration whose model policy selects Codex runs only as Dedicated Codex.
-    if ((harnessId ?? configuredHarnessId(configuration, options)) === "codex") {
+    const dedicatedCodex = (harnessId ?? configuredHarnessId(configuration, options)) === "codex";
+    if (dedicatedCodex) {
       requireCodexPlugin(configuration, callerSettingError, options);
     }
     // Deployment admission refuses the rest of the gateway shape in its own order.
     const trustedProxy = asRecord(asRecord(asRecord(configuration.gateway)?.auth)?.trustedProxy);
     if (trustedProxy !== undefined) {
       refuseInvalidTrustedProxyIdentities(trustedProxy, callerSettingError, options);
+    }
+    if (dedicatedCodex && this.appliesWorkspaceNodeAtRuntime()) {
+      requireWorkspaceNodeGatewayPassword(configuration, callerSettingError);
     }
   }
 
@@ -11714,9 +11720,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return (
       revision.harness.mode === "dedicated" &&
       revision.harness.id !== "openclaw" &&
+      this.appliesWorkspaceNodeAtRuntime() &&
+      this.getGatewayEndpoint(revision) !== undefined
+    );
+  }
+
+  // The Installation settings with which a dedicated Gateway other than OpenClaw gets its
+  // workspace node through the binding ConfigMap and confirms it through its own Gateway client
+  // (usesWorkspaceNodeBinding), which signs in with the gateway password
+  // (requireWorkspaceNodeGatewayPassword). Without private status, the node is in the pod spec.
+  private appliesWorkspaceNodeAtRuntime(): boolean {
+    return (
       this.nodeEnrollment !== undefined &&
       this.options.runtime !== undefined &&
-      this.getGatewayEndpoint(revision) !== undefined &&
+      this.options.gatewayRouting !== undefined &&
       this.gatewayPrivateStatusReachable()
     );
   }

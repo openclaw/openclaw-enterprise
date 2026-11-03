@@ -2042,6 +2042,11 @@ test("Dedicated OpenClaw Presets preserve custom provider transport across execu
 });
 
 test("Partial Presets without a model policy retain the default Codex harness", async (t) => {
+  const partialGateway = {
+    mode: "local",
+    bind: "lan",
+    auth: { password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" } },
+  };
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Partial model Preset", { ready: true });
@@ -2053,7 +2058,8 @@ test("Partial Presets without a model policy retain the default Codex harness", 
         name: "Gateway settings only",
         template: {
           agent: { name: "Partial Preset Agent" },
-          configuration: { values: { gateway: { mode: "local", bind: "lan" } } },
+          // The generated gateway password a Dedicated Codex workspace node needs (finding 3132).
+          configuration: { values: { gateway: partialGateway } },
         },
       },
     },
@@ -2079,7 +2085,7 @@ test("Partial Presets without a model policy retain the default Codex harness", 
   assert.deepEqual(saved.data.values.agents.defaults.models["codex/gpt-6-astra"]?.agentRuntime, {
     id: "codex",
   });
-  assert.deepEqual(saved.data.values.gateway, { mode: "local", bind: "lan" });
+  assert.deepEqual(saved.data.values.gateway, partialGateway);
 });
 
 test("Presets render variables into independent Agent drafts and keep partial-save retries fixed", async (t) => {
@@ -2669,15 +2675,21 @@ async function variablePresetForm(
 
 // A string variable Human fills the trusted-proxy allowlist beside the machine identity, which
 // Kubernetes Compute refuses with a case-duplicate of that identity. The allowlist waits on the
-// variable, so the Preset itself saves (finding 3122).
+// variable, so the Preset itself saves (finding 3122). The rest is a gateway a Kubernetes install
+// deploys with a human admitted (finding 3133): the Preset's generated gateway password, which a
+// Dedicated Codex workspace node needs, and device auto-approval without operator.admin.
 function humanAllowlistVariable(template: VariablePresetTemplate) {
   template.variables.human = {
     type: "string",
     description: "Identity of the person who runs this Agent",
   };
-  const auth = nativeAdminGatewayAuth();
-  auth.trustedProxy.allowUsers = ["occ-workspace-files", "{{ vars.human }}"];
   const gateway = template.configuration.values.gateway;
+  const auth = {
+    ...nativeAdminGatewayAuth(),
+    password: (gateway.auth as { password: unknown }).password,
+  };
+  auth.trustedProxy.allowUsers = ["occ-workspace-files", "{{ vars.human }}"];
+  auth.trustedProxy.deviceAutoApprove.scopes = ["operator.read", "operator.write"];
   gateway.controlUi = { enabled: true, allowedOrigins: ["http://127.0.0.1:18789"] };
   gateway.auth = auth;
 }
@@ -2781,6 +2793,13 @@ for (const viewport of consoleViewports) {
       "occ-workspace-files",
       "oidc:member-01",
     ]);
+    // The real Kubernetes deploy admission admits the Configuration the form saved, so this path
+    // cannot pass with one a Kubernetes install refuses (finding 3133). The Agent uses its model
+    // Secret once an Installation administrator grants it.
+    await fixture.grantAgentSecretOperate(created, created.harnessAuth.source, {
+      modelGrant: true,
+    });
+    await fixture.deployAgent(namespace.id, created.id);
     assert.equal(
       await page.evaluate(
         () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
