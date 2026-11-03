@@ -53,8 +53,10 @@ drivers:
 ```
 
 Keep `drivers.credential_gateway` and its Backend member for model authentication.
-The repository authority is configured by `repository.openShell`; do not carry
-the static-inference Proxy's authority configuration into this empty selection.
+`repository.openShell` configures the selected Credential Proxy's connection to
+OpenShell. To grant repository access, configure the Namespace registry and
+grant access to the Agent separately. Keep this Driver's `configuration: {}`
+empty; do not copy the static-inference Proxy configuration into it.
 Use the normal [production Installation and Helm procedure](../deploy/production-installation.md).
 The development launcher's native repository input is a separate path and does
 not accept this protected registry.
