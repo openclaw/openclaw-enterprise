@@ -18,6 +18,7 @@ import {
   login,
   nativeValues,
   newPage,
+  waitForCondition,
   waitForIdleFetches,
   trackSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
@@ -554,6 +555,21 @@ for (const viewport of [
           // Before an explicit Refresh, let the existing running poll discover completion.
           const focused = await focusDiagnostics(true);
           assert.equal(await isOpen(), false);
+          // A reader can scroll back toward the summary without moving keyboard focus.
+          const wheel = await focused.evaluate((node) => {
+            const delta = Math.min(
+              0,
+              Math.round(node.getBoundingClientRect().bottom - innerHeight + 10),
+            );
+            return { delta, target: Math.max(0, scrollY + delta) };
+          });
+          if (wheel.delta < 0) {
+            await page.mouse.wheel(0, wheel.delta);
+            await waitForCondition(
+              () => page.evaluate((target) => Math.abs(scrollY - target) <= 1, wheel.target),
+              "Diagnostics wheel scroll reaches its target before the deployment poll",
+            );
+          }
           const before = await readerPosition(focused);
           assert.ok(
             before.focused && before.hit && before.top >= 0 && before.bottom <= before.viewport,
