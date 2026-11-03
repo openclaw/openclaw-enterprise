@@ -87,7 +87,47 @@ tree=$(gh api "repos/$repo/git/commits/$base_sha" --jq .tree.sha)
 stop_and_retire "$write_revision"
 touch "$RUN_DIR/git-write-retired"
 select_registry "$READ_REGISTRY" read
-deploy_and_wait
+rm -f -- "$RUN_DIR/requested-revision"
+read_recovery=null
+if ! deploy_and_wait; then
+  # A held Git route cannot reopen on the same revision. For the two documented
+  # terminal causes only, confirm cleanup before making one fresh read revision.
+  failed_read=$(cat "$RUN_DIR/requested-revision")
+  [[ $failed_read =~ ^rev_[0-9a-f-]{36}$ && $failed_read != "$write_revision" ]]
+  status_path="$base/agents/$agent/deployments/$failed_read"
+  request GET "$status_path" | jq -e --arg r "$failed_read" --arg a "$agent" --arg n "$namespace" '
+    .data | .deploymentId==$r and .agentId==$a and .namespaceId==$n and
+    .status=="failed" and .error.code=="REPOSITORY_GIT_ROUTE_BLOCKED"' >/dev/null
+  route_check() {
+    kube -n "$PLATFORM_NS" exec -i deployment/openclaw-enterprise-worker -c worker -- \
+      node --input-type=module - "$namespace" "$agent" "$failed_read" "$1" < "$dir/git-route-status.mjs"
+  }
+  reason=$(route_check recovery-reason)
+  [[ $reason == bootstrap_failed || $reason == worker_replaced ]]
+  read_recovery=$(jq -nc --arg revision "$failed_read" --arg reason "$reason" '{revision:$revision,reason:$reason}')
+  printf '%s\n' "$read_recovery" > "$RUN_DIR/git-read-recovery.json"
+  request GET "$base/agents/$agent" | jq -e --arg r "$failed_read" --arg ref "$ref" '
+    .data | (.activeRevisionId==null or .activeRevisionId==$r) and
+    .repositoryBindings==[{repositoryRef:$ref,profile:"github-repository"}]' >/dev/null
+  request GET "$base/agents/$agent/repository-approvals" | jq -e '.data==[]' >/dev/null
+  request POST "$base/agents/$agent/stop" > "$RUN_DIR/git-stop.json"
+  for ((i=0;i<100;i++)); do
+    if stopped && request GET "$status_path" | jq -e '.data.cleanup.status=="succeeded"' >/dev/null; then break; fi
+    sleep 3
+  done
+  test "$i" -lt 100
+  route_check retired
+  # Verify both live components still mount the validated immutable read map.
+  kube -n "$PLATFORM_NS" get cm "$READ_REGISTRY" -o json | jq -e --slurpfile wanted "$RUN_DIR/registry-read.json" '
+    .immutable==true and (.data["registry.json"]|fromjson)==$wanted[0]' >/dev/null
+  for component in api worker; do
+    kube -n "$PLATFORM_NS" get pods -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=$component" -o json |
+      jq -e --arg r "$READ_REGISTRY" '[.items[]|select(.metadata.deletionTimestamp==null)] |
+        length==1 and all(.[]; any(.spec.volumes[]; .name=="repository-registry" and .configMap.name==$r))' >/dev/null
+  done
+  deploy_and_wait
+  test "$(cat "$RUN_DIR/requested-revision")" != "$failed_read"
+fi
 read_revision=$(cat "$RUN_DIR/requested-revision")
 printf 'Use native Git to run git ls-remote --exit-code https://github.com/%s.git refs/heads/%s and return the SHA. Do not write.\n' \
   "$repo" "$branch" > "$RUN_DIR/git-read-prompt"
@@ -109,6 +149,6 @@ push_run=$(run_id "$RUN_DIR/first-result")
 read_run=$(run_id "$RUN_DIR/git-read-result")
 jq -n --arg agent "$agent" --arg w "$write_revision" --arg r "$read_revision" --arg repo "$repo" \
   --arg b "$branch" --arg c "$first_sha" --arg p "$base_sha" --arg t "$tree" \
-  --arg pushRun "$push_run" --arg readRun "$read_run" \
-  '{agentId:$agent,writeRevision:$w,readRevision:$r,repository:$repo,branch:$b,commit:$c,parent:$p,tree:$t,pushRun:$pushRun,readRun:$readRun,pushAuthorized:true,writeRetired:true,readVerified:true}' \
+  --arg pushRun "$push_run" --arg readRun "$read_run" --argjson recovery "$read_recovery" \
+  '{agentId:$agent,writeRevision:$w,readRevision:$r,repository:$repo,branch:$b,commit:$c,parent:$p,tree:$t,pushRun:$pushRun,readRun:$readRun,pushAuthorized:true,writeRetired:true,readVerified:true} + (if $recovery==null then {} else {readRecovery:$recovery} end)' \
   > "$RUN_DIR/git-receipt.json"

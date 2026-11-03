@@ -56,6 +56,10 @@ else
         # The disposable cluster has one tenant. Inspect the Gateway, Sandbox
         # supervisor and operator, including an earlier supervisor if retained.
         # Print only regional package hostnames, never paths or signed queries.
+        if [[ $phase == git ]]; then
+          kube -n "$PLATFORM_NS" exec -i deployment/openclaw-enterprise-worker -c worker -- \
+            node --input-type=module - "$namespace" "$agent" "$revision" < scripts/ci/k3d-quickstart/git-route-status.mjs || true
+        fi
         runtime_log="$RUNNER_TEMP/oce-credentials/capability-runtime.log"
         for scope in "$TENANT_NAMESPACE:openshell.ai/boundary-role=supervisor" "$TENANT_NAMESPACE:openclaw.dev/agent=$agent" "$PLATFORM_NS:app.kubernetes.io/instance=openshell-gateway"; do
           kube -n "${scope%%:*}" logs -l "${scope#*:}" --all-containers --tail=4000 --prefix --ignore-errors=true
@@ -63,6 +67,9 @@ else
         # A preparation Pod can disappear on failure. Include the worker's own
         # runtime startup classifications while keeping all logs runner-private.
         kube -n "$PLATFORM_NS" logs deployment/openclaw-enterprise-worker -c worker --tail=1500 >> "$runtime_log" 2>/dev/null || true
+        grep -F -- "$revision" "$runtime_log" | grep -F 'worker.openshell-git-' |
+          grep -Eo 'bootstrap_failed|execution_replaced|supervisor_replaced|worker_replaced|write_unknown|write_refused|gateway_unauthorized|provider_overlap|preview_install_unverified|preview_release_unconfirmed|grant_changed|material_mismatch|withdrawn' |
+          sort -u | sed 's/^/Git worker reason: /' || true
         grep -Eo 'PLUGIN_(NOT_IN_CATALOG|DETAIL_MISSING|NOT_READY|AUTH_REQUIRED|INSTALL_FAILED)|MODEL_PROBE_FAILED|rate_limit_exceeded|insufficient_quota|no space left on device|permission denied|certificate verify failed|unknown authority|x509: certificate' "$runtime_log" | sort -u | sed 's/^/Runtime diagnostic: /' || true
         grep -Ei 'den(y|ied)|block(ed)?|reject|403|download|failed to fetch' "$runtime_log" |
           grep -Eio 'sdmntpr[a-z]{2,25}[0-9]{0,2}\.oaiusercontent\.com' | sort -u |
