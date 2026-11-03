@@ -86,7 +86,7 @@ test("credential source boundary rejects new raw capabilities in the real source
     [
       "repository installation admits its exact field helpers",
       installation,
-      'import { object as record, closed as check, nonempty as text, openShellRepositoryConfiguration as repository } from "../../../composition/installation-fields.ts"; void record; void check; void text; void repository;',
+      'import { object as record, closed as check, nonempty as text } from "../../../composition/installation-fields.ts"; void record; void check; void text;',
     ],
     [
       "prepared Git admits its existing transaction class and worker identity",
@@ -94,9 +94,9 @@ test("credential source boundary rejects new raw capabilities in the real source
       'import { CredentialDeliveries as Deliveries } from "@openclaw-enterprise/occ"; import { randomUUID as uuid } from "node:crypto"; void Deliveries; void uuid;',
     ],
     [
-      "repository installation admits hashing and its recipient error",
-      installation,
-      'import { createHash as hash } from "node:crypto"; import { SandboxRepositoryRecipientUnverifiedError as RecipientError } from "@openclaw-enterprise/occ"; void hash; void RecipientError;',
+      "repository credential registry admits hashing",
+      "drivers/repo/github/credentials/registry.ts",
+      'import { createHash as hash } from "node:crypto"; void hash;',
     ],
 
     [
@@ -539,10 +539,28 @@ test("credential source boundary rejects new raw capabilities in the real source
       preparedGit,
     ],
     [
+      "repository installation rejects the old OpenShell parser",
+      'import { openShellRepositoryConfiguration } from "../../../composition/installation-fields.ts";',
+      /unreviewed shared field validation import from \.\.\/\.\.\/\.\.\/composition\/installation-fields\.ts/,
+      installation,
+    ],
+    [
+      "repository installation rejects hashing",
+      'import { createHash } from "node:crypto";',
+      /unreviewed runtime import from node:crypto \(createHash\)/,
+      installation,
+    ],
+    [
+      "repository installation rejects the old recipient error",
+      'import { SandboxRepositoryRecipientUnverifiedError } from "@openclaw-enterprise/occ";',
+      /unreviewed runtime import from @openclaw-enterprise\/occ \(SandboxRepositoryRecipientUnverifiedError\)/,
+      installation,
+    ],
+    [
       "configuration hash cannot be re-exported locally",
       "export { createHash };",
       /raw I\/O binding cannot be re-exported/,
-      installation,
+      "drivers/repo/github/credentials/registry.ts",
     ],
 
     [
