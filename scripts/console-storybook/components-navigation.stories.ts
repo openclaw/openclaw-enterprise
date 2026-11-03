@@ -7,6 +7,10 @@ export const MenuMobile = { ...story("menuMobile"), name: "Mobile account menu" 
 export const NamespaceMenu = { ...story("namespaceMenu"), name: "Namespace switcher" };
 export const NamespaceSelectorMobile = { ...story("namespaceSelectorMobile") };
 export const Mobile = { ...story("mobile"), name: "Mobile drawer" };
+export const CompactDrawerScroll = story("navigationDrawerScroll", {
+  frameWidth: "390px",
+  frameHeight: "480px",
+});
 
 export const BuildRevision = { ...story("buildRevision") };
 export const DevelopmentBuild = { ...story("developmentBuild") };
