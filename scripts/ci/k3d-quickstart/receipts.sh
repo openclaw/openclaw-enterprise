@@ -32,7 +32,7 @@ if [[ "$SETUP/$GIT/$LINEAR/$RECALL/$GIT_CLEANUP/$TEARDOWN" == success/success/su
       and $onboard[0].workspaceVerified and $onboard[0].terminalAssistant and $recall[0].preferenceRecalled
       and ($onboard[0].sessionId | type=="string" and length>0)
       and $onboard[0].sessionId==$recall[0].sessionId
-      and $git[0].repository=="oce-test/oce-app-test" and $git[0].writeRetired and $git[0].readVerified
+      and $git[0].repository=="oce-test/oce-app-test" and $git[0].pushAuthorized and $git[0].writeRetired and $git[0].readVerified
       and $linear[0].tool=="codex_apps.linear.list_teams" and $linear[0].teamMatched
       and $recall[0].revisionId==$linear[0].revisionId
       and $cleanup[0].writeRetired and $cleanup[0].readRetired and $cleanup[0].branchRemoved' >/dev/null
