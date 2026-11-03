@@ -1,13 +1,37 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import http from "node:http";
 import https from "node:https";
 import { connect as connectTcp, createServer as createTcpServer } from "node:net";
 import test from "node:test";
+import { loadPublicGithubReadJson } from "../../apps/controller/src/drivers/repo/github/public-read/access.ts";
 import { createPublicGithubReadServer } from "../../apps/controller/src/drivers/repo/github/public-read/server.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+
+const capability = "revision-http." + Buffer.alloc(32, 7).toString("base64url");
+const authorization = {
+  installationId: "installation",
+  namespaceId: "namespace",
+  agentId: "agent-http",
+  revisionId: "revision-http",
+  tokenSha256: createHash("sha256").update(capability).digest("hex"),
+  policy: { mode: "all" },
+  validUntil: "2099-01-01T00:00:00.000Z",
+};
+const readerOptions = {
+  policy: { mode: "all" },
+  loadAuthorizations: () => ({ "revision-http": authorization }),
+};
+const fetch = (url, options = {}) =>
+  globalThis.fetch(url, {
+    ...options,
+    headers: { authorization: `Bearer ${capability}`, ...options.headers },
+  });
 
 // Request headers a client never finishes, so the reader holds the connection open.
 const unfinished = "GET /healthz HTTP/1.1\r\nHost: reader\r\n";
@@ -32,18 +56,22 @@ const received = (client) =>
 const request = (url, localAddress) =>
   new Promise((resolve, reject) => {
     http
-      .get(url, { agent: false, localAddress }, async (res) => {
-        let text = "";
-        res.setEncoding("utf8");
-        try {
-          for await (const chunk of res) {
-            text += chunk;
+      .get(
+        url,
+        { agent: false, localAddress, headers: { authorization: `Bearer ${capability}` } },
+        async (res) => {
+          let text = "";
+          res.setEncoding("utf8");
+          try {
+            for await (const chunk of res) {
+              text += chunk;
+            }
+            resolve({ status: res.statusCode, headers: res.headers, body: JSON.parse(text) });
+          } catch (error) {
+            reject(error);
           }
-          resolve({ status: res.statusCode, headers: res.headers, body: JSON.parse(text) });
-        } catch (error) {
-          reject(error);
-        }
-      })
+        },
+      )
       .once("error", reject);
   });
 const json = { "content-type": "application/json" };
@@ -54,8 +82,8 @@ const githubHeaders = "accept accept-encoding connection host user-agent x-githu
 
 // Starts a reader on loopback for one test. `connect` pairs a raw client with the reader's
 // side of its connection; `hold` opens connections that never finish their request headers.
-async function startReader(t) {
-  const server = createPublicGithubReadServer();
+async function startReader(t, options = readerOptions) {
+  const server = createPublicGithubReadServer(options);
   const clients = [];
   t.after(() => clients.forEach((client) => client.destroy()));
   const port = await listen(t, server);
@@ -167,7 +195,7 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
         "set-cookie": "discard=provider",
       });
       const headers = {
-        authorization: "Bearer synthetic-input",
+        authorization: `Bearer ${capability}`,
         cookie: "discard=client",
         accept: "text/html",
         "if-none-match": "discard",
@@ -468,12 +496,12 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       const before = requests;
       const reads = [from(first, "/pulls/30", reader.base)];
       await holding.promise;
-      // The reader's own request listener is registered first and runs to `pending.get` before
-      // its first await, so by this event it has either joined the read in flight or started
-      // its own provider read.
+      // Let the second request finish its asynchronous capability verification
+      // before releasing the provider read that both authorized callers share.
       const taken = once(reader.server, "request");
       reads.push(from(second, "/pulls/30", reader.base));
       await taken;
+      await new Promise(setImmediate);
       held.writeHead(200, json).end(JSON.stringify({ number: 30 }));
       const responses = await Promise.all(reads);
       assert.equal(requests, before + 1, "identical reads in flight must share one provider read");
@@ -618,4 +646,193 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       await refused();
     },
   );
+});
+
+test("reader capabilities enforce revision scope, current ceiling and withdrawal before provider I/O", async (t) => {
+  const directory = await temporaryDirectory(t, "public-github-authorization-");
+  const { key, cert } = await selfSigned(directory, {
+    commonName: "api.github.com",
+    subjectAltName: "DNS:api.github.com",
+  });
+  let requests = 0;
+  const provider = https.createServer({ key, cert }, (_req, res) => {
+    requests++;
+    ok(res);
+  });
+  await listen(t, provider);
+  const connect = https.Agent.prototype.createConnection;
+  t.mock.method(https.Agent.prototype, "createConnection", function (options, callback) {
+    assert.equal(options.host, "api.github.com");
+    assert.notEqual(options.rejectUnauthorized, false);
+    return connect.call(
+      this,
+      {
+        ...options,
+        host: "127.0.0.1",
+        port: provider.address().port,
+        servername: "api.github.com",
+        ca: cert,
+      },
+      callback,
+    );
+  });
+  const secondCapability = "revision-other." + Buffer.alloc(32, 8).toString("base64url");
+  let ceiling = { mode: "repositories", repositories: ["example/project", "example/tools"] };
+  let registry = {
+    "revision-http": {
+      ...authorization,
+      policy: { mode: "repositories", repositories: ["example/project"] },
+    },
+    "revision-other": {
+      ...authorization,
+      agentId: "agent-other",
+      revisionId: "revision-other",
+      tokenSha256: createHash("sha256").update(secondCapability).digest("hex"),
+      policy: { mode: "all" },
+    },
+  };
+  let unavailable = false;
+  const { base } = await startReader(t, {
+    policy: () => ceiling,
+    loadAuthorizations: () => {
+      if (unavailable) {
+        throw Error("unreadable mounted registry");
+      }
+      return { authorizations: registry, digest: "a".repeat(64) };
+    },
+  });
+  const read = (repo, token, headers = {}) =>
+    globalThis.fetch(base + "/repos/" + repo, {
+      headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers },
+    });
+  const denied = async (repo, token, headers) => {
+    const before = requests;
+    const response = await read(repo, token, headers);
+    assert.ok([401, 403, 503].includes(response.status), String(response.status));
+    assert.equal(requests, before, "denied callers must not reach the provider");
+  };
+  await denied("example/project");
+  await denied("example/project", capability + "forged");
+  await denied("example/tools", capability, {
+    "x-agent-id": "agent-other",
+    "x-public-read-policy": "all",
+  });
+  assert.equal((await read("Example/Project", capability)).status, 200);
+  assert.equal((await read("example/tools", secondCapability)).status, 200);
+  await denied("example/outside", secondCapability);
+  // A withdrawn caller cannot join an already running provider read, even
+  // when another request for the exact API target is currently in flight.
+  const opened = Promise.withResolvers();
+  let held;
+  provider.removeAllListeners("request");
+  provider.on("request", (_req, res) => {
+    requests++;
+    held = res;
+    opened.resolve();
+  });
+  const active = read("example/project", capability);
+  await opened.promise;
+  delete registry["revision-http"];
+  await denied("example/project", capability);
+  await denied("example/project");
+  held.writeHead(200, json).end("{}");
+  assert.equal((await active).status, 200);
+  provider.removeAllListeners("request");
+  provider.on("request", (_req, res) => {
+    requests++;
+    ok(res);
+  });
+  registry["revision-http"] = {
+    ...authorization,
+    policy: { mode: "repositories", repositories: ["example/project"] },
+  };
+  ceiling = { mode: "repositories", repositories: [] };
+  await denied("example/project", capability);
+  ceiling = { mode: "all" };
+  delete registry["revision-http"];
+  await denied("example/project", capability);
+  registry["revision-http"] = { ...authorization, validUntil: "2000-01-01T00:00:00.000Z" };
+  await denied("example/project", capability);
+  const rotatedCapability = "revision-http." + Buffer.alloc(32, 10).toString("base64url");
+  registry["revision-http"] = {
+    ...authorization,
+    tokenSha256: createHash("sha256").update(rotatedCapability).digest("hex"),
+  };
+  await denied("example/project", capability);
+  assert.equal((await read("example/project", rotatedCapability)).status, 200);
+  registry["revision-http"] = authorization;
+  unavailable = true;
+  await denied("example/project", capability);
+  assert.equal((await globalThis.fetch(base + "/healthz")).status, 503);
+  unavailable = false;
+  assert.equal(
+    (await (await globalThis.fetch(base + "/healthz")).json()).authorizationDigest,
+    "a".repeat(64),
+  );
+  const defaultReader = await startReader(t, {});
+  assert.equal((await globalThis.fetch(defaultReader.base + "/repos/example/project")).status, 401);
+});
+
+test("verified reader TLS, exact mounted registry bytes and restart preserve withdrawal", async (t) => {
+  const directory = await temporaryDirectory(t, "public-github-mounted-registry-");
+  const tls = await selfSigned(directory);
+  const file = join(directory, "authorizations.json");
+  const initial = JSON.stringify({ "revision-http": authorization }, null, 2) + "\n";
+  await writeFile(file, initial);
+  const options = {
+    tls,
+    policy: { mode: "all" },
+    loadAuthorizations: async () => {
+      const loaded = await loadPublicGithubReadJson(file);
+      return { authorizations: loaded.value, digest: loaded.digest };
+    },
+  };
+  const server = createPublicGithubReadServer(options);
+  const port = await listen(t, server);
+  const get = (path, ca = tls.cert) =>
+    new Promise((resolve, reject) => {
+      https
+        .get(
+          {
+            host: "127.0.0.1",
+            port,
+            path,
+            ca,
+            agent: false,
+            headers: { authorization: `Bearer ${capability}` },
+          },
+          async (res) => {
+            let body = "";
+            for await (const chunk of res) {
+              body += chunk;
+            }
+            resolve({ status: res.statusCode, body: JSON.parse(body) });
+          },
+        )
+        .on("error", reject);
+    });
+  const healthy = await get("/healthz");
+  assert.equal(healthy.status, 200);
+  assert.equal(
+    healthy.body.authorizationDigest,
+    createHash("sha256").update(initial).digest("hex"),
+  );
+  assert.equal(JSON.stringify(healthy).includes("tokenSha256"), false);
+  await assert.rejects(get("/healthz", "untrusted"), /self-signed|certificate/i);
+  const withdrawn = "{}\n";
+  await writeFile(file, withdrawn);
+  assert.equal((await get("/repos/example/project")).status, 401);
+  assert.equal(
+    (await get("/healthz")).body.authorizationDigest,
+    createHash("sha256").update(withdrawn).digest("hex"),
+  );
+  const restarted = createPublicGithubReadServer({ ...options, tls: undefined });
+  const restartedPort = await listen(t, restarted);
+  assert.equal(
+    (await fetch(`http://127.0.0.1:${restartedPort}/repos/example/project`)).status,
+    401,
+  );
+  await writeFile(file, "invalid registry");
+  assert.equal((await get("/healthz")).status, 503);
+  assert.equal((await get("/repos/example/project")).status, 503);
 });

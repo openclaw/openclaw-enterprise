@@ -1,7 +1,30 @@
-import { createServer, type IncomingMessage, type OutgoingHttpHeaders } from "node:http";
-import { Agent, get } from "node:https";
+import {
+  createServer,
+  type IncomingMessage,
+  type OutgoingHttpHeaders,
+  type ServerOptions,
+  type RequestListener,
+} from "node:http";
+import { Agent, get, createServer as createSecureServer } from "node:https";
+import { readFile } from "node:fs/promises";
 import type { Socket } from "node:net";
 import { URL, URLSearchParams } from "node:url";
+import {
+  authorizationSnapshot,
+  authorizePublicGithubRead,
+  loadPublicGithubReadJson,
+  publicGithubReadPolicy,
+  type ReaderOptions,
+  type PublicGithubReadAuthorizationRegistry,
+} from "./access.ts";
+import {
+  publicGithubGitRoute,
+  publicGithubGitRequestError,
+  publicGithubGitFailure,
+  streamPublicGithubGit,
+} from "./git.ts";
+
+export type { ReaderOptions } from "./access.ts";
 
 const origin = "https://api.github.com";
 const maxConcurrent = 3;
@@ -212,19 +235,30 @@ function retryAfter(milliseconds: number) {
 }
 
 /**
- * Fair share of the reader's provider slots. Every Agent Pod is a separate
- * client address: the reader policy admits Agent Pods directly, so the peer
- * address is the caller's Pod IP, not a shared proxy or node address. One read
- * in flight per caller keeps one slow caller from holding every slot; GitHub's
+ * Fair share of the reader's provider slots. A caller address can belong to a
+ * shared supervisor; this is not per-Agent or per-tenant fairness. One read
+ * in flight per observed address keeps one slow caller from holding every slot; GitHub's
  * own quota, shared at the egress address, is the only request-volume limit.
  * Connections are also capped per address, and the headers timeout is checked
  * every second, so idle sockets from one caller cannot hold every connection.
  */
-export function createPublicGithubReadServer() {
+export function createPublicGithubReadServer(options: ReaderOptions = {}) {
   const agent = new Agent({ keepAlive: true, maxSockets: maxConcurrent });
   const pending = new Map<string, Promise<Result>>();
   const reading = new Set<string>();
   let retryAt = 0;
+  let gitReading = 0;
+
+  function park(headers: IncomingMessage["headers"]) {
+    const now = Date.now();
+    const reset =
+      headers["x-ratelimit-remaining"] === "0"
+        ? Math.max(1, Number(headers["x-ratelimit-reset"]) - now / 1000)
+        : 0;
+    const seconds = Math.max(Number(headers["retry-after"]) || 0, reset || 0) || 60;
+    retryAt = Math.max(retryAt, now + Math.min(86400, Math.max(1, seconds)) * 1000);
+    return retryAfter(retryAt - now);
+  }
 
   function limited(): Result {
     return message(
@@ -317,10 +351,15 @@ export function createPublicGithubReadServer() {
     }
   }
 
-  const server = createServer(
+  const makeServer = (configuration: ServerOptions, listener: RequestListener) =>
+    options.tls
+      ? createSecureServer({ ...configuration, ...options.tls }, listener)
+      : createServer(configuration, listener);
+  const server = makeServer(
     {
+      ...options.tls,
       headersTimeout: 6000,
-      requestTimeout: 8000,
+      requestTimeout: 10 * 60 * 1000,
       // Node checks both timeouts on this interval (default 30 s).
       connectionsCheckingInterval: 1000,
       maxHeaderSize: 8192,
@@ -329,6 +368,50 @@ export function createPublicGithubReadServer() {
       let result: Result;
       const target = req.url ?? "";
       const route = readRoute(target);
+      const gitRoute = publicGithubGitRoute(target);
+      if (target.startsWith("/git/")) {
+        if (!gitRoute) {
+          publicGithubGitFailure(res, 400, "Expected supported Git upload-pack discovery or read.");
+          return;
+        }
+        const invalid = publicGithubGitRequestError(req, gitRoute);
+        if (invalid) {
+          publicGithubGitFailure(res, invalid, "Unsupported Git read request.");
+          return;
+        }
+        const authorized = await authorizePublicGithubRead(
+          options,
+          req.headers.authorization,
+          gitRoute.repository,
+        );
+        if (authorized !== 200) {
+          publicGithubGitFailure(res, authorized, "Public GitHub read authorization denied.");
+          return;
+        }
+        const address = req.socket.remoteAddress ?? "";
+        if (Date.now() < retryAt) {
+          const limitedResult = limited();
+          publicGithubGitFailure(res, 429, "GitHub anonymous reads are rate limited.", {
+            "retry-after": String(limitedResult.headers?.["retry-after"]),
+          });
+        } else if (reading.has(address)) {
+          publicGithubGitFailure(res, 429, "This caller already has a read in progress.", {
+            "retry-after": "2",
+          });
+        } else if (pending.size + gitReading >= maxConcurrent) {
+          publicGithubGitFailure(res, 503, "Public GitHub reader is busy.", { "retry-after": "2" });
+        } else {
+          reading.add(address);
+          gitReading++;
+          try {
+            await streamPublicGithubGit(req, res, gitRoute, agent, park);
+          } finally {
+            gitReading--;
+            reading.delete(address);
+          }
+        }
+        return;
+      }
       if (req.method !== "GET") {
         result = message(405, "Only GET is allowed.", { allow: "GET" });
       } else if (
@@ -337,42 +420,67 @@ export function createPublicGithubReadServer() {
       ) {
         result = message(400, "GET must have no request body.");
       } else if (target === "/healthz") {
-        result = message(200, "ready");
+        try {
+          const snapshot = await authorizationSnapshot(options);
+          result = {
+            status: 200,
+            body: JSON.stringify({ message: "ready", authorizationDigest: snapshot.digest }),
+          };
+        } catch {
+          result = message(503, "Public GitHub read authorization is unavailable.");
+        }
       } else if (!route) {
         result = message(
           400,
           "Expected a supported /repos/{owner}/{repository} public read and query.",
         );
-      } else if (Date.now() < retryAt) {
-        result = limited();
       } else {
-        // A socket that already closed has no address; its reply goes nowhere.
-        const address = req.socket.remoteAddress ?? "";
-        if (reading.has(address)) {
-          result = message(
-            429,
-            "This caller already has a public GitHub read in progress. Wait for it, then retry.",
-            { "retry-after": "2" },
-          );
+        const repository = route.path.split("/").slice(2, 4).join("/");
+        const authorized = await authorizePublicGithubRead(
+          options,
+          req.headers.authorization,
+          repository,
+        );
+        if (authorized !== 200) {
+          result = message(authorized, "Public GitHub read authorization denied.");
+          res.writeHead(result.status, {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+          });
+          res.end(result.body);
+          return;
+        }
+        if (Date.now() < retryAt) {
+          result = limited();
         } else {
-          reading.add(address);
-          try {
-            const sameRead = pending.get(route.target);
-            if (sameRead) {
-              result = await sameRead;
-            } else if (pending.size >= maxConcurrent) {
-              result = message(503, "Public GitHub reader is busy. Retry shortly.", {
-                "retry-after": "2",
-              });
-            } else {
-              const started = read(route).finally(() => {
-                pending.delete(route.target);
-              });
-              pending.set(route.target, started);
-              result = await started;
+          // A socket that already closed has no address; its reply goes nowhere.
+          const address = req.socket.remoteAddress ?? "";
+          if (reading.has(address)) {
+            result = message(
+              429,
+              "This caller already has a public GitHub read in progress. Wait for it, then retry.",
+              { "retry-after": "2" },
+            );
+          } else {
+            reading.add(address);
+            try {
+              const sameRead = pending.get(route.target);
+              if (sameRead) {
+                result = await sameRead;
+              } else if (pending.size + gitReading >= maxConcurrent) {
+                result = message(503, "Public GitHub reader is busy. Retry shortly.", {
+                  "retry-after": "2",
+                });
+              } else {
+                const started = read(route).finally(() => {
+                  pending.delete(route.target);
+                });
+                pending.set(route.target, started);
+                result = await started;
+              }
+            } finally {
+              reading.delete(address);
             }
-          } finally {
-            reading.delete(address);
           }
         }
       }
@@ -391,7 +499,9 @@ export function createPublicGithubReadServer() {
   // the rest close at once unanswered, so refused sockets cannot hold the server-wide limit.
   let refusing = 0;
   function refuse(socket: Socket) {
-    if (refusing >= maxRefusing) {
+    // A raw TLS socket has not completed its handshake, so it cannot receive
+    // the plaintext HTTP refusal used by the loopback HTTP fixture listener.
+    if (options.tls || refusing >= maxRefusing) {
       socket.destroy();
       return;
     }
@@ -443,11 +553,36 @@ export function createPublicGithubReadServer() {
   });
   server.maxRequestsPerSocket = 16;
   server.keepAliveTimeout = 4000;
-  server.setTimeout(30_000);
+  server.setTimeout(10 * 60 * 1000);
   server.once("close", () => agent.destroy());
   return server;
 }
 
 if (import.meta.main) {
-  createPublicGithubReadServer().listen(8080);
+  const required = (name: string) => {
+    const value = process.env[name];
+    if (!value) {
+      throw new Error(`Missing public GitHub reader configuration: ${name}`);
+    }
+    return value;
+  };
+  const certFile = required("PUBLIC_GITHUB_READ_TLS_CERT_FILE");
+  const keyFile = required("PUBLIC_GITHUB_READ_TLS_KEY_FILE");
+  const policyFile = required("PUBLIC_GITHUB_READ_POLICY_FILE");
+  const authorizationFile = required("PUBLIC_GITHUB_READ_AUTHORIZATIONS_FILE");
+  const options: ReaderOptions = {
+    tls: { cert: await readFile(certFile), key: await readFile(keyFile) },
+    policy: async () => publicGithubReadPolicy((await loadPublicGithubReadJson(policyFile)).value),
+    loadAuthorizations: async () => {
+      const loaded = await loadPublicGithubReadJson(authorizationFile);
+      return {
+        authorizations: loaded.value as PublicGithubReadAuthorizationRegistry,
+        digest: loaded.digest,
+      };
+    },
+  };
+  // Refuse to expose a listener until both mounted files can be verified.
+  await authorizationSnapshot(options);
+  publicGithubReadPolicy((await loadPublicGithubReadJson(policyFile)).value);
+  createPublicGithubReadServer(options).listen(8080);
 }
