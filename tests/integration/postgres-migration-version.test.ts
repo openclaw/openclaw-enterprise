@@ -19,8 +19,30 @@ test(
   "Migration refuses PostgreSQL 16 before first installation or upgrade without exposing credentials",
   { skip: process.env.OCC_TEST_MIGRATION_SERVER !== "1", timeout: 180_000 },
   async (context) => {
-    const container = `oce-migration-version-${randomUUID()}`;
+    const owner = randomUUID();
+    const container = `oce-migration-version-${owner}`;
+    const ownershipLabel = `com.openclaw.enterprise.migration-test=${owner}`;
     let client: pg.Client | undefined = undefined;
+    // Launch can time out after Docker creates the container but before returning its ID.
+    context.after(async () => {
+      try {
+        await client?.end();
+      } finally {
+        const owned = await exec("docker", [
+          "ps",
+          "--all",
+          "--quiet",
+          "--no-trunc",
+          "--filter",
+          `label=${ownershipLabel}`,
+        ]);
+        const id = owned.stdout.trim();
+        if (id !== "") {
+          assert.match(id, /^[a-f0-9]{64}$/);
+          await exec("docker", ["rm", "--force", "--volumes", id]);
+        }
+      }
+    });
     // This server belongs only to this test. No existing database or role is changed.
     await exec(
       "docker",
@@ -29,6 +51,8 @@ test(
         "--detach",
         "--name",
         container,
+        "--label",
+        ownershipLabel,
         "--env",
         "POSTGRES_PASSWORD",
         "--env",
@@ -39,13 +63,6 @@ test(
       ],
       { env: { ...process.env, POSTGRES_PASSWORD: randomUUID() }, timeout: 120_000 },
     );
-    context.after(async () => {
-      try {
-        await client?.end();
-      } finally {
-        await exec("docker", ["rm", "--force", "--volumes", container]);
-      }
-    });
     const mapped = await exec("docker", ["port", container, "5432/tcp"]);
     const port = Number(mapped.stdout.trim().split(":").at(-1));
     assert.ok(Number.isInteger(port) && port > 0);
