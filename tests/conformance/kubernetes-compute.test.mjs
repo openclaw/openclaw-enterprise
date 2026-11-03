@@ -71,10 +71,8 @@ import {
   withYieldingGatewayDrain,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { normalizeSecretBindings } from "../../packages/contracts/src/index.ts";
-import {
-  managedGoogleInstall,
-  managedMcpInstalls,
-} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { managedGatewayConfiguration } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -1754,7 +1752,15 @@ test("the dedicated Gateway exposes reviewed MCP tools subject to its admitted a
   );
 });
 
-async function verifyManagedRelease({ id, packageName, releaseSha256, slotId, toolNames }) {
+async function verifyManagedRelease({
+  id,
+  kind,
+  packageName,
+  releaseSha256,
+  credentials,
+  toolNames,
+}) {
+  const slotId = Object.keys(credentials)[0];
   const selectionCases = [{ enabled: true }, { enabled: false }];
   if (toolNames !== undefined) {
     for (const selectedNames of [toolNames, [], undefined]) {
@@ -1771,7 +1777,7 @@ async function verifyManagedRelease({ id, packageName, releaseSha256, slotId, to
   for (const selection of selectionCases) {
     const { enabled, driverPolicy } = selection;
     const selections = {
-      ...(slotId !== undefined && { [managedGoogleInstall.id]: { enabled: true } }),
+      ...(kind === "mcp" && { [managedGoogleInstall.id]: { enabled: true } }),
       [id]: selection,
     };
     let worker;
@@ -1818,33 +1824,30 @@ async function verifyManagedRelease({ id, packageName, releaseSha256, slotId, to
     const gateway = fixture.read("Deployment", fixture.gatewayName).spec.template.spec;
     const gatewayEnv = gateway.containers[0].env;
     const variable = (environment, name) => environment.find((item) => item.name === name)?.value;
-    assert.equal(
-      variable(gatewayEnv, "OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID"),
-      managedGoogleInstall.id,
-    );
-    for (const environment of [worker.environment, gatewayEnv]) {
-      assert.equal(
-        variable(environment, "OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256"),
-        selections[managedGoogleInstall.id].enabled
-          ? managedGoogleInstall.releaseSha256
-          : undefined,
-      );
-    }
-    if (slotId !== undefined) {
-      const workerSettings = variable(worker.environment, "OPENCLAW_MANAGED_MCP_JSON");
-      const gatewaySettings = variable(gatewayEnv, "OPENCLAW_MANAGED_MCP_JSON");
-      const expected = {
+    const google = {
+      kind: managedGoogleInstall.kind,
+      id: managedGoogleInstall.id,
+      packageName: managedGoogleInstall.packageName,
+      slotId: Object.keys(managedGoogleInstall.credentials)[0],
+      releaseSha256: managedGoogleInstall.releaseSha256,
+    };
+    const expected = [
+      ...(kind === "mcp" ? [google] : []),
+      {
+        id,
+        kind,
         packageName,
         slotId,
         ...(enabled && { releaseSha256 }),
         ...(driverPolicy?.toolNames?.length && { toolNames: driverPolicy.toolNames }),
-      };
-      assert.deepEqual(
-        workerSettings && JSON.parse(workerSettings),
-        enabled ? [expected] : undefined,
-      );
-      assert.deepEqual(JSON.parse(gatewaySettings), [{ ...expected, id }]);
-    }
+      },
+    ];
+    const workerSettings = variable(worker.environment, "OPENCLAW_MANAGED_PLUGIN_JSON");
+    assert.deepEqual(
+      JSON.parse(workerSettings ?? "[]"),
+      expected.filter((pkg) => pkg.releaseSha256).map(({ id, ...pkg }) => pkg),
+    );
+    assert.deepEqual(JSON.parse(variable(gatewayEnv, "OPENCLAW_MANAGED_PLUGIN_JSON")), expected);
     // An Agent editor cannot replace deployment inputs with Secret bindings.
     for (const { name } of gatewayEnv.filter(({ name }) => name.startsWith("OPENCLAW_MANAGED_"))) {
       assert.throws(

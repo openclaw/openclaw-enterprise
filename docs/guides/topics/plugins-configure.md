@@ -52,30 +52,33 @@ check the effective policy and a normal Agent turn; a saved selection alone does
 not prove approval routing. See the [approval policy](../../reference/agent-plugins.md#approval-policy)
 and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
 
-## Configure Slack search
+<a id="configure-slack-search"></a>
 
-The Slack package pins its MCP endpoint and credential binding. The operator
-selects upstream tool names in the Agent configuration. This example enables public search.
+## Configure a hosted MCP plugin
 
-Register a `bearer-token` credential source that references the saved Slack
-OAuth access token as its `token` Secret. Use
-`protocol: mcp`, `host: mcp.slack.com`, `port: "443"`, `path: /mcp`,
-`env_var: SLACK_MCP_TOKEN`. OCE stores the token through the Secret Driver
-and supplies the access token to OpenShell for injection.
+A hosted MCP package pins its server endpoint and declares a credential slot.
+On a dedicated OpenClaw Agent, select an attached credential for that slot and
+the upstream tool names the Agent may call. The worker advertises those tools;
+the Sandbox enforces the selection for both worker and script calls.
 
-Use the OpenShell Sandbox and Credential Gateway Drivers. Add
-`/usr/local/bin/node` to `toolBinaries`. Attach the source to the Agent draft
-and grant the operator and Agent service principal `credential_source:operate`
-on it. [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
+The bundled credentialed path uses the OpenShell Sandbox and Credential Gateway
+Drivers. Configure `/usr/local/bin/node` in `toolBinaries`, then register a
+`bearer-token` source with the package's MCP host, port, path and placeholder name.
+Reference the saved access token as its `token` Secret and set `protocol: mcp`.
+Attach the source to the Agent draft and grant the operator and Agent service
+principal `credential_source:operate` on it.
+[OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
 · [Bind a source to an Agent](../../reference/credential-sources.md#bind-a-source-to-an-agent)
 
-Add **Slack** to the Agent and select its attached Slack account. In the Agent's
-plugin selections JSON, set `driverPolicy.toolNames` to
-`["slack_search_public"]` for an account that has Slack public search. Save the
-selection and deploy. OpenShell checks the selected names for worker and script
-calls. An empty selection leaves the worker server disabled.
+Add the plugin and select its attached account. Set `driverPolicy.toolNames` in
+the Agent's plugin selections JSON, then save and deploy. An empty tool selection
+leaves the server disabled. Removing the plugin keeps its independently attached
+credential; [withdraw the source](../../reference/credential-sources/withdrawal.md)
+to revoke a running version's credential access.
 
-Inspect the worker's server and tool filter:
+For example, Slack uses `host: mcp.slack.com`, `port: "443"`, `path: /mcp` and
+`env_var: SLACK_MCP_TOKEN`. Select `toolNames: ["slack_search_public"]` for an
+account that permits public search. Inspect its worker server and tool filter:
 
 ```sh
 OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.oce_mcp_slack --json

@@ -7,6 +7,10 @@ import {
 } from "../../../../../../packages/contracts/src/runtime-failure.mjs";
 
 import { readFileSync } from "node:fs";
+import {
+  MANAGED_PLUGIN_CREDENTIAL_HELPER,
+  managedCredentialEnvironment,
+} from "../../sandbox/openshell-plugin-runtime.ts";
 import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
@@ -262,19 +266,24 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
 }
 `;
 
-// The bootstrap also needs the reserved alias when the Agent installs no Google release.
-// Read it in the controller so an unselected worker need not have the package on disk.
-const googleAccountEnv: string = JSON.parse(
-  readFileSync(
-    new URL(
-      "../../../../plugins/oce-google-workspace/ai.openclaw.oce/release.json",
-      import.meta.url,
+// Reserve every bundled credential alias even when no package is selected. Independent
+// attachments may supply an issued placeholder; ordinary environment values must not.
+const managedPluginCredentialEnvironments = JSON.parse(
+  readFileSync(new URL("../../../../plugins/marketplace.json", import.meta.url), "utf8"),
+).plugins.flatMap(({ name }: { name: string }) => {
+  const release = JSON.parse(
+    readFileSync(
+      new URL(`../../../../plugins/${name}/ai.openclaw.oce/release.json`, import.meta.url),
+      "utf8",
     ),
-    "utf8",
-  ),
-).credentials.account.delivery.env;
+  );
+  return Object.values(release.credentials).map((slot) => ({
+    env: (slot as { delivery: { env: string } }).delivery.env,
+    kind: release.capabilities.harness.includes("mcp") ? "mcp" : "cli",
+  }));
+});
 
-export const MANAGED_MCP_ENVIRONMENT = "OPENCLAW_MANAGED_MCP_JSON";
+export const MANAGED_PLUGIN_ENVIRONMENT = "OPENCLAW_MANAGED_PLUGIN_JSON";
 
 const MANAGED_INSTALL_HELPERS = String.raw`
 function verifiedPluginFile(path, expected) {
@@ -285,51 +294,51 @@ function verifiedPluginFile(path, expected) {
   return bytes;
 }
 
-function readManagedMcpInstall({ id, packageName, releaseSha256, slotId, toolNames = [] }) {
-  if (typeof packageName !== "string" || !/^[a-z][a-z0-9-]*$/.test(packageName)) {
-    throw new Error("The managed MCP package name is invalid.");
+function managedPluginInstallations() {
+  const selection = process.env[${JSON.stringify(MANAGED_PLUGIN_ENVIRONMENT)}];
+  if (selection === undefined) return [];
+  const settings = JSON.parse(selection);
+  return (Array.isArray(settings) ? settings : [settings]).map(readManagedPluginInstallation);
+}
+
+function readManagedPluginInstallation({ id, kind, packageName, releaseSha256, slotId, toolNames = [] }) {
+  if ((kind !== "cli" && kind !== "mcp") || typeof packageName !== "string" || !/^[a-z][a-z0-9-]*$/.test(packageName)) {
+    throw new Error("The managed plugin package type or name is invalid.");
   }
   const root = "/usr/local/lib/oce/plugin-catalog/" + packageName;
   const release = releaseSha256 === undefined ? undefined
     : JSON.parse(verifiedPluginFile(root + "/ai.openclaw.oce/release.json", releaseSha256));
-  const slot = release?.credentials?.[slotId];
-  if (!Array.isArray(toolNames) || (release ? !slot?.mcp?.server : toolNames.length > 0) ||
-      !toolNames.every((name) => typeof name === "string" &&
-        /^[a-zA-Z](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(name) &&
-        ("oce_mcp_" + slot?.mcp?.server + "_" + name).length <= 64) ||
-      new Set(toolNames.map((name) => name.toLowerCase())).size !== toolNames.length) {
-    throw new Error("The selected MCP tools must have distinct literal names and OpenClaw aliases within 64 characters.");
+  if (release && !release.capabilities?.harness?.includes(kind)) {
+    throw new Error("The managed plugin type differs from its reviewed release.");
   }
-  const mcp = slot && {
-    delivery: slot.delivery,
-    server: slot.mcp.server,
-    localServer: "oce_mcp_" + slot.mcp.server,
-    toolNames,
-  };
-  return { id, root, release, mcp };
-}
-
-function managedGoogleInstallation() {
-  const googleId = process.env.OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID;
-  const googleDigest = process.env.OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256;
-  if (googleId === undefined && googleDigest === undefined) return undefined;
-  const root = "/usr/local/lib/oce/plugins/google";
-  const release = googleDigest === undefined ? undefined
-    : JSON.parse(verifiedPluginFile(root + "/release.json", googleDigest));
+  const credential = release?.credentials?.[slotId];
   const skills = root + "/skills";
   let skill;
   if (release?.capabilities.gateway.includes("skill")) {
     const directory = skills + "/" + release.skill;
     skill = { directory, instructions: directory + "/SKILL.md" };
   }
-  return { id: googleId, root, release, skills, skill };
-}
-
-function managedMcpInstallations() {
-  const json = process.env[${JSON.stringify(MANAGED_MCP_ENVIRONMENT)}];
-  if (json === undefined) return [];
-  const settings = JSON.parse(json);
-  return (Array.isArray(settings) ? settings : [settings]).map(readManagedMcpInstall);
+  if (kind === "cli") {
+    if (release && (
+      typeof release.runtimeDirectory !== "string" || !/^\/usr\/local\/lib\/oce\/plugins\/[a-z][a-z0-9-]*$/.test(release.runtimeDirectory) ||
+      typeof release.executable !== "string" || !/^[a-z][a-z0-9-]*$/.test(release.executable)
+    )) throw new Error("The managed CLI installation paths are invalid.");
+    return { id, kind, root, release, skills, skill, credential };
+  }
+  if (!Array.isArray(toolNames) || (release ? !credential?.mcp?.server : toolNames.length > 0) ||
+      !toolNames.every((name) => typeof name === "string" &&
+        /^[a-zA-Z](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(name) &&
+        ("oce_mcp_" + credential?.mcp?.server + "_" + name).length <= 64) ||
+      new Set(toolNames.map((name) => name.toLowerCase())).size !== toolNames.length) {
+    throw new Error("The selected MCP tools must have distinct literal names and OpenClaw aliases within 64 characters.");
+  }
+  const mcp = credential && {
+    delivery: credential.delivery,
+    server: credential.mcp.server,
+    localServer: "oce_mcp_" + credential.mcp.server,
+    toolNames,
+  };
+  return { id, kind, root, release, skills, skill, credential, mcp };
 }
 `;
 
@@ -2740,7 +2749,8 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
   if (nodes[workspaceNodeId] === undefined && nodes["*"] === undefined) {
     // Native workspace.skills checks the source root for discovery, the skill directory for
     // resources and the instruction file for reads. This release needs exactly those paths.
-    const install = managedGoogleInstallation();
+    const managedSkillPaths = managedPluginInstallations().flatMap(({ skills, skill }) =>
+      skill ? [skills, skill.directory, skill.instructions] : []);
     nodes[workspaceNodeId] = {
       ask: "off",
       allowReadPaths: [
@@ -2748,7 +2758,7 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
         remoteRoot + "/**",
         "/home/node/.openclaw",
         ...skillRoots.flatMap((root) => [root, root + "/**"]),
-        ...(install?.skill ? [install.skills, install.skill.directory, install.skill.instructions] : []),
+        ...managedSkillPaths,
       ],
       allowWritePaths: [
         ...editable.map((name) => remoteRoot + "/" + name),
@@ -3110,7 +3120,7 @@ function configureGateway(peerStatus) {
   }
   const pluginInstallStartedAt = Date.now();
   const installs = pluginRuntime?.manifest.kind === "openclaw"
-    ? [managedGoogleInstallation(), ...managedMcpInstallations()].filter(Boolean) : [];
+    ? managedPluginInstallations() : [];
   const pluginResult =
     pluginRuntime === undefined
       ? { successfulPluginIds: [], failures: peerFailures }
@@ -4910,6 +4920,7 @@ const { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("n
 const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
 ${MANAGED_INSTALL_HELPERS}
+${MANAGED_PLUGIN_CREDENTIAL_HELPER}
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
 ${openClawStateMigrationHelper("Native worker", "deploy the Agent again")}
@@ -4946,32 +4957,36 @@ if (
 const outdatedNodeDatabases = outdatedOpenClawDatabases(state);
 let nodeStateCurrent = outdatedNodeDatabases.length === 0;
 
-const google = managedGoogleInstallation();
-const release = google?.release;
-const googleAlias = ${JSON.stringify(googleAccountEnv)};
-const googleCredentialEnv = process.env.OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV;
-const googleMarker = process.env[googleAlias];
-const scopedGoogleMarker = /^openshell:resolve:env:s[0-9a-f]{64}_([A-Z][A-Z0-9_]*)$/.exec(googleMarker ?? "")?.[1] === googleAlias;
-if (googleCredentialEnv !== undefined && (
-  googleCredentialEnv !== googleAlias ||
-  release?.credentials?.account?.delivery?.env !== googleCredentialEnv ||
-  (googleMarker !== undefined && !scopedGoogleMarker)
-)) throw new Error("The selected Google account requires its scoped OpenShell credential placeholder.");
-// OpenShell supplies a scoped marker for an attached provider, including an independent
-// Agent credential. A withdrawn provider stops supplying it when this container restarts.
-if (!scopedGoogleMarker) delete process.env[googleAlias];
-const pluginBin = release?.capabilities.harness.includes("cli") ? join(google.root, "bin") : undefined;
-if (pluginBin) {
-  const architecture = { x64: "linux-amd64", arm64: "linux-arm64" }[process.arch];
-  verifiedPluginFile(join(pluginBin, release.executable), release.artifacts[architecture]?.binarySha256);
+const installs = managedPluginInstallations();
+const boundCredentialEnv = process.env[${JSON.stringify(managedCredentialEnvironment)}];
+const boundMarker = boundCredentialEnv === undefined ? undefined : process.env[boundCredentialEnv];
+if (boundCredentialEnv !== undefined && (
+  !installs.some(({ kind, credential }) => kind === "cli" && credential?.delivery?.env === boundCredentialEnv) ||
+  (boundMarker !== undefined && !isManagedPluginPlaceholder(boundCredentialEnv, boundMarker, "cli"))
+)) throw new Error("The selected account requires its issued credential placeholder.");
+// The credential adapter recognizes issued markers. A withdrawn attachment supplies no
+// marker after restart; unrelated raw environment values are never treated as credentials.
+const credentialEnvironments = [
+  ...${JSON.stringify(managedPluginCredentialEnvironments)},
+  ...installs.flatMap(({ kind, release }) => Object.values(release?.credentials ?? {}).map((slot) => ({ env: slot.delivery.env, kind }))),
+];
+for (const { env, kind } of credentialEnvironments) {
+  if (!isManagedPluginPlaceholder(env, process.env[env], kind)) delete process.env[env];
 }
 
-// OpenShell supplies the placeholder for the selected account. A withdrawn
-// account leaves the definition staged with discovery disabled.
+const pluginBins = [];
 const mcpServers = {};
-for (const install of managedMcpInstallations()) {
+for (const install of installs) {
+  const { kind, release } = install;
+  if (kind === "cli" && release) {
+    const pluginBin = join(release.runtimeDirectory, "bin");
+    const architecture = { x64: "linux-amd64", arm64: "linux-arm64" }[process.arch];
+    verifiedPluginFile(join(pluginBin, release.executable), release.artifacts[architecture]?.binarySha256);
+    pluginBins.push(pluginBin);
+  }
+  // A withdrawn account leaves only its own MCP definition staged with discovery disabled.
   if (!install.mcp) continue;
-  const bytes = verifiedPluginFile(join(install.root, "mcp.json"), install.release.mcpServersSha256);
+  const bytes = verifiedPluginFile(join(install.root, "mcp.json"), release.mcpServersSha256);
   const manifest = JSON.parse(bytes);
   const { delivery, server, localServer, toolNames } = install.mcp;
   const endpoint = manifest.mcpServers[server];
@@ -4979,8 +4994,7 @@ for (const install of managedMcpInstallations()) {
     throw new Error("The managed MCP server declaration is invalid.");
   }
   const placeholder = process.env[delivery.env];
-  // OpenShell can scope its placeholder to a provider revision or a stable credential identity.
-  const matchingPlaceholder = /^openshell:resolve:env:(?:v[0-9]+|s[0-9a-f]{64})_([A-Z][A-Z0-9_]*)$/.exec(placeholder ?? "")?.[1] === delivery.env;
+  const matchingPlaceholder = isManagedPluginPlaceholder(delivery.env, placeholder, "mcp");
   const enabled = toolNames.length > 0 && matchingPlaceholder;
   if (!matchingPlaceholder) delete process.env[delivery.env];
   mcpServers[localServer] = {
@@ -5068,7 +5082,7 @@ delete process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 delete process.env.OPENCLAW_HARNESS_PROBE_CONFIG;
 const nodeEnv = {
   ...process.env,
-  ...(pluginBin && { PATH: [pluginBin, process.env.PATH].filter(Boolean).join(require("node:path").delimiter) }),
+  ...(pluginBins.length > 0 && { PATH: [...pluginBins, process.env.PATH].filter(Boolean).join(require("node:path").delimiter) }),
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: workerConfigPath,
 };

@@ -44,8 +44,8 @@ graph TD
   A["Authorize and validate policy"] -->|valid| S["Save Agent selections"]
   A -->|unsupported| Y["Reject write"]
   S --> B["Revalidate and snapshot version"]
-  B -->|managed Slack| K["Project worker MCP and Gateway tool selections"]
-  K --> L["Apply OpenShell rules for the selected account and MCP tool names"]
+  B -->|managed MCP| K["Project worker MCP and Gateway tool selections"]
+  K --> L["Sandbox applies account and tool request policy"]
   L --> I
   B --> C["Validate native metadata; grant selected plugins"]
   C --> D["Attempt selected installs"]
@@ -118,10 +118,10 @@ Installation uses `GET /installation`; Agent editors use
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC snapshots the validated Configuration, Driver and plugin selections in the queued Agent revision. On a dedicated OpenClaw Agent, Kubernetes Compute passes the release pin for each enabled package to the Gateway and the worker. Both verify the package files they use at startup.
+OCC snapshots the validated Configuration, Driver and plugin selections in the queued Agent revision. Compute sends the Gateway and worker a descriptor for each selected package. At startup each verifies the pinned CLI or MCP assets it uses.
 
 - **CLI packages.** The Gateway loads skill instructions. The Harness runs its image’s pinned executable. The shared guard checks operation and credential restrictions before injection.
-- **Hosted MCP packages.** Compute gives the worker the pinned server descriptor, credential placeholder and selected upstream tool names. The worker advertises that subset and the Gateway admits those tools. The Credential Gateway supplies the bearer. The Sandbox installs exact OpenShell rules for worker and script calls and rejects overlapping routes. An account and nonempty tool selection enable the server.
+- **Hosted MCP packages.** Compute gives the worker the pinned descriptor and selected upstream tool names. The worker advertises that subset and the Gateway admits it. The credential driver attaches the source. The Sandbox delivers its placeholder and translates the selection into request policy for worker and script calls. The bundled OpenShell implementation enforces exact MCP names and rejects overlapping routes. An account and nonempty selection enable the server.
 - **Native runtime plugins.** Startup installs packages and verifies native tool policy.
 
 Credential withdrawal removes injection. Recovery preserves other attachments.
@@ -353,7 +353,10 @@ establish starvation.
 
 ## Changelog
 
-- 2026-11-03 01:22: Trace startup of multiple managed packages on one dedicated Agent. (authoring-run/e29308a5-ef76-4952-b439-23483c4dbd99 - 4178b555ac5dc711c818055bd7fe34c3e4d4943b)
+- 2026-11-03 01:40: Trace startup of multiple managed packages on one dedicated Agent. (authoring-run/e29308a5-ef76-4952-b439-23483c4dbd99 - 54b2a30498f690e2a16a3198e84a6363f69d91ae)
+
+- 2026-11-03 01:10: Describe hosted MCP packages and Driver-owned request policy. (authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8 - 4178b555ac5dc711c818055bd7fe34c3e4d4943b)
+
 - 2026-11-03 00:16: Describe plugin types. (authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7 - e1a6ce75ac414131e759b985d280833b3b26b90e)
 
 - 2026-11-02 22:29: Trace the Slack account and tool selection through dedicated Agent deployment. (authoring-run/84451153-a081-4e74-aa29-e1a4acecddad - 5c0623f136d881356cec3c104b8657c761c14782)

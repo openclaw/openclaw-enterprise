@@ -259,7 +259,7 @@ test("dedicated OpenClaw admits Google and Slack together and validates Slack's 
   driver.credentials.validate(selections, [source]);
   assert.throws(
     () => driver.credentials.validate(selections, [{ ...broaderRestSource, id: source.id }]),
-    /Select a ready Slack MCP account/,
+    /Select a ready Slack account/,
   );
   const mixedPlacement = { ...selections, ...occSelection() };
   driver.validatePolicies(mixedPlacement);

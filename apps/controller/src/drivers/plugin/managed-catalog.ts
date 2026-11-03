@@ -9,12 +9,7 @@ import {
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { exactDnsName } from "../credential-source-endpoint.ts";
-import {
-  eligibleGoogleOperations,
-  googleDiscoveryRequests,
-  googleRequestScope,
-  googleRelease,
-} from "./google-workspace/operations.ts";
+import { googleWorkspaceCredentialPolicy } from "./google-workspace/credential-policy.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 
@@ -114,31 +109,35 @@ const bundledInstalls = marketplace.plugins.map(({ name, source }) => {
   }
   return loadManagedInstall(name);
 });
-const googleInstall = bundledInstalls.find(
-  ({ packageName }) => packageName === "oce-google-workspace",
-);
-const credentials = googleRelease?.credentials;
-if (
-  !googleInstall ||
-  !Check(
-    Type.Record(Type.String({ pattern: "^[a-z][a-z0-9-]*$" }), credentialSlot, {
-      minProperties: 1,
-      maxProperties: 1,
-      additionalProperties: false,
-    }),
+function loadManagedCliInstall(install: ReturnType<typeof loadManagedInstall>) {
+  const { release } = install;
+  const credentials = release?.credentials;
+  if (
+    !Check(
+      Type.Record(Type.String({ pattern: "^[a-z][a-z0-9-]*$" }), credentialSlot, {
+        minProperties: 1,
+        maxProperties: 1,
+        additionalProperties: false,
+      }),
+      credentials,
+    ) ||
+    !isNonEmptyString(release?.executable) ||
+    !/^[a-z][a-z0-9-]*$/.test(release.executable) ||
+    typeof release.runtimeDirectory !== "string" ||
+    !/^\/usr\/local\/lib\/oce\/plugins\/[a-z][a-z0-9-]*$/.test(release.runtimeDirectory)
+  ) {
+    throw new Error(`Invalid managed CLI release: ${install.packageName}.`);
+  }
+  return {
+    ...install,
+    kind: "cli" as const,
     credentials,
-  ) ||
-  !isNonEmptyString(googleRelease?.executable) ||
-  !/^[a-z][a-z0-9-]*$/.test(googleRelease.executable)
-) {
-  throw new Error("Invalid bundled Google Workspace release.");
+    runtimeDirectory: release.runtimeDirectory,
+    binaryPath: `${release.runtimeDirectory}/bin/${release.executable}`,
+  };
 }
+export type ManagedCliInstall = ReturnType<typeof loadManagedCliInstall>;
 
-export const managedGoogleInstall = {
-  ...googleInstall,
-  credentials,
-  binaryPath: `/usr/local/lib/oce/plugins/google/bin/${googleRelease.executable}`,
-} as const;
 const mcpSlot = Type.Object(
   {
     label: Type.String({ minLength: 1 }),
@@ -204,6 +203,8 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
   }
   return {
     ...install,
+    kind: "mcp" as const,
+    credentials: slots,
     server,
     slotId,
     url: url.href,
@@ -216,10 +217,28 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
 }
 
 export type ManagedMcpInstall = ReturnType<typeof loadManagedMcpInstall>;
-export const managedMcpInstalls: readonly ManagedMcpInstall[] = Object.freeze(
-  bundledInstalls.filter((install) => install !== googleInstall).map(loadManagedMcpInstall),
+export const managedInstalls = Object.freeze(
+  bundledInstalls.map((install) => {
+    const harness = asRecord(install.release?.capabilities)?.harness;
+    if (Array.isArray(harness) && harness.length === 1) {
+      if (harness[0] === "cli") {
+        return loadManagedCliInstall(install);
+      }
+      if (harness[0] === "mcp") {
+        return loadManagedMcpInstall(install);
+      }
+    }
+    throw new Error(`Unsupported managed package type: ${install.packageName}.`);
+  }),
 );
-export const managedInstalls = [managedGoogleInstall, ...managedMcpInstalls] as const;
+export const managedCliInstalls = managedInstalls.filter((install) => install.kind === "cli");
+export const managedMcpInstalls = managedInstalls.filter((install) => install.kind === "mcp");
+
+// CLI request semantics belong to each reviewed connector; the catalog owns iteration.
+const cliCredentialPolicies = [googleWorkspaceCredentialPolicy];
+const cliCredentialPolicy = (install: ManagedCliInstall) =>
+  cliCredentialPolicies.find(({ packageName }) => packageName === install.packageName);
+
 if (
   new Set(managedInstalls.map(({ runtimeName }) => runtimeName)).size !== managedInstalls.length ||
   new Set(managedMcpInstalls.map(({ endpoint }) => `${endpoint.host}:${endpoint.port}`)).size !==
@@ -231,17 +250,20 @@ if (
 }
 
 /** A selection holds references only. Installation without an account remains valid. */
-export function managedCredentialBinding(selections: PluginDesiredState | undefined) {
-  const selection = selections?.[managedGoogleInstall.id];
+export function managedCredentialBinding(
+  selections: PluginDesiredState | undefined,
+  install: ManagedCliInstall,
+) {
+  const selection = selections?.[install.id];
   const policy = selection?.driverPolicy;
   if (policy === undefined) {
     return undefined;
   }
   const bindings = Object.entries(asRecord(policy.credentials) ?? {});
   const entry = bindings[0];
-  if (policy.releaseSha256 !== managedGoogleInstall.releaseSha256) {
+  if (policy.releaseSha256 !== install.releaseSha256) {
     throw new ConfigurationHarnessError(
-      "The Google Workspace release has changed. Select the account again for the current release.",
+      `The ${install.entry.name} release has changed. Select the account again for the current release.`,
     );
   }
   if (!selection?.enabled || Object.keys(policy).length !== 2 || bindings.length !== 1 || !entry) {
@@ -250,14 +272,20 @@ export function managedCredentialBinding(selections: PluginDesiredState | undefi
     );
   }
   const [slot, sourceId] = entry;
-  const available = managedGoogleInstall.credentials;
+  const available = install.credentials;
   const credential = Object.hasOwn(available, slot) ? available[slot] : undefined;
   if (!credential || typeof sourceId !== "string" || !sourceId.startsWith("cs_")) {
     throw new ConfigurationHarnessError(
       "Select an Agent credential source for a declared plugin slot.",
     );
   }
-  return { slot, sourceId, credential };
+  return { install, slot, sourceId, credential };
+}
+
+export function managedCliCredentialBindings(selections: PluginDesiredState | undefined) {
+  return managedCliInstalls
+    .map((install) => managedCredentialBinding(selections, install))
+    .filter((binding) => binding !== undefined);
 }
 
 /** Upstream tool names belong to one pinned MCP server. */
@@ -343,74 +371,6 @@ export function managedMcpCredentialBindings(
   return bindings;
 }
 
-export function requireManagedCredentialRuntime(
-  selections: PluginDesiredState | undefined,
-  sandbox?: string,
-  gateway?: string,
-): void {
-  const supported = sandbox === "openshell" && gateway === "openshell";
-  if (managedCredentialBinding(selections) && !supported) {
-    throw new ConfigurationHarnessError(
-      "A bound Google account requires the OpenShell Sandbox and Credential Gateway.",
-    );
-  }
-  if (managedMcpCredentialBindings(selections).length > 0 && !supported) {
-    throw new ConfigurationHarnessError(
-      "A bound MCP account requires the OpenShell Sandbox and Credential Gateway.",
-    );
-  }
-}
-
-function googleSourceScope(source: CredentialSource) {
-  const config = source.config;
-  return googleRequestScope({
-    host: config.host,
-    port: Number(config.port ?? 443),
-    path: config.path ?? "/**",
-    scopes: config.scope?.split(" ") ?? [],
-  });
-}
-
-export function managedSlotAcceptsSource(
-  slot: ManagedCredentialSlot,
-  source: CredentialSource,
-): boolean {
-  const config = source.config;
-  const scope = googleSourceScope(source);
-  return (
-    source.state === "ready" &&
-    source.ownerCapability === "credential_gateway" &&
-    source.egress === undefined &&
-    source.type === "oauth2-refresh-token" &&
-    config.token_url === slot.tokenEndpoint &&
-    config.env_var === slot.delivery.env &&
-    (config.binary === undefined || config.binary === managedGoogleInstall.binaryPath) &&
-    scope !== undefined &&
-    eligibleGoogleOperations(scope).length > 0
-  );
-}
-
-/** OpenShell selects middleware by destination host, so even a disjoint path cannot
- * bypass its guard for an independently authorized source on the same host. */
-export function googleAttachmentConflict(
-  selected: CredentialSource,
-  sources: readonly CredentialSource[],
-) {
-  const scope = googleSourceScope(selected);
-  if (!scope) {
-    return undefined;
-  }
-  const hosts = new Set([scope.host, ...googleDiscoveryRequests(scope).map((r) => r.host)]);
-  const conflict = sources.find(
-    (s) =>
-      s.id !== selected.id &&
-      (s.config.env_var === selected.config.env_var || hosts.has(s.config.host ?? "")),
-  );
-  if (conflict) {
-    return "This Google plugin binding conflicts with another attached credential's placeholder or guarded Google host. Use non-overlapping credential routes and distinct placeholder names, or clear the plugin binding.";
-  }
-}
-
 export function managedMcpInstallForSourceConfig(
   config: CredentialSource["config"],
 ): ManagedMcpInstall | undefined {
@@ -442,62 +402,58 @@ export function managedMcpSlotAcceptsSource(
 
 export const managedPluginCredentials = {
   choices(sources: readonly CredentialSource[]) {
-    const google = Object.entries(managedGoogleInstall.credentials).map(([id, slot]) => ({
-      pluginId: managedGoogleInstall.id,
-      releaseSha256: managedGoogleInstall.releaseSha256,
-      id,
-      label: slot.label,
-      sources: sources
-        .filter((source) => managedSlotAcceptsSource(slot, source))
-        .map(({ id, name }) => ({ id, name })),
-    }));
-    return [
-      ...google,
-      ...managedMcpInstalls.map((install) => ({
+    return managedInstalls.flatMap((install) =>
+      Object.entries(install.credentials).map(([id, slot]) => ({
         pluginId: install.id,
         releaseSha256: install.releaseSha256,
-        id: install.slotId,
-        label: install.credentialLabel,
+        id,
+        label: slot.label,
         sources: sources
-          .filter((source) => managedMcpSlotAcceptsSource(install, source))
+          .filter((source) =>
+            install.kind === "mcp"
+              ? managedMcpSlotAcceptsSource(install, source)
+              : cliCredentialPolicy(install)?.accepts(install, install.credentials[id]!, source) ===
+                true,
+          )
           .map(({ id, name }) => ({ id, name })),
       })),
-    ];
+    );
   },
   validate(
     selections: PluginDesiredState,
     sources: readonly CredentialSource[],
     modelSourceId?: string,
   ) {
-    for (const mcp of managedMcpCredentialBindings(selections)) {
-      const source = sources.find(({ id }) => id === mcp.sourceId);
-      if (
-        !source ||
-        source.id === modelSourceId ||
-        !managedMcpSlotAcceptsSource(mcp.install, source)
-      ) {
+    for (const install of managedInstalls) {
+      const binding =
+        install.kind === "mcp"
+          ? managedMcpCredentialBinding(selections, install)
+          : managedCredentialBinding(selections, install);
+      if (!binding) {
+        continue;
+      }
+      const source = sources.find(({ id }) => id === binding.sourceId);
+      const accepts =
+        source &&
+        (install.kind === "mcp"
+          ? managedMcpSlotAcceptsSource(install, source)
+          : cliCredentialPolicy(install)?.accepts(
+              install,
+              Object.values(install.credentials)[0]!,
+              source,
+            ));
+      if (!source || source.id === modelSourceId || !accepts) {
         throw new ConfigurationHarnessError(
-          `Select a ready ${mcp.install.entry.name} MCP account attached to this Agent that matches the reviewed credential slot.`,
+          `Select a ready ${install.entry.name} account attached to this Agent that matches the reviewed credential slot.`,
         );
       }
-    }
-    const binding = managedCredentialBinding(selections);
-    if (!binding) {
-      return;
-    }
-    const source = sources.find(({ id }) => id === binding.sourceId);
-    if (
-      !source ||
-      source.id === modelSourceId ||
-      !managedSlotAcceptsSource(binding.credential, source)
-    ) {
-      throw new ConfigurationHarnessError(
-        "Select a ready Google account attached to this Agent that matches the reviewed plugin credential slot.",
-      );
-    }
-    const conflict = googleAttachmentConflict(source, sources);
-    if (conflict) {
-      throw new ConfigurationHarnessError(conflict);
+      const conflict =
+        install.kind === "cli"
+          ? cliCredentialPolicy(install)?.conflict(source, sources)
+          : undefined;
+      if (conflict) {
+        throw new ConfigurationHarnessError(conflict);
+      }
     }
   },
 };

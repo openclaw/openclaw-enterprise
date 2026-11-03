@@ -191,13 +191,8 @@ import {
 } from "../workspace-setup-runtime.ts";
 import { requireHarnessAuthMethod } from "../harness-auth-method.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
-import {
-  managedGoogleInstall,
-  managedInstalls,
-  managedMcpCredentialBinding,
-  managedMcpInstalls,
-  requireManagedCredentialRuntime,
-} from "../../plugin/managed-catalog.ts";
+import { managedInstalls, managedMcpCredentialBinding } from "../../plugin/managed-catalog.ts";
+import { requireManagedCredentialRuntime } from "../../plugin/managed-runtime.ts";
 import {
   validatePlaintextNativeGateway,
   validateRoutableNativeListener,
@@ -269,7 +264,7 @@ import {
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
-  MANAGED_MCP_ENVIRONMENT,
+  MANAGED_PLUGIN_ENVIRONMENT,
   MANAGED_CONFIGURATION_DIRECTORY,
   NATIVE_HOOK_CREDENTIAL_DIRECTORY,
   NATIVE_WORKER_ENTRYPOINT,
@@ -16101,40 +16096,27 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         });
       }
     }
-    // The managed release is in the image. The two processes receive only its
-    // identity and the reviewed tool selection, never the account's bearer.
+    // The image supplies the releases. Both processes receive only package identities and
+    // reviewed tool selections, never account credentials.
     if (dedicated && pluginRuntime?.runtime.kind === "openclaw") {
       const { selections } = pluginRuntime.runtime;
-      const google = selections[managedGoogleInstall.id];
-      if (google && role === "gateway") {
-        variables.push({
-          name: "OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID",
-          value: managedGoogleInstall.id,
-        });
-      }
-      if (google?.enabled) {
-        variables.push({
-          name: "OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256",
-          value: managedGoogleInstall.releaseSha256,
-        });
-      }
-      const mcpSettings = [];
-      for (const install of managedMcpInstalls) {
+      const packages = [];
+      for (const install of managedInstalls) {
         const selection = selections[install.id];
-        if (!selection || (!selection.enabled && role !== "gateway")) {
-          continue;
-        }
-        const binding = managedMcpCredentialBinding(selections, install);
-        mcpSettings.push({
+        if (!selection || (!selection.enabled && role !== "gateway")) continue;
+        const binding =
+          install.kind === "mcp" ? managedMcpCredentialBinding(selections, install) : undefined;
+        packages.push({
+          kind: install.kind,
           packageName: install.packageName,
-          slotId: install.slotId,
+          slotId: Object.keys(install.credentials)[0],
           ...(role === "gateway" && { id: install.id }),
           ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
           ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
         });
       }
-      if (mcpSettings.length > 0) {
-        variables.push({ name: MANAGED_MCP_ENVIRONMENT, value: JSON.stringify(mcpSettings) });
+      if (packages.length > 0) {
+        variables.push({ name: MANAGED_PLUGIN_ENVIRONMENT, value: JSON.stringify(packages) });
       }
     }
     const needsPluginRuntime =
