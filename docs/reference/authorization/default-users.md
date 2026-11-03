@@ -44,7 +44,8 @@ still needs an administrator to enable it; see
 [policy authority](../sandbox-policies.md#authority-and-admission).
 
 Database triggers refuse updates and deletes of the four Roles, the Default
-users Group, and the Agent Creator binding. The
+users Group, and the Agent Creator binding. Namespace deletion removes the Agent
+Creator binding with the rest of the Namespace's policy. The
 `iam_access_bindings_built_in_role_shape` constraint enforces the binding
 shapes in the table. The
 [Namespace policy API](../authorization.md#manage-namespace-policy) cannot bind
@@ -132,8 +133,9 @@ is removed.
 
 Each create or deploy that writes an Owner binding or a deploy-time grant
 holds the caller's session until COMMIT and authorizes only after that. A
-sign-out, account disable, or removal from Default users commits either before
-it, so the request is refused and writes nothing, or after its COMMIT.
+sign-out, account disable, removal from Default users, or delete of an
+AccessBinding that allowed the request commits either before it, so the request
+is refused and writes nothing, or after its COMMIT.
 
 OCC writes no Owner binding when the selected IAM Driver has no
 `createOwnerBinding` member. A Driver that has it but does not join the platform

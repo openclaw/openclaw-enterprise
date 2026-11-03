@@ -568,3 +568,49 @@ test(
     assert.equal(later.status, 403);
   },
 );
+
+test(
+  "an Agent Owner binding deleted while its owner's deploy waits commits no Agent grant",
+  requiresPostgres,
+  async (t) => {
+    const agentApp = await defaultUsersApp(t, "default-users-owner-revocation");
+    const { pool, inject, account, addDefaultUser } = agentApp;
+    const namespaceId = await defaultNamespace(agentApp);
+    const base = `/namespaces/${namespaceId}`;
+    const alice = await account("alice");
+    await addDefaultUser(alice.principalId);
+    const { secretId, agent } = await ownedAgent(base, alice);
+
+    // Another writer holds the Namespace lock. The administrator's delete of only the Agent's
+    // Owner binding queues on it first. Alice's deploy, which that binding still allows, queues
+    // second. She keeps her Owner bindings on the Configuration and Secret, so only the Agent
+    // binding stands between her deploy and a durable grant for the Agent's principal.
+    const namespaceLock = await pool.connect();
+    await namespaceLock.query("BEGIN");
+    await namespaceLock.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE", [
+      namespaceId,
+    ]);
+    const revoking = inject("DELETE", `${base}/iam/access-bindings/binding_owner_${agent.id}`);
+    await lockWaiters(pool, 1);
+    const deploying = alice.request("POST", `${base}/agents/${agent.id}/deploy`);
+    await lockWaiters(pool, 2);
+    await namespaceLock.query("COMMIT");
+    namespaceLock.release();
+
+    // The revocation commits first. The deploy authorizes again under the Namespace lock, is
+    // refused, and writes neither a revision nor the Secret grant.
+    const revoked = await revoking;
+    assert.equal(revoked.statusCode, 204, revoked.body);
+    const deployed = await deploying;
+    assert.equal(deployed.status, 403, JSON.stringify(deployed.error));
+    const grants = await pool.query(
+      "SELECT 1 FROM occ.iam_access_bindings WHERE identity_subject_id = $1 AND resource_id = $2",
+      [agent.servicePrincipalId, secretId],
+    );
+    assert.equal(grants.rowCount, 0);
+    const revisions = await pool.query("SELECT 1 FROM occ.agent_revisions WHERE agent_id = $1", [
+      agent.id,
+    ]);
+    assert.equal(revisions.rowCount, 0);
+  },
+);

@@ -357,7 +357,7 @@ updated.
 ### `iam_roles`
 
 Defines native IAM roles as sets of actions and resource kinds, including the
-three immutable [built-in Roles](../authorization/default-users.md#built-in-roles).
+four immutable [built-in Roles](../authorization/default-users.md#built-in-roles).
 
 - `id`
 - `namespace_id`

@@ -208,9 +208,8 @@ selected account, session, and policy writers join the same protocol.
 behavior; this phase traces the writes.
 
 - **Membership.** `apps/controller/src/index.ts:createFastifyApp` handles
-  `addDefaultUser` and `removeDefaultUser` inside `transactHoldingSession`, so
-  like the Namespace policy writes above they hold the human session through
-  COMMIT. `setDefaultUser` holds the acting account, authorizes Installation
+  `addDefaultUser` and `removeDefaultUser` inside `transactHoldingSession`, which
+  holds the session through COMMIT. `setDefaultUser` holds the acting account, authorizes Installation
   `administer`, and calls the Driver's `addGroupMember` or `removeGroupMember`
   for `group_builtin_default_users`. PostgreSQL State refuses a member that is
   not an Installation Principal, and `deleteGroupMembership` takes the member's
@@ -219,9 +218,11 @@ behavior; this phase traces the writes.
 - **Authority fence.** `performFenced` runs each session request inside
   `controller.withAuthorityFence`. The create paths below and
   `deployAgentWithAuthorization` call `holdAuthority` first: it holds the
-  session through COMMIT, takes the Principal's authority lock shared, then
-  authorizes. A sign-out, disable, or removal commits before the authorization,
-  which refuses, or after this COMMIT.
+  session through COMMIT and takes the Principal's authority lock shared before
+  the authorization. Each create in a Namespace and the deploy
+  authorize again after `lockNamespace`, which AccessBinding deletes also take,
+  and the deploy's grants use that second decision. `fenceAgentProvisioning`
+  takes the requester's authority lock before `authorizeProvisioningRecord`.
 - **Owner bindings.** Each create path calls `bindCreator` after it inserts the
   resource row, in the same unit: `createNamespace`, `createAgent`,
   `createConfiguration`, `createSecret`, `createCredentialSource`,
@@ -230,24 +231,21 @@ behavior; this phase traces the writes.
   `bindCreator` skips the write when the selected Driver has no
   `createOwnerBinding` or the controller was built with the `authorize` option.
   Otherwise the Driver writes `binding_owner_<resource-id>` through
-  `createBuiltInBinding`, Namespace-wide for a Namespace and exact for anything
-  else, and `auditBinding` appends the event with `reason: "creator"`. A
-  Namespace's Owner binding comes before its default Presets, so the creator's
-  own grant creates them.
+  `createBuiltInBinding`, and `auditBinding` appends the event with
+  `reason: "creator"`. A Namespace's Owner binding comes before its default
+  Presets, so the creator's own grant creates them.
 - **Parent checks.** `authorizationDecision` passes `parentAgentId` with each
   `agent_revision` and `sandbox_policy` check. Revision reads name the Agent
   they loaded, or the route's Agent in `getRevision`, whose later lookups accept
   only that Agent's revision. A sandbox policy's parent derives from its ID,
   which migration 0058 ties to the Agent ID. The native Driver's `sameResource`
-  then matches an exact binding on that Agent, and `effectiveGrants` keeps those
-  permissions for identity access coverage.
+  then matches an exact binding on that Agent.
 - **Built-in Default users bindings.** When `createNamespace` creates the
   Namespace named `default`, `bindDefaultUsers` calls the Driver's
   `setDefaultUsersBinding` for Agent Creator there. `applyDefaultUserSettings`,
   which the production and development compositions call at startup and the
   bootstrap route calls after bootstrap, writes or deletes the Namespace Creator
-  binding to match `defaultUser.namespaceCreate`. Each change is audited, with
-  the Installation as actor for the setting.
+  binding to match `defaultUser.namespaceCreate`. Each change is audited.
 - **Deployment.** `deployAgentWithAuthorization` calls
   `grantDeployedAgentSources` with the Roles that allowed `agent:deploy`. If
   `role_builtin_owner` or `role_builtin_namespace_member` is among
@@ -255,8 +253,7 @@ behavior; this phase traces the writes.
   each reference that a built-in Role lets the caller `operate`, and
   that the Agent ServicePrincipal cannot `operate`, `ensureAgentOperateGrants`
   writes the exact binding. OCC appends one event for each with
-  `reason: "agent_deploy"`. Then the ordinary Agent principal checks run, so a
-  later deploy failure rolls back the grants.
+  `reason: "agent_deploy"`. A later deploy failure rolls back the grants.
 
 ## Debugging and Verification
 
@@ -305,6 +302,7 @@ behavior; this phase traces the writes.
 
 - 2026-11-02 10:00: Trace Owner bindings for every create, the default Namespace binding, and the Namespace Creator setting; drop the Namespace limit. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - aba993606)
 - 2026-11-02 16:00: Trace parent checks that apply an exact Agent binding to the Agent's revisions and sandbox policy. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
+- 2026-11-02 21:00: Trace the second authorization under the Namespace lock for creates and deploy, and the provisioning authority lock. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-11-02 18:00: Trace the authority fence; correct the membership session hold. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-10-30 09:02: Trace Default users membership, the Namespace owner binding, and deploy-time Agent grants; working tree changes uncommitted. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - a382326dde18057a250e93a222aa8f4000477166)
 - 2026-10-15 13:28: Retain assigning sessions through policy COMMIT, require transactional IAM writes, and preserve caller limits with shared guarded-session holds. (authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851 - a302a3e2061575b64dcc37e212c55075d5c74b9a)

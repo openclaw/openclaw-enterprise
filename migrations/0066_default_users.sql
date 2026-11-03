@@ -143,10 +143,24 @@ SELECT 'binding_builtin_default_users_agent_create', id, NULL, 'group_builtin_de
   'role_builtin_agent_creator', NULL, NULL
 FROM occ.namespaces WHERE name = 'default' AND deleted_at IS NULL;
 --> statement-breakpoint
+-- The Agent Creator binding stays fixed while its Namespace exists. The Namespace deletion
+-- finalizer removes every binding of the Namespace in the transaction that tombstones it.
+CREATE FUNCTION occ.reject_built_in_binding_mutation() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog, occ, pg_temp AS $$
+BEGIN
+  IF TG_OP = 'DELETE' AND EXISTS (
+    SELECT 1 FROM occ.namespaces WHERE id = OLD.namespace_id AND deleted_at IS NOT NULL
+  ) THEN
+    RETURN OLD;
+  END IF;
+  RAISE EXCEPTION '% is immutable', TG_TABLE_NAME USING ERRCODE = '55000';
+END;
+$$;
+--> statement-breakpoint
 CREATE TRIGGER iam_built_in_binding_is_immutable
 BEFORE UPDATE OR DELETE ON occ.iam_access_bindings
 FOR EACH ROW WHEN (OLD.id = 'binding_builtin_default_users_agent_create')
-EXECUTE FUNCTION occ.reject_row_mutation();
+EXECUTE FUNCTION occ.reject_built_in_binding_mutation();
 --> statement-breakpoint
 -- Administrators remove Default users members; memberships stay otherwise immutable.
 DROP TRIGGER iam_group_membership_is_immutable ON occ.iam_group_memberships;

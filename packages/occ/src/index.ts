@@ -5306,12 +5306,16 @@ export class OpenClawController {
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
       await this.holdAuthority(state, principalId);
-      await this.authorize(principalId, "create", {
+      const target: ResourceRef = {
         kind: "preset",
         id: input.namespaceId,
         namespaceId: input.namespaceId,
-      });
+      };
+      await this.authorize(principalId, "create", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
+      // while this write waited stops it before it leaves a durable Owner binding or grant.
+      await this.authorize(principalId, "create", target);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -5665,12 +5669,16 @@ export class OpenClawController {
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
       await this.holdAuthority(state, principalId);
-      await this.authorize(principalId, "create", {
+      const target: ResourceRef = {
         kind: "secret",
         id: input.namespaceId,
         namespaceId: input.namespaceId,
-      });
+      };
+      await this.authorize(principalId, "create", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
+      // while this write waited stops it before it leaves a durable Owner binding or grant.
+      await this.authorize(principalId, "create", target);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -6815,12 +6823,16 @@ export class OpenClawController {
     this.namespaceIdentity(input.namespaceId);
     const registration = await this.mutate(async (state) => {
       await this.holdAuthority(state, principalId);
-      await this.authorize(principalId, "create", {
+      const target: ResourceRef = {
         kind: "credential_source",
         id: input.namespaceId,
         namespaceId: input.namespaceId,
-      });
+      };
+      await this.authorize(principalId, "create", target);
       const locked = await this.lockNamespace(state, input.namespaceId);
+      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
+      // while this write waited stops it before it leaves a durable Owner binding or grant.
+      await this.authorize(principalId, "create", target);
       // An Installation property, so it is reported before any Namespace state.
       this.assertCredentialSourceOwnerSelected();
       const protectedType = this.protectedSourceTypes().find((p) => p.type.type === input.type);
@@ -7572,12 +7584,16 @@ export class OpenClawController {
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
       await this.holdAuthority(state, principalId);
-      await this.authorize(principalId, "create", {
+      const target: ResourceRef = {
         kind: "configuration",
         id: input.namespaceId,
         namespaceId: input.namespaceId,
-      });
+      };
+      await this.authorize(principalId, "create", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
+      // while this write waited stops it before it leaves a durable Owner binding or grant.
+      await this.authorize(principalId, "create", target);
       // Checked after authorization: the conflict names the Namespace state.
       if (namespace.status !== "provisioning" && namespace.status !== "ready") {
         throw new ResourceStateConflictError("The Namespace does not accept new Configurations.");
@@ -7650,12 +7666,16 @@ export class OpenClawController {
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
       await this.holdAuthority(state, principalId);
-      await this.authorize(principalId, "create", {
+      const target: ResourceRef = {
         kind: "service_account",
         id: input.namespaceId,
         namespaceId: input.namespaceId,
-      });
-      const namespace = await this.exactNamespace(state, input.namespaceId);
+      };
+      await this.authorize(principalId, "create", target);
+      const namespace = await this.lockNamespace(state, input.namespaceId);
+      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
+      // while this write waited stops it before it leaves a durable Owner binding or grant.
+      await this.authorize(principalId, "create", target);
       // Checked after authorization: the conflict names the Namespace state.
       if (namespace.status !== "provisioning" && namespace.status !== "ready") {
         throw new ResourceStateConflictError("The Namespace does not accept new ServiceAccounts.");
@@ -9972,6 +9992,9 @@ export class OpenClawController {
       await this.authorizeGatewayManagedModeChange(principalId, input.gatewayManagedMode === false);
       this.requireGatewayManagedModeSupport(gatewayManagedMode);
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
+      // while this write waited stops it before it leaves a durable Owner binding or grant.
+      await this.authorize(principalId, "create", target);
       // Checked after authorization: the conflict names the Namespace state.
       if (namespace.status !== "provisioning" && namespace.status !== "ready") {
         throw new ResourceStateConflictError("The Namespace does not accept new Agents.");
@@ -10693,12 +10716,16 @@ export class OpenClawController {
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
       await this.holdAuthority(state, principalId);
-      const authorization = await this.authorize(principalId, "deploy", {
+      const target: ResourceRef = {
         kind: "agent",
         id: input.agentId,
         namespaceId: input.namespaceId,
-      });
+      };
+      await this.authorize(principalId, "deploy", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // AccessBinding deletes hold this lock: the decision taken now, not the one taken
+      // before the wait, selects the Roles whose grants this deploy may write.
+      const authorization = await this.authorize(principalId, "deploy", target);
       const agent = await state.agents.findAgent(namespace.id, input.agentId);
       if (!agent) {
         throw new ScopeViolationError(
@@ -13093,6 +13120,9 @@ export class OpenClawController {
         throw new ResourceStateConflictError("The Agent lifecycle changed during provisioning.");
       }
     }
+    // Hold the requester's membership so a removal from Default users commits before this
+    // check or after the Owner bindings that provisioning writes for the requester.
+    await state.installations.holdPrincipalIdentity(record.actorId);
     await this.authorizeProvisioningRecord(state, record.actorId, record);
     return state.provisioning.checkpoint(claim, {
       completedPhase: record.completedPhase,
